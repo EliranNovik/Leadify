@@ -63,7 +63,7 @@ const SalesLinkedContributionModal: React.FC<SalesLinkedContributionModalProps> 
           </button>
         </div>
         <p className="text-sm text-base-content/70 mb-4">
-          Employees from Handlers, Partners, and Finance with contribution from <strong>Closer</strong>, <strong>Helper Closer</strong>, or <strong>Meeting Manager</strong> roles in this period. Signed = amount from those roles; contribution is applied automatically to Sales to reduce the adjustment.
+          Employees from Handlers, Partners, and Finance with contribution from <strong>Closer</strong>, <strong>Helper Closer</strong>, or <strong>Meeting Manager</strong> roles in this period. Signed = amount from those roles; contribution is applied automatically to Sales to reduce the adjustment. Contribution fixed stays on each employee&apos;s department (no split to Sales).
         </p>
         <div className="overflow-auto flex-1 min-h-0">
           <table className="table table-pin-rows w-full">

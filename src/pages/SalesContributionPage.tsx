@@ -180,7 +180,6 @@ const SalesContributionPage = () => {
   const [isFixedContributionModalOpen, setIsFixedContributionModalOpen] = useState(false);
   const [isDepartmentRolesModalOpen, setIsDepartmentRolesModalOpen] = useState(false);
   const [isSalesLinkedModalOpen, setIsSalesLinkedModalOpen] = useState(false);
-  const [salesLinkedModalFixedMap, setSalesLinkedModalFixedMap] = useState<Map<number, number>>(new Map());
   const [handlersPartnersFinanceForLinkedModal, setHandlersPartnersFinanceForLinkedModal] = useState<Array<{ employeeId: number; employeeName: string; departmentName: 'Handlers' | 'Partners' | 'Finance'; photoUrl?: string | null }>>([]);
   const [isHandlersLinkedModalOpen, setIsHandlersLinkedModalOpen] = useState(false);
   const [salesPartnersFinanceForHandlersModal, setSalesPartnersFinanceForHandlersModal] = useState<Array<{ employeeId: number; employeeName: string; departmentName: 'Sales' | 'Partners' | 'Finance'; photoUrl?: string | null }>>([]);
@@ -715,103 +714,13 @@ const SalesContributionPage = () => {
         });
         list.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
         if (!cancelled) setHandlersPartnersFinanceForLinkedModal(list);
-
-        // Fetch 50% fixed contribution for employees in employee_handlers_sales_contributions with department_role Sales
-        // Use fixed from any department (Sales, Handlers, Partners, Finance) so Handlers/Partners/Finance employees get their saved amount
-        const { data: salesContribData, error: salesContribErr } = await supabase
-          .from('employee_handlers_sales_contributions')
-          .select('employee_id')
-          .eq('department_role', 'Sales')
-          .eq('is_active', true);
-        if (!salesContribErr && salesContribData?.length) {
-          const salesEmployeeIds = [...new Set((salesContribData as any[]).map((r: any) => Number(r.employee_id)).filter(Boolean))];
-          if (salesEmployeeIds.length > 0) {
-            const { data: fixedData, error: fixedErr } = await supabase
-              .from('employee_fixed_contribution')
-              .select('employee_id, department_role, fixed_contribution_amount')
-              .in('employee_id', salesEmployeeIds);
-            if (!fixedErr && fixedData) {
-              const fixedMap = new Map<number, number>();
-              const order = ['Sales', 'Handlers', 'Partners', 'Finance'];
-              const byEmployee = new Map<number, Array<{ role: string; amount: number }>>();
-              (fixedData as any[]).forEach((r: any) => {
-                const eid = Number(r.employee_id);
-                const amount = Number(r.fixed_contribution_amount) || 0;
-                const role = (r.department_role || '').toString();
-                if (!byEmployee.has(eid)) byEmployee.set(eid, []);
-                byEmployee.get(eid)!.push({ role, amount });
-              });
-              byEmployee.forEach((rows, eid) => {
-                const sorted = rows.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role));
-                const amount = sorted.length > 0 ? sorted[0].amount : 0;
-                if (amount > 0) fixedMap.set(eid, amount * 0.5);
-              });
-              if (!cancelled) setSalesLinkedModalFixedMap(fixedMap);
-            }
-          }
-        }
-        if (cancelled) return;
-        if (!salesContribData?.length) setSalesLinkedModalFixedMap(new Map());
       } catch (e) {
         console.error('Fetch Handlers/Partners/Finance for linked modal:', e);
         if (!cancelled) setHandlersPartnersFinanceForLinkedModal([]);
-        if (!cancelled) setSalesLinkedModalFixedMap(new Map());
       }
     })();
     return () => { cancelled = true; };
   }, [isSalesLinkedModalOpen]);
-
-  // Fetch 50% fixed contribution for Sales link (employee_handlers_sales_contributions) on report load so the −50% deduction shows in Handlers/Partners/Finance tables without opening the Sales modal
-  useEffect(() => {
-    if (!filters.fromDate || !filters.toDate || !searchPerformed) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const { data: salesContribData, error: salesContribErr } = await supabase
-          .from('employee_handlers_sales_contributions')
-          .select('employee_id')
-          .eq('department_role', 'Sales')
-          .eq('is_active', true);
-        if (salesContribErr || !salesContribData?.length) {
-          if (!cancelled) setSalesLinkedModalFixedMap(new Map());
-          return;
-        }
-        const salesEmployeeIds = [...new Set((salesContribData as any[]).map((r: any) => Number(r.employee_id)).filter(Boolean))];
-        if (salesEmployeeIds.length === 0) {
-          if (!cancelled) setSalesLinkedModalFixedMap(new Map());
-          return;
-        }
-        const { data: fixedData, error: fixedErr } = await supabase
-          .from('employee_fixed_contribution')
-          .select('employee_id, department_role, fixed_contribution_amount')
-          .in('employee_id', salesEmployeeIds);
-        if (fixedErr || !fixedData) {
-          if (!cancelled) setSalesLinkedModalFixedMap(new Map());
-          return;
-        }
-        const fixedMap = new Map<number, number>();
-        const order = ['Sales', 'Handlers', 'Partners', 'Finance'];
-        const byEmployee = new Map<number, Array<{ role: string; amount: number }>>();
-        (fixedData as any[]).forEach((r: any) => {
-          const eid = Number(r.employee_id);
-          const amount = Number(r.fixed_contribution_amount) || 0;
-          const role = (r.department_role || '').toString();
-          if (!byEmployee.has(eid)) byEmployee.set(eid, []);
-          byEmployee.get(eid)!.push({ role, amount });
-        });
-        byEmployee.forEach((rows, eid) => {
-          const sorted = rows.sort((a, b) => order.indexOf(a.role) - order.indexOf(b.role));
-          const amount = sorted.length > 0 ? sorted[0].amount : 0;
-          if (amount > 0) fixedMap.set(eid, amount * 0.5);
-        });
-        if (!cancelled) setSalesLinkedModalFixedMap(fixedMap);
-      } catch (e) {
-        console.error('Fetch Sales link fixed map on load:', e);
-        if (!cancelled) setSalesLinkedModalFixedMap(new Map());
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [searchPerformed, filters.fromDate, filters.toDate]);
 
   // Fetch all Sales + Partners + Finance employees from DB when Handlers linked modal opens
   useEffect(() => {
@@ -925,7 +834,8 @@ const SalesContributionPage = () => {
           signedFromAllNonHandler += r.signedTotal ?? 0;
         }
       }
-      const contributionFixedFromModal = salesLinkedModalFixedMap.get(emp.employeeId) ?? 0;
+      // Fixed contribution is no longer split/reallocated to Sales from employee_handlers_sales_contributions (Partners keep full fixed in their table).
+      const contributionFixedFromModal = 0;
       rows.push({
         employeeId: emp.employeeId,
         employeeName: emp.employeeName,
@@ -937,7 +847,7 @@ const SalesContributionPage = () => {
       });
     }
     return rows.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
-  }, [handlersPartnersFinanceForLinkedModal, departmentData, roleDataCache, salesLinkedModalFixedMap, departmentPercentages, filters.fromDate, filters.toDate, totalIncome, dueNormalizedPercentage, rolePercentages, getRolePercentagesHash]);
+  }, [handlersPartnersFinanceForLinkedModal, departmentData, roleDataCache, departmentPercentages, filters.fromDate, filters.toDate, totalIncome, dueNormalizedPercentage, rolePercentages, getRolePercentagesHash]);
 
   // Derived linked totals (same render as modal rows so they apply on initial load without needing to click Search)
   const linkedContributionForSales = useMemo(() =>
@@ -1019,16 +929,37 @@ const SalesContributionPage = () => {
     return (marketingFixedDeductedByEmployee.get(4) ?? 0) + (marketingFixedDeductedByEmployee.get(1) ?? 0);
   }, [marketingFixedDeductedByEmployee]);
 
-  // Sum of total cost (totalSalaryCost) across all employees in all departments
-  const totalCostAllEmployees = useMemo(() => {
+  /**
+   * Same number as summing each department table’s Total row “Total salary cost” (employee view only).
+   * Mirrors `renderTable` → `filteredEmployeesForCorrection` + reduce (field view tables use empty filter for totals → 0).
+   * Uses summed row values, not `dept.totals.totalSalaryCost` (totals can lag after contribution scaling).
+   */
+  const totalCostVisibleEmployees = useMemo(() => {
+    if (viewMode === 'field') {
+      return 0;
+    }
     let sum = 0;
-    for (const dept of departmentData.values()) {
-      for (const emp of dept.employees) {
-        sum += emp.totalSalaryCost ?? 0;
-      }
+    for (const deptName of departmentNames) {
+      const deptData = departmentData.get(deptName);
+      if (!deptData) continue;
+      const filteredEmployeesForCorrection = deptData.employees.filter((emp) => {
+        if (!employeeSearchTerm.trim()) return true;
+        const searchLower = employeeSearchTerm.toLowerCase().trim();
+        return (
+          emp.employeeName.toLowerCase().includes(searchLower) ||
+          (emp.department ?? '').toLowerCase().includes(searchLower)
+        );
+      });
+      sum += filteredEmployeesForCorrection.reduce(
+        (s, emp) => s + (emp.totalSalaryCost ?? 0),
+        0
+      );
     }
     return sum;
-  }, [departmentData]);
+    // departmentNames is constant list; omit from deps to avoid new [] reference each render
+  }, [departmentData, employeeSearchTerm, viewMode]);
+
+  const displayTotalCostForTopBadge = totalCostVisibleEmployees;
 
   // Sum of salary budget across all employees in all departments
   const totalSalaryBudgetAllEmployees = useMemo(() => {
@@ -1086,11 +1017,8 @@ const SalesContributionPage = () => {
       }, 0);
       const totalContributionFixedDisplayed = employees.reduce((s, emp) => {
         const fullFixed = emp.contributionFixed ?? 0;
-        const toSales = (deptName === 'Handlers' || deptName === 'Partners' || deptName === 'Finance')
-          ? (salesLinkedModalFixedMap.get(emp.employeeId) ?? 0)
-          : 0;
         const toMarketing = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
-        return s + (fullFixed - toSales - toMarketing);
+        return s + (fullFixed - toMarketing);
       }, 0);
       const totalContributionFixedDisplayedAdjusted =
         totalContributionFixedDisplayed + (deptName === 'Marketing' ? linkedContributionForMarketing : 0);
@@ -1105,7 +1033,7 @@ const SalesContributionPage = () => {
       map.set(deptName, totalRowSalaryBudget);
     }
     return map;
-  }, [departmentData, departmentNames, linkedContributionForSales, linkedContributionForHandlers, linkedContributionFixedForSales, linkedContributionForMarketing, salesLinkedModalFixedMap, marketingFixedDeductedByEmployee, contributionToSalesByEmployee, contributionToHandlersByEmployee]);
+  }, [departmentData, departmentNames, linkedContributionForSales, linkedContributionForHandlers, linkedContributionFixedForSales, linkedContributionForMarketing, marketingFixedDeductedByEmployee, contributionToSalesByEmployee, contributionToHandlersByEmployee]);
 
   // Sum of total row salary budget across all departments — use this for the top badge so it matches the sum of the 5 summary boxes and table total rows
   const totalSalaryBudgetFromTotalRows = useMemo(() => {
@@ -4581,30 +4509,6 @@ const SalesContributionPage = () => {
             console.warn('Error fetching fixed contribution toggle/map:', e);
           }
 
-          // Fetch employee_handlers_sales_contributions to identify employees with Handler/Sales roles (50% of Salary B)
-          const employeesWithHalfContribution = new Set<number>();
-          try {
-            const { data: handlersSalesContributions, error: handlersSalesError } = await supabase
-              .from('employee_handlers_sales_contributions')
-              .select('employee_id, department_role')
-              .in('department_role', ['Handler', 'Sales'])
-              .eq('is_active', true);
-
-            if (!handlersSalesError && handlersSalesContributions) {
-              handlersSalesContributions.forEach((contribution: any) => {
-                employeesWithHalfContribution.add(Number(contribution.employee_id));
-              });
-              console.log('✅ Fetched employee_handlers_sales_contributions for Contribution Fixed (50%):', {
-                contributionsCount: handlersSalesContributions.length,
-                uniqueEmployees: employeesWithHalfContribution.size
-              });
-            } else if (handlersSalesError) {
-              console.error('Error fetching employee_handlers_sales_contributions:', handlersSalesError);
-            }
-          } catch (error) {
-            console.error('Error fetching employee_handlers_sales_contributions:', error);
-          }
-
           // Fetch employee_field_assignments to identify employees with Marketing/Finance/Partners roles (100% of Salary B)
           const employeesWithFixedContribution = new Set<number>();
           try {
@@ -4650,17 +4554,13 @@ const SalesContributionPage = () => {
                   updatedEmp.salaryBrutto = 40000;
                 }
 
-                // Set contributionFixed: from DB (if toggle on) or 60% of Salary (B) for Marketing/Finance and Partners (without employee_handlers_sales_contributions), else existing logic
+                // Set contributionFixed: from DB (if toggle on) or 60% of Salary (B) for Marketing/Finance/Partners; 100% of B for other field-assignment roles. (No 50% split from employee_handlers_sales_contributions — Partners keep full Partners fixed.)
                 if (useFixedFromDb && fixedContributionFromDbMap.has(emp.employeeId)) {
                   updatedEmp.contributionFixed = fixedContributionFromDbMap.get(emp.employeeId) ?? 0;
                 } else if (!useFixedFromDb) {
                   const salaryB = updatedEmp.salaryBrutto || 0;
-                  if (deptName === 'Marketing' || deptName === 'Finance') {
+                  if (deptName === 'Marketing' || deptName === 'Finance' || deptName === 'Partners') {
                     updatedEmp.contributionFixed = salaryB * 0.6;
-                  } else if (deptName === 'Partners' && !employeesWithHalfContribution.has(emp.employeeId)) {
-                    updatedEmp.contributionFixed = salaryB * 0.6;
-                  } else if (employeesWithHalfContribution.has(emp.employeeId)) {
-                    updatedEmp.contributionFixed = salaryB * 0.5;
                   } else if (employeesWithFixedContribution.has(emp.employeeId)) {
                     updatedEmp.contributionFixed = salaryB;
                   } else {
@@ -4923,30 +4823,6 @@ const SalesContributionPage = () => {
           console.warn('Error fetching fixed contribution toggle/map (cached):', e);
         }
 
-        // Fetch employee_handlers_sales_contributions to identify employees with Handler/Sales roles (50% of Salary B)
-        const employeesWithHalfContribution = new Set<number>();
-        try {
-          const { data: handlersSalesContributions, error: handlersSalesError } = await supabase
-            .from('employee_handlers_sales_contributions')
-            .select('employee_id, department_role')
-            .in('department_role', ['Handler', 'Sales'])
-            .eq('is_active', true);
-
-          if (!handlersSalesError && handlersSalesContributions) {
-            handlersSalesContributions.forEach((contribution: any) => {
-              employeesWithHalfContribution.add(Number(contribution.employee_id));
-            });
-            console.log('✅ Fetched employee_handlers_sales_contributions for Contribution Fixed (50%, cached):', {
-              contributionsCount: handlersSalesContributions.length,
-              uniqueEmployees: employeesWithHalfContribution.size
-            });
-          } else if (handlersSalesError) {
-            console.error('Error fetching employee_handlers_sales_contributions:', handlersSalesError);
-          }
-        } catch (error) {
-          console.error('Error fetching employee_handlers_sales_contributions:', error);
-        }
-
         // Fetch employee_field_assignments to identify employees with Marketing/Finance/Partners roles (100% of Salary B)
         const employeesWithFixedContribution = new Set<number>();
         try {
@@ -4994,17 +4870,13 @@ const SalesContributionPage = () => {
                     updatedEmp.salaryBrutto = 40000;
                   }
 
-                  // Set contributionFixed: from DB (if toggle on) or 60% of Salary (B) for Marketing/Finance and Partners (without employee_handlers_sales_contributions), else existing logic
+                  // Set contributionFixed: from DB (if toggle on) or 60% of Salary (B) for Marketing/Finance/Partners; 100% of B for field-assignment roles.
                   if (useFixedFromDbCached && fixedContributionFromDbMapCached.has(emp.employeeId)) {
                     updatedEmp.contributionFixed = fixedContributionFromDbMapCached.get(emp.employeeId) ?? 0;
                   } else if (!useFixedFromDbCached) {
                     const salaryB = updatedEmp.salaryBrutto || 0;
-                    if (deptName === 'Marketing' || deptName === 'Finance') {
+                    if (deptName === 'Marketing' || deptName === 'Finance' || deptName === 'Partners') {
                       updatedEmp.contributionFixed = salaryB * 0.6;
-                    } else if (deptName === 'Partners' && !employeesWithHalfContribution.has(emp.employeeId)) {
-                      updatedEmp.contributionFixed = salaryB * 0.6;
-                    } else if (employeesWithHalfContribution.has(emp.employeeId)) {
-                      updatedEmp.contributionFixed = salaryB * 0.5;
                     } else if (employeesWithFixedContribution.has(emp.employeeId)) {
                       updatedEmp.contributionFixed = salaryB;
                     } else {
@@ -5060,12 +4932,8 @@ const SalesContributionPage = () => {
                   updatedEmp.contributionFixed = fixedContributionFromDbMapCached.get(emp.employeeId) ?? 0;
                 } else if (!useFixedFromDbCached) {
                   const salaryB = updatedEmp.salaryBrutto || 0;
-                  if (deptName === 'Marketing' || deptName === 'Finance') {
+                  if (deptName === 'Marketing' || deptName === 'Finance' || deptName === 'Partners') {
                     updatedEmp.contributionFixed = salaryB * 0.6;
-                  } else if (deptName === 'Partners' && !employeesWithHalfContribution.has(emp.employeeId)) {
-                    updatedEmp.contributionFixed = salaryB * 0.6;
-                  } else if (employeesWithHalfContribution.has(emp.employeeId)) {
-                    updatedEmp.contributionFixed = salaryB * 0.5;
                   } else if (employeesWithFixedContribution.has(emp.employeeId)) {
                     updatedEmp.contributionFixed = salaryB;
                   } else {
@@ -6151,7 +6019,18 @@ const SalesContributionPage = () => {
     const percentage = departmentPercentages.get(departmentName) || 0;
     const isEditing = editingPercentage === departmentName;
     const totalSalaryBudget = totalRowSalaryBudgetByDepartment.get(departmentName) ?? 0;
-    const totalCost = deptData?.totals?.totalSalaryCost ?? 0;
+    // Sum row totalSalaryCost like the table Total row (not dept.totals — can be stale vs rows after scaling)
+    const totalCost =
+      deptData?.employees
+        .filter((emp) => {
+          if (!employeeSearchTerm.trim()) return true;
+          const searchLower = employeeSearchTerm.toLowerCase().trim();
+          return (
+            emp.employeeName.toLowerCase().includes(searchLower) ||
+            (emp.department ?? '').toLowerCase().includes(searchLower)
+          );
+        })
+        .reduce((s, emp) => s + (emp.totalSalaryCost ?? 0), 0) ?? 0;
 
     // Calculate summary box amount: 40% of income * department percentage
     const baseAmount = (totalIncome || 0) * 0.4;
@@ -6397,12 +6276,8 @@ const SalesContributionPage = () => {
     const departmentPercentage = departmentPercentages.get(deptData.departmentName) || 0;
     const contributionAmount = totalIncome && totalIncome > 0 ? (departmentPercentage / 100) * totalIncome : 0;
 
-    // For Handlers/Partners/Finance: amount of contribution fixed "moved" to Sales modal (50% for employees in employee_handlers_sales_contributions).
-    // Subtract from this department's total so correction and Total row reflect the deduction.
-    const linkedFixedDeductedForThisDept =
-      (deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance')
-        ? deptData.employees.reduce((s, emp) => s + (salesLinkedModalFixedMap.get(emp.employeeId) ?? 0), 0)
-        : 0;
+    // No fixed contribution relocated to Sales (removed: former 50% split from employee_handlers_sales_contributions).
+    const linkedFixedDeductedForThisDept = 0;
 
     // Handlers only: per-employee share of linked contribution (from S/P/F modal) to deduct from contribution column so total row stays correct.
     const linkedToHandlersShareByEmployee = (() => {
@@ -6478,11 +6353,7 @@ const SalesContributionPage = () => {
       return emp.employeeName.toLowerCase().includes(searchLower) || emp.department.toLowerCase().includes(searchLower);
     });
 
-    // Amount of contribution fixed deducted (moved to Sales) for displayed employees in this department (Handlers/Partners/Finance only).
-    const linkedFixedDeductedForDisplayed =
-      (deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance')
-        ? filteredEmployeesForCorrection.reduce((s, emp) => s + (salesLinkedModalFixedMap.get(emp.employeeId) ?? 0), 0)
-        : 0;
+    const linkedFixedDeductedForDisplayed = 0;
     // Amount of contribution fixed deducted (moved to Marketing) for displayed employees 1 and 4 in this department.
     const linkedMarketingFixedDeductedForDisplayed = filteredEmployeesForCorrection.reduce(
       (s, emp) => s + (marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0),
@@ -6499,15 +6370,12 @@ const SalesContributionPage = () => {
       },
       0
     );
-    // Total contribution fixed: sum of per-row net (full fixed − relocated to Sales − relocated to Marketing) so total row matches displayed rows.
+    // Total contribution fixed: sum of per-row net (full fixed − relocated to Marketing where applicable).
     const totalContributionFixedDisplayed = filteredEmployeesForCorrection.reduce(
       (s, emp) => {
         const fullFixed = emp.contributionFixed ?? 0;
-        const toSales = (deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance')
-          ? (salesLinkedModalFixedMap.get(emp.employeeId) ?? 0)
-          : 0;
         const toMarketing = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
-        return s + (fullFixed - toSales - toMarketing);
+        return s + (fullFixed - toMarketing);
       },
       0
     );
@@ -6547,11 +6415,8 @@ const SalesContributionPage = () => {
     const fullTotalContributionFixed = deptData.employees.reduce(
       (s, emp) => {
         const fullFixed = emp.contributionFixed ?? 0;
-        const toSales = (deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance')
-          ? (salesLinkedModalFixedMap.get(emp.employeeId) ?? 0)
-          : 0;
         const toMarketing = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
-        return s + (fullFixed - toSales - toMarketing);
+        return s + (fullFixed - toMarketing);
       },
       0
     );
@@ -6810,23 +6675,11 @@ const SalesContributionPage = () => {
                             </td>
                             <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
                               {(() => {
-                                // Amount reallocated to Sales modal (50% of their fixed); shown under contribution fixed in main table row.
-                                const deductedFixed = (deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance')
-                                  ? (salesLinkedModalFixedMap.get(emp.employeeId) ?? 0)
-                                  : 0;
                                 const marketingDeducted = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
                                 const fullFixed = emp.contributionFixed ?? 0;
                                 return (
                                   <div className="flex flex-col items-end gap-0.5">
                                     <span>{formatCurrency(fullFixed)}</span>
-                                    {deductedFixed > 0 && (
-                                      <span
-                                        className="tooltip tooltip-top text-xs text-amber-600 dark:text-amber-400 font-medium cursor-help"
-                                        data-tip="50% of this employee's fixed contribution is reallocated to the Sales table (Link contribution to Sales)."
-                                      >
-                                        −{formatCurrency(deductedFixed)}
-                                      </span>
-                                    )}
                                     {marketingDeducted > 0 && (
                                       <span
                                         className="tooltip tooltip-top text-xs text-amber-600 dark:text-amber-400 font-medium cursor-help"
@@ -7829,7 +7682,7 @@ const SalesContributionPage = () => {
                         </span>
                         {(deptData.departmentName === 'Sales' && linkedContributionForSales != null && linkedContributionForSales > 0) || (deptData.departmentName === 'Handlers' && linkedContributionForHandlers != null && linkedContributionForHandlers > 0) ? (
                           <span
-                            className="tooltip tooltip-top text-xs text-green-600 dark:text-green-400 font-medium cursor-help"
+                            className="tooltip tooltip-top text-xs text-blue-600 dark:text-blue-400 font-medium cursor-help"
                             data-tip={deptData.departmentName === 'Sales'
                               ? 'Contribution from employees in Handlers, Partners and Finance who have Closer / Helper Closer / Meeting Manager / Scheduler roles (Link contribution to Sales).'
                               : 'Contribution from employees in Sales, Partners and Finance who have the Handler role (Link contribution to Handlers).'}
@@ -8026,12 +7879,12 @@ const SalesContributionPage = () => {
               <span className="text-sm font-medium text-base-content/70">Total cost</span>
               {totalIncome != null && totalIncome > 0 && (
                 <span className="badge badge-sm bg-amber-500/90 text-white border-0">
-                  {((totalCostAllEmployees / totalIncome) * 100).toFixed(1)}%
+                  {((displayTotalCostForTopBadge / totalIncome) * 100).toFixed(1)}%
                 </span>
               )}
             </div>
             <div className="px-5 py-2.5 bg-gradient-to-tr from-amber-500 via-orange-500 to-orange-600 rounded-lg min-w-[160px] text-center text-white shadow-md">
-              <span className="font-semibold text-white text-lg">{formatCurrency(totalCostAllEmployees)}</span>
+              <span className="font-semibold text-white text-lg">{formatCurrency(displayTotalCostForTopBadge)}</span>
             </div>
           </div>
         </div>

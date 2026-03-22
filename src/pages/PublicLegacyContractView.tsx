@@ -1,9 +1,70 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useState, useRef, useMemo, useCallback } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
 import { useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
-import SignaturePad from 'react-signature-canvas';
+import SignatureCanvas from 'react-signature-canvas';
 import { ShareIcon } from '@heroicons/react/24/outline';
+
+type InlineSignatureFieldProps = {
+  index: number;
+  registerPad: (idx: number, pad: SignatureCanvas | null) => void;
+};
+
+/** Same stamp asset as PublicContractView (public folder). */
+const CONTRACT_STAMP_SRC = '/חתימה מסמכים (5).png';
+
+/** Real signature pad (react-signature-canvas) for public legacy contract — not a click-to-sign placeholder. */
+const InlineSignatureField: React.FC<InlineSignatureFieldProps> = ({ index, registerPad }) => {
+  const padRef = useRef<SignatureCanvas | null>(null);
+  return (
+    <span
+      className="inline-flex items-start gap-2 md:gap-4 flex-wrap my-1"
+      style={{ display: 'inline-flex', verticalAlign: 'middle', maxWidth: '100%' }}
+    >
+      <div className="inline-flex flex-col align-middle gap-1 max-w-[min(100%,300px)] flex-shrink-0">
+        <SignatureCanvas
+          ref={(instance) => {
+            padRef.current = instance;
+            registerPad(index, instance);
+          }}
+          penColor="#1e3a8a"
+          canvasProps={{
+            width: 300,
+            height: 120,
+            className: 'rounded-md border-2 border-dashed border-blue-500 bg-slate-50 touch-none',
+            style: { width: '100%', maxWidth: 300, height: 120, touchAction: 'none' },
+          }}
+          backgroundColor="rgba(255,255,255,0)"
+        />
+        <button
+          type="button"
+          className="self-start text-xs text-red-600 border border-red-400 rounded px-2 py-0.5 bg-white hover:bg-red-50"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            padRef.current?.clear();
+          }}
+        >
+          Clear
+        </button>
+      </div>
+      {/* Stamp image — same route as PublicContractView */}
+      <div className="flex-shrink-0 max-w-full flex items-center min-h-[96px] md:min-h-[160px]">
+        <img
+          src={CONTRACT_STAMP_SRC}
+          alt="Stamp"
+          width={160}
+          height={160}
+          decoding="async"
+          loading="eager"
+          className="h-24 md:h-40 w-auto max-w-[min(100vw,200px)] object-contain"
+          style={{ display: 'block', objectFit: 'contain' }}
+        />
+      </div>
+    </span>
+  );
+};
 
 // Function to clean HTML content and make it readable
 const cleanHtmlContent = (html: string): string => {
@@ -53,7 +114,27 @@ const PublicLegacyContractView: React.FC = () => {
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isAlreadySigned, setIsAlreadySigned] = useState(false);
   const [leadNumber, setLeadNumber] = useState<string | null>(null);
-  const signaturePads = useRef<{ [key: string]: any }>({});
+  /** One entry per {{sig}} field, in document order (for submit). */
+  const signaturePadListRef = useRef<(SignatureCanvas | null)[]>([]);
+  const signatureFieldRootsRef = useRef<Root[]>([]);
+  /** Host for legacy HTML (inner div with dangerouslySetInnerHTML) — scope signature mounts & avoid wrong .contract-content on refresh. */
+  const legacyContractHtmlHostRef = useRef<HTMLDivElement | null>(null);
+
+  const registerSignaturePad = useCallback((idx: number, pad: SignatureCanvas | null) => {
+    signaturePadListRef.current[idx] = pad;
+  }, []);
+
+  const teardownSignatureRoots = useCallback(() => {
+    signatureFieldRootsRef.current.forEach((r) => {
+      try {
+        r.unmount();
+      } catch {
+        /* ignore */
+      }
+    });
+    signatureFieldRootsRef.current = [];
+    signaturePadListRef.current = [];
+  }, []);
 
   useEffect(() => {
     const fetchContract = async () => {
@@ -296,10 +377,12 @@ const PublicLegacyContractView: React.FC = () => {
   // Helper function to process HTML for editing with input fields
   const processHtmlForEditing = (html: string): string => {
     if (!html) return '';
+
+    // Align with other templates that use {{signature}}
+    let processed = html.replace(/\{\{signature\}\}/g, '{{sig}}');
     
     // First, convert any existing lines (_____________) back to placeholders
     // This handles cases where the contract was saved with lines instead of placeholders
-    let processed = html;
     
     // Convert lines in styled spans (from processSignedContractHtml) back to placeholders
     // Match any span with style containing border and the line text
@@ -324,180 +407,109 @@ const PublicLegacyContractView: React.FC = () => {
         return `<input type="text" id="${id}" class="inline-input" data-field-type="text" style="border: 2px solid #3b82f6; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; font-family: inherit; font-size: 14px; background: #ffffff; color: #374151; box-shadow: 0 1px 3px rgba(0,0,0,0.1);" placeholder="Enter text..." />`;
       })
       .replace(/\{\{sig\}\}/g, () => {
-        const id = `sig-field-${sigCounter++}`;
-        return `<div id="${id}" class="signature-pad-placeholder" data-field-type="signature" style="display: inline-block; border: 2px dashed #3b82f6; border-radius: 6px; padding: 12px; margin: 0 4px; min-width: 180px; min-height: 50px; background: #f8fafc; cursor: pointer; text-align: center; font-size: 14px; color: #6b7280; font-weight: 500; direction: inherit; text-align: inherit;">Click to sign</div>`;
+        const order = sigCounter++;
+        // Mount point for react-signature-canvas (filled in useEffect via createRoot)
+        return `<div class="sig-inline-mount" data-sig-order="${order}" data-field-type="signature"></div>`;
       });
     
     return processed;
   };
 
-  // Effect to convert signature placeholders to actual signature pads
-  useEffect(() => {
-    if (!contract || isSubmitted || isAlreadySigned) return;
+  /** Memoize processed HTML so React does not constantly replace innerHTML and destroy mounted signature roots. */
+  const editableContractHtml = useMemo(() => {
+    if (!contract?.contract_html || isSubmitted || isAlreadySigned) return '';
+    return processHtmlForEditing(contract.contract_html);
+  }, [contract?.contract_html, isSubmitted, isAlreadySigned]);
 
-    // Use a timeout to ensure DOM is ready after render
-    const timeoutId = setTimeout(() => {
-      // Find all signature pad placeholders and replace them with actual signature pads
-      const placeholders = document.querySelectorAll('.contract-content .signature-pad-placeholder');
-      placeholders.forEach((placeholder) => {
-        const id = placeholder.getAttribute('id');
-        if (!id) return;
-        
-        // Check if already replaced (container exists)
-        if (document.querySelector(`.signature-pad-container[data-signature-id="${id}"]`)) {
-          return;
+  /**
+   * Mount signature pads after the innerHTML host is in the DOM (useLayoutEffect + rAF + scoped ref).
+   * Avoids refresh races from document.querySelector('.contract-content') and setTimeout(0) running before commit.
+   */
+  useLayoutEffect(() => {
+    if (!editableContractHtml || isSubmitted || isAlreadySigned) {
+      teardownSignatureRoots();
+      return;
+    }
+
+    let cancelled = false;
+    let attempt = 0;
+    const maxAttempts = 8;
+
+    const tryMount = () => {
+      if (cancelled) return;
+      const host = legacyContractHtmlHostRef.current;
+      if (!host || !host.isConnected) {
+        if (attempt < maxAttempts) {
+          attempt += 1;
+          requestAnimationFrame(() => {
+            if (!cancelled) tryMount();
+          });
         }
+        return;
+      }
 
-        const container = document.createElement('div');
-        container.className = 'signature-pad-container';
-        // Check if parent paragraph has right alignment
-        const parentParagraph = placeholder.closest('p.ql-align-right, .ql-align-right');
-        const isRightAligned = parentParagraph !== null;
-        container.style.cssText = `display: inline-block; vertical-align: middle; margin: 0 4px; ${isRightAligned ? 'text-align: right; direction: rtl;' : ''}`;
-        container.setAttribute('data-signature-id', id);
+      const mounts = host.querySelectorAll('.sig-inline-mount');
+      if (mounts.length === 0) {
+        // innerHTML may not be parsed yet on hard refresh — retry
+        if (attempt < maxAttempts) {
+          attempt += 1;
+          requestAnimationFrame(() => {
+            if (!cancelled) tryMount();
+          });
+        }
+        return;
+      }
 
-        const canvasContainer = document.createElement('div');
-        // Make canvas container responsive for mobile - use max-width instead of fixed width
-        canvasContainer.style.cssText = 'border: 2px dashed #3b82f6; border-radius: 6px; background-color: #f8fafc; width: 100%; max-width: 200px; min-width: 150px; height: 80px; position: relative;';
+      teardownSignatureRoots();
+      signaturePadListRef.current = new Array(mounts.length).fill(null);
 
-        const canvas = document.createElement('canvas');
-        // Initial dimensions - will be resized based on actual container size
-        canvas.width = 200;
-        canvas.height = 80;
-        canvas.style.cssText = 'display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none;';
-
-        canvasContainer.appendChild(canvas);
-        
-        const clearBtn = document.createElement('button');
-        clearBtn.textContent = 'Clear';
-        clearBtn.type = 'button';
-        clearBtn.style.cssText = 'display: block; margin-top: 4px; padding: 2px 8px; font-size: 12px; color: #ef4444; background: none; border: 1px solid #ef4444; border-radius: 4px; cursor: pointer;';
-        clearBtn.onclick = () => {
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-          }
-        };
-
-        container.appendChild(canvasContainer);
-        container.appendChild(clearBtn);
-        
-        // Replace placeholder with container FIRST so canvas is in DOM
-        placeholder.parentNode?.replaceChild(container, placeholder);
-
-        // Initialize signature pad functionality - must happen AFTER canvas is in DOM
-        setTimeout(() => {
-          let isDrawing = false;
-          let lastX = 0;
-          let lastY = 0;
-          
-          const ctx = canvas.getContext('2d');
-          if (!ctx) return;
-          
-          // Set canvas size to match its displayed size (now that it's in DOM)
-          // Use devicePixelRatio for crisp rendering on high-DPI displays
-          const rect = canvas.getBoundingClientRect();
-          const dpr = window.devicePixelRatio || 1;
-          const displayWidth = Math.max(1, Math.floor(rect.width));
-          const displayHeight = Math.max(1, Math.floor(rect.height));
-          
-          // Set actual canvas size accounting for device pixel ratio (backing store resolution)
-          canvas.width = displayWidth * dpr;
-          canvas.height = displayHeight * dpr;
-          
-          // Set the CSS size to the display size (logical pixels) - keep it responsive
-          // Don't set explicit pixel sizes to maintain responsiveness
-          canvas.style.width = '100%';
-          canvas.style.height = '100%';
-          
-          // Scale the context to account for device pixel ratio (do this BEFORE setting styles)
-          ctx.scale(dpr, dpr);
-          
-          // Set drawing style (after scaling) - use logical pixel values
-          ctx.strokeStyle = '#3b82f6';
-          ctx.lineWidth = 2; // This will be 2 logical pixels, rendered as 2*dpr physical pixels
-          ctx.lineCap = 'round';
-          ctx.lineJoin = 'round';
-
-          const getPoint = (e: any): { x: number; y: number } => {
-            const rect = canvas.getBoundingClientRect();
-            
-            // Check for touch events (use type checking that works in browsers)
-            if (e.touches && e.touches.length > 0) {
-              // For touch events, use the first touch point
-              const touch = e.touches[0] || e.changedTouches?.[0];
-              if (touch) {
-                return {
-                  x: touch.clientX - rect.left,
-                  y: touch.clientY - rect.top
-                };
-              }
-            } else if (e.clientX !== undefined && e.clientY !== undefined) {
-              // Mouse event
-              return {
-                x: e.clientX - rect.left,
-                y: e.clientY - rect.top
-              };
-            } else if (e.changedTouches && e.changedTouches.length > 0) {
-              // Handle touchend/touchcancel events
-              const touch = e.changedTouches[0];
-              return {
-                x: touch.clientX - rect.left,
-                y: touch.clientY - rect.top
-              };
-            }
-            return { x: 0, y: 0 };
-          };
-
-          const startDrawing = (e: any) => {
-            e.preventDefault();
-            isDrawing = true;
-            const point = getPoint(e);
-            lastX = point.x;
-            lastY = point.y;
-            ctx.beginPath();
-            ctx.moveTo(lastX, lastY);
-          };
-
-          const draw = (e: any) => {
-            if (!isDrawing) return;
-            e.preventDefault();
-            e.stopPropagation(); // Prevent scrolling on mobile
-            const point = getPoint(e);
-            if (point.x > 0 || point.y > 0) { // Only draw if we have valid coordinates
-              ctx.beginPath();
-              ctx.moveTo(lastX, lastY);
-              ctx.lineTo(point.x, point.y);
-              ctx.stroke();
-              lastX = point.x;
-              lastY = point.y;
-            }
-          };
-
-          const stopDrawing = (e: any) => {
-            e.preventDefault();
-            if (isDrawing) {
-              isDrawing = false;
-            }
-          };
-
-          canvas.addEventListener('mousedown', startDrawing, { passive: false });
-          canvas.addEventListener('mousemove', draw, { passive: false });
-          canvas.addEventListener('mouseup', stopDrawing, { passive: false });
-          canvas.addEventListener('mouseleave', stopDrawing, { passive: false });
-          canvas.addEventListener('touchstart', startDrawing, { passive: false });
-          canvas.addEventListener('touchmove', draw, { passive: false });
-          canvas.addEventListener('touchend', stopDrawing, { passive: false });
-          canvas.addEventListener('touchcancel', stopDrawing, { passive: false });
-
-          // Store canvas reference for later use
-          (signaturePads.current as any)[id] = { canvas, ctx };
-        }, 50);
+      mounts.forEach((el, index) => {
+        if (!(el instanceof HTMLElement) || !el.isConnected) return;
+        try {
+          const root = createRoot(el);
+          signatureFieldRootsRef.current.push(root);
+          root.render(
+            <InlineSignatureField
+              key={`legacy-sig-${contractId ?? 'c'}-${token ?? 't'}-${index}`}
+              index={index}
+              registerPad={registerSignaturePad}
+            />
+          );
+        } catch (e) {
+          console.warn('Legacy contract: signature mount failed', e);
+        }
       });
-    }, 100);
+    };
 
-    return () => clearTimeout(timeoutId);
-  }, [contract, isSubmitted, isAlreadySigned]);
+    // After paint, DOM from dangerouslySetInnerHTML is guaranteed for this frame
+    queueMicrotask(() => {
+      requestAnimationFrame(() => {
+        if (!cancelled) tryMount();
+      });
+    });
+
+    const safetyTimer = window.setTimeout(() => {
+      if (cancelled) return;
+      if (signatureFieldRootsRef.current.length > 0) return;
+      if (!editableContractHtml.includes('sig-inline-mount')) return;
+      attempt = 0;
+      tryMount();
+    }, 200);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(safetyTimer);
+      teardownSignatureRoots();
+    };
+  }, [
+    editableContractHtml,
+    isSubmitted,
+    isAlreadySigned,
+    registerSignaturePad,
+    teardownSignatureRoots,
+    contractId,
+    token,
+  ]);
 
   // Helper function to detect if text contains Hebrew characters
   const containsHebrew = (text: string): boolean => {
@@ -559,8 +571,12 @@ const PublicLegacyContractView: React.FC = () => {
   // Effect to process rendered HTML and apply appropriate direction/alignment
   useEffect(() => {
     if (!contract || loading) return;
-    
-    const contractContentEl = document.querySelector('.contract-content');
+
+    const contractContentEl =
+      legacyContractHtmlHostRef.current ||
+      document.querySelector('.legacy-contract-html-host') ||
+      document.querySelector('.contract-wrapper .contract-content') ||
+      document.querySelector('.contract-content');
     if (!contractContentEl) return;
     
     // Process all elements in the contract content
@@ -582,7 +598,7 @@ const PublicLegacyContractView: React.FC = () => {
             if (node.nodeType === Node.ELEMENT_NODE) {
               const elem = node as Element;
               return !elem.classList.contains('inline-input') && 
-                     !elem.classList.contains('signature-pad-placeholder') &&
+                     !elem.classList.contains('sig-inline-mount') &&
                      !elem.classList.contains('signature-pad-container') &&
                      elem.tagName !== 'INPUT' &&
                      elem.tagName !== 'CANVAS';
@@ -617,29 +633,24 @@ const PublicLegacyContractView: React.FC = () => {
 
   // Function to render contract content with interactive fields
   const renderContractContent = (htmlContent: string, isReadOnly: boolean = false) => {
-    if (!htmlContent) return null;
-    
     // For signed contracts, process the HTML to properly position signatures at the bottom
     if (isReadOnly) {
-      // Use the processSignedContractHtml function to handle signatures correctly
-      htmlContent = processSignedContractHtml(htmlContent);
-      
-      // For read-only mode, render the HTML
+      if (!htmlContent) return null;
+      const readHtml = processSignedContractHtml(htmlContent);
       return (
-        <div 
-          className="contract-content"
-          dangerouslySetInnerHTML={{ __html: htmlContent }}
-        />
+        <div className="contract-content" dangerouslySetInnerHTML={{ __html: readHtml }} />
       );
     }
-    
-    // For editable mode, process the HTML to replace placeholders with inputs
-    const processedHtml = processHtmlForEditing(htmlContent);
-    
+
+    // Editable: memoized HTML keeps innerHTML stable so createRoot signature mounts survive re-renders
+    const editHtml =
+      editableContractHtml || (htmlContent ? processHtmlForEditing(htmlContent) : '');
+    if (!editHtml) return null;
     return (
-      <div 
-        className="contract-content"
-        dangerouslySetInnerHTML={{ __html: processedHtml }}
+      <div
+        ref={legacyContractHtmlHostRef}
+        className="contract-content legacy-contract-html-host"
+        dangerouslySetInnerHTML={{ __html: editHtml }}
       />
     );
   };
@@ -655,7 +666,11 @@ const PublicLegacyContractView: React.FC = () => {
 
       // Get values from all text input fields in the DOM (ordered by appearance)
       // Use a more specific selector and ensure we're getting from the right container
-      const contractContentEl = document.querySelector('.contract-content');
+      const contractContentEl =
+        legacyContractHtmlHostRef.current ||
+        document.querySelector('.legacy-contract-html-host') ||
+        document.querySelector('.contract-wrapper .contract-content') ||
+        document.querySelector('.contract-content');
       if (!contractContentEl) {
         toast.error('Could not find contract content');
         setIsSubmitting(false);
@@ -721,27 +736,16 @@ const PublicLegacyContractView: React.FC = () => {
       console.log(`🔍 Replaced ${textPlaceholderIndex} {{text}} placeholders with text values`);
       console.log('🔍 HTML content after text replacement (first 500 chars):', htmlContent.substring(0, 500));
 
-      // Get signature data from canvas elements (ordered by appearance)
-      const signatureContainers = document.querySelectorAll('.contract-content .signature-pad-container');
-      const signatureValues: string[] = [];
-      signatureContainers.forEach((container) => {
-        const canvas = container.querySelector('canvas');
-        if (canvas) {
-          const dataUrl = canvas.toDataURL('image/png');
-          // Check if canvas has content (check for any non-transparent pixels)
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const hasContent = imageData.data.some((channel, index) => {
-              // Check alpha channel (every 4th value, starting at index 3)
-              return index % 4 === 3 && channel > 0;
-            });
-            signatureValues.push(hasContent ? dataUrl : '_____________');
-          } else {
-            signatureValues.push('_____________');
+      // Get signature data from react-signature-canvas (same order as {{sig}} placeholders)
+      const signatureValues: string[] = signaturePadListRef.current.map((pad) => {
+        if (!pad) return '_____________';
+        try {
+          if (typeof (pad as any).isEmpty === 'function' && (pad as any).isEmpty()) {
+            return '_____________';
           }
-        } else {
-          signatureValues.push('_____________');
+          return pad.toDataURL('image/png');
+        } catch {
+          return '_____________';
         }
       });
 
@@ -916,7 +920,7 @@ const PublicLegacyContractView: React.FC = () => {
             <div className="flex items-center gap-4">
               {leadNumber && (
                 <div className="text-right">
-                  <span className="text-sm text-gray-500 font-medium">Lead Number:</span>
+                  <span className="text-sm text-gray-500 font-medium">Case:</span>
                   <span className="ml-2 text-lg font-mono font-bold text-blue-600">#{leadNumber}</span>
                 </div>
               )}
@@ -1028,24 +1032,12 @@ const PublicLegacyContractView: React.FC = () => {
                 line-height: 1.5 !important;
                 height: auto !important;
               }
-              /* Signature pad placeholder and container */
-              .contract-content .signature-pad-placeholder {
+              /* react-signature-canvas mount (filled by createRoot) */
+              .contract-content .sig-inline-mount {
                 display: inline-block !important;
                 vertical-align: middle !important;
-                border: 2px dashed #3b82f6 !important;
-                border-radius: 6px !important;
-                padding: 12px !important;
                 margin: 0 4px !important;
-                width: 100% !important;
-                max-width: 200px !important;
-                min-width: 150px !important;
-                min-height: 50px !important;
-                background: #f8fafc !important;
-                cursor: pointer !important;
-                text-align: center !important;
-                font-size: 14px !important;
-                color: #6b7280 !important;
-                font-weight: 500 !important;
+                max-width: 300px !important;
               }
               .contract-content .signature-pad-container {
                 display: inline-block !important;
@@ -1085,7 +1077,7 @@ const PublicLegacyContractView: React.FC = () => {
                   padding: 3px 6px !important;
                   min-width: 120px !important;
                 }
-                .contract-content .signature-pad-placeholder,
+                .contract-content .sig-inline-mount,
                 .contract-content .signature-pad-container {
                   max-width: 100% !important;
                   min-width: 120px !important;
@@ -1112,13 +1104,13 @@ const PublicLegacyContractView: React.FC = () => {
                 color: white !important;
               }
               /* Right-align signatures in right-aligned paragraphs - use more specific selectors */
-              .contract-content p.ql-align-right .signature-pad-placeholder,
+              .contract-content p.ql-align-right .sig-inline-mount,
               .contract-content p.ql-align-right .signature-pad-container,
               .contract-content p.ql-align-right img[alt="Signature"],
-              .contract-content .ql-align-right .signature-pad-placeholder,
+              .contract-content .ql-align-right .sig-inline-mount,
               .contract-content .ql-align-right .signature-pad-container,
               .contract-content .ql-align-right img[alt="Signature"],
-              .contract-content .ql-direction-rtl .signature-pad-placeholder,
+              .contract-content .ql-direction-rtl .sig-inline-mount,
               .contract-content .ql-direction-rtl .signature-pad-container,
               .contract-content .ql-direction-rtl img[alt="Signature"] {
                 text-align: right !important;
@@ -1147,10 +1139,10 @@ const PublicLegacyContractView: React.FC = () => {
                 direction: inherit !important;
               }
               /* Override for signature elements specifically */
-              .contract-content p.ql-align-right .signature-pad-placeholder,
+              .contract-content p.ql-align-right .sig-inline-mount,
               .contract-content p.ql-align-right .signature-pad-container,
               .contract-content p.ql-align-right img[alt="Signature"],
-              .contract-content .ql-align-right .signature-pad-placeholder,
+              .contract-content .ql-align-right .sig-inline-mount,
               .contract-content .ql-align-right .signature-pad-container,
               .contract-content .ql-align-right img[alt="Signature"] {
                 text-align: right !important;
@@ -1322,6 +1314,29 @@ const PublicLegacyContractView: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Footer — same as PublicContractView */}
+      <footer className="bg-white border-t border-gray-200 mt-8 md:mt-24 print:hidden">
+        <div className="max-w-5xl mx-auto px-4 py-8 md:py-20 md:px-8">
+          <div className="flex flex-col items-center justify-center gap-4 md:gap-8">
+            <div className="text-center space-y-2 md:space-y-3">
+              <div className="flex items-center justify-center gap-3">
+                <img src="/DPL-LOGO1.png" alt="DPL Logo" className="h-12 w-auto object-contain" />
+                <p className="font-bold text-xl text-gray-900">Decker, Pex, Levi Law Offices</p>
+              </div>
+              <div className="text-gray-500 text-sm flex flex-col md:flex-row items-center justify-center gap-1 md:gap-3">
+                <p>Yad Harutzim 10, Jerusalem, Israel</p>
+                <span className="hidden md:inline text-gray-400">•</span>
+                <p>Menachem Begin Rd. 150, Tel Aviv, Israel</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-6 md:mt-12 pt-4 md:pt-8 border-t border-gray-100 text-center text-xs text-gray-400">
+            RMQ 2.0 - Copyright © {new Date().getFullYear()} - All right reserved
+          </div>
+        </div>
+      </footer>
     </div>
   );
 };

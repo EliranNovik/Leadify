@@ -403,14 +403,23 @@ const EmployeeSalariesReport = () => {
                 return;
             }
             for (const row of toSave) {
+                // Preserve uploaded PDF path / extracted_data when editing numbers manually (was wiping document_url on upsert)
+                const { data: existingRow } = await supabase
+                    .from('employee_salary')
+                    .select('document_url, extracted_data')
+                    .eq('employee_id', row.employee_id)
+                    .eq('salary_month', selectedMonth)
+                    .eq('salary_year', selectedYear)
+                    .maybeSingle();
+
                 const payload = {
                     employee_id: row.employee_id,
                     salary_month: selectedMonth,
                     salary_year: selectedYear,
                     gross_salary: Number(row.gross_salary) || 0,
                     net_salary: row.net_salary != null ? Number(row.net_salary) : null,
-                    document_url: null,
-                    extracted_data: null,
+                    document_url: existingRow?.document_url ?? null,
+                    extracted_data: existingRow?.extracted_data ?? null,
                     approved: false,
                     uploaded_by: user.id
                 };
@@ -439,6 +448,14 @@ const EmployeeSalariesReport = () => {
             r.department.toLowerCase().includes(term)
         );
     }, [manualEntriesRows, manualEntriesSearch]);
+
+    /** After PDF upload every matched row should have document_url; if some rows are null, reuse any path from this month so the eye stays usable. */
+    const sharedPayrollDocumentUrl = useMemo(() => {
+        const row = salaryRecords.find(
+            (r) => r.document_url != null && String(r.document_url).trim() !== ''
+        );
+        return row ? String(row.document_url).trim() : null;
+    }, [salaryRecords]);
 
     // Parse PDF and extract salary data
     const parsePDF = useCallback(async (file: File): Promise<Array<{ workerId: string; grossSalary: number; netSalary: number | null }>> => {
@@ -1437,6 +1454,10 @@ const EmployeeSalariesReport = () => {
                                         const photoUrl = employee?.photo_url;
                                         const displayName = employee?.display_name || 'Unknown';
                                         const initials = getInitials(displayName);
+                                        const rowDocumentUrl =
+                                            record.document_url != null && String(record.document_url).trim() !== ''
+                                                ? String(record.document_url).trim()
+                                                : sharedPayrollDocumentUrl;
 
                                         return (
                                             <tr key={record.id}>
@@ -1490,15 +1511,28 @@ const EmployeeSalariesReport = () => {
                                                     {formatCurrency(record.gross_salary)}
                                                 </td>
                                                 <td>
-                                                    {record.document_url && (
-                                                        <button
-                                                            className="btn btn-ghost btn-xs"
-                                                            onClick={() => handleViewDocument(record.document_url!, 'Payroll Document')}
-                                                        >
-                                                            <EyeIcon className="w-4 h-4" />
-                                                            View
-                                                        </button>
-                                                    )}
+                                                    <button
+                                                        type="button"
+                                                        className={`btn btn-ghost btn-xs btn-circle ${rowDocumentUrl ? '' : 'btn-disabled opacity-40'}`}
+                                                        disabled={!rowDocumentUrl}
+                                                        title={
+                                                            rowDocumentUrl
+                                                                ? 'View uploaded payroll document'
+                                                                : 'No payroll document for this period'
+                                                        }
+                                                        aria-label={
+                                                            rowDocumentUrl
+                                                                ? 'View uploaded payroll document'
+                                                                : 'No document uploaded'
+                                                        }
+                                                        onClick={() => {
+                                                            if (rowDocumentUrl) {
+                                                                handleViewDocument(rowDocumentUrl, 'Payroll Document');
+                                                            }
+                                                        }}
+                                                    >
+                                                        <EyeIcon className="w-4 h-4" />
+                                                    </button>
                                                 </td>
                                             </tr>
                                         );
@@ -1661,22 +1695,20 @@ const EmployeeSalariesReport = () => {
                 </div>
             )}
 
-            {/* Document Viewer Modal */}
-            {selectedDocument && (
-                <DocumentViewerModal
-                    documentUrl={selectedDocument.url}
-                    documentName={selectedDocument.name}
-                    employeeName=""
-                    uploadedAt={new Date().toISOString()}
-                    sickDaysReason=""
-                    isOpen={isViewerOpen}
-                    bucketName="employee-salary-documents"
-                    onClose={() => {
-                        setIsViewerOpen(false);
-                        setSelectedDocument(null);
-                    }}
-                />
-            )}
+            {/* Document Viewer Modal — always mounted so open state is not lost on first paint */}
+            <DocumentViewerModal
+                documentUrl={selectedDocument?.url ?? ''}
+                documentName={selectedDocument?.name ?? 'Payroll Document'}
+                employeeName=""
+                uploadedAt={new Date().toISOString()}
+                sickDaysReason=""
+                isOpen={Boolean(selectedDocument && isViewerOpen)}
+                bucketName="employee-salary-documents"
+                onClose={() => {
+                    setIsViewerOpen(false);
+                    setSelectedDocument(null);
+                }}
+            />
         </div>
     );
 };

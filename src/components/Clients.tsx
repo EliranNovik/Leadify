@@ -3092,6 +3092,8 @@ const Clients: React.FC<ClientsProps> = ({
             closer_id,
             case_handler_id,
             retainer_handler_id,
+            meeting_collection_id,
+            marketing_officer_id,
             retention_handler_started,
             active_handler_type,
             vat,
@@ -3270,6 +3272,8 @@ const Clients: React.FC<ClientsProps> = ({
             meeting_lawyer_id: data.meeting_lawyer_id || null,
             expert_id: data.expert_id || null,
             retainer_handler_id: data.retainer_handler_id || null,
+            meeting_collection_id: (data as any).meeting_collection_id ?? null,
+            marketing_officer_id: (data as any).marketing_officer_id ?? null,
             retention_handler_started: data.retention_handler_started === true || (data as any).retention_handler_started === 'true',
             active_handler_type: Number(data.active_handler_type) === 1 ? 1 : 2,
             description: data.description || null,
@@ -4104,6 +4108,8 @@ const Clients: React.FC<ClientsProps> = ({
                   meeting_lawyer_id: legacyLead.meeting_lawyer_id || null,
                   expert_id: legacyLead.expert_id || null,
                   retainer_handler_id: legacyLead.retainer_handler_id || null,
+                  meeting_collection_id: (legacyLead as any).meeting_collection_id ?? null,
+                  marketing_officer_id: (legacyLead as any).marketing_officer_id ?? null,
                   retention_handler_started: legacyLead.retention_handler_started === true || (legacyLead as any).retention_handler_started === 'true',
                   active_handler_type: Number(legacyLead.active_handler_type) === 1 ? 1 : 2,
                   vat: (legacyLead as any).vat || null,
@@ -14873,7 +14879,8 @@ const Clients: React.FC<ClientsProps> = ({
           transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
       `}</style>
-          <div className="desktop-tabs-navigation hidden lg:block fixed bottom-0 left-0 right-0 z-50 pb-safe">
+          {/* z-30: below app sidebar (z-40) so left nav stays clickable at the bottom; modals/drawers use z-50+ */}
+          <div className="desktop-tabs-navigation hidden lg:block fixed bottom-0 left-0 right-0 z-30 pb-safe">
             <div className="flex justify-center px-4 pb-4">
               <div
                 onMouseEnter={floatingNavBarAlwaysOpen ? undefined : () => {
@@ -17819,7 +17826,7 @@ const Clients: React.FC<ClientsProps> = ({
               aria-hidden="true"
             />
           )}
-          {/* z-40 to stay below sidebar (z-50) */}
+          {/* z-40: above mobile tab backdrop z-[38]; desktop sidebar is z-40 (Clients bottom tabs are z-30 on lg) */}
           <div ref={mobileTabPanelRef} className={`md:hidden fixed right-0 top-1/2 -translate-y-1/2 z-40 flex items-center ${showEditLeadDrawer || isBalanceModalOpen || showScheduleMeetingPanel || showRescheduleDrawer || showUpdateDrawer ? 'hidden' : ''}`}>
             {/* Vertical tab panel - appears when arrow is clicked */}
             {isMobileTabPanelOpen && (
