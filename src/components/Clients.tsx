@@ -1517,7 +1517,15 @@ const Clients: React.FC<ClientsProps> = ({
     paid_category: '',
     paid_currency: '',
     meeting_total: '',
+    custom_link: '',
+    custom_address: '',
   });
+  const CUSTOM_LINK_LOCATION_ID = 31;
+  const CUSTOM_ADDRESS_LOCATION_ID = 32;
+  const [showCustomLocationModal, setShowCustomLocationModal] = useState(false);
+  const [customLocationMode, setCustomLocationMode] = useState<'link' | 'address'>('link');
+  const [customLocationTarget, setCustomLocationTarget] = useState<'schedule' | 'reschedule'>('schedule');
+  const [customLocationDraft, setCustomLocationDraft] = useState('');
   const [meetingLocations, setMeetingLocations] = useState<
     Array<{ id: string | number; name: string; default_link?: string | null }>
   >([]);
@@ -2038,6 +2046,8 @@ const Clients: React.FC<ClientsProps> = ({
     attendance_probability: 'Medium',
     complexity: 'Simple',
     car_number: '',
+    custom_link: '',
+    custom_address: '',
   });
   const [meetingToDelete, setMeetingToDelete] = useState<number | null>(null);
   const [rescheduleOption, setRescheduleOption] = useState<'cancel' | 'reschedule'>('cancel');
@@ -5573,9 +5583,48 @@ const Clients: React.FC<ClientsProps> = ({
       paid_category: '',
       paid_currency: '',
       meeting_total: '',
+      custom_link: '',
+      custom_address: '',
     });
     setMeetingType('regular');
     setNotifyClientOnSchedule(false); // Reset to default
+  };
+
+  const handleMeetingLocationChange = (
+    locationName: string,
+    target: 'schedule' | 'reschedule'
+  ) => {
+    const selectedLocation = meetingLocations.find((loc: any) => loc.name === locationName);
+    const locationId = Number(selectedLocation?.id);
+
+    if (target === 'schedule') {
+      setMeetingFormData((prev) => ({ ...prev, location: locationName }));
+    } else {
+      setRescheduleFormData((prev: any) => ({ ...prev, location: locationName }));
+    }
+
+    if (locationId === CUSTOM_LINK_LOCATION_ID || locationId === CUSTOM_ADDRESS_LOCATION_ID) {
+      const isLink = locationId === CUSTOM_LINK_LOCATION_ID;
+      const currentValue = target === 'schedule'
+        ? (isLink ? meetingFormData.custom_link : meetingFormData.custom_address)
+        : (isLink ? rescheduleFormData.custom_link : rescheduleFormData.custom_address);
+
+      setCustomLocationMode(isLink ? 'link' : 'address');
+      setCustomLocationTarget(target);
+      setCustomLocationDraft(currentValue || '');
+      setShowCustomLocationModal(true);
+    }
+  };
+
+  const handleSaveCustomLocationValue = () => {
+    const trimmed = customLocationDraft.trim();
+    const key = customLocationMode === 'link' ? 'custom_link' : 'custom_address';
+    if (customLocationTarget === 'schedule') {
+      setMeetingFormData((prev) => ({ ...prev, [key]: trimmed }));
+    } else {
+      setRescheduleFormData((prev: any) => ({ ...prev, [key]: trimmed }));
+    }
+    setShowCustomLocationModal(false);
   };
 
   // Function to test calendar access permissions
@@ -5839,6 +5888,20 @@ const Clients: React.FC<ClientsProps> = ({
       const selectedLocation = meetingLocations.find(
         loc => loc.name === meetingFormData.location
       );
+      const selectedLocationId = Number(selectedLocation?.id);
+      const customLinkValue = meetingFormData.custom_link?.trim() || '';
+      const customAddressValue = meetingFormData.custom_address?.trim() || '';
+
+      if (selectedLocationId === CUSTOM_LINK_LOCATION_ID && !customLinkValue) {
+        toast.error('Please enter a custom link for this location.');
+        setIsCreatingMeeting(false);
+        return;
+      }
+      if (selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID && !customAddressValue) {
+        toast.error('Please enter a custom address for this location.');
+        setIsCreatingMeeting(false);
+        return;
+      }
 
       // Check for location conflict for restricted zoom room locations
       const restrictedLocationIds = [3, 4, 15, 16, 17, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29];
@@ -6038,6 +6101,8 @@ const Clients: React.FC<ClientsProps> = ({
           fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'Clients.tsx:4999', message: 'Teams meeting URL set to empty after calendar error', data: { teamsMeetingUrl }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
           // #endregion
         }
+      } else if (selectedLocationId === CUSTOM_LINK_LOCATION_ID) {
+        teamsMeetingUrl = customLinkValue;
       } else if (selectedLocation?.default_link) {
         // For non-Teams online locations, use the default_link from tenants_meetinglocation
         teamsMeetingUrl = selectedLocation.default_link;
@@ -6183,6 +6248,8 @@ const Clients: React.FC<ClientsProps> = ({
         last_edited_timestamp: new Date().toISOString(),
         last_edited_by: currentUserFullName,
         calendar_type: meetingFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
+        custom_link: selectedLocationId === CUSTOM_LINK_LOCATION_ID ? customLinkValue : null,
+        custom_address: selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID ? customAddressValue : null,
       };
 
       console.log('Attempting to insert meeting data:', meetingData);
@@ -6778,6 +6845,41 @@ const Clients: React.FC<ClientsProps> = ({
                       ${selectedClient.category ? `<p><strong>Category:</strong> ${selectedClient.category}</p>` : ''}
                       ${selectedClient.topic ? `<p><strong>Topic:</strong> ${selectedClient.topic}</p>` : ''}
                     </div>
+
+                    {Number(meetingLocations.find((loc: any) => loc.name === meetingFormData.location)?.id) === CUSTOM_LINK_LOCATION_ID && (
+                      <div>
+                        <label className="block font-semibold mb-1">Custom Link</label>
+                        <button
+                          type="button"
+                          className="btn btn-outline w-full justify-start"
+                          onClick={() => {
+                            setCustomLocationMode('link');
+                            setCustomLocationTarget('schedule');
+                            setCustomLocationDraft(meetingFormData.custom_link || '');
+                            setShowCustomLocationModal(true);
+                          }}
+                        >
+                          {meetingFormData.custom_link?.trim() || 'Set custom link'}
+                        </button>
+                      </div>
+                    )}
+                    {Number(meetingLocations.find((loc: any) => loc.name === meetingFormData.location)?.id) === CUSTOM_ADDRESS_LOCATION_ID && (
+                      <div>
+                        <label className="block font-semibold mb-1">Custom Address</label>
+                        <button
+                          type="button"
+                          className="btn btn-outline w-full justify-start"
+                          onClick={() => {
+                            setCustomLocationMode('address');
+                            setCustomLocationTarget('schedule');
+                            setCustomLocationDraft(meetingFormData.custom_address || '');
+                            setShowCustomLocationModal(true);
+                          }}
+                        >
+                          {meetingFormData.custom_address?.trim() || 'Set custom address'}
+                        </button>
+                      </div>
+                    )}
                     <p>We look forward to meeting with you.</p>
                     <p>Best regards,<br/>Decker, Pex, Levi Lawoffice</p>
                   </body>
@@ -6988,6 +7090,8 @@ const Clients: React.FC<ClientsProps> = ({
         paid_category: '',
         paid_currency: '',
         meeting_total: '',
+        custom_link: '',
+        custom_address: '',
       });
       setMeetingType('regular');
 
@@ -9116,7 +9220,7 @@ const Clients: React.FC<ClientsProps> = ({
       setShowRescheduleDrawer(false);
       setNotifyClientOnReschedule(false); // Reset to default
       setMeetingToDelete(null);
-      setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+      setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
     } catch (error) {
@@ -9311,6 +9415,20 @@ const Clients: React.FC<ClientsProps> = ({
       const selectedLocation = meetingLocations.find(
         loc => loc.name === rescheduleFormData.location
       );
+      const selectedLocationId = Number(selectedLocation?.id);
+      const customLinkValue = rescheduleFormData.custom_link?.trim() || '';
+      const customAddressValue = rescheduleFormData.custom_address?.trim() || '';
+
+      if (selectedLocationId === CUSTOM_LINK_LOCATION_ID && !customLinkValue) {
+        toast.error('Please enter a custom link for this location.');
+        setIsReschedulingMeeting(false);
+        return;
+      }
+      if (selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID && !customAddressValue) {
+        toast.error('Please enter a custom address for this location.');
+        setIsReschedulingMeeting(false);
+        return;
+      }
 
       // Check for location conflict for restricted zoom room locations
       const restrictedLocationIds = [3, 4, 15, 16, 17, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29];
@@ -9363,7 +9481,9 @@ const Clients: React.FC<ClientsProps> = ({
       }
 
       // For non-Teams online locations, use the default_link from tenants_meetinglocation
-      if (selectedLocation?.default_link && rescheduleFormData.location !== 'Teams') {
+      if (selectedLocationId === CUSTOM_LINK_LOCATION_ID) {
+        teamsMeetingUrl = customLinkValue;
+      } else if (selectedLocation?.default_link && rescheduleFormData.location !== 'Teams') {
         teamsMeetingUrl = selectedLocation.default_link;
       }
       // For Teams meetings, create the Teams URL BEFORE inserting the meeting
@@ -9483,6 +9603,8 @@ const Clients: React.FC<ClientsProps> = ({
         last_edited_timestamp: new Date().toISOString(),
         last_edited_by: currentUserFullName,
         calendar_type: rescheduleFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
+        custom_link: selectedLocationId === CUSTOM_LINK_LOCATION_ID ? customLinkValue : null,
+        custom_address: selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID ? customAddressValue : null,
       };
 
       // #region agent log
@@ -10322,7 +10444,7 @@ const Clients: React.FC<ClientsProps> = ({
       setShowRescheduleDrawer(false);
       setNotifyClientOnReschedule(false); // Reset to default
       setMeetingToDelete(null);
-      setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+      setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
     } catch (error) {
@@ -15323,7 +15445,7 @@ const Clients: React.FC<ClientsProps> = ({
                       <select
                         className="select select-bordered w-full"
                         value={meetingFormData.location}
-                        onChange={(e) => setMeetingFormData(prev => ({ ...prev, location: e.target.value }))}
+                        onChange={(e) => handleMeetingLocationChange(e.target.value, 'schedule')}
                       >
                         {meetingLocations.map((location) => (
                           <option key={location.id} value={location.name}>
@@ -17467,7 +17589,7 @@ const Clients: React.FC<ClientsProps> = ({
                   setShowRescheduleDrawer(false);
                   setNotifyClientOnReschedule(false); // Reset to default
                   setMeetingToDelete(null);
-                  setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+                  setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
                   setRescheduleOption('cancel');
                   setNotifyClientOnReschedule(false); // Reset to default
                 }}
@@ -17503,7 +17625,7 @@ const Clients: React.FC<ClientsProps> = ({
                       setShowRescheduleDrawer(false);
                       setNotifyClientOnReschedule(false); // Reset to default
                       setMeetingToDelete(null);
-                      setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+                      setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
                       setRescheduleOption('cancel');
                       setNotifyClientOnReschedule(false); // Reset to default
                     }}
@@ -17561,6 +17683,8 @@ const Clients: React.FC<ClientsProps> = ({
                                   attendance_probability: selectedMeeting.attendance_probability || 'Medium',
                                   complexity: selectedMeeting.complexity || 'Simple',
                                   car_number: selectedMeeting.car_number || '',
+                                  custom_link: selectedMeeting.custom_link || '',
+                                  custom_address: selectedMeeting.custom_address || '',
                                 });
                               }
                             }}
@@ -17617,7 +17741,7 @@ const Clients: React.FC<ClientsProps> = ({
                           <select
                             className="select select-bordered w-full"
                             value={rescheduleFormData.location}
-                            onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, location: e.target.value }))}
+                            onChange={(e) => handleMeetingLocationChange(e.target.value, 'reschedule')}
                           >
                             {meetingLocations.map((location) => (
                               <option key={location.id} value={location.name}>
@@ -17626,6 +17750,41 @@ const Clients: React.FC<ClientsProps> = ({
                             ))}
                           </select>
                         </div>
+
+                        {Number(meetingLocations.find((loc: any) => loc.name === rescheduleFormData.location)?.id) === CUSTOM_LINK_LOCATION_ID && (
+                          <div>
+                            <label className="block font-semibold mb-1">Custom Link</label>
+                            <button
+                              type="button"
+                              className="btn btn-outline w-full justify-start"
+                              onClick={() => {
+                                setCustomLocationMode('link');
+                                setCustomLocationTarget('reschedule');
+                                setCustomLocationDraft(rescheduleFormData.custom_link || '');
+                                setShowCustomLocationModal(true);
+                              }}
+                            >
+                              {rescheduleFormData.custom_link?.trim() || 'Set custom link'}
+                            </button>
+                          </div>
+                        )}
+                        {Number(meetingLocations.find((loc: any) => loc.name === rescheduleFormData.location)?.id) === CUSTOM_ADDRESS_LOCATION_ID && (
+                          <div>
+                            <label className="block font-semibold mb-1">Custom Address</label>
+                            <button
+                              type="button"
+                              className="btn btn-outline w-full justify-start"
+                              onClick={() => {
+                                setCustomLocationMode('address');
+                                setCustomLocationTarget('reschedule');
+                                setCustomLocationDraft(rescheduleFormData.custom_address || '');
+                                setShowCustomLocationModal(true);
+                              }}
+                            >
+                              {rescheduleFormData.custom_address?.trim() || 'Set custom address'}
+                            </button>
+                          </div>
+                        )}
 
                         {/* Calendar */}
                         <div>
@@ -17757,7 +17916,7 @@ const Clients: React.FC<ClientsProps> = ({
                         setShowRescheduleDrawer(false);
                         setNotifyClientOnReschedule(false); // Reset to default
                         setMeetingToDelete(null);
-                        setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+                        setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
                         setRescheduleOption('cancel');
                       }}
                     >
@@ -17788,6 +17947,41 @@ const Clients: React.FC<ClientsProps> = ({
                       </button>
                     )}
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {showCustomLocationModal && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+              <div className="absolute inset-0 bg-black/40" onClick={() => setShowCustomLocationModal(false)} />
+              <div className="relative w-full max-w-md rounded-xl bg-base-100 border border-base-300 shadow-2xl p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="text-lg font-bold">
+                    {customLocationMode === 'link' ? 'Custom Link' : 'Custom Address'}
+                  </h4>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm btn-circle"
+                    onClick={() => setShowCustomLocationModal(false)}
+                  >
+                    <XMarkIcon className="w-5 h-5" />
+                  </button>
+                </div>
+                <input
+                  type={customLocationMode === 'link' ? 'url' : 'text'}
+                  className="input input-bordered w-full"
+                  value={customLocationDraft}
+                  onChange={(e) => setCustomLocationDraft(e.target.value)}
+                  placeholder={customLocationMode === 'link' ? 'https://example.com/meeting' : 'Enter address'}
+                />
+                <div className="mt-4 flex justify-end gap-2">
+                  <button type="button" className="btn btn-ghost" onClick={() => setShowCustomLocationModal(false)}>
+                    Cancel
+                  </button>
+                  <button type="button" className="btn btn-primary" onClick={handleSaveCustomLocationValue}>
+                    Save
+                  </button>
                 </div>
               </div>
             </div>

@@ -99,6 +99,8 @@ interface Meeting {
   feasibility_notes?: string;
   documents_link?: string;
   car_number?: string;
+  custom_link?: string;
+  custom_address?: string;
   lastEdited: {
     timestamp: string;
     user: string;
@@ -130,6 +132,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Edit meeting state
   const [editingMeetingId, setEditingMeetingId] = useState<number | null>(null);
   const [editedMeeting, setEditedMeeting] = useState<Partial<Meeting>>({});
+  const CUSTOM_LINK_LOCATION_ID = 31;
+  const CUSTOM_ADDRESS_LOCATION_ID = 32;
+  const [showCustomLocationModal, setShowCustomLocationModal] = useState(false);
+  const [customLocationMode, setCustomLocationMode] = useState<'link' | 'address'>('link');
+  const [customLocationTarget, setCustomLocationTarget] = useState<'schedule' | 'reschedule' | 'edit'>('schedule');
+  const [customLocationDraft, setCustomLocationDraft] = useState('');
   const [isUpdatingMeeting, setIsUpdatingMeeting] = useState(false);
   const [showEditLocationDropdown, setShowEditLocationDropdown] = useState(false);
   const [showEditManagerDropdown, setShowEditManagerDropdown] = useState(false);
@@ -217,6 +225,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     complexity: 'Simple',
     car_number: '',
     calendar: 'current', // 'current' or 'active_client'
+    custom_link: '',
+    custom_address: '',
   });
   const [isSchedulingMeeting, setIsSchedulingMeeting] = useState(false);
   const [meetingCountsByTime, setMeetingCountsByTime] = useState<Record<string, number>>({});
@@ -242,6 +252,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     attendance_probability: 'Medium',
     complexity: 'Simple',
     car_number: '',
+    custom_link: '',
+    custom_address: '',
   });
   const [meetingToDelete, setMeetingToDelete] = useState<number | null>(null);
   const [rescheduleOption, setRescheduleOption] = useState<'cancel' | 'reschedule'>('cancel');
@@ -328,6 +340,54 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     const location = allMeetingLocations.find((loc: any) => loc.id.toString() === locationId.toString());
     console.log('MeetingTab: Found location:', location);
     return location ? location.name : locationId; // Fallback to ID if not found
+  };
+
+  const openCustomLocationModal = (
+    target: 'schedule' | 'reschedule' | 'edit',
+    mode: 'link' | 'address',
+    currentValue: string
+  ) => {
+    setCustomLocationTarget(target);
+    setCustomLocationMode(mode);
+    setCustomLocationDraft(currentValue || '');
+    setShowCustomLocationModal(true);
+  };
+
+  const handleMeetingLocationChange = (
+    locationName: string,
+    target: 'schedule' | 'reschedule'
+  ) => {
+    const selectedLocation = allMeetingLocations.find((loc: any) => loc.name === locationName);
+    const locationId = Number(selectedLocation?.id);
+
+    if (target === 'schedule') {
+      setScheduleMeetingFormData((prev) => ({ ...prev, location: locationName }));
+      if (locationId === CUSTOM_LINK_LOCATION_ID) {
+        openCustomLocationModal('schedule', 'link', scheduleMeetingFormData.custom_link || '');
+      } else if (locationId === CUSTOM_ADDRESS_LOCATION_ID) {
+        openCustomLocationModal('schedule', 'address', scheduleMeetingFormData.custom_address || '');
+      }
+    } else {
+      setRescheduleFormData((prev: any) => ({ ...prev, location: locationName }));
+      if (locationId === CUSTOM_LINK_LOCATION_ID) {
+        openCustomLocationModal('reschedule', 'link', rescheduleFormData.custom_link || '');
+      } else if (locationId === CUSTOM_ADDRESS_LOCATION_ID) {
+        openCustomLocationModal('reschedule', 'address', rescheduleFormData.custom_address || '');
+      }
+    }
+  };
+
+  const handleSaveCustomLocationValue = () => {
+    const trimmed = customLocationDraft.trim();
+    const key = customLocationMode === 'link' ? 'custom_link' : 'custom_address';
+    if (customLocationTarget === 'schedule') {
+      setScheduleMeetingFormData((prev) => ({ ...prev, [key]: trimmed }));
+    } else if (customLocationTarget === 'reschedule') {
+      setRescheduleFormData((prev: any) => ({ ...prev, [key]: trimmed }));
+    } else {
+      setEditedMeeting((prev) => ({ ...prev, [key]: trimmed }));
+    }
+    setShowCustomLocationModal(false);
   };
 
   // Helper function to get currency symbol
@@ -700,6 +760,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         complexity: 'Simple',
         car_number: '',
         calendar: 'active_client',
+        custom_link: '',
+        custom_address: '',
       });
     }
   }, [showScheduleDrawer, allMeetingLocations]);
@@ -825,7 +887,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             scheduler: m.scheduler,
             helper: m.helper,
             expert: m.expert,
-            link: m.teams_meeting_url,
+            link: m.custom_link || m.teams_meeting_url,
             status: m.status || 'scheduled',
             expert_notes: m.expert_notes,
             handler_notes: m.handler_notes,
@@ -833,6 +895,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             feasibility_notes: m.feasibility_notes,
             documents_link: m.documents_link,
             car_number: m.car_number,
+            custom_link: m.custom_link,
+            custom_address: m.custom_address,
             lastEdited: {
               timestamp: m.last_edited_timestamp,
               user: m.last_edited_by,
@@ -863,7 +927,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             scheduler: m.scheduler,
             helper: m.helper,
             expert: m.expert,
-            link: m.teams_meeting_url,
+            link: m.custom_link || m.teams_meeting_url,
             status: m.status || 'scheduled',
             expert_notes: m.expert_notes,
             handler_notes: m.handler_notes,
@@ -871,6 +935,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             feasibility_notes: m.feasibility_notes,
             documents_link: m.documents_link,
             car_number: m.car_number,
+            custom_link: m.custom_link,
+            custom_address: m.custom_address,
             lastEdited: {
               timestamp: m.last_edited_timestamp,
               user: m.last_edited_by,
@@ -2838,6 +2904,20 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const selectedLocation = allMeetingLocations.find(
         loc => loc.name === scheduleMeetingFormData.location
       );
+      const selectedLocationId = Number(selectedLocation?.id);
+      const customLinkValue = scheduleMeetingFormData.custom_link?.trim() || '';
+      const customAddressValue = scheduleMeetingFormData.custom_address?.trim() || '';
+
+      if (selectedLocationId === CUSTOM_LINK_LOCATION_ID && !customLinkValue) {
+        toast.error('Please enter a custom link for this location.');
+        setIsSchedulingMeeting(false);
+        return;
+      }
+      if (selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID && !customAddressValue) {
+        toast.error('Please enter a custom address for this location.');
+        setIsSchedulingMeeting(false);
+        return;
+      }
 
       // Check for location conflict for restricted zoom room locations
       const restrictedLocationIds = [3, 4, 15, 16, 17, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29];
@@ -2963,6 +3043,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           // Continue without calendar event - meeting will be created without Teams URL
           teamsMeetingUrl = '';
         }
+      } else if (selectedLocationId === CUSTOM_LINK_LOCATION_ID) {
+        teamsMeetingUrl = customLinkValue;
       } else if (selectedLocation?.default_link) {
         teamsMeetingUrl = selectedLocation.default_link;
       }
@@ -2991,6 +3073,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         last_edited_timestamp: new Date().toISOString(),
         last_edited_by: currentUserFullName,
         calendar_type: scheduleMeetingFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
+        custom_link: selectedLocationId === CUSTOM_LINK_LOCATION_ID ? customLinkValue : null,
+        custom_address: selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID ? customAddressValue : null,
       };
 
       const { data: insertedData, error: meetingError } = await supabase
@@ -3205,6 +3289,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         complexity: 'Simple',
         car_number: '',
         calendar: 'active_client',
+        custom_link: '',
+        custom_address: '',
       });
 
       if (onClientUpdate) await onClientUpdate();
@@ -3399,6 +3485,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         attendance_probability: 'Medium',
         complexity: 'Simple',
         car_number: '',
+        custom_link: '',
+        custom_address: '',
       });
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
@@ -3509,6 +3597,20 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const selectedLocation = allMeetingLocations.find(
         loc => loc.name === rescheduleFormData.location
       );
+      const selectedLocationId = Number(selectedLocation?.id);
+      const customLinkValue = rescheduleFormData.custom_link?.trim() || '';
+      const customAddressValue = rescheduleFormData.custom_address?.trim() || '';
+
+      if (selectedLocationId === CUSTOM_LINK_LOCATION_ID && !customLinkValue) {
+        toast.error('Please enter a custom link for this location.');
+        setIsReschedulingMeeting(false);
+        return;
+      }
+      if (selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID && !customAddressValue) {
+        toast.error('Please enter a custom address for this location.');
+        setIsReschedulingMeeting(false);
+        return;
+      }
 
       // Check for location conflict for restricted zoom room locations
       const restrictedLocationIds = [3, 4, 15, 16, 17, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29];
@@ -3631,6 +3733,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           // Continue without calendar event - meeting will be created without Teams URL
           teamsMeetingUrl = '';
         }
+      } else if (selectedLocationId === CUSTOM_LINK_LOCATION_ID) {
+        teamsMeetingUrl = customLinkValue;
       } else if (selectedLocation?.default_link) {
         teamsMeetingUrl = selectedLocation.default_link;
       }
@@ -3656,6 +3760,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         last_edited_timestamp: new Date().toISOString(),
         last_edited_by: currentUserFullName,
         calendar_type: 'active_client', // Always active_client for MeetingTab
+        custom_link: selectedLocationId === CUSTOM_LINK_LOCATION_ID ? customLinkValue : null,
+        custom_address: selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID ? customAddressValue : null,
       };
 
       const { data: insertedData, error: meetingError } = await supabase
@@ -3911,6 +4017,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         attendance_probability: 'Medium',
         complexity: 'Simple',
         car_number: '',
+        custom_link: '',
+        custom_address: '',
       });
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
@@ -3989,6 +4097,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         scheduler: schedulerId,
         helper: meeting.helper,
         car_number: meeting.car_number,
+        custom_link: meeting.custom_link,
+        custom_address: meeting.custom_address,
       });
     };
 
@@ -4149,6 +4259,23 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           // For new meetings, update the meetings table
           // Convert location ID to location name for new leads
           const locationText = getMeetingLocationName(editedMeeting.location);
+          const selectedLocationForEdit = allMeetingLocations.find(
+            (loc: any) => String(loc.id) === String(editedMeeting.location) || loc.name === locationText
+          );
+          const selectedLocationIdForEdit = Number(selectedLocationForEdit?.id);
+          const customLinkValue = (editedMeeting.custom_link || '').trim();
+          const customAddressValue = (editedMeeting.custom_address || '').trim();
+
+          if (selectedLocationIdForEdit === CUSTOM_LINK_LOCATION_ID && !customLinkValue) {
+            toast.error('Please enter a custom link for this location.');
+            setIsUpdatingMeeting(false);
+            return;
+          }
+          if (selectedLocationIdForEdit === CUSTOM_ADDRESS_LOCATION_ID && !customAddressValue) {
+            toast.error('Please enter a custom address for this location.');
+            setIsUpdatingMeeting(false);
+            return;
+          }
 
           // Convert scheduler employee ID to display name for new meetings
           const schedulerDisplayName = editedMeeting.scheduler
@@ -4166,6 +4293,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             scheduler: schedulerDisplayName,
             helper: editedMeeting.helper,
             car_number: editedMeeting.car_number || null,
+            custom_link: selectedLocationIdForEdit === CUSTOM_LINK_LOCATION_ID ? customLinkValue : null,
+            custom_address: selectedLocationIdForEdit === CUSTOM_ADDRESS_LOCATION_ID ? customAddressValue : null,
             last_edited_timestamp: new Date().toISOString(),
             last_edited_by: editor,
           };
@@ -4616,6 +4745,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                               className="px-4 py-2 cursor-pointer hover:bg-gray-100"
                               onClick={() => {
                                 setEditedMeeting(prev => ({ ...prev, location: location.id }));
+                                if (Number(location.id) === CUSTOM_LINK_LOCATION_ID) {
+                                  openCustomLocationModal('edit', 'link', editedMeeting.custom_link || '');
+                                } else if (Number(location.id) === CUSTOM_ADDRESS_LOCATION_ID) {
+                                  openCustomLocationModal('edit', 'address', editedMeeting.custom_address || '');
+                                }
                                 setEditLocationSearchTerm('');
                                 setShowEditLocationDropdown(false);
                               }}
@@ -4676,6 +4810,31 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     )}
                   </div>
                 </div>
+
+                {Number(editedMeeting.location) === CUSTOM_LINK_LOCATION_ID && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Custom Link</label>
+                    <button
+                      type="button"
+                      className="btn btn-outline w-full justify-start"
+                      onClick={() => openCustomLocationModal('edit', 'link', editedMeeting.custom_link || '')}
+                    >
+                      {editedMeeting.custom_link?.trim() || 'Set custom link'}
+                    </button>
+                  </div>
+                )}
+                {Number(editedMeeting.location) === CUSTOM_ADDRESS_LOCATION_ID && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Custom Address</label>
+                    <button
+                      type="button"
+                      className="btn btn-outline w-full justify-start"
+                      onClick={() => openCustomLocationModal('edit', 'address', editedMeeting.custom_address || '')}
+                    >
+                      {editedMeeting.custom_address?.trim() || 'Set custom address'}
+                    </button>
+                  </div>
+                )}
 
                 {/* Scheduler and Helper */}
                 <div className="grid grid-cols-2 gap-3">
@@ -5264,8 +5423,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
 
-        {/* Past Meetings icon button - fixed on right edge; on mobile just above bottom tabs */}
-        <div className="fixed right-0 bottom-24 md:bottom-auto md:top-1/2 md:-translate-y-1/2 z-30">
+        {/* Past Meetings icon button - fixed on right edge, centered vertically */}
+        <div className="fixed right-0 top-1/2 -translate-y-1/2 z-30">
           <button
             type="button"
             onClick={() => setShowPastMeetingsPanel(!showPastMeetingsPanel)}
@@ -5663,6 +5822,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 complexity: 'Simple',
                 car_number: '',
                 calendar: 'active_client',
+                custom_link: '',
+                custom_address: '',
               });
             }}
           />
@@ -5705,6 +5866,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   complexity: 'Simple',
                   car_number: '',
                   calendar: 'active_client',
+                  custom_link: '',
+                  custom_address: '',
                 });
               }}>
                 <XMarkIcon className="w-6 h-6" />
@@ -5720,7 +5883,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   <select
                     className="select select-bordered w-full"
                     value={scheduleMeetingFormData.location}
-                    onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, location: e.target.value }))}
+                    onChange={(e) => handleMeetingLocationChange(e.target.value, 'schedule')}
                   >
                     {allMeetingLocations.map((location) => (
                       <option key={location.id} value={location.name}>
@@ -5729,6 +5892,31 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     ))}
                   </select>
                 </div>
+
+                {Number(allMeetingLocations.find((loc: any) => loc.name === scheduleMeetingFormData.location)?.id) === CUSTOM_LINK_LOCATION_ID && (
+                  <div>
+                    <label className="block font-semibold mb-1">Custom Link</label>
+                    <button
+                      type="button"
+                      className="btn btn-outline w-full justify-start"
+                      onClick={() => openCustomLocationModal('schedule', 'link', scheduleMeetingFormData.custom_link || '')}
+                    >
+                      {scheduleMeetingFormData.custom_link?.trim() || 'Set custom link'}
+                    </button>
+                  </div>
+                )}
+                {Number(allMeetingLocations.find((loc: any) => loc.name === scheduleMeetingFormData.location)?.id) === CUSTOM_ADDRESS_LOCATION_ID && (
+                  <div>
+                    <label className="block font-semibold mb-1">Custom Address</label>
+                    <button
+                      type="button"
+                      className="btn btn-outline w-full justify-start"
+                      onClick={() => openCustomLocationModal('schedule', 'address', scheduleMeetingFormData.custom_address || '')}
+                    >
+                      {scheduleMeetingFormData.custom_address?.trim() || 'Set custom address'}
+                    </button>
+                  </div>
+                )}
 
                 {/* Calendar */}
                 <div>
@@ -6036,6 +6224,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 attendance_probability: 'Medium',
                 complexity: 'Simple',
                 car_number: '',
+                custom_link: '',
+                custom_address: '',
               });
               setRescheduleOption('cancel');
             }}
@@ -6081,6 +6271,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   attendance_probability: 'Medium',
                   complexity: 'Simple',
                   car_number: '',
+                  custom_link: '',
+                  custom_address: '',
                 });
                 setRescheduleOption('cancel');
               }}>
@@ -6128,6 +6320,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                             attendance_probability: selectedMeeting.attendance_probability || 'Medium',
                             complexity: selectedMeeting.complexity || 'Simple',
                             car_number: selectedMeeting.car_number || '',
+                            custom_link: selectedMeeting.custom_link || '',
+                            custom_address: selectedMeeting.custom_address || '',
                           });
                         }
                       }}
@@ -6178,7 +6372,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       <select
                         className="select select-bordered w-full"
                         value={rescheduleFormData.location}
-                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, location: e.target.value }))}
+                        onChange={(e) => handleMeetingLocationChange(e.target.value, 'reschedule')}
                       >
                         {allMeetingLocations.map((location) => (
                           <option key={location.id} value={location.name}>
@@ -6187,6 +6381,31 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         ))}
                       </select>
                     </div>
+
+                    {Number(allMeetingLocations.find((loc: any) => loc.name === rescheduleFormData.location)?.id) === CUSTOM_LINK_LOCATION_ID && (
+                      <div>
+                        <label className="block font-semibold mb-1">Custom Link</label>
+                        <button
+                          type="button"
+                          className="btn btn-outline w-full justify-start"
+                          onClick={() => openCustomLocationModal('reschedule', 'link', rescheduleFormData.custom_link || '')}
+                        >
+                          {rescheduleFormData.custom_link?.trim() || 'Set custom link'}
+                        </button>
+                      </div>
+                    )}
+                    {Number(allMeetingLocations.find((loc: any) => loc.name === rescheduleFormData.location)?.id) === CUSTOM_ADDRESS_LOCATION_ID && (
+                      <div>
+                        <label className="block font-semibold mb-1">Custom Address</label>
+                        <button
+                          type="button"
+                          className="btn btn-outline w-full justify-start"
+                          onClick={() => openCustomLocationModal('reschedule', 'address', rescheduleFormData.custom_address || '')}
+                        >
+                          {rescheduleFormData.custom_address?.trim() || 'Set custom address'}
+                        </button>
+                      </div>
+                    )}
 
                     {/* Calendar */}
                     <div>
@@ -6444,6 +6663,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       attendance_probability: 'Medium',
                       complexity: 'Simple',
                       car_number: '',
+                      custom_link: '',
+                      custom_address: '',
                     });
                     setRescheduleOption('cancel');
                   }}
@@ -6482,6 +6703,41 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   </button>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCustomLocationModal && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowCustomLocationModal(false)} />
+          <div className="relative w-full max-w-md rounded-xl bg-base-100 border border-base-300 shadow-2xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h4 className="text-lg font-bold">
+                {customLocationMode === 'link' ? 'Custom Link' : 'Custom Address'}
+              </h4>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm btn-circle"
+                onClick={() => setShowCustomLocationModal(false)}
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <input
+              type={customLocationMode === 'link' ? 'url' : 'text'}
+              className="input input-bordered w-full"
+              value={customLocationDraft}
+              onChange={(e) => setCustomLocationDraft(e.target.value)}
+              placeholder={customLocationMode === 'link' ? 'https://example.com/meeting' : 'Enter address'}
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" className="btn btn-ghost" onClick={() => setShowCustomLocationModal(false)}>
+                Cancel
+              </button>
+              <button type="button" className="btn btn-primary" onClick={handleSaveCustomLocationValue}>
+                Save
+              </button>
             </div>
           </div>
         </div>

@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { Link, useNavigate, useNavigationType, useLocation } from 'react-router-dom';
 import { useCachedFetch } from '../hooks/useCachedFetch';
 import { usePersistedState } from '../hooks/usePersistedState';
-import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon, PlusIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, MapPinIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon, PlusIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import DocumentModal from './DocumentModal';
 import { FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
@@ -520,6 +520,8 @@ const CalendarPage: React.FC = () => {
 
   // Mobile filters modal (date, staff, meeting type)
   const [showMobileFiltersModal, setShowMobileFiltersModal] = useState(false);
+  const [isCustomAddressModalOpen, setIsCustomAddressModalOpen] = useState(false);
+  const [selectedCustomAddress, setSelectedCustomAddress] = useState('');
 
   // Unavailable staff section collapse state
   const [isUnavailableStaffExpanded, setIsUnavailableStaffExpanded] = useState(false);
@@ -1393,6 +1395,8 @@ const CalendarPage: React.FC = () => {
           meeting_location: getLegacyMeetingLocation(legacyLead.meeting_location_id) || 'Teams',
           meeting_location_id: legacyLead.meeting_location_id,
           teams_meeting_url: null,
+          custom_link: null,
+          custom_address: null,
           meeting_brief: null,
           meeting_amount: parseFloat(legacyLead.total || '0'),
           // Use balance_currency that's already set to a symbol from JOIN processing above
@@ -1599,6 +1603,8 @@ const CalendarPage: React.FC = () => {
             helper: '--',
             meeting_location: meeting.location || 'Teams',
             teams_meeting_url: meeting.teams_join_url || '',
+            custom_link: null,
+            custom_address: null,
             meeting_amount: '--',
             meeting_currency: '',
             status: 'scheduled',
@@ -1919,7 +1925,7 @@ const CalendarPage: React.FC = () => {
 
         // Build meetings query WITH joins so one round-trip gets meetings + leads (no separate lead fetches)
         const meetingsSelect = `
-          id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url,
+          id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url, custom_link, custom_address,
           meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
           attendance_probability, complexity, car_number, calendar_type, extern1, extern2,
           leads!meetings_client_id_fkey (
@@ -2855,7 +2861,7 @@ const CalendarPage: React.FC = () => {
         .from('meetings')
         .select(`
           id, created_at, meeting_date, meeting_time, meeting_manager, helper, meeting_location, 
-          teams_meeting_url, meeting_brief, status, client_id, legacy_lead_id
+          teams_meeting_url, custom_link, custom_address, meeting_brief, status, client_id, legacy_lead_id
         `)
         .gte('meeting_date', sevenDaysAgo)
         .lte('meeting_date', thirtyDaysFromNow)
@@ -3105,6 +3111,8 @@ const CalendarPage: React.FC = () => {
           meeting_location: getLegacyMeetingLocation(legacyLead.meeting_location_id) || 'Teams',
           meeting_location_id: legacyLead.meeting_location_id,
           teams_meeting_url: null,
+          custom_link: null,
+          custom_address: null,
           meeting_brief: null,
           status: null,
           client_id: null,
@@ -4686,23 +4694,40 @@ const CalendarPage: React.FC = () => {
             }
             const hasAllowedLocationId = locationIdNum !== null && meetingLocationIdsWithLink.has(locationIdNum);
             const isTeamsWithUrl = locationName && locationName.toLowerCase() === 'teams' && !!meeting.teams_meeting_url;
+            const hasCustomLink = !!meeting.custom_link;
+            const hasCustomAddress = !!meeting.custom_address;
             const isStaffMeeting = meeting.calendar_type === 'staff';
-            return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting;
+            return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting || hasCustomLink || hasCustomAddress;
           })() && (
-            <button
-              className="btn btn-outline btn-primary btn-sm"
-              onClick={(e) => {
-                e.stopPropagation();
-                const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
-                const defaultLink = meetingLocationLinks[locationName] || '';
-                const url = getValidTeamsLink(meeting.teams_meeting_url || defaultLink);
-                if (url) window.open(url, '_blank');
-                else alert('No meeting URL available');
-              }}
-              title="Teams Meeting"
-            >
-              <VideoCameraIcon className="w-4 h-4" />
-            </button>
+            <>
+              <button
+                className="btn btn-outline btn-primary btn-sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
+                  const defaultLink = meetingLocationLinks[locationName] || '';
+                  const url = getValidTeamsLink(meeting.custom_link || meeting.teams_meeting_url || defaultLink);
+                  if (url) window.open(url, '_blank');
+                  else alert('No meeting URL available');
+                }}
+                title="Meeting Link"
+              >
+                <VideoCameraIcon className="w-4 h-4" />
+              </button>
+              {meeting.custom_address && (
+                <button
+                  className="btn btn-outline btn-secondary btn-sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedCustomAddress(meeting.custom_address);
+                    setIsCustomAddressModalOpen(true);
+                  }}
+                  title="View Custom Address"
+                >
+                  <MapPinIcon className="w-4 h-4" />
+                </button>
+              )}
+            </>
           )}
           {/* Add guest plus button - active_client and potential_client only */}
           {(meeting.calendar_type === 'active_client' || meeting.calendar_type === 'potential_client') && (
@@ -5136,6 +5161,7 @@ const CalendarPage: React.FC = () => {
             )}
           </td>
           <td className="text-sm sm:text-base">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
+          <td className="text-sm sm:text-base">{meeting.custom_address || '--'}</td>
           <td>
             <div className="flex items-center justify-center">
               {getStageBadge(lead.stage ?? meeting.stage)}
@@ -5182,29 +5208,46 @@ const CalendarPage: React.FC = () => {
 
                 // Also show for Teams meetings that have a teams_meeting_url
                 const isTeamsWithUrl = locationName && locationName.toLowerCase() === 'teams' && !!meeting.teams_meeting_url;
+                const hasCustomLink = !!meeting.custom_link;
+                const hasCustomAddress = !!meeting.custom_address;
 
                 // Also show for staff meetings (they have teams_meeting_url)
                 const isStaffMeeting = meeting.calendar_type === 'staff';
 
-                return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting;
+                return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting || hasCustomLink || hasCustomAddress;
               })() && (
-                  <button
-                    className="btn btn-primary btn-xs sm:btn-sm"
-                    onClick={() => {
-                      // Use teams_meeting_url if available, otherwise use default_link from location
-                      const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
-                      const defaultLink = meetingLocationLinks[locationName] || '';
-                      const url = getValidTeamsLink(meeting.teams_meeting_url || defaultLink);
-                      if (url) {
-                        window.open(url, '_blank');
-                      } else {
-                        alert('No meeting URL available');
-                      }
-                    }}
-                    title="Teams Meeting"
-                  >
-                    <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-                  </button>
+                  <>
+                    <button
+                      className="btn btn-primary btn-xs sm:btn-sm"
+                      onClick={() => {
+                        // Use custom_link first, then teams/default links
+                        const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
+                        const defaultLink = meetingLocationLinks[locationName] || '';
+                        const url = getValidTeamsLink(meeting.custom_link || meeting.teams_meeting_url || defaultLink);
+                        if (url) {
+                          window.open(url, '_blank');
+                        } else {
+                          alert('No meeting URL available');
+                        }
+                      }}
+                      title="Meeting Link"
+                    >
+                      <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                    </button>
+                    {meeting.custom_address && (
+                      <button
+                        className="btn btn-outline btn-secondary btn-xs sm:btn-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedCustomAddress(meeting.custom_address);
+                          setIsCustomAddressModalOpen(true);
+                        }}
+                        title="View Custom Address"
+                      >
+                        <MapPinIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                      </button>
+                    )}
+                  </>
                 )}
               {/* Show edit button for staff meetings */}
               {meeting.calendar_type === 'staff' && (
@@ -5709,6 +5752,39 @@ const CalendarPage: React.FC = () => {
         </div>,
         document.body
       )}
+
+      {isCustomAddressModalOpen && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setIsCustomAddressModalOpen(false)}
+          />
+          <div className="relative w-full max-w-xl bg-base-100 rounded-xl border border-base-300 shadow-2xl p-6">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-lg font-bold">Custom Address</h3>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm btn-circle"
+                onClick={() => setIsCustomAddressModalOpen(false)}
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="text-base whitespace-pre-wrap break-words text-gray-800">
+              {selectedCustomAddress || 'No address provided'}
+            </div>
+            <div className="mt-5 flex justify-end">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => setIsCustomAddressModalOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Spacer on mobile so content starts below the fixed date bar (under header) */}
       <div className="h-32 flex-shrink-0 md:hidden" aria-hidden="true" />
 
@@ -5955,13 +6031,14 @@ const CalendarPage: React.FC = () => {
                 <th className="text-gray-500">Value</th>
                 <th className="text-gray-500 w-20 min-w-[5rem]">Participants</th>
                 <th className="text-gray-500">Location</th>
+                <th className="text-gray-500">Address</th>
                 <th className="text-gray-500">Status</th>
                 <th className="text-gray-500">Actions</th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
-                <tr><td colSpan={8} className="text-center p-8 text-lg">Loading meetings...</td></tr>
+                <tr><td colSpan={10} className="text-center p-8 text-lg">Loading meetings...</td></tr>
               ) : filteredMeetings.length > 0 ? (
                 (() => {
                   const todayStr = new Date().toISOString().split('T')[0];
@@ -5970,7 +6047,7 @@ const CalendarPage: React.FC = () => {
                   const showNowLine = appliedFromDate && appliedToDate && appliedFromDate <= todayStr && todayStr <= appliedToDate;
                   const CurrentTimeRow = () => (
                     <tr className="relative z-0 bg-transparent hover:bg-transparent border-0">
-                      <td colSpan={8} className="p-0 align-middle border-0 relative">
+                      <td colSpan={10} className="p-0 align-middle border-0 relative">
                         <div className="relative flex items-center gap-3 py-1.5">
                           <span className="relative z-10 bg-white px-1.5 py-0.5 text-xs font-semibold text-red-600 whitespace-nowrap tabular-nums rounded" style={{ minWidth: '3.5rem' }}>
                             {currentTime}
@@ -5995,14 +6072,14 @@ const CalendarPage: React.FC = () => {
                   return result;
                 })()
               ) : isLegacyLoading ? (
-                <tr><td colSpan={8} className="text-center p-8 text-lg">
+                <tr><td colSpan={10} className="text-center p-8 text-lg">
                   <div className="flex items-center justify-center gap-2">
                     <span className="loading loading-spinner loading-sm"></span>
                     Loading meetings...
                   </div>
                 </td></tr>
               ) : (
-                <tr><td colSpan={8} className="text-center p-8 text-lg">No meetings found for the selected filters.</td></tr>
+                <tr><td colSpan={10} className="text-center p-8 text-lg">No meetings found for the selected filters.</td></tr>
               )}
             </tbody>
           </table>
@@ -6654,6 +6731,7 @@ const CalendarPage: React.FC = () => {
                                 <th className="text-left text-sm font-semibold text-gray-500">Lead</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Time</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Location</th>
+                                <th className="text-left text-sm font-semibold text-gray-500">Address</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Category</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Expert</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Language</th>
@@ -6765,6 +6843,9 @@ const CalendarPage: React.FC = () => {
 
                                     {/* Location */}
                                     <td className="text-base">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
+
+                                    {/* Address */}
+                                    <td className="text-base">{meeting.custom_address || '--'}</td>
 
                                     {/* Category */}
                                     <td className="text-base">

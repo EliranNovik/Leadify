@@ -2944,9 +2944,9 @@ ${combinedText}`;
         </div>
         )}
 
-        {/* Collapsed Summary - Fixed on right edge; on mobile sit lower to clear bottom tabs */}
+        {/* Collapsed Summary - Fixed on right edge, centered vertically */}
         {isSummaryCollapsed && (
-          <div className="fixed right-0 bottom-28 md:bottom-auto md:top-1/2 md:-translate-y-1/2 z-50">
+          <div className="fixed right-0 top-1/2 -translate-y-1/2 z-50">
             <button
               onClick={() => setIsSummaryCollapsed(false)}
               className="flex flex-col items-center justify-center gap-2 w-12 py-6 bg-white border border-gray-200 rounded-l-2xl shadow-lg hover:shadow-xl hover:bg-gray-50 transition-all duration-200"
