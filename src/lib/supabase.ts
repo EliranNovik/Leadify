@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -6,6 +6,202 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables');
 }
+
+/**
+ * Native fetch used as the innermost layer. Supabase wraps this with `fetchWithAuth`
+ * for REST/Storage/Functions; Auth uses this fetch directly (see below).
+ */
+const baseFetch: typeof fetch = (...args) => fetch(...args);
+const REST_GET_CACHE_TTL_MS = 15000;
+const REST_GET_CACHE_MAX_BODY_BYTES = 1024 * 1024; // 1 MB safety cap
+
+type CachedHttpResponse = {
+  status: number;
+  statusText: string;
+  headers: [string, string][];
+  bodyText: string;
+  cachedAt: number;
+};
+
+const restGetResponseCache = new Map<string, CachedHttpResponse>();
+const restGetInFlightRequests = new Map<string, Promise<Response>>();
+
+const clearGlobalResponseCache = () => {
+  restGetResponseCache.clear();
+  restGetInFlightRequests.clear();
+};
+
+function getRequestUrl(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.href;
+  if (typeof Request !== 'undefined' && input instanceof Request) return input.url;
+  return String(input);
+}
+
+function getRequestMethod(input: RequestInfo | URL, init?: RequestInit): string {
+  const initMethod = init?.method;
+  if (initMethod) return initMethod.toUpperCase();
+  if (typeof Request !== 'undefined' && input instanceof Request) {
+    return input.method.toUpperCase();
+  }
+  return 'GET';
+}
+
+function buildRestGetCacheKey(url: string, headers: Headers): string {
+  // Scope by bearer token to avoid cross-user cache bleed in shared tabs.
+  const bearer = (headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
+  const scope = bearer ? bearer.slice(0, 24) : 'anon';
+  return `rest-get:${scope}:${url}`;
+}
+
+function responseFromCachedEntry(cached: CachedHttpResponse): Response {
+  return new Response(cached.bodyText, {
+    status: cached.status,
+    statusText: cached.statusText,
+    headers: new Headers(cached.headers),
+  });
+}
+
+function readRestGetCache(cacheKey: string): Response | null {
+  const cached = restGetResponseCache.get(cacheKey);
+  if (!cached) return null;
+  if (Date.now() - cached.cachedAt > REST_GET_CACHE_TTL_MS) {
+    restGetResponseCache.delete(cacheKey);
+    return null;
+  }
+  return responseFromCachedEntry(cached);
+}
+
+async function maybeStoreRestGetCache(cacheKey: string, response: Response): Promise<void> {
+  if (!response.ok) return;
+  const contentType = response.headers.get('content-type') || '';
+  if (!contentType.toLowerCase().includes('application/json')) return;
+
+  const clone = response.clone();
+  const bodyText = await clone.text();
+  if (!bodyText || bodyText.length > REST_GET_CACHE_MAX_BODY_BYTES) return;
+
+  const headers: [string, string][] = [];
+  clone.headers.forEach((value, key) => {
+    headers.push([key, value]);
+  });
+
+  restGetResponseCache.set(cacheKey, {
+    status: clone.status,
+    statusText: clone.statusText,
+    headers,
+    bodyText,
+    cachedAt: Date.now(),
+  });
+}
+
+/** Set after `createClient` — used only by the global fetch wrapper */
+let supabaseForFetch: SupabaseClient | null = null;
+/** Assigned after `handleSessionExpiration` is defined */
+let handleSessionExpiredForFetch: (() => Promise<void>) | null = null;
+
+/**
+ * Global fetch for all Supabase HTTP traffic:
+ * - On 401 from REST/Storage/Functions (user JWT), refresh once and retry with new access token.
+ * - If refresh fails, sign out and redirect (via handleSessionExpiration).
+ * - `/auth/v1/*` passes through untouched so refresh/token calls cannot recurse into this logic.
+ */
+const supabaseGlobalFetch: typeof fetch = async (input, init) => {
+  const url = getRequestUrl(input as RequestInfo);
+
+  if (url.includes('/auth/v1/')) {
+    return baseFetch(input as RequestInfo, init);
+  }
+
+  const projectOrigin = new URL(supabaseUrl).origin;
+  let requestUrl: URL;
+  try {
+    requestUrl = new URL(url, projectOrigin);
+  } catch {
+    return baseFetch(input as RequestInfo, init);
+  }
+
+  if (requestUrl.origin !== projectOrigin) {
+    return baseFetch(input as RequestInfo, init);
+  }
+
+  const method = getRequestMethod(input as RequestInfo, init);
+  const isRestRequest = requestUrl.pathname.startsWith('/rest/v1/');
+  const requestHeaders = new Headers(init?.headers as HeadersInit | undefined);
+  const canUseRestGetCache = isRestRequest && method === 'GET';
+
+  if (isRestRequest && method !== 'GET') {
+    // Mutation happened; drop stale cached reads globally.
+    clearGlobalResponseCache();
+  }
+
+  let cacheKey: string | null = null;
+  if (canUseRestGetCache) {
+    cacheKey = buildRestGetCacheKey(requestUrl.href, requestHeaders);
+    const cachedResponse = readRestGetCache(cacheKey);
+    if (cachedResponse) {
+      return cachedResponse;
+    }
+    const existingInFlight = restGetInFlightRequests.get(cacheKey);
+    if (existingInFlight) {
+      const sharedResponse = await existingInFlight;
+      return sharedResponse.clone();
+    }
+  }
+
+  const clonedForRetry =
+    typeof Request !== 'undefined' && input instanceof Request ? input.clone() : null;
+
+  const performNetworkRequest = async (): Promise<Response> => {
+    let response = await baseFetch(input as RequestInfo, init);
+
+    if (response.status !== 401) {
+      return response;
+    }
+
+    const client = supabaseForFetch;
+    if (!client) {
+      return response;
+    }
+
+    const hdrs = new Headers(init?.headers as HeadersInit | undefined);
+    const bearer = (hdrs.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
+    if (!bearer || bearer === supabaseAnonKey) {
+      return response;
+    }
+
+    try {
+      const { data: { session }, error } = await client.auth.refreshSession();
+      if (error || !session?.access_token) {
+        await handleSessionExpiredForFetch?.();
+        return response;
+      }
+
+      const retryHeaders = new Headers(init?.headers as HeadersInit | undefined);
+      retryHeaders.set('Authorization', `Bearer ${session.access_token}`);
+      const retryInput = clonedForRetry ?? input;
+      return baseFetch(retryInput as RequestInfo, { ...init, headers: retryHeaders });
+    } catch (e) {
+      console.warn('Supabase global fetch: recovery after 401 failed', e);
+      await handleSessionExpiredForFetch?.();
+      return response;
+    }
+  };
+
+  if (!cacheKey) {
+    return performNetworkRequest();
+  }
+
+  const networkPromise = performNetworkRequest();
+  restGetInFlightRequests.set(cacheKey, networkPromise.then((res) => res.clone()));
+  try {
+    const response = await networkPromise;
+    await maybeStoreRestGetCache(cacheKey, response);
+    return response;
+  } finally {
+    restGetInFlightRequests.delete(cacheKey);
+  }
+};
 
 // Configure Supabase client with proper session management for multi-tab support
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
@@ -23,13 +219,16 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     // Disable debug mode to reduce console noise
     debug: false,
   },
-  // Global headers
+  // Global headers + fetch: 401 recovery for all PostgREST/Storage/Functions calls
   global: {
+    fetch: supabaseGlobalFetch,
     headers: {
       'X-Client-Info': 'leadify-crm',
     },
   },
 });
+
+supabaseForFetch = supabase;
 
 // Sync session across tabs - Supabase handles this automatically via localStorage
 // No additional listeners needed - Supabase's built-in session management handles multi-tab scenarios
@@ -65,6 +264,7 @@ export const tryRefreshThenExpire = async (): Promise<boolean> => {
 // Function to handle session expiration and redirect
 export const handleSessionExpiration = async () => {
   if (typeof window === 'undefined') return;
+  clearGlobalResponseCache();
   
   // Check if another tab is already redirecting
   const redirectingUntil = localStorage.getItem(REDIRECTING_KEY);
@@ -112,6 +312,9 @@ export const handleSessionExpiration = async () => {
     }
   }
 };
+
+/** Wire global fetch 401 handler to the same sign-out flow */
+handleSessionExpiredForFetch = handleSessionExpiration;
 
 // Helper function to check if an error is an authentication error
 // IMPORTANT: This should NOT return true for network errors

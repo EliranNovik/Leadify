@@ -532,6 +532,16 @@ const Clients: React.FC<ClientsProps> = ({
   setSelectedClient,
   refreshClientData,
 }) => {
+  const getClientTabMemoryKey = useCallback((client: any): string | null => {
+    if (!client) return null;
+    const leadType = client.lead_type || (String(client.id || '').startsWith('legacy_') ? 'legacy' : 'new');
+    const leadNumber = String(client.lead_number || '').trim();
+    const id = String(client.id || '').trim();
+    const keyPart = leadNumber || id;
+    if (!keyPart) return null;
+    return `clientsPage_activeTab_byClient_${leadType}_${keyPart}`;
+  }, []);
+
   const { user } = useAuthContext();
 
   // Use a stable user ID reference to prevent unnecessary re-renders
@@ -1435,7 +1445,7 @@ const Clients: React.FC<ClientsProps> = ({
   }, [activeTab, prefetchTabChunk]);
 
   const handleMobileTabSelect = (tabId: string) => {
-    setActiveTab(tabId);
+    setActiveTabWithUrl(tabId);
     setIsMobileTabPanelOpen(false);
     setTimeout(() => {
       tabContentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1537,6 +1547,22 @@ const Clients: React.FC<ClientsProps> = ({
   const helperDropdownRef = useRef<HTMLDivElement>(null);
   const [helperSearchTerm, setHelperSearchTerm] = useState('');
   const navigate = useNavigate();
+  const setActiveTabWithUrl = useCallback((tabId: string) => {
+    if (!Object.prototype.hasOwnProperty.call(TAB_LOADERS, tabId)) return;
+
+    setActiveTab((prev) => (prev === tabId ? prev : tabId));
+
+    // Keep ?tab= in sync for deep links/back-forward without relying on a state<->URL effect loop.
+    if (location.pathname === '/clients' || location.pathname === '/clients/') return;
+    const params = new URLSearchParams(location.search);
+    if (params.get('tab') === tabId) return;
+    params.set('tab', tabId);
+    const search = params.toString() ? `?${params.toString()}` : '';
+    navigate(
+      { pathname: location.pathname, search, hash: location.hash || '' },
+      { replace: true }
+    );
+  }, [location.pathname, location.search, location.hash, navigate, setActiveTab]);
   const [showUpdateDrawer, setShowUpdateDrawer] = useState(false);
   const [meetingNotes, setMeetingNotes] = useState('');
   const [nextFollowup, setNextFollowup] = useState('');
@@ -4882,13 +4908,14 @@ const Clients: React.FC<ClientsProps> = ({
     };
   }, [showManagerDropdown, showHelperDropdown]);
 
-  // Handle tab switching from URL
+  // Apply ?tab= from the URL only when `location.search` changes (deep link / back-forward).
+  // Do NOT sync activeTab → URL on every click: that races with Router (stale search vs new tab)
+  // and fights user clicks, causing tabs to flip or feel stuck.
   useEffect(() => {
     const tabFromUrl = new URLSearchParams(location.search).get('tab');
-    if (tabFromUrl && tabs.map(t => t.id).includes(tabFromUrl)) {
-      setActiveTab(tabFromUrl);
-    }
-  }, [location.search]);
+    if (!tabFromUrl || !Object.prototype.hasOwnProperty.call(TAB_LOADERS, tabFromUrl)) return;
+    setActiveTab((prev) => (prev === tabFromUrl ? prev : tabFromUrl));
+  }, [location.search, setActiveTab]);
 
 
 
@@ -4914,7 +4941,7 @@ const Clients: React.FC<ClientsProps> = ({
       setShowUpdateDrawer(true);
       (document.activeElement as HTMLElement)?.blur();
     } else if (newStage === 'Meeting Ended') {
-      setActiveTab('meeting');
+      setActiveTabWithUrl('meeting');
       setShowMeetingEndedDrawer(true);
       (document.activeElement as HTMLElement)?.blur();
     } else {
@@ -10513,7 +10540,7 @@ const Clients: React.FC<ClientsProps> = ({
     // NOTE: do not close the finance plan drawer here; the user may still
     // be working in the Finances tab. FinancesTab handles its own drawer state.
     setPayments([]); // Optionally, setPayments(newPayments) if you want to show them immediately
-    setActiveTab('finances');
+    setActiveTabWithUrl('finances');
     toast.success('Payment plan saved!');
 
     try {
@@ -10778,6 +10805,18 @@ const Clients: React.FC<ClientsProps> = ({
     return allTabs;
   }, [interactionCount, selectedClient]);
 
+  // Persist selected tab per specific client so returning to the same client restores exact tab.
+  useEffect(() => {
+    if (!selectedClient || !activeTab) return;
+    const key = getClientTabMemoryKey(selectedClient);
+    if (!key) return;
+    try {
+      sessionStorage.setItem(key, activeTab);
+    } catch {
+      // ignore storage errors
+    }
+  }, [selectedClient, activeTab, getClientTabMemoryKey]);
+
   // Force re-render when interaction count changes
   const tabsKey = `tabs-${interactionCount}-${selectedClient?.id}`;
 
@@ -10789,7 +10828,7 @@ const Clients: React.FC<ClientsProps> = ({
     const isCreatedStage = areStagesEquivalent(currentStageName, 'Created');
 
     if (isCreatedStage && (activeTab === 'meeting' || activeTab === 'price' || activeTab === 'finances')) {
-      setActiveTab('info');
+      setActiveTabWithUrl('info');
     }
   }, [selectedClient?.stage, activeTab]);
 
@@ -14156,7 +14195,7 @@ const Clients: React.FC<ClientsProps> = ({
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        setActiveTab('meeting');
+                        setActiveTabWithUrl('meeting');
                       }}
                       className="shadow-lg cursor-pointer animate-pulse font-semibold rounded-full"
                       style={{
@@ -15077,7 +15116,7 @@ const Clients: React.FC<ClientsProps> = ({
                             }}
                             onClick={(e) => {
                               e.stopPropagation();
-                              setActiveTab(tab.id);
+                              setActiveTabWithUrl(tab.id);
                             }}
                           >
                             <div className="relative inline-flex items-center justify-center">
@@ -15264,7 +15303,7 @@ const Clients: React.FC<ClientsProps> = ({
                         ? 'bg-transparent text-[#471CCA] font-bold shadow-none scale-100'
                         : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 font-semibold'
                         }`}
-                      onClick={() => setActiveTab(tab.id)}
+                      onClick={() => setActiveTabWithUrl(tab.id)}
                       onMouseEnter={() => prefetchTabChunk(tab.id)}
                       onTouchStart={() => prefetchTabChunk(tab.id)}
                     >

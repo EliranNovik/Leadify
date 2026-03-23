@@ -432,135 +432,116 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [authState.user, updateAuthState, fetchUserDetails]);
 
-  // Session expiration monitoring - only when user exists
-  // LESS AGGRESSIVE - trust Supabase's auto-refresh and only check occasionally
+  // Proactive session watchdog:
+  // - checks session periodically (no user action needed)
+  // - refreshes shortly before expiry
+  // - signs out automatically on confirmed unrecoverable auth state
   useEffect(() => {
     if (!authState.user) return;
 
-    let consecutiveFailures = 0;
-    const MAX_CONSECUTIVE_FAILURES = 3; // Require 3 consecutive failures before logging out
+    let isMounted = true;
+    let checkInFlight = false;
+    let consecutiveAuthFailures = 0;
+    const MAX_CONSECUTIVE_AUTH_FAILURES = 2;
+    const CHECK_INTERVAL_MS = 60000; // 1 minute
+    const REFRESH_BUFFER_SEC = 90; // refresh when <90s to expiry
 
-    const checkSessionExpiration = async () => {
+    const maybeExpireSession = async () => {
+      if (!isMounted) return;
+      consecutiveAuthFailures += 1;
+      if (consecutiveAuthFailures < MAX_CONSECUTIVE_AUTH_FAILURES) return;
+      await handleSessionExpiration();
+    };
+
+    const runWatchdogCheck = async () => {
+      if (!isMounted || checkInFlight) return;
+      checkInFlight = true;
       try {
-        // Get current session first to verify it still exists
         const { data: { session }, error } = await supabase.auth.getSession();
 
-        // If there's an error, check if it's a network error
         if (error) {
-          const errorMsg = String(error.message || error).toLowerCase();
-          const isNetworkErr = errorMsg.includes('network') || errorMsg.includes('timeout') || errorMsg.includes('fetch');
-          
-          if (isNetworkErr) {
-            // Network error - don't treat as auth failure
-            consecutiveFailures = 0; // Reset on network errors
+          if (isNetworkError(error)) {
+            // Transient connectivity issues should not force sign-out.
+            return;
+          }
+          if (isAuthError(error)) {
+            await maybeExpireSession();
+          }
+          return;
+        }
+
+        if (session?.user) {
+          consecutiveAuthFailures = 0;
+
+          const expiresAtSec = typeof session.expires_at === 'number' ? session.expires_at : null;
+          const nowSec = Math.floor(Date.now() / 1000);
+          const shouldRefreshSoon = !!expiresAtSec && expiresAtSec - nowSec <= REFRESH_BUFFER_SEC;
+
+          if (shouldRefreshSoon) {
+            const { data: { session: refreshed }, error: refreshError } = await supabase.auth.refreshSession();
+            if (!refreshError && refreshed?.user) {
+              updateAuthState(refreshed, true);
+              setAuthState((prev) => ({
+                ...prev,
+                sessionRefreshNonce: prev.sessionRefreshNonce + 1,
+              }));
+              consecutiveAuthFailures = 0;
+              return;
+            }
+            if (refreshError && !isNetworkError(refreshError)) {
+              await maybeExpireSession();
+            }
+          }
+          return;
+        }
+
+        // Missing session while app still thinks user is signed in.
+        const hasTokens = hasAnySupabaseAuthKey();
+        if (hasTokens) {
+          const { data: { session: refreshed }, error: refreshError } = await supabase.auth.refreshSession();
+          if (!refreshError && refreshed?.user) {
+            updateAuthState(refreshed, true);
+            setAuthState((prev) => ({
+              ...prev,
+              sessionRefreshNonce: prev.sessionRefreshNonce + 1,
+            }));
+            consecutiveAuthFailures = 0;
+            return;
+          }
+          if (refreshError && isNetworkError(refreshError)) {
             return;
           }
         }
 
-        // If session exists, reset failure count
-        if (session?.user) {
-          consecutiveFailures = 0;
-          return; // Session is valid
+        await maybeExpireSession();
+      } catch (e) {
+        if (!isNetworkError(e) && isAuthError(e)) {
+          await maybeExpireSession();
         }
-
-        // No session - try refresh once (Supabase autoRefreshToken may not have run yet)
-        if (!session && typeof window !== 'undefined') {
-          try {
-            let hasStoredTokens = false;
-            for (let i = 0; i < localStorage.length; i++) {
-              const key = localStorage.key(i);
-              if (key && (key.includes('supabase.auth.token') || (key.includes('sb-') && key.includes('-auth-token')))) {
-                hasStoredTokens = true;
-                break;
-              }
-            }
-            if (hasStoredTokens) {
-              const { data: { session: refreshed }, error } = await supabase.auth.refreshSession();
-              if (!error && refreshed?.user) {
-                consecutiveFailures = 0;
-                updateAuthState(refreshed, true);
-                return;
-              }
-              // Refresh failed - do not clear tokens here; only clear after multiple consecutive failures below
-            }
-          } catch (e) {
-            console.warn('Could not check/refresh session:', e);
-          }
-        }
-
-        // No session (and refresh didn't recover) - increment failure count
-        consecutiveFailures++;
-
-        // Only clear state after multiple consecutive failures
-        // This prevents false positives from transient network issues
-        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-          console.log(`Session check failed ${consecutiveFailures} times consecutively, clearing auth state`);
-
-          // Double-check one more time before clearing
-          const { data: { session: finalCheck } } = await supabase.auth.getSession();
-          if (!finalCheck?.user) {
-            if (typeof window !== 'undefined') {
-              try {
-                Object.keys(localStorage).forEach(key => {
-                  if (key.includes('supabase.auth.token') || (key.includes('sb-') && key.includes('-auth-token'))) {
-                    localStorage.removeItem(key);
-                  }
-                });
-              } catch (e) {
-                console.warn('Could not clear auth storage:', e);
-              }
-            }
-            setAuthState(prev => {
-              if (!prev.user) return prev;
-              return {
-                ...prev,
-                user: null,
-                userFullName: null,
-                userInitials: null,
-                profilePhotoUrl: null,
-                isLoading: false,
-                isInitialized: true,
-                sessionRefreshNonce: 0,
-              };
-            });
-          } else {
-            consecutiveFailures = 0;
-          }
-        }
-      } catch (error) {
-        console.error('Error checking session expiration:', error);
-        
-        // Check if it's a network error
-        const errorMsg = String(error instanceof Error ? error.message : error).toLowerCase();
-        const isNetworkErr = errorMsg.includes('network') || errorMsg.includes('timeout') || errorMsg.includes('fetch');
-        
-        // Don't clear state on network errors
-        if (isNetworkErr) {
-          consecutiveFailures = 0; // Reset on network errors
-          return;
-        }
-        
-        // Only handle if it's a clear auth error (not network error)
-        if (isAuthError(error) && !isNetworkErr) {
-          consecutiveFailures++;
-          // Only redirect after multiple failures
-          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-            try {
-              await handleSessionExpiration();
-            } catch (handleError) {
-              // Silently fail - don't disrupt user experience
-            }
-          }
-        }
+      } finally {
+        checkInFlight = false;
       }
     };
 
-    // Check less frequently - every 5 minutes instead of 60 seconds
-    // This reduces false positives and gives Supabase more time to auto-refresh
-    const interval = setInterval(checkSessionExpiration, 300000); // 5 minutes
+    const interval = setInterval(() => {
+      void runWatchdogCheck();
+    }, CHECK_INTERVAL_MS);
 
-    return () => clearInterval(interval);
-  }, [authState.user]);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void runWatchdogCheck();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    void runWatchdogCheck();
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [authState.user, updateAuthState]);
 
   // Initialize auth state - INSTANT initialization using cached session
   useEffect(() => {
