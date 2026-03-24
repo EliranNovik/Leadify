@@ -625,6 +625,18 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
   // Create or update record
   const saveRecord = async (record: Partial<Record>) => {
+    // Keep only fields configured for this manager.
+    // This prevents stale keys from previous schema versions (e.g. is_active/order_value)
+    // from leaking into payloads and causing PostgREST column errors.
+    const allowedFieldNames = new Set(fields.map((f) => f.name));
+    const sanitizedRecord: Partial<Record> = {};
+    Object.keys(record as object).forEach((key) => {
+      if (allowedFieldNames.has(key)) {
+        (sanitizedRecord as any)[key] = (record as any)[key];
+      }
+    });
+    record = sanitizedRecord;
+
     // Apply prepareValueForSave for all fields, including hidden ones
     fields.forEach(field => {
       if (field.prepareValueForSave) {
@@ -720,27 +732,61 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       const authUserId = authUser?.user?.id ?? null;
       const authUserEmail = authUser?.user?.email ?? null;
       let updatedByUserId: string | null = null;
+      let currentUserFirmId: number | null = null;
+      let currentUserEmployeeId: number | null = null;
 
       if (authUserId) {
         const { data: userRowByAuth } = await supabase
           .from('users')
-          .select('id')
+          .select('id, employee_id')
           .eq('auth_id', authUserId)
           .maybeSingle();
         if (userRowByAuth?.id) {
           updatedByUserId = String(userRowByAuth.id);
+        }
+        if (userRowByAuth?.employee_id != null) {
+          currentUserEmployeeId = Number(userRowByAuth.employee_id);
         }
       }
 
       if (!updatedByUserId && authUserEmail) {
         const { data: userRowByEmail } = await supabase
           .from('users')
-          .select('id')
+          .select('id, employee_id')
           .eq('email', authUserEmail)
           .maybeSingle();
         if (userRowByEmail?.id) {
           updatedByUserId = String(userRowByEmail.id);
         }
+        if (userRowByEmail?.employee_id != null) {
+          currentUserEmployeeId = Number(userRowByEmail.employee_id);
+        }
+      }
+
+      // Resolve firm_id via tenants_employee (users table may not have firm_id column).
+      if (currentUserFirmId == null && currentUserEmployeeId != null) {
+        const { data: employeeRow } = await supabase
+          .from('tenants_employee')
+          .select('firm_id')
+          .eq('id', currentUserEmployeeId)
+          .maybeSingle();
+        if (employeeRow?.firm_id != null) {
+          currentUserFirmId = Number(employeeRow.firm_id);
+        }
+      }
+
+      // Auto-apply firm_id for tenant-scoped tables.
+      // Some managers don't expose firm_id as a field (e.g., misc_leadtag), so
+      // we still need to inject it from current user context.
+      const hasFirmIdField = fields.some(f => f.name === 'firm_id');
+      const requiresFirmIdByTable = new Set([
+        'misc_leadtag',
+        'misc_maincategory',
+        'misc_category',
+      ]);
+      const shouldInjectFirmId = hasFirmIdField || requiresFirmIdByTable.has(tableName);
+      if (shouldInjectFirmId && currentUserFirmId != null && ((record as any).firm_id == null || (record as any).firm_id === '')) {
+        (record as any).firm_id = currentUserFirmId;
       }
 
       if (editingRecord?.id) {
@@ -1426,7 +1472,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
     const commonProps = {
       name: field.name,
-      className: `input input-bordered w-full ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`,
+      className: `input input-bordered w-full text-gray-900 placeholder:text-gray-400 !placeholder:text-gray-400 placeholder:opacity-100 admin-drawer-input ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`,
       placeholder: field.placeholder,
       value: value || '',
       readOnly: field.readOnly,
@@ -1444,7 +1490,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             rows={8}
             value={value || ''}
             onChange={field.readOnly ? undefined : handleChange}
-            className="textarea textarea-bordered w-full whitespace-pre-wrap"
+            className="textarea textarea-bordered w-full whitespace-pre-wrap text-gray-900 placeholder:text-gray-400 !placeholder:text-gray-400 placeholder:opacity-100 admin-drawer-textarea"
             dir={isRTL ? 'rtl' : 'ltr'}
             style={{ 
               color: '#111827', 
@@ -1506,7 +1552,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                 <input
                   type="text"
                   maxLength={field.maxLength}
-                  className={`input input-bordered w-full pr-10 ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`}
+                  className={`input input-bordered w-full pr-10 text-gray-900 placeholder:text-gray-400 !placeholder:text-gray-400 placeholder:opacity-100 admin-drawer-input ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`}
                   placeholder={`Search ${field.label}`}
                   value={searchTerm}
                   readOnly={field.readOnly}
@@ -1583,8 +1629,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
               {...commonProps} 
               value={stringValue} 
               onChange={field.readOnly ? undefined : handleChange} 
-              className={`input input-bordered w-full ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`}
-              style={{ color: '#111827', WebkitTextFillColor: '#111827' } as React.CSSProperties}
+              className={`input input-bordered w-full ${!stringValue ? 'text-gray-400' : 'text-gray-900'} ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`}
             >
               <option value="">{field.placeholder || `Select ${field.label}`}</option>
               {options.map(option => (
@@ -1602,8 +1647,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             {...commonProps} 
             value={value || ''} 
             onChange={field.readOnly ? undefined : handleChange} 
-            className={`input input-bordered w-full ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`}
-            style={{ color: '#111827', WebkitTextFillColor: '#111827' } as React.CSSProperties}
+            className={`input input-bordered w-full ${!(value || '') ? 'text-gray-400' : 'text-gray-900'} ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`}
           >
             <option value="">Select {field.label}</option>
             {field.options?.map(option => (
@@ -1669,7 +1713,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         // For JSONB fields, render as JSON editor (textarea with formatted JSON)
         return (
           <textarea
-            className="textarea textarea-bordered w-full font-mono text-sm"
+            className="textarea textarea-bordered w-full font-mono text-sm text-gray-900 placeholder:text-gray-400 !placeholder:text-gray-400 placeholder:opacity-100 admin-drawer-textarea"
             rows={6}
             value={value ? JSON.stringify(value, null, 2) : ''}
             onChange={(e) => {
@@ -1690,6 +1734,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       default:
         // Detect Hebrew text for RTL support
         const isRTLText = value && /[\u0590-\u05FF]/.test(String(value));
+        const hasInputValue = value !== null && value !== undefined && String(value).length > 0;
         return (
           <input 
             {...commonProps} 
@@ -1699,7 +1744,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             dir={isRTLText ? 'rtl' : 'ltr'}
             style={{ 
               color: '#111827', 
-              WebkitTextFillColor: '#111827',
+              WebkitTextFillColor: hasInputValue ? '#111827' : undefined,
               textAlign: isRTLText ? 'right' : 'left'
             } as React.CSSProperties}
           />
@@ -1709,6 +1754,13 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
   return (
     <div className="w-full">
+      <style>{`
+        .admin-drawer-input::placeholder,
+        .admin-drawer-textarea::placeholder {
+          color: #9CA3AF !important;
+          opacity: 1 !important;
+        }
+      `}</style>
       {/* Header */}
       {!hideTitle && (
         <div className="flex justify-between items-center mb-6">
@@ -2059,7 +2111,15 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                 saveRecord(record);
               }}>
                 <div className="grid grid-cols-1 gap-6">
-                  {fields.filter(field => field.type !== 'boolean' && field.type !== 'custom' && field.type !== 'jsonb' && (!editingRecord?.id || !field.hideInAdd) && (!editingRecord?.id || !field.hideInEdit)).map(field => {
+                  {fields.filter(field => {
+                    if (field.type === 'boolean' || field.type === 'custom' || field.type === 'jsonb') return false;
+                    // If we're adding (no id), check hideInAdd - only show if NOT hidden
+                    if (!editingRecord?.id) {
+                      return field.hideInAdd !== true;
+                    }
+                    // If we're editing (has id), check hideInEdit - only show if NOT hidden
+                    return field.hideInEdit !== true;
+                  }).map(field => {
                     // Ensure required fields with defaults are initialized
                     let fieldValue = editingRecord?.[field.name];
                     if (field.required && field.defaultValue !== undefined && (fieldValue === null || fieldValue === undefined || fieldValue === '')) {

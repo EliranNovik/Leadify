@@ -10,9 +10,9 @@ const SubCategoriesManager: React.FC = () => {
     const fetchMainCategories = async () => {
       try {
         const { data } = await supabase
-          .from('main_categories')
+          .from('misc_maincategory')
           .select('id, name')
-          .eq('is_active', true)
+          .eq('active', true)
           .order('name');
         
         if (data) {
@@ -41,39 +41,43 @@ const SubCategoriesManager: React.FC = () => {
       required: false,
       options: mainCategories.map(cat => ({ value: cat.id, label: cat.name })),
       foreignKey: {
-        table: 'main_categories',
+        table: 'misc_maincategory',
         valueField: 'id',
         displayField: 'name'
       }
     },
     {
-      name: 'order_value',
-      label: 'Order Value',
+      name: 'order',
+      label: 'Order',
       type: 'number' as const,
       required: false,
-      placeholder: 'e.g., 1'
+      placeholder: 'e.g., 1',
+      defaultValue: 100,
+      hideInAdd: true,
+      hideInEdit: true,
+      hideInTable: true,
+      prepareValueForSave: (value: any, record?: any) => (record?.id ? (value ?? 100) : 100)
     },
     {
-      name: 'is_important',
-      label: 'Important Sub Category',
-      type: 'boolean' as const,
-      required: false
-    },
-    {
-      name: 'is_active',
+      name: 'active',
       label: 'Active',
       type: 'boolean' as const,
-      required: false
+      required: false,
+      defaultValue: true,
+      hideInAdd: true,
+      hideInEdit: true,
+      prepareValueForSave: (value: any, record?: any) => (record?.id ? (value ?? true) : true)
     }
   ];
 
   return (
     <GenericCRUDManager
-      tableName="sub_categories"
+      tableName="misc_category"
       fields={fields}
       title="Sub Category"
       description="Manage sub categories for detailed lead classification"
       pageSize={10}
+      sortColumn="id"
     />
   );
 };

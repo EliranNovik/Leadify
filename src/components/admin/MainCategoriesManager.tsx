@@ -10,9 +10,8 @@ const MainCategoriesManager: React.FC = () => {
     const fetchDepartments = async () => {
       try {
         const { data } = await supabase
-          .from('departments')
+          .from('tenant_departement')
           .select('id, name')
-          .eq('is_active', true)
           .order('name');
         
         if (data) {
@@ -35,8 +34,8 @@ const MainCategoriesManager: React.FC = () => {
       placeholder: 'e.g., German Citizenship'
     },
     {
-      name: 'order_value',
-      label: 'Order Value',
+      name: 'order',
+      label: 'Order',
       type: 'number' as const,
       required: false,
       placeholder: 'e.g., 1'
@@ -56,26 +55,39 @@ const MainCategoriesManager: React.FC = () => {
       placeholder: 'e.g., 2'
     },
     {
-      name: 'is_important',
+      name: 'important',
       label: 'Important Category',
       type: 'boolean' as const,
       required: false
     },
     {
-      name: 'is_active',
+      name: 'active',
       label: 'Active',
       type: 'boolean' as const,
       required: false
+    },
+    {
+      name: 'department_id',
+      label: 'Department',
+      type: 'select' as const,
+      required: false,
+      options: departments.map(dep => ({ value: dep.id, label: dep.name })),
+      foreignKey: {
+        table: 'tenant_departement',
+        valueField: 'id',
+        displayField: 'name'
+      }
     }
   ];
 
   return (
     <GenericCRUDManager
-      tableName="main_categories"
+      tableName="misc_maincategory"
       fields={fields}
       title="Main Category"
       description="Manage main categories for lead classification"
       pageSize={10}
+      sortColumn="id"
     />
   );
 };

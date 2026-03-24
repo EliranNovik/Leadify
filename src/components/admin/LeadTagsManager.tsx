@@ -11,27 +11,38 @@ const LeadTagsManager: React.FC = () => {
       placeholder: 'e.g., VIP'
     },
     {
-      name: 'order_value',
-      label: 'Order Value',
+      name: 'order',
+      label: 'Order',
       type: 'number' as const,
       required: false,
-      placeholder: 'e.g., 1'
+      defaultValue: 0,
+      placeholder: 'e.g., 1',
+      hideInAdd: true,
+      hideInEdit: true,
+      hideInTable: true,
+      prepareValueForSave: () => 0
     },
     {
-      name: 'is_active',
+      name: 'active',
       label: 'Active',
       type: 'boolean' as const,
-      required: false
+      required: false,
+      defaultValue: true,
+      hideInAdd: true,
+      hideInEdit: true,
+      prepareValueForSave: () => true
     }
   ];
 
   return (
     <GenericCRUDManager
-      tableName="leads_tags"
+      tableName="misc_leadtag"
       fields={fields}
       title="Lead Tag"
       description="Manage lead tags for categorization"
       pageSize={10}
+      sortColumn="id"
+      skipIdAssignment={true}
     />
   );
 };
