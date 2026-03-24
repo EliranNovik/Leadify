@@ -9,7 +9,7 @@ import EmployeeLeadDrawer, {
   EmployeeLeadDrawerItem,
   LeadBaseDetail,
 } from '../components/reports/EmployeeLeadDrawer';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend, Cell } from 'recharts';
 import { convertToNIS } from '../lib/currencyConversion';
 import { usePersistedFilters } from '../hooks/usePersistedState';
@@ -8310,6 +8310,7 @@ const reports: ReportSection[] = [
 
 export default function ReportsPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [selectedReport, setSelectedReport] = useState<ReportItem | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showSearchDropdown, setShowSearchDropdown] = useState<boolean>(false);
@@ -8383,6 +8384,21 @@ export default function ReportsPage() {
       setSearchQuery('');
     }
   }, [selectedReport]);
+
+  // Allow deep-linking to in-page reports via /reports?report=<label>
+  useEffect(() => {
+    const requested = new URLSearchParams(location.search).get('report');
+    if (!requested) return;
+
+    const normalize = (value: string) => value.trim().toLowerCase();
+    const target = normalize(requested);
+
+    const allItems = reports.flatMap((section) => section.items);
+    const matched = allItems.find((item) => normalize(item.label) === target);
+    if (!matched || !matched.component) return;
+
+    setSelectedReport((prev) => (prev?.label === matched.label ? prev : matched));
+  }, [location.search]);
 
   // Filter reports based on search query, superuser status, and collection access
   const filteredReports = useMemo(() => {

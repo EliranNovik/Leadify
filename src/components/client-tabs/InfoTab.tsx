@@ -372,6 +372,10 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     }
   }, [client?.id, client?.lead_type]);
 
+  useEffect(() => {
+    setCurrentUserFollowupNotes((getFieldValue(client, 'followup_log') as string) || null);
+  }, [client]);
+
   const getEligibilityStatus = () => {
     // For legacy leads, use state (fetched from database)
     // For new leads, use client data
@@ -394,6 +398,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
   // State for current user's follow-up
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [currentUserFollowup, setCurrentUserFollowup] = useState<string | null>(null);
+  const [currentUserFollowupNotes, setCurrentUserFollowupNotes] = useState<string | null>(
+    (getFieldValue(client, 'followup_log') as string) || null
+  );
   const [followupId, setFollowupId] = useState<number | null>(null);
   const [isFollowupLoading, setIsFollowupLoading] = useState(false);
   const cachedUserIdRef = useRef<string | null>(null);
@@ -413,6 +420,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
   const [isAddingFollowup, setIsAddingFollowup] = useState(false);
   const [isEditingFollowup, setIsEditingFollowup] = useState(false);
   const [followupDate, setFollowupDate] = useState('');
+  const [isEditingFollowupNotes, setIsEditingFollowupNotes] = useState(false);
+  const [followupNotes, setFollowupNotes] = useState('');
   const [isEditingFileId, setIsEditingFileId] = useState(false);
   const [editedFileId, setEditedFileId] = useState('');
 
@@ -677,6 +686,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
   useEffect(() => {
     if (!client?.id) {
       setCurrentUserFollowup(null);
+      setCurrentUserFollowupNotes(null);
       setFollowupId(null);
       setIsFollowupLoading(false);
       return;
@@ -771,6 +781,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
         if (!cancelled && INFOTAB_DEBUG) console.warn('Error fetching user follow-up:', err);
         if (!cancelled) {
           setCurrentUserFollowup(null);
+          setCurrentUserFollowupNotes(null);
           setFollowupId(null);
         }
       } finally {
@@ -1080,6 +1091,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
       // Update local state
       setFollowupId(null);
       setCurrentUserFollowup(null);
+      setCurrentUserFollowupNotes(null);
       setIsEditingFollowup(false);
       setFollowupDate('');
 
@@ -1090,6 +1102,41 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     } catch (error) {
       console.error('Error deleting follow-up:', error);
       alert('Failed to delete follow-up date');
+    }
+  };
+
+  const handleSaveFollowupNotes = async () => {
+    const normalizedNotes = (followupNotes || '').trim();
+
+    try {
+      if (isLegacy) {
+        const legacyId = client.id.toString().replace('legacy_', '');
+        const legacyIdNum = parseInt(legacyId, 10);
+        if (Number.isNaN(legacyIdNum)) {
+          alert('Invalid legacy lead id');
+          return;
+        }
+
+        const { error } = await supabase
+          .from('leads_lead')
+          .update({ followup_log: normalizedNotes || null })
+          .eq('id', legacyIdNum);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('leads')
+          .update({ followup_log: normalizedNotes || null })
+          .eq('id', client.id);
+        if (error) throw error;
+      }
+
+      setCurrentUserFollowupNotes(normalizedNotes || null);
+      setIsEditingFollowupNotes(false);
+      setFollowupNotes('');
+      if (onClientUpdate) await onClientUpdate();
+    } catch (error) {
+      console.error('Error saving follow-up notes:', error);
+      alert('Failed to save follow-up notes');
     }
   };
 
@@ -1422,8 +1469,21 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
 
           {/* Followup */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5">
-              <h4 className="text-lg font-semibold text-black">Follow-up Status</h4>
+            <div className="px-6 pt-2 pb-2">
+              <div className="flex items-start justify-between gap-3">
+                <h4 className="text-lg font-semibold text-black">Follow-up Status</h4>
+                {isFollowupLoading ? (
+                  <span className="text-xs text-gray-400 mt-1">Loading...</span>
+                ) : !readOnly && !isAddingFollowup && !isEditingFollowup && !nextFollowupDate ? (
+                  <button
+                    className="btn btn-xs gap-1 bg-white border border-[#3b28c7] text-[#3b28c7] hover:bg-[#3b28c7] hover:text-white hover:border-[#3b28c7] transition-colors duration-200"
+                    onClick={() => setIsAddingFollowup(true)}
+                  >
+                    <PlusIcon className="w-3.5 h-3.5" />
+                    Add Follow-up
+                  </button>
+                ) : null}
+              </div>
               <div className="border-b border-gray-200 mt-2"></div>
             </div>
             <div className="p-6">
@@ -1435,9 +1495,31 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                   </div>
                 ) : nextFollowupDate && !isEditingFollowup ? (
                   <div className="space-y-3">
-                    <div className="flex justify-between items-center">
+                    <div className="space-y-0.5">
                       <span className="text-sm font-medium text-gray-500">Next Follow-up</span>
-                      <span className="text-base font-semibold text-gray-900">{nextFollowupDate.toLocaleDateString()}</span>
+                      <p className="text-base font-semibold text-gray-900">{nextFollowupDate.toLocaleDateString()}</p>
+                    </div>
+                    <div className="pt-2 border-t border-gray-100">
+                      <div className="flex justify-between items-start gap-3">
+                        <span className="text-sm font-medium text-gray-500">Follow-up Notes</span>
+                        {!readOnly && (
+                          <button
+                            className="btn btn-ghost btn-sm btn-square text-gray-700 hover:text-gray-900"
+                            onClick={() => {
+                              setFollowupNotes(currentUserFollowupNotes || '');
+                              setIsEditingFollowupNotes(true);
+                            }}
+                            aria-label="Edit follow-up notes"
+                          >
+                            <PencilSquareIcon className="w-6 h-6" />
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-sm text-gray-800 whitespace-pre-wrap mt-1.5">
+                        {currentUserFollowupNotes && currentUserFollowupNotes.trim().length > 0
+                          ? currentUserFollowupNotes
+                          : 'No follow-up notes yet'}
+                      </p>
                     </div>
                     {!readOnly && (
                       <div className="flex gap-2 justify-end">
@@ -1497,17 +1579,29 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                     )}
                   </div>
                 ) : (
-                  <div className="flex flex-col items-center justify-center py-4">
-                    <p className="text-sm text-gray-500 mb-3">No follow-up scheduled</p>
-                    {!readOnly && (
-                      <button
-                        className="btn btn-sm gap-2 bg-white border-2 border-[#3b28c7] text-[#3b28c7] hover:bg-[#3b28c7] hover:text-white hover:border-[#3b28c7] transition-colors duration-200"
-                        onClick={() => setIsAddingFollowup(true)}
-                      >
-                        <PlusIcon className="w-4 h-4" />
-                        Add Follow-up
-                      </button>
-                    )}
+                  <div className="space-y-3 py-2">
+                    <div className="w-full border-t border-gray-100 pt-3 mb-3">
+                      <div className="flex justify-between items-start gap-3">
+                        <span className="text-sm font-medium text-gray-500">Follow-up Notes</span>
+                        {!readOnly && (
+                          <button
+                            className="btn btn-ghost btn-sm btn-square text-gray-700 hover:text-gray-900"
+                            onClick={() => {
+                              setFollowupNotes(currentUserFollowupNotes || '');
+                              setIsEditingFollowupNotes(true);
+                            }}
+                            aria-label="Edit follow-up notes"
+                          >
+                            <PencilSquareIcon className="w-6 h-6" />
+                          </button>
+                        )}
+                      </div>
+                      <p className="text-sm text-gray-800 whitespace-pre-wrap mt-1.5 text-left">
+                        {currentUserFollowupNotes && currentUserFollowupNotes.trim().length > 0
+                          ? currentUserFollowupNotes
+                          : 'No follow-up notes yet'}
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1935,6 +2029,69 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
             </div>
           </div>
         </div> */}
+
+        {isEditingFollowupNotes && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <div
+              className="absolute inset-0 bg-black/40"
+              onClick={() => {
+                setIsEditingFollowupNotes(false);
+                setFollowupNotes('');
+              }}
+              aria-hidden="true"
+            />
+            <div
+              className="relative w-full max-w-xl bg-white rounded-2xl shadow-2xl border border-gray-200"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="followup-notes-modal-title"
+            >
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-200">
+                <h3 id="followup-notes-modal-title" className="text-lg font-semibold text-gray-900">Edit Follow-up Notes</h3>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm btn-circle"
+                  onClick={() => {
+                    setIsEditingFollowupNotes(false);
+                    setFollowupNotes('');
+                  }}
+                  aria-label="Close follow-up notes modal"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-5">
+                <textarea
+                  dir="auto"
+                  className="textarea textarea-bordered w-full min-h-[180px] text-start"
+                  value={followupNotes}
+                  onChange={(e) => setFollowupNotes(e.target.value)}
+                  placeholder="Add follow-up notes..."
+                />
+              </div>
+              <div className="flex justify-end gap-2 px-5 py-4 border-t border-gray-200">
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    setIsEditingFollowupNotes(false);
+                    setFollowupNotes('');
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={handleSaveFollowupNotes}
+                  disabled={readOnly}
+                >
+                  Save Notes
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Mobile (< md): full-screen editors — desktop keeps inline editing in cards */}
         {useMobileEditModal && isEditingFileId && (

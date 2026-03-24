@@ -1,12 +1,13 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { convertToNIS } from '../lib/currencyConversion';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
-import { EnvelopeIcon, PhoneIcon, ChatBubbleLeftRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, PencilIcon, MagnifyingGlassIcon, ChartBarIcon } from '@heroicons/react/24/outline';
+import { EnvelopeIcon, PhoneIcon, ChatBubbleLeftRightIcon, XMarkIcon, PencilIcon, MagnifyingGlassIcon, ChartBarIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import * as Slider from '@radix-ui/react-slider';
+import LeadInteractionsModal from '../components/LeadInteractionsModal';
 
 const CloserSuperPipelinePage = () => {
   const navigate = useNavigate();
@@ -22,6 +23,7 @@ const CloserSuperPipelinePage = () => {
     tags: string[];
     minProbability: number;
     maxProbability: number;
+    eligibilityDeterminedOnly: boolean;
   }>('closerSuperPipeline_filters', {
     fromDate: '',
     toDate: '',
@@ -34,6 +36,7 @@ const CloserSuperPipelinePage = () => {
     tags: [], // Changed to array for multi-select
     minProbability: 80,
     maxProbability: 100,
+    eligibilityDeterminedOnly: false,
   }, {
     storage: 'sessionStorage',
   });
@@ -68,6 +71,28 @@ const CloserSuperPipelinePage = () => {
   const [showStageDropdown, setShowStageDropdown] = useState<boolean>(false);
   const [showTagsDropdown, setShowTagsDropdown] = useState<boolean>(false);
   const [probabilityExpanded, setProbabilityExpanded] = useState<boolean>(false);
+
+  const employeeNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    employees.forEach((emp) => {
+      map.set(String(emp.id), emp.name);
+    });
+    return map;
+  }, [employees]);
+
+  const resolveEmployeeDisplay = useCallback((value: any): string => {
+    if (value === null || value === undefined) return '---';
+    const raw = String(value).trim();
+    if (!raw) return '---';
+
+    // If stored value is numeric employee id (e.g. "108"), map to employee display_name.
+    if (/^\d+$/.test(raw)) {
+      return employeeNameById.get(raw) || `Employee #${raw}`;
+    }
+
+    // Some records can contain extra spaces around names.
+    return raw;
+  }, [employeeNameById]);
 
   // Helper function to toggle stage selection
   const toggleStageSelection = (stageId: string) => {
@@ -134,34 +159,52 @@ const CloserSuperPipelinePage = () => {
       }));
     }
   };
-  const [currentUserId, setCurrentUserId] = useState<number | null>(null);
-  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  const [currentUserId, setCurrentUserId] = useState<string | number | null>(null);
   const [interactionsCache, setInteractionsCache] = useState<Map<string, any[]>>(new Map());
   const [loadingInteractions, setLoadingInteractions] = useState<Set<string>>(new Set());
-  const [editingFollowUp, setEditingFollowUp] = useState<{ leadId: string; leadType: 'new' | 'legacy' } | null>(null);
+  const [selectedLeadForInteractions, setSelectedLeadForInteractions] = useState<any | null>(null);
+  const [editingFollowUpDate, setEditingFollowUpDate] = useState<{ leadId: string; leadType: 'new' | 'legacy' } | null>(null);
+  const [editingFollowUpNotes, setEditingFollowUpNotes] = useState<{ leadId: string; leadType: 'new' | 'legacy' } | null>(null);
   const [followUpDate, setFollowUpDate] = useState<string>('');
+  const [followUpNotes, setFollowUpNotes] = useState<string>('');
   const [savingFollowUp, setSavingFollowUp] = useState(false);
 
-  // Fetch current user ID
-  useEffect(() => {
-    const fetchCurrentUserId = async () => {
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-          const { data: userData } = await supabase
-            .from('users')
-            .select('id')
-            .eq('auth_id', user.id)
-            .maybeSingle();
-          if (userData?.id) {
-            setCurrentUserId(userData.id);
-          }
-        }
-      } catch (error) {
-        console.error('Error fetching current user ID:', error);
+  const resolveCurrentUserId = async (): Promise<string | number | null> => {
+    if (currentUserId) return currentUserId;
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return null;
+
+      const byAuth = await supabase
+        .from('users')
+        .select('id')
+        .eq('auth_id', user.id)
+        .maybeSingle();
+      if (byAuth.data?.id != null) {
+        setCurrentUserId(byAuth.data.id);
+        return byAuth.data.id;
       }
-    };
-    fetchCurrentUserId();
+
+      if (user.email) {
+        const byEmail = await supabase
+          .from('users')
+          .select('id')
+          .eq('email', user.email)
+          .maybeSingle();
+        if (byEmail.data?.id != null) {
+          setCurrentUserId(byEmail.data.id);
+          return byEmail.data.id;
+        }
+      }
+    } catch (error) {
+      console.error('Error resolving current user ID:', error);
+    }
+    return null;
+  };
+
+  // Fetch current user ID once on mount
+  useEffect(() => {
+    void resolveCurrentUserId();
   }, []);
 
   useEffect(() => {
@@ -731,24 +774,13 @@ const CloserSuperPipelinePage = () => {
     }
   }, [loadingInteractions]);
 
-  // Function to toggle row expansion
-  const toggleRowExpansion = useCallback((lead: any) => {
+  const handleOpenInteractions = useCallback((lead: any) => {
     const leadKey = lead.id?.toString() || lead.lead_number || '';
     if (!leadKey) return;
-
-    setExpandedRows(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(leadKey)) {
-        newSet.delete(leadKey);
-      } else {
-        newSet.add(leadKey);
-        // Fetch interactions if not cached
-        if (!interactionsCache.has(leadKey)) {
-          fetchInteractions(lead);
-        }
-      }
-      return newSet;
-    });
+    setSelectedLeadForInteractions(lead);
+    if (!interactionsCache.has(leadKey)) {
+      void fetchInteractions(lead);
+    }
   }, [interactionsCache, fetchInteractions]);
 
   const handleCancelFilters = () => {
@@ -765,6 +797,7 @@ const CloserSuperPipelinePage = () => {
       tags: [], // Reset to empty array
       minProbability: 80,
       maxProbability: 100,
+      eligibilityDeterminedOnly: false,
     });
     // Clear search inputs
     setCategorySearch('');
@@ -938,49 +971,70 @@ const CloserSuperPipelinePage = () => {
     }
   };
 
-  const handleEditFollowUp = (lead: any) => {
+  const handleEditFollowUpDate = (lead: any) => {
     const leadId = lead.id;
     const leadType = lead.lead_type || (leadId.toString().startsWith('legacy_') ? 'legacy' : 'new');
-    setEditingFollowUp({ leadId, leadType });
+    setEditingFollowUpDate({ leadId, leadType });
     setFollowUpDate(lead.follow_up_date || '');
   };
 
-  const handleSaveFollowUp = async () => {
-    if (!editingFollowUp || !currentUserId) return;
+  const handleEditFollowUpNotes = (lead: any) => {
+    const leadId = lead.id;
+    const leadType = lead.lead_type || (leadId.toString().startsWith('legacy_') ? 'legacy' : 'new');
+    setEditingFollowUpNotes({ leadId, leadType });
+    setFollowUpNotes(lead.follow_up_notes && lead.follow_up_notes !== '---' ? lead.follow_up_notes : '');
+  };
+
+  const getExistingFollowUp = async (
+    leadId: string,
+    leadType: 'new' | 'legacy',
+    userId: string | number
+  ) => {
+    const isLegacyLead = leadType === 'legacy';
+    const actualLeadId = isLegacyLead ? leadId.toString().replace('legacy_', '') : leadId;
+
+    if (isLegacyLead) {
+      const { data } = await supabase
+        .from('follow_ups')
+        .select('id')
+        .eq('user_id', userId)
+        .eq('lead_id', Number(actualLeadId))
+        .is('new_lead_id', null)
+        .order('date', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      return { existingFollowUp: data, isLegacyLead, actualLeadId };
+    }
+
+    const { data } = await supabase
+      .from('follow_ups')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('new_lead_id', actualLeadId)
+      .is('lead_id', null)
+      .order('date', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    return { existingFollowUp: data, isLegacyLead, actualLeadId };
+  };
+
+  const handleSaveFollowUpDate = async () => {
+    if (!editingFollowUpDate) return;
 
     setSavingFollowUp(true);
     try {
-      const { leadId, leadType } = editingFollowUp;
-      const isLegacyLead = leadType === 'legacy';
-      const actualLeadId = isLegacyLead ? leadId.toString().replace('legacy_', '') : leadId;
-
-      // Check if follow-up already exists for this user and lead
-      let existingFollowUp = null;
-      if (isLegacyLead) {
-        const { data } = await supabase
-          .from('follow_ups')
-          .select('id')
-          .eq('user_id', currentUserId)
-          .eq('lead_id', Number(actualLeadId))
-          .is('new_lead_id', null)
-          .maybeSingle();
-        existingFollowUp = data;
-      } else {
-        const { data } = await supabase
-          .from('follow_ups')
-          .select('id')
-          .eq('user_id', currentUserId)
-          .eq('new_lead_id', actualLeadId)
-          .is('lead_id', null)
-          .maybeSingle();
-        existingFollowUp = data;
+      const userId = await resolveCurrentUserId();
+      if (!userId) {
+        toast.error('User not authenticated');
+        return;
       }
+      const { leadId, leadType } = editingFollowUpDate;
+      const { existingFollowUp, isLegacyLead, actualLeadId } = await getExistingFollowUp(leadId, leadType, userId);
+      const hasDate = !!(followUpDate && followUpDate.trim() !== '');
+      const dateValue = hasDate ? `${followUpDate}T00:00:00Z` : null;
 
-      if (followUpDate && followUpDate.trim() !== '') {
-        const dateValue = followUpDate + 'T00:00:00Z';
-
+      if (hasDate) {
         if (existingFollowUp) {
-          // Update existing follow-up
           const { error } = await supabase
             .from('follow_ups')
             .update({ date: dateValue })
@@ -991,15 +1045,13 @@ const CloserSuperPipelinePage = () => {
             toast.error('Failed to update follow-up date');
           } else {
             toast.success('Follow-up date updated');
-            setEditingFollowUp(null);
+            setEditingFollowUpDate(null);
             setFollowUpDate('');
-            // Refresh the search to show updated follow-up date
             handleSearch(false);
           }
         } else {
-          // Create new follow-up
           const insertData: any = {
-            user_id: currentUserId,
+            user_id: userId,
             date: dateValue,
             created_at: new Date().toISOString()
           };
@@ -1021,14 +1073,12 @@ const CloserSuperPipelinePage = () => {
             toast.error('Failed to save follow-up date');
           } else {
             toast.success('Follow-up date saved');
-            setEditingFollowUp(null);
+            setEditingFollowUpDate(null);
             setFollowUpDate('');
-            // Refresh the search to show updated follow-up date
             handleSearch(false);
           }
         }
       } else {
-        // Delete follow-up if date is empty
         if (existingFollowUp) {
           const { error } = await supabase
             .from('follow_ups')
@@ -1040,19 +1090,102 @@ const CloserSuperPipelinePage = () => {
             toast.error('Failed to delete follow-up');
           } else {
             toast.success('Follow-up removed');
-            setEditingFollowUp(null);
+            setEditingFollowUpDate(null);
             setFollowUpDate('');
-            // Refresh the search to show updated follow-up date
             handleSearch(false);
           }
         } else {
-          setEditingFollowUp(null);
+          setEditingFollowUpDate(null);
           setFollowUpDate('');
         }
       }
     } catch (error) {
       console.error('Error saving follow-up:', error);
       toast.error('Failed to save follow-up');
+    } finally {
+      setSavingFollowUp(false);
+    }
+  };
+
+  const handleSaveFollowUpNotes = async () => {
+    if (!editingFollowUpNotes) return;
+
+    setSavingFollowUp(true);
+    try {
+      const userId = await resolveCurrentUserId();
+      if (!userId) {
+        toast.error('User not authenticated');
+        return;
+      }
+      const { leadId, leadType } = editingFollowUpNotes;
+      const { existingFollowUp, isLegacyLead, actualLeadId } = await getExistingFollowUp(leadId, leadType, userId);
+      const hasNotes = !!(followUpNotes && followUpNotes.trim() !== '');
+      const noteValue = hasNotes ? followUpNotes.trim() : null;
+
+      if (hasNotes) {
+        if (isLegacyLead) {
+          const { error } = await supabase
+            .from('leads_lead')
+            .update({ followup_log: noteValue })
+            .eq('id', Number(actualLeadId));
+          if (error) {
+            console.error('Error updating legacy follow-up notes:', error);
+            toast.error('Failed to update follow-up notes');
+          } else {
+            toast.success('Follow-up notes updated');
+            setEditingFollowUpNotes(null);
+            setFollowUpNotes('');
+            handleSearch(false);
+          }
+        } else {
+          const { error } = await supabase
+            .from('leads')
+            .update({ followup_log: noteValue })
+            .eq('id', actualLeadId);
+          if (error) {
+            console.error('Error updating new lead follow-up notes:', error);
+            toast.error('Failed to update follow-up notes');
+          } else {
+            toast.success('Follow-up notes updated');
+            setEditingFollowUpNotes(null);
+            setFollowUpNotes('');
+            handleSearch(false);
+          }
+        }
+      } else {
+        if (isLegacyLead) {
+          const { error } = await supabase
+            .from('leads_lead')
+            .update({ followup_log: null })
+            .eq('id', Number(actualLeadId));
+          if (error) {
+            console.error('Error clearing legacy follow-up notes:', error);
+            toast.error('Failed to clear follow-up notes');
+          } else {
+            toast.success('Follow-up notes cleared');
+            setEditingFollowUpNotes(null);
+            setFollowUpNotes('');
+            handleSearch(false);
+          }
+        } else {
+          const { error } = await supabase
+            .from('leads')
+            .update({ followup_log: null })
+            .eq('id', actualLeadId);
+          if (error) {
+            console.error('Error clearing new lead follow-up notes:', error);
+            toast.error('Failed to clear follow-up notes');
+          } else {
+            toast.success('Follow-up notes cleared');
+            setEditingFollowUpNotes(null);
+            setFollowUpNotes('');
+            handleSearch(false);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error saving follow-up notes:', error);
+      toast.error('Failed to save follow-up notes');
     } finally {
       setSavingFollowUp(false);
     }
@@ -1129,6 +1262,7 @@ const CloserSuperPipelinePage = () => {
     }
     try {
       const allLeads: any[] = [];
+      const effectiveCurrentUserId = currentUserId ?? await resolveCurrentUserId();
 
       // Get selected stages from filters (only filter if stages are selected)
       const selectedStageIds = (filters.stages && filters.stages.length > 0)
@@ -1172,6 +1306,7 @@ const CloserSuperPipelinePage = () => {
           category,
           category_id,
           stage,
+          eligible,
           probability,
           language,
           number_of_applicants_meeting,
@@ -1207,7 +1342,11 @@ const CloserSuperPipelinePage = () => {
           ),
           expert_notes,
           management_notes,
-          unactivated_at
+          followup_log,
+          unactivated_at,
+          eligibility_status,
+          eligibility_status_timestamp,
+          eligibility_status_last_edited_at
         `)
         .gte('probability', Number(filters.minProbability)) // Probability >= minProbability (ensure it's a number)
         .lte('probability', Number(filters.maxProbability)) // Probability <= maxProbability (ensure it's a number)
@@ -1261,6 +1400,11 @@ const CloserSuperPipelinePage = () => {
       }
       if (filters.createdToDate) {
         newLeadsQuery = newLeadsQuery.lte('created_at', filters.createdToDate + 'T23:59:59');
+      }
+
+      // Match LeadSearchPage behavior exactly.
+      if (filters.eligibilityDeterminedOnly) {
+        newLeadsQuery = newLeadsQuery.eq('eligible', true);
       }
 
       // Apply employee filter (closer)
@@ -1381,38 +1525,55 @@ const CloserSuperPipelinePage = () => {
       const meetingDatesMap: Record<string, string> = {};
 
       if (newLeadIds.length > 0) {
-        const { data: meetingsData } = await supabase
-          .from('meetings')
-          .select('client_id, meeting_date')
-          .in('client_id', newLeadIds)
-          .or('status.is.null,status.neq.canceled')
-          .order('meeting_date', { ascending: false });
+        // Query in chunks to avoid oversized IN() lists that can drop matches.
+        const CHUNK_SIZE = 500;
+        for (let i = 0; i < newLeadIds.length; i += CHUNK_SIZE) {
+          const chunk = newLeadIds.slice(i, i + CHUNK_SIZE);
+          const { data: meetingsData, error: meetingsError } = await supabase
+            .from('meetings')
+            .select('client_id, meeting_date')
+            .in('client_id', chunk)
+            .or('status.is.null,status.neq.canceled')
+            .order('meeting_date', { ascending: false });
 
-        if (meetingsData) {
-          meetingsData.forEach((meeting: any) => {
-            if (meeting.meeting_date && meeting.client_id) {
-              const dateStr = typeof meeting.meeting_date === 'string'
-                ? meeting.meeting_date.split('T')[0]
-                : new Date(meeting.meeting_date).toISOString().split('T')[0];
-              // Keep the most recent meeting date for each lead
-              if (!meetingDatesMap[meeting.client_id] || dateStr > meetingDatesMap[meeting.client_id]) {
-                meetingDatesMap[meeting.client_id] = dateStr;
+          if (meetingsError) {
+            console.error('❌ ERROR: Failed fetching new lead meetings chunk', {
+              chunkStart: i,
+              chunkSize: chunk.length,
+              meetingsError,
+            });
+            continue;
+          }
+
+          if (meetingsData) {
+            meetingsData.forEach((meeting: any) => {
+              if (meeting.meeting_date && meeting.client_id) {
+                const dateStr = typeof meeting.meeting_date === 'string'
+                  ? meeting.meeting_date.split('T')[0]
+                  : new Date(meeting.meeting_date).toISOString().split('T')[0];
+                const key = String(meeting.client_id);
+                // Keep the most recent meeting date for each lead
+                if (!meetingDatesMap[key] || dateStr > meetingDatesMap[key]) {
+                  meetingDatesMap[key] = dateStr;
+                }
               }
-            }
-          });
+            });
+          }
         }
       }
 
       // Fetch follow-up dates for new leads (only current user's follow-ups)
       const followUpDatesMap: Record<string, string> = {};
+      const followUpNotesMap: Record<string, string> = {};
 
-      if (newLeadIds.length > 0 && currentUserId) {
+      if (newLeadIds.length > 0 && effectiveCurrentUserId) {
         const { data: followUpsData } = await supabase
           .from('follow_ups')
           .select('new_lead_id, date')
-          .eq('user_id', currentUserId)
+          .eq('user_id', effectiveCurrentUserId)
           .in('new_lead_id', newLeadIds)
-          .is('lead_id', null);
+          .is('lead_id', null)
+          .order('date', { ascending: false });
 
         if (followUpsData) {
           followUpsData.forEach((fu: any) => {
@@ -1420,7 +1581,10 @@ const CloserSuperPipelinePage = () => {
               const dateStr = typeof fu.date === 'string'
                 ? fu.date.split('T')[0]
                 : new Date(fu.date).toISOString().split('T')[0];
-              followUpDatesMap[fu.new_lead_id] = dateStr;
+              const key = String(fu.new_lead_id);
+              if (!followUpDatesMap[key]) {
+                followUpDatesMap[key] = dateStr;
+              }
             }
           });
         }
@@ -1457,13 +1621,14 @@ const CloserSuperPipelinePage = () => {
       let filteredNewLeads = newLeads || [];
       if (applyDateFilters && (filters.fromDate || filters.toDate)) {
         filteredNewLeads = filteredNewLeads.filter((lead: any) => {
-          const meetingDate = meetingDatesMap[lead.id];
+          const meetingDate = meetingDatesMap[String(lead.id)];
           if (!meetingDate) return false; // Exclude leads without meeting dates when filtering
           if (filters.fromDate && meetingDate < filters.fromDate) return false;
           if (filters.toDate && meetingDate > filters.toDate) return false;
           return true;
         });
       }
+
 
       // Apply employee filter client-side (closer field can contain either ID or name)
       // Use the same logic as SalesContributionPage.tsx: check type first, then match accordingly
@@ -1632,15 +1797,19 @@ const CloserSuperPipelinePage = () => {
           allLeads.push({
             ...lead,
             lead_type: 'new',
+            eligibility_raw: lead.eligible,
+            eligibility_status: lead.eligibility_status ?? null,
+            eligibility_status_timestamp: lead.eligibility_status_timestamp ?? null,
+            eligibility_status_last_edited_at: lead.eligibility_status_last_edited_at ?? null,
             stage: getStageNameFromJoin(lead) || getStageName(lead.stage),
             category: getCategoryDisplayFromJoin(lead) || '---',
             expert_opinion: expertOpinionText,
             manager_notes: managerNotesText,
-            closer: lead.closer || '---',
-            scheduler: lead.scheduler || '---',
+            closer: resolveEmployeeDisplay(lead.closer),
+            scheduler: resolveEmployeeDisplay(lead.scheduler),
             meeting_date: meetingDatesMap[lead.id] || null,
-            follow_up_date: followUpDatesMap[lead.id] || null,
-            follow_up_notes: null,
+            follow_up_date: followUpDatesMap[String(lead.id)] || null,
+            follow_up_notes: lead.followup_log || followUpNotesMap[String(lead.id)] || null,
             latest_interaction: lead.latest_interaction || null,
             balance_currency: balanceCurrency,
             currency_id: (lead as any).currency_id,
@@ -1684,6 +1853,7 @@ const CloserSuperPipelinePage = () => {
           meeting_manager_id,
           category_id,
           stage,
+          eligibile,
           probability,
           language_id,
           no_of_applicants,
@@ -1739,7 +1909,10 @@ const CloserSuperPipelinePage = () => {
           expert_notes,
           management_notes,
           meeting_date,
-          followup_log
+          followup_log,
+          eligibility_status,
+          eligibility_status_timestamp,
+          eligibility_status_last_edited_at
         `)
         .not('probability', 'is', null) // Exclude null probabilities
         .neq('probability', '') // Exclude empty strings
@@ -1763,16 +1936,8 @@ const CloserSuperPipelinePage = () => {
         legacyLeadsQuery = legacyLeadsQuery.not('closer_id', 'is', null); // Only leads with closer assigned
       }
 
-      // Apply date filter based on meeting_date when explicitly requested (when Show is clicked)
-      // Only apply date filters if dates are actually provided (not empty strings)
-      if (applyDateFilters) {
-        if (filters.fromDate && filters.fromDate.trim() !== '') {
-          legacyLeadsQuery = legacyLeadsQuery.gte('meeting_date', filters.fromDate);
-        }
-        if (filters.toDate && filters.toDate.trim() !== '') {
-          legacyLeadsQuery = legacyLeadsQuery.lte('meeting_date', filters.toDate);
-        }
-      }
+      // Do not filter legacy meeting dates at query level.
+      // We apply date range client-side using the latest meeting from `meetings` per lead.
 
       // Apply category filter (main category - need to filter by all subcategories)
       if (filters.categories && filters.categories.length > 0) {
@@ -1808,6 +1973,11 @@ const CloserSuperPipelinePage = () => {
       }
       if (filters.createdToDate) {
         legacyLeadsQuery = legacyLeadsQuery.lte('cdate', filters.createdToDate + 'T23:59:59');
+      }
+
+      // Match LeadSearchPage behavior exactly.
+      if (filters.eligibilityDeterminedOnly) {
+        legacyLeadsQuery = legacyLeadsQuery.eq('eligibile', 'true');
       }
 
       // Apply employee filter (closer)
@@ -1901,8 +2071,10 @@ const CloserSuperPipelinePage = () => {
         });
       }
 
-      // Use filtered results
-      const legacyLeadsToProcess = filteredLegacyLeads;
+
+      // Start with probability-filtered legacy leads. Date range is applied below after
+      // resolving latest meeting date from meetings table per lead.
+      let legacyLeadsToProcess = filteredLegacyLeads;
 
       if (legacyLeadsError) {
         console.error('❌ ERROR: Error fetching legacy leads:', legacyLeadsError);
@@ -1940,16 +2112,36 @@ const CloserSuperPipelinePage = () => {
         }
       }
 
+      // Filter legacy leads by date using latest meeting date from `meetings` table.
+      if (applyDateFilters && (filters.fromDate || filters.toDate)) {
+        legacyLeadsToProcess = legacyLeadsToProcess.filter((lead: any) => {
+          const meetingDate = legacyMeetingDatesMap[lead.id]
+            || (lead.meeting_date
+              ? (typeof lead.meeting_date === 'string'
+                ? lead.meeting_date.split('T')[0]
+                : new Date(lead.meeting_date).toISOString().split('T')[0])
+              : null);
+          if (!meetingDate) return false;
+          if (filters.fromDate && meetingDate < filters.fromDate) return false;
+          if (filters.toDate && meetingDate > filters.toDate) return false;
+          return true;
+        });
+      }
+
+      const legacyLeadIdsForFollowUps = (legacyLeadsToProcess || []).map((l: any) => l.id).filter(Boolean);
+
       // Fetch follow-up dates for legacy leads (only current user's follow-ups)
       const legacyFollowUpDatesMap: Record<number, string> = {};
+      const legacyFollowUpNotesMap: Record<number, string> = {};
 
-      if (legacyLeadIds.length > 0 && currentUserId) {
+      if (legacyLeadIdsForFollowUps.length > 0 && effectiveCurrentUserId) {
         const { data: legacyFollowUpsData } = await supabase
           .from('follow_ups')
           .select('lead_id, date')
-          .eq('user_id', currentUserId)
-          .in('lead_id', legacyLeadIds)
-          .is('new_lead_id', null);
+          .eq('user_id', effectiveCurrentUserId)
+          .in('lead_id', legacyLeadIdsForFollowUps)
+          .is('new_lead_id', null)
+          .order('date', { ascending: false });
 
         if (legacyFollowUpsData) {
           legacyFollowUpsData.forEach((fu: any) => {
@@ -1957,7 +2149,9 @@ const CloserSuperPipelinePage = () => {
               const dateStr = typeof fu.date === 'string'
                 ? fu.date.split('T')[0]
                 : new Date(fu.date).toISOString().split('T')[0];
-              legacyFollowUpDatesMap[fu.lead_id] = dateStr;
+              if (!legacyFollowUpDatesMap[fu.lead_id]) {
+                legacyFollowUpDatesMap[fu.lead_id] = dateStr;
+              }
             }
           });
         }
@@ -2074,9 +2268,13 @@ const CloserSuperPipelinePage = () => {
             is_sub_lead: isLegacySubLead,
             manager_notes: managerNotesText,
             lead_type: 'legacy',
+            eligibility_raw: lead.eligibile,
+            eligibility_status: lead.eligibility_status ?? null,
+            eligibility_status_timestamp: lead.eligibility_status_timestamp ?? null,
+            eligibility_status_last_edited_at: lead.eligibility_status_last_edited_at ?? null,
             meeting_date: meetingDate,
             follow_up_date: legacyFollowUpDatesMap[lead.id] || null,
-            follow_up_notes: lead.followup_log || null,
+            follow_up_notes: legacyFollowUpNotesMap[lead.id] || lead.followup_log || null,
             latest_interaction: lead.latest_interaction || null,
             tags: legacyTagsFromJoin || '',
           });
@@ -2094,7 +2292,7 @@ const CloserSuperPipelinePage = () => {
       // Apply tags filter client-side (if filter is set)
       let filteredAllLeads = allLeads;
       if (filters.tags && filters.tags.length > 0) {
-        filteredAllLeads = allLeads.filter((lead: any) => {
+        filteredAllLeads = filteredAllLeads.filter((lead: any) => {
           const leadTags = lead.tags || '';
           if (!leadTags || leadTags.trim() === '') return false;
           // Check if any of the selected tags are in the lead's tags
@@ -2373,7 +2571,7 @@ const CloserSuperPipelinePage = () => {
 
       {/* Filters */}
       <div className="mb-6 px-4">
-        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-9 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-10 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">From Date (Meeting Date)</label>
             <input
@@ -2817,6 +3015,20 @@ const CloserSuperPipelinePage = () => {
               </>
             )}
           </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Eligibility</label>
+            <div className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md flex items-center gap-3">
+              <input
+                type="checkbox"
+                className="toggle toggle-primary toggle-sm"
+                checked={filters.eligibilityDeterminedOnly}
+                onChange={(e) => handleFilterChange('eligibilityDeterminedOnly', e.target.checked)}
+              />
+              <span className="text-xs text-gray-600">
+                Show only eligible leads
+              </span>
+            </div>
+          </div>
         </div>
         <div className="mt-4 flex flex-row items-center justify-between gap-4 w-full flex-wrap">
           {/* Left: Probability - collapsed as icon, expands on click */}
@@ -3119,23 +3331,17 @@ const CloserSuperPipelinePage = () => {
                 <tbody className="bg-white divide-y divide-gray-200">
                   {results.map((lead, index) => {
                     const leadKey = lead.id?.toString() || lead.lead_number || '';
-                    const isExpanded = expandedRows.has(leadKey);
                     const interactions = interactionsCache.get(leadKey) || [];
                     const isLoading = loadingInteractions.has(leadKey);
-
+                    const isExpanded = false;
                     return (
                       <React.Fragment key={lead.id || index}>
                         <tr
                           className="hover:bg-gray-50 cursor-pointer"
-                          onClick={() => toggleRowExpansion(lead)}
+                          onClick={() => handleOpenInteractions(lead)}
                         >
                           <td className="px-2 py-2" style={{ maxWidth: '200px' }}>
                             <div className="flex items-center gap-2">
-                              {isExpanded ? (
-                                <ChevronUpIcon className="w-4 h-4 text-gray-500 flex-shrink-0" />
-                              ) : (
-                                <ChevronDownIcon className="w-4 h-4 text-gray-500 flex-shrink-0" />
-                              )}
                               <div
                                 className="text-sm font-medium cursor-pointer hover:underline break-words"
                                 style={{ color: '#411CCF' }}
@@ -3183,7 +3389,10 @@ const CloserSuperPipelinePage = () => {
                             <div className="flex items-center gap-2 group">
                               <span>{lead.follow_up_date ? new Date(lead.follow_up_date).toLocaleDateString() : '---'}</span>
                               <button
-                                onClick={() => handleEditFollowUp(lead)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleEditFollowUpDate(lead);
+                                }}
                                 className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
                                 title="Edit follow-up date"
                               >
@@ -3195,11 +3404,23 @@ const CloserSuperPipelinePage = () => {
                             {lead.latest_interaction ? new Date(lead.latest_interaction).toLocaleDateString() : '---'}
                           </td>
                           <td className="px-2 py-2 text-sm text-gray-900 max-w-[200px]">
-                            <div
-                              className="line-clamp-3 break-words cursor-help"
-                              title={lead.follow_up_notes || undefined}
-                            >
-                              {lead.follow_up_notes || '---'}
+                            <div className="flex items-start gap-2 group">
+                              <div
+                                className="line-clamp-3 break-words flex-1 cursor-help"
+                                title={lead.follow_up_notes || undefined}
+                              >
+                                {lead.follow_up_notes || '---'}
+                              </div>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleEditFollowUpNotes(lead);
+                                }}
+                                className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                                title="Edit follow-up notes"
+                              >
+                                <PencilIcon className="w-4 h-4" />
+                              </button>
                             </div>
                           </td>
                           <td className="px-2 py-2 text-sm text-gray-900 max-w-[200px]">
@@ -3225,7 +3446,10 @@ const CloserSuperPipelinePage = () => {
                                 {lead.manager_notes || '---'}
                               </div>
                               <button
-                                onClick={() => handleEditManagerNotes(lead)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleEditManagerNotes(lead);
+                                }}
                                 className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
                                 title="Edit manager notes"
                               >
@@ -3350,8 +3574,24 @@ const CloserSuperPipelinePage = () => {
         </div>
       )}
 
-      {/* Follow-up Edit Modal */}
-      {editingFollowUp && (
+      <LeadInteractionsModal
+        isOpen={!!selectedLeadForInteractions}
+        onClose={() => setSelectedLeadForInteractions(null)}
+        leadName={selectedLeadForInteractions?.name || selectedLeadForInteractions?.lead_number || 'Lead'}
+        interactions={
+          selectedLeadForInteractions
+            ? (interactionsCache.get(selectedLeadForInteractions.id?.toString() || selectedLeadForInteractions.lead_number || '') || [])
+            : []
+        }
+        isLoading={
+          selectedLeadForInteractions
+            ? loadingInteractions.has(selectedLeadForInteractions.id?.toString() || selectedLeadForInteractions.lead_number || '')
+            : false
+        }
+      />
+
+      {/* Follow-up Date Edit Modal */}
+      {editingFollowUpDate && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
           <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
             <h3 className="text-lg font-semibold mb-4">Edit Follow-Up Date</h3>
@@ -3371,7 +3611,7 @@ const CloserSuperPipelinePage = () => {
                 <button
                   className="btn btn-ghost"
                   onClick={() => {
-                    setEditingFollowUp(null);
+                    setEditingFollowUpDate(null);
                     setFollowUpDate('');
                   }}
                   disabled={savingFollowUp}
@@ -3380,7 +3620,55 @@ const CloserSuperPipelinePage = () => {
                 </button>
                 <button
                   className="btn btn-primary"
-                  onClick={handleSaveFollowUp}
+                  onClick={handleSaveFollowUpDate}
+                  disabled={savingFollowUp}
+                >
+                  {savingFollowUp ? (
+                    <>
+                      <span className="loading loading-spinner loading-sm"></span>
+                      Saving...
+                    </>
+                  ) : (
+                    'Save'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Follow-up Notes Edit Modal */}
+      {editingFollowUpNotes && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
+            <h3 className="text-lg font-semibold mb-4">Edit Follow-Up Notes</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Follow-Up Notes
+                </label>
+                <textarea
+                  className="textarea textarea-bordered w-full min-h-[120px]"
+                  placeholder="Add follow-up notes..."
+                  value={followUpNotes}
+                  onChange={(e) => setFollowUpNotes(e.target.value)}
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setEditingFollowUpNotes(null);
+                    setFollowUpNotes('');
+                  }}
+                  disabled={savingFollowUp}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleSaveFollowUpNotes}
                   disabled={savingFollowUp}
                 >
                   {savingFollowUp ? (

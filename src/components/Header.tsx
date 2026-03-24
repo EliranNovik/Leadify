@@ -208,6 +208,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [searchDropdownStyle, setSearchDropdownStyle] = useState({ top: 0, left: 0, width: 0 });
   const [isSearchAnimationDone, setIsSearchAnimationDone] = useState(false);
   const [showQuickActionsDropdown, setShowQuickActionsDropdown] = useState(false);
+  const [quickMenuSearchValue, setQuickMenuSearchValue] = useState('');
+  const [showQuickMenuAllDropdown, setShowQuickMenuAllDropdown] = useState(false);
   const [showSignOutModal, setShowSignOutModal] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [stageOptions, setStageOptions] = useState<string[]>([]);
@@ -515,6 +517,272 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   ];
 
+  const quickMenuItems = useMemo(() => {
+    const items: Array<{
+      id: string;
+      label: string;
+      description: string;
+      keywords: string[];
+      icon: any;
+      badge?: string | number | null;
+      onSelect: () => void;
+    }> = [];
+
+    navTabs
+      .filter(tab => isSuperUser || tab.path !== '/new-cases')
+      .forEach((tab) => {
+        const isNewCases = tab.path === '/new-cases';
+        items.push({
+          id: `nav_${tab.path}`,
+          label: tab.label,
+          description: tab.path,
+          keywords: [tab.label, tab.path, tab.label.replace(/\s+/g, ''), 'page', 'route'],
+          icon: tab.icon,
+          badge: isNewCases && newLeadsCount > 0 ? newLeadsCount : null,
+          onSelect: () => {
+            setShowQuickActionsDropdown(false);
+            navigate(tab.path || '/');
+          },
+        });
+      });
+
+    // Keep hamburger search aligned with Sidebar pages (including grouped sub-items).
+    const sidebarSearchItems: Array<{ label: string; path: string; keywords?: string[] }> = [
+      { label: 'Dashboard', path: '/', keywords: ['home', 'main'] },
+      { label: 'Collection', path: '/collection' },
+      { label: 'Calendar', path: '/calendar' },
+      { label: 'Waiting for Price Offer', path: '/waiting-for-price-offer', keywords: ['price offer', 'waiting'] },
+      { label: 'Hot Leads', path: '/scheduler-tool', keywords: ['hot', 'priority', 'scheduler'] },
+      { label: 'Pipeline', path: '/pipeline' },
+      { label: 'Expert', path: '/expert' },
+      { label: 'Create New', path: '/create', keywords: ['new lead', 'create lead'] },
+      { label: 'Lead Search', path: '/lead-search' },
+      { label: 'Double Leads', path: '/double-leads', keywords: ['duplicates'] },
+      { label: 'Assign Leads', path: '/new-cases' },
+      { label: 'New Handler Cases', path: '/new-handler-cases' },
+      { label: 'My Cases', path: '/my-cases' },
+      { label: 'Retention Cases', path: '/retainer-handler-cases' },
+      { label: 'Case Manager', path: '/case-manager' },
+      { label: 'My Performance', path: '/performance' },
+      { label: 'Employee Performance', path: '/employee-performance' },
+      { label: 'Documents', path: '/documents' },
+      { label: 'WhatsApp Leads', path: '/whatsapp-leads', keywords: ['whatsapp', 'wa'] },
+      { label: 'Email Leads', path: '/email-leads', keywords: ['email', 'mail'] },
+      { label: 'Calls Ledger', path: '/calls-ledger', keywords: ['calls', 'phone'] },
+      { label: 'Reports', path: '/reports' },
+      { label: 'Settings', path: '/settings' },
+      { label: 'Admin Panel', path: '/admin', keywords: ['admin'] },
+    ];
+
+    const existingPaths = new Set(
+      items
+        .map((entry) => entry.description)
+        .filter((desc) => typeof desc === 'string' && desc.startsWith('/'))
+    );
+
+    sidebarSearchItems
+      .filter((entry) => isSuperUser || entry.path !== '/new-cases')
+      .forEach((entry) => {
+        if (existingPaths.has(entry.path)) return;
+        items.push({
+          id: `sidebar_${entry.path.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`,
+          label: entry.label,
+          description: entry.path,
+          keywords: [entry.label, entry.path, 'sidebar', 'page', ...(entry.keywords || [])],
+          icon: DocumentChartBarIcon,
+          onSelect: () => {
+            setShowQuickActionsDropdown(false);
+            navigate(entry.path);
+          },
+        });
+      });
+
+    items.push(
+      {
+        id: 'home',
+        label: 'Dashboard',
+        description: '/',
+        keywords: ['home', 'dashboard', 'main', 'landing', 'index', '/'],
+        icon: UserGroupIcon,
+        onSelect: () => {
+          setShowQuickActionsDropdown(false);
+          navigate('/');
+        },
+      },
+      {
+        id: 'my_profile',
+        label: 'My Profile',
+        description: '/my-profile',
+        keywords: ['profile', 'me', 'account', 'user', 'my profile'],
+        icon: UserIcon,
+        onSelect: () => {
+          setShowQuickActionsDropdown(false);
+          navigate('/my-profile');
+        },
+      },
+      {
+        id: 'settings',
+        label: 'Settings',
+        description: '/settings',
+        keywords: ['settings', 'preferences', 'config', 'system'],
+        icon: Cog6ToothIcon,
+        onSelect: () => {
+          setShowQuickActionsDropdown(false);
+          navigate('/settings');
+        },
+      },
+      {
+        id: 'highlights',
+        label: 'Highlights',
+        description: 'Open highlights panel',
+        keywords: ['highlights', 'important', 'pinned', 'starred'],
+        icon: StarIcon,
+        onSelect: () => {
+          setShowQuickActionsDropdown(false);
+          setIsHighlightsPanelOpen(true);
+        },
+      }
+    );
+
+    if (typeof onOpenAIChat === 'function') {
+      items.push({
+        id: 'rmq_ai',
+        label: 'RMQ AI',
+        description: 'Open AI chat',
+        keywords: ['ai', 'assistant', 'chat', 'rmq ai', 'bot'],
+        icon: FaRobot,
+        onSelect: () => {
+          setShowQuickActionsDropdown(false);
+          onOpenAIChat();
+        },
+      });
+    }
+
+    if (typeof onOpenWhatsApp === 'function') {
+      items.push({
+        id: 'whatsapp',
+        label: 'WhatsApp',
+        description: 'Open WhatsApp inbox',
+        keywords: ['whatsapp', 'wa', 'messages', 'chat'],
+        icon: FaWhatsapp,
+        badge: whatsappClientsUnreadCount > 0 ? (whatsappClientsUnreadCount > 9 ? '9+' : whatsappClientsUnreadCount) : null,
+        onSelect: () => {
+          setShowQuickActionsDropdown(false);
+          onOpenWhatsApp();
+        },
+      });
+    }
+
+    if (typeof onOpenEmailThread === 'function') {
+      items.push({
+        id: 'email_thread',
+        label: 'Email Thread',
+        description: 'Open email conversations',
+        keywords: ['email', 'mail', 'thread', 'inbox'],
+        icon: EnvelopeIcon,
+        onSelect: () => {
+          setShowQuickActionsDropdown(false);
+          onOpenEmailThread();
+        },
+      });
+    }
+
+    const reportSearchItems = [
+      { label: 'Sources pie', category: 'Marketing' },
+      { label: 'Category & source', category: 'Marketing' },
+      { label: 'Convertion', category: 'Marketing' },
+      { label: 'Convertion Steps', category: 'Marketing' },
+      { label: 'Scheduled', category: 'Meetings' },
+      { label: 'Signed', category: 'Sales', route: '/sales/signed' },
+      { label: 'Bonuses (v4)', category: 'Sales' },
+      { label: 'Expert', category: 'Pipelines' },
+      { label: 'Sales Pipeline', category: 'Pipelines', route: '/reports/closer-super-pipeline' },
+      { label: 'Experts Results', category: 'Experts' },
+      { label: 'All', category: 'Contribution' },
+      { label: 'Sales Contribution', category: 'Contribution', route: '/reports/sales-contribution' },
+      { label: 'Collection', category: 'Finances', route: '/reports/collection-finances' },
+      { label: 'Collection Due', category: 'Finances', route: '/reports/collection-due' },
+      { label: 'Edit Contracts', category: 'Tools', route: '/reports/edit-contracts' },
+      { label: 'Re-assign leads', category: 'Tools', route: '/reports/reassign-leads' },
+      { label: 'Employee Unavailabilities', category: 'Tools', route: '/reports/employee-unavailabilities' },
+      { label: 'Employee Salaries', category: 'Tools', route: '/reports/employee-salaries' },
+      { label: 'Leads Report', category: 'Tools', route: '/reports/leads-report' },
+      { label: 'Employee Info', category: 'Employees', route: '/reports/employee-info' },
+    ];
+
+    reportSearchItems.forEach((report) => {
+      const targetPath = report.route || `/reports?report=${encodeURIComponent(report.label)}`;
+      items.push({
+        id: `report_${report.label.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`,
+        label: report.label,
+        description: `${report.category} report`,
+        keywords: [
+          report.label,
+          report.category,
+          'report',
+          'reports',
+          'analytics',
+          targetPath,
+        ],
+        icon: DocumentChartBarIcon,
+        onSelect: () => {
+          setShowQuickActionsDropdown(false);
+          navigate(targetPath);
+        },
+      });
+    });
+
+    return items;
+  }, [isSuperUser, navTabs, newLeadsCount, navigate, onOpenAIChat, onOpenEmailThread, onOpenWhatsApp, whatsappClientsUnreadCount]);
+
+  const filteredQuickMenuItems = useMemo(() => {
+    const q = quickMenuSearchValue.trim().toLowerCase();
+    if (!q) return quickMenuItems;
+
+    const scoreItem = (item: (typeof quickMenuItems)[number]): number => {
+      const label = item.label.toLowerCase();
+      const desc = item.description.toLowerCase();
+      const keywords = item.keywords.join(' ').toLowerCase();
+      const haystack = `${label} ${desc} ${keywords}`;
+      const labelWords = label.split(/[\s/-]+/).filter(Boolean);
+
+      if (label === q) return 1000;
+      if (label.startsWith(q)) return 900;
+      if (labelWords.some((word) => word.startsWith(q))) return 860;
+      if (label.includes(q)) return 750;
+      if (desc.startsWith(q)) return 650;
+      if (desc.includes(q)) return 600;
+      if (keywords.includes(q)) return 500;
+
+      // Keep fuzzy search stricter: only allow subsequence matching for >=3 chars.
+      if (q.length < 3) return 0;
+
+      // Lightweight fuzzy subsequence score for typos/partial matches.
+      let qi = 0;
+      let bonus = 0;
+      for (let i = 0; i < haystack.length && qi < q.length; i += 1) {
+        if (haystack[i] === q[qi]) {
+          bonus += i < label.length ? 8 : 3;
+          qi += 1;
+        }
+      }
+      return qi === q.length ? 250 + bonus : 0;
+    };
+
+    return quickMenuItems
+      .map((item) => ({ item, score: scoreItem(item) }))
+      .filter((entry) => {
+        if (entry.score <= 0) return false;
+        // Short queries must be strong matches to reduce noise.
+        if (q.length <= 2) return entry.score >= 860;
+        if (q.length === 3) return entry.score >= 500;
+        return entry.score >= 300;
+      })
+      .sort((a, b) => b.score - a.score || a.item.label.localeCompare(b.item.label))
+      .map((entry) => entry.item)
+      .slice(0, 10);
+  }, [quickMenuItems, quickMenuSearchValue]);
+
   useEffect(() => {
     let clickTimeout: NodeJS.Timeout;
     let isScrolling = false;
@@ -629,6 +897,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     setShowQuickActionsDropdown(false);
     setShowProfileDropdown(false);
   }, [location.pathname]);
+
+  useEffect(() => {
+    if (!showQuickActionsDropdown) {
+      setQuickMenuSearchValue('');
+      setShowQuickMenuAllDropdown(false);
+    }
+  }, [showQuickActionsDropdown]);
 
   // Handle escape key to close dropdowns
   useEffect(() => {
@@ -7349,77 +7624,133 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 onClick={(e) => e.stopPropagation()}
               >
                 {/* RMQ 2.0 at top */}
-                <div className="flex-shrink-0 pt-16 px-4 pb-4 border-b border-base-300">
+                <div className="flex-shrink-0 pt-3 px-4 pb-2 border-b border-base-300">
                   <span className="text-xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
                 </div>
-                {/* Nav links - scrollable */}
-                <div className="flex-1 overflow-y-auto py-2">
-                {navTabs
-                  .filter(tab => isSuperUser || tab.path !== '/new-cases')
-                  .map((tab, index) => {
-                    const Icon = tab.icon;
-                    const showCount = tab.path === '/new-cases' && newLeadsCount > 0;
-                    const itemClass = "flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 dark:text-base-content w-full text-left hover:bg-base-200";
-                    if (false) { // Removed action check
-                      return (
-                        <React.Fragment key={tab.label}>
-                          {index > 0 && <div className="border-t border-base-300" />}
-                          <button
-                            onClick={() => {
-                              setShowQuickActionsDropdown(false);
-                              if (onOpenEmailThread) onOpenEmailThread();
+                {/* Menu search + links/results */}
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <div className="px-4 py-3 border-b border-base-300 bg-white dark:bg-gray-900">
+                    <div className="relative">
+                      <div className="flex items-center gap-2">
+                        <div className="relative flex-1 min-w-0">
+                          <MagnifyingGlassIcon className="w-4 h-4 text-base-content/50 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                          <input
+                            type="text"
+                            value={quickMenuSearchValue}
+                            onChange={(e) => {
+                              setQuickMenuSearchValue(e.target.value);
+                              if (showQuickMenuAllDropdown) setShowQuickMenuAllDropdown(false);
                             }}
-                            className={itemClass}
-                          >
-                            <Icon className="w-5 h-5 text-gray-500" />
-                            <span className="text-sm font-medium">{tab.label}</span>
-                          </button>
-                        </React.Fragment>
-                      );
-                    }
-                    if (tab.path === '/whatsapp') {
-                      return (
-                        <React.Fragment key={tab.label}>
-                          {index > 0 && <div className="border-t border-base-300" />}
-                          <button
-                            onClick={() => {
-                              setShowQuickActionsDropdown(false);
-                              if (onOpenWhatsApp) onOpenWhatsApp();
-                            }}
-                            className={itemClass}
-                          >
-                            <Icon className="w-5 h-5 text-gray-500" />
-                            <span className="text-sm font-medium">{tab.label}</span>
-                            {whatsappClientsUnreadCount > 0 && (
-                              <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                                {whatsappClientsUnreadCount > 9 ? '9+' : whatsappClientsUnreadCount}
-                              </span>
-                            )}
-                          </button>
-                        </React.Fragment>
-                      );
-                    }
-                    return (
-                      <React.Fragment key={tab.path || tab.label}>
-                        {index > 0 && <div className="border-t border-base-300" />}
-                        <Link
-                          to={tab.path || '/'}
-                          onClick={() => {
-                            setShowQuickActionsDropdown(false);
-                          }}
-                          className={itemClass}
+                            placeholder="Search pages, tools, files..."
+                            className="w-full h-10 pl-9 pr-3 rounded-lg border border-base-300 bg-white dark:bg-gray-800 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 focus:border-primary/50"
+                            autoComplete="off"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowQuickMenuAllDropdown((prev) => !prev)}
+                          className={`h-10 px-3 rounded-lg border border-base-300 transition-colors text-sm font-medium flex items-center gap-1.5 ${showQuickMenuAllDropdown ? 'bg-primary/10 text-primary' : 'bg-base-100 hover:bg-base-200'}`}
+                          aria-expanded={showQuickMenuAllDropdown}
+                          aria-haspopup="menu"
+                          title="Show all pages and files"
                         >
-                          <Icon className="w-5 h-5 text-gray-500" />
-                          <span className="text-sm font-medium">{tab.label}</span>
-                          {showCount && (
-                            <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
-                              {newLeadsCount}
-                            </span>
-                          )}
-                        </Link>
-                      </React.Fragment>
-                    );
-                  })}
+                          All
+                          <ChevronDownIcon className={`w-4 h-4 transition-transform ${showQuickMenuAllDropdown ? 'rotate-180' : ''}`} />
+                        </button>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-base-content/60 mt-1">
+                    </p>
+                  </div>
+                  <div className="flex-1 overflow-y-auto py-2">
+                    {showQuickMenuAllDropdown ? (
+                      quickMenuItems.map((item, index) => {
+                        const Icon = item.icon;
+                        return (
+                          <React.Fragment key={`all_inline_${item.id}`}>
+                            {index > 0 && <div className="border-t border-base-300" />}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowQuickMenuAllDropdown(false);
+                                item.onSelect();
+                              }}
+                              className="flex items-center gap-3 px-4 py-3 transition-all duration-150 text-gray-700 dark:text-base-content w-full text-left hover:bg-base-200"
+                            >
+                              <Icon className="w-5 h-5 text-gray-500" />
+                              <div className="min-w-0 flex-1">
+                                <div className="text-sm font-medium truncate">{item.label}</div>
+                                <div className="text-xs text-base-content/60 truncate">{item.description}</div>
+                              </div>
+                              {item.badge ? (
+                                <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
+                                  {item.badge}
+                                </span>
+                              ) : null}
+                            </button>
+                          </React.Fragment>
+                        );
+                      })
+                    ) : quickMenuSearchValue.trim() ? (
+                      filteredQuickMenuItems.length > 0 ? (
+                        filteredQuickMenuItems.map((item, index) => {
+                          const Icon = item.icon;
+                          return (
+                            <React.Fragment key={item.id}>
+                              {index > 0 && <div className="border-t border-base-300" />}
+                              <button
+                                type="button"
+                                onClick={item.onSelect}
+                                className="flex items-center gap-3 px-4 py-3 transition-all duration-150 text-gray-700 dark:text-base-content w-full text-left hover:bg-base-200"
+                              >
+                                <Icon className="w-5 h-5 text-gray-500" />
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-sm font-medium truncate">{item.label}</div>
+                                  <div className="text-xs text-base-content/60 truncate">{item.description}</div>
+                                </div>
+                                {item.badge ? (
+                                  <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
+                                    {item.badge}
+                                  </span>
+                                ) : null}
+                              </button>
+                            </React.Fragment>
+                          );
+                        })
+                      ) : (
+                        <div className="px-4 py-6 text-sm text-base-content/65">
+                          No matches found. Try a shorter term or another keyword.
+                        </div>
+                      )
+                    ) : (
+                      navTabs
+                        .filter(tab => isSuperUser || tab.path !== '/new-cases')
+                        .map((tab, index) => {
+                          const Icon = tab.icon;
+                          const showCount = tab.path === '/new-cases' && newLeadsCount > 0;
+                          return (
+                            <React.Fragment key={tab.path || tab.label}>
+                              {index > 0 && <div className="border-t border-base-300" />}
+                              <Link
+                                to={tab.path || '/'}
+                                onClick={() => {
+                                  setShowQuickActionsDropdown(false);
+                                }}
+                                className="flex items-center gap-3 px-4 py-3 transition-all duration-150 text-gray-700 dark:text-base-content w-full text-left hover:bg-base-200"
+                              >
+                                <Icon className="w-5 h-5 text-gray-500" />
+                                <span className="text-sm font-medium">{tab.label}</span>
+                                {showCount && (
+                                  <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
+                                    {newLeadsCount}
+                                  </span>
+                                )}
+                              </Link>
+                            </React.Fragment>
+                          );
+                        })
+                    )}
+                  </div>
                 </div>
                 {/* Employee profile at bottom */}
                 <div className="flex-shrink-0 px-4 py-4 pb-6 border-t border-base-300 flex items-center gap-3">
