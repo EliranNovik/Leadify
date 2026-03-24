@@ -1459,6 +1459,71 @@ const CalendarPage: React.FC = () => {
   };
 
   // Helper function to combine meetings without duplicates
+  const dedupeMeetingsByLeadAndDate = (items: any[]): any[] => {
+    const byLeadAndDate = new Map<string, any>();
+    const passthrough: any[] = [];
+
+    const getDateKey = (value: any): string | null => {
+      if (!value) return null;
+      if (typeof value === 'string') return value.split('T')[0];
+      const d = new Date(value);
+      if (isNaN(d.getTime())) return null;
+      return d.toISOString().split('T')[0];
+    };
+
+    const getLeadKey = (meeting: any): string | null => {
+      const legacyId = meeting?.legacy_lead_id ?? (typeof meeting?.id === 'string' && meeting.id.startsWith('legacy_')
+        ? meeting.id.replace('legacy_', '')
+        : null);
+      if (legacyId != null && legacyId !== '') return `legacy:${legacyId}`;
+      const clientId = meeting?.client_id ?? meeting?.lead?.id;
+      if (clientId != null && clientId !== '') return `new:${clientId}`;
+      return null;
+    };
+
+    const getCreatedRank = (meeting: any): number => {
+      const created = meeting?.created_at ? new Date(meeting.created_at).getTime() : 0;
+      return Number.isFinite(created) ? created : 0;
+    };
+
+    const getIdRank = (meeting: any): number => {
+      const raw = String(meeting?.id ?? '');
+      const parsed = Number(raw.replace(/[^\d]/g, ''));
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    items.forEach((meeting) => {
+      const leadKey = getLeadKey(meeting);
+      const dateKey = getDateKey(meeting?.meeting_date);
+
+      // Keep non-lead or invalid-date meetings untouched (e.g., staff meetings)
+      if (!leadKey || !dateKey) {
+        passthrough.push(meeting);
+        return;
+      }
+
+      const dedupeKey = `${leadKey}|${dateKey}`;
+      const existing = byLeadAndDate.get(dedupeKey);
+      if (!existing) {
+        byLeadAndDate.set(dedupeKey, meeting);
+        return;
+      }
+
+      const existingCreated = getCreatedRank(existing);
+      const currentCreated = getCreatedRank(meeting);
+      if (currentCreated > existingCreated) {
+        byLeadAndDate.set(dedupeKey, meeting);
+        return;
+      }
+
+      if (currentCreated === existingCreated && getIdRank(meeting) > getIdRank(existing)) {
+        byLeadAndDate.set(dedupeKey, meeting);
+      }
+    });
+
+    return [...passthrough, ...Array.from(byLeadAndDate.values())];
+  };
+
   const combineMeetingsWithoutDuplicates = (regularMeetings: any[], legacyMeetings: any[]): any[] => {
     // Build a Set of existing meeting IDs to prevent duplicates
     const existingMeetingIds = new Set<string | number>();
@@ -1496,8 +1561,8 @@ const CalendarPage: React.FC = () => {
       totalOutput: regularMeetings.length + newLegacyMeetings.length
     });
 
-    // Combine all meetings
-    return [...regularMeetings, ...newLegacyMeetings];
+    // Combine all meetings and enforce one meeting per lead/date (latest created wins)
+    return dedupeMeetingsByLeadAndDate([...regularMeetings, ...newLegacyMeetings]);
   };
 
   // Function to load legacy meetings for a specific date
@@ -1925,7 +1990,7 @@ const CalendarPage: React.FC = () => {
 
         // Build meetings query WITH joins so one round-trip gets meetings + leads (no separate lead fetches)
         const meetingsSelect = `
-          id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url, custom_link, custom_address,
+          id, created_at, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url, custom_link, custom_address,
           meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
           attendance_probability, complexity, car_number, calendar_type, extern1, extern2,
           leads!meetings_client_id_fkey (
@@ -2191,7 +2256,7 @@ const CalendarPage: React.FC = () => {
         }
 
         // Set meetings immediately so the calendar renders without waiting for legacy
-        setMeetings(allProcessedMeetings);
+        setMeetings(dedupeMeetingsByLeadAndDate(allProcessedMeetings));
         setIsLoading(false);
         setIsBackgroundLoading(false);
 

@@ -8,6 +8,7 @@ import { EnvelopeIcon, PhoneIcon, ChatBubbleLeftRightIcon, XMarkIcon, PencilIcon
 import { FaWhatsapp } from 'react-icons/fa';
 import * as Slider from '@radix-ui/react-slider';
 import LeadInteractionsModal from '../components/LeadInteractionsModal';
+import ExpertOpinionModal from '../components/ExpertOpinionModal';
 
 const CloserSuperPipelinePage = () => {
   const navigate = useNavigate();
@@ -21,6 +22,7 @@ const CloserSuperPipelinePage = () => {
     languages: string[];
     stages: string[];
     tags: string[];
+    countries: string[];
     minProbability: number;
     maxProbability: number;
     eligibilityDeterminedOnly: boolean;
@@ -34,6 +36,7 @@ const CloserSuperPipelinePage = () => {
     languages: [], // Changed to array for multi-select
     stages: ['40', '50'], // Default stages: 40 and 50
     tags: [], // Changed to array for multi-select
+    countries: [],
     minProbability: 80,
     maxProbability: 100,
     eligibilityDeterminedOnly: false,
@@ -56,6 +59,7 @@ const CloserSuperPipelinePage = () => {
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
   const [languages, setLanguages] = useState<{ id: string; name: string }[]>([]);
+  const [countries, setCountries] = useState<{ id: string; name: string }[]>([]);
   const [stages, setStages] = useState<{ id: string; name: string }[]>([]);
   const [editingManagerNotes, setEditingManagerNotes] = useState<{ leadId: string; lead: any } | null>(null);
   const [managerNotesValue, setManagerNotesValue] = useState<string>('');
@@ -65,11 +69,13 @@ const CloserSuperPipelinePage = () => {
   const [languageSearch, setLanguageSearch] = useState<string>('');
   const [stageSearch, setStageSearch] = useState<string>('');
   const [tagsSearch, setTagsSearch] = useState<string>('');
+  const [countrySearch, setCountrySearch] = useState<string>('');
   const [showCategoryDropdown, setShowCategoryDropdown] = useState<boolean>(false);
   const [showEmployeeDropdown, setShowEmployeeDropdown] = useState<boolean>(false);
   const [showLanguageDropdown, setShowLanguageDropdown] = useState<boolean>(false);
   const [showStageDropdown, setShowStageDropdown] = useState<boolean>(false);
   const [showTagsDropdown, setShowTagsDropdown] = useState<boolean>(false);
+  const [showCountryDropdown, setShowCountryDropdown] = useState<boolean>(false);
   const [probabilityExpanded, setProbabilityExpanded] = useState<boolean>(false);
 
   const employeeNameById = useMemo(() => {
@@ -159,10 +165,27 @@ const CloserSuperPipelinePage = () => {
       }));
     }
   };
+
+  // Helper function to toggle country selection
+  const toggleCountrySelection = (countryId: string) => {
+    const currentCountries = filters.countries || [];
+    if (currentCountries.includes(countryId)) {
+      setFilters(prev => ({
+        ...prev,
+        countries: currentCountries.filter(id => id !== countryId)
+      }));
+    } else {
+      setFilters(prev => ({
+        ...prev,
+        countries: [...currentCountries, countryId]
+      }));
+    }
+  };
   const [currentUserId, setCurrentUserId] = useState<string | number | null>(null);
   const [interactionsCache, setInteractionsCache] = useState<Map<string, any[]>>(new Map());
   const [loadingInteractions, setLoadingInteractions] = useState<Set<string>>(new Set());
   const [selectedLeadForInteractions, setSelectedLeadForInteractions] = useState<any | null>(null);
+  const [selectedExpertOpinionLead, setSelectedExpertOpinionLead] = useState<{ name: string; opinion: string } | null>(null);
   const [editingFollowUpDate, setEditingFollowUpDate] = useState<{ leadId: string; leadType: 'new' | 'legacy' } | null>(null);
   const [editingFollowUpNotes, setEditingFollowUpNotes] = useState<{ leadId: string; leadType: 'new' | 'legacy' } | null>(null);
   const [followUpDate, setFollowUpDate] = useState<string>('');
@@ -236,6 +259,15 @@ const CloserSuperPipelinePage = () => {
         .order('name');
       if (langData) {
         setLanguages(langData.map(lang => ({ id: lang.id.toString(), name: lang.name })));
+      }
+
+      // Fetch countries
+      const { data: countryData } = await supabase
+        .from('misc_country')
+        .select('id, name')
+        .order('name');
+      if (countryData) {
+        setCountries(countryData.map((country: any) => ({ id: country.id.toString(), name: country.name })));
       }
 
       // Fetch all stages from lead_stages table
@@ -795,6 +827,7 @@ const CloserSuperPipelinePage = () => {
       languages: [], // Reset to empty array
       stages: [], // Reset to empty array (no default stages)
       tags: [], // Reset to empty array
+      countries: [],
       minProbability: 80,
       maxProbability: 100,
       eligibilityDeterminedOnly: false,
@@ -805,6 +838,7 @@ const CloserSuperPipelinePage = () => {
     setLanguageSearch('');
     setStageSearch('');
     setTagsSearch('');
+    setCountrySearch('');
     // Keep results, totals, and table visibility - don't clear them
   };
 
@@ -1263,6 +1297,20 @@ const CloserSuperPipelinePage = () => {
     try {
       const allLeads: any[] = [];
       const effectiveCurrentUserId = currentUserId ?? await resolveCurrentUserId();
+      const normalizeDateOnly = (value: any): string | null => {
+        if (!value) return null;
+        if (typeof value === 'string') return value.split('T')[0];
+        const date = new Date(value);
+        if (isNaN(date.getTime())) return null;
+        return date.toISOString().split('T')[0];
+      };
+      const getLatestDate = (first: any, second: any): string | null => {
+        const a = normalizeDateOnly(first);
+        const b = normalizeDateOnly(second);
+        if (!a) return b;
+        if (!b) return a;
+        return a >= b ? a : b;
+      };
 
       // Get selected stages from filters (only filter if stages are selected)
       const selectedStageIds = (filters.stages && filters.stages.length > 0)
@@ -1299,6 +1347,7 @@ const CloserSuperPipelinePage = () => {
           name,
           created_at,
           latest_interaction,
+          meeting_date,
           closer,
           scheduler,
           expert,
@@ -1309,6 +1358,7 @@ const CloserSuperPipelinePage = () => {
           eligible,
           probability,
           language,
+          country_id,
           number_of_applicants_meeting,
           potential_applicants_meeting,
           balance,
@@ -1320,6 +1370,10 @@ const CloserSuperPipelinePage = () => {
             id,
             name,
             iso_code
+          ),
+          misc_country!country_id (
+            id,
+            name
           ),
           lead_stages!fk_leads_stage (
             id,
@@ -1392,6 +1446,12 @@ const CloserSuperPipelinePage = () => {
       // Apply language filter
       if (filters.languages && filters.languages.length > 0) {
         newLeadsQuery = newLeadsQuery.in('language', filters.languages);
+      }
+      if (filters.countries && filters.countries.length > 0) {
+        const selectedCountryIds = filters.countries.map((id) => Number(id)).filter((id) => !isNaN(id));
+        if (selectedCountryIds.length > 0) {
+          newLeadsQuery = newLeadsQuery.in('country_id', selectedCountryIds);
+        }
       }
 
       // Apply created date filter for new leads (created_at)
@@ -1621,7 +1681,7 @@ const CloserSuperPipelinePage = () => {
       let filteredNewLeads = newLeads || [];
       if (applyDateFilters && (filters.fromDate || filters.toDate)) {
         filteredNewLeads = filteredNewLeads.filter((lead: any) => {
-          const meetingDate = meetingDatesMap[String(lead.id)];
+          const meetingDate = getLatestDate(meetingDatesMap[String(lead.id)], lead.meeting_date);
           if (!meetingDate) return false; // Exclude leads without meeting dates when filtering
           if (filters.fromDate && meetingDate < filters.fromDate) return false;
           if (filters.toDate && meetingDate > filters.toDate) return false;
@@ -1807,7 +1867,8 @@ const CloserSuperPipelinePage = () => {
             manager_notes: managerNotesText,
             closer: resolveEmployeeDisplay(lead.closer),
             scheduler: resolveEmployeeDisplay(lead.scheduler),
-            meeting_date: meetingDatesMap[lead.id] || null,
+            country: (lead as any).misc_country?.name || '---',
+            meeting_date: getLatestDate(meetingDatesMap[String(lead.id)], lead.meeting_date),
             follow_up_date: followUpDatesMap[String(lead.id)] || null,
             follow_up_notes: lead.followup_log || followUpNotesMap[String(lead.id)] || null,
             latest_interaction: lead.latest_interaction || null,
@@ -2115,12 +2176,7 @@ const CloserSuperPipelinePage = () => {
       // Filter legacy leads by date using latest meeting date from `meetings` table.
       if (applyDateFilters && (filters.fromDate || filters.toDate)) {
         legacyLeadsToProcess = legacyLeadsToProcess.filter((lead: any) => {
-          const meetingDate = legacyMeetingDatesMap[lead.id]
-            || (lead.meeting_date
-              ? (typeof lead.meeting_date === 'string'
-                ? lead.meeting_date.split('T')[0]
-                : new Date(lead.meeting_date).toISOString().split('T')[0])
-              : null);
+          const meetingDate = getLatestDate(legacyMeetingDatesMap[lead.id], lead.meeting_date);
           if (!meetingDate) return false;
           if (filters.fromDate && meetingDate < filters.fromDate) return false;
           if (filters.toDate && meetingDate > filters.toDate) return false;
@@ -2129,6 +2185,7 @@ const CloserSuperPipelinePage = () => {
       }
 
       const legacyLeadIdsForFollowUps = (legacyLeadsToProcess || []).map((l: any) => l.id).filter(Boolean);
+      const legacyLeadIdsForCountry = (legacyLeadsToProcess || []).map((l: any) => l.id).filter(Boolean);
 
       // Fetch follow-up dates for legacy leads (only current user's follow-ups)
       const legacyFollowUpDatesMap: Record<number, string> = {};
@@ -2154,6 +2211,60 @@ const CloserSuperPipelinePage = () => {
               }
             }
           });
+        }
+      }
+
+      // Fetch legacy country data using main contact first (same pattern as SchedulerToolPage)
+      const legacyCountryMap = new Map<number, string>();
+      if (legacyLeadIdsForCountry.length > 0) {
+        const { data: legacyCountryData } = await supabase
+          .from('lead_leadcontact')
+          .select(`
+            lead_id,
+            leads_contact (
+              country_id,
+              misc_country (
+                id,
+                name
+              )
+            )
+          `)
+          .in('lead_id', legacyLeadIdsForCountry)
+          .eq('main', 'true');
+
+        if (legacyCountryData && legacyCountryData.length > 0) {
+          legacyCountryData.forEach((item: any) => {
+            const countryName = (item.leads_contact as any)?.misc_country?.name;
+            if (item.lead_id && countryName) {
+              legacyCountryMap.set(Number(item.lead_id), String(countryName));
+            }
+          });
+        } else {
+          // Fallback: try without `main=true` and take first available contact country per lead
+          const { data: allLegacyCountryData } = await supabase
+            .from('lead_leadcontact')
+            .select(`
+              lead_id,
+              leads_contact (
+                country_id,
+                misc_country (
+                  id,
+                  name
+                )
+              )
+            `)
+            .in('lead_id', legacyLeadIdsForCountry);
+
+          if (allLegacyCountryData && allLegacyCountryData.length > 0) {
+            allLegacyCountryData.forEach((item: any) => {
+              const leadId = Number(item.lead_id);
+              if (legacyCountryMap.has(leadId)) return;
+              const countryName = (item.leads_contact as any)?.misc_country?.name;
+              if (leadId && countryName) {
+                legacyCountryMap.set(leadId, String(countryName));
+              }
+            });
+          }
         }
       }
 
@@ -2194,15 +2305,8 @@ const CloserSuperPipelinePage = () => {
             }
           }
 
-          // Get meeting date - prefer from meetings table, fallback to leads_lead.meeting_date
-          let meetingDate: string | null = null;
-          if (legacyMeetingDatesMap[lead.id]) {
-            meetingDate = legacyMeetingDatesMap[lead.id];
-          } else if (lead.meeting_date) {
-            meetingDate = typeof lead.meeting_date === 'string'
-              ? lead.meeting_date.split('T')[0]
-              : new Date(lead.meeting_date).toISOString().split('T')[0];
-          }
+          // Use the latest available date between meetings table and lead record.
+          const meetingDate = getLatestDate(legacyMeetingDatesMap[lead.id], lead.meeting_date);
 
           // Extract currency data from joined table - USE NAME DIRECTLY (like edit drawer does)
           // The accounting_currencies.name column contains the symbol (₪, $, €, £)
@@ -2273,6 +2377,7 @@ const CloserSuperPipelinePage = () => {
             eligibility_status_timestamp: lead.eligibility_status_timestamp ?? null,
             eligibility_status_last_edited_at: lead.eligibility_status_last_edited_at ?? null,
             meeting_date: meetingDate,
+            country: legacyCountryMap.get(lead.id) || '---',
             follow_up_date: legacyFollowUpDatesMap[lead.id] || null,
             follow_up_notes: legacyFollowUpNotesMap[lead.id] || lead.followup_log || null,
             latest_interaction: lead.latest_interaction || null,
@@ -2299,6 +2404,19 @@ const CloserSuperPipelinePage = () => {
           return filters.tags.some(tag =>
             leadTags.toLowerCase().includes(tag.toLowerCase())
           );
+        });
+      }
+
+      // Apply country filter client-side on combined leads (works for both new and legacy).
+      if (filters.countries && filters.countries.length > 0) {
+        const selectedCountryNames = new Set(
+          countries
+            .filter((c) => filters.countries.includes(c.id.toString()))
+            .map((c) => c.name.toLowerCase().trim())
+        );
+        filteredAllLeads = filteredAllLeads.filter((lead: any) => {
+          const country = (lead.country || '').toString().toLowerCase().trim();
+          return country && selectedCountryNames.has(country);
         });
       }
 
@@ -2382,6 +2500,10 @@ const CloserSuperPipelinePage = () => {
 
   const filteredLanguages = languages.filter((lang: any) =>
     lang.name.toLowerCase().includes(languageSearch.toLowerCase())
+  );
+
+  const filteredCountries = countries.filter((country: any) =>
+    country.name.toLowerCase().includes(countrySearch.toLowerCase())
   );
 
   const filteredStages = stages.filter((stage: any) =>
@@ -2842,6 +2964,95 @@ const CloserSuperPipelinePage = () => {
             )}
           </div>
           <div className="relative">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Country (Multi-select)</label>
+            <input
+              type="text"
+              className="w-full mb-2 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Search countries..."
+              value={countrySearch}
+              onChange={(e) => {
+                setCountrySearch(e.target.value);
+                if (!showCountryDropdown) {
+                  setShowCountryDropdown(true);
+                }
+              }}
+              onFocus={() => setShowCountryDropdown(true)}
+            />
+            <div
+              className="w-full min-h-[42px] px-3 py-2 border border-gray-300 rounded-md focus-within:outline-none focus-within:ring-2 focus-within:ring-blue-500 cursor-text flex flex-wrap gap-2 items-center"
+              onClick={() => setShowCountryDropdown(true)}
+            >
+              {filters.countries && filters.countries.length > 0 ? (
+                filters.countries.map((countryId) => {
+                  const country = countries.find(c => c.id.toString() === countryId.toString());
+                  if (!country) return null;
+                  return (
+                    <div
+                      key={countryId}
+                      className="badge badge-primary badge-sm flex items-center gap-1"
+                    >
+                      <span>{country.name}</span>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleCountrySelection(countryId.toString());
+                        }}
+                        className="ml-1 hover:bg-primary-focus rounded-full p-0.5"
+                      >
+                        <XMarkIcon className="w-3 h-3" />
+                      </button>
+                    </div>
+                  );
+                })
+              ) : (
+                <span className="text-gray-400 text-sm">Click to select countries...</span>
+              )}
+            </div>
+            {showCountryDropdown && (
+              <>
+                <div
+                  className="fixed inset-0 z-[5]"
+                  onClick={() => setShowCountryDropdown(false)}
+                />
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setFilters(prev => ({ ...prev, countries: [] }));
+                      setCountrySearch('');
+                    }}
+                  >
+                    Clear All
+                  </div>
+                  <div className="border-t border-gray-200 my-1"></div>
+                  {filteredCountries.map((country) => {
+                    const isSelected = filters.countries?.includes(country.id.toString()) || false;
+                    return (
+                      <div
+                        key={country.id}
+                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleCountrySelection(country.id.toString());
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleCountrySelection(country.id.toString())}
+                          onClick={(e) => e.stopPropagation()}
+                          className="checkbox checkbox-sm checkbox-primary"
+                        />
+                        <span className={isSelected ? 'font-semibold' : ''}>{country.name}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+          <div className="relative">
             <label className="block text-sm font-medium text-gray-700 mb-1">Stage (Multi-select)</label>
             <input
               type="text"
@@ -3025,7 +3236,6 @@ const CloserSuperPipelinePage = () => {
                 onChange={(e) => handleFilterChange('eligibilityDeterminedOnly', e.target.checked)}
               />
               <span className="text-xs text-gray-600">
-                Show only eligible leads
               </span>
             </div>
           </div>
@@ -3221,14 +3431,14 @@ const CloserSuperPipelinePage = () => {
               <table className="min-w-full divide-y divide-gray-200">
                 <thead>
                   <tr>
-                    <th className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
                       <div className="line-clamp-2 break-words">Lead</div>
                     </th>
-                    <th className="px-1 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider">
+                    <th className="px-1 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
                       <div className="line-clamp-2 break-words">Stage</div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('probability')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3238,7 +3448,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('closer')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3248,7 +3458,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('scheduler')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3258,7 +3468,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('meeting_date')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3267,8 +3477,14 @@ const CloserSuperPipelinePage = () => {
                         )}
                       </div>
                     </th>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                      <div className="line-clamp-2 break-words">Country</div>
+                    </th>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                      <div className="line-clamp-2 break-words">Tags</div>
+                    </th>
                     <th
-                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('follow_up_date')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3278,7 +3494,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('latest_interaction')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3287,14 +3503,14 @@ const CloserSuperPipelinePage = () => {
                         )}
                       </div>
                     </th>
-                    <th className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
                       <div className="line-clamp-2 break-words">Follow Up Notes</div>
                     </th>
-                    <th className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
                       <div className="line-clamp-2 break-words">Expert Opinion</div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('total_applicants')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3304,7 +3520,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('potential_applicants')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3313,11 +3529,11 @@ const CloserSuperPipelinePage = () => {
                         )}
                       </div>
                     </th>
-                    <th className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                    <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
                       <div className="line-clamp-2 break-words">Manager Notes</div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('total')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3386,6 +3602,14 @@ const CloserSuperPipelinePage = () => {
                             {lead.meeting_date ? new Date(lead.meeting_date).toLocaleDateString() : '---'}
                           </td>
                           <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
+                            {lead.country || '---'}
+                          </td>
+                          <td className="px-2 py-2 text-sm text-gray-900 max-w-[200px]">
+                            <div className="line-clamp-2 break-words" title={lead.tags || undefined}>
+                              {lead.tags || '---'}
+                            </div>
+                          </td>
+                          <td className="px-2 py-2 whitespace-nowrap text-sm text-gray-900">
                             <div className="flex items-center gap-2 group">
                               <span>{lead.follow_up_date ? new Date(lead.follow_up_date).toLocaleDateString() : '---'}</span>
                               <button
@@ -3425,8 +3649,15 @@ const CloserSuperPipelinePage = () => {
                           </td>
                           <td className="px-2 py-2 text-sm text-gray-900 max-w-[200px]">
                             <div
-                              className="line-clamp-3 break-words cursor-help"
+                              className="line-clamp-3 break-words cursor-pointer hover:underline"
                               title={lead.expert_opinion && lead.expert_opinion !== '---' ? lead.expert_opinion : undefined}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedExpertOpinionLead({
+                                  name: lead.name || `#${getDisplayLeadNumber(lead)}`,
+                                  opinion: lead.expert_opinion || '---',
+                                });
+                              }}
                             >
                               {lead.expert_opinion || '---'}
                             </div>
@@ -3588,6 +3819,13 @@ const CloserSuperPipelinePage = () => {
             ? loadingInteractions.has(selectedLeadForInteractions.id?.toString() || selectedLeadForInteractions.lead_number || '')
             : false
         }
+      />
+
+      <ExpertOpinionModal
+        isOpen={!!selectedExpertOpinionLead}
+        onClose={() => setSelectedExpertOpinionLead(null)}
+        leadName={selectedExpertOpinionLead?.name || 'Lead'}
+        opinionText={selectedExpertOpinionLead?.opinion || '---'}
       />
 
       {/* Follow-up Date Edit Modal */}
