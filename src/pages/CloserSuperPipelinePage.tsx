@@ -3221,14 +3221,14 @@ const CloserSuperPipelinePage = () => {
               <table className="min-w-full divide-y divide-gray-200">
                 <thead>
                   <tr>
-                    <th className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                    <th className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
                       <div className="line-clamp-2 break-words">Lead</div>
                     </th>
-                    <th className="px-1 py-2 text-left text-xs font-medium text-black uppercase tracking-wider">
+                    <th className="px-1 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider">
                       <div className="line-clamp-2 break-words">Stage</div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('probability')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3238,7 +3238,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('closer')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3248,7 +3248,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('scheduler')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3258,7 +3258,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('meeting_date')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3268,7 +3268,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('follow_up_date')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3278,7 +3278,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('latest_interaction')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3287,14 +3287,14 @@ const CloserSuperPipelinePage = () => {
                         )}
                       </div>
                     </th>
-                    <th className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                    <th className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
                       <div className="line-clamp-2 break-words">Follow Up Notes</div>
                     </th>
-                    <th className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                    <th className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
                       <div className="line-clamp-2 break-words">Expert Opinion</div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('total_applicants')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3304,7 +3304,7 @@ const CloserSuperPipelinePage = () => {
                       </div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('potential_applicants')}
                     >
                       <div className="line-clamp-2 break-words">
@@ -3313,11 +3313,11 @@ const CloserSuperPipelinePage = () => {
                         )}
                       </div>
                     </th>
-                    <th className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider" style={{ maxWidth: '200px' }}>
+                    <th className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider" style={{ maxWidth: '200px' }}>
                       <div className="line-clamp-2 break-words">Manager Notes</div>
                     </th>
                     <th
-                      className="px-2 py-2 text-left text-xs font-medium text-black uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                      className="px-2 py-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                       onClick={() => handleSort('total')}
                     >
                       <div className="line-clamp-2 break-words">
