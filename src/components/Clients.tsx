@@ -8,6 +8,8 @@ import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
 import { saveFollowUp } from '../lib/followUpsManager';
 import { usePersistedState } from '../hooks/usePersistedState';
 import BalanceEditModal from './BalanceEditModal';
+import ProbabilityFactorsSliders, { type ProbabilityFactors } from './ProbabilityFactorsSliders';
+import { caseProbabilityFromFactors, clampProbabilityPart, splitProbabilityEvenly } from './client-tabs/ProbabilitySlidersModal';
 import {
   PencilIcon,
   TrashIcon,
@@ -1630,6 +1632,9 @@ const Clients: React.FC<ClientsProps> = ({
     topic: selectedClient?.topic || '',
     special_notes: selectedClient?.special_notes || '',
     probability: selectedClient?.probability || 0,
+    legal_potential: 0,
+    seriousness: 0,
+    financial_ability: 0,
     number_of_applicants_meeting: selectedClient?.number_of_applicants_meeting || '',
     potential_applicants_meeting: selectedClient?.potential_applicants_meeting || '',
     balance: selectedClient?.balance || '',
@@ -8001,6 +8006,9 @@ const Clients: React.FC<ClientsProps> = ({
         topic: selectedClient.topic || '',
         special_notes: selectedClient.special_notes || '',
         probability: selectedClient.probability || 0,
+        legal_potential: (editLeadData as any).legal_potential || 0,
+        seriousness: (editLeadData as any).seriousness || 0,
+        financial_ability: (editLeadData as any).financial_ability || 0,
         number_of_applicants_meeting: selectedClient.number_of_applicants_meeting || '',
         potential_applicants_meeting: selectedClient.potential_applicants_meeting || '',
         balance: selectedClient.balance || selectedClient.total || '',
@@ -8275,6 +8283,26 @@ const Clients: React.FC<ClientsProps> = ({
     // Get the full category display name (subcategory + main category) using category_id
     const categoryDisplayName = getCategoryName(selectedClient?.category_id, selectedClient?.category);
 
+    // Factors: if missing, default from probability using shared helper
+    const parseFactor = (v: any): number | null => {
+      if (v == null || v === '') return null;
+      if (typeof v === 'string') {
+        const n = parseInt(v.trim(), 10);
+        return Number.isNaN(n) ? null : n;
+      }
+      const n = Number(v);
+      return Number.isNaN(n) ? null : Math.round(n);
+    };
+
+    const fL = parseFactor((selectedClient as any)?.legal_potential);
+    const fS = parseFactor((selectedClient as any)?.seriousness);
+    const fF = parseFactor((selectedClient as any)?.financial_ability);
+    const factors =
+      fL == null && fS == null && fF == null
+        ? splitProbabilityEvenly(clampProbabilityPart(probabilityValue))
+        : { legal: fL ?? 0, seriousness: fS ?? 0, financial: fF ?? 0 };
+    const computedProb = caseProbabilityFromFactors(factors.legal, factors.seriousness, factors.financial);
+
     setEditLeadData({
       tags: tagsString || selectedClient?.tags || '',
       source: sourceName,
@@ -8283,7 +8311,10 @@ const Clients: React.FC<ClientsProps> = ({
       category: categoryDisplayName,
       topic: selectedClient?.topic || '',
       special_notes: selectedClient?.special_notes || '',
-      probability: probabilityValue,
+      probability: computedProb,
+      legal_potential: factors.legal,
+      seriousness: factors.seriousness,
+      financial_ability: factors.financial,
       number_of_applicants_meeting: selectedClient?.number_of_applicants_meeting || '',
       potential_applicants_meeting: selectedClient?.potential_applicants_meeting || '',
       balance: selectedClient?.balance || selectedClient?.total || '',
@@ -8598,17 +8629,24 @@ const Clients: React.FC<ClientsProps> = ({
             updateData.notes = newSpecialNotes; // Map special_notes to notes for legacy
           }
         }
-        // Compare probability values (handle both string and number formats)
+        // Probability + factors (legacy: legal_potential is TEXT)
+        const nextL = clampProbabilityPart(Number((editLeadData as any).legal_potential || 0));
+        const nextS = clampProbabilityPart(Number((editLeadData as any).seriousness || 0));
+        const nextF = clampProbabilityPart(Number((editLeadData as any).financial_ability || 0));
+        const nextProb = caseProbabilityFromFactors(nextL, nextS, nextF);
+
+        const curLRaw: any = (selectedClient as any).legal_potential;
+        const curSRaw: any = (selectedClient as any).seriousness;
+        const curFRaw: any = (selectedClient as any).financial_ability;
+
+        if (String(nextL) !== String(curLRaw ?? '')) updateData.legal_potential = String(nextL);
+        if (Number(curSRaw ?? 0) !== nextS) updateData.seriousness = nextS;
+        if (Number(curFRaw ?? 0) !== nextF) updateData.financial_ability = nextF;
+
         const currentProbability = typeof selectedClient.probability === 'string'
           ? (selectedClient.probability === '' ? 0 : Number(selectedClient.probability) || 0)
           : (selectedClient.probability || 0);
-        const newProbability = typeof editLeadData.probability === 'string'
-          ? (editLeadData.probability === '' ? 0 : Number(editLeadData.probability) || 0)
-          : (editLeadData.probability || 0);
-
-        if (newProbability !== currentProbability) {
-          updateData.probability = newProbability;
-        }
+        if (Math.round(currentProbability) !== nextProb) updateData.probability = nextProb;
         // Handle source - convert source name to source_id
         if (editLeadData.source !== selectedClient.source) {
           if (editLeadData.source && editLeadData.source.trim() !== '') {
@@ -8765,17 +8803,24 @@ const Clients: React.FC<ClientsProps> = ({
             updateData.special_notes = newSpecialNotes;
           }
         }
-        // Compare probability values (handle both string and number formats)
+        // Probability + factors (new leads: all numeric)
+        const nextL = clampProbabilityPart(Number((editLeadData as any).legal_potential || 0));
+        const nextS = clampProbabilityPart(Number((editLeadData as any).seriousness || 0));
+        const nextF = clampProbabilityPart(Number((editLeadData as any).financial_ability || 0));
+        const nextProb = caseProbabilityFromFactors(nextL, nextS, nextF);
+
+        const curL = clampProbabilityPart(Number((selectedClient as any).legal_potential || 0));
+        const curS = clampProbabilityPart(Number((selectedClient as any).seriousness || 0));
+        const curF = clampProbabilityPart(Number((selectedClient as any).financial_ability || 0));
+
+        if (nextL !== curL) updateData.legal_potential = nextL;
+        if (nextS !== curS) updateData.seriousness = nextS;
+        if (nextF !== curF) updateData.financial_ability = nextF;
+
         const currentProbabilityNew = typeof selectedClient.probability === 'string'
           ? (selectedClient.probability === '' ? 0 : Number(selectedClient.probability) || 0)
           : (selectedClient.probability || 0);
-        const newProbabilityNew = typeof editLeadData.probability === 'string'
-          ? (editLeadData.probability === '' ? 0 : Number(editLeadData.probability) || 0)
-          : (editLeadData.probability || 0);
-
-        if (newProbabilityNew !== currentProbabilityNew) {
-          updateData.probability = newProbabilityNew;
-        }
+        if (Math.round(currentProbabilityNew) !== nextProb) updateData.probability = nextProb;
         if (editLeadData.number_of_applicants_meeting !== selectedClient.number_of_applicants_meeting) {
           // Handle empty string for numeric field
           let applicantsValue = null;
@@ -16562,20 +16607,25 @@ const Clients: React.FC<ClientsProps> = ({
                     <textarea className="textarea textarea-bordered w-full min-h-[60px]" value={editLeadData.special_notes} onChange={e => handleEditLeadChange('special_notes', e.target.value)} />
                   </div>
                   <div>
-                    <label className="block font-semibold mb-1">Probability</label>
-                    <div className="flex items-center gap-3">
-                      <input
-                        type="range"
-                        min="0"
-                        max="100"
-                        className="range range-primary flex-1"
-                        value={editLeadData.probability || 0}
-                        onChange={e => handleEditLeadChange('probability', parseInt(e.target.value))}
-                      />
-                      <span className="text-sm font-medium text-gray-700 min-w-[50px] text-right">
-                        {editLeadData.probability || 0}%
-                      </span>
-                    </div>
+                    <label className="block font-semibold mb-1">Case Probability</label>
+                    <ProbabilityFactorsSliders
+                      baselineProbability={selectedClient?.probability ?? null}
+                      value={{
+                        legal_potential: Number((editLeadData as any).legal_potential || 0),
+                        seriousness: Number((editLeadData as any).seriousness || 0),
+                        financial_ability: Number((editLeadData as any).financial_ability || 0),
+                      }}
+                      onChange={(next: ProbabilityFactors) => {
+                        const computed = caseProbabilityFromFactors(next.legal_potential, next.seriousness, next.financial_ability);
+                        setEditLeadData((prev: any) => ({
+                          ...prev,
+                          legal_potential: next.legal_potential,
+                          seriousness: next.seriousness,
+                          financial_ability: next.financial_ability,
+                          probability: computed,
+                        }));
+                      }}
+                    />
                   </div>
                   <div>
                     <label className="block font-semibold mb-1">Number of Applicants</label>

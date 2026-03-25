@@ -611,6 +611,10 @@ export interface Lead {
   tags?: string;
   anchor?: string;
   probability?: number;
+  /** Case probability factors (new leads: bigint) */
+  legal_potential?: number | null;
+  seriousness?: number | null;
+  financial_ability?: number | null;
   general_notes?: string;
   scheduler?: string;
   manager?: string;

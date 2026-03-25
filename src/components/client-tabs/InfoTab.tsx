@@ -1,8 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { ClientTabProps } from '../../types/client';
-import { InformationCircleIcon, ExclamationCircleIcon, PencilIcon, CheckIcon, XMarkIcon, PencilSquareIcon, PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { InformationCircleIcon, ExclamationCircleIcon, PencilIcon, CheckIcon, XMarkIcon, PencilSquareIcon, PlusIcon, TrashIcon, ScaleIcon, ExclamationTriangleIcon, BanknotesIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
+import ProbabilitySlidersModal, {
+  caseProbabilityFromFactors,
+  clampProbabilityPart,
+  probabilityLevelLabel,
+  splitProbabilityEvenly,
+  type ProbabilitySlidersValues,
+} from './ProbabilitySlidersModal';
 
 const INFOTAB_DEBUG = typeof window !== 'undefined' && (window as any).__INFOTAB_DEBUG__ === true;
 
@@ -180,6 +187,41 @@ const isLegacyLead = (client: any) => {
   return client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
 };
 
+const normalizeTagsValue = (value: unknown): string[] => {
+  if (!value) return [];
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => String(item || '').trim())
+      .filter(Boolean);
+  }
+  return String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+// Legacy probability may be numeric text or labels like L/M/H/VH (or Low/Medium/High/Very High).
+const parseProbabilityValue = (value: unknown): number | null => {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number') {
+    return Number.isNaN(value) ? null : Math.round(value);
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const asNumber = Number(raw);
+  if (!Number.isNaN(asNumber)) return Math.round(asNumber);
+
+  const normalized = raw.toLowerCase().replace(/[\s_-]+/g, '');
+  if (normalized === 'l' || normalized === 'low') return 25;
+  if (normalized === 'm' || normalized === 'medium') return 50;
+  if (normalized === 'h' || normalized === 'high') return 75;
+  if (normalized === 'vh' || normalized === 'veryhigh') return 90;
+
+  return null;
+};
+
 const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = false }) => {
   if (!client) {
     return <div className="flex justify-center items-center h-32"><span className="loading loading-spinner loading-md text-primary"></span></div>;
@@ -191,11 +233,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
   // Get field values with proper mapping for legacy leads
   const getProbability = () => {
     const prob = getFieldValue(client, 'probability');
-    // Handle both string and number formats
-    if (typeof prob === 'string') {
-      return prob === '' ? 50 : (parseInt(prob) || 50);
-    }
-    return prob !== null && prob !== undefined ? Number(prob) : 50;
+    const parsed = parseProbabilityValue(prob);
+    return parsed != null ? clampProbabilityPart(parsed) : 50;
   };
 
   const getSpecialNotes = () => {
@@ -212,9 +251,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
   const getTags = () => {
     // Prefer tags from join (client.tags set by parent when lead fetched with leads_lead_tags + misc_leadtag join)
     const fromJoin = getFieldValue(client, 'tags');
-    if (fromJoin && String(fromJoin).trim()) return String(fromJoin).trim();
-    // Legacy fallback: category when tags not from join
-    return isLegacy ? (getFieldValue(client, 'category') || '') : '';
+    if (fromJoin) return normalizeTagsValue(fromJoin);
+    // No category fallback: tags box should only reflect actual tag relations.
+    return [];
   };
 
   const getAnchor = () => {
@@ -411,6 +450,12 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
   };
 
   const [probability, setProbability] = useState(getProbability());
+  const [probFactorLegal, setProbFactorLegal] = useState(0);
+  const [probFactorSeriousness, setProbFactorSeriousness] = useState(0);
+  const [probFactorFinancial, setProbFactorFinancial] = useState(0);
+  const [probFactorsLoaded, setProbFactorsLoaded] = useState(false);
+  const [probabilityModalOpen, setProbabilityModalOpen] = useState(false);
+  const [probabilitySaving, setProbabilitySaving] = useState(false);
   const [isEditingSpecialNotes, setIsEditingSpecialNotes] = useState(false);
   const [isEditingGeneralNotes, setIsEditingGeneralNotes] = useState(false);
   const [isEditingTags, setIsEditingTags] = useState(false);
@@ -427,14 +472,15 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
 
   const [specialNotes, setSpecialNotes] = useState(getSpecialNotes());
   const [generalNotes, setGeneralNotes] = useState(getGeneralNotes());
-  const [tags, setTags] = useState(getTags());
+  const [tags, setTags] = useState<string[]>(getTags());
   const [anchor, setAnchor] = useState(getAnchor());
   const [factsOfCase, setFactsOfCase] = useState(getFacts());
   const [fileId, setFileId] = useState(getFileId());
 
   const [editedSpecialNotes, setEditedSpecialNotes] = useState(specialNotes.join('\n'));
   const [editedGeneralNotes, setEditedGeneralNotes] = useState(generalNotes);
-  const [editedTags, setEditedTags] = useState(tags);
+  const [editedTags, setEditedTags] = useState<string[]>(tags);
+  const [tagSearchTerm, setTagSearchTerm] = useState('');
   const [editedAnchor, setEditedAnchor] = useState(anchor);
   const [editedFacts, setEditedFacts] = useState(() => {
     const facts = getFacts();
@@ -446,7 +492,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
 
   // Tags state and functionality
   const [allTags, setAllTags] = useState<any[]>([]);
-  const [tagsList, setTagsList] = useState<string[]>([]);
 
   const [isMdUp, setIsMdUp] = useState(() =>
     typeof window !== 'undefined' ? window.matchMedia('(min-width: 768px)').matches : true
@@ -472,8 +517,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
 
         if (!tagsError && tagsData) {
           setAllTags(tagsData);
-          const tagNames = tagsData.map(tag => tag.name);
-          setTagsList(tagNames);
         }
       } catch (error) {
         console.error('Error fetching tags:', error);
@@ -484,12 +527,28 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
   }, []);
 
   // Fetch current lead tags
-  const fetchCurrentLeadTags = async (leadId: string) => {
+  const fetchCurrentLeadTags = async (leadId: string | number) => {
     try {
-      const isLegacy = leadId.toString().startsWith('legacy_');
+      const isLegacyById = leadId.toString().startsWith('legacy_');
+      const isLegacyLeadRecord = isLegacy || isLegacyById;
+      if (INFOTAB_DEBUG) {
+        console.log('🏷️ InfoTab fetchCurrentLeadTags start', {
+          leadId,
+          clientId: client?.id,
+          leadType: client?.lead_type,
+          isLegacyById,
+          isLegacyLeadRecord,
+        });
+      }
 
-      if (isLegacy) {
-        const legacyId = parseInt(leadId.replace('legacy_', ''));
+      if (isLegacyLeadRecord) {
+        const legacyId = isLegacyById ? parseInt(leadId.toString().replace('legacy_', ''), 10) : Number(leadId);
+        if (Number.isNaN(legacyId)) {
+          throw new Error(`Invalid legacy lead id for tags: ${leadId}`);
+        }
+        if (INFOTAB_DEBUG) {
+          console.log('🏷️ InfoTab fetch legacy tags query', { legacyId });
+        }
         const { data, error } = await supabase
           .from('leads_lead_tags')
           .select(`
@@ -502,13 +561,24 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
           `)
           .eq('lead_id', legacyId);
 
-        if (!error && data) {
+        if (error) throw error;
+        if (INFOTAB_DEBUG) {
+          console.log('🏷️ InfoTab fetch legacy tags result', { legacyId, count: data?.length || 0, data });
+        }
+        if (data) {
           const tags = data
-            .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
-            .map(item => (item.misc_leadtag as any).name);
-          return tags.join(', ');
+            .map((item) => {
+              const rel = item.misc_leadtag as any;
+              if (Array.isArray(rel)) return rel[0]?.name || null;
+              return rel?.name || null;
+            })
+            .filter(Boolean);
+          return tags;
         }
       } else {
+        if (INFOTAB_DEBUG) {
+          console.log('🏷️ InfoTab fetch new lead tags query', { leadId });
+        }
         const { data, error } = await supabase
           .from('leads_lead_tags')
           .select(`
@@ -521,95 +591,239 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
           `)
           .eq('newlead_id', leadId);
 
-        if (!error && data) {
+        if (error) throw error;
+        if (INFOTAB_DEBUG) {
+          console.log('🏷️ InfoTab fetch new lead tags result', { leadId, count: data?.length || 0, data });
+        }
+        if (data) {
           const tags = data
-            .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
-            .map(item => (item.misc_leadtag as any).name);
-          return tags.join(', ');
+            .map((item) => {
+              const rel = item.misc_leadtag as any;
+              if (Array.isArray(rel)) return rel[0]?.name || null;
+              return rel?.name || null;
+            })
+            .filter(Boolean);
+          return tags;
         }
       }
-      return '';
+      return [] as string[];
     } catch (error) {
-      console.error('Error fetching current lead tags:', error);
-      return '';
+      console.error('❌ InfoTab error fetching current lead tags:', {
+        leadId,
+        clientId: client?.id,
+        leadType: client?.lead_type,
+        error,
+      });
+      return [] as string[];
     }
   };
 
   // Save lead tags
-  const saveLeadTags = async (leadId: string, tagsString: string) => {
+  const saveLeadTags = async (leadId: string | number, selectedTags: string[]) => {
     try {
-      const isLegacy = leadId.toString().startsWith('legacy_');
+      const isLegacyById = leadId.toString().startsWith('legacy_');
+      const isLegacyLeadRecord = isLegacy || isLegacyById;
+      const normalizedTagNames = Array.from(
+        new Set(selectedTags.map((tag) => tag.trim()).filter(Boolean))
+      );
+      if (INFOTAB_DEBUG) {
+        console.log('🏷️ InfoTab saveLeadTags start', {
+          leadId,
+          clientId: client?.id,
+          leadType: client?.lead_type,
+          isLegacyById,
+          isLegacyLeadRecord,
+          selectedTags,
+          normalizedTagNames,
+          allTagsCount: allTags.length,
+        });
+      }
 
-      if (isLegacy) {
-        const legacyId = parseInt(leadId.replace('legacy_', ''));
-        await supabase
+      if (isLegacyLeadRecord) {
+        const legacyId = isLegacyById ? parseInt(leadId.toString().replace('legacy_', ''), 10) : Number(leadId);
+        if (Number.isNaN(legacyId)) {
+          throw new Error(`Invalid legacy lead id for tags save: ${leadId}`);
+        }
+        if (INFOTAB_DEBUG) {
+          console.log('🏷️ InfoTab save legacy delete', { legacyId });
+        }
+        const { error: deleteError } = await supabase
           .from('leads_lead_tags')
           .delete()
           .eq('lead_id', legacyId);
+        if (deleteError) throw deleteError;
 
-        if (tagsString.trim()) {
-          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
-          const tagIds = tagNames
+        if (normalizedTagNames.length > 0) {
+          const tagIds = normalizedTagNames
             .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
             .filter(id => id !== undefined);
+          if (INFOTAB_DEBUG) {
+            console.log('🏷️ InfoTab save legacy resolved tagIds', { legacyId, normalizedTagNames, tagIds });
+          }
 
           if (tagIds.length > 0) {
             const tagInserts = tagIds.map(tagId => ({
               lead_id: legacyId,
               leadtag_id: tagId
             }));
-            await supabase.from('leads_lead_tags').insert(tagInserts);
+            if (INFOTAB_DEBUG) {
+              console.log('🏷️ InfoTab save legacy insert payload', { tagInserts });
+            }
+            const { error: insertError } = await supabase.from('leads_lead_tags').insert(tagInserts);
+            if (insertError) throw insertError;
           }
         }
       } else {
-        await supabase
+        if (INFOTAB_DEBUG) {
+          console.log('🏷️ InfoTab save newlead delete', { leadId });
+        }
+        const { error: deleteError } = await supabase
           .from('leads_lead_tags')
           .delete()
           .eq('newlead_id', leadId);
+        if (deleteError) throw deleteError;
 
-        if (tagsString.trim()) {
-          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
-          const tagIds = tagNames
+        if (normalizedTagNames.length > 0) {
+          const tagIds = normalizedTagNames
             .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
             .filter(id => id !== undefined);
+          if (INFOTAB_DEBUG) {
+            console.log('🏷️ InfoTab save newlead resolved tagIds', { leadId, normalizedTagNames, tagIds });
+          }
 
           if (tagIds.length > 0) {
             const tagInserts = tagIds.map(tagId => ({
               newlead_id: leadId,
               leadtag_id: tagId
             }));
-            await supabase.from('leads_lead_tags').insert(tagInserts);
+            if (INFOTAB_DEBUG) {
+              console.log('🏷️ InfoTab save newlead insert payload', { tagInserts });
+            }
+            const { error: insertError } = await supabase.from('leads_lead_tags').insert(tagInserts);
+            if (insertError) throw insertError;
           }
         }
       }
+      if (INFOTAB_DEBUG) {
+        console.log('✅ InfoTab saveLeadTags done', { leadId, selectedTags: normalizedTagNames });
+      }
     } catch (error) {
-      console.error('Error saving tags:', error);
+      console.error('❌ InfoTab error saving tags:', {
+        leadId,
+        clientId: client?.id,
+        leadType: client?.lead_type,
+        selectedTags,
+        error,
+      });
+      throw error;
     }
   };
 
   // Update tags when client changes: use tags from join (client.tags) when present, else fetch
   useEffect(() => {
     const fromJoin = getTags();
-    if (fromJoin) {
+    if (fromJoin.length > 0) {
       setTags(fromJoin);
       setEditedTags(fromJoin);
       return;
     }
     const loadTags = async () => {
-      const tagsString = await fetchCurrentLeadTags(client.id);
-      setTags(tagsString);
-      setEditedTags(tagsString);
+      const fetchedTags = await fetchCurrentLeadTags(client.id);
+      setTags(fetchedTags);
+      setEditedTags(fetchedTags);
     };
     if (client?.id) {
       loadTags();
     }
   }, [client?.id]);
 
-  // Update probability when client changes
+  // When factor columns are not loaded yet, keep probability label in sync with client row
   useEffect(() => {
-    const newProbability = getProbability();
-    setProbability(newProbability);
-  }, [client?.probability, client?.id]);
+    if (!probFactorsLoaded) {
+      setProbability(getProbability());
+    }
+  }, [client?.probability, client?.id, probFactorsLoaded]);
+
+  // Fetch legal / seriousness / financial_ability for case probability breakdown
+  useEffect(() => {
+    let cancelled = false;
+
+    const parseLegalPotential = (v: unknown): number | null => {
+      if (v == null || v === '') return null;
+      if (typeof v === 'string') {
+        const n = parseInt(String(v).trim(), 10);
+        return Number.isNaN(n) ? null : n;
+      }
+      const n = Number(v);
+      return Number.isNaN(n) ? null : Math.round(n);
+    };
+
+    const parseBigFactor = (v: unknown): number | null => {
+      if (v == null || v === '') return null;
+      const n = Number(v);
+      return Number.isNaN(n) ? null : Math.round(n);
+    };
+
+    const loadFactors = async () => {
+      if (!client?.id) return;
+      setProbFactorsLoaded(false);
+
+      const tableName = isLegacy ? 'leads_lead' : 'leads';
+      const rowId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
+
+      try {
+        const { data, error } = await supabase
+          .from(tableName)
+          .select('legal_potential, financial_ability, seriousness, probability')
+          .eq('id', rowId)
+          .maybeSingle();
+
+        if (cancelled) return;
+        if (error && error.code !== 'PGRST116') {
+          if (INFOTAB_DEBUG) console.warn('InfoTab probability factors fetch:', error);
+        }
+
+        const L = data ? parseLegalPotential(data.legal_potential) : null;
+        const S = data ? parseBigFactor(data.seriousness) : null;
+        const F = data ? parseBigFactor(data.financial_ability) : null;
+
+        if (L == null && S == null && F == null) {
+          const fromDb = data ? parseProbabilityValue(data.probability) : null;
+          const targetCaseProb =
+            fromDb != null ? clampProbabilityPart(fromDb) : clampProbabilityPart(getProbability());
+          const split = splitProbabilityEvenly(targetCaseProb);
+          setProbFactorLegal(split.legal);
+          setProbFactorSeriousness(split.seriousness);
+          setProbFactorFinancial(split.financial);
+          setProbability(caseProbabilityFromFactors(split.legal, split.seriousness, split.financial));
+        } else {
+          const l = L ?? 0;
+          const s = S ?? 0;
+          const f = F ?? 0;
+          setProbFactorLegal(l);
+          setProbFactorSeriousness(s);
+          setProbFactorFinancial(f);
+          setProbability(caseProbabilityFromFactors(l, s, f));
+        }
+      } catch (e) {
+        if (!cancelled && INFOTAB_DEBUG) console.warn('InfoTab loadFactors', e);
+        if (!cancelled) {
+          const split = splitProbabilityEvenly(getProbability());
+          setProbFactorLegal(split.legal);
+          setProbFactorSeriousness(split.seriousness);
+          setProbFactorFinancial(split.financial);
+          setProbability(caseProbabilityFromFactors(split.legal, split.seriousness, split.financial));
+        }
+      } finally {
+        if (!cancelled) setProbFactorsLoaded(true);
+      }
+    };
+
+    void loadFactors();
+    return () => {
+      cancelled = true;
+    };
+  }, [client?.id, isLegacy]);
 
   // Update file ID when client changes
   useEffect(() => {
@@ -793,30 +1007,49 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     return () => { cancelled = true; };
   }, [client?.id]);
 
-  const handleProbabilityChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const newProbability = Number(event.target.value);
-    setProbability(newProbability);
+  const handleProbabilitySave = async (values: ProbabilitySlidersValues) => {
+    const L = clampProbabilityPart(values.legal);
+    const S = clampProbabilityPart(values.seriousness);
+    const F = clampProbabilityPart(values.financial);
+    const prob = caseProbabilityFromFactors(L, S, F);
 
+    setProbabilitySaving(true);
     try {
-      // Determine which table to update based on lead type
       const tableName = isLegacy ? 'leads_lead' : 'leads';
-      const idField = isLegacy ? 'id' : 'id';
       const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
 
-      const { error } = await supabase
-        .from(tableName)
-        .update({ probability: newProbability })
-        .eq(idField, clientId);
+      const updatePayload = isLegacy
+        ? {
+            legal_potential: String(L),
+            seriousness: S,
+            financial_ability: F,
+            probability: prob,
+          }
+        : {
+            legal_potential: L,
+            seriousness: S,
+            financial_ability: F,
+            probability: prob,
+          };
+
+      const { error } = await supabase.from(tableName).update(updatePayload).eq('id', clientId);
 
       if (error) throw error;
 
-      // Refresh client data in parent component
+      setProbFactorLegal(L);
+      setProbFactorSeriousness(S);
+      setProbFactorFinancial(F);
+      setProbability(prob);
+      setProbabilityModalOpen(false);
+
       if (onClientUpdate) {
         await onClientUpdate();
       }
     } catch (error) {
-      console.error('Error updating probability:', error);
-      alert('Failed to update probability');
+      console.error('Error updating case probability:', error);
+      alert('Failed to update case probability');
+    } finally {
+      setProbabilitySaving(false);
     }
   };
 
@@ -1328,14 +1561,38 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
 
   const saveTagsEdits = async () => {
     try {
+      if (INFOTAB_DEBUG) {
+        console.log('🏷️ InfoTab saveTagsEdits click', {
+          clientId: client?.id,
+          leadType: client?.lead_type,
+          editedTags,
+        });
+      }
       await saveLeadTags(client.id, editedTags);
-      setTags(editedTags);
+      setTags(Array.from(new Set(editedTags.map((tag) => tag.trim()).filter(Boolean))));
       setIsEditingTags(false);
       if (onClientUpdate) await onClientUpdate();
     } catch (error) {
-      console.error('Error updating tags:', error);
+      console.error('❌ InfoTab error updating tags (saveTagsEdits):', {
+        clientId: client?.id,
+        leadType: client?.lead_type,
+        editedTags,
+        error,
+      });
       alert('Failed to update tags');
     }
+  };
+
+  const visibleTags = allTags.filter((tag) =>
+    String(tag.name || '').toLowerCase().includes(tagSearchTerm.trim().toLowerCase())
+  );
+
+  const toggleEditedTag = (tagName: string) => {
+    setEditedTags((prev) =>
+      prev.includes(tagName)
+        ? prev.filter((tag) => tag !== tagName)
+        : [...prev, tagName]
+    );
   };
 
   const EditButtons = readOnly
@@ -1412,6 +1669,35 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     }
   }
 
+  const probabilityTone =
+    probability >= 85
+      ? {
+          valueClass: 'text-emerald-800',
+          barClass: 'bg-emerald-600',
+          badgeClass: 'text-emerald-800 bg-emerald-50 border-emerald-100',
+          label: 'Very high chance',
+        }
+      : probability >= 70
+      ? {
+          valueClass: 'text-emerald-700',
+          barClass: 'bg-emerald-500',
+          badgeClass: 'text-emerald-700 bg-emerald-50 border-emerald-100',
+          label: 'High chance',
+        }
+      : probability >= 40
+        ? {
+            valueClass: 'text-amber-700',
+            barClass: 'bg-amber-500',
+            badgeClass: 'text-amber-700 bg-amber-50 border-amber-100',
+            label: 'Moderate chance',
+          }
+        : {
+            valueClass: 'text-rose-700',
+            barClass: 'bg-rose-500',
+            badgeClass: 'text-rose-700 bg-rose-50 border-rose-100',
+            label: 'Low chance',
+          };
+
   return (
     <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
       {/* Header */}
@@ -1428,243 +1714,304 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
       </div>
 
       {/* Main Info Grid */}
-      <div className="space-y-12">
+      <div className="space-y-8">
+        <div className="space-y-1 mb-4">
+          <h3 className="text-xs font-semibold tracking-wide text-gray-500 uppercase">Overview</h3>
+          <div className="h-px bg-gray-200" />
+        </div>
         {/* Row 1: Case Probability, Follow-up Status, Eligibility Status, File ID */}
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 gap-y-12 lg:mb-14">
           {/* Case Probability */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5">
-              <div className="flex items-center justify-between">
+          <div className="bg-white border border-black/5 rounded-2xl shadow-md hover:shadow-lg transition-all duration-200 overflow-hidden">
+            <div className="px-6 pt-4 pb-5 space-y-5">
+              <div className="flex items-center justify-between gap-2">
                 <h4 className="text-lg font-semibold text-black">Case Probability</h4>
+                {!readOnly && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm rounded-md text-gray-500 hover:text-gray-900"
+                    onClick={() => setProbabilityModalOpen(true)}
+                    disabled={!probFactorsLoaded}
+                    aria-label="Edit case probability"
+                  >
+                    <PencilSquareIcon className="w-4 h-4" />
+                  </button>
+                )}
               </div>
-              <div className="border-b border-gray-200 mt-2"></div>
-            </div>
-            <div className="p-6">
-              <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-sm font-medium text-gray-500">Success Probability</span>
-                  <span className="text-lg font-bold text-gray-900">{probability}%</span>
-                </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={probability}
-                  onChange={readOnly ? undefined : handleProbabilityChange}
-                  className="range range-success w-full"
-                  step="1"
-                  disabled={readOnly}
-                  readOnly={readOnly}
-                />
-                <div className="flex justify-between text-xs text-gray-400">
-                  <span>0%</span>
-                  <span>25%</span>
-                  <span>50%</span>
-                  <span>75%</span>
-                  <span>100%</span>
-                </div>
+
+              <div className="space-y-3">
+                {!probFactorsLoaded ? (
+                  <div className="flex justify-center py-4">
+                    <span className="loading loading-spinner loading-sm text-primary align-middle" />
+                  </div>
+                ) : (
+                  <>
+                    <div className="text-center space-y-1">
+                      <span className={`text-5xl font-extrabold leading-none ${probabilityTone.valueClass}`}>
+                        {probability}%
+                      </span>
+                      <p className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium ${probabilityTone.badgeClass}`}>
+                        {probabilityTone.label}
+                      </p>
+                    </div>
+                    <div className="h-3 w-full rounded-full bg-gray-100 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full ${probabilityTone.barClass} transition-all duration-300`}
+                        style={{ width: `${Math.max(0, Math.min(100, probability))}%` }}
+                      />
+                    </div>
+                  </>
+                )}
               </div>
+
+              {!probFactorsLoaded ? (
+                <p className="text-xs text-gray-400">Loading breakdown...</p>
+              ) : (
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between py-1.5">
+                    <p className="text-sm font-normal text-gray-500 flex items-center gap-2">
+                      <ScaleIcon className="w-4 h-4 text-gray-400" />
+                      Legal
+                    </p>
+                    <p className="text-sm font-bold text-gray-900">{probabilityLevelLabel(probFactorLegal)}</p>
+                  </div>
+                  <div className="flex items-center justify-between py-1.5">
+                    <p className="text-sm font-normal text-gray-500 flex items-center gap-2">
+                      <ExclamationTriangleIcon className="w-4 h-4 text-gray-400" />
+                      Seriousness
+                    </p>
+                    <p className="text-sm font-bold text-gray-900">{probabilityLevelLabel(probFactorSeriousness)}</p>
+                  </div>
+                  <div className="flex items-center justify-between py-1.5">
+                    <p className="text-sm font-normal text-gray-500 flex items-center gap-2">
+                      <BanknotesIcon className="w-4 h-4 text-gray-400" />
+                      Financial ability
+                    </p>
+                    <p className="text-sm font-bold text-gray-900">{probabilityLevelLabel(probFactorFinancial)}</p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
           {/* Followup */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="px-6 pt-2 pb-2">
-              <div className="flex items-start justify-between gap-3">
-                <h4 className="text-lg font-semibold text-black">Follow-up Status</h4>
+          <div className="bg-white border border-black/5 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+            <div className="px-6 pt-4 pb-5 space-y-5">
+              <div className="flex items-center justify-between gap-2">
+                <h4 className="text-lg font-semibold text-gray-900">Follow-up Status</h4>
                 {isFollowupLoading ? (
-                  <span className="text-xs text-gray-400 mt-1">Loading...</span>
-                ) : !readOnly && !isAddingFollowup && !isEditingFollowup && !nextFollowupDate ? (
-                  <button
-                    className="btn btn-xs gap-1 bg-white border border-[#3b28c7] text-[#3b28c7] hover:bg-[#3b28c7] hover:text-white hover:border-[#3b28c7] transition-colors duration-200"
-                    onClick={() => setIsAddingFollowup(true)}
-                  >
-                    <PlusIcon className="w-3.5 h-3.5" />
-                    Add Follow-up
-                  </button>
+                  <span className="text-xs text-gray-400">Loading...</span>
                 ) : null}
               </div>
-              <div className="border-b border-gray-200 mt-2"></div>
-            </div>
-            <div className="p-6">
-              <div className="space-y-4">
-                {isFollowupLoading ? (
-                  <div className="flex items-center justify-center py-6 gap-2">
-                    <span className="loading loading-spinner loading-sm text-primary"></span>
-                    <span className="text-sm text-gray-500">Loading follow-up...</span>
+
+              {isFollowupLoading ? (
+                <div className="flex items-center justify-center py-6 gap-2">
+                  <span className="loading loading-spinner loading-sm text-primary"></span>
+                  <span className="text-sm text-gray-500">Loading follow-up...</span>
+                </div>
+              ) : nextFollowupDate && !isEditingFollowup ? (
+                <div className="space-y-5">
+                  <div className="space-y-1">
+                    <p className="text-sm text-gray-500">Next Follow-up</p>
+                    <p className="text-base font-semibold text-gray-900">{nextFollowupDate.toLocaleDateString()}</p>
                   </div>
-                ) : nextFollowupDate && !isEditingFollowup ? (
-                  <div className="space-y-3">
-                    <div className="space-y-0.5">
-                      <span className="text-sm font-medium text-gray-500">Next Follow-up</span>
-                      <p className="text-base font-semibold text-gray-900">{nextFollowupDate.toLocaleDateString()}</p>
-                    </div>
-                    <div className="pt-2 border-t border-gray-100">
-                      <div className="flex justify-between items-start gap-3">
-                        <span className="text-sm font-medium text-gray-500">Follow-up Notes</span>
-                        {!readOnly && (
-                          <button
-                            className="btn btn-ghost btn-sm btn-square text-gray-700 hover:text-gray-900"
-                            onClick={() => {
-                              setFollowupNotes(currentUserFollowupNotes || '');
-                              setIsEditingFollowupNotes(true);
-                            }}
-                            aria-label="Edit follow-up notes"
-                          >
-                            <PencilSquareIcon className="w-6 h-6" />
-                          </button>
-                        )}
-                      </div>
-                      <p className="text-sm text-gray-800 whitespace-pre-wrap mt-1.5">
-                        {currentUserFollowupNotes && currentUserFollowupNotes.trim().length > 0
-                          ? currentUserFollowupNotes
-                          : 'No follow-up notes yet'}
-                      </p>
-                    </div>
-                    {!readOnly && (
-                      <div className="flex gap-2 justify-end">
+
+                  <div className="border-t border-gray-100 pt-4 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm text-gray-500">Notes</p>
+                      {!readOnly && (
                         <button
-                          className="btn btn-primary btn-sm gap-2"
+                          className="btn btn-ghost btn-sm btn-square rounded-md text-gray-600 hover:text-gray-900"
                           onClick={() => {
-                            setIsEditingFollowup(true);
-                            setFollowupDate(nextFollowupDate.toISOString().split('T')[0]);
+                            setFollowupNotes(currentUserFollowupNotes || '');
+                            setIsEditingFollowupNotes(true);
                           }}
+                          aria-label="Edit follow-up notes"
                         >
                           <PencilSquareIcon className="w-4 h-4" />
-                          Change Follow-up
                         </button>
-                        <button
-                          className="btn btn-ghost btn-sm gap-2 text-gray-700 hover:text-gray-900"
-                          onClick={handleDeleteFollowup}
-                        >
-                          <TrashIcon className="w-4 h-4" />
-                          Delete
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ) : isAddingFollowup || isEditingFollowup ? (
-                  <div className="space-y-3">
-                    <div className="flex flex-col gap-2">
-                      <label className="text-sm font-medium text-gray-500">Select Follow-up Date</label>
-                      <input
-                        type="date"
-                        className="input input-bordered w-full"
-                        value={followupDate}
-                        onChange={(e) => setFollowupDate(e.target.value)}
-                        min={new Date().toISOString().split('T')[0]}
-                        readOnly={readOnly}
-                        disabled={readOnly}
-                      />
+                      )}
                     </div>
+                    <p className="text-sm text-gray-800 whitespace-pre-wrap">
+                      {currentUserFollowupNotes && currentUserFollowupNotes.trim().length > 0
+                        ? currentUserFollowupNotes
+                        : 'No notes yet'}
+                    </p>
+                  </div>
+
+                  {!readOnly && (
+                    <div className="flex gap-2 justify-end">
+                      <button
+                        className="btn btn-primary btn-sm rounded-md px-3"
+                        onClick={() => {
+                          setIsEditingFollowup(true);
+                          setFollowupDate(nextFollowupDate.toISOString().split('T')[0]);
+                        }}
+                      >
+                        <PencilSquareIcon className="w-4 h-4" />
+                        Change
+                      </button>
+                      <button
+                        className="btn btn-outline btn-sm rounded-md px-3"
+                        onClick={handleDeleteFollowup}
+                      >
+                        <TrashIcon className="w-4 h-4" />
+                        Delete
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : isAddingFollowup || isEditingFollowup ? (
+                <div className="space-y-4">
+                  <div className="flex flex-col gap-2">
+                    <label className="text-sm text-gray-500">Select Follow-up Date</label>
+                    <input
+                      type="date"
+                      className="input input-bordered w-full"
+                      value={followupDate}
+                      onChange={(e) => setFollowupDate(e.target.value)}
+                      min={new Date().toISOString().split('T')[0]}
+                      readOnly={readOnly}
+                      disabled={readOnly}
+                    />
+                  </div>
+                  {!readOnly && (
+                    <div className="flex gap-2 justify-end">
+                      <button
+                        className="btn btn-ghost btn-sm rounded-md px-3"
+                        onClick={() => {
+                          setIsAddingFollowup(false);
+                          setIsEditingFollowup(false);
+                          setFollowupDate('');
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        className="btn btn-primary btn-sm rounded-md px-3"
+                        onClick={isEditingFollowup ? handleUpdateFollowup : handleAddFollowup}
+                      >
+                        Save
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  <div className="space-y-1">
+                    <p className="text-sm text-gray-500">Next Follow-up</p>
                     {!readOnly && (
-                      <div className="flex gap-2 justify-end">
-                        <button
-                          className="btn btn-ghost btn-sm"
-                          onClick={() => {
-                            setIsAddingFollowup(false);
-                            setIsEditingFollowup(false);
-                            setFollowupDate('');
-                          }}
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          className="btn btn-primary btn-sm"
-                          onClick={isEditingFollowup ? handleUpdateFollowup : handleAddFollowup}
-                        >
-                          Save
-                        </button>
-                      </div>
+                      <button
+                        className="btn btn-sm rounded-md px-3 mt-3 border border-purple-200 bg-purple-100 text-purple-700 hover:bg-purple-200 hover:border-purple-300 active:scale-95 transition-all"
+                        onClick={() => setIsAddingFollowup(true)}
+                      >
+                        <PlusIcon className="w-4 h-4" />
+                        Schedule Follow-up
+                      </button>
                     )}
                   </div>
-                ) : (
-                  <div className="space-y-3 py-2">
-                    <div className="w-full border-t border-gray-100 pt-3 mb-3">
-                      <div className="flex justify-between items-start gap-3">
-                        <span className="text-sm font-medium text-gray-500">Follow-up Notes</span>
-                        {!readOnly && (
-                          <button
-                            className="btn btn-ghost btn-sm btn-square text-gray-700 hover:text-gray-900"
-                            onClick={() => {
-                              setFollowupNotes(currentUserFollowupNotes || '');
-                              setIsEditingFollowupNotes(true);
-                            }}
-                            aria-label="Edit follow-up notes"
-                          >
-                            <PencilSquareIcon className="w-6 h-6" />
-                          </button>
-                        )}
-                      </div>
-                      <p className="text-sm text-gray-800 whitespace-pre-wrap mt-1.5 text-left">
-                        {currentUserFollowupNotes && currentUserFollowupNotes.trim().length > 0
-                          ? currentUserFollowupNotes
-                          : 'No follow-up notes yet'}
-                      </p>
+
+                  <div className="border-t border-gray-100 pt-4 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm text-gray-500">Notes</p>
+                      {!readOnly && (
+                        <button
+                          className="btn btn-ghost btn-sm btn-square rounded-md text-gray-600 hover:text-gray-900"
+                          onClick={() => {
+                            setFollowupNotes(currentUserFollowupNotes || '');
+                            setIsEditingFollowupNotes(true);
+                          }}
+                          aria-label="Edit follow-up notes"
+                        >
+                          <PencilSquareIcon className="w-4 h-4" />
+                        </button>
+                      )}
                     </div>
+                    <p className="text-sm text-gray-800 whitespace-pre-wrap">
+                      {currentUserFollowupNotes && currentUserFollowupNotes.trim().length > 0
+                        ? currentUserFollowupNotes
+                        : 'No notes yet'}
+                    </p>
                   </div>
-                )}
-              </div>
+                </div>
+              )}
             </div>
           </div>
 
           {/* Eligibility */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5">
-              <h4 className="text-lg font-semibold text-black">Eligibility Status</h4>
-              <div className="border-b border-gray-200 mt-2"></div>
-            </div>
-            <div className="p-6 space-y-4">
-              <div className="flex justify-between items-center">
-                <span className="text-sm font-medium text-gray-500">Expert Status</span>
-                <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-gray-200 text-gray-700 ${getEligibilityStatus() === 'feasible_no_check' ? 'px-4 py-2 text-base rounded-xl' : ''}`}>
-                  {eligibilityDisplay.text}
-                  {(() => {
-                    // Get section_eligibility - use state for legacy leads, client data for new leads
-                    const currentSection = isLegacy ? sectionEligibility : (client.section_eligibility ?? '');
-                    if (['feasible_no_check', 'feasible_check'].includes(getEligibilityStatus() ?? '') && currentSection) {
-                      const sections = [
-                        { value: '116', label: 'German Citizenship - § 116' },
-                        { value: '15', label: 'German Citizenship - § 15' },
-                        { value: '5', label: 'German Citizenship - § 5' },
-                        { value: '58c', label: 'Austrian Citizenship - § 58c' },
-                      ];
-                      const found = sections.find(s => s.value === currentSection);
-                      return (
-                        <span className="ml-2 px-2 py-0.5 rounded bg-gray-300 text-gray-800 font-semibold text-xs">
-                          {found ? found.label.split(' - ')[1] : currentSection}
-                        </span>
-                      );
-                    }
-                    return null;
-                  })()}
-                </span>
-              </div>
-              <div className="flex justify-between items-center pt-2 border-t border-gray-200">
-                <span className="text-sm font-medium text-gray-500">Eligibility Determined</span>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="checkbox"
-                    className="toggle toggle-success"
-                    checked={eligible}
-                    onChange={readOnly ? undefined : (e) => handleEligibleToggle(e.target.checked)}
-                    disabled={readOnly}
-                  />
-                  <span className="text-sm font-medium text-gray-700">
-                    {eligible ? 'Yes' : 'No'}
+          <div className="bg-white border border-black/5 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+            <div className="px-6 pt-4 pb-5 space-y-5">
+              <h4 className="text-lg font-semibold text-gray-900">Eligibility Status</h4>
+
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-3 py-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2.5 h-2.5 rounded-full ${eligibilityDisplay.text === 'Not checked' ? 'bg-gray-300' : 'bg-emerald-500'}`} />
+                    <span className="text-sm text-gray-600">Status</span>
+                  </div>
+                  <span className="text-sm font-semibold text-gray-900">
+                    {eligibilityDisplay.text === 'Not checked' ? 'Not checked yet' : eligibilityDisplay.text}
                   </span>
                 </div>
+
+                <div className="border-t border-gray-100 pt-3 flex items-center justify-between gap-3 py-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2.5 h-2.5 rounded-full ${eligibilityDisplay.text === 'Not checked' ? 'bg-gray-300' : 'bg-emerald-500'}`} />
+                    <span className="text-sm text-gray-600">Expert Review</span>
+                  </div>
+                  <span className="text-sm font-semibold text-gray-900">
+                    {eligibilityDisplay.text === 'Not checked' ? 'Not completed' : 'Completed'}
+                  </span>
+                </div>
+
+                <div className="border-t border-gray-100 pt-3 flex items-center justify-between gap-3 py-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`w-2.5 h-2.5 rounded-full ${eligible ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+                    <span className="text-sm text-gray-600">Eligibility Decided</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="checkbox"
+                      className="toggle toggle-success"
+                      checked={eligible}
+                      onChange={readOnly ? undefined : (e) => handleEligibleToggle(e.target.checked)}
+                      disabled={readOnly}
+                    />
+                    <span className="text-sm font-medium text-gray-700">
+                      {eligible ? 'Yes' : 'Not determined'}
+                    </span>
+                  </div>
+                </div>
               </div>
+
+              {(() => {
+                const currentSection = isLegacy ? sectionEligibility : (client.section_eligibility ?? '');
+                if (['feasible_no_check', 'feasible_check'].includes(getEligibilityStatus() ?? '') && currentSection) {
+                  const sections = [
+                    { value: '116', label: 'German Citizenship - § 116' },
+                    { value: '15', label: 'German Citizenship - § 15' },
+                    { value: '5', label: 'German Citizenship - § 5' },
+                    { value: '58c', label: 'Austrian Citizenship - § 58c' },
+                  ];
+                  const found = sections.find(s => s.value === currentSection);
+                  return (
+                  <p className="mt-4 text-xs text-gray-500 border-t border-gray-100 pt-4">
+                      Section: <span className="font-semibold text-gray-700">{found ? found.label.split(' - ')[1] : currentSection}</span>
+                    </p>
+                  );
+                }
+                return null;
+              })()}
             </div>
           </div>
 
           {/* File ID */}
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-            <div className="pl-6 pt-2 pb-2 w-2/5">
+          <div className="bg-white border border-black/5 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
+            <div className="px-6 pt-4 pb-5 space-y-5">
               <div className="flex items-center justify-between">
-                <h4 className="text-lg font-semibold text-black">File ID</h4>
+                <h4 className="text-lg font-semibold text-gray-900">File ID</h4>
                 {useMobileEditModal && isEditingFileId ? (
-                  <span className="text-xs text-gray-400 shrink-0">Editing…</span>
+                  <span className="text-xs text-gray-400 shrink-0">Editing...</span>
                 ) : (
                   <EditButtons
                     isEditing={isEditingFileId && !useMobileEditModal}
@@ -1674,43 +2021,70 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                     }}
                     onSave={saveFileIdEdits}
                     onCancel={() => setIsEditingFileId(false)}
-                    editButtonClassName="btn btn-ghost btn-sm"
-                    editIconClassName="w-5 h-5 text-black"
+                    editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-gray-100 active:scale-95 transition-transform"
+                    editIconClassName="w-4 h-4 text-gray-400"
                   />
                 )}
               </div>
-              <div className="border-b border-gray-200 mt-2"></div>
-            </div>
-            <div className="p-6">
+
               {isEditingFileId && !useMobileEditModal ? (
-                <div className="space-y-3">
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    value={editedFileId}
-                    onChange={(e) => setEditedFileId(e.target.value)}
-                    placeholder="Enter file ID..."
-                  />
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  value={editedFileId}
+                  onChange={(e) => setEditedFileId(e.target.value)}
+                  placeholder="Enter file ID..."
+                />
+              ) : fileId ? (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-lg font-bold text-gray-900">{fileId}</p>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm rounded-md px-3"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(fileId);
+                        } catch {
+                          // no-op
+                        }
+                      }}
+                    >
+                      Copy
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500">File ID linked to this case.</p>
                 </div>
               ) : (
-                <div className="space-y-3">
-                  <div className="min-h-[40px] flex items-center">
-                    {fileId ? (
-                      <p className="text-gray-900 font-medium">{fileId}</p>
-                    ) : (
-                      <span className="text-gray-500">No file ID added</span>
-                    )}
-                  </div>
+                <div className="space-y-2">
+                  <p className="text-sm font-semibold text-gray-900">No file ID yet</p>
+                  {!readOnly && (
+                    <button
+                      className="btn btn-primary btn-sm rounded-md px-3 mt-3"
+                      onClick={() => {
+                        setIsEditingFileId(true);
+                        setEditedFileId(fileId);
+                      }}
+                    >
+                      <PlusIcon className="w-4 h-4" />
+                      Add File ID
+                    </button>
+                  )}
                 </div>
               )}
             </div>
           </div>
         </div>
 
-        {/* Row 2: Special Notes and General Notes — each section in its own card on mobile */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
+        <div className="mt-8 mb-4 border-t border-gray-200 pt-6 space-y-1">
+          <h3 className="text-xs font-semibold tracking-wide text-gray-500 uppercase">Case Details</h3>
+          <div className="h-px bg-gray-200" />
+        </div>
+
+        {/* Row 2: Special Notes and General Notes */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           {/* Special Notes */}
-          <div className="mb-6 max-lg:rounded-2xl max-lg:border max-lg:border-gray-200 max-lg:bg-base-100 max-lg:p-4 max-lg:sm:p-5 max-lg:shadow-md lg:mb-12 lg:pb-2">
+          <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm hover:shadow-md transition-all duration-200">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-base font-semibold text-gray-900">Special Notes</h4>
                 {useMobileEditModal && isEditingSpecialNotes ? (
@@ -1724,8 +2098,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                     }}
                     onSave={saveSpecialNotesEdits}
                     onCancel={() => setIsEditingSpecialNotes(false)}
-                    editButtonClassName="btn btn-ghost btn-sm"
-                    editIconClassName="w-5 h-5 text-black"
+                    editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-gray-100 active:scale-95 transition-transform"
+                    editIconClassName="w-4 h-4 text-gray-400"
                   />
                 )}
             </div>
@@ -1746,7 +2120,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                         <p
                           key={index}
                           dir={getTextDirection(formatNoteText(note))}
-                          className="text-gray-900 mb-2 last:mb-0 whitespace-pre-wrap break-words text-start"
+                          className="text-sm text-gray-600 leading-relaxed mb-2 last:mb-0 whitespace-pre-wrap break-words text-start"
                         >
                           {formatNoteText(note)}
                         </p>
@@ -1755,19 +2129,22 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                       <span className="text-gray-500">No special notes added</span>
                     )}
                   </div>
-                  {(getFieldValue(client, 'special_notes_last_edited_by') || getFieldValue(client, 'special_notes_last_edited_at')) && (
-                    <div className="text-xs text-gray-400 flex justify-between">
-                      <span>Last edited by {getFieldValue(client, 'special_notes_last_edited_by') || 'Unknown'}</span>
-                      <span>{getFieldValue(client, 'special_notes_last_edited_at') ? new Date(getFieldValue(client, 'special_notes_last_edited_at')).toLocaleString() : ''}</span>
-                    </div>
-                  )}
+                  <div className="text-xs text-gray-400 flex justify-between">
+                    <span>Last edited by {getFieldValue(client, 'special_notes_last_edited_by') || 'Unknown'}</span>
+                    <span>
+                      Last edited at{' '}
+                      {getFieldValue(client, 'special_notes_last_edited_at')
+                        ? new Date(getFieldValue(client, 'special_notes_last_edited_at')).toLocaleString()
+                        : 'Not set'}
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
           </div>
 
           {/* General Notes */}
-          <div className="mb-6 max-lg:rounded-2xl max-lg:border max-lg:border-gray-200 max-lg:bg-base-100 max-lg:p-4 max-lg:sm:p-5 max-lg:shadow-md lg:mb-12 lg:pb-2">
+          <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm hover:shadow-md transition-all duration-200">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-base font-semibold text-gray-900">General Notes</h4>
                 {useMobileEditModal && isEditingGeneralNotes ? (
@@ -1781,8 +2158,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                     }}
                     onSave={saveGeneralNotesEdits}
                     onCancel={() => setIsEditingGeneralNotes(false)}
-                    editButtonClassName="btn btn-ghost btn-sm"
-                    editIconClassName="w-5 h-5 text-black"
+                    editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-gray-100 active:scale-95 transition-transform"
+                    editIconClassName="w-4 h-4 text-gray-400"
                   />
                 )}
             </div>
@@ -1806,25 +2183,43 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                         {formatNoteText(generalNotes)}
                       </p>
                     ) : (
-                      <span className="text-gray-500">No general notes added</span>
+                      <div className="space-y-2">
+                        <span className="text-gray-500 block">No notes yet</span>
+                        {!readOnly && (
+                          <button
+                            type="button"
+                            className="btn btn-primary btn-sm rounded-md mt-2 active:scale-95 transition-transform"
+                            onClick={() => {
+                              setIsEditingGeneralNotes(true);
+                              setEditedGeneralNotes(formatNoteText(generalNotes));
+                            }}
+                          >
+                            <PlusIcon className="w-4 h-4" />
+                            Add Note
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
-                  {(getFieldValue(client, isLegacy ? 'notes_last_edited_by' : 'general_notes_last_edited_by') || getFieldValue(client, isLegacy ? 'notes_last_edited_at' : 'general_notes_last_edited_at')) && (
-                    <div className="text-xs text-gray-400 flex justify-between">
-                      <span>Last edited by {getFieldValue(client, isLegacy ? 'notes_last_edited_by' : 'general_notes_last_edited_by') || 'Unknown'}</span>
-                      <span>{getFieldValue(client, isLegacy ? 'notes_last_edited_at' : 'general_notes_last_edited_at') ? new Date(getFieldValue(client, isLegacy ? 'notes_last_edited_at' : 'general_notes_last_edited_at')).toLocaleString() : ''}</span>
-                    </div>
-                  )}
+                  <div className="text-xs text-gray-400 flex justify-between">
+                    <span>Last edited by {getFieldValue(client, isLegacy ? 'notes_last_edited_by' : 'general_notes_last_edited_by') || 'Unknown'}</span>
+                    <span>
+                      Last edited at{' '}
+                      {getFieldValue(client, isLegacy ? 'notes_last_edited_at' : 'general_notes_last_edited_at')
+                        ? new Date(getFieldValue(client, isLegacy ? 'notes_last_edited_at' : 'general_notes_last_edited_at')).toLocaleString()
+                        : 'Not set'}
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
           </div>
         </div>
 
-        {/* Row 4: Facts of Case and Tags — each section in its own card on mobile */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
+        {/* Row 4: Facts of Case and Tags */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           {/* Facts of Case */}
-          <div className="max-lg:rounded-2xl max-lg:border max-lg:border-gray-200 max-lg:bg-base-100 max-lg:p-4 max-lg:sm:p-5 max-lg:shadow-md">
+          <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm hover:shadow-md transition-all duration-200">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-base font-semibold text-gray-900">Facts of Case</h4>
                 {useMobileEditModal && isEditingFacts ? (
@@ -1838,8 +2233,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                     }}
                     onSave={saveFactsEdits}
                     onCancel={() => setIsEditingFacts(false)}
-                    editButtonClassName="btn btn-ghost btn-sm"
-                    editIconClassName="w-5 h-5 text-black"
+                    editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-gray-100 active:scale-95 transition-transform"
+                    editIconClassName="w-4 h-4 text-gray-400"
                   />
                 )}
             </div>
@@ -1877,22 +2272,41 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                         ));
                       })()
                     ) : (
-                      <span className="text-gray-500">No case facts added</span>
+                      <div className="space-y-2">
+                        <span className="text-gray-500 block">No facts recorded yet</span>
+                        <p className="text-sm text-gray-500">Capture key facts to support this case.</p>
+                        {!readOnly && (
+                          <button
+                            type="button"
+                            className="btn btn-primary btn-sm rounded-md mt-2 active:scale-95 transition-transform"
+                            onClick={() => {
+                              setIsEditingFacts(true);
+                              setEditedFacts(factsOfCase.map(fact => fact.value).join('\n'));
+                            }}
+                          >
+                            <PlusIcon className="w-4 h-4" />
+                            Add Fact
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
-                  {(getFieldValue(client, isLegacy ? 'description_last_edited_by' : 'facts_last_edited_by') || getFieldValue(client, isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at')) && (
-                    <div className="text-xs text-gray-400 flex justify-between">
-                      <span>Last edited by {getFieldValue(client, isLegacy ? 'description_last_edited_by' : 'facts_last_edited_by') || 'Unknown'}</span>
-                      <span>{getFieldValue(client, isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at') ? new Date(getFieldValue(client, isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at')).toLocaleString() : ''}</span>
-                    </div>
-                  )}
+                  <div className="text-xs text-gray-400 flex justify-between">
+                    <span>Last edited by {getFieldValue(client, isLegacy ? 'description_last_edited_by' : 'facts_last_edited_by') || 'Unknown'}</span>
+                    <span>
+                      Last edited at{' '}
+                      {getFieldValue(client, isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at')
+                        ? new Date(getFieldValue(client, isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at')).toLocaleString()
+                        : 'Not set'}
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
           </div>
 
           {/* Tags */}
-          <div className="max-lg:rounded-2xl max-lg:border max-lg:border-gray-200 max-lg:bg-base-100 max-lg:p-4 max-lg:sm:p-5 max-lg:shadow-md">
+          <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm hover:shadow-md transition-all duration-200">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-base font-semibold text-gray-900">Tags</h4>
                 {useMobileEditModal && isEditingTags ? (
@@ -1902,47 +2316,126 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                     isEditing={isEditingTags && !useMobileEditModal}
                     onEdit={() => {
                       setIsEditingTags(true);
-                      setEditedTags(tags);
+                      setEditedTags([...tags]);
+                      setTagSearchTerm('');
                     }}
                     onSave={saveTagsEdits}
                     onCancel={() => setIsEditingTags(false)}
-                    editButtonClassName="btn btn-ghost btn-sm"
-                    editIconClassName="w-5 h-5 text-black"
+                    editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-gray-100 active:scale-95 transition-transform"
+                    editIconClassName="w-4 h-4 text-gray-400"
                   />
                 )}
             </div>
             <div>
               {isEditingTags && !useMobileEditModal ? (
-                <>
+                <div className="space-y-3">
+                  {editedTags.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                      {editedTags.map((tagName) => (
+                        <span
+                          key={`selected-${tagName}`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-primary/10 text-primary text-sm font-medium"
+                        >
+                          {tagName}
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-xs btn-circle min-h-0 h-5 w-5"
+                            onClick={() => toggleEditedTag(tagName)}
+                            title={`Remove ${tagName}`}
+                            aria-label={`Remove ${tagName}`}
+                          >
+                            <XMarkIcon className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <input
                     type="text"
                     className="input input-bordered w-full"
-                    placeholder="Search or select tags..."
-                    value={editedTags}
-                    onChange={(e) => setEditedTags(e.target.value)}
-                    list="tags-options"
+                    placeholder="Search tags..."
+                    value={tagSearchTerm}
+                    onChange={(e) => setTagSearchTerm(e.target.value)}
                   />
-                  <datalist id="tags-options">
-                    {tagsList.map((name, index) => (
-                      <option key={`${name}-${index}`} value={name} />
-                    ))}
-                  </datalist>
-                </>
+                  <div className="max-h-44 overflow-y-auto border border-gray-200 rounded-xl p-2 space-y-1 bg-white">
+                    {visibleTags.map((tag) => {
+                      const isChecked = editedTags.includes(tag.name);
+                      return (
+                        <label
+                          key={tag.id}
+                          className={`flex items-center gap-2 px-2 py-1.5 rounded-lg ${
+                            isChecked ? 'opacity-60 cursor-not-allowed bg-gray-50' : 'hover:bg-gray-50 cursor-pointer'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            className="checkbox checkbox-sm checkbox-primary"
+                            checked={isChecked}
+                            disabled={isChecked}
+                            onChange={() => toggleEditedTag(tag.name)}
+                          />
+                          <span className="text-sm text-gray-800">{tag.name}</span>
+                          {isChecked && <span className="text-xs text-gray-500">(added)</span>}
+                        </label>
+                      );
+                    })}
+                    {visibleTags.length === 0 && (
+                      <div className="text-sm text-gray-500 px-2 py-2">No tags found</div>
+                    )}
+                  </div>
+                </div>
               ) : (
                 <div className="space-y-3">
                   <div className="min-h-[80px]">
-                    {tags ? (
-                      <p dir={getTextDirection(tags)} className="text-gray-900 whitespace-pre-wrap break-words text-start">
-                        {tags}
-                      </p>
+                    {tags.length > 0 ? (
+                      <div className="mt-3 flex flex-wrap gap-2 items-center">
+                        {tags.map((tagName) => (
+                          <span
+                            key={tagName}
+                            className="px-2.5 py-1 rounded-full bg-primary/10 text-primary text-sm font-medium hover:bg-purple-200 cursor-pointer transition-colors"
+                          >
+                            {tagName}
+                          </span>
+                        ))}
+                        {!readOnly && (
+                          <button
+                            type="button"
+                            className="btn btn-primary btn-sm rounded-md hover:shadow-md active:scale-95 transition-all"
+                            onClick={() => {
+                              setIsEditingTags(true);
+                              setEditedTags([...tags]);
+                              setTagSearchTerm('');
+                            }}
+                          >
+                            <PlusIcon className="w-4 h-4" />
+                            Add Tag
+                          </button>
+                        )}
+                      </div>
                     ) : (
-                      <span className="text-gray-500">No tags added</span>
+                      <div className="space-y-2">
+                        <span className="text-gray-500 block">No tags yet</span>
+                        {!readOnly && (
+                          <button
+                            type="button"
+                            className="btn btn-primary btn-sm rounded-md mt-1 hover:shadow-md active:scale-95 transition-all"
+                            onClick={() => {
+                              setIsEditingTags(true);
+                              setEditedTags([...tags]);
+                              setTagSearchTerm('');
+                            }}
+                          >
+                            <PlusIcon className="w-4 h-4" />
+                            Add Tag
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                   {(getFieldValue(client, isLegacy ? 'category_last_edited_by' : 'tags_last_edited_by') || getFieldValue(client, isLegacy ? 'category_last_edited_at' : 'tags_last_edited_at')) && (
                     <div className="text-xs text-gray-400 flex justify-between">
-                      <span>Last edited by {getFieldValue(client, isLegacy ? 'category_last_edited_by' : 'tags_last_edited_by') || 'Unknown'}</span>
-                      <span>{getFieldValue(client, isLegacy ? 'category_last_edited_at' : 'tags_last_edited_at') ? new Date(getFieldValue(client, isLegacy ? 'category_last_edited_at' : 'tags_last_edited_at')).toLocaleString() : ''}</span>
+                      <span>Last updated by {getFieldValue(client, isLegacy ? 'category_last_edited_by' : 'tags_last_edited_by') || 'Unknown'}</span>
+                      <span>{getFieldValue(client, isLegacy ? 'category_last_edited_at' : 'tags_last_edited_at') ? new Date(getFieldValue(client, isLegacy ? 'category_last_edited_at' : 'tags_last_edited_at')).toLocaleDateString() : ''}</span>
                     </div>
                   )}
                 </div>
@@ -2171,26 +2664,76 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
             onClose={() => setIsEditingTags(false)}
             onSave={saveTagsEdits}
           >
+            {editedTags.length > 0 && (
+              <div className="mb-3 flex flex-wrap gap-2">
+                {editedTags.map((tagName) => (
+                  <span
+                    key={`mobile-selected-${tagName}`}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-primary/10 text-primary text-sm font-medium"
+                  >
+                    {tagName}
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-xs btn-circle min-h-0 h-5 w-5"
+                      onClick={() => toggleEditedTag(tagName)}
+                      title={`Remove ${tagName}`}
+                      aria-label={`Remove ${tagName}`}
+                    >
+                      <XMarkIcon className="w-3 h-3" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
             <label className="label">
               <span className="label-text">Search or select tags</span>
             </label>
             <input
               type="text"
               className="input input-bordered w-full"
-              placeholder="Search or select tags..."
-              value={editedTags}
-              onChange={(e) => setEditedTags(e.target.value)}
-              list="tags-options-mobile"
+              placeholder="Search tags..."
+              value={tagSearchTerm}
+              onChange={(e) => setTagSearchTerm(e.target.value)}
             />
-            <datalist id="tags-options-mobile">
-              {tagsList.map((name, index) => (
-                <option key={`mobile-${name}-${index}`} value={name} />
-              ))}
-            </datalist>
+            <div className="mt-3 max-h-56 overflow-y-auto border border-gray-200 rounded-xl p-2 space-y-1 bg-white">
+              {visibleTags.map((tag) => {
+                const isChecked = editedTags.includes(tag.name);
+                return (
+                  <label
+                    key={`mobile-${tag.id}`}
+                    className={`flex items-center gap-2 px-2 py-1.5 rounded-lg ${
+                      isChecked ? 'opacity-60 cursor-not-allowed bg-gray-50' : 'hover:bg-gray-50 cursor-pointer'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      className="checkbox checkbox-sm checkbox-primary"
+                      checked={isChecked}
+                      disabled={isChecked}
+                      onChange={() => toggleEditedTag(tag.name)}
+                    />
+                    <span className="text-sm text-gray-800">{tag.name}</span>
+                    {isChecked && <span className="text-xs text-gray-500">(added)</span>}
+                  </label>
+                );
+              })}
+              {visibleTags.length === 0 && (
+                <div className="text-sm text-gray-500 px-2 py-2">No tags found</div>
+              )}
+            </div>
           </MobileEditModal>
         )}
       </div>
 
+      <ProbabilitySlidersModal
+        open={probabilityModalOpen}
+        onClose={() => setProbabilityModalOpen(false)}
+        onSave={handleProbabilitySave}
+        initialLegal={probFactorLegal}
+        initialSeriousness={probFactorSeriousness}
+        initialFinancial={probFactorFinancial}
+        saving={probabilitySaving}
+      />
     </div>
   );
 };

@@ -20,6 +20,7 @@ import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGri
 import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
 import { convertToNIS } from '../lib/currencyConversion';
 import CallOptionsModal from './CallOptionsModal';
+import EditLeadDrawer from './EditLeadDrawer';
 
 interface LeadForPipeline {
   id: number | string;
@@ -478,27 +479,7 @@ const PipelinePage: React.FC = () => {
   
   // Edit lead drawer state
   const [showEditLeadDrawer, setShowEditLeadDrawer] = useState(false);
-  const [editLeadData, setEditLeadData] = useState({
-    tags: '',
-    source: '',
-    name: '',
-    language: '',
-    category: '',
-    topic: '',
-    probability: 0,
-    number_of_applicants_meeting: '',
-    potential_applicants_meeting: '',
-    balance: '',
-    next_followup: '',
-    balance_currency: '₪',
-    eligible: true,
-  });
-  const [currentLeadTags, setCurrentLeadTags] = useState('');
-  const [mainCategories, setMainCategories] = useState<string[]>([]);
-  const [sources, setSources] = useState<string[]>([]);
-  const [tagsList, setTagsList] = useState<string[]>([]);
   const [labelTags, setLabelTags] = useState<string[]>([]); // Tags from misc_leadtag for label dropdown
-  const [currencies, setCurrencies] = useState<Array<{id: string, front_name: string, iso_code: string, name: string}>>([]);
   
   const navigate = useNavigate();
 
@@ -1886,88 +1867,27 @@ const PipelinePage: React.FC = () => {
     }
   }, [isDocumentModalOpen]);
 
-  // Fetch additional data for edit lead drawer
+  // Label filter dropdown: all tags from misc_leadtag
   useEffect(() => {
-    const fetchEditLeadData = async () => {
+    const fetchLabelTags = async () => {
       try {
-        // Fetch currencies - try both new and legacy tables
-        const [newCurrencies, legacyCurrencies] = await Promise.all([
-          supabase.from('misc_currency').select('id, front_name, iso_code, name').order('name', { ascending: true }),
-          supabase.from('accounting_currencies').select('id, iso_code, name').order('name', { ascending: true })
-        ]);
-        
-        // Process currencies
-        if (!newCurrencies.error && newCurrencies.data && newCurrencies.data.length > 0) {
-          setCurrencies(newCurrencies.data);
-        } else if (!legacyCurrencies.error && legacyCurrencies.data && legacyCurrencies.data.length > 0) {
-          const transformedCurrencies = legacyCurrencies.data.map((currency: any) => ({
-            id: currency.id.toString(),
-            front_name: currency.iso_code === 'NIS' ? '₪' : currency.iso_code === 'EUR' ? '€' : currency.iso_code === 'USD' ? '$' : currency.iso_code === 'GBP' ? '£' : currency.iso_code,
-            iso_code: currency.iso_code,
-            name: currency.name
-          }));
-          setCurrencies(transformedCurrencies);
-        } else {
-          // Fallback to hardcoded currencies
-          const fallbackCurrencies = [
-            { id: '1', front_name: '₪', iso_code: 'NIS', name: '₪' },
-            { id: '2', front_name: '€', iso_code: 'EUR', name: '€' },
-            { id: '3', front_name: '$', iso_code: 'USD', name: '$' },
-            { id: '4', front_name: '£', iso_code: 'GBP', name: '£' }
-          ];
-          setCurrencies(fallbackCurrencies);
-        }
-
-        // Fetch sources for dropdown
-        const { data: sourcesData, error: sourcesError } = await supabase
-          .from('misc_leadsource')
-          .select('name')
-          .order('name', { ascending: true });
-        
-        if (sourcesError) {
-          console.error('Error fetching sources:', sourcesError);
-        } else if (sourcesData) {
-          setSources(sourcesData.map(s => s.name));
-        }
-
-        // Fetch tags for dropdown
         const { data: tagsData, error: tagsError } = await supabase
           .from('misc_leadtag')
           .select('name')
           .eq('active', true)
           .order('name', { ascending: true });
-        
+
         if (tagsError) {
-          console.error('Error fetching tags:', tagsError);
+          console.error('Error fetching label tags:', tagsError);
         } else if (tagsData) {
-          setTagsList(tagsData.map(t => t.name));
-          // Also set label tags (same source for label dropdown)
           setLabelTags(tagsData.map(t => t.name));
         }
-
-        // Extract main categories from allCategories
-        if (allCategories && allCategories.length > 0) {
-          const mainCatSet = new Set<string>();
-          allCategories.forEach((cat: any) => {
-            const mainCatName = cat.misc_maincategory?.name || '';
-            if (mainCatName) {
-              mainCatSet.add(mainCatName);
-            }
-            // Also add the category name itself
-            const fullCategoryName = mainCatName 
-              ? `${cat.name} (${mainCatName})`
-              : cat.name;
-            mainCatSet.add(fullCategoryName);
-          });
-          setMainCategories(Array.from(mainCatSet).sort());
-        }
       } catch (error) {
-        console.error('Error fetching edit lead data:', error);
+        console.error('Error fetching label tags:', error);
       }
     };
-
-    fetchEditLeadData();
-  }, [allCategories]);
+    fetchLabelTags();
+  }, []);
 
   // Close dropdown when clicking outside
   useEffect(() => {
@@ -2580,553 +2500,9 @@ const PipelinePage: React.FC = () => {
     navigate(`/clients/${lead.lead_number}`);
   };
 
-  const handleEditLead = async (lead: LeadForPipeline) => {
-    // Set selected lead for editing
+  const handleEditLead = (lead: LeadForPipeline) => {
     setSelectedLead(lead);
-    
-    // Get the correct currency for this lead
-    const currentCurrency = getCurrencySymbol(lead.balance_currency) || '₪';
-    
-    // Get language name
-    const languageName = getLanguageName(lead.language_id, lead.language);
-    
-    // Fetch follow-up from follow_ups table for current user
-    let followUpDate = '';
-    if (userId) {
-      const isLegacyLead = lead.lead_type === 'legacy' || lead.id.toString().startsWith('legacy_');
-      
-      if (isLegacyLead) {
-        const legacyId = lead.id.toString().replace('legacy_', '');
-        const { data: followUpData } = await supabase
-          .from('follow_ups')
-          .select('date')
-          .eq('user_id', userId)
-          .eq('lead_id', legacyId)
-          .is('new_lead_id', null)
-          .maybeSingle();
-        
-        if (followUpData?.date) {
-          followUpDate = new Date(followUpData.date).toISOString().split('T')[0];
-        }
-      } else {
-        const { data: followUpData } = await supabase
-          .from('follow_ups')
-          .select('date')
-          .eq('user_id', userId)
-          .eq('new_lead_id', lead.id)
-          .is('lead_id', null)
-          .maybeSingle();
-        
-        if (followUpData?.date) {
-          followUpDate = new Date(followUpData.date).toISOString().split('T')[0];
-        }
-      }
-    }
-    
-    // Reset the edit form data with current lead data
-    setEditLeadData({
-      tags: '',
-      source: lead.source || '',
-      name: lead.name || '',
-      language: languageName !== 'N/A' ? languageName : '',
-      category: lead.category || '',
-      topic: lead.topic || '',
-      probability: lead.probability || 0,
-      number_of_applicants_meeting: lead.number_of_applicants_meeting?.toString() || '',
-      potential_applicants_meeting: lead.potential_applicants_meeting?.toString() || '',
-      balance: lead.balance?.toString() || '',
-      next_followup: followUpDate, // Use follow-up from follow_ups table
-      balance_currency: currentCurrency,
-      eligible: lead.eligible !== false,
-    });
-    
-    // Fetch current lead's tags
-    await fetchCurrentLeadTags(lead.id.toString());
-    
     setShowEditLeadDrawer(true);
-  };
-
-  const handleEditLeadChange = (field: string, value: any) => {
-    setEditLeadData(prev => ({ ...prev, [field]: value }));
-  };
-
-  const fetchCurrentLeadTags = async (leadId: string) => {
-    try {
-      // Check if it's a legacy lead
-      const isLegacyLead = leadId.toString().startsWith('legacy_');
-      
-      if (isLegacyLead) {
-        const legacyId = parseInt(leadId.replace('legacy_', ''));
-        const { data, error } = await supabase
-          .from('leads_lead_tags')
-          .select(`
-            id,
-            leadtag_id,
-            misc_leadtag (
-              id,
-              name
-            )
-          `)
-          .eq('lead_id', legacyId);
-        
-        if (!error && data) {
-          const tags = data
-            .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
-            .map(item => (item.misc_leadtag as any).name);
-          
-          // Join tags with comma and space
-          const tagsString = tags.join(', ');
-          setCurrentLeadTags(tagsString);
-        } else {
-          console.error('❌ Error fetching current lead tags (legacy):', error);
-          setCurrentLeadTags('');
-        }
-      } else {
-        // For new leads, fetch from leads_lead_tags table using newlead_id
-        const { data, error } = await supabase
-          .from('leads_lead_tags')
-          .select(`
-            id,
-            leadtag_id,
-            misc_leadtag (
-              id,
-              name
-            )
-          `)
-          .eq('newlead_id', leadId);
-        
-        if (!error && data) {
-          const tags = data
-            .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
-            .map(item => (item.misc_leadtag as any).name);
-          
-          // Join tags with comma and space
-          const tagsString = tags.join(', ');
-          setCurrentLeadTags(tagsString);
-        } else {
-          console.error('❌ Error fetching current lead tags (new):', error);
-          setCurrentLeadTags('');
-        }
-      }
-    } catch (error) {
-      console.error('❌ Error fetching current lead tags:', error);
-      setCurrentLeadTags('');
-    }
-  };
-
-  const saveLeadTags = async (leadId: string, tagsString: string) => {
-    try {
-      const isLegacyLead = leadId.toString().startsWith('legacy_');
-      
-      if (isLegacyLead) {
-        const legacyId = parseInt(leadId.replace('legacy_', ''));
-        
-        // First, remove all existing tags for this legacy lead
-        const { error: deleteError } = await supabase
-          .from('leads_lead_tags')
-          .delete()
-          .eq('lead_id', legacyId);
-        
-        if (deleteError) {
-          console.error('❌ Error deleting existing tags (legacy):', deleteError);
-          return;
-        }
-        
-        // Parse the tags string and find matching tag IDs
-        if (tagsString.trim()) {
-          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
-          
-          // Fetch tags to get IDs
-          const { data: allTagsData } = await supabase
-            .from('misc_leadtag')
-            .select('id, name')
-            .eq('active', true);
-          
-          // Find tag IDs for the provided tag names
-          const tagIds = tagNames
-            .map(tagName => allTagsData?.find(tag => tag.name === tagName)?.id)
-            .filter(id => id !== undefined);
-          
-          // Insert new tags for legacy lead
-          if (tagIds.length > 0) {
-            const tagInserts = tagIds.map(tagId => ({
-              lead_id: legacyId,
-              leadtag_id: tagId
-            }));
-            
-            const { error: insertError } = await supabase
-              .from('leads_lead_tags')
-              .insert(tagInserts);
-            
-            if (insertError) {
-              console.error('❌ Error inserting tags (legacy):', insertError);
-            }
-          }
-        }
-      } else {
-        // For new leads, remove all existing tags
-        const { error: deleteError } = await supabase
-          .from('leads_lead_tags')
-          .delete()
-          .eq('newlead_id', leadId);
-        
-        if (deleteError) {
-          console.error('❌ Error deleting existing tags (new):', deleteError);
-          return;
-        }
-        
-        // Parse the tags string and find matching tag IDs
-        if (tagsString.trim()) {
-          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
-          
-          // Fetch tags to get IDs
-          const { data: allTagsData } = await supabase
-            .from('misc_leadtag')
-            .select('id, name')
-            .eq('active', true);
-          
-          // Find tag IDs for the provided tag names
-          const tagIds = tagNames
-            .map(tagName => allTagsData?.find(tag => tag.name === tagName)?.id)
-            .filter(id => id !== undefined);
-          
-          // Insert new tags for new lead
-          if (tagIds.length > 0) {
-            const tagInserts = tagIds.map(tagId => ({
-              newlead_id: leadId,
-              leadtag_id: tagId
-            }));
-            
-            const { error: insertError } = await supabase
-              .from('leads_lead_tags')
-              .insert(tagInserts);
-            
-            if (insertError) {
-              console.error('❌ Error inserting tags (new):', insertError);
-            }
-          }
-        }
-      }
-    } catch (error) {
-      console.error('❌ Error saving lead tags:', error);
-    }
-  };
-
-  const fetchCurrentUserFullName = async () => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user?.email) {
-        const { data: userData, error } = await supabase
-          .from('users')
-          .select('full_name')
-          .eq('email', user.email)
-          .single();
-        
-        if (error) {
-          console.error('Error fetching user full name:', error);
-          return user.email;
-        }
-        
-        return userData?.full_name || user.email;
-      }
-      return 'Unknown User';
-    } catch (error) {
-      console.error('Error in fetchCurrentUserFullName:', error);
-      return 'Unknown User';
-    }
-  };
-
-  const handleSaveEditLead = async () => {
-    if (!selectedLead) return;
-    
-    // Check if this is a legacy lead
-    const isLegacyLead = selectedLead.lead_type === 'legacy' || selectedLead.id.toString().startsWith('legacy_');
-    
-    try {
-      // Get current user name from Supabase users table
-      const currentUserName = await fetchCurrentUserFullName();
-      
-      // Create update data based on whether it's a legacy lead or not
-      let updateData: any = {};
-      
-      if (isLegacyLead) {
-        // For legacy leads, only include fields that exist in leads_lead table
-        const currencyNameToId = (currencyName: string): number | null => {
-          switch (currencyName) {
-            case '₪': return 1; // NIS
-            case '€': return 2; // EUR  
-            case '$': return 3; // USD
-            case '£': return 4; // GBP
-            default: return 1; // Default to NIS
-          }
-        };
-        
-        // Check each field and only include if it has changed
-        if (editLeadData.name !== selectedLead.name) {
-          updateData.name = editLeadData.name;
-        }
-        if (editLeadData.topic !== selectedLead.topic) {
-          updateData.topic = editLeadData.topic;
-        }
-        if (editLeadData.probability !== selectedLead.probability) {
-          let probabilityValue = null;
-          if (editLeadData.probability !== null && editLeadData.probability !== undefined) {
-            const parsed = Number(editLeadData.probability);
-            probabilityValue = isNaN(parsed) ? null : parsed;
-          }
-          updateData.probability = probabilityValue;
-        }
-        // Follow-up is now handled separately in follow_ups table, not in updateData
-        if (editLeadData.balance !== selectedLead.balance?.toString()) {
-          const balanceValue = editLeadData.balance === '' || editLeadData.balance === null ? null : String(editLeadData.balance);
-          updateData.total = balanceValue;
-        }
-        if (editLeadData.balance_currency !== selectedLead.balance_currency) {
-          updateData.currency_id = currencyNameToId(editLeadData.balance_currency);
-        }
-        if (editLeadData.category !== selectedLead.category) {
-          const fullCategoryString = editLeadData.category;
-          const foundCategory = allCategories.find((cat: any) => {
-            const expectedFormat = cat.misc_maincategory?.name 
-              ? `${cat.name} (${cat.misc_maincategory.name})`
-              : cat.name;
-            return expectedFormat === fullCategoryString;
-          });
-          
-          if (foundCategory) {
-            updateData.category_id = foundCategory.id;
-          } else {
-            const categoryName = editLeadData.category.includes(' (') ? editLeadData.category.split(' (')[0] : editLeadData.category;
-            const fallbackCategory = allCategories.find((cat: any) => 
-              cat.name.toLowerCase().trim() === categoryName.toLowerCase().trim()
-            );
-            
-            if (fallbackCategory) {
-              updateData.category_id = fallbackCategory.id;
-            } else {
-              updateData.category = editLeadData.category;
-            }
-          }
-        }
-        if (editLeadData.eligible !== selectedLead.eligible) {
-          updateData.eligibile = editLeadData.eligible ? 'yes' : 'no';
-        }
-        
-        // Handle number_of_applicants_meeting and potential_applicants_meeting for legacy
-        if (editLeadData.number_of_applicants_meeting !== selectedLead.number_of_applicants_meeting?.toString()) {
-          const applicantsValue = editLeadData.number_of_applicants_meeting === '' ? null : Number(editLeadData.number_of_applicants_meeting);
-          updateData.no_of_applicants = isNaN(applicantsValue as number) ? null : applicantsValue;
-        }
-        if (editLeadData.potential_applicants_meeting !== selectedLead.potential_applicants_meeting?.toString()) {
-          const potentialValue = editLeadData.potential_applicants_meeting === '' ? null : Number(editLeadData.potential_applicants_meeting);
-          updateData.potential_applicants = isNaN(potentialValue as number) ? null : potentialValue;
-        }
-
-        // Only update if there are changes
-        if (Object.keys(updateData).length > 0) {
-          const legacyId = selectedLead.id.toString().replace('legacy_', '');
-          const { error } = await supabase
-            .from('leads_lead')
-            .update(updateData)
-            .eq('id', legacyId);
-          
-          if (error) throw error;
-        }
-      } else {
-        // For regular leads, check each field and only include if it has changed
-        if (editLeadData.source !== selectedLead.source) {
-          updateData.source = editLeadData.source;
-        }
-        if (editLeadData.name !== selectedLead.name) {
-          updateData.name = editLeadData.name;
-        }
-        if (editLeadData.language !== getLanguageName(selectedLead.language_id, selectedLead.language)) {
-          updateData.language = editLeadData.language;
-        }
-        if (editLeadData.category !== selectedLead.category) {
-          const fullCategoryString = editLeadData.category;
-          const foundCategory = allCategories.find((cat: any) => {
-            const expectedFormat = cat.misc_maincategory?.name 
-              ? `${cat.name} (${cat.misc_maincategory.name})`
-              : cat.name;
-            return expectedFormat === fullCategoryString;
-          });
-          
-          if (foundCategory) {
-            updateData.category_id = foundCategory.id;
-            updateData.category = foundCategory.name;
-          } else {
-            const categoryName = editLeadData.category.includes(' (') ? editLeadData.category.split(' (')[0] : editLeadData.category;
-            const fallbackCategory = allCategories.find((cat: any) => 
-              cat.name.toLowerCase().trim() === categoryName.toLowerCase().trim()
-            );
-            
-            if (fallbackCategory) {
-              updateData.category_id = fallbackCategory.id;
-              updateData.category = fallbackCategory.name;
-            } else {
-              updateData.category = editLeadData.category;
-            }
-          }
-        }
-        if (editLeadData.topic !== selectedLead.topic) {
-          updateData.topic = editLeadData.topic;
-        }
-        if (editLeadData.probability !== selectedLead.probability) {
-          let probabilityValue = null;
-          if (editLeadData.probability !== null && editLeadData.probability !== undefined) {
-            const parsed = Number(editLeadData.probability);
-            probabilityValue = isNaN(parsed) ? null : parsed;
-          }
-          updateData.probability = probabilityValue;
-        }
-        if (editLeadData.number_of_applicants_meeting !== selectedLead.number_of_applicants_meeting?.toString()) {
-          let applicantsValue = null;
-          if (editLeadData.number_of_applicants_meeting !== '' && editLeadData.number_of_applicants_meeting !== null && editLeadData.number_of_applicants_meeting !== undefined) {
-            const parsed = Number(editLeadData.number_of_applicants_meeting);
-            applicantsValue = isNaN(parsed) ? null : parsed;
-          }
-          updateData.number_of_applicants_meeting = applicantsValue;
-        }
-        if (editLeadData.potential_applicants_meeting !== selectedLead.potential_applicants_meeting?.toString()) {
-          let potentialValue = null;
-          if (editLeadData.potential_applicants_meeting !== '' && editLeadData.potential_applicants_meeting !== null && editLeadData.potential_applicants_meeting !== undefined) {
-            const parsed = Number(editLeadData.potential_applicants_meeting);
-            potentialValue = isNaN(parsed) ? null : parsed;
-          }
-          updateData.potential_applicants_meeting = potentialValue;
-        }
-        if (editLeadData.balance !== selectedLead.balance?.toString()) {
-          if (editLeadData.balance !== '' && editLeadData.balance !== null && editLeadData.balance !== undefined) {
-            const parsed = Number(editLeadData.balance);
-            updateData.balance = isNaN(parsed) ? null : parsed;
-          } else {
-            updateData.balance = null;
-          }
-        }
-        // Follow-up is now handled separately in follow_ups table, not in updateData
-        if (editLeadData.balance_currency !== selectedLead.balance_currency) {
-          updateData.balance_currency = editLeadData.balance_currency;
-        }
-        if (editLeadData.eligible !== selectedLead.eligible) {
-          updateData.eligible = editLeadData.eligible;
-        }
-
-        // Only update if there are changes
-        if (Object.keys(updateData).length > 0) {
-          const { error } = await supabase
-            .from('leads')
-            .update(updateData)
-            .eq('id', selectedLead.id);
-          
-          if (error) throw error;
-        }
-      }
-
-      // Save tags if they changed
-      if (currentLeadTags !== (selectedLead?.tags || '')) {
-        await saveLeadTags(selectedLead.id.toString(), currentLeadTags);
-      }
-      
-      // Handle follow-up save/update in follow_ups table
-      // Use currentUserId (from users table) instead of userId (auth ID) for RLS compliance
-      if (currentUserId) {
-        const isLegacyLead = selectedLead.lead_type === 'legacy' || selectedLead.id.toString().startsWith('legacy_');
-        
-        // Fetch current follow-up to compare
-        let currentFollowUp;
-        if (isLegacyLead) {
-          const legacyId = selectedLead.id.toString().replace('legacy_', '');
-          const { data } = await supabase
-            .from('follow_ups')
-            .select('id, date')
-            .eq('user_id', currentUserId)
-            .eq('lead_id', legacyId)
-            .is('new_lead_id', null)
-            .maybeSingle();
-          currentFollowUp = data;
-        } else {
-          const { data } = await supabase
-            .from('follow_ups')
-            .select('id, date')
-            .eq('user_id', currentUserId)
-            .eq('new_lead_id', selectedLead.id)
-            .is('lead_id', null)
-            .maybeSingle();
-          currentFollowUp = data;
-        }
-        
-        const currentFollowUpDate = currentFollowUp?.date ? new Date(currentFollowUp.date).toISOString().split('T')[0] : '';
-        const newFollowUpDate = editLeadData.next_followup || '';
-        
-        if (currentFollowUpDate !== newFollowUpDate) {
-          if (newFollowUpDate && newFollowUpDate.trim() !== '') {
-            // Update or create follow-up
-            if (currentFollowUp) {
-              // Update existing
-              const { error: followupError } = await supabase
-                .from('follow_ups')
-                .update({ date: newFollowUpDate + 'T00:00:00Z' })
-                .eq('id', currentFollowUp.id)
-                .eq('user_id', currentUserId);
-              
-              if (followupError) {
-                console.error('Error updating follow-up:', followupError);
-                toast.error('Failed to update follow-up date');
-              }
-            } else {
-              // Create new follow-up
-              const insertData: any = {
-                user_id: currentUserId,
-                date: newFollowUpDate + 'T00:00:00Z',
-                created_at: new Date().toISOString()
-              };
-              
-              if (isLegacyLead) {
-                const legacyId = selectedLead.id.toString().replace('legacy_', '');
-                insertData.lead_id = legacyId;
-                insertData.new_lead_id = null;
-              } else {
-                insertData.new_lead_id = selectedLead.id;
-                insertData.lead_id = null;
-              }
-              
-              const { error: followupError } = await supabase
-                .from('follow_ups')
-                .insert(insertData);
-              
-              if (followupError) {
-                console.error('Error creating follow-up:', followupError);
-                toast.error('Failed to save follow-up date');
-              }
-            }
-          } else {
-            // Delete follow-up if date is empty
-            if (currentFollowUp) {
-              const { error: followupError } = await supabase
-                .from('follow_ups')
-                .delete()
-                .eq('id', currentFollowUp.id)
-                .eq('user_id', currentUserId);
-              
-              if (followupError) {
-                console.error('Error deleting follow-up:', followupError);
-                toast.error('Failed to delete follow-up');
-              }
-            }
-          }
-        }
-      }
-      
-      
-      // Refresh leads
-      await fetchLeads();
-      
-      setShowEditLeadDrawer(false);
-      setSelectedLead(null);
-    } catch (error) {
-      console.error('Error in handleSaveEditLead:', error);
-    }
   };
 
   const toggleContactDropdown = (leadId: string | number) => {
@@ -7279,174 +6655,38 @@ const PipelinePage: React.FC = () => {
         document.body
       )}
       
-      {/* Edit Lead Drawer */}
-      {showEditLeadDrawer && (
-        <div className="fixed inset-0 z-50 flex">
-          {/* Overlay */}
-          <div className="fixed inset-0 bg-black/30" onClick={() => setShowEditLeadDrawer(false)} />
-          {/* Drawer */}
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-2xl font-bold">Edit Lead</h3>
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowEditLeadDrawer(false)}>
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
-            <div className="flex flex-col gap-4 flex-1 overflow-y-auto">
-              <div>
-                <label className="block font-semibold mb-1">Tags</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="Search or select tags..."
-                  value={currentLeadTags}
-                  onChange={e => setCurrentLeadTags(e.target.value)}
-                  list="tags-options"
-                />
-                <datalist id="tags-options">
-                  {tagsList.map((name, index) => (
-                    <option key={`${name}-${index}`} value={name} />
-                  ))}
-                </datalist>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Source</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="Search or select a source..."
-                  value={editLeadData.source}
-                  onChange={e => handleEditLeadChange('source', e.target.value)}
-                  list="source-options"
-                />
-                <datalist id="source-options">
-                  {sources.map((name, index) => (
-                    <option key={`${name}-${index}`} value={name} />
-                  ))}
-                </datalist>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Client Name</label>
-                <input type="text" className="input input-bordered w-full" value={editLeadData.name} onChange={e => handleEditLeadChange('name', e.target.value)} />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Language</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="Search or select a language..."
-                  value={editLeadData.language}
-                  onChange={e => handleEditLeadChange('language', e.target.value)}
-                  list="language-options"
-                />
-                <datalist id="language-options">
-                  {allLanguages.map((lang: any, index: number) => (
-                    <option key={`${lang.name}-${index}`} value={lang.name} />
-                  ))}
-                </datalist>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Category</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="Search or select a category..."
-                  value={editLeadData.category}
-                  onChange={e => handleEditLeadChange('category', e.target.value)}
-                  list="category-options"
-                />
-                <datalist id="category-options">
-                  {mainCategories.map((name, index) => (
-                    <option key={`${name}-${index}`} value={name} />
-                  ))}
-                </datalist>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Topic</label>
-                <input type="text" className="input input-bordered w-full" value={editLeadData.topic} onChange={e => handleEditLeadChange('topic', e.target.value)} />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Probability</label>
-                <div className="flex items-center gap-3">
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    className="range range-primary flex-1"
-                    value={editLeadData.probability || 0}
-                    onChange={e => handleEditLeadChange('probability', parseInt(e.target.value))}
-                  />
-                  <span className="text-sm font-medium text-gray-700 min-w-[50px] text-right">
-                    {editLeadData.probability || 0}%
-                  </span>
-                </div>
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Number of Applicants</label>
-                <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.number_of_applicants_meeting} onChange={e => handleEditLeadChange('number_of_applicants_meeting', e.target.value)} />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Potential Applicants</label>
-                <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.potential_applicants_meeting} onChange={e => handleEditLeadChange('potential_applicants_meeting', e.target.value)} />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Value (Amount)</label>
-                <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.balance} onChange={e => handleEditLeadChange('balance', e.target.value)} />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Follow Up Date</label>
-                <input type="date" className="input input-bordered w-full" value={editLeadData.next_followup} onChange={e => handleEditLeadChange('next_followup', e.target.value)} />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Currency</label>
-                <div className="dropdown w-full">
-                  <div tabIndex={0} role="button" className="btn btn-outline w-full justify-between">
-                    {editLeadData.balance_currency || 'Select Currency'}
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                    </svg>
-                  </div>
-                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 shadow bg-base-100 rounded-box w-full max-h-60 overflow-y-auto">
-                    {currencies.length > 0 ? (
-                      <>
-                        {/* Show current currency first */}
-                        {currencies
-                          .filter(currency => currency.name === editLeadData.balance_currency)
-                          .map((currency) => (
-                            <li key={`current-${currency.id}`}>
-                              <a onClick={() => handleEditLeadChange('balance_currency', currency.name)}>
-                                {currency.name} ({currency.iso_code})
-                              </a>
-                            </li>
-                          ))
-                        }
-                        {/* Show other currencies */}
-                        {currencies
-                          .filter(currency => currency.name !== editLeadData.balance_currency)
-                          .map((currency) => (
-                            <li key={currency.id}>
-                              <a onClick={() => handleEditLeadChange('balance_currency', currency.name)}>
-                                {currency.name} ({currency.iso_code})
-                              </a>
-                            </li>
-                          ))
-                        }
-                      </>
-                    ) : (
-                      <li><a>Loading currencies...</a></li>
-                    )}
-                  </ul>
-                </div>
-              </div>
-            </div>
-            <div className="mt-6 flex justify-end">
-              <button className="btn btn-primary px-8" onClick={handleSaveEditLead}>
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <EditLeadDrawer
+        isOpen={showEditLeadDrawer}
+        onClose={() => setShowEditLeadDrawer(false)}
+        lead={
+          selectedLead && showEditLeadDrawer
+            ? {
+                id: selectedLead.id,
+                lead_number: selectedLead.lead_number,
+                lead_type: selectedLead.lead_type ?? 'new',
+                name: selectedLead.name,
+                topic: selectedLead.topic ?? undefined,
+                category: selectedLead.category ?? undefined,
+                source: selectedLead.source ?? undefined,
+                language: getLanguageName(selectedLead.language_id, selectedLead.language),
+                probability: selectedLead.probability ?? null,
+                number_of_applicants_meeting: selectedLead.number_of_applicants_meeting,
+                potential_applicants_meeting: selectedLead.potential_applicants_meeting,
+                balance: selectedLead.balance,
+                total: selectedLead.total,
+                balance_currency: selectedLead.balance_currency,
+                currency_id: (selectedLead as LeadForPipeline & { currency_id?: number | null }).currency_id ?? null,
+                next_followup: selectedLead.next_followup,
+                eligible: selectedLead.eligible,
+                tags: selectedLead.tags ?? null,
+              }
+            : null
+        }
+        onSave={async () => {
+          await fetchLeads();
+          setSelectedLead(null);
+        }}
+      />
 
       {/* My Stats Modal */}
       {showMyStatsModal && (

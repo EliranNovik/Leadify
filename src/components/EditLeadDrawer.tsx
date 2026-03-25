@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { XMarkIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
+import ProbabilityFactorsSliders, { type ProbabilityFactors } from './ProbabilityFactorsSliders';
+import { caseProbabilityFromFactors, clampProbabilityPart, splitProbabilityEvenly } from './client-tabs/ProbabilitySlidersModal';
 
 interface EditLeadDrawerProps {
   isOpen: boolean;
@@ -16,6 +18,9 @@ interface EditLeadDrawerProps {
     source?: string;
     language?: string;
     probability?: number | null;
+    legal_potential?: number | string | null;
+    seriousness?: number | string | null;
+    financial_ability?: number | string | null;
     number_of_applicants_meeting?: number | string | null;
     potential_applicants_meeting?: number | string | null;
     balance?: number | string | null;
@@ -38,6 +43,9 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
     category: '',
     topic: '',
     probability: 0,
+    legal_potential: 0,
+    seriousness: 0,
+    financial_ability: 0,
     number_of_applicants_meeting: '',
     potential_applicants_meeting: '',
     balance: '',
@@ -182,7 +190,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
       if (isLegacyLead) {
         const { data, error } = await supabase
           .from('leads_lead')
-          .select('name, topic, probability, no_of_applicants, total, currency_id, eligibile, source_id, language_id, category_id')
+          .select('name, topic, probability, legal_potential, seriousness, financial_ability, no_of_applicants, total, currency_id, eligibile, source_id, language_id, category_id')
           .eq('id', leadId)
           .single();
         
@@ -221,7 +229,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
       } else {
         const { data, error } = await supabase
           .from('leads')
-          .select('name, topic, probability, number_of_applicants_meeting, potential_applicants_meeting, balance, balance_currency, eligible, source, language, category_id')
+          .select('name, topic, probability, legal_potential, seriousness, financial_ability, number_of_applicants_meeting, potential_applicants_meeting, balance, balance_currency, eligible, source, language, category_id')
           .eq('id', leadId)
           .single();
         
@@ -281,6 +289,27 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
       }
       
       // Reset the edit form data with current lead data
+      const parseFactor = (v: any): number | null => {
+        if (v == null || v === '') return null;
+        if (typeof v === 'string') {
+          const n = parseInt(v.trim(), 10);
+          return Number.isNaN(n) ? null : n;
+        }
+        const n = Number(v);
+        return Number.isNaN(n) ? null : Math.round(n);
+      };
+
+      const probRaw = leadDetails?.probability ?? lead.probability ?? 0;
+      const baselineProb = clampProbabilityPart(typeof probRaw === 'string' ? Number(probRaw) || 0 : Number(probRaw) || 0);
+      const L = parseFactor(leadDetails?.legal_potential ?? (lead as any).legal_potential);
+      const S = parseFactor(leadDetails?.seriousness ?? (lead as any).seriousness);
+      const F = parseFactor(leadDetails?.financial_ability ?? (lead as any).financial_ability);
+      const factors =
+        L == null && S == null && F == null
+          ? splitProbabilityEvenly(baselineProb)
+          : { legal: L ?? 0, seriousness: S ?? 0, financial: F ?? 0 };
+      const computedProb = caseProbabilityFromFactors(factors.legal, factors.seriousness, factors.financial);
+
       setEditLeadData({
         tags: '',
         source: leadDetails?.source || lead.source || '',
@@ -288,7 +317,10 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
         language: leadDetails?.language || lead.language || '',
         category: categoryName,
         topic: leadDetails?.topic || lead.topic || '',
-        probability: leadDetails?.probability || lead.probability || 0,
+        probability: computedProb,
+        legal_potential: factors.legal,
+        seriousness: factors.seriousness,
+        financial_ability: factors.financial,
         number_of_applicants_meeting: isLegacyLead 
           ? (leadDetails?.no_of_applicants || lead.number_of_applicants_meeting || '')
           : (leadDetails?.number_of_applicants_meeting || lead.number_of_applicants_meeting || ''),
@@ -532,7 +564,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
         // Fetch current lead data to compare
         const { data: currentData } = await supabase
           .from('leads_lead')
-          .select('name, topic, probability, no_of_applicants, total, next_followup, currency_id, eligibile, source_id, language_id, category_id')
+          .select('name, topic, probability, legal_potential, seriousness, financial_ability, no_of_applicants, total, next_followup, currency_id, eligibile, source_id, language_id, category_id')
           .eq('id', legacyId)
           .single();
         
@@ -563,14 +595,23 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
           if (editLeadData.topic !== currentData.topic) {
             updateData.topic = editLeadData.topic;
           }
-          if (editLeadData.probability !== currentData.probability) {
-            let probabilityValue = null;
-            if (editLeadData.probability !== null && editLeadData.probability !== undefined) {
-              const parsed = Number(editLeadData.probability);
-              probabilityValue = isNaN(parsed) ? null : parsed;
-            }
-            updateData.probability = probabilityValue;
-          }
+          const nextL = clampProbabilityPart(Number((editLeadData as any).legal_potential || 0));
+          const nextS = clampProbabilityPart(Number((editLeadData as any).seriousness || 0));
+          const nextF = clampProbabilityPart(Number((editLeadData as any).financial_ability || 0));
+          const nextProb = caseProbabilityFromFactors(nextL, nextS, nextF);
+
+          const curLRaw: any = (currentData as any).legal_potential;
+          const curL = curLRaw == null || curLRaw === '' ? null : parseInt(String(curLRaw), 10);
+          const curS = (currentData as any).seriousness == null ? null : Number((currentData as any).seriousness);
+          const curF = (currentData as any).financial_ability == null ? null : Number((currentData as any).financial_ability);
+
+          if (String(nextL) !== String(curLRaw ?? '')) updateData.legal_potential = String(nextL);
+          if (nextS !== (curS ?? 0)) updateData.seriousness = nextS;
+          if (nextF !== (curF ?? 0)) updateData.financial_ability = nextF;
+
+          // Always keep probability aligned with factors
+          const curProb = currentData.probability == null ? 0 : Number(currentData.probability) || 0;
+          if (nextProb !== Math.round(curProb)) updateData.probability = nextProb;
           if (editLeadData.number_of_applicants_meeting !== (currentData.no_of_applicants || '')) {
             let applicantsValue = null;
             if (editLeadData.number_of_applicants_meeting !== '' && editLeadData.number_of_applicants_meeting !== null) {
@@ -644,7 +685,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
         // Fetch current lead data to compare
         const { data: currentData } = await supabase
           .from('leads')
-          .select('name, topic, probability, number_of_applicants_meeting, potential_applicants_meeting, balance, next_followup, balance_currency, eligible, source, language, category_id')
+          .select('name, topic, probability, legal_potential, seriousness, financial_ability, number_of_applicants_meeting, potential_applicants_meeting, balance, next_followup, balance_currency, eligible, source, language, category_id')
           .eq('id', leadId)
           .single();
         
@@ -674,14 +715,21 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
           if (editLeadData.topic !== currentData.topic) {
             updateData.topic = editLeadData.topic;
           }
-          if (editLeadData.probability !== currentData.probability) {
-            let probabilityValue = null;
-            if (editLeadData.probability !== null && editLeadData.probability !== undefined) {
-              const parsed = Number(editLeadData.probability);
-              probabilityValue = isNaN(parsed) ? null : parsed;
-            }
-            updateData.probability = probabilityValue;
-          }
+          const nextL = clampProbabilityPart(Number((editLeadData as any).legal_potential || 0));
+          const nextS = clampProbabilityPart(Number((editLeadData as any).seriousness || 0));
+          const nextF = clampProbabilityPart(Number((editLeadData as any).financial_ability || 0));
+          const nextProb = caseProbabilityFromFactors(nextL, nextS, nextF);
+
+          const curL = currentData.legal_potential == null ? 0 : Number(currentData.legal_potential) || 0;
+          const curS = currentData.seriousness == null ? 0 : Number(currentData.seriousness) || 0;
+          const curF = currentData.financial_ability == null ? 0 : Number(currentData.financial_ability) || 0;
+
+          if (nextL !== Math.round(curL)) updateData.legal_potential = nextL;
+          if (nextS !== Math.round(curS)) updateData.seriousness = nextS;
+          if (nextF !== Math.round(curF)) updateData.financial_ability = nextF;
+
+          const curProb = currentData.probability == null ? 0 : Number(currentData.probability) || 0;
+          if (nextProb !== Math.round(curProb)) updateData.probability = nextProb;
           if (editLeadData.number_of_applicants_meeting !== (currentData.number_of_applicants_meeting || '')) {
             let applicantsValue = null;
             if (editLeadData.number_of_applicants_meeting !== '' && editLeadData.number_of_applicants_meeting !== null) {
@@ -982,20 +1030,25 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
             <input type="text" className="input input-bordered w-full" value={editLeadData.topic} onChange={e => handleEditLeadChange('topic', e.target.value)} />
           </div>
           <div>
-            <label className="block font-semibold mb-1">Probability</label>
-            <div className="flex items-center gap-3">
-              <input
-                type="range"
-                min="0"
-                max="100"
-                className="range range-primary flex-1"
-                value={editLeadData.probability || 0}
-                onChange={e => handleEditLeadChange('probability', parseInt(e.target.value))}
-              />
-              <span className="text-sm font-medium text-gray-700 min-w-[50px] text-right">
-                {editLeadData.probability || 0}%
-              </span>
-            </div>
+            <label className="block font-semibold mb-1">Case Probability</label>
+            <ProbabilityFactorsSliders
+              baselineProbability={lead?.probability ?? null}
+              value={{
+                legal_potential: Number(editLeadData.legal_potential || 0),
+                seriousness: Number(editLeadData.seriousness || 0),
+                financial_ability: Number(editLeadData.financial_ability || 0),
+              }}
+              onChange={(next: ProbabilityFactors) => {
+                const computed = caseProbabilityFromFactors(next.legal_potential, next.seriousness, next.financial_ability);
+                setEditLeadData((prev) => ({
+                  ...prev,
+                  legal_potential: next.legal_potential,
+                  seriousness: next.seriousness,
+                  financial_ability: next.financial_ability,
+                  probability: computed,
+                }));
+              }}
+            />
           </div>
           <div>
             <label className="block font-semibold mb-1">Number of Applicants</label>
