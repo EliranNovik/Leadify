@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
-  ChevronDownIcon,
   ArrowRightOnRectangleIcon,
+  ChevronDownIcon,
   CalculatorIcon,
   ShieldCheckIcon,
   BanknotesIcon,
@@ -12,8 +12,7 @@ import {
   BuildingOffice2Icon,
   ChatBubbleLeftRightIcon,
   MagnifyingGlassIcon,
-  ChevronDoubleRightIcon,
-  ChevronDoubleLeftIcon
+  HomeIcon,
 } from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
 import UsersManager from './UsersManager';
@@ -54,13 +53,13 @@ const ADMIN_TABS: AdminTab[] = [
   {
     label: 'Accounting',
     icon: CalculatorIcon,
-    subcategories: ['Currencies', 'Currency rates', 'Money accounts', 'Vats'],
+    subcategories: ['Currencies', 'Currency rates'],
     requiresAdmin: true,
   },
   {
     label: 'Authentication',
     icon: ShieldCheckIcon,
-    subcategories: ['Groups', 'Users'],
+    subcategories: ['Users'],
     requiresAdmin: true,
   },
   {
@@ -78,7 +77,7 @@ const ADMIN_TABS: AdminTab[] = [
   {
     label: 'Leads',
     icon: UsersIcon,
-    subcategories: ['Anchors', 'Contacts', 'Leads'],
+    subcategories: ['Contacts', 'Leads'],
     requiresAdmin: true,
   },
   {
@@ -108,6 +107,27 @@ const ADMIN_TABS: AdminTab[] = [
     requiresAdmin: true,
   },
 ];
+
+/** Subcategory labels hidden from sidebar/search (still in ADMIN_TABS for deep links if needed). */
+const HIDDEN_ADMIN_SUBCATEGORY_LABELS = new Set([
+  'Anchors',
+  'Groups',
+  'Vats',
+  'Money accounts',
+]);
+
+/** Same name exclusions as SalesContributionPage (EmployeePerformance alignment). */
+const DASHBOARD_EXCLUDED_EMPLOYEE_NAMES = new Set([
+  'FINANCE',
+  'INTERNS',
+  'NO SCHEDULER',
+  'Mango Test',
+  'pink',
+  'Interns',
+]);
+
+/** Department roles counted from `employee_field_assignments` (Sales contribution alignment). */
+const DASHBOARD_ASSIGNMENT_ROLES = ['Sales', 'Handlers', 'Marketing', 'Finance'] as const;
 
 // Type for leads
 type Lead = { id: number; name: string; email: string; phone: string; stage: string; number: string };
@@ -159,34 +179,109 @@ interface AdminSectionOption {
   searchText: string;
 }
 
+interface AdminDashboardStats {
+  totalActiveEmployees: number;
+  sales: number;
+  handlers: number;
+  marketing: number;
+  finance: number;
+  administration: number;
+  activeClientMeetingsToday: number;
+  staffMeetingsToday: number;
+  potentialClientMeetingsToday: number;
+}
+
+type AdminTopLink = { label: string; tabIndex: number; subIndex: number };
+
+const titleCaseField = (value: string) =>
+  value
+    .split('_')
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+
+/** Build merged user-change rows from `user_changes_history` (same shaping as former admin dashboard). */
+const buildUserChangeRowsFromHistory = (
+  userHistory: Array<{
+    id: string | number;
+    user_id?: string | number | null;
+    changed_by?: string | number | null;
+    field_name?: string | null;
+    old_value?: unknown;
+    new_value?: unknown;
+    changed_at?: string | null;
+  }>,
+  getUserDisplayName: (userId?: string | number | null) => string
+): RecentChange[] => {
+  const historyByChange = new Map<
+    string,
+    {
+      user_id: string | null;
+      changed_by: string | null;
+      changed_at: string | null;
+      fields: Array<{ field: string; oldValue: unknown; newValue: unknown }>;
+    }
+  >();
+  (userHistory || []).forEach(entry => {
+    const key = `${entry.user_id || 'unknown'}-${entry.changed_at || entry.id}`;
+    if (!historyByChange.has(key)) {
+      historyByChange.set(key, {
+        user_id: entry.user_id ? String(entry.user_id) : null,
+        changed_by: entry.changed_by ? String(entry.changed_by) : null,
+        changed_at: entry.changed_at || null,
+        fields: [],
+      });
+    }
+    historyByChange.get(key)?.fields.push({
+      field: entry.field_name || '',
+      oldValue: entry.field_name === 'password' ? '•••••' : entry.old_value,
+      newValue: entry.field_name === 'password' ? '•••••' : entry.new_value,
+    });
+  });
+
+  return Array.from(historyByChange.values()).map(entry => {
+    const infoParts = entry.fields.map(({ field, oldValue, newValue }) => {
+      const t = titleCaseField(field || '');
+      const displayOld = oldValue === null || oldValue === undefined || oldValue === '' ? 'Empty' : oldValue;
+      const displayNew = newValue === null || newValue === undefined || newValue === '' ? 'Empty' : newValue;
+      return `${t}: ${displayOld} → ${displayNew}`;
+    });
+    if (infoParts.length === 0) infoParts.push('No field changes recorded');
+
+    return {
+      id: `history-${entry.user_id || 'unknown'}-${entry.changed_at || Date.now()}`,
+      type: 'user_change' as const,
+      created_at: entry.changed_at || new Date().toISOString(),
+      user_name: getUserDisplayName(entry.user_id),
+      updated_by_name: getUserDisplayName(entry.changed_by),
+      action: 'User updated',
+      info: infoParts.join(' | '),
+    };
+  });
+};
+
 const AdminPage: React.FC = () => {
   const { isAdmin, isLoading, refreshAdminStatus } = useAdminRole();
   const navigate = useNavigate();
   const [openTab, setOpenTab] = useState<number | null>(null);
   const [selected, setSelected] = useState<{ tab: number | null; sub: number | null }>({ tab: null, sub: null });
-  const tabBarRef = useRef<HTMLDivElement>(null);
-  const [showLeftArrow, setShowLeftArrow] = useState(false);
-  const [showRightArrow, setShowRightArrow] = useState(false);
 
   // State for current user
   const [currentUser, setCurrentUser] = useState<{ first_name?: string; email?: string } | null>(null);
   const [userLoading, setUserLoading] = useState(true);
   const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
   const [isTopSectionCollapsed, setIsTopSectionCollapsed] = useState(false);
-  const [dropdownPositions, setDropdownPositions] = useState<{ [key: number]: 'left' | 'right' }>({});
-  const dropdownRef = useRef<HTMLDivElement>(null);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
-
-  // State for sidebar collapse and employee data
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isSidebarHovered, setIsSidebarHovered] = useState(false);
+  const [currentUserPhotoUrl, setCurrentUserPhotoUrl] = useState<string | null>(null);
   const [employeeData, setEmployeeData] = useState<{
     department?: string;
     bonusRole?: string;
   } | null>(null);
 
-  // State for recent changes
-  const [recentChanges, setRecentChanges] = useState<RecentChange[]>([]);
-  const [loadingChanges, setLoadingChanges] = useState(false);
+  const [dashboardStats, setDashboardStats] = useState<AdminDashboardStats | null>(null);
+  const [dashboardStatsLoading, setDashboardStatsLoading] = useState(false);
+  const [fullUserChanges, setFullUserChanges] = useState<RecentChange[]>([]);
+  const [fullUserChangesLoading, setFullUserChangesLoading] = useState(false);
 
   // Search navigation state
   const [searchQuery, setSearchQuery] = useState('');
@@ -215,9 +310,42 @@ const AdminPage: React.FC = () => {
     return availableSections.filter(section => section.searchText.includes(query)).slice(0, 10);
   }, [searchQuery, availableSections]);
 
+  const filteredAdminTabs = useMemo(() => {
+    return ADMIN_TABS.filter(tab => !tab.requiresAdmin || isAdmin);
+  }, [isAdmin]);
+
+  const activeTopTabIndex = useMemo(() => {
+    if (selected.tab != null) return selected.tab;
+    if (openTab != null) return openTab;
+    return 0;
+  }, [selected.tab, openTab]);
+
+  const topLinks = useMemo<AdminTopLink[]>(() => {
+    const tab = filteredAdminTabs[activeTopTabIndex];
+    if (!tab) return [];
+    return tab.subcategories
+      .map((label, subIndex) => ({ label, tabIndex: activeTopTabIndex, subIndex }))
+      .filter((x) => !HIDDEN_ADMIN_SUBCATEGORY_LABELS.has(x.label));
+  }, [filteredAdminTabs, activeTopTabIndex]);
+
+  const sidebarItems = useMemo(() => {
+    const filteredTabs = ADMIN_TABS.filter(tab => !tab.requiresAdmin || isAdmin);
+    return filteredTabs.flatMap((tab, tabIndex) =>
+      tab.subcategories
+        .map((subLabel, subIndex) => ({
+          key: `${tab.label}-${subLabel}`,
+          subLabel,
+          icon: tab.icon,
+          tabIndex,
+          subIndex,
+        }))
+        .filter(item => !HIDDEN_ADMIN_SUBCATEGORY_LABELS.has(item.subLabel))
+    );
+  }, [isAdmin]);
+
   const handleSearchSelect = (section: AdminSectionOption) => {
     setSelected({ tab: section.tabIndex, sub: section.subIndex });
-    setOpenTab(null);
+    setOpenTab(section.tabIndex);
     setIsTopSectionCollapsed(true);
     setSearchQuery('');
     setIsSearchFocused(false);
@@ -249,25 +377,9 @@ const AdminPage: React.FC = () => {
     setIsTopSectionCollapsed(hasTableOpen);
   }, [selected]);
 
-  // Recalculate dropdown positions on window resize
-  useEffect(() => {
-    const handleResize = () => {
-      if (openTab !== null) {
-        const position = calculateDropdownPosition(openTab);
-        setDropdownPositions(prev => ({ ...prev, [openTab]: position }));
-      }
-    };
-
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [openTab]);
-
-  // Outside click handler to close dropdown
+  // Outside click handler to close search results
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (openTab !== null && dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setOpenTab(null);
-      }
       if (isSearchFocused && searchBoxRef.current && !searchBoxRef.current.contains(event.target as Node)) {
         setIsSearchFocused(false);
       }
@@ -278,46 +390,7 @@ const AdminPage: React.FC = () => {
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [openTab, isSearchFocused]);
-
-  // Function to calculate dropdown position
-  const calculateDropdownPosition = (tabIndex: number) => {
-    if (!tabBarRef.current) return 'left';
-
-    const tabBar = tabBarRef.current;
-    const tabElement = tabBar.children[tabIndex] as HTMLElement;
-    if (!tabElement) return 'left';
-
-    const tabBarRect = tabBar.getBoundingClientRect();
-    const tabRect = tabElement.getBoundingClientRect();
-    const dropdownWidth = 224; // w-56 = 14rem = 224px
-    const viewportWidth = window.innerWidth;
-
-    // For mobile screens, use a more conservative approach
-    const isMobile = viewportWidth < 768;
-
-    if (isMobile) {
-      // On mobile, check if the dropdown would overflow the viewport
-      const spaceOnRight = viewportWidth - tabRect.left;
-      const spaceOnLeft = tabRect.right;
-
-      // If dropdown would overflow on the right, align to right
-      if (spaceOnRight < dropdownWidth) {
-        return 'right';
-      }
-      // If dropdown would overflow on the left when aligned right, center it
-      if (spaceOnLeft < dropdownWidth) {
-        return 'right'; // Use right alignment as fallback
-      }
-      return 'left';
-    } else {
-      // Desktop logic
-      const spaceOnRight = tabBarRect.right - tabRect.left;
-      const spaceOnLeft = tabRect.right - tabBarRect.left;
-
-      return spaceOnRight < dropdownWidth && spaceOnLeft > dropdownWidth ? 'right' : 'left';
-    }
-  };
+  }, [isSearchFocused]);
 
   // Function to fetch current user data
   const fetchCurrentUser = async () => {
@@ -355,6 +428,8 @@ const AdminPage: React.FC = () => {
             id,
             display_name,
             official_name,
+            photo_url,
+            photo,
             bonuses_role,
             department_id,
             tenant_departement!department_id(
@@ -382,6 +457,8 @@ const AdminPage: React.FC = () => {
               id,
               display_name,
               official_name,
+              photo_url,
+              photo,
               bonuses_role,
               department_id,
               tenant_departement!department_id(
@@ -411,6 +488,7 @@ const AdminPage: React.FC = () => {
             department: deptName,
             bonusRole: empData.bonuses_role || ''
           });
+          setCurrentUserPhotoUrl(empData.photo_url || empData.photo || null);
         }
       }
 
@@ -450,61 +528,156 @@ const AdminPage: React.FC = () => {
     }
   };
 
-  // Arrow visibility logic
-  useEffect(() => {
-    const checkArrows = () => {
-      const el = tabBarRef.current;
-      if (!el) return;
-      setShowLeftArrow(el.scrollLeft > 2);
-      setShowRightArrow(el.scrollWidth - el.clientWidth - el.scrollLeft > 2);
-    };
-    checkArrows();
-    window.addEventListener('resize', checkArrows);
-    if (tabBarRef.current) {
-      tabBarRef.current.addEventListener('scroll', checkArrows);
-    }
-    return () => {
-      window.removeEventListener('resize', checkArrows);
-      if (tabBarRef.current) {
-        tabBarRef.current.removeEventListener('scroll', checkArrows);
-      }
-    };
-  }, [ADMIN_TABS.length]);
+  const fetchDashboardEmployeeStats = async () => {
+    setDashboardStatsLoading(true);
+    try {
+      const { data: allEmployeesData, error: allEmployeesDataError } = await supabase
+        .from('users')
+        .select(`
+          id,
+          full_name,
+          email,
+          employee_id,
+          is_active,
+          is_staff,
+          tenants_employee!employee_id(
+            id,
+            display_name,
+            department_id,
+            tenant_departement!department_id(
+              id,
+              name
+            )
+          )
+        `)
+        .not('employee_id', 'is', null)
+        .eq('is_active', true)
+        .eq('is_staff', true);
 
-  const scrollTabs = (dir: 'left' | 'right') => {
-    const el = tabBarRef.current;
-    if (!el) return;
-    const scrollAmount = el.clientWidth * 0.7;
-    el.scrollBy({ left: dir === 'left' ? -scrollAmount : scrollAmount, behavior: 'smooth' });
+      if (allEmployeesDataError) throw allEmployeesDataError;
+
+      const processedEmployees = (allEmployeesData || [])
+        .filter(user => user.tenants_employee && user.email)
+        .map(user => {
+          const employee = user.tenants_employee as unknown as {
+            id: number;
+            display_name?: string;
+            department_id?: number | null;
+            tenant_departement?: { id?: number; name?: string } | { id?: number; name?: string }[];
+          };
+          const dept = Array.isArray(employee.tenant_departement)
+            ? employee.tenant_departement[0]
+            : employee.tenant_departement;
+          return {
+            id: Number(employee.id),
+            display_name: employee.display_name || '',
+            department: dept?.name || 'Unknown',
+          };
+        });
+
+      const uniqueEmployeesMap = new Map<number, { id: number; display_name: string; department: string }>();
+      processedEmployees.forEach(emp => {
+        if (!uniqueEmployeesMap.has(emp.id)) {
+          uniqueEmployeesMap.set(emp.id, emp);
+        }
+      });
+      const allEmployees = Array.from(uniqueEmployeesMap.values());
+      const filteredEmployees = allEmployees.filter(
+        emp => !DASHBOARD_EXCLUDED_EMPLOYEE_NAMES.has(emp.display_name)
+      );
+
+      const { data: roleAssignments, error: roleAssignmentsError } = await supabase
+        .from('employee_field_assignments')
+        .select('employee_id, department_role')
+        .in('department_role', [...DASHBOARD_ASSIGNMENT_ROLES])
+        .eq('is_active', true);
+
+      if (roleAssignmentsError) throw roleAssignmentsError;
+
+      const employeeIdsByRole = new Map<string, Set<number>>();
+      DASHBOARD_ASSIGNMENT_ROLES.forEach(name => employeeIdsByRole.set(name, new Set()));
+      (roleAssignments || []).forEach((row: { employee_id?: number | string; department_role?: string }) => {
+        const role = row.department_role;
+        const empId = Number(row.employee_id);
+        if (role && !Number.isNaN(empId) && employeeIdsByRole.has(role)) {
+          employeeIdsByRole.get(role)!.add(empId);
+        }
+      });
+
+      // Today meeting stats
+      const today = new Date();
+      const todayStr = today.toISOString().split('T')[0];
+      const todayStart = new Date(today);
+      todayStart.setHours(0, 0, 0, 0);
+      const todayEnd = new Date(today);
+      todayEnd.setHours(23, 59, 59, 999);
+
+      const [activeClientMeetingsRes, potentialClientMeetingsRes, staffMeetingsRes] = await Promise.all([
+        supabase
+          .from('meetings')
+          .select('id', { count: 'exact', head: true })
+          .eq('meeting_date', todayStr)
+          .or('calendar_type.eq.active_client,calendar_type.is.null')
+          .or('status.is.null,status.neq.canceled,status.neq.cancelled'),
+        supabase
+          .from('meetings')
+          .select('id', { count: 'exact', head: true })
+          .eq('meeting_date', todayStr)
+          .eq('calendar_type', 'potential_client')
+          .or('status.is.null,status.neq.canceled,status.neq.cancelled'),
+        supabase
+          .from('outlook_teams_meetings')
+          .select('id', { count: 'exact', head: true })
+          .gte('start_date_time', todayStart.toISOString())
+          .lte('start_date_time', todayEnd.toISOString())
+          .or('status.is.null,status.neq.cancelled'),
+      ]);
+
+      if (activeClientMeetingsRes.error) console.error('Dashboard active client meetings count:', activeClientMeetingsRes.error);
+      if (potentialClientMeetingsRes.error) console.error('Dashboard potential client meetings count:', potentialClientMeetingsRes.error);
+      if (staffMeetingsRes.error) console.error('Dashboard staff meetings count:', staffMeetingsRes.error);
+
+      setDashboardStats({
+        totalActiveEmployees: filteredEmployees.length,
+        sales: filteredEmployees.filter(emp => employeeIdsByRole.get('Sales')?.has(emp.id)).length,
+        handlers: filteredEmployees.filter(emp => employeeIdsByRole.get('Handlers')?.has(emp.id)).length,
+        marketing: filteredEmployees.filter(emp => employeeIdsByRole.get('Marketing')?.has(emp.id)).length,
+        finance: filteredEmployees.filter(emp => employeeIdsByRole.get('Finance')?.has(emp.id)).length,
+        administration: filteredEmployees.filter(
+          emp => (emp.department || '').trim().toLowerCase() === 'administration'
+        ).length,
+        activeClientMeetingsToday: activeClientMeetingsRes.count || 0,
+        staffMeetingsToday: staffMeetingsRes.count || 0,
+        potentialClientMeetingsToday: potentialClientMeetingsRes.count || 0,
+      });
+    } catch (e) {
+      console.error('Admin dashboard employee stats:', e);
+      setDashboardStats({
+        totalActiveEmployees: 0,
+        sales: 0,
+        handlers: 0,
+        marketing: 0,
+        finance: 0,
+        administration: 0,
+        activeClientMeetingsToday: 0,
+        staffMeetingsToday: 0,
+        potentialClientMeetingsToday: 0,
+      });
+    } finally {
+      setDashboardStatsLoading(false);
+    }
   };
 
-  // Fetch recent changes
-  const fetchRecentChanges = async () => {
+  const loadFullUserChanges = async () => {
+    setFullUserChangesLoading(true);
     try {
-      setLoadingChanges(true);
-
-      // Fetch access logs
-      const { data: accessLogs, error: accessError } = await supabase
-        .from('access_logs')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(20);
-
-      // Fetch user change history entries
       const { data: userHistory, error: historyError } = await supabase
         .from('user_changes_history')
         .select('id, user_id, changed_by, field_name, old_value, new_value, changed_at')
         .order('changed_at', { ascending: false })
-        .limit(40);
+        .limit(500);
 
-      if (accessError) console.error('Error fetching access logs:', accessError);
-      if (historyError) console.error('Error fetching user history:', historyError);
-
-      console.log('📊 Access logs:', accessLogs);
-      console.log('🗂️ User change history:', userHistory);
-      if (userHistory && userHistory.length > 0) {
-        console.log('🔍 First history entry:', userHistory[0]);
-      }
+      if (historyError) throw historyError;
 
       const userIdSet = new Set<string>();
       (userHistory || []).forEach(entry => {
@@ -525,7 +698,7 @@ const AdminPage: React.FC = () => {
             userLookup.set(String(record.id), {
               full_name: record.full_name,
               first_name: record.first_name,
-              last_name: (record as any).last_name,
+              last_name: (record as { last_name?: string }).last_name,
               email: record.email,
             });
           });
@@ -535,131 +708,43 @@ const AdminPage: React.FC = () => {
       const getUserDisplayName = (userId?: string | number | null) => {
         if (!userId) return 'System';
         const entry = userLookup.get(String(userId));
-        if (!entry) return 'System';
+        if (!entry) return 'Unknown user';
         return (
           entry.full_name ||
           [entry.first_name, entry.last_name].filter(Boolean).join(' ').trim() ||
           entry.email ||
-          'System'
+          'Unknown user'
         );
       };
 
-      const filteredAccessLogs = (accessLogs || []).filter(log => log.endpoint && log.endpoint.includes('/api/hook/catch'));
-      console.log('📊 Access logs (filtered):', filteredAccessLogs);
-
-      const transformedAccessLogs: RecentChange[] = filteredAccessLogs.map(log => {
-        let info = '';
-        let bodyRequest = '';
-        if (log.request_body) {
-          try {
-            const parsed = JSON.parse(log.request_body);
-            if (parsed && typeof parsed === 'object') {
-              const entries = Object.entries(parsed).map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`);
-              info = entries.join(' | ');
-              const bodyEntries: string[] = [];
-              if ('topic' in parsed) bodyEntries.push(`topic: ${parsed.topic}`);
-              if ('source' in parsed) bodyEntries.push(`source: ${parsed.source}`);
-              if ('email' in parsed) bodyEntries.push(`email: ${parsed.email}`);
-              if (bodyEntries.length === 0 && Array.isArray(parsed)) {
-                parsed.forEach((item: any, idx: number) => {
-                  if (item && typeof item === 'object') {
-                    ['topic', 'source', 'email'].forEach(field => {
-                      if (field in item) bodyEntries.push(`${field}[${idx}]: ${item[field]}`);
-                    });
-                  }
-                });
-              }
-              bodyRequest = bodyEntries.join(' | ');
-            } else {
-              info = String(log.request_body);
-              bodyRequest = info;
-            }
-          } catch (error) {
-            console.error('Failed to parse access log body:', error);
-            info = String(log.request_body);
-            bodyRequest = info;
-          }
-        }
-
-        return {
-          id: log.id,
-          type: 'access_log' as const,
-          created_at: log.created_at,
-          request_method: log.request_method,
-          endpoint: log.endpoint,
-          response_code: log.response_code,
-          info,
-          bodyRequest,
-        };
-      });
-
-      const historyByChange = new Map<string, { user_id: string | null; changed_by: string | null; changed_at: string | null; fields: Array<{ field: string; oldValue: any; newValue: any }> }>();
-      (userHistory || []).forEach(entry => {
-        const key = `${entry.user_id || 'unknown'}-${entry.changed_at || entry.id}`;
-        if (!historyByChange.has(key)) {
-          historyByChange.set(key, {
-            user_id: entry.user_id ? String(entry.user_id) : null,
-            changed_by: entry.changed_by ? String(entry.changed_by) : null,
-            changed_at: entry.changed_at || null,
-            fields: [],
-          });
-        }
-        historyByChange.get(key)?.fields.push({
-          field: entry.field_name,
-          oldValue: entry.field_name === 'password' ? '•••••' : entry.old_value,
-          newValue: entry.field_name === 'password' ? '•••••' : entry.new_value,
-        });
-      });
-
-      const transformedUserChanges: RecentChange[] = Array.from(historyByChange.values()).map(entry => {
-        const infoParts = entry.fields.map(({ field, oldValue, newValue }) => {
-          const titleField = toTitleCase(field);
-          const displayOld = oldValue === null || oldValue === undefined || oldValue === '' ? 'Empty' : oldValue;
-          const displayNew = newValue === null || newValue === undefined || newValue === '' ? 'Empty' : newValue;
-          return `${titleField}: ${displayOld} → ${displayNew}`;
-        });
-        if (infoParts.length === 0) infoParts.push('No field changes recorded');
-
-        return {
-          id: `history-${entry.user_id || 'unknown'}-${entry.changed_at || Date.now()}`,
-          type: 'user_change' as const,
-          created_at: entry.changed_at || new Date().toISOString(),
-          user_name: getUserDisplayName(entry.user_id),
-          updated_by_name: getUserDisplayName(entry.changed_by),
-          action: 'User updated',
-          info: infoParts.join(' | '),
-        };
-      });
-
-      console.log('📋 Transformed user changes array:', transformedUserChanges);
-
-      // Combine and sort by timestamp
-      const combined = [...transformedAccessLogs, ...transformedUserChanges].sort((a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-      ).slice(0, 20);
-
-      console.log('✅ Combined recent changes:', combined);
-      console.log('📊 User changes in combined:', combined.filter(c => c.type === 'user_change').length);
-      console.log('📊 Access logs in combined:', combined.filter(c => c.type === 'access_log').length);
-      setRecentChanges(combined);
+      const rows = buildUserChangeRowsFromHistory(userHistory || [], getUserDisplayName).sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+      setFullUserChanges(rows);
     } catch (error) {
-      console.error('Error fetching recent changes:', error);
+      console.error('Error loading user changes:', error);
+      setFullUserChanges([]);
     } finally {
-      setLoadingChanges(false);
+      setFullUserChangesLoading(false);
     }
   };
 
   // Fetch current user data on component mount
   useEffect(() => {
     fetchCurrentUser();
-    fetchRecentChanges();
   }, []);
 
-  const toTitleCase = (value: string) =>
-    value
-      .split('_')
-      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(' ');
+  useEffect(() => {
+    if (!userLoading && isSuperUser) {
+      void fetchDashboardEmployeeStats();
+    }
+  }, [userLoading, isSuperUser]);
+
+  useEffect(() => {
+    if (!userLoading && isSuperUser && fullUserChanges.length === 0 && !fullUserChangesLoading) {
+      void loadFullUserChanges();
+    }
+  }, [userLoading, isSuperUser, fullUserChanges.length, fullUserChangesLoading]);
 
   // Show loading state
   if (isLoading || userLoading) {
@@ -806,121 +891,119 @@ const AdminPage: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen bg-base-100 w-full overflow-hidden">
-      {/* Desktop Sidebar Overlay */}
-      {isSidebarOpen && (
-        <div className="fixed inset-0 z-[10000] hidden md:flex">
-          {/* Backdrop */}
-          <div
-            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-            onClick={() => setIsSidebarOpen(false)}
-          />
-          {/* Sidebar Panel */}
-          <aside className="relative w-80 bg-white shadow-2xl overflow-y-auto">
-            <div className="border-b border-gray-200 flex-shrink-0 px-4 py-3 flex items-center justify-between">
-              <h2 className="text-xl font-bold text-gray-900">Admin Menu</h2>
-              <button
-                onClick={() => setIsSidebarOpen(false)}
-                className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-                title="Close sidebar"
-              >
-                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto pt-2">
-              {ADMIN_TABS.filter(tab => {
-                const hasAccess = !tab.requiresAdmin || isAdmin;
-                return hasAccess;
-              }).map((tab, i) => {
-                const Icon = tab.icon;
-                return (
-                  <div key={tab.label} className="mb-2">
-                    <button
-                      onClick={() => setOpenTab(openTab === i ? null : i)}
-                      className={`w-full flex items-center justify-between p-3 mx-2 rounded-lg transition-all ${openTab === i
-                          ? 'bg-primary text-white shadow-md'
-                          : 'hover:bg-gray-100 text-gray-900'
-                        }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <Icon className="w-6 h-6" />
-                        <span className="font-semibold">{tab.label}</span>
-                      </div>
-                      <ChevronDownIcon
-                        className={`w-5 h-5 transition-transform ${openTab === i ? 'rotate-180' : ''}`}
-                      />
-                    </button>
-                    {openTab === i && (
-                      <div className="mt-2 space-y-1 ml-6">
-                        {tab.subcategories.map((sub, j) => (
-                          <button
-                            key={sub}
-                            onClick={() => {
-                              setSelected({ tab: i, sub: j });
-                              setOpenTab(null);
-                              setIsSidebarOpen(false);
-                            }}
-                            className={`w-full text-left px-4 py-2 rounded-lg transition-all ${selected.tab === i && selected.sub === j
-                                ? 'bg-primary/10 text-primary font-semibold'
-                                : 'text-gray-700 hover:bg-gray-100'
-                              }`}
-                          >
-                            {sub}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* Footer with User Info and Logout */}
-            <div className="p-4 border-t border-gray-200 flex-shrink-0 space-y-3">
-              <div className="space-y-1">
-                <div className="font-semibold text-gray-900">
-                  {currentUser?.first_name || currentUser?.email}
-                </div>
-                {employeeData?.bonusRole && (
-                  <div className="text-sm text-gray-600">{getRoleDisplayName(employeeData.bonusRole)}</div>
-                )}
-              </div>
-              <button
-                onClick={handleLogout}
-                className="w-full flex items-center justify-start p-2 rounded-lg transition-all hover:bg-red-50 text-red-600"
-              >
-                <ArrowRightOnRectangleIcon className="w-5 h-5" />
-                <span className="ml-2 font-medium">Logout</span>
-              </button>
-            </div>
-          </aside>
+    <div className="admin-page-shell flex h-screen bg-[#ececec] w-full overflow-hidden">
+      {/* Fixed Desktop Sidebar */}
+      <aside
+        className={`hidden md:flex fixed left-4 top-24 bottom-6 z-40 ${isSidebarHovered ? 'w-64' : 'w-20'} bg-white/95 border border-gray-200 rounded-[2rem] shadow-[0_18px_45px_rgba(15,23,42,0.18),0_6px_18px_rgba(15,23,42,0.10),inset_0_1px_0_rgba(255,255,255,0.75)] flex-col transition-all duration-300 overflow-hidden`}
+        onMouseEnter={() => setIsSidebarHovered(true)}
+        onMouseLeave={() => setIsSidebarHovered(false)}
+      >
+        <div className="border-b border-gray-200 px-4 py-4 min-h-[72px] flex items-center">
+          <h2 className={`text-lg font-semibold text-gray-900 transition-opacity duration-200 ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>Admin</h2>
         </div>
-      )}
-
-      {/* Sidebar menu button - bottom center, shows current page */}
-      {(() => {
-        const filteredTabsForLabel = ADMIN_TABS.filter(tab => !tab.requiresAdmin || isAdmin);
-        const currentPageLabel = selected.tab !== null && selected.sub !== null && filteredTabsForLabel[selected.tab]
-          ? filteredTabsForLabel[selected.tab].subcategories[selected.sub]
-          : 'Menu';
-        return (
+        <div className="flex-1 overflow-y-auto px-2 py-2 space-y-1">
           <button
             onClick={() => {
-              if (window.innerWidth >= 768) setIsSidebarOpen(true);
-              else setIsMobileSidebarOpen(true);
+              setSelected({ tab: null, sub: null });
+              setOpenTab(null);
+              setIsTopSectionCollapsed(false);
+              setSearchQuery('');
+              setIsSearchFocused(false);
             }}
-            className="fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 bg-primary text-white rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-105"
-            title="Open menu"
+            className={`w-full rounded-lg px-3 py-2.5 text-left transition-all ${
+              selected.tab === null && selected.sub === null
+                ? 'bg-primary/10 text-primary'
+                : 'hover:bg-gray-100 text-gray-800'
+            }`}
           >
-            <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-            </svg>
-            <span className="font-medium whitespace-nowrap">{currentPageLabel}</span>
+            <div className="flex items-center gap-2.5">
+              <HomeIcon className="h-5 w-5 shrink-0" />
+              <span className={`text-sm font-semibold whitespace-nowrap transition-opacity duration-200 ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>Dashboard</span>
+            </div>
           </button>
-        );
-      })()}
+          {ADMIN_TABS
+            .filter(tab => !tab.requiresAdmin || isAdmin)
+            .map((tab, tabIndex) => {
+              const visibleSubcategories = tab.subcategories.filter(
+                (subLabel) => !HIDDEN_ADMIN_SUBCATEGORY_LABELS.has(subLabel)
+              );
+              if (visibleSubcategories.length === 0) return null;
+              const isOpen = openTab === tabIndex;
+              const Icon = tab.icon;
+
+              return (
+                <div key={tab.label} className="space-y-1">
+                  <button
+                    onClick={() => setOpenTab(isOpen ? null : tabIndex)}
+                    className={`w-full rounded-lg px-3 py-2.5 text-left transition-all flex items-center justify-between ${
+                      isOpen ? 'bg-primary/10 text-primary' : 'hover:bg-gray-100 text-gray-800'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Icon className="h-5 w-5 shrink-0" />
+                      <span className={`text-sm font-semibold whitespace-nowrap transition-opacity duration-200 ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>{tab.label}</span>
+                    </div>
+                  </button>
+
+                  {isOpen && isSidebarHovered && (
+                    <div className="pl-7 space-y-1">
+                      {visibleSubcategories.map((subLabel, subIndex) => (
+                        <button
+                          key={`${tab.label}-${subLabel}`}
+                          onClick={() => {
+                            const originalSubIndex = tab.subcategories.findIndex((s) => s === subLabel);
+                            setSelected({ tab: tabIndex, sub: originalSubIndex >= 0 ? originalSubIndex : subIndex });
+                            setOpenTab(tabIndex);
+                            setIsTopSectionCollapsed(true);
+                          }}
+                          className={`w-full rounded-lg px-3 py-2 text-left text-sm transition-all ${
+                            selected.tab === tabIndex && selected.sub === subIndex
+                              ? 'bg-primary/10 text-primary font-semibold'
+                              : 'hover:bg-gray-100 text-gray-700'
+                          }`}
+                        >
+                          {subLabel}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+        </div>
+        <div className="p-3 border-t border-gray-200 flex items-center justify-center">
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="rounded-full focus:outline-none focus:ring-2 focus:ring-primary/40"
+            title={`Logout ${currentUser?.first_name || currentUser?.email || ''}`}
+          >
+            {currentUserPhotoUrl ? (
+              <img
+                src={currentUserPhotoUrl}
+                alt={currentUser?.first_name || 'Profile'}
+                className="h-10 w-10 rounded-full object-cover border border-gray-200"
+              />
+            ) : (
+              <div className="h-10 w-10 rounded-full bg-gray-200 text-gray-700 flex items-center justify-center text-sm font-semibold border border-gray-300">
+                {(currentUser?.first_name || currentUser?.email || 'U').charAt(0).toUpperCase()}
+              </div>
+            )}
+          </button>
+        </div>
+      </aside>
+
+      {/* Mobile Sidebar menu button */}
+      <button
+        onClick={() => setIsMobileSidebarOpen(true)}
+        className="fixed bottom-24 right-5 z-[70] md:hidden flex items-center gap-2 px-4 py-3 bg-primary text-white rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-105"
+        title="Open menu"
+      >
+        <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+        <span className="font-medium whitespace-nowrap">Menu</span>
+      </button>
 
       {/* Mobile Sidebar */}
       {isMobileSidebarOpen && (
@@ -943,40 +1026,77 @@ const AdminPage: React.FC = () => {
                 </svg>
               </button>
             </div>
-            <div className="p-4">
-              {ADMIN_TABS.filter(tab => {
-                const hasAccess = !tab.requiresAdmin || isAdmin;
-                return hasAccess;
-              }).map((tab, i) => (
-                <div key={tab.label} className="mb-4">
-                  <button
-                    onClick={() => setOpenTab(openTab === i ? null : i)}
-                    className="w-full flex items-center justify-between p-3 rounded-lg hover:bg-gray-100 text-left font-semibold"
-                  >
-                    <span>{tab.label}</span>
-                    <ChevronDownIcon
-                      className={`w-5 h-5 transition-transform ${openTab === i ? 'rotate-180' : ''}`}
-                    />
-                  </button>
-                  {openTab === i && (
-                    <div className="mt-2 space-y-1">
-                      {tab.subcategories.map((sub, j) => (
-                        <button
-                          key={sub}
-                          onClick={() => {
-                            setSelected({ tab: i, sub: j });
-                            setOpenTab(null);
-                            setIsMobileSidebarOpen(false);
-                          }}
-                          className="w-full text-left px-4 py-2 rounded-lg hover:bg-primary/10 text-sm"
-                        >
-                          {sub}
-                        </button>
-                      ))}
-                    </div>
-                  )}
+            <div className="p-4 space-y-1">
+              <button
+                onClick={() => {
+                  setSelected({ tab: null, sub: null });
+                  setOpenTab(null);
+                  setIsTopSectionCollapsed(false);
+                  setSearchQuery('');
+                  setIsSearchFocused(false);
+                  setIsMobileSidebarOpen(false);
+                }}
+                className={`w-full rounded-lg px-3 py-2.5 text-left transition-all ${
+                  selected.tab === null && selected.sub === null
+                    ? 'bg-primary/10 text-primary'
+                    : 'hover:bg-gray-100 text-gray-800'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <HomeIcon className="h-5 w-5 shrink-0" />
+                  <span className="text-sm font-semibold">Dashboard</span>
                 </div>
-              ))}
+              </button>
+              {ADMIN_TABS
+                .filter(tab => !tab.requiresAdmin || isAdmin)
+                .map((tab, tabIndex) => {
+                  const visibleSubcategories = tab.subcategories.filter(
+                    (subLabel) => !HIDDEN_ADMIN_SUBCATEGORY_LABELS.has(subLabel)
+                  );
+                  if (visibleSubcategories.length === 0) return null;
+                  const isOpen = openTab === tabIndex;
+                  const Icon = tab.icon;
+
+                  return (
+                    <div key={`mobile-${tab.label}`} className="space-y-1">
+                      <button
+                        onClick={() => setOpenTab(isOpen ? null : tabIndex)}
+                        className={`w-full rounded-lg px-3 py-2.5 text-left transition-all flex items-center justify-between ${
+                          isOpen ? 'bg-primary/10 text-primary' : 'hover:bg-gray-100 text-gray-800'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <Icon className="h-5 w-5 shrink-0" />
+                          <span className="text-sm font-semibold">{tab.label}</span>
+                        </div>
+                      </button>
+
+                      {isOpen && (
+                        <div className="pl-7 space-y-1">
+                          {visibleSubcategories.map((subLabel, subIndex) => (
+                            <button
+                              key={`mobile-${tab.label}-${subLabel}`}
+                              onClick={() => {
+                                const originalSubIndex = tab.subcategories.findIndex((s) => s === subLabel);
+                                setSelected({ tab: tabIndex, sub: originalSubIndex >= 0 ? originalSubIndex : subIndex });
+                                setOpenTab(tabIndex);
+                                setIsTopSectionCollapsed(true);
+                                setIsMobileSidebarOpen(false);
+                              }}
+                              className={`w-full rounded-lg px-3 py-2 text-left text-sm transition-all ${
+                                selected.tab === tabIndex && selected.sub === subIndex
+                                  ? 'bg-primary/10 text-primary font-semibold'
+                                  : 'hover:bg-gray-100 text-gray-700'
+                              }`}
+                            >
+                              {subLabel}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
             </div>
           </div>
         </div>
@@ -984,16 +1104,37 @@ const AdminPage: React.FC = () => {
 
       {/* Main Content Area */}
       <div
-        className="flex-1 overflow-y-auto px-2 sm:px-3 md:px-6 py-4 md:py-6 transition-all duration-300"
+        className="flex-1 overflow-y-auto px-2 sm:px-3 md:px-6 py-4 md:py-6 transition-all duration-300 md:ml-24"
       >
-        {/* Admin Search */}
-        <div className="max-w-3xl mx-auto mb-8 w-full" ref={searchBoxRef}>
-          <div className="relative">
-            <MagnifyingGlassIcon className="w-6 h-6 text-gray-400 absolute left-4 top-1/2 -translate-y-1/2" />
+        {/* Top nav + search */}
+        <div className="max-w-6xl mx-auto mb-3 flex flex-col lg:flex-row lg:flex-nowrap lg:items-center lg:justify-between gap-2.5" ref={searchBoxRef}>
+          <div className="flex items-center gap-1 overflow-x-auto whitespace-nowrap scrollbar-thin scrollbar-thumb-black/10 scrollbar-track-transparent">
+            {topLinks.map((item) => (
+              <button
+                key={`${item.tabIndex}-${item.subIndex}-${item.label}`}
+                type="button"
+                onClick={() => {
+                  setSelected({ tab: item.tabIndex, sub: item.subIndex });
+                  setOpenTab(item.tabIndex);
+                  setIsTopSectionCollapsed(true);
+                }}
+                className={`px-3 py-1.5 text-sm rounded-lg transition-all ${
+                  selected.tab === item.tabIndex && selected.sub === item.subIndex
+                    ? 'bg-white shadow-sm text-gray-900'
+                    : 'text-gray-700 hover:bg-white hover:shadow-sm'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="relative w-full lg:w-80 lg:flex-shrink-0">
+            <MagnifyingGlassIcon className="w-5 h-5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 z-10" />
             <input
               type="text"
-              className="input input-bordered w-full pl-12 pr-4 py-3 text-base md:text-lg shadow-sm focus:shadow-md transition-all"
-              placeholder="Search admin sections…"
+              className="w-full h-9 rounded-xl border border-white/80 bg-white pl-10 pr-4 text-sm text-gray-700 placeholder:text-gray-400 shadow-[0_8px_24px_rgba(17,24,39,0.08),0_1px_2px_rgba(17,24,39,0.06)] focus:outline-none focus:ring-2 focus:ring-[#e7bcc7]/50 focus:shadow-[0_12px_28px_rgba(17,24,39,0.12),0_2px_6px_rgba(17,24,39,0.08)] transition-shadow"
+              placeholder="Search"
               value={searchQuery}
               onChange={(e) => {
                 setSearchQuery(e.target.value);
@@ -1002,19 +1143,17 @@ const AdminPage: React.FC = () => {
               onFocus={() => setIsSearchFocused(true)}
               onKeyDown={handleSearchKeyDown}
             />
-          </div>
-          {isSearchFocused && (
-            <div className="relative">
-              <div className="absolute z-20 w-full bg-base-100 border border-base-200 rounded-2xl shadow-2xl mt-2 max-h-80 overflow-y-auto">
+            {isSearchFocused && (
+              <div className="absolute right-0 top-full z-20 w-full bg-white border border-gray-200 rounded-xl shadow-xl mt-2 max-h-80 overflow-y-auto">
                 {filteredSections.length > 0 ? (
                   filteredSections.map((section) => (
                     <button
                       key={section.key}
                       onClick={() => handleSearchSelect(section)}
-                      className="w-full text-left px-4 py-3 hover:bg-primary/5 flex items-center justify-between gap-4"
+                      className="w-full text-left px-4 py-2 hover:bg-primary/5 flex items-center justify-between gap-4"
                     >
                       <div>
-                        <p className="font-semibold text-gray-900">{section.subLabel}</p>
+                        <p className="font-semibold text-gray-900 text-sm">{section.subLabel}</p>
                         <p className="text-xs text-gray-500">{section.tabLabel}</p>
                       </div>
                       <span className="text-xs text-gray-400">Enter ↵</span>
@@ -1026,8 +1165,8 @@ const AdminPage: React.FC = () => {
                   </div>
                 )}
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
         {/* Welcome Section */}
         <div className={`mb-12 transition-all duration-500 ease-in-out overflow-hidden ${isTopSectionCollapsed ? 'max-h-0 mb-0' : 'max-h-screen'
@@ -1039,264 +1178,278 @@ const AdminPage: React.FC = () => {
             <p className="text-xl md:text-xl lg:text-2xl font-medium mb-8" style={{ color: '#4218CC' }}>Welcome to your CRM Admin Panel</p>
           </div>
 
-          {/* Quick Action Buttons */}
-          <div className={`flex md:grid md:grid-cols-2 lg:grid-cols-5 gap-6 max-w-6xl mx-auto transition-all duration-500 ease-in-out overflow-x-auto scrollbar-hide pb-2 md:pb-0 ${isTopSectionCollapsed ? 'opacity-0 max-h-0 overflow-hidden' : 'opacity-100 max-h-screen'
-            }`}>
+          {/* Quick action cards (boxed) */}
+          <div
+            className={`flex md:grid md:grid-cols-2 lg:grid-cols-5 gap-6 max-w-6xl mx-auto transition-all duration-500 ease-in-out overflow-x-auto scrollbar-hide pb-2 md:pb-0 ${isTopSectionCollapsed ? 'opacity-0 max-h-0 overflow-hidden' : 'opacity-100 max-h-screen'
+              }`}
+          >
             <button
+              type="button"
               onClick={() => {
                 const usersTab = ADMIN_TABS.findIndex(tab => tab.label === 'Authentication');
                 const usersSub = ADMIN_TABS[usersTab]?.subcategories.findIndex(sub => sub === 'Users');
                 setSelected({ tab: usersTab, sub: usersSub || 0 });
                 setOpenTab(null);
-                setIsTopSectionCollapsed(true); // Auto-collapse after clicking
+                setIsTopSectionCollapsed(true);
               }}
-              className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white relative overflow-hidden p-6 h-32 w-64 md:w-auto"
+              className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-md shadow-sm bg-[#f4ecff] text-gray-800 relative overflow-hidden p-6 h-32 w-64 md:w-auto border border-[#eadbff]"
             >
+              <div className="absolute -top-10 -right-10 w-28 h-28 rounded-full bg-white/40 blur-2xl" />
               <div className="flex items-center gap-4">
-                <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
-                  <svg className="w-7 h-7 text-white opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/70 border border-white shadow-sm">
+                  <svg className="w-7 h-7 text-[#8a63d2] opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197m13.5-9a2.5 2.5 0 11-5 0 2.5 2.5 0 015 0z" />
                   </svg>
                 </div>
                 <div>
-                  <div className="text-3xl font-extrabold text-white leading-tight">Users</div>
-                  <div className="text-white/80 text-xs font-medium mt-1">Manage Users</div>
+                  <div className="text-3xl font-extrabold text-[#342b56] leading-tight">Users</div>
+                  <div className="text-[#6d6791] text-xs font-medium mt-1">Manage Users</div>
                 </div>
               </div>
-              {/* SVG Graph Placeholder */}
-              <svg className="absolute bottom-2 right-2 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
+              <svg className="absolute bottom-2 right-2 w-16 h-8 opacity-30" fill="none" stroke="#7f78a8" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
             </button>
 
             <button
+              type="button"
               onClick={() => {
                 const employeesTab = ADMIN_TABS.findIndex(tab => tab.label === 'Tenants');
                 const employeesSub = ADMIN_TABS[employeesTab]?.subcategories.findIndex(sub => sub === 'Employees');
                 setSelected({ tab: employeesTab, sub: employeesSub || 0 });
                 setOpenTab(null);
-                setIsTopSectionCollapsed(true); // Auto-collapse after clicking
+                setIsTopSectionCollapsed(true);
               }}
-              className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden p-6 h-32 w-64 md:w-auto"
+              className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-md shadow-sm bg-[#eaf0ff] text-gray-800 relative overflow-hidden p-6 h-32 w-64 md:w-auto border border-[#d6e2ff]"
             >
+              <div className="absolute -top-10 -right-10 w-28 h-28 rounded-full bg-white/45 blur-2xl" />
               <div className="flex items-center gap-4">
-                <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
-                  <svg className="w-7 h-7 text-white opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/70 border border-white shadow-sm">
+                  <svg className="w-7 h-7 text-[#4b63c9] opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a4 4 0 00-3-3.87M9 20H4v-2a4 4 0 013-3.87m9-4a4 4 0 11-8 0 4 4 0 018 0z" />
                   </svg>
                 </div>
                 <div>
-                  <div className="text-2xl font-extrabold text-white leading-tight">Employees</div>
-                  <div className="text-white/80 text-xs font-medium mt-1">Manage Team</div>
+                  <div className="text-2xl font-extrabold text-[#2f3f7a] leading-tight">Employees</div>
+                  <div className="text-[#5f73a8] text-xs font-medium mt-1">Manage Team</div>
                 </div>
               </div>
-              {/* SVG Bar Chart Placeholder */}
-              <svg className="absolute bottom-2 right-2 w-12 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 48 32"><rect x="2" y="20" width="4" height="10" /><rect x="10" y="10" width="4" height="20" /><rect x="18" y="16" width="4" height="14" /><rect x="26" y="6" width="4" height="24" /><rect x="34" y="14" width="4" height="16" /></svg>
+              <svg className="absolute bottom-2 right-2 w-12 h-8 opacity-30" fill="none" stroke="#6d81bd" strokeWidth="2" viewBox="0 0 48 32"><rect x="2" y="20" width="4" height="10" /><rect x="10" y="10" width="4" height="20" /><rect x="18" y="16" width="4" height="14" /><rect x="26" y="6" width="4" height="24" /><rect x="34" y="14" width="4" height="16" /></svg>
             </button>
 
             <button
+              type="button"
               onClick={() => {
                 const sourcesTab = ADMIN_TABS.findIndex(tab => tab.label === 'Misc');
                 const sourcesSub = ADMIN_TABS[sourcesTab]?.subcategories.findIndex(sub => sub === 'Lead Sources');
                 setSelected({ tab: sourcesTab, sub: sourcesSub || 0 });
                 setOpenTab(null);
-                setIsTopSectionCollapsed(true); // Auto-collapse after clicking
+                setIsTopSectionCollapsed(true);
               }}
-              className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden p-6 h-32 w-64 md:w-auto"
+              className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-md shadow-sm bg-[#e8f8f2] text-gray-800 relative overflow-hidden p-6 h-32 w-64 md:w-auto border border-[#cfeede]"
             >
+              <div className="absolute -top-10 -right-10 w-28 h-28 rounded-full bg-white/45 blur-2xl" />
               <div className="flex items-center gap-4">
-                <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
-                  <svg className="w-7 h-7 text-white opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/70 border border-white shadow-sm">
+                  <svg className="w-7 h-7 text-[#2d947b] opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
                   </svg>
                 </div>
                 <div>
-                  <div className="text-3xl font-extrabold text-white leading-tight">Sources</div>
-                  <div className="text-white/80 text-xs font-medium mt-1">Lead Sources</div>
+                  <div className="text-3xl font-extrabold text-[#2a5f50] leading-tight">Sources</div>
+                  <div className="text-[#578874] text-xs font-medium mt-1">Lead Sources</div>
                 </div>
               </div>
-              {/* SVG Circle Placeholder */}
-              <svg className="absolute bottom-2 right-2 w-10 h-10 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" /><text x="16" y="21" textAnchor="middle" fontSize="10" fill="white" opacity="0.7">99+</text></svg>
+              <svg className="absolute bottom-2 right-2 w-10 h-10 opacity-30" fill="none" stroke="#5a9f86" strokeWidth="2" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" /><text x="16" y="21" textAnchor="middle" fontSize="10" fill="#5a9f86" opacity="0.8">99+</text></svg>
             </button>
 
             <button
+              type="button"
               onClick={() => {
                 const contractsTab = ADMIN_TABS.findIndex(tab => tab.label === 'Misc');
                 const contractsSub = ADMIN_TABS[contractsTab]?.subcategories.findIndex(sub => sub === 'Contract templates');
                 setSelected({ tab: contractsTab, sub: contractsSub || 0 });
                 setOpenTab(null);
-                setIsTopSectionCollapsed(true); // Auto-collapse after clicking
+                setIsTopSectionCollapsed(true);
               }}
-              className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white relative overflow-hidden p-6 h-32 w-64 md:w-auto"
+              className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-md shadow-sm bg-[#efeafd] text-gray-800 relative overflow-hidden p-6 h-32 w-64 md:w-auto border border-[#ddd2fb]"
             >
+              <div className="absolute -top-10 -right-10 w-28 h-28 rounded-full bg-white/45 blur-2xl" />
               <div className="flex items-center gap-4">
-                <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
-                  <svg className="w-7 h-7 text-white opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/70 border border-white shadow-sm">
+                  <svg className="w-7 h-7 text-[#6d57be] opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                   </svg>
                 </div>
                 <div>
-                  <div className="text-3xl font-extrabold text-white leading-tight">Contracts</div>
-                  <div className="text-white/80 text-xs font-medium mt-1">Templates</div>
+                  <div className="text-3xl font-extrabold text-[#3d2f72] leading-tight">Contracts</div>
+                  <div className="text-[#7464a7] text-xs font-medium mt-1">Templates</div>
                 </div>
               </div>
-              {/* SVG Line Chart Placeholder */}
-              <svg className="absolute bottom-2 right-2 w-16 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><polyline points="2,28 16,20 32,24 48,10 62,18" /></svg>
+              <svg className="absolute bottom-2 right-2 w-16 h-8 opacity-30" fill="none" stroke="#7b6ba8" strokeWidth="2" viewBox="0 0 64 32"><polyline points="2,28 16,20 32,24 48,10 62,18" /></svg>
             </button>
 
             <button
+              type="button"
               onClick={() => {
                 const accessLogsTab = ADMIN_TABS.findIndex(tab => tab.label === 'Hooks');
                 const accessLogsSub = ADMIN_TABS[accessLogsTab]?.subcategories.findIndex(sub => sub === 'Access Logs');
                 setSelected({ tab: accessLogsTab, sub: accessLogsSub || 0 });
                 setOpenTab(null);
-                setIsTopSectionCollapsed(true); // Auto-collapse after clicking
+                setIsTopSectionCollapsed(true);
               }}
-              className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 text-white relative overflow-hidden p-6 h-32 w-64 md:w-auto"
+              className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-md shadow-sm bg-[#e7f6f1] text-gray-800 relative overflow-hidden p-6 h-32 w-64 md:w-auto border border-[#cdebe0]"
             >
+              <div className="absolute -top-10 -right-10 w-28 h-28 rounded-full bg-white/45 blur-2xl" />
               <div className="flex items-center gap-4">
-                <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
-                  <svg className="w-7 h-7 text-white opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/70 border border-white shadow-sm">
+                  <svg className="w-7 h-7 text-[#3d9b7b] opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                   </svg>
                 </div>
                 <div>
-                  <div className="text-3xl font-extrabold text-white leading-tight">Access</div>
-                  <div className="text-white/80 text-xs font-medium mt-1">Logs</div>
+                  <div className="text-3xl font-extrabold text-[#2f5e50] leading-tight">Access</div>
+                  <div className="text-[#5f877b] text-xs font-medium mt-1">Logs</div>
                 </div>
               </div>
-              {/* SVG Activity Log Placeholder */}
-              <svg className="absolute bottom-2 right-2 w-12 h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 48 32"><rect x="2" y="8" width="4" height="16" /><rect x="8" y="12" width="4" height="12" /><rect x="14" y="6" width="4" height="18" /><rect x="20" y="10" width="4" height="14" /><rect x="26" y="14" width="4" height="10" /><rect x="32" y="4" width="4" height="20" /><rect x="38" y="8" width="4" height="16" /></svg>
+              <svg className="absolute bottom-2 right-2 w-12 h-8 opacity-30" fill="none" stroke="#5b9c88" strokeWidth="2" viewBox="0 0 48 32"><rect x="2" y="8" width="4" height="16" /><rect x="8" y="12" width="4" height="12" /><rect x="14" y="6" width="4" height="18" /><rect x="20" y="10" width="4" height="14" /><rect x="26" y="14" width="4" height="10" /><rect x="32" y="4" width="4" height="20" /><rect x="38" y="8" width="4" height="16" /></svg>
             </button>
           </div>
         </div>
 
-        {/* Recent Changes Section - Only show when no specific content is selected */}
+        {/* Dashboard: team overview + expandable user changes — only when no admin page is selected */}
         {selected.tab === null && selected.sub === null && (
-          <div className="w-full mt-8 px-2 sm:px-3 md:px-4">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* User Changes */}
-              <div className="rounded-xl p-6">
-                <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
-                  <svg className="w-6 h-6 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                  </svg>
-                  User Changes
-                </h3>
-                {loadingChanges ? (
-                  <div className="flex justify-center items-center py-8">
-                    <div className="loading loading-spinner loading-lg text-success"></div>
+          <div className="w-full max-w-5xl mx-auto mt-10 md:mt-14 px-2 sm:px-3 md:px-0">
+            <section className="pb-10 md:pb-12 border-b border-gray-200/90">
+              <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500 mb-2">Team overview</h2>
+              <p className="text-sm text-gray-600 leading-relaxed max-w-2xl mb-8">
+                Active staff linked to <span className="font-medium text-gray-800">tenants_employee</span>. Role counts use
+                <span className="font-medium text-gray-800"> employee_field_assignments</span>. Includes today meetings stats.
+              </p>
+
+              {dashboardStatsLoading ? (
+                <div className="flex justify-start py-8">
+                  <span className="loading loading-spinner loading-md text-gray-400" />
+                </div>
+              ) : dashboardStats ? (
+                <>
+                  <div className="mb-10 md:mb-12">
+                    <p className="text-sm text-gray-500 mb-1">Active employees</p>
+                    <p className="text-5xl md:text-6xl font-semibold text-gray-900 tabular-nums tracking-tight">
+                      {dashboardStats.totalActiveEmployees}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-2">Staff users linked to tenants_employee</p>
                   </div>
-                ) : (() => {
-                  const userChangeCount = recentChanges.filter(c => c.type === 'user_change').length;
-                  console.log('👥 User changes count:', userChangeCount);
-                  return userChangeCount > 0;
-                })() ? (
-                  <div className="overflow-x-auto">
-                    <table className="table w-full">
-                      <thead>
-                        <tr>
-                          <th className="text-gray-900 font-semibold">User</th>
-                          <th className="text-gray-900 font-semibold">Updated By</th>
-                          <th className="text-gray-900 font-semibold">Info</th>
-                          <th className="text-gray-900 font-semibold">Time</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {recentChanges.filter(c => c.type === 'user_change').map((change) => (
-                          <tr key={`${change.type}-${change.id}`}>
-                            <td>
-                              <div className="font-medium text-gray-900">{change.user_name}</div>
-                            </td>
-                            <td>
-                              <div className="text-sm text-gray-600">
-                                {change.updated_by_name || 'System'}
-                              </div>
-                            </td>
-                            <td>
-                              <div className="text-xs text-gray-600 break-words max-w-md">
-                                {change.info || '—'}
-                              </div>
-                            </td>
-                            <td>
-                              <div className="text-xs text-gray-500">
-                                {new Date(change.created_at).toLocaleString()}
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+
+                  <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-x-8 gap-y-8">
+                    {(
+                      [
+                        { key: 'handlers', label: 'Handlers', value: dashboardStats.handlers },
+                        { key: 'sales', label: 'Sales', value: dashboardStats.sales },
+                        { key: 'marketing', label: 'Marketing', value: dashboardStats.marketing },
+                        { key: 'finance', label: 'Finance', value: dashboardStats.finance },
+                        { key: 'administration', label: 'Administration', value: dashboardStats.administration },
+                      ] as const
+                    ).map((row, idx) => (
+                      <div
+                        key={row.key}
+                        className={
+                          idx > 0 ? 'lg:border-l lg:border-gray-200/80 lg:pl-8' : ''
+                        }
+                      >
+                        <dt className="text-xs font-medium uppercase tracking-wider text-gray-500">{row.label}</dt>
+                        <dd className="mt-1.5 text-2xl md:text-3xl font-semibold text-gray-900 tabular-nums">
+                          {row.value}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <div className="mt-10 bg-white rounded-2xl border border-gray-200 shadow-sm p-5">
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500 mb-4">Meetings Today</p>
+                    <dl className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div>
+                        <dt className="text-xs font-medium uppercase tracking-wider text-gray-500">Active client</dt>
+                        <dd className="mt-1 text-3xl font-semibold text-gray-900 tabular-nums">
+                          {dashboardStats.activeClientMeetingsToday}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs font-medium uppercase tracking-wider text-gray-500">Staff meetings</dt>
+                        <dd className="mt-1 text-3xl font-semibold text-gray-900 tabular-nums">
+                          {dashboardStats.staffMeetingsToday}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-xs font-medium uppercase tracking-wider text-gray-500">Potential client</dt>
+                        <dd className="mt-1 text-3xl font-semibold text-gray-900 tabular-nums">
+                          {dashboardStats.potentialClientMeetingsToday}
+                        </dd>
+                      </div>
+                    </dl>
                   </div>
-                ) : (
-                  <div className="text-center py-8 text-gray-500">
-                    No user changes found
-                  </div>
-                )}
+                </>
+              ) : null}
+            </section>
+
+            <section className="pt-10 md:pt-12">
+              <div className="w-full py-3 border-b border-gray-200/90">
+                <h2 className="text-xs font-semibold uppercase tracking-[0.14em] text-gray-500">
+                  User change history
+                </h2>
+                <p className="text-sm text-gray-600 mt-1">
+                  Recent account and profile changes (up to 500 rows)
+                </p>
               </div>
 
-              {/* Access Logs */}
-              <div className="rounded-xl p-6">
-                <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
-                  <svg className="w-6 h-6 text-info" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                  API Requests
-                </h3>
-                {loadingChanges ? (
-                  <div className="flex justify-center items-center py-8">
-                    <div className="loading loading-spinner loading-lg text-info"></div>
+              <div className="pt-6">
+                {fullUserChangesLoading ? (
+                  <div className="flex justify-start py-10">
+                    <span className="loading loading-spinner loading-md text-gray-400" />
                   </div>
-                ) : recentChanges.filter(c => c.type === 'access_log').length > 0 ? (
-                  <div className="overflow-x-auto">
-                    <table className="table w-full">
-                      <thead>
-                        <tr>
-                          <th className="text-gray-900 font-semibold">Method</th>
-                          <th className="text-gray-900 font-semibold">Endpoint</th>
-                          <th className="text-gray-900 font-semibold">Body</th>
-                          <th className="text-gray-900 font-semibold">Status</th>
-                          <th className="text-gray-900 font-semibold">Time</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {recentChanges.filter(c => c.type === 'access_log').map((change) => (
-                          <tr key={`${change.type}-${change.id}`}>
-                            <td>
-                              <span className="text-xs sm:text-sm font-medium text-gray-700">
-                                {change.request_method}
-                              </span>
-                            </td>
-                            <td>
-                              <div className="text-xs text-gray-700 truncate max-w-xs" title={change.endpoint}>
-                                {change.endpoint}
-                              </div>
-                            </td>
-                            <td>
-                              <div className="text-xs text-gray-600 break-words max-w-xs">
-                                {change.bodyRequest && change.bodyRequest.trim() !== '' ? change.bodyRequest : '—'}
-                              </div>
-                            </td>
-                            <td>
-                              <span className="text-xs sm:text-sm font-medium text-gray-700">
-                                {change.response_code}
-                              </span>
-                            </td>
-                            <td>
-                              <div className="text-xs text-gray-500">
-                                {new Date(change.created_at).toLocaleString()}
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                ) : fullUserChanges.length === 0 ? (
+                  <p className="text-sm text-gray-500 py-6">No user changes found</p>
                 ) : (
-                  <div className="text-center py-8 text-gray-500">
-                    No API requests found
+                  <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-3">
+                    <div className="overflow-x-auto max-h-[min(70vh,560px)] overflow-y-auto">
+                      <table className="w-full text-sm text-left border-collapse">
+                        <thead>
+                          <tr className="border-b border-gray-200">
+                            <th scope="col" className="py-3 pr-4 font-medium text-gray-500 whitespace-nowrap sticky top-0 bg-white z-[1]">
+                              User
+                            </th>
+                            <th scope="col" className="py-3 pr-4 font-medium text-gray-500 whitespace-nowrap sticky top-0 bg-white z-[1]">
+                              Updated by
+                            </th>
+                            <th scope="col" className="py-3 pr-4 font-medium text-gray-500 min-w-[12rem] sticky top-0 bg-white z-[1]">
+                              Changes
+                            </th>
+                            <th scope="col" className="py-3 font-medium text-gray-500 whitespace-nowrap sticky top-0 bg-white z-[1]">
+                              Time
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {fullUserChanges.map(change => (
+                            <tr key={`${change.type}-${change.id}`} className="align-top hover:bg-gray-50/50">
+                              <td className="py-3 pr-4 font-medium text-gray-900 whitespace-nowrap">
+                                {change.user_name}
+                              </td>
+                              <td className="py-3 pr-4 text-gray-600 whitespace-nowrap">
+                                {change.updated_by_name || '—'}
+                              </td>
+                              <td className="py-3 pr-4 text-gray-700 break-words max-w-xl leading-relaxed">
+                                {change.info || '—'}
+                              </td>
+                              <td className="py-3 text-gray-500 whitespace-nowrap tabular-nums text-xs">
+                                {new Date(change.created_at).toLocaleString()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
               </div>
-            </div>
+            </section>
           </div>
         )}
 
@@ -1304,10 +1457,7 @@ const AdminPage: React.FC = () => {
         <div className="relative">
           <button
             onClick={() => setIsTopSectionCollapsed(!isTopSectionCollapsed)}
-            className={`fixed top-20 right-4 md:right-8 z-50 p-2 md:p-3 rounded-full shadow-lg transition-all duration-300 transform hover:scale-110 ${isTopSectionCollapsed
-                ? 'bg-gradient-to-r from-primary to-secondary text-white'
-                : 'bg-white text-primary border-2 border-primary/20 hover:border-primary/40'
-              }`}
+            className="fixed top-24 right-4 md:right-8 z-50 p-2 md:p-3 rounded-full bg-[#4B18D2] text-white border border-[#4B18D2]/80 shadow-[0_10px_26px_rgba(75,24,210,0.34)] transition-all duration-300 transform hover:scale-110 hover:bg-[#4214BC]"
             title={isTopSectionCollapsed ? 'Show Welcome Section' : 'Hide Welcome Section'}
           >
             <svg
@@ -1439,8 +1589,103 @@ const AdminPage: React.FC = () => {
             </div>
           ) : null}
         </div>
-        {/* Glassy card style */}
+        {/* Admin page scoped style overrides */}
         <style>{`
+          .admin-page-shell table {
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            border-collapse: separate !important;
+            border-spacing: 0 10px !important;
+          }
+
+          /* Kill global index.css rectangular hover on <tr> (boxy strip) */
+          .admin-page-shell .table tbody tr:hover {
+            background-color: transparent !important;
+          }
+          html.dark .admin-page-shell .table tbody tr:hover {
+            background-color: transparent !important;
+          }
+
+          /*
+           * Rounded rows: round first/last <td> (reliable). Do NOT use tr::before — in WebKit/Blink
+           * it can generate an extra table cell and shift every column.
+           * Shadow on <tr> + overflow so it follows rounded corners where supported.
+           */
+          .admin-page-shell table tbody tr {
+            background: transparent !important;
+            border-radius: 18px !important;
+            overflow: hidden !important;
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.10), 0 2px 6px rgba(15, 23, 42, 0.06) !important;
+            transition: box-shadow 0.2s ease;
+          }
+
+          .admin-page-shell table tbody tr:hover {
+            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.14), 0 4px 10px rgba(15, 23, 42, 0.08) !important;
+          }
+
+          .admin-page-shell table tbody td {
+            border: none !important;
+            border-bottom: none !important;
+            background: #ffffff !important;
+            box-shadow: none !important;
+            vertical-align: middle;
+          }
+
+          .admin-page-shell table tbody td:first-child {
+            border-top-left-radius: 18px !important;
+            border-bottom-left-radius: 18px !important;
+            padding-left: 1.1rem !important;
+          }
+
+          .admin-page-shell table tbody td:last-child {
+            border-top-right-radius: 18px !important;
+            border-bottom-right-radius: 18px !important;
+            padding-right: 1.1rem !important;
+          }
+
+          .admin-page-shell table tbody tr:hover td {
+            background: #f1f5f9 !important;
+          }
+
+          html.dark .admin-page-shell table tbody tr {
+            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.25) !important;
+          }
+
+          html.dark .admin-page-shell table tbody tr:hover {
+            box-shadow: 0 14px 30px rgba(0, 0, 0, 0.42), 0 4px 12px rgba(0, 0, 0, 0.3) !important;
+          }
+
+          html.dark .admin-page-shell table tbody td {
+            background: rgba(255, 255, 255, 0.06) !important;
+          }
+
+          html.dark .admin-page-shell table tbody tr:hover td {
+            background: rgba(255, 255, 255, 0.10) !important;
+          }
+
+          .admin-page-shell input[type='search'],
+          .admin-page-shell input[placeholder*='search' i] {
+            border-radius: 9999px !important;
+            background: #ffffff !important;
+            border: 1px solid rgba(229, 231, 235, 0.95) !important;
+            box-shadow: 0 8px 22px rgba(17, 24, 39, 0.08), 0 1px 3px rgba(17, 24, 39, 0.06) !important;
+            transition: box-shadow 0.2s ease, transform 0.2s ease;
+          }
+
+          .admin-page-shell input[type='search']:focus,
+          .admin-page-shell input[placeholder*='search' i]:focus {
+            box-shadow: 0 12px 28px rgba(17, 24, 39, 0.12), 0 2px 6px rgba(17, 24, 39, 0.08) !important;
+          }
+
+          .admin-page-shell table thead,
+          .admin-page-shell table thead tr,
+          .admin-page-shell table thead th {
+            background-color: transparent !important;
+            background-image: none !important;
+            border-bottom: none !important;
+          }
+
           .glass-card {
             background: rgba(255,255,255,0.70);
             backdrop-filter: blur(16px);

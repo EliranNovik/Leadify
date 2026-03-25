@@ -1771,7 +1771,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           {!hideAddButton && (
             <button
               onClick={() => openModal()}
-              className="btn btn-primary gap-2"
+              className="btn btn-primary gap-2 rounded-full px-5"
             >
               <PlusIcon className="w-5 h-5" />
               Add {title}
@@ -1835,15 +1835,15 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         </div>
       </div>
 
-      {/* Records Table */}
-      <div className="bg-base-100 shadow-xl rounded-lg overflow-hidden">
+      {/* Records Table — avoid overflow-hidden so row shadows aren’t clipped */}
+      <div className="w-full py-2">
         {loading ? (
           <div className="flex justify-center py-8">
             <div className="loading loading-spinner loading-lg"></div>
           </div>
         ) : (
           <>
-            <div className="overflow-x-auto w-full p-4">
+            <div className="overflow-x-auto w-full">
               <table className="table w-full">
                 <thead className="bg-base-200">
                   <tr>

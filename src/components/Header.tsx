@@ -290,14 +290,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         setTimeout(checkTheme, 100);
       }
     };
-    window.addEventListener('storagechange', handleStorageChange);
+    // Use the standard StorageEvent.
+    window.addEventListener('storage', handleStorageChange as unknown as EventListener);
 
     const interval = setInterval(checkTheme, 500);
 
     return () => {
       observer.disconnect();
       window.removeEventListener('themechange', handleThemeChange as EventListener);
-      window.removeEventListener('storagechange', handleStorageChange);
+      window.removeEventListener('storage', handleStorageChange as unknown as EventListener);
       clearInterval(interval);
     };
   }, []);
@@ -7213,10 +7214,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   if (isExternalUser && !isLoadingExternal) {
     return (
       <>
-        <div className="navbar bg-base-100 px-2 md:px-0 h-14 md:h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
+        <div className="navbar bg-base-100 px-2 md:px-0 h-11 md:h-12 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
           {/* Logo and Logout Button */}
           <div className="flex-1 justify-start flex items-center gap-4">
-            <div className="h-14 md:h-16 flex items-center gap-3">
+            <div className="h-11 md:h-12 flex items-center gap-3">
               <Link to="/" className="flex items-center gap-2">
                 <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
               </Link>
@@ -7298,7 +7299,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   return (
     <>
-      <div className="navbar bg-base-100 px-2 md:px-0 h-14 md:h-16 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
+      <div className="navbar bg-base-100 px-2 md:px-0 h-11 md:h-12 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
         {/* Left section with menu and logo */}
         <div className={`flex-1 justify-start flex items-center gap-4 overflow-hidden md:overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
           <button className="md:hidden btn btn-ghost btn-square" onClick={onMenuClick} aria-label={isMenuOpen ? "Close menu" : "Open menu"}>
@@ -7448,7 +7449,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           </div>
 
           {/* Desktop: hamburger flush left, RMQ logo next to it */}
-          <div className="hidden md:flex items-center h-14 pl-2 md:pl-4">
+          <div className="hidden md:flex items-center h-10 pl-2 md:pl-4">
             <button
               ref={buttonRef}
               type="button"
@@ -7457,12 +7458,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 e.stopPropagation();
                 setShowQuickActionsDropdown(!showQuickActionsDropdown);
               }}
-              className="btn btn-ghost btn-square min-h-12 h-12 w-12 p-0 flex items-center justify-center rounded-xl"
+              className="btn btn-ghost btn-square min-h-9 h-9 w-9 p-0 flex items-center justify-center rounded-xl"
               aria-label={showQuickActionsDropdown ? 'Close menu' : 'Open menu'}
               title="Quick Actions"
               data-quick-actions-dropdown
             >
-              <Bars3Icon className="w-8 h-8" />
+              <Bars3Icon className="w-6 h-6" />
             </button>
             <Link to="/" className="flex items-center ml-2" onClick={() => setShowQuickActionsDropdown(false)}>
               <span className="text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
@@ -7471,7 +7472,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             <div className="hidden md:block relative ml-4 flex items-center flex-shrink-0" ref={profileDropdownRefDesktop}>
               <button
                 type="button"
-                className="btn btn-ghost gap-2 min-h-0 h-10 w-auto min-w-[2.5rem] pl-2 pr-2.5 rounded-full flex items-center justify-start flex-shrink-0"
+                className="btn btn-ghost gap-2 min-h-0 h-9 w-auto min-w-[2.25rem] pl-2 pr-2 rounded-full flex items-center justify-start flex-shrink-0"
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
@@ -7483,7 +7484,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 {resolvedHeaderPhotoUrl ? (
                   <>
                     <span
-                      className="w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] flex-shrink-0 rounded-full bg-base-300 block bg-no-repeat bg-center"
+                      className="w-8 h-8 min-w-[2rem] min-h-[2rem] flex-shrink-0 rounded-full bg-base-300 block bg-no-repeat bg-center"
                       style={{
                         backgroundImage: `url(${resolvedHeaderPhotoUrl})`,
                         backgroundSize: 'contain',
@@ -7501,13 +7502,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     />
                   </>
                 ) : null}
-                <span className={`w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] flex-shrink-0 rounded-full overflow-hidden aspect-square bg-base-300 flex items-center justify-center ${resolvedHeaderPhotoUrl ? 'hidden' : ''}`}>
+                <span className={`w-8 h-8 min-w-[2rem] min-h-[2rem] flex-shrink-0 rounded-full overflow-hidden aspect-square bg-base-300 flex items-center justify-center ${resolvedHeaderPhotoUrl ? 'hidden' : ''}`}>
                   {(authUserInitials || authUserFullName || userFullName) ? (
-                    <span className="text-sm font-semibold text-base-content/80">
+                  <span className="text-xs font-semibold text-base-content/80">
                       {(authUserInitials || (authUserFullName || userFullName || '').trim().split(/\s+/).map(n => n[0]).join('').toUpperCase().slice(0, 2)) || 'U'}
                     </span>
                   ) : (
-                    <UserIcon className="w-5 h-5 text-base-content/70" />
+                    <UserIcon className="w-4 h-4 text-base-content/70" />
                   )}
                 </span>
                 <span className="font-medium text-base-content max-w-[120px] truncate text-sm">

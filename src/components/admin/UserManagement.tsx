@@ -380,7 +380,7 @@ const UserManagement: React.FC = () => {
             Sync All Users
           </button>
           <button
-            className="btn btn-primary gap-2"
+            className="btn btn-primary gap-2 rounded-full px-5"
             onClick={() => {
               setEditingUser({} as User);
               setFormData({
