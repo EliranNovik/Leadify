@@ -655,6 +655,15 @@ const Clients: React.FC<ClientsProps> = ({
     if (fallbackId !== null && fallbackId !== undefined) return getEmployeeDisplayName(fallbackId);
     return 'Not assigned';
   };
+  const isUnassignedHandlerValue = (value: string | null | undefined): boolean => {
+    if (!value) return true;
+    const normalized = value.trim().toLowerCase().replace(/[\s_]+/g, ' ');
+    return normalized === '' || normalized === '---' || normalized === '--' || normalized === 'not assigned';
+  };
+  const normalizeHandlerToNull = (value: string | null | undefined): string | null => {
+    if (isUnassignedHandlerValue(value)) return null;
+    return value!.trim();
+  };
 
   // Helper function to get employee display name from ID
   const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
@@ -2746,11 +2755,12 @@ const Clients: React.FC<ClientsProps> = ({
           ? Number.parseInt(successForm.handlerId, 10)
           : null;
 
-      const handlerName =
+      const handlerNameRaw =
         successForm.handler ||
         (handlerIdNumeric != null
           ? handlerOptionsMap.get(String(handlerIdNumeric)) || ''
           : '');
+      const handlerName = normalizeHandlerToNull(handlerNameRaw);
 
       if (isLegacyLead) {
         const legacyId = selectedClient.id
@@ -2812,9 +2822,9 @@ const Clients: React.FC<ClientsProps> = ({
           proposal_total: proposal ?? prev?.proposal_total,
           potential_value: potentialValue ?? prev?.potential_value,
           file_id: fileId ?? prev?.file_id,
-          case_handler_id: handlerIdNumeric ?? prev?.case_handler_id,
-          handler: handlerName || prev?.handler,
-          closer: handlerName || prev?.closer,
+          case_handler_id: handlerIdNumeric,
+          handler: handlerName,
+          closer: handlerName,
           balance: proposal ?? prev?.balance,
           balance_currency: successForm.currency || prev?.balance_currency,
         }));
@@ -2838,6 +2848,9 @@ const Clients: React.FC<ClientsProps> = ({
         if (handlerName) {
           updateData.handler = handlerName;
           updateData.closer = handlerName;
+        } else {
+          updateData.handler = null;
+          updateData.case_handler_id = null;
         }
         if (handlerIdNumeric != null && !Number.isNaN(handlerIdNumeric)) {
           updateData.case_handler_id = handlerIdNumeric;
@@ -2866,10 +2879,9 @@ const Clients: React.FC<ClientsProps> = ({
           proposal_total: proposal,
           potential_value: potentialValue,
           file_id: fileId ?? prev?.file_id,
-          handler: handlerName || prev?.handler,
-          case_handler_id:
-            handlerIdNumeric != null ? handlerIdNumeric : prev?.case_handler_id,
-          closer: handlerName || prev?.closer,
+          handler: handlerName,
+          case_handler_id: handlerIdNumeric,
+          closer: handlerName,
           balance: proposal ?? prev?.balance,
           balance_currency: successForm.currency || prev?.balance_currency,
         }));
@@ -5275,7 +5287,7 @@ const Clients: React.FC<ClientsProps> = ({
 
     const rawClientId = selectedClient.id;
     const handlerIdRaw = option?.id ?? '';
-    const handlerLabel = option?.label ?? '';
+    const handlerLabel = normalizeHandlerToNull(option?.label ?? '');
     // Convert to string first in case id is a number
     const trimmedId = String(handlerIdRaw).trim();
     const handlerIdNumeric =
@@ -5298,7 +5310,7 @@ const Clients: React.FC<ClientsProps> = ({
         selectedClient.lead_type === 'legacy' || clientIdString.startsWith('legacy_');
 
       // If handler is being assigned (not cleared), change stage to 105 (Handler Set)
-      const shouldUpdateStage = handlerLabel && handlerLabel.trim() !== '';
+      const shouldUpdateStage = !!handlerLabel;
       console.log('📊 Should update stage?', shouldUpdateStage, 'Handler label:', handlerLabel);
 
       let handlerSetStageId: number | null = null;
@@ -5354,7 +5366,7 @@ const Clients: React.FC<ClientsProps> = ({
         // For new leads, save to handler column and case_handler_id
         const updatePayload: Record<string, any> = {
           case_handler_id: handlerIdNumeric,
-          handler: handlerLabel || null,
+          handler: handlerLabel,
         };
 
         if (!handlerLabel) {
@@ -5397,8 +5409,8 @@ const Clients: React.FC<ClientsProps> = ({
         const updated = {
           ...prev,
           case_handler_id: handlerIdNumeric,
-          handler: handlerLabel || '',
-          closer: handlerLabel || null,
+          handler: handlerLabel,
+          closer: handlerLabel,
           ...(shouldUpdateStage && handlerSetStageId !== null ? { stage: handlerSetStageId } : {}),
         };
         console.log('📊 Updated client state:', { oldStage: prev.stage, newStage: updated.stage });
@@ -6550,7 +6562,7 @@ const Clients: React.FC<ClientsProps> = ({
               meeting_total_currency: resolvedMeetingCurrency,
               proposal_total: meetingAmount,
               potential_value: null,
-              handler: selectedClient.handler || null,
+              handler: normalizeHandlerToNull(selectedClient.handler),
               case_handler_id: selectedClient.case_handler_id || null,
               scheduler: currentUserFullName,
               created_at: new Date().toISOString(),
@@ -13317,9 +13329,10 @@ const Clients: React.FC<ClientsProps> = ({
         const trimmedHandlerId = subLeadForm.handlerId.trim();
         handlerIdValue = /^\d+$/.test(trimmedHandlerId) ? Number(trimmedHandlerId) : trimmedHandlerId;
       }
-      const handlerLabel = subLeadForm.handlerId
+      const handlerLabelRaw = subLeadForm.handlerId
         ? handlerOptionsMap.get(subLeadForm.handlerId) || subLeadForm.handler || ''
         : subLeadForm.handler || '';
+      const handlerLabel = normalizeHandlerToNull(handlerLabelRaw);
 
       const parseNumericInput = (value: string) => {
         if (!value) return null;
@@ -13517,7 +13530,7 @@ const Clients: React.FC<ClientsProps> = ({
           meeting_total_currency: currencyValue,
           proposal_total: proposalAmount,
           potential_value: potentialValueAmount,
-          handler: handlerLabel || null,
+          handler: handlerLabel,
           case_handler_id: handlerIdValue,
           number_of_applicants_meeting: applicantCount,
           created_at: new Date().toISOString(),

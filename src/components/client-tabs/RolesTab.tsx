@@ -41,6 +41,11 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
 
   // Check if this is a legacy lead
   const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+  const isUnassignedValue = (value: string | null | undefined): boolean => {
+    if (!value) return true;
+    const normalized = value.trim().toLowerCase().replace(/[\s_]+/g, ' ');
+    return normalized === '' || normalized === '---' || normalized === '--' || normalized === 'not assigned';
+  };
 
   // Helper function to get employee by ID or name (matching CalendarPage logic)
   const getEmployeeById = (employeeIdOrName: string | number | null | undefined) => {
@@ -84,12 +89,13 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
 
   // Helper function to get employee initials
   const getEmployeeInitials = (name: string | null | undefined): string => {
-    if (!name || name === '---' || name === '--' || name === 'Not assigned') return '';
-    const parts = name.trim().split(' ');
+    if (isUnassignedValue(name)) return '';
+    const safeName = name ?? '';
+    const parts = safeName.trim().split(' ');
     if (parts.length >= 2) {
       return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
     }
-    return name.substring(0, 2).toUpperCase();
+    return safeName.substring(0, 2).toUpperCase();
   };
 
   // Helper to get employee ID from role assignee name
@@ -620,10 +626,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
             // For other roles (scheduler, closer, handler), use display name as string
             // Save null when "---" or "Not assigned" is selected, otherwise save the display name
             const assigneeValue = role.assignee;
-            const shouldSaveNull = assigneeValue === '---' ||
-              !assigneeValue ||
-              assigneeValue.trim() === '' ||
-              assigneeValue.toLowerCase() === 'not assigned';
+            const shouldSaveNull = isUnassignedValue(assigneeValue);
 
             updateData[role.fieldName] = shouldSaveNull ? null : assigneeValue;
 

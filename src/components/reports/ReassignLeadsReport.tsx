@@ -7,6 +7,12 @@ import { getStageName, getStageColour, fetchStageNames } from '../../lib/stageUt
 import { convertToNIS } from '../../lib/currencyConversion';
 import FloatingFilterBar from './FloatingFilterBar';
 
+const isUnassignedHandlerValue = (value: string | null | undefined): boolean => {
+    if (!value) return true;
+    const normalized = value.trim().toLowerCase().replace(/[\s_]+/g, ' ');
+    return normalized === '' || normalized === '---' || normalized === '--' || normalized === 'not assigned';
+};
+
 // Multi-select input component for multiple selections
 const MultiSelectInput = ({
     label,
@@ -1108,8 +1114,13 @@ const ReassignLeadsReport: React.FC = () => {
                 leadsQuery = leadsQuery.ilike('manager', `%${reassignFilters.meetingManager}%`);
             }
             if (reassignFilters.handler) {
-                // For new leads, handler field stores employee name as text
-                leadsQuery = leadsQuery.ilike('handler', `%${reassignFilters.handler}%`);
+                // Treat all "not assigned" variants as null/unassigned in filters.
+                if (isUnassignedHandlerValue(reassignFilters.handler)) {
+                    leadsQuery = leadsQuery.or('handler.is.null,handler.eq.---,handler.eq.--,handler.eq.,handler.eq.Not assigned,handler.eq.not_assigned');
+                } else {
+                    // For new leads, handler field stores employee name as text
+                    leadsQuery = leadsQuery.ilike('handler', `%${reassignFilters.handler}%`);
+                }
             }
             if (reassignFilters.helper) {
                 // For new leads, helper field stores employee name as text
@@ -1409,7 +1420,7 @@ const ReassignLeadsReport: React.FC = () => {
                 // Fetch handler employees for new leads (handler is stored as text/name)
                 const handlerNames = new Set<string>();
                 (leadsResult.data || []).forEach((lead: any) => {
-                    if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---') {
+                    if (typeof lead.handler === 'string' && !isUnassignedHandlerValue(lead.handler)) {
                         handlerNames.add(lead.handler.trim());
                     }
                 });
@@ -1538,7 +1549,7 @@ const ReassignLeadsReport: React.FC = () => {
                     const languageName = lead.language || (lead.language_id === null ? 'N/A' : 'Unknown');
 
                     // Get handler employee info for new leads
-                    const handlerEmployee = lead.handler ? handlerEmployeeMap.get(lead.handler) : null;
+                    const handlerEmployee = !isUnassignedHandlerValue(lead.handler) ? handlerEmployeeMap.get(lead.handler) : null;
 
                     return {
                         ...lead,

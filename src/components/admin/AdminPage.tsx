@@ -1610,18 +1610,16 @@ const AdminPage: React.FC = () => {
           /*
            * Rounded rows: round first/last <td> (reliable). Do NOT use tr::before — in WebKit/Blink
            * it can generate an extra table cell and shift every column.
-           * Shadow on <tr> + overflow so it follows rounded corners where supported.
            */
           .admin-page-shell table tbody tr {
             background: transparent !important;
             border-radius: 18px !important;
             overflow: hidden !important;
-            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.10), 0 2px 6px rgba(15, 23, 42, 0.06) !important;
-            transition: box-shadow 0.2s ease;
+            box-shadow: none !important;
           }
 
           .admin-page-shell table tbody tr:hover {
-            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.14), 0 4px 10px rgba(15, 23, 42, 0.08) !important;
+            box-shadow: none !important;
           }
 
           .admin-page-shell table tbody td {
@@ -1649,11 +1647,11 @@ const AdminPage: React.FC = () => {
           }
 
           html.dark .admin-page-shell table tbody tr {
-            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.25) !important;
+            box-shadow: none !important;
           }
 
           html.dark .admin-page-shell table tbody tr:hover {
-            box-shadow: 0 14px 30px rgba(0, 0, 0, 0.42), 0 4px 12px rgba(0, 0, 0, 0.3) !important;
+            box-shadow: none !important;
           }
 
           html.dark .admin-page-shell table tbody td {

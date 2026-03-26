@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { AtSymbolIcon, ArrowRightOnRectangleIcon, CheckCircleIcon, Bars3Icon, XMarkIcon } from '@heroicons/react/24/outline';
+import { AtSymbolIcon, ArrowRightOnRectangleIcon, CheckCircleIcon, Bars3Icon, XMarkIcon, EyeIcon, EyeSlashIcon } from '@heroicons/react/24/outline';
 import { LockClosedIcon } from '@heroicons/react/24/outline';
 import { preCheckExternalUser } from '../hooks/useExternalUser';
 
@@ -16,6 +16,7 @@ const LoginPage: React.FC = () => {
   const [welcomeName, setWelcomeName] = useState<string>('');
   const [welcomeImage, setWelcomeImage] = useState<string>('');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
 
   const handleSignIn = async (e: React.FormEvent) => {
@@ -166,8 +167,19 @@ const LoginPage: React.FC = () => {
 
   return (
     <div className="min-h-screen w-full flex relative overflow-hidden">
-      {/* Gradient background for entire page */}
-      <div className="absolute inset-0 w-full h-full bg-gradient-to-br from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] z-0" />
+      {/* Full-page video background */}
+      <video
+        className="absolute inset-0 w-full h-full object-cover z-0"
+        autoPlay
+        muted
+        loop
+        playsInline
+        preload="metadata"
+      >
+        <source src="/dist/8061667-uhd_3840_2160_25fps.mp4" type="video/mp4" />
+      </video>
+      <div className="absolute inset-0 w-full h-full bg-gradient-to-b from-[rgba(10,10,10,0.52)] to-[rgba(10,10,10,0.74)] z-0" />
+      <div className="absolute inset-0 w-full h-full bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.05),transparent_60%)] z-0" />
 
       {/* Only render login UI if not showing welcome animation */}
       {!showSuccessAnim && (
@@ -183,31 +195,29 @@ const LoginPage: React.FC = () => {
                   className="text-white hover:text-gray-200 transition-colors duration-200"
                 >
                   {isMenuOpen ? (
-                    <XMarkIcon className="w-6 h-6" />
+                    <XMarkIcon className="w-7 h-7" />
                   ) : (
-                    <Bars3Icon className="w-6 h-6" />
+                    <Bars3Icon className="w-7 h-7" />
                   )}
                 </button>
 
-                {/* Centered Text */}
+                {/* Centered Logo */}
                 <div className="flex items-center gap-3">
-                  <span className="text-lg font-bold text-white tracking-tight" style={{ letterSpacing: '-0.02em' }}>
-                    RMQ 2.0
-                  </span>
+                  <img src="/RMQ_LOGO.png" alt="RMQ 2.0" className="w-16 h-16 object-contain" />
                 </div>
 
               </div>
 
               {/* Mobile Menu Overlay */}
               {isMenuOpen && (
-                <div className="absolute top-full left-0 right-0 shadow-lg z-40 bg-white/10 backdrop-blur-md">
+                <div className="absolute top-full left-0 right-0 shadow-lg z-40 bg-black/70 border border-white/15 backdrop-blur-md">
                   <div className="py-2">
                     <button
                       onClick={() => {
                         navigate('/about');
                         setIsMenuOpen(false);
                       }}
-                      className="w-full text-left px-6 py-3 text-white hover:bg-white/20 transition-colors duration-200"
+                      className="w-full text-left px-6 py-3 text-white/90 hover:bg-white/10 transition-colors duration-200"
                     >
                       About Us
                     </button>
@@ -216,7 +226,7 @@ const LoginPage: React.FC = () => {
                         navigate('/contact');
                         setIsMenuOpen(false);
                       }}
-                      className="w-full text-left px-6 py-3 text-white hover:bg-white/20 transition-colors duration-200"
+                      className="w-full text-left px-6 py-3 text-white/90 hover:bg-white/10 transition-colors duration-200"
                     >
                       Contact
                     </button>
@@ -225,7 +235,7 @@ const LoginPage: React.FC = () => {
                         navigate('/how-it-works');
                         setIsMenuOpen(false);
                       }}
-                      className="w-full text-left px-6 py-3 text-white hover:bg-white/20 transition-colors duration-200"
+                      className="w-full text-left px-6 py-3 text-white/90 hover:bg-white/10 transition-colors duration-200"
                     >
                       How It Works
                     </button>
@@ -239,28 +249,26 @@ const LoginPage: React.FC = () => {
               <div className="flex items-center justify-between py-4 px-8">
                 {/* Brand */}
                 <div className="flex items-center gap-3">
-                  <span className="text-xl font-extrabold text-white tracking-tight" style={{ letterSpacing: '-0.03em' }}>
-                    RMQ 2.0
-                  </span>
+                  <img src="/RMQ_LOGO.png" alt="RMQ 2.0" className="w-20 h-20 object-contain" />
                 </div>
 
                 {/* Navigation Links */}
-                <div className="flex items-center gap-8">
+                <div className="flex items-center gap-9">
                   <button
                     onClick={() => navigate('/about')}
-                    className="text-white hover:text-gray-200 transition-colors duration-200 font-medium"
+                    className="text-white/95 hover:text-[#f5e8c4] transition-colors duration-200 font-semibold text-[15px] tracking-[0.03em] drop-shadow-[0_1px_4px_rgba(0,0,0,0.5)]"
                   >
                     About Us
                   </button>
                   <button
                     onClick={() => navigate('/contact')}
-                    className="text-white hover:text-gray-200 transition-colors duration-200 font-medium"
+                    className="text-white/95 hover:text-[#f5e8c4] transition-colors duration-200 font-semibold text-[15px] tracking-[0.03em] drop-shadow-[0_1px_4px_rgba(0,0,0,0.5)]"
                   >
                     Contact
                   </button>
                   <button
                     onClick={() => navigate('/how-it-works')}
-                    className="text-white hover:text-gray-200 transition-colors duration-200 font-medium"
+                    className="text-white/95 hover:text-[#f5e8c4] transition-colors duration-200 font-semibold text-[15px] tracking-[0.03em] drop-shadow-[0_1px_4px_rgba(0,0,0,0.5)]"
                   >
                     How It Works
                   </button>
@@ -268,122 +276,106 @@ const LoginPage: React.FC = () => {
               </div>
             </div>
             {/* Logo above login form */}
-            <div className="mb-4 md:mb-6 flex flex-col items-center">
-              <img src="/RMQ_LOGO.png" alt="RMQ 2.0" className="w-56 h-56 md:w-64 md:h-64 object-contain" />
+            <div className="w-full h-72 md:h-[420px] relative -mt-16 md:-mt-20 mb-4 md:mb-6 flex justify-center items-center">
+              <div className="absolute right-4 md:right-10 top-1/2 -translate-y-1/2 z-10 text-right text-white max-w-[320px] md:max-w-[700px] bg-black/28 backdrop-blur-sm border border-white/15 rounded-xl px-4 py-3 md:px-6 md:py-5">
+                <div className="text-xl md:text-[2.2rem] font-semibold leading-[1.12] whitespace-nowrap drop-shadow-[0_2px_10px_rgba(0,0,0,0.55)]" style={{ fontFamily: "'Playfair Display', 'Libre Baskerville', serif" }}>
+                  Smart CRM for Law Firms
+                </div>
+                <div className="mt-2 text-[11px] md:text-sm font-medium tracking-[0.12em] uppercase text-white/95 leading-tight drop-shadow-[0_2px_8px_rgba(0,0,0,0.55)]">
+                  Secure. Structured. Scalable.
+                </div>
+              </div>
+              <div className="hidden md:flex absolute left-10 bottom-12 z-10 flex-col gap-2 text-white/95 text-[15px] bg-black/28 backdrop-blur-sm border border-white/15 rounded-xl px-4 py-3">
+                <div className="flex items-center gap-2"><span className="text-[#d4af37]">✔</span><span>Case tracking</span></div>
+                <div className="flex items-center gap-2"><span className="text-[#d4af37]">✔</span><span>Client management</span></div>
+                <div className="flex items-center gap-2"><span className="text-[#d4af37]">✔</span><span>Automated workflows</span></div>
+              </div>
             </div>
 
             {/* Login box */}
-            <div className="w-full max-w-md flex flex-col items-center justify-center min-h-[500px] pt-0 pb-12 px-6 md:pt-2 md:px-0">
+            <div className="w-full max-w-md flex flex-col items-center justify-center min-h-[500px] -mt-10 md:-mt-16 pt-0 pb-12 px-6 md:pt-2 md:px-0 md:-ml-20 relative z-20">
               {/* Glassy blurred white box container */}
-              <div className="w-full bg-white/20 backdrop-blur-lg rounded-2xl border border-white/30 shadow-2xl p-6 md:p-8">
+              <div className="w-full p-6 md:p-9 bg-[rgba(20,20,20,0.60)] backdrop-blur-[16px] border border-[rgba(255,255,255,0.08)] shadow-[0_20px_60px_rgba(0,0,0,0.45)] rounded-2xl transition-transform duration-300 hover:scale-[1.02]">
+                <div className="mb-5 text-center text-white">
+                  <h2 className="text-xl font-semibold tracking-wide" style={{ fontFamily: "'Playfair Display', 'Libre Baskerville', serif" }}>
+                    Sign In
+                  </h2>
+                  <p className="mt-1 text-xs uppercase tracking-[0.14em] text-white/75">
+                    Secure Access to RMQ
+                  </p>
+                </div>
                 <form className="w-full flex flex-col items-center gap-6" onSubmit={handleSignIn}>
                   <div className="w-full mt-0 md:mt-2">
-                    <label className="block font-semibold mb-1 text-white text-left">Email</label>
                     <div className="relative">
                       <input
                         type="email"
-                        className="input input-bordered w-full pl-10 bg-white/95 backdrop-blur-sm text-gray-900 placeholder-gray-400 border-white/30 focus:border-white/50 focus:bg-white"
-                        placeholder="you@email.com"
+                        className="peer input input-bordered w-full h-12 pl-10 bg-[rgba(255,255,255,0.06)] text-white placeholder-transparent border-[rgba(255,255,255,0.18)] rounded-[10px] shadow-none focus:border-[#d4af37] focus:shadow-[0_0_0_2px_rgba(212,175,55,0.2)] focus:bg-[rgba(255,255,255,0.10)] transition-all duration-200 focus:outline-none"
+                        placeholder="Email"
                         value={email}
                         onChange={e => setEmail(e.target.value)}
                         onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
                         required
                         autoFocus
                       />
-                      <AtSymbolIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                      <AtSymbolIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-white/75" />
+                      <label
+                        className={`absolute left-9 px-1 rounded-sm bg-[rgba(20,20,20,0.9)] pointer-events-none transition-all duration-200 ${
+                          email
+                            ? '-top-2 -translate-y-1/2 text-xs text-[#E5C07B]'
+                            : 'top-1/2 -translate-y-1/2 text-sm text-white/70'
+                        } peer-focus:-top-2 peer-focus:-translate-y-1/2 peer-focus:text-xs peer-focus:text-[#E5C07B]`}
+                      >
+                        Email
+                      </label>
                     </div>
                   </div>
                   <div className="w-full">
-                    <label className="block font-semibold mb-1 text-white text-left">Password</label>
-                    <input
-                      type="password"
-                      className="input input-bordered w-full bg-white/95 backdrop-blur-sm text-gray-900 placeholder-gray-400 border-white/30 focus:border-white/50 focus:bg-white"
-                      placeholder="Password"
-                      value={password}
-                      onChange={e => setPassword(e.target.value)}
-                      required
-                    />
+                    <div className="relative">
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        className="peer input input-bordered w-full h-12 pr-11 pl-10 bg-[rgba(255,255,255,0.06)] text-white placeholder-transparent border-[rgba(255,255,255,0.18)] rounded-[10px] shadow-none focus:border-[#d4af37] focus:shadow-[0_0_0_2px_rgba(212,175,55,0.2)] focus:bg-[rgba(255,255,255,0.10)] transition-all duration-200 focus:outline-none"
+                        placeholder="Password"
+                        value={password}
+                        onChange={e => setPassword(e.target.value)}
+                        required
+                      />
+                      <LockClosedIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-white/75" />
+                      <label
+                        className={`absolute left-9 px-1 rounded-sm bg-[rgba(20,20,20,0.9)] pointer-events-none transition-all duration-200 ${
+                          password
+                            ? '-top-2 -translate-y-1/2 text-xs text-[#E5C07B]'
+                            : 'top-1/2 -translate-y-1/2 text-sm text-white/70'
+                        } peer-focus:-top-2 peer-focus:-translate-y-1/2 peer-focus:text-xs peer-focus:text-[#E5C07B]`}
+                      >
+                        Password
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword(prev => !prev)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-white/75 hover:text-white transition-colors"
+                        aria-label={showPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showPassword ? <EyeSlashIcon className="w-5 h-5" /> : <EyeIcon className="w-5 h-5" />}
+                      </button>
+                    </div>
                   </div>
                   <button
                     type="submit"
-                    className="btn btn-outline border-white/50 text-white hover:bg-white/20 hover:border-white/70 w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="btn w-full h-12 text-base font-semibold border-0 rounded-[10px] bg-gradient-to-br from-[#d4af37] to-[#b8962e] text-[#111] shadow-[0_4px_20px_rgba(212,175,55,0.25)] hover:-translate-y-0.5 hover:shadow-[0_8px_24px_rgba(212,175,55,0.35)] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                     disabled={loading}
                   >
                     {loading ? <span className="loading loading-spinner loading-sm" /> : <LockClosedIcon className="w-5 h-5" />}
                     Sign in
                   </button>
-                  <div className="relative group w-full">
+                  <div className="w-full flex items-center justify-end text-xs text-white/85 -mt-1">
                     <button
                       type="button"
-                      className="btn btn-outline border-white/50 text-white hover:bg-white/20 hover:border-white/70 w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
                       onClick={handleMagicLink}
                       disabled={magicLinkLoading || !email}
+                      className="text-[#E5C07B] hover:text-[#f2d79d] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                     >
-                      {magicLinkLoading ? (
-                        <>
-                          <span className="loading loading-spinner loading-sm mr-2"></span>
-                          Sending Magic Link...
-                        </>
-                      ) : (
-                        'Trouble signing in? Get a Magic Link'
-                      )}
+                      {magicLinkLoading ? 'Sending…' : 'Forgot password?'}
                     </button>
-
-                    {/* Desktop hover tooltip */}
-                    <div className="hidden md:block absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-6 py-5 bg-gray-900 text-white text-sm rounded-xl shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none z-50 max-w-md">
-                      <div className="text-left">
-                        <div className="font-bold mb-3 text-lg flex items-center gap-2">
-                          <span className="text-2xl">🔗</span>
-                          Magic Link Authentication
-                        </div>
-
-                        <div className="space-y-3">
-                          <div>
-                            <div className="font-semibold text-gray-100 mb-2">What is a Magic Link?</div>
-                            <p className="text-xs text-gray-300 leading-relaxed">
-                              A secure, passwordless way to sign in. Instead of remembering passwords,
-                              you'll receive a time-limited link via email that automatically logs you in with one click.
-                            </p>
-                          </div>
-
-                          <div>
-                            <div className="font-semibold text-gray-100 mb-2">How it works:</div>
-                            <div className="space-y-2">
-                              <div className="flex items-start gap-3">
-                                <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">1</span>
-                                <div>
-                                  <div className="text-xs font-medium">Enter your email address above</div>
-                                  <div className="text-xs text-gray-400">Use the same email associated with your account</div>
-                                </div>
-                              </div>
-                              <div className="flex items-start gap-3">
-                                <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">2</span>
-                                <div>
-                                  <div className="text-xs font-medium">Click "Get a Magic Link" button</div>
-                                  <div className="text-xs text-gray-400">We'll send a secure link instantly</div>
-                                </div>
-                              </div>
-                              <div className="flex items-start gap-3">
-                                <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">3</span>
-                                <div>
-                                  <div className="text-xs font-medium">Check your email inbox</div>
-                                  <div className="text-xs text-gray-400">Look for email from RMQ 2.0 (check spam folder)</div>
-                                </div>
-                              </div>
-                              <div className="flex items-start gap-3">
-                                <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">4</span>
-                                <div>
-                                  <div className="text-xs font-medium">Click the secure link in the email</div>
-                                  <div className="text-xs text-gray-400">You'll be automatically logged in and redirected</div>
-                                </div>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      {/* Arrow pointing down */}
-                      <div className="absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-900"></div>
-                    </div>
                   </div>
                 </form>
               </div>
@@ -463,7 +455,7 @@ const LoginPage: React.FC = () => {
             </div>
             {/* Copyright at bottom left */}
             <div className="absolute left-0 right-0 bottom-0 z-20 pb-6 flex justify-center w-full">
-              <span className="text-white/80 text-lg font-semibold drop-shadow-lg text-center w-full">© Rainmaker Queen 2.0 {new Date().getFullYear()}</span>
+              <span className="text-white/85 text-lg font-semibold text-center w-full">© Rainmaker Queen 2.0 {new Date().getFullYear()}</span>
             </div>
           </div>
         </>
@@ -474,12 +466,12 @@ const LoginPage: React.FC = () => {
       {showSuccessAnim && (
         <div className="absolute inset-0 z-50 flex flex-col items-center justify-center w-full h-full">
           {/* Animated gradient background */}
-          <div className="absolute inset-0 w-full h-full bg-gradient-to-br from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] animate-gradient z-0" />
+          <div className="absolute inset-0 w-full h-full bg-white md:bg-gradient-to-br md:from-[#0b1e3d] md:via-[#0f4c75] md:to-[#06b6d4] md:animate-gradient z-0" />
           {/* Welcome message and icon */}
           <div className="relative z-10 flex flex-col items-center justify-center w-full h-full gap-6 -mt-16">
             {/* Welcome text above */}
             <div className="flex flex-col items-center gap-2 slide-fade-in">
-              <div className="text-4xl font-bold text-white">
+              <div className="text-4xl font-bold text-gray-900 md:text-white">
                 Welcome to RMQ 2.0.
               </div>
             </div>
@@ -506,7 +498,7 @@ const LoginPage: React.FC = () => {
             ) : (
               <CheckCircleIcon className="w-24 h-24 text-green-400 checkmark-pop" />
             )}
-            <div className="text-3xl font-bold text-white slide-fade-in">
+            <div className="text-3xl font-bold text-gray-900 md:text-white slide-fade-in">
               Welcome, {welcomeName}!
             </div>
           </div>

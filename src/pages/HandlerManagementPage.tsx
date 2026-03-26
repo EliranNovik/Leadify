@@ -69,6 +69,11 @@ let handlerManagementCache: (HandlerManagementPageData & { _v?: number }) | null
 
 const HandlerManagementPage: React.FC = () => {
   const navigate = useNavigate();
+  const isUnassignedHandlerValue = (value: string | null | undefined): boolean => {
+    if (!value) return true;
+    const normalized = value.trim().toLowerCase().replace(/[\s_]+/g, ' ');
+    return normalized === '' || normalized === '---' || normalized === '--' || normalized === 'not assigned';
+  };
   const [pageData, setPageData] = useState<HandlerManagementPageData>(() => {
     if (handlerManagementCache?.loadedAt && handlerManagementCache?._v === CACHE_VERSION) {
       return handlerManagementCache;
@@ -834,12 +839,7 @@ const HandlerManagementPage: React.FC = () => {
       } else {
         // Filter unassigned leads first
         const filteredNewLeads = (newLeads || []).filter(lead => {
-          const hasHandlerText = lead.handler &&
-            lead.handler !== '---' &&
-            lead.handler !== '--' &&
-            lead.handler !== '' &&
-            lead.handler !== null &&
-            lead.handler.trim() !== '';
+          const hasHandlerText = !isUnassignedHandlerValue(lead.handler);
           const hasHandlerId = lead.case_handler_id &&
             lead.case_handler_id !== null &&
             lead.case_handler_id !== undefined;
@@ -1285,17 +1285,14 @@ const HandlerManagementPage: React.FC = () => {
       // Fetch new leads with no handler (exclude inactive: unactivated_at IS NULL, exclude stage 91)
       const { data: newLeads } = await supabase
         .from('leads')
-        .select('id, name, lead_number')
+        .select('id, name, lead_number, handler, case_handler_id')
         .gte('stage', 60)
         .neq('stage', 91) // Exclude stage 91 (Dropped/Spam/Irrelevant)
         .is('unactivated_at', null) // Only active leads
-        .or('handler.is.null,handler.eq.---,handler.eq.,case_handler_id.is.null');
+        .or('handler.is.null,handler.eq.---,handler.eq.--,handler.eq.,handler.eq.Not assigned,handler.eq.not_assigned,case_handler_id.is.null');
 
       (newLeads || []).forEach(lead => {
-        const hasHandler = lead.handler &&
-          lead.handler !== '---' &&
-          lead.handler !== '' &&
-          lead.handler !== null;
+        const hasHandler = !isUnassignedHandlerValue(lead.handler);
         const hasHandlerId = lead.case_handler_id && lead.case_handler_id !== null;
 
         if (!hasHandler && !hasHandlerId) {
