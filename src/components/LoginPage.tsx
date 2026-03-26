@@ -176,7 +176,7 @@ const LoginPage: React.FC = () => {
         playsInline
         preload="metadata"
       >
-        <source src="/dist/8061667-uhd_3840_2160_25fps.mp4" type="video/mp4" />
+        <source src="/login-hero.mp4" type="video/mp4" />
       </video>
       <div className="absolute inset-0 w-full h-full bg-gradient-to-b from-[rgba(10,10,10,0.52)] to-[rgba(10,10,10,0.74)] z-0" />
       <div className="absolute inset-0 w-full h-full bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.05),transparent_60%)] z-0" />
