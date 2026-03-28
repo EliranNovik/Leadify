@@ -2,6 +2,25 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Mobile Safari / iOS: stable viewport height + flex children that scroll (min-h-0) */
+html {
+  height: 100%;
+}
+body {
+  margin: 0;
+  min-height: 100%;
+  min-height: 100dvh;
+  /* Fallback when dynamic viewport is wrong with toolbars / safe areas */
+  min-height: -webkit-fill-available;
+}
+#root {
+  min-height: 100%;
+  min-height: 100dvh;
+  min-height: -webkit-fill-available;
+  display: flex;
+  flex-direction: column;
+}
+
 @keyframes slideInRight {
   from {
     transform: translateX(100%);
@@ -252,9 +271,9 @@ html,
   }
 }
 
-/* Fixed header is h-11 (2.75rem) mobile / h-12 (3rem) desktop + optional safe-area on navbar */
+/* Fixed header: mobile navbar uses pt(safe-area) + h-11 + pb-1.5 — keep main content below the full bar */
 .app-main-scroll {
-  padding-top: calc(0.5rem + 2.75rem + env(safe-area-inset-top, 0px));
+  padding-top: calc(0.5rem + 2.75rem + 0.375rem + env(safe-area-inset-top, 0px));
 }
 @media (min-width: 768px) {
   .app-main-scroll {

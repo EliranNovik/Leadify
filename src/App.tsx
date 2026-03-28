@@ -549,6 +549,7 @@ const AppContentInner: React.FC = () => {
   // The auth will load in the background
 
   return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden h-[100dvh] max-h-[100dvh]">
     <Routes>
       <Route path="/login" element={<RouteSuspense><LazyLoginPage /></RouteSuspense>} />
       <Route path="/about" element={<RouteSuspense><LazyAboutPage /></RouteSuspense>} />
@@ -561,8 +562,8 @@ const AppContentInner: React.FC = () => {
       <Route path="/my-profile/:employeeId" element={<RouteSuspense><LazyPublicProfilePage /></RouteSuspense>} />
       <Route path="/business-card/:employeeId" element={<RouteSuspense><LazyBusinessCardPage /></RouteSuspense>} />
       <Route path="/documents" element={
-        <div className="flex min-h-[100dvh] h-[100dvh] bg-white">
-          <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex min-h-0 h-[100dvh] max-h-[100dvh] bg-white">
+          <div className="flex min-h-0 flex-1 flex flex-col overflow-hidden">
             <div className="bg-white border-b border-gray-200 px-4 md:px-6 py-4">
               {/* Desktop Layout */}
               <div className="hidden md:flex items-center justify-between">
@@ -669,7 +670,7 @@ const AppContentInner: React.FC = () => {
                 </div>
               </div>
             </div>
-            <main className="flex-1 overflow-x-hidden overflow-y-auto bg-gradient-to-br from-blue-800 via-blue-900 to-blue-950" style={{ background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 50%, #1e3a8a 100%)' }}>
+            <main className="flex min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-gradient-to-br from-blue-800 via-blue-900 to-blue-950" style={{ background: 'linear-gradient(135deg, #1e40af 0%, #3b82f6 50%, #1e3a8a 100%)' }}>
               <RouteSuspense>
                 <LazyDocumentsPage />
               </RouteSuspense>
@@ -679,7 +680,7 @@ const AppContentInner: React.FC = () => {
       } />
       <Route path="/calls-ledger" element={
         <ProtectedRoute user={authUser}>
-          <div className="flex min-h-[100dvh] h-[100dvh] bg-white">
+          <div className="flex min-h-0 h-[100dvh] max-h-[100dvh] bg-white">
             <Sidebar
               userName={userFullName || userName}
               userInitials={userInitials}
@@ -688,7 +689,7 @@ const AppContentInner: React.FC = () => {
               onOpenAIChat={() => setIsAiChatOpen(true)}
               mobileOnly={true}
             />
-            <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex min-h-0 flex-1 flex flex-col overflow-hidden">
               <Header
                 onMenuClick={() => setIsSidebarOpen(prev => !prev)}
                 onSearchClick={() => setIsSearchOpen(prev => !prev)}
@@ -721,7 +722,7 @@ const AppContentInner: React.FC = () => {
                 onOpenMessaging={() => setIsMessagingOpen(true)}
                 isMenuOpen={isSidebarOpen}
               />
-<main className="flex-1 overflow-x-hidden overflow-y-auto bg-white app-main-scroll">
+<main className="flex min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-white app-main-scroll">
               <RouteSuspense>
                 <LazyCallsLedgerPage />
               </RouteSuspense>
@@ -737,8 +738,8 @@ const AppContentInner: React.FC = () => {
       } />
       <Route path="/my-profile" element={
         <ProtectedRoute user={authUser}>
-          <div className="flex min-h-[100dvh] h-[100dvh] bg-base-100">
-            <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex min-h-0 h-[100dvh] max-h-[100dvh] bg-base-100">
+            <div className="flex min-h-0 flex-1 flex flex-col overflow-hidden">
               <Header
                 onMenuClick={() => setIsSidebarOpen(prev => !prev)}
                 onSearchClick={handleSearchClick}
@@ -751,7 +752,7 @@ const AppContentInner: React.FC = () => {
                 onOpenMessaging={handleOpenMessaging}
                 isMenuOpen={isSidebarOpen}
               />
-              <main className="flex-1 overflow-x-hidden overflow-y-auto bg-white app-main-scroll">
+              <main className="flex min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-white app-main-scroll">
                 <RouteSuspense>
                   <LazyMyProfilePage />
                 </RouteSuspense>
@@ -819,7 +820,7 @@ const AppContentInner: React.FC = () => {
         path="/*"
         element={
           < ProtectedRoute user={authUser} >
-            <div className={`flex min-h-[100dvh] h-[100dvh] bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
+            <div className={`flex min-h-0 h-[100dvh] max-h-[100dvh] bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
               {/* Always mount Sidebar so it does not reload when navigating; hide on full-width pages */}
               <div className={isSignedSalesPage || isCaseManagerPage || isContractPage ? 'hidden' : undefined}>
                 <Sidebar
@@ -831,7 +832,7 @@ const AppContentInner: React.FC = () => {
                   mobileOnly={sidebarMobileOnly}
                 />
               </div>
-              <div className={`flex-1 flex flex-col overflow-hidden ${!isAdminPage && !isReportsPage && !isSignedSalesPage && !isCaseManagerPage && !isContractPage ? 'md:pl-24' : ''}`}>
+              <div className={`flex min-h-0 flex-1 flex flex-col overflow-hidden ${!isAdminPage && !isReportsPage && !isSignedSalesPage && !isCaseManagerPage && !isContractPage ? 'md:pl-24' : ''}`}>
                 <Header
                   onMenuClick={handleMenuClick}
                   onSearchClick={handleSearchClick}
@@ -844,7 +845,7 @@ const AppContentInner: React.FC = () => {
                   onOpenMessaging={handleOpenMessaging}
                   isMenuOpen={isSidebarOpen}
                 />
-                <main className={`flex-1 overflow-x-hidden overflow-y-auto app-main-scroll ${isReportsPage ? 'w-full' : ''} ${showBottomNav ? 'main-with-bottom-nav-padding' : ''}`}>
+                <main className={`flex min-h-0 flex-1 overflow-x-hidden overflow-y-auto app-main-scroll ${isReportsPage ? 'w-full' : ''} ${showBottomNav ? 'main-with-bottom-nav-padding' : ''}`}>
                   <Routes>
                     <Route path="/" element={<RouteSuspense><LazyDashboard /></RouteSuspense>} />
                     <Route path="/clients" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} /></RouteSuspense>} />
@@ -967,7 +968,8 @@ const AppContentInner: React.FC = () => {
           </ProtectedRoute >
         }
       />
-    </Routes >
+    </Routes>
+    </div>
   );
 };
 
