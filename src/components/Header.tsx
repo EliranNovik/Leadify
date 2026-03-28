@@ -824,6 +824,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           // Only close search bar if filter dropdown is not open, no search value/results, not searching, and mouse is not over search area
           if (!showFilterDropdown && !searchValue.trim() && searchResults.length === 0 && !isSearching && !isMouseOverSearchRef.current) {
             setIsSearchActive(false);
+            setIsSearchOpen(false);
             setSearchResults([]);
             setSearchValue('');
             setHasAppliedFilters(false);
@@ -6140,6 +6141,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     fuzzyMatchesRef.current = [];
     previousSearchQueryRef.current = '';
     setIsSearchActive(false);
+    setIsSearchOpen(false);
     setHasAppliedFilters(false);
     setIsSearching(false);
     isSearchingRef.current = false;
@@ -6159,6 +6161,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       searchHoverCloseTimeoutRef.current = null;
     }
     setIsSearchActive(false);
+    setIsSearchOpen(false);
     setSearchResults([]);
     masterSearchResultsRef.current = [];
     exactMatchesRef.current = [];
@@ -6346,6 +6349,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         searchHoverCloseTimeoutRef.current = null;
         if (!isMouseOverSearchRef.current) {
           setIsSearchActive(false);
+          setIsSearchOpen(false);
         }
       }, 280);
     }
@@ -7214,16 +7218,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   if (isExternalUser && !isLoadingExternal) {
     return (
       <>
-        <div className="navbar bg-base-100 px-2 md:px-0 h-11 md:h-12 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
+        <div
+          data-mobile-header={isMobile ? 'floating' : undefined}
+          className="navbar px-2 md:px-0 h-11 md:h-12 fixed top-0 left-0 w-full z-50 md:bg-base-100 bg-transparent border-0 shadow-none pt-[env(safe-area-inset-top,0px)] pb-1.5 md:pb-0 md:pt-0"
+          style={{ boxShadow: 'none', borderBottom: 'none' }}
+        >
           {/* Logo and Logout Button */}
-          <div className="flex-1 justify-start flex items-center gap-4">
-            <div className="h-11 md:h-12 flex items-center gap-3">
+          <div className="flex-1 justify-start flex items-center gap-2 md:gap-4">
+            <div className="rounded-2xl shadow-none bg-white/90 dark:bg-base-300/90 backdrop-blur-md border border-base-200/50 md:rounded-none md:shadow-none md:bg-transparent md:border-0 md:backdrop-blur-none flex h-11 md:h-12 items-center gap-2 md:gap-3 px-2 md:px-0">
               <Link to="/" className="flex items-center gap-2">
                 <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
               </Link>
               <button
                 onClick={handleSignOut}
-                className="btn btn-ghost btn-sm btn-circle"
+                className="btn btn-ghost btn-sm btn-circle border-0"
                 title="Sign Out"
               >
                 <ArrowRightOnRectangleIcon className="w-5 h-5" />
@@ -7299,23 +7307,33 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   return (
     <>
-      <div className="navbar bg-base-100 px-2 md:px-0 h-11 md:h-12 fixed top-0 left-0 w-full z-50" style={{ boxShadow: 'none', borderBottom: 'none' }}>
+      <div
+        data-mobile-header={isMobile ? 'floating' : undefined}
+        className="navbar px-2 md:px-0 h-11 md:h-12 fixed top-0 left-0 w-full z-50 md:bg-base-100 bg-transparent border-0 shadow-none pt-[env(safe-area-inset-top,0px)] pb-1.5 md:pb-0 md:pt-0"
+        style={{ boxShadow: 'none', borderBottom: 'none' }}
+      >
         {/* Left section with menu and logo */}
-        <div className={`flex-1 justify-start flex items-center gap-4 overflow-hidden md:overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
-          <button className="md:hidden btn btn-ghost btn-square" onClick={onMenuClick} aria-label={isMenuOpen ? "Close menu" : "Open menu"}>
-            {isMenuOpen ? (
-              <XMarkIcon className="w-6 h-6" />
-            ) : (
-              <Bars3Icon className="w-6 h-6" />
-            )}
-          </button>
+        <div className={`flex-1 justify-start flex items-center gap-2 md:gap-4 overflow-hidden md:overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+          <div className="md:hidden flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-none bg-white/90 dark:bg-base-300/90 backdrop-blur-md border border-base-200/50">
+            <button
+              className="btn btn-ghost btn-square min-h-0 h-10 w-10 p-0 rounded-full border-0"
+              onClick={onMenuClick}
+              aria-label={isMenuOpen ? "Close menu" : "Open menu"}
+            >
+              {isMenuOpen ? (
+                <XMarkIcon className="w-6 h-6" />
+              ) : (
+                <Bars3Icon className="w-6 h-6" />
+              )}
+            </button>
+          </div>
 
-          {/* Profile + dropdown: mobile only, next to hamburger */}
+          {/* Profile + dropdown: mobile only — avatar only (no chip, no chevron) */}
           <div className="relative flex items-center flex-shrink-0 md:hidden" ref={profileDropdownRef}>
             <button
               ref={profileButtonRefMobile}
               type="button"
-              className="btn btn-ghost gap-1.5 min-h-0 h-10 w-auto min-w-[2.5rem] pl-2 pr-2 rounded-full flex items-center justify-center flex-shrink-0"
+              className="btn btn-ghost min-h-0 h-10 w-10 p-0 rounded-full border-0 flex items-center justify-center overflow-hidden ring-0 hover:bg-transparent"
               onClick={(e) => {
                 e.stopPropagation();
                 setShowProfileDropdown((v) => !v);
@@ -7326,10 +7344,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               {resolvedHeaderPhotoUrl ? (
                 <>
                   <span
-                    className="w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] flex-shrink-0 rounded-full bg-base-300 block bg-no-repeat bg-center"
+                    className="w-10 h-10 min-w-[2.5rem] min-h-[2.5rem] flex-shrink-0 rounded-full bg-base-300 block bg-no-repeat bg-center"
                     style={{
                       backgroundImage: `url(${resolvedHeaderPhotoUrl})`,
-                      backgroundSize: 'contain',
+                      backgroundSize: 'cover',
                     }}
                   />
                   <img
@@ -7344,7 +7362,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   />
                 </>
               ) : null}
-              <span className={`w-9 h-9 min-w-[2.25rem] min-h-[2.25rem] flex-shrink-0 rounded-full overflow-hidden aspect-square bg-base-300 flex items-center justify-center ${resolvedHeaderPhotoUrl ? 'hidden' : ''}`}>
+              <span className={`w-10 h-10 min-w-[2.5rem] min-h-[2.5rem] flex-shrink-0 rounded-full overflow-hidden aspect-square bg-base-300 flex items-center justify-center ${resolvedHeaderPhotoUrl ? 'hidden' : ''}`}>
                 {(authUserInitials || authUserFullName || userFullName) ? (
                   <span className="text-sm font-semibold text-base-content/80">
                     {(authUserInitials || (authUserFullName || userFullName || '').trim().split(/\s+/).map(n => n[0]).join('').toUpperCase().slice(0, 2)) || 'U'}
@@ -7353,7 +7371,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   <UserIcon className="w-5 h-5 text-base-content/70" />
                 )}
               </span>
-              <ChevronDownIcon className={`w-4 h-4 flex-shrink-0 transition-transform ${showProfileDropdown ? 'rotate-180' : ''}`} />
             </button>
             {showProfileDropdown && isMobile && createPortal(
               <div
@@ -7794,15 +7811,21 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           )}
         </div>
 
-        {/* Search bar */}
-        <div className={`relative transition-all duration-300 ${isSearchActive && isMobile ? 'flex-1' : 'flex-1'}`}>
+        {/* Search bar — centered; desktop: always visible; mobile: hidden until opened (icon next to bell) */}
+        <div
+          className={`relative transition-all duration-300 flex-1 min-w-0 ${
+            isMobile && !isSearchActive ? 'hidden md:flex' : 'flex'
+          }`}
+        >
           <div
             ref={searchContainerRef}
             className={`min-w-12 min-h-12 md:min-h-[56px] transition-all duration-[700ms] ease-in-out cursor-pointer px-2 md:px-0 ${isSearchActive
               ? isMobile
                 ? 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100vw-120px)]'
                 : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-xl md:max-w-xl'
-              : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1 md:w-48'
+              : isMobile
+                ? 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[min(42vw,9rem)] max-w-[152px]'
+                : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1 md:w-48'
               }`}
             style={{
               background: 'transparent'
@@ -7811,19 +7834,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             onMouseLeave={!isMobile ? handleDesktopSearchMouseLeave : undefined}
           >
             <div
-              className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out ${isSearchActive ? 'w-full overflow-hidden bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-600 shadow-md' : `w-12 min-w-12 md:w-48 md:min-w-48 overflow-visible ${isMobile ? 'min-h-[48px] bg-transparent border-0' : 'md:bg-white dark:md:bg-gray-800 md:border-2 md:border-gray-200 dark:md:border-gray-600 md:shadow-md'}`}`}
+              className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out ${
+                isSearchActive
+                  ? `w-full overflow-hidden bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-600 ${isMobile ? 'shadow-none' : 'shadow-md'}`
+                  : isMobile
+                    ? 'w-full min-h-9 h-9 shadow-none bg-white/90 dark:bg-base-300/90 backdrop-blur-md border border-base-200/50 dark:border-base-200/40 box-border'
+                    : 'w-12 min-w-12 md:w-48 md:min-w-48 overflow-visible md:bg-white dark:md:bg-gray-800 md:border-2 md:border-gray-200 dark:md:border-gray-600 md:shadow-md'
+              }`}
               style={isSearchActive && isDarkMode ? { borderColor: 'rgba(96, 165, 250, 0.75)' } : undefined}
             >
-              {/* Search icon - closed: simple search icon; desktop when open (e.g. on hover): purple circle with Siriwave */}
-              {isMobile && !isSearchActive ? (
-                <label
-                  htmlFor={HEADER_SEARCH_INPUT_ID}
-                  className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center justify-center z-10 transition-opacity duration-300 opacity-100 w-9 h-9 flex-shrink-0 cursor-pointer text-gray-500 dark:text-gray-400"
-                  style={{ minWidth: 36, minHeight: 36 }}
-                  aria-label="Open search"
+              {/* Search icon left — mobile: always; desktop active: Siriwave; desktop idle: icon */}
+              {isMobile ? (
+                <span
+                  className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center justify-center z-10 w-9 h-9 pointer-events-none text-gray-500 dark:text-gray-400"
+                  aria-hidden
                 >
-                  <MagnifyingGlassIcon className="w-6 h-6 flex-shrink-0" />
-                </label>
+                  <MagnifyingGlassIcon className="w-4 h-4 flex-shrink-0" />
+                </span>
               ) : !isMobile && isSearchActive ? (
                 <span className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center justify-center z-10 w-9 h-9 flex-shrink-0 pointer-events-none" aria-hidden>
                   <div
@@ -7865,17 +7892,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 onBlur={isMobile ? () => {
                   // On mobile, close search if no value, no results, and not searching
                   if (!searchValue.trim() && searchResults.length === 0 && !isSearching) {
-                    setTimeout(() => setIsSearchActive(false), 150);
+                    setTimeout(() => {
+                      setIsSearchActive(false);
+                      setIsSearchOpen(false);
+                    }, 150);
                   }
                 } : undefined}
                 className={`
                   w-full bg-transparent border-0 rounded-full text-gray-800 dark:text-gray-200 placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-0 transition-all duration-300 search-input-placeholder
-                  ${isSearchActive ? 'opacity-100 visible pl-12' : isMobile ? 'opacity-0 w-px h-px absolute left-0 top-0 overflow-hidden pl-0' : 'opacity-100 visible pl-12'}
-                  ${searchValue.trim() || searchResults.length > 0 ? 'pr-12' : 'pr-4'}
+                  ${isSearchActive ? 'opacity-100 visible pl-12' : isMobile ? 'opacity-100 visible pl-9 pr-2 text-sm' : 'opacity-100 visible pl-12'}
+                  ${searchValue.trim() || searchResults.length > 0 ? 'pr-12' : isMobile && !isSearchActive ? 'pr-2' : 'pr-4'}
                 `}
                 style={{
-                  height: isMobile ? 48 : 44,
-                  fontSize: isMobile ? 16 : 14,
+                  height: isMobile ? (isSearchActive ? 48 : 36) : 44,
+                  fontSize: isMobile ? (isSearchActive ? 16 : 13) : 14,
                   fontWeight: 500,
                   letterSpacing: '-0.01em'
                 }}
@@ -7884,8 +7914,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               {(searchValue.trim() || searchResults.length > 0) && (
                 <button
                   onClick={handleClearSearch}
-                  className={`absolute right-1 top-1/2 -translate-y-1/2 btn btn-ghost btn-sm btn-circle transition-all duration-300 ease-out text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 ${isMobile && isSearchActive ? 'flex' : 'hidden md:flex'
-                    }`}
+                  className={`absolute right-1 top-1/2 -translate-y-1/2 btn btn-ghost btn-sm btn-circle transition-all duration-300 ease-out text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 flex ${
+                    isMobile ? 'h-7 w-7 min-h-7' : ''
+                  }`}
                   title="Clear search"
                 >
                   <XMarkIcon className="w-5 h-5" />
@@ -7919,9 +7950,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             {/* Mobile: full-screen white panel — search results scroll inline here; recently viewed when no query */}
             {isMobile && (
               <div
-                className="fixed inset-x-0 top-14 bottom-0 bg-white dark:bg-gray-900 z-[49] md:hidden flex flex-col min-h-0"
+                className="fixed inset-x-0 bottom-0 bg-white dark:bg-gray-900 z-[49] md:hidden flex flex-col min-h-0 top-[calc(2.75rem+env(safe-area-inset-top,0px)+0.5rem)]"
                 onClick={() => {
                   setIsSearchActive(false);
+                  setIsSearchOpen(false);
                   searchInputRef.current?.blur();
                 }}
               >
@@ -8366,29 +8398,27 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             )}
           </div>
 
-          {/* Microsoft sign in - mobile only, show only when NOT logged in (desktop: inside profile dropdown) */}
-          {!userAccount && (
+          {/* Mobile: search opens from icon only (sits next to bell); desktop search stays in center */}
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-none bg-white/90 dark:bg-base-300/90 backdrop-blur-md border border-base-200/50 md:hidden">
             <button
               type="button"
-              className="btn btn-ghost btn-sm btn-circle md:hidden min-h-8 h-8 w-8 p-0 text-base-content/70"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                handleMicrosoftSignIn();
+              className="btn btn-ghost btn-square min-h-0 h-10 w-10 p-0 rounded-full border-0"
+              aria-label="Search"
+              onClick={() => {
+                setIsSearchOpen(true);
+                setIsSearchActive(true);
+                window.setTimeout(() => searchInputRef.current?.focus(), 0);
               }}
-              disabled={isMsalLoading || !isMsalInitialized}
-              title="Sign in with Microsoft"
             >
-              <svg className="w-4 h-4" viewBox="0 0 24 24">
-                <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
-              </svg>
+              <MagnifyingGlassIcon className="w-6 h-6" />
             </button>
-          )}
+          </div>
 
           {/* Notifications */}
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-none bg-white/90 dark:bg-base-300/90 backdrop-blur-md border border-base-200/50 md:h-auto md:w-auto md:rounded-none md:shadow-none md:bg-transparent md:border-0 md:backdrop-blur-none">
           <div className="relative" ref={notificationsRef}>
             <button
-              className="btn btn-ghost btn-circle mr-1"
+              className="btn btn-ghost btn-circle h-10 w-10 min-h-10 min-w-10 p-0 border-0 mr-0 md:mr-1 md:h-12 md:w-12 md:min-h-12 md:min-w-12"
               onClick={handleNotificationClick}
             >
               <div className="indicator">
@@ -8402,7 +8432,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             {showNotifications && (
               <div
                 className={`notification-dropdown shadow-xl rounded-xl overflow-hidden z-50 border border-gray-200 dark:border-gray-600 ${isMobile
-                  ? 'notification-dropdown-mobile fixed right-3 top-14 left-auto w-72 max-w-[calc(100vw-24px)] text-[13px]'
+                  ? 'notification-dropdown-mobile fixed right-3 left-auto w-72 max-w-[calc(100vw-24px)] text-[13px] top-[calc(2.75rem+env(safe-area-inset-top,0px)+0.5rem)]'
                   : 'absolute right-0 mt-2 w-80 text-sm'
                   }`}
               >
@@ -8695,17 +8725,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               </div>
             )}
           </div>
+          </div>
 
           {/* Mobile back button - right corner inside header (hidden on login) */}
           {location.pathname !== '/login' && (
+            <div className="md:hidden flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-none bg-white/90 dark:bg-base-300/90 backdrop-blur-md border border-base-200/50">
             <button
               type="button"
               onClick={() => navigate(-1)}
-              className="md:hidden btn btn-ghost btn-circle flex items-center justify-center flex-shrink-0"
+              className="btn btn-ghost btn-square min-h-0 h-10 w-10 p-0 rounded-full border-0 flex items-center justify-center flex-shrink-0"
               aria-label="Go back"
             >
               <ArrowLeftIcon className="w-6 h-6" />
             </button>
+            </div>
           )}
         </div>
       </div>
@@ -8749,8 +8782,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         </div>
       )}
 
-      {/* Spacer to prevent content from being hidden behind the fixed header */}
-      <div className="h-14 md:h-16 w-full" />
+      {/* Main content offset is app-main-scroll on <main> (safe area + header height) */}
 
       {/* Employee Modal for My Profile */}
       <EmployeeModal

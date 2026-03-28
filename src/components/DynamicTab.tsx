@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { CheckIcon, EyeIcon, EyeSlashIcon, AdjustmentsHorizontalIcon } from '@heroicons/react/24/outline';
 
 interface DynamicTabProps {
+  /** When true, income field is read-only (computed from invoiced totals). */
+  incomeReadOnly?: boolean;
   totalIncome: number;
   setTotalIncome: (value: number) => void;
   dueNormalizedPercentage: number;
@@ -20,6 +22,7 @@ interface DynamicTabProps {
 }
 
 const DynamicTab: React.FC<DynamicTabProps> = ({
+  incomeReadOnly = false,
   totalIncome,
   setTotalIncome,
   dueNormalizedPercentage,
@@ -186,24 +189,31 @@ const DynamicTab: React.FC<DynamicTabProps> = ({
           <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', flexShrink: 0 }}
             className="md:gap-3">
             <label style={{ fontSize: '10px', fontWeight: '500', color: '#374151' }}
-              className="md:text-base md:font-semibold">Income</label>
+              className="md:text-base md:font-semibold"
+              title={incomeReadOnly ? '90% of invoiced total due for due dates in the report From/To range' : undefined}
+            >
+              Income
+            </label>
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}
               className="md:gap-2">
               <input
                 type="text"
+                readOnly={incomeReadOnly}
                 style={{
                   width: '90px',
                   padding: '4px 6px',
                   border: '1px solid rgba(209, 213, 219, 0.5)',
                   borderRadius: '6px',
                   fontSize: '12px',
-                  background: 'rgba(255, 255, 255, 0.9)',
+                  background: incomeReadOnly ? 'rgba(229, 231, 235, 0.95)' : 'rgba(255, 255, 255, 0.9)',
+                  cursor: incomeReadOnly ? 'not-allowed' : undefined,
                 }}
                 className="md:w-[180px] md:px-4 md:py-3 md:text-lg"
                 value={totalIncome !== null && totalIncome !== undefined && totalIncome > 0
                   ? totalIncome.toLocaleString('en-US')
                   : ''}
                 onChange={(e) => {
+                  if (incomeReadOnly) return;
                   const rawValue = e.target.value.replace(/[^\d]/g, '');
                   if (rawValue === '') {
                     setTotalIncome(0);

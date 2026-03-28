@@ -35,6 +35,7 @@ import {
   findBestCategoryMatch as findBestCategoryMatchUtil,
   normalizeCategoryText as normalizeCategoryTextUtil
 } from '../utils/categoryResolver';
+import { fetchInvoicedTotalDueNisForDateRange } from '../lib/fetchInvoicedLast30TotalDueNis';
 
 interface EmployeeData {
   employeeId: number;
@@ -147,9 +148,9 @@ const SalesContributionPage = () => {
   const [searchPerformed, setSearchPerformed] = usePersistedState('salesContribution_performed', true, {
     storage: 'sessionStorage',
   });
-  const [totalIncome, setTotalIncome] = usePersistedState('salesContribution_income', 0, {
-    storage: 'sessionStorage',
-  });
+  /** 90% of invoiced total due for payment rows with due_date in the report From/To filter — see fetchInvoicedTotalDueNisForDateRange */
+  const [totalIncome, setTotalIncome] = useState(0);
+  const [loadingInvoicedIncome, setLoadingInvoicedIncome] = useState(true);
   const [dueNormalizedPercentage, setDueNormalizedPercentage] = usePersistedState('salesContribution_dueNormalizedPercentage', 0, {
     storage: 'sessionStorage',
   });
@@ -226,27 +227,18 @@ const SalesContributionPage = () => {
         setDepartmentPercentages(percentagesMap);
       }
 
-      // Fetch income setting - always load from database on initial load
-      // Session storage will be checked first by usePersistedState, so we only update if DB has a value
+      // Total income is computed from invoiced due for the report date range — not loaded from DB
       const { data: incomeSettings, error: incomeError } = await supabase
         .from('sales_contribution_income')
-        .select('income_amount, due_normalized_percentage')
+        .select('due_normalized_percentage')
         .order('updated_at', { ascending: false })
         .limit(1)
         .maybeSingle();
 
       if (!incomeError && incomeSettings) {
-        if (incomeSettings.income_amount !== null && incomeSettings.income_amount !== undefined) {
-          const incomeAmount = Number(incomeSettings.income_amount);
-          if (!isNaN(incomeAmount) && incomeAmount >= 0) {
-            // Always set from database on initial load (fetchSettings only runs once)
-            setTotalIncome(incomeAmount);
-          }
-        }
         if (incomeSettings.due_normalized_percentage !== null && incomeSettings.due_normalized_percentage !== undefined) {
           const duePercentage = Number(incomeSettings.due_normalized_percentage);
           if (!isNaN(duePercentage) && duePercentage >= 0 && duePercentage <= 100) {
-            // Always set from database on initial load (fetchSettings only runs once)
             setDueNormalizedPercentage(duePercentage);
           }
         }
@@ -264,7 +256,25 @@ const SalesContributionPage = () => {
     } finally {
       setLoadingSettings(false);
     }
-  }, [departmentNames, setTotalIncome, totalIncome, setDueNormalizedPercentage]);
+  }, [departmentNames, setDueNormalizedPercentage]);
+
+  const refreshIncomeFromInvoicedForFilter = useCallback(async () => {
+    if (!filters.fromDate || !filters.toDate) {
+      setTotalIncome(0);
+      setLoadingInvoicedIncome(false);
+      return;
+    }
+    setLoadingInvoicedIncome(true);
+    try {
+      const totalDueNis = await fetchInvoicedTotalDueNisForDateRange(filters.fromDate, filters.toDate);
+      setTotalIncome(Math.round(totalDueNis * 0.9));
+    } catch (e) {
+      console.error('Failed to compute income from invoiced total due for date range:', e);
+      setTotalIncome(0);
+    } finally {
+      setLoadingInvoicedIncome(false);
+    }
+  }, [filters.fromDate, filters.toDate]);
 
   // Fetch role percentages from database
   const fetchRolePercentages = useCallback(async () => {
@@ -613,6 +623,10 @@ const SalesContributionPage = () => {
       fetchRolePercentages();
     }
   }, [fetchRolePercentages]); // Only run once on mount
+
+  useEffect(() => {
+    refreshIncomeFromInvoicedForFilter();
+  }, [refreshIncomeFromInvoicedForFilter]);
 
   // Update tempRolePercentages when rolePercentages changes and modal is open
   useEffect(() => {
@@ -1129,6 +1143,8 @@ const SalesContributionPage = () => {
     const epsilon = 1; // require within 1 NIS of target for "perfect" 40%
     if (Math.abs(current - target) <= epsilon) return;
     if (salaryBudgetAdjustmentIterationsRef.current >= 15) return;
+    // Avoid Infinity/NaN when scaling before contributions exist (e.g. income loaded but rows not yet)
+    if (!Number.isFinite(current) || current <= 0) return;
     // When within 2000 NIS but not exact (e.g. rounding left 569 short), add the gap to one adjustable employee so total is exactly 40%
     if (Math.abs(current - target) <= 2000 && salaryBudgetAdjustmentIterationsRef.current > 0) {
       salaryBudgetAdjustmentIterationsRef.current += 1;
@@ -1384,16 +1400,23 @@ const SalesContributionPage = () => {
   }, [filters.fromDate, filters.toDate]);
 
   // Auto-run search once when report is entered or refreshed so all calculations use the default date range (last 30 days) or restored filters. Correction amounts, fixed contribution, orange (marketing) amounts, and all link modals (Sales, Handlers, Marketing) are driven by this run; date changes after that require clicking Search.
+  // Must wait for invoiced income to finish so totalIncome is set before handleSearch — otherwise normalization and 40% salary-budget scaling use income 0 and the badge shows ~39% (or wrong %) until a manual Search.
   const hasAutoRunInitialRef = useRef(false);
   useEffect(() => {
-    if (categoriesLoaded && filters.fromDate && filters.toDate && !hasAutoRunInitialRef.current) {
+    if (
+      categoriesLoaded &&
+      filters.fromDate &&
+      filters.toDate &&
+      !loadingInvoicedIncome &&
+      !hasAutoRunInitialRef.current
+    ) {
       hasAutoRunInitialRef.current = true;
       (async () => {
         await handleSearch();
       })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [categoriesLoaded, filters.fromDate, filters.toDate]);
+  }, [categoriesLoaded, filters.fromDate, filters.toDate, loadingInvoicedIncome]);
 
   // Fetch total signed value when date filters change
   useEffect(() => {
@@ -2408,23 +2431,28 @@ const SalesContributionPage = () => {
     }
   }, [filters.fromDate, filters.toDate, totalSignedValue, totalIncome, dueNormalizedPercentage, rolePercentages, getRolePercentagesHash, categoriesLoaded, categoryNameToDataMap, allCategories]);
 
-  // Recalculate signed portions when income changes
+  // Recalculate signed portions when income changes (after initial load)
   // This ensures signed portions are recalculated with the new income value immediately
   // Instead of calling fetchRoleData individually (which causes popcorn effect),
   // we trigger a full batch recalculation via handleSearch
-  const prevIncomeRef = useRef<number>(totalIncome);
+  const prevIncomeRef = useRef<number | null>(null);
   useEffect(() => {
-    // Only trigger if income actually changed and we have employees loaded
-    if (prevIncomeRef.current !== totalIncome && departmentData.size > 0 && filters.fromDate && filters.toDate) {
+    if (!filters.fromDate || !filters.toDate) return;
+    // While the table is still empty, only track income so we do not fire handleSearch twice on entry
+    if (departmentData.size === 0) {
       prevIncomeRef.current = totalIncome;
-      // Clear cache to force recalculation (cache key includes income, so old cache won't match)
-      setRoleDataCache(new Map());
-
-      // Trigger full batch recalculation instead of individual fetches
-      // This prevents the popcorn effect by calculating everything at once
-      console.log('🔄 Total income changed, triggering batch recalculation...');
-      handleSearch();
+      return;
     }
+    if (prevIncomeRef.current === totalIncome) return;
+    const prev = prevIncomeRef.current;
+    prevIncomeRef.current = totalIncome;
+    // First time we have rows: auto handleSearch already ran after income loaded; no duplicate run
+    if (prev === null) {
+      return;
+    }
+    setRoleDataCache(new Map());
+    console.log('🔄 Total income changed, triggering batch recalculation...');
+    handleSearch();
   }, [totalIncome, departmentData.size, filters.fromDate, filters.toDate]);
 
   // Recalculate due normalized when due normalized percentage changes
@@ -7858,7 +7886,11 @@ const SalesContributionPage = () => {
           <div className="flex flex-col items-center gap-1.5">
             <span className="text-sm font-medium text-base-content/70">Total income</span>
             <div className="px-5 py-2.5 bg-gradient-to-tr from-teal-500 via-green-500 to-emerald-500 rounded-lg min-w-[160px] text-center text-white shadow-md">
-              <span className="font-semibold text-white text-lg">{formatCurrency(totalIncome || 0)}</span>
+              {loadingInvoicedIncome ? (
+                <span className="loading loading-spinner loading-sm text-white"></span>
+              ) : (
+                <span className="font-semibold text-white text-lg">{formatCurrency(totalIncome || 0)}</span>
+              )}
             </div>
           </div>
           <div className="flex flex-col items-center gap-1.5">
@@ -7962,6 +7994,7 @@ const SalesContributionPage = () => {
       <DynamicIsland
         isOpen={isDynamicIslandOpen}
         onClose={() => setIsDynamicIslandOpen(false)}
+        incomeReadOnly
         totalIncome={totalIncome}
         setTotalIncome={setTotalIncome}
         dueNormalizedPercentage={dueNormalizedPercentage}
@@ -7983,6 +8016,7 @@ const SalesContributionPage = () => {
 
       {/* Dynamic Tab - Fixed when scrolled */}
       <DynamicTab
+        incomeReadOnly
         totalIncome={totalIncome}
         setTotalIncome={setTotalIncome}
         dueNormalizedPercentage={dueNormalizedPercentage}

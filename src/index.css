@@ -148,6 +148,20 @@
   animation: checkmarkPop 0.7s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
+/* Fill the visible mobile viewport (100vh is often wrong on mobile browsers / PWA). */
+html {
+  min-height: 100%;
+  min-height: 100dvh;
+  min-height: -webkit-fill-available;
+}
+
+body,
+#root {
+  min-height: 100%;
+  min-height: 100dvh;
+  min-height: -webkit-fill-available;
+}
+
 body,
 html,
 #root {
@@ -159,11 +173,19 @@ html,
 }
 
 @media (max-width: 640px) {
-  .navbar {
+  /* Default mobile navbar sizing — do not crush floating / zero-height headers */
+  .navbar:not([data-mobile-header='floating']) {
     min-height: 4.5rem !important;
     height: 4.5rem !important;
     padding-top: 0.5rem;
     padding-bottom: 0.5rem;
+  }
+
+  .navbar[data-mobile-header='floating'] {
+    min-height: 0 !important;
+    height: auto !important;
+    padding-top: 0 !important;
+    padding-bottom: 0 !important;
   }
 
   .navbar img {
@@ -195,6 +217,16 @@ html,
   }
 }
 
+/* Match Header isMobile (< md): no box-shadow on header buttons / DaisyUI defaults */
+@media (max-width: 767px) {
+  .navbar[data-mobile-header='floating'] .btn,
+  .navbar[data-mobile-header='floating'] .btn:hover,
+  .navbar[data-mobile-header='floating'] .btn:focus-visible,
+  .navbar[data-mobile-header='floating'] .btn:active {
+    box-shadow: none !important;
+  }
+}
+
 /* Hide scrollbar utility for horizontal scroll */
 .scrollbar-hide {
   -ms-overflow-style: none;
@@ -213,10 +245,20 @@ html,
   }
 }
 
-/* Ensure main content can scroll past bottom nav on mobile - nothing hidden behind it */
+/* Ensure main content can scroll past bottom nav on mobile — simple bar ~icon row + labels + safe-area */
 @media (max-width: 767px) {
   .main-with-bottom-nav-padding {
-    padding-bottom: max(4.25rem, calc(3.75rem + env(safe-area-inset-bottom, 0px)));
+    padding-bottom: calc(5rem + env(safe-area-inset-bottom, 0px));
+  }
+}
+
+/* Fixed header is h-11 (2.75rem) mobile / h-12 (3rem) desktop + optional safe-area on navbar */
+.app-main-scroll {
+  padding-top: calc(0.5rem + 2.75rem + env(safe-area-inset-top, 0px));
+}
+@media (min-width: 768px) {
+  .app-main-scroll {
+    padding-top: max(1.5rem, calc(0.5rem + 3rem));
   }
 }
 

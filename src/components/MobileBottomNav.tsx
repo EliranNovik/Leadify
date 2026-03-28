@@ -4,8 +4,6 @@ import { createPortal } from 'react-dom';
 import {
   CalendarIcon,
   MagnifyingGlassIcon,
-  FireIcon,
-  ChartBarIcon,
   DocumentChartBarIcon,
   FolderPlusIcon,
   BoltIcon,
@@ -16,8 +14,6 @@ import {
 import {
   CalendarIcon as CalendarIconSolid,
   MagnifyingGlassIcon as MagnifyingGlassIconSolid,
-  FireIcon as FireIconSolid,
-  ChartBarIcon as ChartBarIconSolid,
   DocumentChartBarIcon as DocumentChartBarIconSolid,
   FolderPlusIcon as FolderPlusIconSolid,
 } from '@heroicons/react/24/solid';
@@ -43,18 +39,6 @@ const navItems = [
     label: 'Lead Search',
     Icon: MagnifyingGlassIcon,
     IconActive: MagnifyingGlassIconSolid,
-  },
-  {
-    path: '/scheduler-tool',
-    label: 'Hot Leads',
-    Icon: FireIcon,
-    IconActive: FireIconSolid,
-  },
-  {
-    path: '/pipeline',
-    label: 'Pipeline',
-    Icon: ChartBarIcon,
-    IconActive: ChartBarIconSolid,
   },
   {
     path: '/reports',
@@ -88,19 +72,10 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
   const { isSuperUser } = useAdminRole();
   const newLeadsCount = useNewLeadsCount();
   const [showQuickActionsDropdown, setShowQuickActionsDropdown] = useState(false);
-  const [isAltTheme, setIsAltTheme] = useState(() => document.documentElement.classList.contains('theme-alt'));
-
-  useEffect(() => {
-    const checkTheme = () => setIsAltTheme(document.documentElement.classList.contains('theme-alt'));
-    const observer = new MutationObserver(checkTheme);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-    return () => observer.disconnect();
-  }, []);
-  const [dropdownBottom, setDropdownBottom] = useState('4.25rem');
+  const [dropdownBottom, setDropdownBottom] = useState('5rem');
   const quickActionsButtonRef = useRef<HTMLButtonElement>(null);
-  const navBarRef = useRef<HTMLDivElement>(null);
+  const navRef = useRef<HTMLElement>(null);
 
-  // Hide on full-width pages (contract, case-manager, reports, etc.)
   const pathname = location.pathname;
   const isHidden =
     pathname.includes('/contract') ||
@@ -115,7 +90,6 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
     return true;
   });
 
-  // Close dropdown when clicking outside or on a navigation link
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
@@ -131,15 +105,13 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
     return () => document.removeEventListener('click', handleClickOutside);
   }, [showQuickActionsDropdown]);
 
-  // Close dropdown on route change
   useEffect(() => {
     setShowQuickActionsDropdown(false);
   }, [pathname]);
 
-  // Compute dropdown position when it opens (above the nav bar)
   useEffect(() => {
-    if (showQuickActionsDropdown && navBarRef.current) {
-      const rect = navBarRef.current.getBoundingClientRect();
+    if (showQuickActionsDropdown && navRef.current) {
+      const rect = navRef.current.getBoundingClientRect();
       setDropdownBottom(`${window.innerHeight - rect.top + 8}px`);
     }
   }, [showQuickActionsDropdown]);
@@ -148,143 +120,90 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
     return null;
   }
 
-  // Split items: left half, center (Quick Actions), right half
-  const midIndex = Math.ceil(visibleItems.length / 2);
-  const leftItems = visibleItems.slice(0, midIndex);
-  const rightItems = visibleItems.slice(midIndex);
+  const renderNavItem = (item: (typeof navItems)[0]) => {
+    const actionItem = item as { action?: string };
+    const isAction = !!actionItem.action;
+    const isActive =
+      !isAction && (pathname === item.path || (item.path !== '/' && pathname.startsWith(item.path)));
+    const IconComponent = isActive ? item.IconActive : item.Icon;
+    const showCount = item.path === '/new-cases' && newLeadsCount > 0;
+
+    const baseClass =
+      'flex flex-1 min-w-0 flex-col items-center justify-center gap-0.5 py-2 min-h-[48px] rounded-lg transition-colors active:opacity-90';
+
+    if (isAction && actionItem.action === 'openMessaging') {
+      return (
+        <button
+          key={item.path}
+          type="button"
+          onClick={() => onOpenMessaging?.()}
+          className={`${baseClass} text-base-content/70 hover:text-base-content hover:bg-base-content/5`}
+          title={item.label}
+          aria-label={item.label}
+        >
+          <IconComponent className="h-7 w-7 shrink-0" />
+          <span className="text-[10px] font-medium leading-none truncate max-w-full px-0.5">{item.label}</span>
+        </button>
+      );
+    }
+
+    return (
+      <NavLink
+        key={item.path}
+        to={item.path}
+        title={item.label}
+        aria-label={item.label}
+        className={({ isActive: navActive }) =>
+          `${baseClass} ${navActive ? 'text-primary bg-primary/10' : 'text-base-content/70 hover:text-base-content hover:bg-base-content/5'}`
+        }
+      >
+        <span className="relative inline-flex shrink-0">
+          <IconComponent className={`h-7 w-7 ${isActive ? 'scale-105' : ''}`} />
+          {showCount && (
+            <span className="absolute -top-0.5 -right-1.5 flex h-[14px] min-w-[14px] items-center justify-center rounded-full bg-red-500 px-0.5 text-[9px] font-bold text-white">
+              {newLeadsCount > 9 ? '9+' : newLeadsCount}
+            </span>
+          )}
+        </span>
+        <span className="text-[10px] font-medium leading-none truncate max-w-full px-0.5">{item.label}</span>
+      </NavLink>
+    );
+  };
 
   return (
     <nav
-      className="md:hidden fixed bottom-0 left-0 right-0 w-full z-[40]"
-      style={{ paddingBottom: 0 }}
+      ref={navRef}
+      className="md:hidden fixed bottom-0 left-0 right-0 z-[100] border-t border-base-200 bg-base-100 pointer-events-auto"
+      style={{
+        paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom, 0px))',
+      }}
     >
-      <div
-        ref={navBarRef}
-        className="w-full min-w-0 rounded-t-2xl border-t border-x-0 border-b-0 border-white/50 dark:border-white/20 bg-white/90 dark:bg-base-300/90 backdrop-blur-2xl shadow-[0_-4px_24px_rgba(0,0,0,0.08)]"
-        style={{
-          paddingBottom: 'max(0.375rem, env(safe-area-inset-bottom, 0px))',
-        }}
-      >
-        <div className="flex items-center justify-between py-1 px-2 gap-1">
-          {leftItems.map((item) => {
-            const actionItem = item as { action?: string };
-            const isAction = !!actionItem.action;
-            const isActive =
-              !isAction && (pathname === item.path || (item.path !== '/' && pathname.startsWith(item.path)));
-            const IconComponent = isActive ? item.IconActive : item.Icon;
-            const showCount = item.path === '/new-cases' && newLeadsCount > 0;
-            const itemClass = `flex items-center justify-center min-w-[48px] py-2.5 px-2 rounded-full transition-all duration-200 relative ${
-              isActive ? 'bg-primary/10 text-primary' : 'text-base-content/60 hover:text-base-content hover:bg-base-content/5'
-            }`;
-
-            if (isAction && actionItem.action === 'openMessaging') {
-              return (
-                <button
-                  key={item.path}
-                  type="button"
-                  onClick={() => onOpenMessaging?.()}
-                  className={itemClass}
-                  title={item.label}
-                >
-                  <IconComponent className="w-7 h-7 transition-transform duration-200" />
-                </button>
-              );
-            }
-
-            return (
-              <NavLink
-                key={item.path}
-                to={item.path}
-                className={({ isActive: navActive }) =>
-                  `flex items-center justify-center min-w-[48px] py-2.5 px-2 rounded-full transition-all duration-200 relative ${
-                    navActive ? 'bg-primary/10 text-primary' : 'text-base-content/60 hover:text-base-content hover:bg-base-content/5'
-                  }`
-                }
-              >
-                <span className="relative inline-flex">
-                  <IconComponent className={`w-7 h-7 transition-transform duration-200 ${isActive ? 'scale-105' : ''}`} />
-                  {showCount && (
-                    <span className="absolute -top-0.5 -right-1.5 bg-red-500 text-white text-[9px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5">
-                      {newLeadsCount > 9 ? '9+' : newLeadsCount}
-                    </span>
-                  )}
-                </span>
-              </NavLink>
-            );
-          })}
-
-          {/* Quick Actions - center */}
-          <div className="flex flex-col items-center justify-center min-w-[40px] py-0.5 px-0.5 gap-0" data-quick-actions-dropdown>
-            <button
-              ref={quickActionsButtonRef}
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setShowQuickActionsDropdown((v) => !v);
-              }}
-              className="flex items-center justify-center w-12 h-12 rounded-full text-white font-medium transition-all duration-300 active:scale-95 shadow-lg hover:opacity-90"
-              style={{ backgroundColor: '#471CCA' }}
-              title="Quick Actions"
-            >
-              <BoltIcon className="w-6 h-6" />
-            </button>
-          </div>
-
-          {rightItems.map((item) => {
-            const actionItem = item as { action?: string };
-            const isAction = !!actionItem.action;
-            const isActive =
-              !isAction && (pathname === item.path || (item.path !== '/' && pathname.startsWith(item.path)));
-            const IconComponent = isActive ? item.IconActive : item.Icon;
-            const showCount = item.path === '/new-cases' && newLeadsCount > 0;
-            const itemClass = `flex items-center justify-center min-w-[48px] py-2.5 px-2 rounded-full transition-all duration-200 relative ${
-              isActive ? 'bg-primary/10 text-primary' : 'text-base-content/60 hover:text-base-content hover:bg-base-content/5'
-            }`;
-
-            if (isAction && actionItem.action === 'openMessaging') {
-              return (
-                <button
-                  key={item.path}
-                  type="button"
-                  onClick={() => onOpenMessaging?.()}
-                  className={itemClass}
-                  title={item.label}
-                >
-                  <IconComponent className="w-7 h-7 transition-transform duration-200" />
-                </button>
-              );
-            }
-
-            return (
-              <NavLink
-                key={item.path}
-                to={item.path}
-                className={({ isActive: navActive }) =>
-                  `flex items-center justify-center min-w-[48px] py-2.5 px-2 rounded-full transition-all duration-200 relative ${
-                    navActive ? 'bg-primary/10 text-primary' : 'text-base-content/60 hover:text-base-content hover:bg-base-content/5'
-                  }`
-                }
-              >
-                <span className="relative inline-flex">
-                  <IconComponent className={`w-7 h-7 transition-transform duration-200 ${isActive ? 'scale-105' : ''}`} />
-                  {showCount && (
-                    <span className="absolute -top-0.5 -right-1.5 bg-red-500 text-white text-[9px] font-bold rounded-full min-w-[14px] h-[14px] flex items-center justify-center px-0.5">
-                      {newLeadsCount > 9 ? '9+' : newLeadsCount}
-                    </span>
-                  )}
-                </span>
-              </NavLink>
-            );
-          })}
-        </div>
+      <div className="flex items-stretch justify-around gap-0 px-1 pt-1">
+        {visibleItems.map((item) => renderNavItem(item))}
+        <button
+          ref={quickActionsButtonRef}
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setShowQuickActionsDropdown((v) => !v);
+          }}
+          className={`flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 py-2 min-h-[48px] rounded-lg transition-colors active:opacity-90 ${
+            showQuickActionsDropdown ? 'text-primary bg-primary/10' : 'text-base-content/70 hover:text-base-content hover:bg-base-content/5'
+          }`}
+          title="Quick actions"
+          aria-label="Quick actions"
+          aria-expanded={showQuickActionsDropdown}
+        >
+          <BoltIcon className="h-7 w-7 shrink-0" strokeWidth={1.75} />
+          <span className="text-[10px] font-medium leading-none">More</span>
+        </button>
       </div>
 
-      {/* Dropdown above the bar */}
       {showQuickActionsDropdown &&
         createPortal(
           <div
-            className="fixed left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 sm:max-w-sm w-auto min-w-[280px] bg-white dark:bg-base-100 rounded-2xl shadow-2xl border border-base-200 z-[9999] overflow-hidden py-2"
+            className="fixed left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 sm:max-w-sm w-auto min-w-[280px] rounded-2xl border border-base-200 bg-base-100 py-2 shadow-2xl z-[9999] overflow-hidden"
             data-mobile-quick-actions-dropdown
             style={{ bottom: dropdownBottom }}
             onClick={(e) => e.stopPropagation()}
@@ -294,9 +213,9 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
                 setShowQuickActionsDropdown(false);
                 onOpenMessaging?.();
               }}
-              className="flex items-center gap-4 px-5 py-4 w-full text-left border-b border-base-200 hover:bg-base-200/50 active:bg-base-200/70 transition-colors"
+              className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
             >
-              <ChatBubbleLeftRightIcon className="w-6 h-6 text-gray-500 flex-shrink-0" />
+              <ChatBubbleLeftRightIcon className="h-6 w-6 shrink-0 text-gray-500" />
               <span className="text-base font-medium">RMQ Messages</span>
             </button>
             <button
@@ -304,9 +223,9 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
                 setShowQuickActionsDropdown(false);
                 onOpenWhatsApp?.();
               }}
-              className="flex items-center gap-4 px-5 py-4 w-full text-left border-b border-base-200 hover:bg-base-200/50 active:bg-base-200/70 transition-colors"
+              className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
             >
-              <FaWhatsapp className="w-6 h-6 text-green-500 flex-shrink-0" />
+              <FaWhatsapp className="h-6 w-6 shrink-0 text-green-500" />
               <span className="text-base font-medium">WhatsApp</span>
             </button>
             <button
@@ -314,17 +233,17 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
                 setShowQuickActionsDropdown(false);
                 onOpenEmailThread?.();
               }}
-              className="flex items-center gap-4 px-5 py-4 w-full text-left border-b border-base-200 hover:bg-base-200/50 active:bg-base-200/70 transition-colors"
+              className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
             >
-              <EnvelopeIcon className="w-6 h-6 text-gray-500 flex-shrink-0" />
+              <EnvelopeIcon className="h-6 w-6 shrink-0 text-gray-500" />
               <span className="text-base font-medium">Email Thread</span>
             </button>
             <Link
               to="/handler-management"
               onClick={() => setShowQuickActionsDropdown(false)}
-              className="flex items-center gap-4 px-5 py-4 w-full text-left hover:bg-base-200/50 active:bg-base-200/70 transition-colors"
+              className="flex w-full items-center gap-4 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
             >
-              <UserGroupIcon className="w-6 h-6 text-gray-500 flex-shrink-0" />
+              <UserGroupIcon className="h-6 w-6 shrink-0 text-gray-500" />
               <span className="text-base font-medium">Handler Management</span>
             </Link>
           </div>,

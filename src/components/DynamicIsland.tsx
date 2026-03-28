@@ -6,6 +6,8 @@ import { supabase } from '../lib/supabase';
 interface DynamicIslandProps {
   isOpen: boolean;
   onClose: () => void;
+  /** When true, income is display-only (computed elsewhere, e.g. from invoiced totals). */
+  incomeReadOnly?: boolean;
   totalIncome: number;
   setTotalIncome: (value: number) => void;
   dueNormalizedPercentage: number;
@@ -28,6 +30,7 @@ interface DynamicIslandProps {
 const DynamicIsland: React.FC<DynamicIslandProps> = ({
   isOpen,
   onClose,
+  incomeReadOnly = false,
   totalIncome,
   setTotalIncome,
   dueNormalizedPercentage,
@@ -79,16 +82,23 @@ const DynamicIsland: React.FC<DynamicIslandProps> = ({
               <div className="card bg-base-200 shadow-lg">
                 <div className="card-body">
                   <h3 className="text-2xl font-bold mb-4">Income</h3>
+                  {incomeReadOnly && (
+                    <p className="text-sm text-base-content/70 mb-3">
+                      90% of the Dashboard <strong>Invoiced</strong> total due for payment rows whose <strong>due date</strong> falls in the report <strong>From / To</strong> range (same rules as the dashboard invoiced logic).
+                    </p>
+                  )}
                   <div className="space-y-4">
                     <div className="flex items-center gap-4">
                       <label className="text-lg font-medium whitespace-nowrap">Income:</label>
                       <input
                         type="text"
-                        className="input input-bordered input-lg flex-1"
+                        className={`input input-bordered input-lg flex-1 ${incomeReadOnly ? 'bg-base-300/50 cursor-not-allowed' : ''}`}
+                        readOnly={incomeReadOnly}
                         value={totalIncome !== null && totalIncome !== undefined && totalIncome > 0
                           ? totalIncome.toLocaleString('en-US')
                           : ''}
                         onChange={(e) => {
+                          if (incomeReadOnly) return;
                           const rawValue = e.target.value.replace(/[^\d]/g, '');
                           if (rawValue === '') {
                             setTotalIncome(0);

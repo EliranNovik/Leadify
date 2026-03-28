@@ -561,7 +561,7 @@ const AppContentInner: React.FC = () => {
       <Route path="/my-profile/:employeeId" element={<RouteSuspense><LazyPublicProfilePage /></RouteSuspense>} />
       <Route path="/business-card/:employeeId" element={<RouteSuspense><LazyBusinessCardPage /></RouteSuspense>} />
       <Route path="/documents" element={
-        <div className="flex h-screen bg-white">
+        <div className="flex min-h-[100dvh] h-[100dvh] bg-white">
           <div className="flex-1 flex flex-col overflow-hidden">
             <div className="bg-white border-b border-gray-200 px-4 md:px-6 py-4">
               {/* Desktop Layout */}
@@ -679,7 +679,7 @@ const AppContentInner: React.FC = () => {
       } />
       <Route path="/calls-ledger" element={
         <ProtectedRoute user={authUser}>
-          <div className="flex h-screen bg-white">
+          <div className="flex min-h-[100dvh] h-[100dvh] bg-white">
             <Sidebar
               userName={userFullName || userName}
               userInitials={userInitials}
@@ -721,7 +721,7 @@ const AppContentInner: React.FC = () => {
                 onOpenMessaging={() => setIsMessagingOpen(true)}
                 isMenuOpen={isSidebarOpen}
               />
-<main className="flex-1 overflow-x-hidden overflow-y-auto bg-white pt-8 md:pt-6">
+<main className="flex-1 overflow-x-hidden overflow-y-auto bg-white app-main-scroll">
               <RouteSuspense>
                 <LazyCallsLedgerPage />
               </RouteSuspense>
@@ -737,7 +737,7 @@ const AppContentInner: React.FC = () => {
       } />
       <Route path="/my-profile" element={
         <ProtectedRoute user={authUser}>
-          <div className="flex h-screen bg-base-100">
+          <div className="flex min-h-[100dvh] h-[100dvh] bg-base-100">
             <div className="flex-1 flex flex-col overflow-hidden">
               <Header
                 onMenuClick={() => setIsSidebarOpen(prev => !prev)}
@@ -751,7 +751,7 @@ const AppContentInner: React.FC = () => {
                 onOpenMessaging={handleOpenMessaging}
                 isMenuOpen={isSidebarOpen}
               />
-              <main className="flex-1 overflow-x-hidden overflow-y-auto bg-white pt-8 md:pt-6">
+              <main className="flex-1 overflow-x-hidden overflow-y-auto bg-white app-main-scroll">
                 <RouteSuspense>
                   <LazyMyProfilePage />
                 </RouteSuspense>
@@ -819,7 +819,7 @@ const AppContentInner: React.FC = () => {
         path="/*"
         element={
           < ProtectedRoute user={authUser} >
-            <div className={`flex h-screen bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
+            <div className={`flex min-h-[100dvh] h-[100dvh] bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
               {/* Always mount Sidebar so it does not reload when navigating; hide on full-width pages */}
               <div className={isSignedSalesPage || isCaseManagerPage || isContractPage ? 'hidden' : undefined}>
                 <Sidebar
@@ -844,7 +844,7 @@ const AppContentInner: React.FC = () => {
                   onOpenMessaging={handleOpenMessaging}
                   isMenuOpen={isSidebarOpen}
                 />
-                <main className={`flex-1 overflow-x-hidden overflow-y-auto pt-8 md:pt-6 ${isReportsPage ? 'w-full' : ''} ${showBottomNav ? 'main-with-bottom-nav-padding' : ''}`}>
+                <main className={`flex-1 overflow-x-hidden overflow-y-auto app-main-scroll ${isReportsPage ? 'w-full' : ''} ${showBottomNav ? 'main-with-bottom-nav-padding' : ''}`}>
                   <Routes>
                     <Route path="/" element={<RouteSuspense><LazyDashboard /></RouteSuspense>} />
                     <Route path="/clients" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} /></RouteSuspense>} />
