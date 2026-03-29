@@ -7225,7 +7225,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         >
           {/* Logo and Logout Button */}
           <div className="flex-1 justify-start flex items-center gap-2 md:gap-4">
-            <div className="rounded-2xl shadow-none bg-white/90 dark:bg-base-300/90 backdrop-blur-md border border-base-200/50 md:rounded-none md:shadow-none md:bg-transparent md:border-0 md:backdrop-blur-none flex h-11 md:h-12 items-center gap-2 md:gap-3 px-2 md:px-0">
+            <div className="rounded-2xl shadow-sm bg-white/45 backdrop-blur-2xl backdrop-saturate-150 border border-white/60 ring-1 ring-white/30 dark:bg-white/[0.12] dark:backdrop-blur-2xl dark:border-white/20 dark:ring-white/10 md:rounded-none md:shadow-none md:bg-transparent md:border-0 md:ring-0 md:backdrop-blur-none flex h-11 md:h-12 items-center gap-2 md:gap-3 px-2 md:px-0">
               <Link to="/" className="flex items-center gap-2">
                 <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
               </Link>
@@ -7314,7 +7314,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       >
         {/* Left section with menu and logo */}
         <div className={`flex-1 justify-start flex items-center gap-2 md:gap-4 overflow-hidden md:overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
-          <div className="md:hidden flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-none bg-white/90 dark:bg-base-300/90 backdrop-blur-md border border-base-200/50">
+          <div className="md:hidden flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-sm bg-white/45 backdrop-blur-2xl backdrop-saturate-150 border border-white/60 ring-1 ring-white/30 dark:bg-white/[0.12] dark:backdrop-blur-2xl dark:border-white/20 dark:ring-white/10">
             <button
               className="btn btn-ghost btn-square min-h-0 h-10 w-10 p-0 rounded-full border-0"
               onClick={onMenuClick}
@@ -7838,7 +7838,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 isSearchActive
                   ? `w-full overflow-hidden bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-600 ${isMobile ? 'shadow-none' : 'shadow-md'}`
                   : isMobile
-                    ? 'w-full min-h-9 h-9 shadow-none bg-white/90 dark:bg-base-300/90 backdrop-blur-md border border-base-200/50 dark:border-base-200/40 box-border'
+                    ? 'w-full min-h-9 h-9 shadow-sm bg-white/45 backdrop-blur-2xl backdrop-saturate-150 border border-white/60 ring-1 ring-white/30 dark:bg-white/[0.12] dark:backdrop-blur-2xl dark:border-white/20 dark:ring-white/10 box-border'
                     : 'w-12 min-w-12 md:w-48 md:min-w-48 overflow-visible md:bg-white dark:md:bg-gray-800 md:border-2 md:border-gray-200 dark:md:border-gray-600 md:shadow-md'
               }`}
               style={isSearchActive && isDarkMode ? { borderColor: 'rgba(96, 165, 250, 0.75)' } : undefined}
@@ -8399,7 +8399,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           </div>
 
           {/* Mobile: search opens from icon only (sits next to bell); desktop search stays in center */}
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-none bg-white/90 dark:bg-base-300/90 backdrop-blur-md border border-base-200/50 md:hidden">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-sm bg-white/45 backdrop-blur-2xl backdrop-saturate-150 border border-white/60 ring-1 ring-white/30 dark:bg-white/[0.12] dark:backdrop-blur-2xl dark:border-white/20 dark:ring-white/10 md:hidden">
             <button
               type="button"
               className="btn btn-ghost btn-square min-h-0 h-10 w-10 p-0 rounded-full border-0"
@@ -8415,7 +8415,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           </div>
 
           {/* Notifications */}
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-none bg-white/90 dark:bg-base-300/90 backdrop-blur-md border border-base-200/50 md:h-auto md:w-auto md:rounded-none md:shadow-none md:bg-transparent md:border-0 md:backdrop-blur-none">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-sm bg-white/45 backdrop-blur-2xl backdrop-saturate-150 border border-white/60 ring-1 ring-white/30 dark:bg-white/[0.12] dark:backdrop-blur-2xl dark:border-white/20 dark:ring-white/10 md:h-auto md:w-auto md:rounded-none md:shadow-none md:bg-transparent md:border-0 md:ring-0 md:backdrop-blur-none">
           <div className="relative" ref={notificationsRef}>
             <button
               className="btn btn-ghost btn-circle h-10 w-10 min-h-10 min-w-10 p-0 border-0 mr-0 md:mr-1 md:h-12 md:w-12 md:min-h-12 md:min-w-12"
@@ -8729,7 +8729,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
           {/* Mobile back button - right corner inside header (hidden on login) */}
           {location.pathname !== '/login' && (
-            <div className="md:hidden flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-none bg-white/90 dark:bg-base-300/90 backdrop-blur-md border border-base-200/50">
+            <div className="md:hidden flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-sm bg-white/45 backdrop-blur-2xl backdrop-saturate-150 border border-white/60 ring-1 ring-white/30 dark:bg-white/[0.12] dark:backdrop-blur-2xl dark:border-white/20 dark:ring-white/10">
             <button
               type="button"
               onClick={() => navigate(-1)}

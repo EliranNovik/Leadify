@@ -21,6 +21,14 @@ import { FaWhatsapp } from 'react-icons/fa';
 import { useAdminRole } from '../hooks/useAdminRole';
 import { useNewLeadsCount } from '../hooks/useNewLeadsCount';
 
+/**
+ * Fixed mobile tab bar sits below app chrome. Modals/drawers/backdrops must use a **higher** z-index
+ * (e.g. Tailwind `z-50` or `z-[100]`) so they overlay this bar.
+ */
+export const MOBILE_BOTTOM_NAV_Z_INDEX = 40;
+/** Use at least this for any full-screen overlay/modal/drawer on mobile (above the bottom nav). */
+export const MOBILE_OVERLAY_MIN_Z_INDEX = 50;
+
 interface MobileBottomNavProps {
   onOpenMessaging?: () => void;
   onOpenWhatsApp?: () => void;
@@ -173,8 +181,9 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
   return (
     <nav
       ref={navRef}
-      className="md:hidden fixed bottom-0 left-0 right-0 z-[100] border-t border-base-200 bg-base-100 pointer-events-auto"
+      className="md:hidden fixed bottom-0 left-0 right-0 border-t border-base-200 bg-base-100 pointer-events-auto"
       style={{
+        zIndex: MOBILE_BOTTOM_NAV_Z_INDEX,
         paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom, 0px))',
       }}
     >
@@ -203,9 +212,9 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
       {showQuickActionsDropdown &&
         createPortal(
           <div
-            className="fixed left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 sm:max-w-sm w-auto min-w-[280px] rounded-2xl border border-base-200 bg-base-100 py-2 shadow-2xl z-[9999] overflow-hidden"
+            className="fixed left-2 right-2 sm:left-1/2 sm:right-auto sm:-translate-x-1/2 sm:max-w-sm w-auto min-w-[280px] rounded-2xl border border-base-200 bg-base-100 py-2 shadow-2xl overflow-hidden"
             data-mobile-quick-actions-dropdown
-            style={{ bottom: dropdownBottom }}
+            style={{ bottom: dropdownBottom, zIndex: MOBILE_OVERLAY_MIN_Z_INDEX }}
             onClick={(e) => e.stopPropagation()}
           >
             <button

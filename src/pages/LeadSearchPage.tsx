@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
 import { Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
-import { Search } from 'lucide-react';
+import { Search, Loader2 } from 'lucide-react';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import { useTheme } from '../hooks/useTheme';
@@ -923,6 +923,9 @@ const LeadSearchPage: React.FC = () => {
 
   // Ref for results section to scroll to after search
   const resultsRef = useRef<HTMLDivElement>(null);
+  const cardsGridRef = useRef<HTMLDivElement>(null);
+  const tableResultsRef = useRef<HTMLDivElement>(null);
+  const scrollToResultsAfterSearchRef = useRef(false);
 
   // Initialize filters with current date - ensure no persistent state interferes
   const todayStr = new Date().toISOString().split('T')[0];
@@ -972,6 +975,7 @@ const LeadSearchPage: React.FC = () => {
       setSearchParams({}, { replace: true }); // Clear param after applying
     }
   }, [searchParams, setFilters, setSearchParams]);
+
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const [mainCategoryOptions, setMainCategoryOptions] = useState<string[]>([]);
   const [sourceOptions, setSourceOptions] = useState<string[]>([]);
@@ -1018,6 +1022,20 @@ const LeadSearchPage: React.FC = () => {
   });
   const [showColumnSelector, setShowColumnSelector] = useState(false);
   const navigate = useNavigate();
+
+  // After search finishes and DOM updates, scroll to cards grid or table (premium UX)
+  useEffect(() => {
+    if (isSearching || !scrollToResultsAfterSearchRef.current) return;
+    scrollToResultsAfterSearchRef.current = false;
+    if (results.length === 0) return;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const target =
+          viewMode === 'cards' ? cardsGridRef.current : tableResultsRef.current ?? resultsRef.current;
+        target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+  }, [isSearching, results, viewMode]);
 
   // Handle lead click navigation
   // Uses the exact same logic as MasterLeadPage.tsx
@@ -4057,14 +4075,8 @@ const LeadSearchPage: React.FC = () => {
         results: allResults
       });
 
+      scrollToResultsAfterSearchRef.current = true;
       setResults(allResults);
-      
-      // Auto-scroll to results section after search completes
-      setTimeout(() => {
-        if (resultsRef.current) {
-          resultsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        }
-      }, 100);
     } catch (error) {
       console.error('Error searching leads:', error);
       alert('Failed to search for leads.');
@@ -4261,17 +4273,31 @@ const LeadSearchPage: React.FC = () => {
               <TableCellsIcon className="w-4 h-4" />
             </button>
           </div>
-          {/* Search Button - Icon Only */}
+          {/* Search: glass pill button (matches bar) + Loader2 while searching */}
           <button
-            className={isAltTheme ? 'btn btn-circle bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn btn-primary btn-circle'}
+            type="button"
+            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-base-200/60 bg-white/90 shadow-inner backdrop-blur-md transition-colors dark:border-base-200/40 dark:bg-gray-800/90 ${
+              isAltTheme
+                ? 'text-white hover:bg-[#505d57]/95'
+                : 'text-primary hover:bg-white dark:hover:bg-gray-700/95'
+            } ${isSearching ? 'cursor-wait opacity-95' : 'hover:opacity-100'} disabled:opacity-70`}
+            style={
+              isAltTheme && !isSearching
+                ? { background: 'rgba(80, 93, 87, 0.92)' }
+                : isAltTheme && isSearching
+                  ? { background: 'rgba(80, 93, 87, 0.85)' }
+                  : undefined
+            }
             onClick={handleSearch}
             disabled={isSearching}
             title="Search"
+            aria-busy={isSearching}
+            aria-label={isSearching ? 'Searching…' : 'Search'}
           >
             {isSearching ? (
-              <span className="loading loading-spinner"></span>
+              <Loader2 className={`h-5 w-5 animate-spin ${isAltTheme ? 'text-white' : 'text-primary'}`} aria-hidden />
             ) : (
-              <Search className="w-5 h-5" strokeWidth={2.25} />
+              <Search className={`h-5 w-5 ${isAltTheme ? 'text-white' : ''}`} strokeWidth={2.25} />
             )}
           </button>
         </div>
@@ -4280,16 +4306,23 @@ const LeadSearchPage: React.FC = () => {
       {/* Mobile: scrolled down = single circle opens full bar; scrolled up = full bar. Circle click does not search. */}
       <div className="md:hidden fixed top-16 left-0 right-0 z-[35] flex justify-center px-4 transition-all duration-300 ease-in-out">
         {showStickySearchButton ? (
-          /* Scrolled down: one big circle – click opens full bar (does not run search) */
+          /* Scrolled down: one big glass circle – opens full bar; show spinner if search still running */
           <button
-            className={`min-w-[56px] min-h-[56px] w-14 h-14 rounded-full shadow-2xl flex items-center justify-center transition-all duration-300 ${
-              isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743] active:scale-95' : 'btn-primary hover:opacity-90 active:scale-95'
+            type="button"
+            className={`min-w-[56px] min-h-[56px] w-14 h-14 rounded-full shadow-2xl flex items-center justify-center border border-base-200/50 bg-white/90 backdrop-blur-md transition-all duration-300 dark:bg-gray-800/90 active:scale-95 ${
+              isAltTheme ? 'text-white' : 'text-primary'
             }`}
+            style={isAltTheme ? { background: 'rgba(80, 93, 87, 0.92)' } : undefined}
             onClick={() => setShowStickySearchButton(false)}
-            title="Open search bar"
-            aria-label="Open search bar"
+            title={isSearching ? 'Search in progress — tap to open bar' : 'Open search bar'}
+            aria-label={isSearching ? 'Search in progress' : 'Open search bar'}
+            aria-busy={isSearching}
           >
-            <Search className="w-7 h-7" strokeWidth={2.25} />
+            {isSearching ? (
+              <Loader2 className={`w-7 h-7 animate-spin ${isAltTheme ? 'text-white' : 'text-primary'}`} aria-hidden />
+            ) : (
+              <Search className="w-7 h-7" strokeWidth={2.25} />
+            )}
           </button>
         ) : (
           /* Scrolled up: full bar with From/To dates, smaller view toggle, search */
@@ -4333,20 +4366,32 @@ const LeadSearchPage: React.FC = () => {
               </button>
             </div>
             <button
-              className={`btn btn-circle min-w-[44px] min-h-[44px] w-11 h-11 transition-all duration-300 ${
-                isAltTheme ? 'bg-[#505d57] text-white hover:bg-[#3d4743]' : 'btn-primary'
-              }`}
+              type="button"
+              className={`flex min-h-[44px] min-w-[44px] h-11 w-11 shrink-0 items-center justify-center rounded-full border border-base-200/60 bg-white/90 shadow-inner backdrop-blur-md transition-all duration-300 dark:border-base-200/40 dark:bg-gray-800/90 ${
+                isAltTheme
+                  ? 'text-white hover:bg-[#505d57]/95'
+                  : 'text-primary hover:bg-white dark:hover:bg-gray-700/95'
+              } ${isSearching ? 'cursor-wait' : ''} disabled:opacity-70`}
+              style={
+                isAltTheme && !isSearching
+                  ? { background: 'rgba(80, 93, 87, 0.92)' }
+                  : isAltTheme && isSearching
+                    ? { background: 'rgba(80, 93, 87, 0.85)' }
+                    : undefined
+              }
               onClick={() => {
                 handleSearch();
                 setShowStickySearchButton(true);
               }}
               disabled={isSearching}
               title="Search"
+              aria-busy={isSearching}
+              aria-label={isSearching ? 'Searching…' : 'Search'}
             >
               {isSearching ? (
-                <span className="loading loading-spinner loading-md"></span>
+                <Loader2 className={`h-6 w-6 animate-spin ${isAltTheme ? 'text-white' : 'text-primary'}`} aria-hidden />
               ) : (
-                <Search className="w-6 h-6" strokeWidth={2.25} />
+                <Search className={`h-6 w-6 ${isAltTheme ? 'text-white' : ''}`} strokeWidth={2.25} />
               )}
             </button>
           </div>
@@ -4677,13 +4722,18 @@ const LeadSearchPage: React.FC = () => {
               </h2>
               {isSearching ? (
                 <div className="flex justify-center p-8">
-                  <span className="loading loading-spinner loading-lg"></span>
+                  <Loader2 className="w-10 h-10 animate-spin text-primary" aria-hidden />
                 </div>
               ) : (
                 viewMode === 'table' ? (
-                  <TableView leads={results} selectedColumns={selectedColumns} onLeadClick={handleLeadClick} />
+                  <div ref={tableResultsRef}>
+                    <TableView leads={results} selectedColumns={selectedColumns} onLeadClick={handleLeadClick} />
+                  </div>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                  <div
+                    ref={cardsGridRef}
+                    className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
+                  >
                     {results.map(renderResultCard)}
                   </div>
                 )
