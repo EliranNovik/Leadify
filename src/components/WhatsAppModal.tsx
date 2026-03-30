@@ -1,15 +1,13 @@
 import React from 'react';
 import { XMarkIcon } from '@heroicons/react/24/outline';
-import WhatsAppPage from '../pages/WhatsAppPage';
+import WhatsAppPage, { type WhatsAppPageSelectedContact } from '../pages/WhatsAppPage';
+
+export type WhatsAppModalSelectedContact = WhatsAppPageSelectedContact;
 
 interface WhatsAppModalProps {
   isOpen: boolean;
   onClose: () => void;
-  selectedContact?: {
-    contact: any;
-    leadId: string | number;
-    leadType: 'legacy' | 'new';
-  } | null;
+  selectedContact?: WhatsAppPageSelectedContact | null;
 }
 
 const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ isOpen, onClose, selectedContact }) => {

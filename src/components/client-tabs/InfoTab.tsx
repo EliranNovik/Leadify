@@ -182,6 +182,14 @@ const getFieldValue = (client: any, fieldName: string, legacyFieldName?: string)
   return client[fieldName];
 };
 
+/** Hide "Last edited" footer when editor is missing/Unknown or timestamp is missing. */
+const shouldShowLastEditedMeta = (editedBy: unknown, editedAt: unknown): boolean => {
+  const by = String(editedBy ?? '').trim();
+  if (!by || by.toLowerCase() === 'unknown') return false;
+  if (editedAt == null || editedAt === '') return false;
+  return true;
+};
+
 // Helper function to determine if this is a legacy lead
 const isLegacyLead = (client: any) => {
   return client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
@@ -1717,13 +1725,13 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
       <div className="space-y-8">
         <div className="space-y-1 mb-4">
           <h3 className="text-xs font-semibold tracking-wide text-gray-500 uppercase">Overview</h3>
-          <div className="h-px bg-gray-200" />
+          <div className="h-px w-full bg-gradient-to-r from-transparent via-gray-300/45 to-transparent" />
         </div>
-        {/* Row 1: Case Probability, Follow-up Status, Eligibility Status, File ID */}
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 gap-y-12 lg:mb-14">
+        {/* Row 1: Case Probability, Follow-up Status, Eligibility Status, File ID — flat layout, dividers only */}
+        <div className="flex flex-col lg:flex-row lg:items-stretch divide-y lg:divide-y-0 lg:divide-x divide-gray-200/50 mb-10 lg:mb-16">
           {/* Case Probability */}
-          <div className="bg-white border border-black/5 rounded-2xl shadow-md hover:shadow-lg transition-all duration-200 overflow-hidden">
-            <div className="px-6 pt-4 pb-5 space-y-5">
+          <div className="flex-1 min-w-0 overflow-hidden">
+            <div className="px-0 sm:px-1 pt-2 pb-8 lg:py-2 lg:pr-6 lg:pb-6 space-y-5">
               <div className="flex items-center justify-between gap-2">
                 <h4 className="text-lg font-semibold text-black">Case Probability</h4>
                 {!readOnly && (
@@ -1795,8 +1803,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
           </div>
 
           {/* Followup */}
-          <div className="bg-white border border-black/5 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
-            <div className="px-6 pt-4 pb-5 space-y-5">
+          <div className="flex-1 min-w-0 overflow-hidden">
+            <div className="px-0 sm:px-1 pt-2 pb-8 lg:py-2 lg:px-6 lg:pb-6 space-y-5">
               <div className="flex items-center justify-between gap-2">
                 <h4 className="text-lg font-semibold text-gray-900">Follow-up Status</h4>
                 {isFollowupLoading ? (
@@ -1816,7 +1824,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                     <p className="text-base font-semibold text-gray-900">{nextFollowupDate.toLocaleDateString()}</p>
                   </div>
 
-                  <div className="border-t border-gray-100 pt-4 space-y-2">
+                  <div className="pt-4 space-y-2">
+                    <div className="h-px w-full bg-gradient-to-r from-transparent via-gray-300/40 to-transparent mb-4" aria-hidden />
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-sm text-gray-500">Notes</p>
                       {!readOnly && (
@@ -1902,7 +1911,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                     <p className="text-sm text-gray-500">Next Follow-up</p>
                     {!readOnly && (
                       <button
-                        className="btn btn-sm rounded-md px-3 mt-3 border border-purple-200 bg-purple-100 text-purple-700 hover:bg-purple-200 hover:border-purple-300 active:scale-95 transition-all"
+                        className="btn btn-primary btn-sm rounded-md mt-2 active:scale-95 transition-transform"
                         onClick={() => setIsAddingFollowup(true)}
                       >
                         <PlusIcon className="w-4 h-4" />
@@ -1911,7 +1920,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                     )}
                   </div>
 
-                  <div className="border-t border-gray-100 pt-4 space-y-2">
+                  <div className="pt-4 space-y-2">
+                    <div className="h-px w-full bg-gradient-to-r from-transparent via-gray-300/40 to-transparent mb-4" aria-hidden />
                     <div className="flex items-center justify-between gap-2">
                       <p className="text-sm text-gray-500">Notes</p>
                       {!readOnly && (
@@ -1939,8 +1949,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
           </div>
 
           {/* Eligibility */}
-          <div className="bg-white border border-black/5 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
-            <div className="px-6 pt-4 pb-5 space-y-5">
+          <div className="flex-1 min-w-0 overflow-hidden">
+            <div className="px-0 sm:px-1 pt-2 pb-8 lg:py-2 lg:px-6 lg:pb-6 space-y-5">
               <h4 className="text-lg font-semibold text-gray-900">Eligibility Status</h4>
 
               <div className="space-y-4">
@@ -1954,32 +1964,38 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                   </span>
                 </div>
 
-                <div className="border-t border-gray-100 pt-3 flex items-center justify-between gap-3 py-1">
-                  <div className="flex items-center gap-2">
-                    <span className={`w-2.5 h-2.5 rounded-full ${eligibilityDisplay.text === 'Not checked' ? 'bg-gray-300' : 'bg-emerald-500'}`} />
-                    <span className="text-sm text-gray-600">Expert Review</span>
+                <div>
+                  <div className="h-px w-full bg-gradient-to-r from-transparent via-gray-300/40 to-transparent mb-3" aria-hidden />
+                  <div className="flex items-center justify-between gap-3 py-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2.5 h-2.5 rounded-full ${eligibilityDisplay.text === 'Not checked' ? 'bg-gray-300' : 'bg-emerald-500'}`} />
+                      <span className="text-sm text-gray-600">Expert Review</span>
+                    </div>
+                    <span className="text-sm font-semibold text-gray-900">
+                      {eligibilityDisplay.text === 'Not checked' ? 'Not completed' : 'Completed'}
+                    </span>
                   </div>
-                  <span className="text-sm font-semibold text-gray-900">
-                    {eligibilityDisplay.text === 'Not checked' ? 'Not completed' : 'Completed'}
-                  </span>
                 </div>
 
-                <div className="border-t border-gray-100 pt-3 flex items-center justify-between gap-3 py-1">
-                  <div className="flex items-center gap-2">
-                    <span className={`w-2.5 h-2.5 rounded-full ${eligible ? 'bg-emerald-500' : 'bg-gray-300'}`} />
-                    <span className="text-sm text-gray-600">Eligibility Decided</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="checkbox"
-                      className="toggle toggle-success"
-                      checked={eligible}
-                      onChange={readOnly ? undefined : (e) => handleEligibleToggle(e.target.checked)}
-                      disabled={readOnly}
-                    />
-                    <span className="text-sm font-medium text-gray-700">
-                      {eligible ? 'Yes' : 'Not determined'}
-                    </span>
+                <div>
+                  <div className="h-px w-full bg-gradient-to-r from-transparent via-gray-300/40 to-transparent mb-3" aria-hidden />
+                  <div className="flex items-center justify-between gap-3 py-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2.5 h-2.5 rounded-full ${eligible ? 'bg-emerald-500' : 'bg-gray-300'}`} />
+                      <span className="text-sm text-gray-600">Eligibility Decided</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-success"
+                        checked={eligible}
+                        onChange={readOnly ? undefined : (e) => handleEligibleToggle(e.target.checked)}
+                        disabled={readOnly}
+                      />
+                      <span className="text-sm font-medium text-gray-700">
+                        {eligible ? 'Yes' : 'Not determined'}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1995,9 +2011,12 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                   ];
                   const found = sections.find(s => s.value === currentSection);
                   return (
-                  <p className="mt-4 text-xs text-gray-500 border-t border-gray-100 pt-4">
-                      Section: <span className="font-semibold text-gray-700">{found ? found.label.split(' - ')[1] : currentSection}</span>
-                    </p>
+                    <div className="mt-4 pt-4">
+                      <div className="h-px w-full bg-gradient-to-r from-transparent via-gray-300/40 to-transparent mb-4" aria-hidden />
+                      <p className="text-xs text-gray-500">
+                        Section: <span className="font-semibold text-gray-700">{found ? found.label.split(' - ')[1] : currentSection}</span>
+                      </p>
+                    </div>
                   );
                 }
                 return null;
@@ -2005,80 +2024,89 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
             </div>
           </div>
 
-          {/* File ID */}
-          <div className="bg-white border border-black/5 rounded-2xl shadow-sm hover:shadow-md transition-all duration-200 overflow-hidden">
-            <div className="px-6 pt-4 pb-5 space-y-5">
-              <div className="flex items-center justify-between">
-                <h4 className="text-lg font-semibold text-gray-900">File ID</h4>
-                {useMobileEditModal && isEditingFileId ? (
-                  <span className="text-xs text-gray-400 shrink-0">Editing...</span>
-                ) : (
-                  <EditButtons
-                    isEditing={isEditingFileId && !useMobileEditModal}
-                    onEdit={() => {
-                      setIsEditingFileId(true);
-                      setEditedFileId(fileId);
-                    }}
-                    onSave={saveFileIdEdits}
-                    onCancel={() => setIsEditingFileId(false)}
-                    editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-gray-100 active:scale-95 transition-transform"
-                    editIconClassName="w-4 h-4 text-gray-400"
-                  />
-                )}
-              </div>
-
-              {isEditingFileId && !useMobileEditModal ? (
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  value={editedFileId}
-                  onChange={(e) => setEditedFileId(e.target.value)}
-                  placeholder="Enter file ID..."
-                />
-              ) : fileId ? (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-lg font-bold text-gray-900">{fileId}</p>
-                    <button
-                      type="button"
-                      className="btn btn-outline btn-sm rounded-md px-3"
-                      onClick={async () => {
-                        try {
-                          await navigator.clipboard.writeText(fileId);
-                        } catch {
-                          // no-op
-                        }
-                      }}
-                    >
-                      Copy
-                    </button>
+          {/* File ID — narrow grey panel (extra row width goes to other Overview columns); full height */}
+          <div className="flex min-h-0 w-full max-w-full flex-none flex-col self-stretch overflow-hidden lg:ml-auto lg:max-w-[min(100%,13rem)]">
+            <div className="flex min-h-0 flex-1 flex-col px-0 pb-8 pt-2 sm:px-1 lg:pb-6 lg:pl-6 lg:pt-2">
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border border-gray-300/90 bg-gray-200/90 p-4 shadow-sm dark:border-gray-600 dark:bg-gray-800/80">
+                <div className="flex min-h-0 flex-1 flex-col gap-5">
+                  <div className="flex shrink-0 items-center justify-between gap-1">
+                    <h4 className="text-base font-semibold text-gray-900 dark:text-gray-100">File ID</h4>
+                    {useMobileEditModal && isEditingFileId ? (
+                      <span className="text-xs text-gray-500 dark:text-gray-400 shrink-0">Editing...</span>
+                    ) : (
+                      <EditButtons
+                        isEditing={isEditingFileId && !useMobileEditModal}
+                        onEdit={() => {
+                          setIsEditingFileId(true);
+                          setEditedFileId(fileId);
+                        }}
+                        onSave={saveFileIdEdits}
+                        onCancel={() => setIsEditingFileId(false)}
+                        editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-gray-300/70 dark:hover:bg-gray-700/80 active:scale-95 transition-transform"
+                        editIconClassName="w-4 h-4 text-gray-500 dark:text-gray-400"
+                      />
+                    )}
                   </div>
-                  <p className="text-xs text-gray-500">File ID linked to this case.</p>
+
+                  <div className="flex min-h-0 flex-1 flex-col">
+                    {isEditingFileId && !useMobileEditModal ? (
+                      <input
+                        type="text"
+                        className="input input-bordered input-sm w-full max-w-full border-gray-300 bg-gray-100 text-gray-900 placeholder:text-gray-500 dark:border-gray-600 dark:bg-gray-900/50"
+                        value={editedFileId}
+                        onChange={(e) => setEditedFileId(e.target.value)}
+                        placeholder="Enter file ID..."
+                      />
+                    ) : fileId ? (
+                      <div className="flex min-h-0 flex-1 flex-col gap-3">
+                        <div className="flex flex-col gap-2">
+                          <p className="text-sm font-bold text-gray-900 break-all leading-snug dark:text-gray-100">{fileId}</p>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-xs rounded-md self-start gap-1 border border-gray-400/80 bg-gray-300/50 text-gray-800 hover:bg-gray-300 dark:border-gray-500 dark:bg-gray-700/50 dark:text-gray-100 dark:hover:bg-gray-600"
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(fileId);
+                              } catch {
+                                // no-op
+                              }
+                            }}
+                          >
+                            Copy
+                          </button>
+                        </div>
+                        <p className="text-[11px] text-gray-600 leading-tight dark:text-gray-400">Linked to this case.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-5">
+                        <div className="space-y-1">
+                          <p className="text-sm text-gray-500 dark:text-gray-400">No file ID yet</p>
+                          {!readOnly && (
+                            <button
+                              type="button"
+                              className="btn btn-primary btn-sm rounded-md mt-2 active:scale-95 transition-transform"
+                              onClick={() => {
+                                setIsEditingFileId(true);
+                                setEditedFileId(fileId);
+                              }}
+                            >
+                              <PlusIcon className="h-4 w-4" />
+                              Add File ID
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
-              ) : (
-                <div className="space-y-2">
-                  <p className="text-sm font-semibold text-gray-900">No file ID yet</p>
-                  {!readOnly && (
-                    <button
-                      className="btn btn-primary btn-sm rounded-md px-3 mt-3"
-                      onClick={() => {
-                        setIsEditingFileId(true);
-                        setEditedFileId(fileId);
-                      }}
-                    >
-                      <PlusIcon className="w-4 h-4" />
-                      Add File ID
-                    </button>
-                  )}
-                </div>
-              )}
+              </div>
             </div>
           </div>
         </div>
 
-        <div className="mt-8 mb-4 border-t border-gray-200 pt-6 space-y-1">
+        <div className="!mt-20 md:!mt-24 mb-4 space-y-1">
           <h3 className="text-xs font-semibold tracking-wide text-gray-500 uppercase">Case Details</h3>
-          <div className="h-px bg-gray-200" />
+          <div className="h-px w-full bg-gradient-to-r from-transparent via-gray-300/45 to-transparent" />
         </div>
 
         {/* Row 2: Special Notes and General Notes */}
@@ -2126,18 +2154,36 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                         </p>
                       ))
                     ) : (
-                      <span className="text-gray-500">No special notes added</span>
+                      <div className="space-y-2">
+                        <span className="text-gray-500 block">No special notes added</span>
+                        {!readOnly && (
+                          <button
+                            type="button"
+                            className="btn btn-primary btn-sm rounded-md mt-2 active:scale-95 transition-transform"
+                            onClick={() => {
+                              setIsEditingSpecialNotes(true);
+                              setEditedSpecialNotes(specialNotes.map((note) => formatNoteText(note)).join('\n'));
+                            }}
+                          >
+                            <PlusIcon className="w-4 h-4" />
+                            Add Special Note
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
-                  <div className="text-xs text-gray-400 flex justify-between">
-                    <span>Last edited by {getFieldValue(client, 'special_notes_last_edited_by') || 'Unknown'}</span>
-                    <span>
-                      Last edited at{' '}
-                      {getFieldValue(client, 'special_notes_last_edited_at')
-                        ? new Date(getFieldValue(client, 'special_notes_last_edited_at')).toLocaleString()
-                        : 'Not set'}
-                    </span>
-                  </div>
+                  {shouldShowLastEditedMeta(
+                    getFieldValue(client, 'special_notes_last_edited_by'),
+                    getFieldValue(client, 'special_notes_last_edited_at')
+                  ) && (
+                    <div className="text-xs text-gray-400 flex justify-between">
+                      <span>Last edited by {getFieldValue(client, 'special_notes_last_edited_by')}</span>
+                      <span>
+                        Last edited at{' '}
+                        {new Date(getFieldValue(client, 'special_notes_last_edited_at')).toLocaleString()}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -2201,15 +2247,23 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                       </div>
                     )}
                   </div>
-                  <div className="text-xs text-gray-400 flex justify-between">
-                    <span>Last edited by {getFieldValue(client, isLegacy ? 'notes_last_edited_by' : 'general_notes_last_edited_by') || 'Unknown'}</span>
-                    <span>
-                      Last edited at{' '}
-                      {getFieldValue(client, isLegacy ? 'notes_last_edited_at' : 'general_notes_last_edited_at')
-                        ? new Date(getFieldValue(client, isLegacy ? 'notes_last_edited_at' : 'general_notes_last_edited_at')).toLocaleString()
-                        : 'Not set'}
-                    </span>
-                  </div>
+                  {shouldShowLastEditedMeta(
+                    getFieldValue(client, isLegacy ? 'notes_last_edited_by' : 'general_notes_last_edited_by'),
+                    getFieldValue(client, isLegacy ? 'notes_last_edited_at' : 'general_notes_last_edited_at')
+                  ) && (
+                    <div className="text-xs text-gray-400 flex justify-between">
+                      <span>
+                        Last edited by{' '}
+                        {getFieldValue(client, isLegacy ? 'notes_last_edited_by' : 'general_notes_last_edited_by')}
+                      </span>
+                      <span>
+                        Last edited at{' '}
+                        {new Date(
+                          getFieldValue(client, isLegacy ? 'notes_last_edited_at' : 'general_notes_last_edited_at')
+                        ).toLocaleString()}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -2291,15 +2345,23 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                       </div>
                     )}
                   </div>
-                  <div className="text-xs text-gray-400 flex justify-between">
-                    <span>Last edited by {getFieldValue(client, isLegacy ? 'description_last_edited_by' : 'facts_last_edited_by') || 'Unknown'}</span>
-                    <span>
-                      Last edited at{' '}
-                      {getFieldValue(client, isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at')
-                        ? new Date(getFieldValue(client, isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at')).toLocaleString()
-                        : 'Not set'}
-                    </span>
-                  </div>
+                  {shouldShowLastEditedMeta(
+                    getFieldValue(client, isLegacy ? 'description_last_edited_by' : 'facts_last_edited_by'),
+                    getFieldValue(client, isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at')
+                  ) && (
+                    <div className="text-xs text-gray-400 flex justify-between">
+                      <span>
+                        Last edited by{' '}
+                        {getFieldValue(client, isLegacy ? 'description_last_edited_by' : 'facts_last_edited_by')}
+                      </span>
+                      <span>
+                        Last edited at{' '}
+                        {new Date(
+                          getFieldValue(client, isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at')
+                        ).toLocaleString()}
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

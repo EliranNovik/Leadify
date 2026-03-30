@@ -102,6 +102,7 @@ import TimePicker from './TimePicker';
 import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
 import ClientHeader from './ClientHeader';
+import type { WhatsAppPageSelectedContact } from '../pages/WhatsAppPage';
 import CombineLeadsModal from './CombineLeadsModal';
 import SendPriceOfferModal from './SendPriceOfferModal';
 import { addToHighlights, removeFromHighlights, isInHighlights } from '../lib/highlightsUtils';
@@ -370,6 +371,7 @@ interface ClientsProps {
   selectedClient: any;
   setSelectedClient: React.Dispatch<any>;
   refreshClientData: (clientId: number | string) => Promise<void>;
+  onOpenWhatsAppForContact?: (payload: WhatsAppPageSelectedContact) => void;
 }
 
 const getCurrencySymbol = (currencyCode?: string) => {
@@ -533,6 +535,7 @@ const Clients: React.FC<ClientsProps> = ({
   selectedClient,
   setSelectedClient,
   refreshClientData,
+  onOpenWhatsAppForContact,
 }) => {
   const getClientTabMemoryKey = useCallback((client: any): string | null => {
     if (!client) return null;
@@ -11369,32 +11372,35 @@ const Clients: React.FC<ClientsProps> = ({
     let baseLeadId: string | null = null; // Store the base lead's ID (UUID for new leads, numeric for legacy)
     let newBaseLead: any = null; // Declare at function scope so it's accessible later
 
-    // Determine if this is a legacy lead based on selectedClient
-    // If selectedClient is a legacy lead, the base lead is also a legacy lead
-    const isLegacyLead = selectedClient?.id && selectedClient.id.toString().startsWith('legacy_');
+    // Determine if this is a legacy lead.
+    // Important: some legacy flows pass numeric IDs without the `legacy_` prefix, so we must also detect by lookup.
+    let isLegacyLead =
+      selectedClient?.lead_type === 'legacy' ||
+      (selectedClient?.id != null && String(selectedClient.id).startsWith('legacy_'));
 
-    if (isLegacyLead) {
-      // For legacy leads, ONLY query leads_lead table
+    // Prefer legacy lookup when base is numeric (even if selectedClient didn't say legacy).
+    const numericId = /^\d+$/.test(normalizedBase) ? parseInt(normalizedBase, 10) : NaN;
+    if (!Number.isNaN(numericId)) {
       try {
-        const numericId = parseInt(normalizedBase, 10);
-        if (!isNaN(numericId)) {
-          const { data: legacyBaseLead, error: legacyError } = await supabase
-            .from('leads_lead')
-            .select('master_id, manual_id')
-            .eq('id', numericId)
-            .maybeSingle();
+        const { data: legacyBaseLead, error: legacyError } = await supabase
+          .from('leads_lead')
+          .select('master_id, manual_id')
+          .eq('id', numericId)
+          .maybeSingle();
 
-          if (!legacyError && legacyBaseLead) {
-            baseLeadMasterId = legacyBaseLead.master_id;
-            baseLeadManualId = legacyBaseLead.manual_id;
-            baseLeadId = numericId.toString();
-            foundBaseLead = true;
-          }
+        if (!legacyError && legacyBaseLead) {
+          isLegacyLead = true;
+          baseLeadMasterId = legacyBaseLead.master_id;
+          baseLeadManualId = legacyBaseLead.manual_id;
+          baseLeadId = numericId.toString();
+          foundBaseLead = true;
         }
       } catch (error) {
         console.error('Error checking legacy lead master_id/manual_id:', error);
       }
-    } else {
+    }
+
+    if (!isLegacyLead) {
       // For new leads, query leads table by lead_number or id (if it's a UUID)
       try {
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(normalizedBase);
@@ -14847,6 +14853,7 @@ const Clients: React.FC<ClientsProps> = ({
             allEmployees={allEmployees}
             dropdownItems={dropdownItems}
             onCombineLeads={(!isSubLead && !isMasterLead && !hasLinkedMasterLead) ? () => setCombineLeadsModalOpen(true) : undefined}
+            onOpenWhatsAppForContact={onOpenWhatsAppForContact}
             handlePaymentReceivedNewClient={handlePaymentReceivedNewClient}
             handleScheduleMenuClick={handleScheduleMenuClick}
             handleStageUpdate={handleStageUpdate}

@@ -104,12 +104,26 @@ interface WhatsAppMessage {
   phone_number?: string | null; // Phone number for matching messages to contacts
 }
 
+export type WhatsAppPageSelectedContact =
+  | {
+      contact: any;
+      leadId: string | number;
+      leadType: 'legacy' | 'new';
+      /** Human-readable id (e.g. L214792); required for new-lead display/URL — do not use UUID here */
+      lead_number?: string;
+    }
+  | {
+      leadOnly: true;
+      leadId: string | number;
+      leadType: 'legacy' | 'new';
+      name: string;
+      phone: string;
+      email?: string | null;
+      lead_number?: string;
+    };
+
 interface WhatsAppPageProps {
-  selectedContact?: {
-    contact: any;
-    leadId: string | number;
-    leadType: 'legacy' | 'new';
-  } | null;
+  selectedContact?: WhatsAppPageSelectedContact | null;
   onClose?: () => void;
 }
 
@@ -2643,31 +2657,58 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     }
   }, [showMyContactsOnly]); // Only run when tab changes
 
-  // If propSelectedContact is provided, use it directly
+  // If propSelectedContact is provided, use it directly (contact row or lead-only phone from client header)
   useEffect(() => {
-    if (propSelectedContact) {
-      setSelectedContactId(propSelectedContact.contact.id);
-      // Ensure no duplicates - use array with single contact
-      setLeadContacts([propSelectedContact.contact]);
-      // Create a Client object from the contact
-      // CRITICAL: Always use contact's name from propSelectedContact.contact.name (from leads_contact table)
-      const contactName = propSelectedContact.contact.name || '';
-      console.log(`✅ Creating client from propSelectedContact: Contact ID=${propSelectedContact.contact.id}, Name="${contactName}" (from leads_contact)`);
+    if (!propSelectedContact) return;
+
+    if ('leadOnly' in propSelectedContact && propSelectedContact.leadOnly) {
+      const p = propSelectedContact;
+      const legacyId = p.leadType === 'legacy' ? String(p.leadId).replace(/^legacy_/, '') : String(p.leadId);
+      const clientId = p.leadType === 'legacy' ? `legacy_${legacyId}` : String(p.leadId);
+      console.log(`✅ WhatsApp: lead-only open from header — leadId=${clientId}, phone=${p.phone}`);
 
       const clientObj: Client = {
-        id: `contact_${propSelectedContact.contact.id}`, // Use contact_ prefix for contacts
-        lead_id: String(propSelectedContact.leadId), // Store the lead_id
-        contact_id: propSelectedContact.contact.id, // Store the contact_id
-        lead_number: String(propSelectedContact.leadId),
-        name: contactName, // Always use contact's name from leads_contact table
-        phone: propSelectedContact.contact.phone || propSelectedContact.contact.mobile || '',
-        mobile: propSelectedContact.contact.mobile || propSelectedContact.contact.phone || '',
-        email: propSelectedContact.contact.email || '',
-        lead_type: propSelectedContact.leadType,
-        isContact: true, // Mark as contact
+        id: clientId,
+        lead_number: p.lead_number || legacyId,
+        name: p.name,
+        phone: p.phone,
+        mobile: p.phone,
+        email: p.email || undefined,
+        lead_type: p.leadType,
+        isContact: false,
       };
       setSelectedClient(clientObj);
+      setLeadContacts([]);
+      setSelectedContactId(null);
+      return;
     }
+
+    const pc = propSelectedContact as {
+      contact: any;
+      leadId: string | number;
+      leadType: 'legacy' | 'new';
+      lead_number?: string;
+    };
+    setSelectedContactId(pc.contact.id);
+    setLeadContacts([pc.contact]);
+    const contactName = pc.contact.name || '';
+    console.log(`✅ Creating client from propSelectedContact: Contact ID=${pc.contact.id}, Name="${contactName}" (from leads_contact)`);
+
+    const displayLeadNumber = pc.lead_number ?? String(pc.leadId);
+
+    const clientObj: Client = {
+      id: `contact_${pc.contact.id}`,
+      lead_id: String(pc.leadId),
+      contact_id: pc.contact.id,
+      lead_number: displayLeadNumber,
+      name: contactName,
+      phone: pc.contact.phone || pc.contact.mobile || '',
+      mobile: pc.contact.mobile || pc.contact.phone || '',
+      email: pc.contact.email || '',
+      lead_type: pc.leadType,
+      isContact: true,
+    };
+    setSelectedClient(clientObj);
   }, [propSelectedContact]);
 
   // Fetch contacts for the selected client (only if no propSelectedContact)
@@ -2748,7 +2789,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       try {
         // Get contact_id if we have a selected contact from the contact selector
         // Also try to find it from leadContacts if not set yet
-        let contactId = selectedContactId || (propSelectedContact?.contact.id ?? null);
+        let contactId =
+          selectedContactId ||
+          (propSelectedContact && 'contact' in propSelectedContact ? propSelectedContact.contact.id : null) ||
+          null;
 
         // If we don't have a contactId but we have leadContacts, try to find the matching contact
         if (!contactId && leadContacts.length > 0) {
@@ -3304,7 +3348,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         // Only apply phone-based filtering for main leads (not contact clients)
         if (!selectedClient.isContact && contactId) {
           // Get the selected contact details
-          const selectedContact = propSelectedContact?.contact || leadContacts.find(c => c.id === contactId);
+          const selectedContact =
+            (propSelectedContact && 'contact' in propSelectedContact ? propSelectedContact.contact : null) ||
+            leadContacts.find((c) => c.id === contactId);
 
           if (selectedContact) {
             const contactPhone = selectedContact.phone || selectedContact.mobile;
@@ -3623,7 +3669,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     };
     // Only re-fetch when these specific values change, not when leadContacts array reference changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedClient?.id, selectedClient?.isContact, selectedClient?.contact_id, selectedContactId, propSelectedContact?.contact?.id]);
+  }, [
+    selectedClient?.id,
+    selectedClient?.isContact,
+    selectedClient?.contact_id,
+    selectedContactId,
+    propSelectedContact && 'contact' in propSelectedContact ? propSelectedContact.contact.id : undefined,
+  ]);
 
   // Load user names for edited/deleted messages
   useEffect(() => {

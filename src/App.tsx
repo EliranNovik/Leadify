@@ -22,7 +22,7 @@ import MobileBottomNav from './components/MobileBottomNav';
 import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon, DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 import { Routes, Route, useLocation, useNavigate } from 'react-router-dom';
 import ProtectedRoute from './components/ProtectedRoute';
-import WhatsAppModal from './components/WhatsAppModal';
+import WhatsAppModal, { type WhatsAppModalSelectedContact } from './components/WhatsAppModal';
 import CTIPopupModal from './components/CTIPopupModal';
 import RMQMessagesPage from './pages/RMQMessagesPage';
 import PageLoader from './components/PageLoader';
@@ -148,11 +148,7 @@ const AppContentInner: React.FC = () => {
   // Contact selection state for email/WhatsApp
   const [showContactSelector, setShowContactSelector] = useState(false);
   const [contactSelectorMode, setContactSelectorMode] = useState<'email' | 'whatsapp'>('email');
-  const [selectedContactForThread, setSelectedContactForThread] = useState<{
-    contact: any;
-    leadId: string | number;
-    leadType: 'legacy' | 'new';
-  } | null>(null);
+  const [selectedContactForThread, setSelectedContactForThread] = useState<WhatsAppModalSelectedContact | null>(null);
   const [appJustLoggedIn, setAppJustLoggedIn] = useState(false);
   const prevUser = useRef<any>(null);
   const navigate = useNavigate();
@@ -519,6 +515,11 @@ const AppContentInner: React.FC = () => {
     setIsWhatsAppOpen(true);
   }, []);
 
+  const handleOpenWhatsAppForContact = useCallback((payload: WhatsAppModalSelectedContact) => {
+    setSelectedContactForThread(payload);
+    setIsWhatsAppOpen(true);
+  }, []);
+
   const handleOpenMessaging = useCallback(() => {
     setIsMessagingOpen(true);
   }, []);
@@ -800,7 +801,11 @@ const AppContentInner: React.FC = () => {
                 setIsEmailThreadOpen(false);
                 setSelectedContactForThread(null);
               }}
-              selectedContact={selectedContactForThread}
+              selectedContact={
+                selectedContactForThread && !('leadOnly' in selectedContactForThread)
+                  ? selectedContactForThread
+                  : null
+              }
             />
             <WhatsAppModal
               isOpen={isWhatsAppOpen}
@@ -850,13 +855,13 @@ const AppContentInner: React.FC = () => {
                 <main className={`app-main-scroll flex-1 overflow-x-hidden overflow-y-auto ${isReportsPage ? 'w-full' : ''} ${showBottomNav ? 'main-with-bottom-nav-padding' : ''}`}>
                   <Routes>
                     <Route path="/" element={<RouteSuspense><LazyDashboard /></RouteSuspense>} />
-                    <Route path="/clients" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} /></RouteSuspense>} />
+                    <Route path="/clients" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/contract" element={<RouteSuspense><LazyContractPage key="contract-lead" /></RouteSuspense>} />
                     <Route path="/contract/:contractId" element={<RouteSuspense><LazyContractPage key="contract-id" /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/timeline" element={<RouteSuspense><LazyTimelinePage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/history" element={<RouteSuspense><LazyHistoryPage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/master" element={<RouteSuspense><LazyMasterLeadPage /></RouteSuspense>} />
-                    <Route path="/clients/:lead_number/*" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} /></RouteSuspense>} />
+                    <Route path="/clients/:lead_number/*" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} /></RouteSuspense>} />
                     <Route path="/calendar" element={<RouteSuspense><LazyCalendarPage /></RouteSuspense>} />
                     <Route path="/outlook-calendar" element={<RouteSuspense><LazyOutlookCalendarPage /></RouteSuspense>} />
                     <Route path="/waiting-for-price-offer" element={<RouteSuspense><LazyWaitingForPriceOfferPage /></RouteSuspense>} />
@@ -950,7 +955,11 @@ const AppContentInner: React.FC = () => {
                   setIsEmailThreadOpen(false);
                   setSelectedContactForThread(null);
                 }}
-                selectedContact={selectedContactForThread}
+                selectedContact={
+                  selectedContactForThread && !('leadOnly' in selectedContactForThread)
+                    ? selectedContactForThread
+                    : null
+                }
               />
               <WhatsAppModal
                 isOpen={isWhatsAppOpen}

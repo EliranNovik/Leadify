@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
     UserIcon,
@@ -40,6 +40,21 @@ import { getStageName, getStageColour, areStagesEquivalent } from '../lib/stageU
 import { addToHighlights, removeFromHighlights } from '../lib/highlightsUtils';
 import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
 import CallOptionsModal from './CallOptionsModal';
+import { fetchLeadContacts } from '../lib/contactHelpers';
+import type { ContactInfo } from '../lib/contactHelpers';
+import type { WhatsAppPageSelectedContact } from '../pages/WhatsAppPage';
+import { FaWhatsapp } from 'react-icons/fa';
+import { fetchUnpaidTotalsByCurrency, pickUnpaidBaseAndVatForCurrency, type UnpaidByCurrencyMap } from '../lib/financeUnpaidTotal';
+
+/** Outer shell for grey meta rows (border, padding). Inner content uses META_GREY_INNER for true centering. */
+const META_GREY_BOX =
+    'w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2.5 text-sm text-gray-700 shadow-sm dark:border-gray-600 dark:bg-gray-800/90 dark:text-gray-200';
+/** Centers icon + text clusters like the stage badge pill below */
+const META_GREY_INNER =
+    'flex w-full min-w-0 flex-wrap items-center justify-center gap-2 text-center';
+/** Language / source / applicants — same wrap layout as grey rows, without border/background */
+const META_TOP_ROW =
+    'flex w-full min-w-0 flex-wrap items-center justify-center gap-2 text-center py-1 text-sm text-gray-700 dark:text-gray-200';
 
 // Helper to get contrasting text color
 const getContrastingTextColor = (hexColor?: string | null) => {
@@ -110,6 +125,8 @@ interface ClientHeaderProps {
     disableCategoryModal?: boolean;
     /** Opens the Combine leads modal (this lead as master, link another lead to it) */
     onCombineLeads?: () => void;
+    /** Opens app WhatsApp modal for this lead (contact match or lead phone) */
+    onOpenWhatsAppForContact?: (payload: WhatsAppPageSelectedContact) => void;
 }
 
 const ClientHeader: React.FC<ClientHeaderProps> = ({
@@ -156,9 +173,32 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     hideTotalValueBadge = false,
     disableCategoryModal = false,
     onCombineLeads,
+    onOpenWhatsAppForContact,
 }) => {
     const navigate = useNavigate();
     const [isEditingCategory, setIsEditingCategory] = useState(false);
+    /** Unpaid finance plan totals by currency (from payment_plans / finances_paymentplanrow, excludes paid rows). */
+    const [unpaidByCurrency, setUnpaidByCurrency] = useState<UnpaidByCurrencyMap | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        const id = selectedClient?.id;
+        if (id == null || id === '') {
+            setUnpaidByCurrency(null);
+            return;
+        }
+        (async () => {
+            try {
+                const map = await fetchUnpaidTotalsByCurrency(id, selectedClient?.lead_type);
+                if (!cancelled) setUnpaidByCurrency(map);
+            } catch {
+                if (!cancelled) setUnpaidByCurrency(null);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [selectedClient?.id, selectedClient?.lead_type]);
 
     // Local state for employees (matching RolesTab pattern)
     const [localAllEmployees, setLocalAllEmployees] = useState<any[]>(allEmployees || []);
@@ -649,6 +689,61 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const displayEmail = legacyContactInfo.email || selectedClient?.email;
     const displayPhone = legacyContactInfo.phone || selectedClient?.phone;
 
+    /** Always opens Call Options modal (direct / OneCom) — same as previous phone-tap behavior for supported regions, now for all numbers */
+    const handleCallPrimaryPhone = useCallback(() => {
+        if (!displayPhone) return;
+        setCallPhoneNumber(displayPhone);
+        setCallContactName(selectedClient?.name || '');
+        setIsCallModalOpen(true);
+    }, [displayPhone, selectedClient?.name]);
+
+    const handleHeaderWhatsAppClick = useCallback(async () => {
+        if (!onOpenWhatsAppForContact) return;
+        if (!displayPhone || displayPhone === '---') {
+            toast.error('No phone number');
+            return;
+        }
+        const isLegacyLead =
+            selectedClient?.lead_type === 'legacy' || String(selectedClient?.id || '').startsWith('legacy_');
+        const leadId = isLegacyLead
+            ? String(selectedClient.id).replace(/^legacy_/, '')
+            : selectedClient.id;
+
+        try {
+            const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+            const norm = (s: string) => s.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+            const target = norm(displayPhone);
+            const matched: ContactInfo | undefined =
+                contacts.find(
+                    (c) => norm(c.phone || '') === target || norm(c.mobile || '') === target
+                ) ||
+                contacts.find((c) => c.isMain) ||
+                contacts[0];
+
+            if (matched) {
+                onOpenWhatsAppForContact({
+                    contact: matched,
+                    leadId,
+                    leadType: isLegacyLead ? 'legacy' : 'new',
+                    lead_number: selectedClient?.lead_number,
+                });
+            } else {
+                onOpenWhatsAppForContact({
+                    leadOnly: true,
+                    leadId,
+                    leadType: isLegacyLead ? 'legacy' : 'new',
+                    name: selectedClient?.name || '',
+                    phone: displayPhone.trim(),
+                    email: displayEmail ?? null,
+                    lead_number: selectedClient?.lead_number,
+                });
+            }
+        } catch (e) {
+            console.error(e);
+            toast.error('Could not open WhatsApp');
+        }
+    }, [onOpenWhatsAppForContact, displayPhone, displayEmail, selectedClient]);
+
     // Helper function to get category display name with main category
     const getCategoryDisplayName = (categoryId: number | string | null | undefined, fallbackCategory?: string): string => {
         if (!categoryId) {
@@ -861,24 +956,97 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     if (!selectedClient) return null;
 
+    const applicantsCount =
+        (selectedClient as any)?.no_of_applicants || selectedClient?.number_of_applicants_meeting || null;
+    /** Same base colour as "Application submitted" stage (150) badge */
+    const applicationSubmittedStageColour = getStageColour('150') || '#EFFF2D';
+    const applicantsBadgeTextColour = getContrastingTextColor(applicationSubmittedStageColour);
+
     return (
         <div className="bg-white dark:bg-gray-900">
-            <div className="w-full mx-auto px-4 sm:px-6 lg:px-8 pt-4 pb-6 md:py-6 space-y-6 md:space-y-8">
+            <div className="w-full mx-auto px-4 sm:px-6 lg:px-8 pt-7 pb-10 md:py-6 space-y-10 md:space-y-8">
 
                 {/* Top Row: Identity & Status */}
-                <div className="flex flex-col gap-2 md:gap-6 mb-0 md:mb-8">
-                    {/* Mobile: two columns - left = stage + client name (name directly under stage), right = actions */}
-                    <div className="flex md:hidden flex-row items-start gap-3 w-full">
-                        {/* Left column: stage then client name with minimal gap */}
-                        <div className="flex flex-col gap-1.5 min-w-0 flex-1">
-                            <div className="flex items-center gap-2 mb-2">
-                                {renderStageBadge('desktop')}
+                <div className="flex flex-col gap-7 md:gap-6 mb-0 md:mb-8">
+                    {/* Mobile: stage + meta rows centered on top; then lead row + actions */}
+                    <div className="flex md:hidden w-full flex-col gap-7">
+                        <div className="flex w-full flex-col items-center gap-4 px-0.5">
+                            <div className="mb-1 flex w-full justify-center">{renderStageBadge('desktop')}</div>
+                            {/* Language / source / applicants — no grey box */}
+                            <div className={`${META_TOP_ROW} w-full max-w-md`}>
+                                {selectedClient.language && (
+                                    <>
+                                        <span className="inline-flex items-center gap-1 shrink-0">
+                                            <GlobeAltIcon className="w-4 h-4 shrink-0" />
+                                            {selectedClient.language}
+                                        </span>
+                                        <span className="text-gray-400 dark:text-gray-500" aria-hidden>
+                                            •
+                                        </span>
+                                    </>
+                                )}
+                                <span className="inline-flex min-w-0 max-w-[min(100%,20rem)] items-center justify-center gap-1">
+                                    <LinkIcon className="w-4 h-4 shrink-0" />
+                                    <span className="truncate">{getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---'}</span>
+                                </span>
+                                {applicantsCount != null && Number(applicantsCount) > 0 && (
+                                    <>
+                                        <span className="text-gray-400 dark:text-gray-500" aria-hidden>
+                                            •
+                                        </span>
+                                        <span
+                                            className="inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold shadow-sm"
+                                            style={{
+                                                backgroundColor: applicationSubmittedStageColour,
+                                                color: applicantsBadgeTextColour,
+                                                border: `2px solid ${applicationSubmittedStageColour}`,
+                                                boxShadow: '0 8px 22px rgba(17, 24, 39, 0.12)',
+                                            }}
+                                        >
+                                            <UserIcon className="h-3 w-3 shrink-0" style={{ color: applicantsBadgeTextColour }} />
+                                            {applicantsCount} Applicants
+                                        </span>
+                                    </>
+                                )}
                             </div>
-                            {/* Client name + meta - mobile only, directly below stage */}
-                            <div className="flex flex-col gap-1">
-                                <div className="flex items-center gap-2 flex-wrap">
+                            <div className={`${META_GREY_BOX} w-full max-w-md`}>
+                                <div className={META_GREY_INNER}>
+                                    <TagIcon className="w-4 h-4 shrink-0" />
+                                    <span
+                                        className={
+                                            disableCategoryModal
+                                                ? 'min-w-0 max-w-[min(100%,28rem)] truncate'
+                                                : 'min-w-0 max-w-[min(100%,28rem)] cursor-pointer truncate hover:text-indigo-600'
+                                        }
+                                        onClick={
+                                            disableCategoryModal
+                                                ? undefined
+                                                : () => {
+                                                      setShowCategoryModal(true);
+                                                      setCategoryInputValue(displayCategory);
+                                                  }
+                                        }
+                                    >
+                                        {displayCategory}
+                                    </span>
+                                </div>
+                            </div>
+                            {selectedClient.topic && (
+                                <div className={`${META_GREY_BOX} w-full max-w-md`}>
+                                    <div className={META_GREY_INNER}>
+                                        <DocumentTextIcon className="w-4 h-4 shrink-0" />
+                                        <span className="max-w-[min(100%,28rem)] truncate">{selectedClient.topic}</span>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                        {/* Mobile: title row + icons, then contact blocks, then value — stacked for breathing room */}
+                        <div className="flex w-full flex-col gap-7">
+                            <div className="flex w-full min-w-0 flex-row items-start justify-between gap-4">
+                                <div className="flex min-w-0 flex-1 flex-col gap-2">
+                                    <div className="flex flex-wrap items-center gap-2">
                                     <h1 className="text-xl font-bold text-gray-900 dark:text-white leading-tight">
-                                        #{renderLeadNumber()}
+                                        {renderLeadNumber()}
                                         <span className="mx-1.5 text-gray-300">|</span>
                                         {selectedClient.name || 'Unnamed Lead'}
                                     </h1>
@@ -899,21 +1067,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">{(subLeadsCount || 0) + 1}</span>
                                         </button>
                                     ) : null}
-                                </div>
-                                <div className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 flex-wrap">
-                                    {selectedClient.language && <span className="flex items-center gap-1"><GlobeAltIcon className="w-4 h-4" />{selectedClient.language}</span>}
-                                    <div className="flex items-center gap-1">
-                                        <TagIcon className="w-4 h-4" />
-                                        <span className={disableCategoryModal ? '' : 'cursor-pointer hover:text-indigo-600'} onClick={disableCategoryModal ? undefined : () => { setShowCategoryModal(true); setCategoryInputValue(displayCategory); }}>{displayCategory}</span>
                                     </div>
                                 </div>
-                            </div>
-                        </div>
-                        {/* Right column: Actions + Timeline/History/Duplicate */}
-                        <div className="flex flex-col items-end gap-4 flex-shrink-0">
-                        {/* Actions Dropdown - Top right */}
+                                {/* Quick actions — top-right on mobile */}
+                                <div className="flex shrink-0 flex-row flex-wrap items-center justify-end gap-3">
                         {!hideActionsDropdown && (
-                            <div className="flex flex-col items-end gap-2">
                                 <div className="dropdown dropdown-end">
                                     <label tabIndex={0} className="btn btn-ghost btn-square min-h-10 min-w-10">
                                         <Cog6ToothIcon className="w-7 h-7" />
@@ -979,17 +1137,26 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     )}
                                 </ul>
                                 </div>
-                            </div>
                         )}
-                        {/* Timeline, History, Duplicate Contact - stacked vertically below Actions, right-aligned */}
-                        <div className="flex flex-col items-end gap-3">
                             {!hideHistoryAndTimeline && (
                                 <>
-                                    <button onClick={handleTimelineClick} className="btn btn-ghost btn-square min-h-10 min-w-10" title="View Timeline">
-                                        <ClockIcon className="w-6 h-6" />
+                                    <button
+                                        type="button"
+                                        onClick={handleTimelineClick}
+                                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
+                                        title="View Timeline"
+                                        aria-label="View Timeline"
+                                    >
+                                        <ClockIcon className="h-6 w-6" />
                                     </button>
-                                    <button onClick={handleHistoryClick} className="btn btn-ghost btn-square min-h-10 min-w-10" title="View History">
-                                        <ArchiveBoxIcon className="w-6 h-6" />
+                                    <button
+                                        type="button"
+                                        onClick={handleHistoryClick}
+                                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
+                                        title="View History"
+                                        aria-label="View History"
+                                    >
+                                        <ArchiveBoxIcon className="h-6 w-6" />
                                     </button>
                                 </>
                             )}
@@ -1004,127 +1171,412 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     <DocumentDuplicateIcon className="w-5 h-5" />
                                 </button>
                             )}
-                        </div>
+                                </div>
+                            </div>
+                            {/* Email + phone — full width */}
+                            <div className="flex w-full min-w-0 flex-col gap-5">
+                                <div className="flex flex-col min-w-0 gap-2">
+                                    <div className="flex min-h-[1.75rem] flex-wrap items-center gap-2">
+                                        <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold shrink-0">Email</p>
+                                        {displayEmail && (
+                                            <div className="flex flex-wrap items-center gap-0.5 shrink-0">
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-gray-600 hover:bg-base-200 transition-colors duration-150 active:scale-[0.98]"
+                                                    title="Copy email"
+                                                    aria-label="Copy email"
+                                                    onClick={() => {
+                                                        void navigator.clipboard.writeText(displayEmail).then(() => toast.success('Email copied'));
+                                                    }}
+                                                >
+                                                    <DocumentDuplicateIcon className="w-4 h-4" />
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-indigo-600 hover:bg-indigo-50 transition-colors duration-150 active:scale-[0.98]"
+                                                    title="Compose email"
+                                                    aria-label="Compose email"
+                                                    onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
+                                                >
+                                                    <EnvelopeIcon className="w-4 h-4" />
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <p
+                                        className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate"
+                                        title={displayEmail || ''}
+                                    >
+                                        {displayEmail || '---'}
+                                    </p>
+                                </div>
+                                <div className="flex flex-col min-w-0 gap-2">
+                                    <div className="flex min-h-[1.75rem] flex-wrap items-center gap-2">
+                                        <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold shrink-0">Phone</p>
+                                        {displayPhone && (
+                                            <div className="flex flex-wrap items-center gap-0.5 shrink-0">
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-gray-600 hover:bg-base-200 transition-colors duration-150 active:scale-[0.98]"
+                                                    title="Copy phone number"
+                                                    aria-label="Copy phone number"
+                                                    onClick={() => {
+                                                        void navigator.clipboard.writeText(displayPhone).then(() => toast.success('Phone copied'));
+                                                    }}
+                                                >
+                                                    <DocumentDuplicateIcon className="w-4 h-4" />
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-gray-700 hover:bg-base-200 transition-colors duration-150 active:scale-[0.98]"
+                                                    title="Call — open call options"
+                                                    aria-label="Call — open call options"
+                                                    onClick={handleCallPrimaryPhone}
+                                                >
+                                                    <PhoneIcon className="w-4 h-4" />
+                                                </button>
+                                                {onOpenWhatsAppForContact && (
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-emerald-700 hover:bg-emerald-50 transition-colors duration-150 active:scale-[0.98]"
+                                                        title="Open WhatsApp"
+                                                        aria-label="Open WhatsApp"
+                                                        onClick={() => void handleHeaderWhatsAppClick()}
+                                                    >
+                                                        <FaWhatsapp className="w-[18px] h-[18px]" aria-hidden />
+                                                    </button>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                                        {displayPhone ? formatPhoneNumberDisplay(displayPhone) : '---'}
+                                    </p>
+                                </div>
+                            </div>
+                        {!hideTotalValueBadge && (
+                            <div className="w-full border-t border-gray-100 dark:border-gray-800 pt-4">
+                            {(() => {
+                            const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
+                            let currency = '';
+                            const accountingCurrencies = (selectedClient as any)?.accounting_currencies;
+                            if (accountingCurrencies) {
+                                const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
+                                if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
+                                    currency = currencyRecord.name.trim();
+                                }
+                            }
+                            if (!isLegacyLead) {
+                                const currencyId = (selectedClient as any)?.currency_id ?? 1;
+                                const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                                if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
+                                    currency = getCurrencyName(numericCurrencyId, accountingCurrencies);
+                                    if (!currency || currency.trim() === '') currency = getCurrencyName(1);
+                                } else {
+                                    currency = getCurrencyName(1);
+                                }
+                            } else {
+                                if (!currency && selectedClient?.currency_id) {
+                                    const currencyFromId = getCurrencyName(selectedClient.currency_id, accountingCurrencies);
+                                    if (currencyFromId && currencyFromId.trim() !== '') currency = currencyFromId;
+                                }
+                                if (!currency || currency.trim() === '') currency = selectedClient?.balance_currency || '';
+                                if (!currency || currency.trim() === '') currency = getCurrencyName(1);
+                            }
+                            let baseAmount: number;
+                            if (isLegacyLead) {
+                                const currencyId = (selectedClient as any)?.currency_id;
+                                let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                                if (!numericCurrencyId || isNaN(numericCurrencyId)) numericCurrencyId = 1;
+                                baseAmount = numericCurrencyId === 1
+                                    ? Number((selectedClient as any)?.total_base ?? 0)
+                                    : Number((selectedClient as any)?.total ?? 0);
+                            } else {
+                                baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
+                            }
+                            const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
+                            const mainAmount = baseAmount - subcontractorFee;
+                            let vatAmount = 0;
+                            let shouldShowVAT = false;
+                            const vatValue = selectedClient?.vat;
+                            if (isLegacyLead) {
+                                shouldShowVAT = true;
+                                if (vatValue !== null && vatValue !== undefined) {
+                                    const vatStr = String(vatValue).toLowerCase().trim();
+                                    if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
+                                }
+                                if (shouldShowVAT) vatAmount = baseAmount * 0.18;
+                            } else {
+                                shouldShowVAT = true;
+                                if (vatValue !== null && vatValue !== undefined) {
+                                    const vatStr = String(vatValue).toLowerCase().trim();
+                                    if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
+                                }
+                                if (shouldShowVAT) {
+                                    vatAmount =
+                                        selectedClient?.vat_value && Number(selectedClient.vat_value) > 0
+                                            ? Number(selectedClient.vat_value)
+                                            : baseAmount * 0.18;
+                                }
+                            }
+                            const unpaidOutstandingPair =
+                                unpaidByCurrency === null
+                                    ? null
+                                    : pickUnpaidBaseAndVatForCurrency(unpaidByCurrency, currency);
+                            const unpaidGross =
+                                unpaidOutstandingPair != null
+                                    ? unpaidOutstandingPair.base + unpaidOutstandingPair.vat
+                                    : 0;
+                            return (
+                                <div className="group relative cursor-pointer text-right" onClick={() => setIsBalanceModalOpen(true)}>
+                                    <div className="space-y-2">
+                                        <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Total Value</p>
+                                        <div className="flex items-end justify-end gap-2">
+                                            <p className="text-2xl font-bold leading-none tracking-tight text-gray-900 dark:text-white">
+                                                {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
+                                            </p>
+                                            {shouldShowVAT && vatAmount > 0 && (
+                                                <p className="pb-0.5 text-xs text-gray-600 dark:text-gray-400">
+                                                    +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
+                                                </p>
+                                            )}
+                                        </div>
+                                        {unpaidOutstandingPair !== null && unpaidGross > 0 && (
+                                            <div className="pt-2 border-t border-gray-200/80 dark:border-gray-600">
+                                                <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">
+                                                    Outstanding
+                                                </p>
+                                                <div className="flex items-end justify-end gap-2">
+                                                    <p className="text-lg font-bold leading-none text-amber-900 dark:text-amber-200">
+                                                        {currency}
+                                                        {Number(unpaidOutstandingPair.base.toFixed(2)).toLocaleString()}
+                                                    </p>
+                                                    {unpaidOutstandingPair.vat > 0 && (
+                                                        <p className="pb-0.5 text-xs text-amber-700/85 dark:text-amber-400">
+                                                            +
+                                                            {unpaidOutstandingPair.vat.toLocaleString(undefined, {
+                                                                minimumFractionDigits: 0,
+                                                                maximumFractionDigits: 2,
+                                                            })}{' '}
+                                                            VAT
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            );
+                        })()}
+                            </div>
+                        )}
                         </div>
                     </div>
 
-                    {/* First row: Client name and info (desktop only; on mobile shown in left column above) */}
-                    <div className="hidden md:flex flex-col md:flex-row justify-between items-start md:items-center gap-2 md:gap-4">
-                        <div className="flex items-center gap-4">
-                            <div>
-                                <div className="flex items-center gap-2 mb-3">
-                                    <h1 className="text-2xl font-bold text-gray-900 dark:text-white leading-none">
-                                        #{renderLeadNumber()}
-                                        <span className="mx-2 text-gray-300">|</span>
-                                        {selectedClient.name || 'Unnamed Lead'}
-                                    </h1>
-                                    {/* Master/Sub Links - Icon Button with Count Badge */}
-                                    {/* Show button for sub-leads OR master leads, but only one */}
-                                    {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
-                                        <button
-                                            onClick={() => {
-                                                if (isSubLead && masterLeadNumber) {
-                                                    // For sub-leads, navigate to master dashboard
-                                                    navigate(`/clients/${masterLeadNumber}/master`);
-                                                } else if (isMasterLead && selectedClient) {
-                                                    // For master leads, navigate to master dashboard
-                                                    // Use the same logic as MasterLeadPage and LeadSearchPage
-                                                    // For legacy leads: use numeric id from leads_lead table
-                                                    // For new leads: use lead_number or manual_id
-                                                    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                                    let identifier: string;
-                                                    if (isLegacyLead) {
-                                                        // Legacy leads: use numeric id (remove 'legacy_' prefix if present)
-                                                        identifier = selectedClient.id.toString().replace('legacy_', '');
-                                                    } else {
-                                                        // New leads: use lead_number or manual_id
-                                                        identifier = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '';
-                                                    }
-                                                    navigate(`/clients/${encodeURIComponent(identifier)}/master`);
+                    {/* Desktop: symmetric grid — center column = stage badge above grey boxes (true horizontal center) */}
+                    <div className="hidden md:grid md:grid-cols-3 md:items-start md:gap-4 lg:gap-6">
+                        <div className="flex min-w-0 flex-col gap-3 justify-self-start">
+                            <div className="flex items-center gap-2">
+                                <h1 className="text-2xl font-bold text-gray-900 dark:text-white leading-none">
+                                    {renderLeadNumber()}
+                                    <span className="mx-2 text-gray-300">|</span>
+                                    {selectedClient.name || 'Unnamed Lead'}
+                                </h1>
+                                {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
+                                    <button
+                                        onClick={() => {
+                                            if (isSubLead && masterLeadNumber) {
+                                                navigate(`/clients/${masterLeadNumber}/master`);
+                                            } else if (isMasterLead && selectedClient) {
+                                                const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                                let identifier: string;
+                                                if (isLegacyLead) {
+                                                    identifier = selectedClient.id.toString().replace('legacy_', '');
+                                                } else {
+                                                    identifier = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '';
                                                 }
-                                            }}
-                                            className="btn btn-square btn-sm relative bg-red-100 hover:bg-red-200 text-red-700 border-red-300"
-                                            title={
-                                                isSubLead
-                                                    ? `View master dashboard (${(subLeadsCount || 0) + 1} total leads)`
-                                                    : `View all ${subLeadsCount || 0} sub-lead${subLeadsCount !== 1 ? 's' : ''} and master lead (${(subLeadsCount || 0) + 1} total)`
+                                                navigate(`/clients/${encodeURIComponent(identifier)}/master`);
                                             }
-                                        >
-                                            <Squares2X2Icon className="w-5 h-5" />
-                                            {/* Count Badge - Always show total (subleads + master = subLeadsCount + 1) */}
-                                            <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">
-                                                {(subLeadsCount || 0) + 1}
-                                            </span>
-                                        </button>
-                                    ) : null}
-                                </div>
-                                <div className="flex items-center gap-3 text-sm text-gray-500 dark:text-gray-400">
-                                    {selectedClient.language && (
-                                        <>
-                                            <span className="flex items-center gap-1">
-                                                <GlobeAltIcon className="w-4 h-4" />
-                                                {selectedClient.language}
-                                            </span>
-                                            <span className="text-gray-400">•</span>
-                                        </>
-                                    )}
-                                    {/* Category Display/Edit */}
-                                    <div className="flex items-center gap-1 relative">
-                                        <TagIcon className="w-4 h-4" />
-                                        <span
-                                            className={`flex items-center gap-1 ${disableCategoryModal ? 'cursor-default' : 'cursor-pointer hover:text-indigo-600'}`}
-                                            onClick={disableCategoryModal ? undefined : () => {
-                                                setShowCategoryModal(true);
-                                                setCategoryInputValue(displayCategory);
-                                            }}
-                                        >
-                                            {displayCategory}
-                                            {!disableCategoryModal && <PencilIcon className="w-3 h-3 opacity-0 group-hover:opacity-100 transition-opacity" />}
+                                        }}
+                                        className="btn btn-square btn-sm relative bg-red-100 hover:bg-red-200 text-red-700 border-red-300"
+                                        title={
+                                            isSubLead
+                                                ? `View master dashboard (${(subLeadsCount || 0) + 1} total leads)`
+                                                : `View all ${subLeadsCount || 0} sub-lead${subLeadsCount !== 1 ? 's' : ''} and master lead (${(subLeadsCount || 0) + 1} total)`
+                                        }
+                                    >
+                                        <Squares2X2Icon className="w-5 h-5" />
+                                        <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">
+                                            {(subLeadsCount || 0) + 1}
                                         </span>
+                                    </button>
+                                ) : null}
+                            </div>
+                            <div className="flex max-w-xl flex-col gap-2">
+                                <div className="flex flex-col min-w-0 gap-1">
+                                    <div className="flex min-h-[1.75rem] flex-wrap items-center gap-2">
+                                        <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold shrink-0">Email</p>
+                                        {displayEmail && (
+                                            <div className="flex flex-wrap items-center gap-0.5 shrink-0">
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-gray-600 hover:bg-base-200 transition-colors duration-150 active:scale-[0.98]"
+                                                    title="Copy email"
+                                                    aria-label="Copy email"
+                                                    onClick={() => {
+                                                        void navigator.clipboard.writeText(displayEmail).then(() => toast.success('Email copied'));
+                                                    }}
+                                                >
+                                                    <DocumentDuplicateIcon className="w-4 h-4" />
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-indigo-600 hover:bg-indigo-50 transition-colors duration-150 active:scale-[0.98]"
+                                                    title="Compose email"
+                                                    aria-label="Compose email"
+                                                    onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
+                                                >
+                                                    <EnvelopeIcon className="w-4 h-4" />
+                                                </button>
+                                            </div>
+                                        )}
                                     </div>
-                                    {/* Topic - Desktop only */}
-                                    {selectedClient.topic && (
-                                        <>
-                                            <span className="hidden md:inline text-gray-400">•</span>
-                                            <span className="hidden md:flex text-sm text-gray-500 dark:text-gray-400 items-center gap-1">
-                                                <DocumentTextIcon className="w-4 h-4" />
-                                                {selectedClient.topic}
-                                            </span>
-                                        </>
-                                    )}
-                                    {/* Source - Desktop only */}
-                                    <span className="hidden md:inline text-gray-400">•</span>
-                                    <span className="hidden md:flex text-sm text-gray-500 dark:text-gray-400 items-center gap-1">
-                                        <LinkIcon className="w-4 h-4" />
-                                        {selectedClient ? getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---' : '---'}
-                                    </span>
+                                    <p className="text-base font-medium text-gray-900 dark:text-gray-100 truncate" title={displayEmail || ''}>
+                                        {displayEmail || '---'}
+                                    </p>
+                                </div>
+                                <div className="flex flex-col min-w-0 gap-1">
+                                    <div className="flex min-h-[1.75rem] flex-wrap items-center gap-2">
+                                        <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold shrink-0">Phone</p>
+                                        {displayPhone && (
+                                            <div className="flex flex-wrap items-center gap-0.5 shrink-0">
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-gray-600 hover:bg-base-200 transition-colors duration-150 active:scale-[0.98]"
+                                                    title="Copy phone number"
+                                                    aria-label="Copy phone number"
+                                                    onClick={() => {
+                                                        void navigator.clipboard.writeText(displayPhone).then(() => toast.success('Phone copied'));
+                                                    }}
+                                                >
+                                                    <DocumentDuplicateIcon className="w-4 h-4" />
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-gray-700 hover:bg-base-200 transition-colors duration-150 active:scale-[0.98]"
+                                                    title="Call — open call options"
+                                                    aria-label="Call — open call options"
+                                                    onClick={handleCallPrimaryPhone}
+                                                >
+                                                    <PhoneIcon className="w-4 h-4" />
+                                                </button>
+                                                {onOpenWhatsAppForContact && (
+                                                    <button
+                                                        type="button"
+                                                        className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-emerald-700 hover:bg-emerald-50 transition-colors duration-150 active:scale-[0.98]"
+                                                        title="Open WhatsApp"
+                                                        aria-label="Open WhatsApp"
+                                                        onClick={() => void handleHeaderWhatsAppClick()}
+                                                    >
+                                                        <FaWhatsapp className="w-[18px] h-[18px]" aria-hidden />
+                                                    </button>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                    <p className="text-base font-medium text-gray-900 dark:text-gray-100">
+                                        {displayPhone ? formatPhoneNumberDisplay(displayPhone) : '---'}
+                                    </p>
                                 </div>
                             </div>
                         </div>
-
-                        {/* Stage Badge and Actions Dropdown - Top Right (Desktop only) */}
-                        <div className="hidden md:flex items-center gap-3">
-                            {/* Stage Badge */}
-                            <div className="flex items-center gap-2">
-                                {renderStageBadge('desktop')}
+                        {/* Center: stage badge on top, meta rows below (first row plain; category/topic still in grey boxes) */}
+                        <div className="flex min-h-0 min-w-0 w-full flex-col items-center gap-2 px-1 pt-0.5">
+                            <div className="mb-3 flex w-full justify-center">{renderStageBadge('desktop')}</div>
+                            <div className={`${META_TOP_ROW} w-full max-w-lg mx-auto`}>
+                                {selectedClient.language && (
+                                    <>
+                                        <span className="inline-flex items-center gap-1 shrink-0">
+                                            <GlobeAltIcon className="w-4 h-4 shrink-0" />
+                                            {selectedClient.language}
+                                        </span>
+                                        <span className="text-gray-400 dark:text-gray-500" aria-hidden>
+                                            •
+                                        </span>
+                                    </>
+                                )}
+                                <span className="inline-flex min-w-0 max-w-[min(100%,20rem)] items-center justify-center gap-1">
+                                    <LinkIcon className="w-4 h-4 shrink-0" />
+                                    <span className="truncate">{getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---'}</span>
+                                </span>
+                                {applicantsCount != null && Number(applicantsCount) > 0 && (
+                                    <>
+                                        <span className="text-gray-400 dark:text-gray-500" aria-hidden>
+                                            •
+                                        </span>
+                                        <span
+                                            className="inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold shadow-sm"
+                                            style={{
+                                                backgroundColor: applicationSubmittedStageColour,
+                                                color: applicantsBadgeTextColour,
+                                                border: `2px solid ${applicationSubmittedStageColour}`,
+                                                boxShadow: '0 8px 22px rgba(17, 24, 39, 0.12)',
+                                            }}
+                                        >
+                                            <UserIcon className="h-3 w-3 shrink-0" style={{ color: applicantsBadgeTextColour }} />
+                                            {applicantsCount} Applicants
+                                        </span>
+                                    </>
+                                )}
                             </div>
+                            <div className={`${META_GREY_BOX} w-full max-w-lg mx-auto`}>
+                                <div className={META_GREY_INNER}>
+                                    <TagIcon className="w-4 h-4 shrink-0" />
+                                    <span
+                                        className={`min-w-0 max-w-[min(100%,28rem)] truncate ${disableCategoryModal ? 'cursor-default' : 'cursor-pointer hover:text-indigo-600'}`}
+                                        onClick={disableCategoryModal ? undefined : () => {
+                                            setShowCategoryModal(true);
+                                            setCategoryInputValue(displayCategory);
+                                        }}
+                                    >
+                                        {displayCategory}
+                                    </span>
+                                    {!disableCategoryModal && <PencilIcon className="h-3 w-3 shrink-0 opacity-60" />}
+                                </div>
+                            </div>
+                            {selectedClient.topic && (
+                                <div className={`${META_GREY_BOX} w-full max-w-lg mx-auto`}>
+                                    <div className={META_GREY_INNER}>
+                                        <DocumentTextIcon className="w-4 h-4 shrink-0" />
+                                        <span className="max-w-[min(100%,28rem)] truncate">{selectedClient.topic}</span>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
 
-                            {/* Timeline and History Buttons - to the right of stage badge */}
+                        {/* Actions + total value under icons (stage badge lives in center column) */}
+                        <div className="flex min-w-0 shrink-0 flex-col items-end gap-3 justify-self-end self-start">
+                            <div className="flex flex-row flex-wrap items-center justify-end gap-3">
+                            {/* Timeline and History Buttons */}
                             {!hideHistoryAndTimeline && (
                                 <>
                                     <button
+                                        type="button"
                                         onClick={handleTimelineClick}
-                                        className="btn btn-circle btn-outline btn-sm"
+                                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
                                         title="View Timeline"
+                                        aria-label="View Timeline"
                                     >
-                                        <ClockIcon className="w-5 h-5" />
+                                        <ClockIcon className="h-6 w-6" />
                                     </button>
                                     <button
+                                        type="button"
                                         onClick={handleHistoryClick}
-                                        className="btn btn-circle btn-outline btn-sm"
+                                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
                                         title="View History"
+                                        aria-label="View History"
                                     >
-                                        <ArchiveBoxIcon className="w-5 h-5" />
+                                        <ArchiveBoxIcon className="h-6 w-6" />
                                     </button>
                                 </>
                             )}
@@ -1210,91 +1662,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </ul>
                                 </div>
                             )}
-                        </div>
-                    </div>
-
-                    {/* Second row: Email, Phone, Source, Topic (vertically on mobile) and Total Value (right side) - tight to language/category on mobile */}
-                    <div className="flex flex-row items-start md:items-center justify-between gap-4 -mt-3 md:mt-0 pt-2 md:pt-0">
-                        {/* Email, Phone, Source, Topic - Stacked vertically on mobile, horizontal on desktop */}
-                        <div className="flex flex-col md:flex-row md:items-center gap-2 md:gap-6 flex-1 md:mr-8">
-                            {/* Email */}
-                            <div className="flex items-center gap-2 md:gap-2 group">
-                                <div className="w-8 h-8 md:w-10 md:h-10 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center text-black flex-shrink-0">
-                                    <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5" />
-                                </div>
-                                <div className="flex flex-col min-w-0">
-                                    <p className="text-xs md:text-xs text-gray-400 uppercase tracking-wide font-semibold">Email</p>
-                                    <p className="text-sm md:text-base font-medium text-gray-900 dark:text-gray-100 truncate max-w-[200px] md:max-w-none" title={displayEmail || ''}>
-                                        {displayEmail ? <a href={`mailto:${displayEmail}`} className="hover:text-indigo-600 transition-colors">{displayEmail}</a> : '---'}
-                                    </p>
-                                </div>
                             </div>
-                            {/* Phone */}
-                            <div className="flex items-center gap-2 md:gap-2 group">
-                                <div className="w-8 h-8 md:w-10 md:h-10 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center text-black flex-shrink-0">
-                                    <PhoneIcon className="w-4 h-4 md:w-5 md:h-5" />
-                                </div>
-                                <div className="flex flex-col min-w-0">
-                                    <p className="text-xs md:text-xs text-gray-400 uppercase tracking-wide font-semibold">Phone</p>
-                                    <p className="text-sm md:text-base font-medium text-gray-900 dark:text-gray-100">
-                                        {displayPhone ? (
-                                            <button
-                                                onClick={() => {
-                                                    // Show modal for US (+1), Australia (+61), UK (+44), and South Africa (+27) numbers
-                                                    const normalizedPhone = displayPhone.replace(/[\s\-\(\)]/g, '');
-                                                    const isSupportedCountry =
-                                                        normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10) || // US/Canada
-                                                        normalizedPhone.startsWith('+61') || (normalizedPhone.startsWith('61') && normalizedPhone.length >= 10) || // Australia
-                                                        normalizedPhone.startsWith('+44') || (normalizedPhone.startsWith('44') && normalizedPhone.length >= 10) || // UK
-                                                        normalizedPhone.startsWith('+27') || (normalizedPhone.startsWith('27') && normalizedPhone.length >= 10); // South Africa
-
-                                                    if (isSupportedCountry) {
-                                                        setCallPhoneNumber(displayPhone);
-                                                        setCallContactName(selectedClient?.name || '');
-                                                        setIsCallModalOpen(true);
-                                                    } else {
-                                                        // For other countries, call directly
-                                                        window.open(`tel:${displayPhone}`, '_self');
-                                                    }
-                                                }}
-                                                className="hover:text-indigo-600 transition-colors cursor-pointer text-left leading-tight"
-                                            >
-                                                {formatPhoneNumberDisplay(displayPhone)}
-                                            </button>
-                                        ) : '---'}
-                                    </p>
-                                </div>
-                            </div>
-                            {/* Topic - Mobile only */}
-                            {selectedClient.topic && (
-                                <div className="flex md:hidden items-center gap-2 group">
-                                    <div className="w-8 h-8 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center text-black flex-shrink-0">
-                                        <DocumentTextIcon className="w-4 h-4 text-gray-500" />
-                                    </div>
-                                    <div className="flex flex-col min-w-0">
-                                        <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">Topic</p>
-                                        <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate max-w-[200px]">
-                                            {selectedClient.topic}
-                                        </p>
-                                    </div>
-                                </div>
-                            )}
-                            {/* Source - Mobile only */}
-                            <div className="flex md:hidden items-center gap-2 group mb-6 md:mb-0">
-                                <div className="w-8 h-8 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center text-black flex-shrink-0">
-                                    <LinkIcon className="w-4 h-4 text-gray-500" />
-                                </div>
-                                <div className="flex flex-col min-w-0">
-                                    <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold">Source</p>
-                                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate max-w-[200px]">
-                                        {selectedClient ? getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---' : '---'}
-                                    </p>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Total Value - Right side aligned with email on mobile, centered on desktop */}
-                        {(() => {
+                            {(() => {
                             if (hideTotalValueBadge) return null;
                             const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
 
@@ -1396,172 +1765,58 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 }
                             }
 
-                            // 5. Applicants
-                            const applicantsCount = (selectedClient as any)?.no_of_applicants || selectedClient?.number_of_applicants_meeting || null;
+                            const unpaidOutstandingPairDesktop =
+                                unpaidByCurrency === null
+                                    ? null
+                                    : pickUnpaidBaseAndVatForCurrency(unpaidByCurrency, currency);
+                            const unpaidGrossDesktop =
+                                unpaidOutstandingPairDesktop != null
+                                    ? unpaidOutstandingPairDesktop.base + unpaidOutstandingPairDesktop.vat
+                                    : 0;
 
                             return (
-                                <div className="hidden md:block cursor-pointer group relative text-right md:text-center self-start md:self-center" onClick={() => setIsBalanceModalOpen(true)}>
-                                    <div className="space-y-2">
-                                        <div className="flex items-center gap-2 justify-end md:justify-center">
-                                            <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold">Total Value</p>
-                                            {applicantsCount && Number(applicantsCount) > 0 && (
-                                                <span className="badge badge-sm badge-ghost font-medium text-xs px-2 py-0.5 border-gray-200 text-gray-600">
-                                                    <UserIcon className="w-3 h-3 mr-1" />
-                                                    {applicantsCount} Applicants
-                                                </span>
-                                            )}
-                                        </div>
-                                        <div className="flex items-end gap-2 justify-end md:justify-center">
-                                            <p className="text-3xl font-bold text-gray-900 dark:text-white leading-none tracking-tight">
+                                <div className="group relative cursor-pointer text-right" onClick={() => setIsBalanceModalOpen(true)}>
+                                    <div className="space-y-1.5">
+                                        <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Total Value</p>
+                                        <div className="flex items-end justify-end gap-2">
+                                            <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white">
                                                 {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
                                             </p>
                                             {shouldShowVAT && vatAmount > 0 && (
-                                                <p className="text-sm text-gray-600 dark:text-gray-400 pb-1">
+                                                <p className="pb-1 text-sm text-gray-600 dark:text-gray-400">
                                                     +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
                                                 </p>
                                             )}
                                         </div>
-                                    </div>
-                                </div>
-                            );
-                        })()}
-                    </div>
-
-                    {/* Total Value - Mobile: Centered with extra space below contact details */}
-                    {!hideTotalValueBadge && (
-                    <div className="flex md:hidden flex-col items-center mt-10 mb-10 pb-2">
-                        {(() => {
-                            const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
-
-                            // Currency Resolution
-                            // For new leads: Always use currency_id -> accounting_currencies.name (default to 1), never use proposal_currency/balance_currency
-                            // For legacy leads: Use currency_id first, then fallback to balance_currency
-                            let currency = ''; // Will be set below
-
-                            // First, try to get from accounting_currencies join data (most reliable)
-                            const accountingCurrencies = (selectedClient as any)?.accounting_currencies;
-                            if (accountingCurrencies) {
-                                const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
-                                if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
-                                    currency = currencyRecord.name.trim();
-                                }
-                            }
-
-                            if (!isLegacyLead) {
-                                // For new leads: Always use currency_id -> accounting_currencies.name (default to 1)
-                                const currencyId = (selectedClient as any)?.currency_id ?? 1;
-                                const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                                if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
-                                    currency = getCurrencyName(numericCurrencyId, accountingCurrencies);
-                                    // Fallback to currency_id 1 if empty
-                                    if (!currency || currency.trim() === '') {
-                                        currency = getCurrencyName(1);
-                                    }
-                                } else {
-                                    // If currency_id is invalid, default to currency_id 1
-                                    currency = getCurrencyName(1);
-                                }
-                            } else {
-                                // For legacy leads: use currency_id first, then fallback to balance_currency
-                                if (!currency && selectedClient?.currency_id) {
-                                    const currencyFromId = getCurrencyName(selectedClient.currency_id, accountingCurrencies);
-                                    if (currencyFromId && currencyFromId.trim() !== '') {
-                                        currency = currencyFromId;
-                                    }
-                                }
-
-                                // Fallback to balance_currency for legacy leads only
-                                if (!currency || currency.trim() === '') {
-                                    currency = selectedClient?.balance_currency || '';
-                                }
-
-                                // Final fallback: default to currency_id 1
-                                if (!currency || currency.trim() === '') {
-                                    currency = getCurrencyName(1);
-                                }
-                            }
-
-                            // 2. Base Amount (Gross)
-                            let baseAmount: number;
-                            if (isLegacyLead) {
-                                const currencyId = (selectedClient as any)?.currency_id;
-                                let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                                if (!numericCurrencyId || isNaN(numericCurrencyId)) numericCurrencyId = 1;
-
-                                if (numericCurrencyId === 1) {
-                                    baseAmount = Number((selectedClient as any)?.total_base ?? 0);
-                                } else {
-                                    baseAmount = Number((selectedClient as any)?.total ?? 0);
-                                }
-                            } else {
-                                baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                            }
-
-                            // 3. Subcontractor Fee & Net Amount
-                            const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
-                            const mainAmount = baseAmount - subcontractorFee;
-
-                            // 4. VAT
-                            let vatAmount = 0;
-                            let shouldShowVAT = false;
-                            const vatValue = selectedClient?.vat;
-
-                            if (isLegacyLead) {
-                                shouldShowVAT = true;
-                                if (vatValue !== null && vatValue !== undefined) {
-                                    const vatStr = String(vatValue).toLowerCase().trim();
-                                    if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
-                                }
-                                if (shouldShowVAT) {
-                                    vatAmount = baseAmount * 0.18;
-                                }
-                            } else {
-                                shouldShowVAT = true;
-                                if (vatValue !== null && vatValue !== undefined) {
-                                    const vatStr = String(vatValue).toLowerCase().trim();
-                                    if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
-                                }
-
-                                if (shouldShowVAT) {
-                                    if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
-                                        vatAmount = Number(selectedClient.vat_value);
-                                    } else {
-                                        vatAmount = baseAmount * 0.18;
-                                    }
-                                }
-                            }
-
-                            // 5. Applicants
-                            const applicantsCount = (selectedClient as any)?.no_of_applicants || selectedClient?.number_of_applicants_meeting || null;
-
-                            return (
-                                <div className="cursor-pointer group relative flex flex-col items-center py-4" onClick={() => setIsBalanceModalOpen(true)}>
-                                    <div className="space-y-2">
-                                        <div className="flex items-center gap-2 justify-center">
-                                            <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold">Total Value</p>
-                                            {applicantsCount && Number(applicantsCount) > 0 && (
-                                                <span className="badge badge-sm badge-ghost font-medium text-xs px-2 py-0.5 border-gray-200 text-gray-600">
-                                                    <UserIcon className="w-3 h-3 mr-1" />
-                                                    {applicantsCount} Applicants
-                                                </span>
-                                            )}
-                                        </div>
-                                        <div className="flex items-end gap-2 justify-center">
-                                            <p className="text-3xl font-bold text-gray-900 dark:text-white leading-none tracking-tight">
-                                                {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
-                                            </p>
-                                            {shouldShowVAT && vatAmount > 0 && (
-                                                <p className="text-sm text-gray-600 dark:text-gray-400 pb-1">
-                                                    +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
+                                        {unpaidOutstandingPairDesktop !== null && unpaidGrossDesktop > 0 && (
+                                            <div className="pt-1 border-t border-gray-200/80 dark:border-gray-600">
+                                                <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">
+                                                    Outstanding
                                                 </p>
-                                            )}
-                                        </div>
+                                                <div className="flex items-end justify-end gap-2">
+                                                    <p className="text-2xl font-bold leading-none text-amber-900 dark:text-amber-200">
+                                                        {currency}
+                                                        {Number(unpaidOutstandingPairDesktop.base.toFixed(2)).toLocaleString()}
+                                                    </p>
+                                                    {unpaidOutstandingPairDesktop.vat > 0 && (
+                                                        <p className="pb-1 text-sm text-amber-700/85 dark:text-amber-400">
+                                                            +
+                                                            {unpaidOutstandingPairDesktop.vat.toLocaleString(undefined, {
+                                                                minimumFractionDigits: 0,
+                                                                maximumFractionDigits: 2,
+                                                            })}{' '}
+                                                            VAT
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
                             );
                         })()}
+                        </div>
                     </div>
-                    )}
 
                     {/* Case unactivated Badge - Between client name and stage badge */}
                     {(() => {
@@ -1621,7 +1876,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 </div>
 
                 {/* Stage Logic Buttons - Mobile: Below timeline/history/stage badge row */}
-                <div className="flex md:hidden items-center gap-3 flex-wrap mt-1.5">
+                <div className="flex md:hidden items-center gap-4 flex-wrap mt-7">
                     {/* Check if case is unactivated - show message instead of buttons */}
                     {(() => {
                         const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
@@ -1927,8 +2182,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
 
                 {/* Workflow Actions Bar - Roles and Quick Actions */}
-                <div className="mt-1.5 md:mt-6 pt-1.5 md:pt-6 border-t border-gray-100 dark:border-gray-800 w-full">
-                    <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-3">Assigned Team</p>
+                <div className="mt-7 pt-6 md:mt-6 md:pt-6 border-t border-gray-100 dark:border-gray-800 w-full">
+                    <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-4">Assigned Team</p>
                     {(() => {
                         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
 

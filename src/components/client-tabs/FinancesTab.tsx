@@ -58,6 +58,7 @@ const AdminDropdownPortal: React.FC<{
 };
 
 import { generateProformaName } from '../../lib/proforma';
+import { sumUnpaidBaseAndVatByCurrencyFromPayments } from '../../lib/financeUnpaidTotal';
 import { getClientContracts, getContractDetails } from '../../lib/contractAutomation';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
 
@@ -5124,6 +5125,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     return acc;
   }, {});
 
+  // Unpaid base + VAT per currency (excludes paid rows — same rules as ClientHeader Outstanding)
+  const unpaidByCurrency = sumUnpaidBaseAndVatByCurrencyFromPayments(
+    financePlan.payments.map((p) => ({
+      value: Number(p.value),
+      valueVat: Number(p.valueVat),
+      paid: !!p.paid,
+      currency: p.currency,
+    }))
+  );
+
   // Before rendering payment rows, calculate total:
   const totalPayments = financePlan.payments.reduce((sum, p) => sum + Number(p.value || 0) + Number(p.valueVat || 0), 0);
   // Before rendering payment rows, calculate totalBalanceWithVat:
@@ -5387,6 +5398,30 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                       )}
                     </div>
                     <div className="text-xs text-gray-500">Total Amount</div>
+                    {Object.keys(unpaidByCurrency).length > 0 &&
+                      Object.values(unpaidByCurrency).some((n) => n.base + n.vat > 0) && (
+                        <div className="mt-2 text-right border-t border-gray-100 pt-2 space-y-1">
+                          <div className="text-xs text-amber-700/90">Outstanding (unpaid rows)</div>
+                          <div className="flex flex-col items-end gap-1">
+                            {Object.entries(unpaidByCurrency).map(([cur, { base, vat }]) => {
+                              if (base + vat <= 0) return null;
+                              return (
+                                <div key={cur} className="flex items-end justify-end gap-2">
+                                  <span className="text-sm font-bold text-amber-900">
+                                    {getCurrencySymbol(cur)}
+                                    {base.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                                  </span>
+                                  {vat > 0 && (
+                                    <span className="text-xs text-amber-700/90 pb-0.5">
+                                      +{vat.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                   </div>
                   {/* Sync Balance Button */}
                   {financePlan && client?.balance !== total && (

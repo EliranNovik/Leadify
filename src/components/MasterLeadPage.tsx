@@ -223,7 +223,8 @@ const MasterLeadPage: React.FC = () => {
     if (!lead_number) return;
 
     const decodedLeadNumber = decodeURIComponent(lead_number);
-    const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+    const baseLeadNumberRaw = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+    const baseLeadNumber = baseLeadNumberRaw.replace(/^[LC]/i, '');
     const prevBaseLeadNumber = currentLeadNumberRef.current
       ? (currentLeadNumberRef.current.includes('/') ? currentLeadNumberRef.current.split('/')[0] : currentLeadNumberRef.current)
       : undefined;
@@ -265,7 +266,8 @@ const MasterLeadPage: React.FC = () => {
     }
 
       const decodedLeadNumber = decodeURIComponent(lead_number);
-      const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+      const baseLeadNumberRaw = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+      const baseLeadNumber = baseLeadNumberRaw.replace(/^[LC]/i, '');
 
     // Set loading to true immediately - will be set to false only if we have matching persisted data
     setLoading(true);
@@ -274,13 +276,16 @@ const MasterLeadPage: React.FC = () => {
     // If we have persisted data, validate it matches the current lead
     if (masterLeadInfo && subLeads.length > 0) {
       const persistedLeadNumber = String(masterLeadInfo.lead_number || masterLeadInfo.id || '');
-      const persistedBaseNumber = persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber;
+      const persistedBaseNumberRaw = persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber;
+      const persistedBaseNumber = persistedBaseNumberRaw.replace(/^[LC]/i, '');
 
       // Check if persisted data matches current lead
       const subLeadMatches = subLeads.some(subLead => {
         const subLeadNumber = String(subLead.lead_number || subLead.id || '');
-        const subLeadBase = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
-        return subLeadBase === baseLeadNumber || subLeadNumber === baseLeadNumber;
+        const subLeadBaseRaw = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
+        const subLeadBase = subLeadBaseRaw.replace(/^[LC]/i, '');
+        const subLeadNumberClean = subLeadNumber.replace(/^[LC]/i, '');
+        return subLeadBase === baseLeadNumber || subLeadNumberClean === baseLeadNumber;
       });
 
       const dataMatches = persistedBaseNumber === baseLeadNumber || subLeadMatches;
@@ -573,60 +578,68 @@ const MasterLeadPage: React.FC = () => {
       }
       setError(null);
 
-      // Try new leads first
-      const newLeadResult = await fetchNewMasterLead(baseLeadNumber, setContractsDataMap);
-
-      if (newLeadResult.success && newLeadResult.masterLead) {
-        setMasterLeadInfo(newLeadResult.masterLead);
-        // Add agreement data to sub-leads (store contract ID, not React element)
-        const subLeadsWithAgreements = (newLeadResult.subLeads || []).map(lead => {
-          const lookupKey = lead.id;
-          const contractData = contractsDataMap.get(lookupKey);
-          return {
-          ...lead,
-            agreement: contractData ? contractData.id : '---',
-            agreementIsLegacy: contractData ? contractData.isLegacy : undefined
-          };
-        });
-        setSubLeads(subLeadsWithAgreements);
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:260', message: 'New lead fetch success - setting loading false', data: { duration: Date.now() - fetchStartTime, subLeadsCount: subLeadsWithAgreements.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-        // #endregion
-        setSubLeadsLoading(false);
-        setLoading(false);
-        return;
+      // Decide which system to query first.
+      // Clients page effectively knows legacy vs new by context; MasterLeadPage must infer from the route.
+      // If the base looks numeric and exists in legacy table, prefer legacy to avoid mistakenly matching a new lead chain.
+      const normalizedIdCandidate = extractNumericId(baseLeadNumber);
+      const numericCandidate = normalizedIdCandidate ? parseInt(normalizedIdCandidate, 10) : NaN;
+      let shouldPreferLegacy = false;
+      if (!Number.isNaN(numericCandidate)) {
+        const { data: legacyExists, error: legacyExistsError } = await supabase
+          .from('leads_lead')
+          .select('id')
+          .eq('id', numericCandidate)
+          .maybeSingle();
+        if (!legacyExistsError && legacyExists?.id != null) {
+          shouldPreferLegacy = true;
+        }
       }
 
-      // Try legacy leads
+      // Try legacy first when we have a confirmed legacy master.
       const normalizedId = extractNumericId(baseLeadNumber);
       if (!normalizedId) {
-        setError('Invalid master lead number');
-        setSubLeadsLoading(false);
-        setLoading(false);
+        shouldPreferLegacy = false;
+      }
+
+      if (shouldPreferLegacy && normalizedId) {
+        const legacyResult = await fetchLegacyMasterLead(baseLeadNumber, normalizedId, setContractsDataMap);
+        if (legacyResult.success && legacyResult.masterLead) {
+          setMasterLeadInfo(legacyResult.masterLead);
+          setSubLeads(legacyResult.subLeads || []);
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:283', message: 'Legacy-first fetch success - setting loading false', data: { duration: Date.now() - fetchStartTime, subLeadsCount: (legacyResult.subLeads || []).length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+          // #endregion
+          return;
+        }
+      }
+
+      // Try new leads
+      const newLeadResult = await fetchNewMasterLead(baseLeadNumber, setContractsDataMap);
+      if (newLeadResult.success && newLeadResult.masterLead) {
+        setMasterLeadInfo(newLeadResult.masterLead);
+        setSubLeads(newLeadResult.subLeads || []);
+        // #region agent log
+        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:260', message: 'New lead fetch success - setting loading false', data: { duration: Date.now() - fetchStartTime, subLeadsCount: (newLeadResult.subLeads || []).length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+        // #endregion
         return;
       }
 
-      const legacyResult = await fetchLegacyMasterLead(baseLeadNumber, normalizedId, setContractsDataMap);
-
-      if (legacyResult.success && legacyResult.masterLead) {
-        setMasterLeadInfo(legacyResult.masterLead);
-        // Add agreement data to sub-leads (store contract ID, not React element)
-        const subLeadsWithAgreements = (legacyResult.subLeads || []).map(lead => {
-          const lookupKey = lead.id.replace('legacy_', '');
-          const contractData = contractsDataMap.get(lookupKey);
-          return {
-          ...lead,
-            agreement: contractData ? contractData.id : '---',
-            agreementIsLegacy: contractData ? contractData.isLegacy : undefined
-          };
-        });
-        setSubLeads(subLeadsWithAgreements);
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:283', message: 'Legacy lead fetch success - setting loading false', data: { duration: Date.now() - fetchStartTime, subLeadsCount: subLeadsWithAgreements.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-        // #endregion
-      } else {
+      // Fallback: try legacy if not already tried or if legacy exists but first attempt failed.
+      if (normalizedId) {
+        const legacyResult = await fetchLegacyMasterLead(baseLeadNumber, normalizedId, setContractsDataMap);
+        if (legacyResult.success && legacyResult.masterLead) {
+          setMasterLeadInfo(legacyResult.masterLead);
+          setSubLeads(legacyResult.subLeads || []);
+          // #region agent log
+          fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:283', message: 'Legacy fallback fetch success - setting loading false', data: { duration: Date.now() - fetchStartTime, subLeadsCount: (legacyResult.subLeads || []).length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
+          // #endregion
+          return;
+        }
         setError(legacyResult.error || 'Failed to fetch master lead');
+        return;
       }
+
+      setError('Invalid master lead number');
     } catch (error) {
       console.error('Error fetching sub-leads:', error);
       setError('An unexpected error occurred while fetching data');
@@ -640,7 +653,7 @@ const MasterLeadPage: React.FC = () => {
       setLoading(false);
       setSubLeadsLoading(false);
     }
-  }, [lead_number]);
+  }, [lead_number, loading, masterLeadInfo, subLeads.length, subLeadsLoading, setContractsDataMap, setMasterLeadInfo, setSubLeads, setError]);
 
   // Refresh data when page becomes visible (e.g., returning from sub-lead creation)
   useEffect(() => {
@@ -683,58 +696,37 @@ const MasterLeadPage: React.FC = () => {
     });
   }, []);
 
-  // Update agreements when contractsDataMap changes
-  // Store contract identifiers instead of React elements (for sessionStorage serialization)
+  // Update agreements when contracts change.
+  // Important: avoid render loops by using a functional update and only mutating when values actually differ.
   useEffect(() => {
-    if (subLeads.length > 0 && contractsDataMap.size > 0) {
-      console.log('🔍 Updating agreements - contractsDataMap size:', contractsDataMap.size, 'subLeads count:', subLeads.length);
-      console.log('🔍 Contracts in map:', Array.from(contractsDataMap.entries()));
+    if (contractsDataMap.size === 0) return;
 
-      const updatedSubLeads = subLeads.map(lead => {
-        // Determine if this is a legacy lead
-        const isLegacy = lead.id?.toString().startsWith('legacy_') ||
-          (masterLeadInfo && (masterLeadInfo.lead_type === 'legacy' || masterLeadInfo.id?.toString().startsWith('legacy_')));
+    const masterIsLegacy =
+      !!masterLeadInfo &&
+      (masterLeadInfo.lead_type === 'legacy' || String(masterLeadInfo.id || '').startsWith('legacy_'));
 
-        // Create lookup key
-        const lookupKey = isLegacy
-          ? String(lead.id).replace('legacy_', '')
-          : String(lead.id);
+    setSubLeads((prev) => {
+      if (!prev.length) return prev;
 
-        console.log('🔍 Checking lead:', lead.id, 'lookupKey:', lookupKey, 'isLegacy:', isLegacy);
-
-        // Get contract data
+      let changed = false;
+      const next = prev.map((lead) => {
+        const leadIsLegacy = String(lead.id || '').startsWith('legacy_') || masterIsLegacy;
+        const lookupKey = leadIsLegacy ? String(lead.id).replace('legacy_', '') : String(lead.id);
         const contractData = contractsDataMap.get(lookupKey);
 
-        console.log('🔍 Contract data for', lookupKey, ':', contractData);
+        const nextAgreement = contractData ? contractData.id : '---';
+        const nextIsLegacy = contractData ? contractData.isLegacy : undefined;
 
-        // Store contract identifier instead of React element (for serialization)
-        if (contractData) {
-          return {
-            ...lead,
-            agreement: contractData.id, // Store contract ID as string
-            agreementIsLegacy: contractData.isLegacy // Store legacy flag separately
-          };
+        if (lead.agreement !== nextAgreement || lead.agreementIsLegacy !== nextIsLegacy) {
+          changed = true;
+          return { ...lead, agreement: nextAgreement, agreementIsLegacy: nextIsLegacy };
         }
-        // Clear agreement if no contract found
-        return {
-          ...lead,
-          agreement: '---',
-          agreementIsLegacy: undefined
-        };
+        return lead;
       });
 
-      // Only update if agreements actually changed
-      const hasChanges = updatedSubLeads.some((updated, index) => {
-        const original = subLeads[index];
-        return updated.agreement !== original.agreement || updated.agreementIsLegacy !== original.agreementIsLegacy;
-      });
-
-      if (hasChanges) {
-        console.log('🔍 Updating subLeads with new agreements');
-        setSubLeads(updatedSubLeads);
-      }
-    }
-  }, [contractsDataArray]); // Depend on contractsDataArray to trigger when contracts change
+      return changed ? next : prev;
+    });
+  }, [contractsDataArray, masterLeadInfo, contractsDataMap.size, setSubLeads]);
 
   const chainMemberIds = useMemo(() => {
     const ids = new Set<string>();
@@ -870,13 +862,16 @@ const MasterLeadPage: React.FC = () => {
       // Check if persisted data matches current lead_number
       // Convert to string to handle both string and number IDs
       const persistedLeadNumber = String(currentMasterLeadInfo.lead_number || currentMasterLeadInfo.id || '');
-      persistedBaseNumber = persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber;
+      const persistedBaseNumberRaw = persistedLeadNumber.includes('/') ? persistedLeadNumber.split('/')[0] : persistedLeadNumber;
+      persistedBaseNumber = persistedBaseNumberRaw.replace(/^[LC]/i, '');
 
       // Also check if any sub-lead matches
       const subLeadMatches = currentSubLeads.some(subLead => {
         const subLeadNumber = String(subLead.lead_number || subLead.id || '');
-        const subLeadBase = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
-        return subLeadBase === baseLeadNumber || subLeadNumber === baseLeadNumber;
+        const subLeadBaseRaw = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
+        const subLeadBase = subLeadBaseRaw.replace(/^[LC]/i, '');
+        const subLeadNumberClean = subLeadNumber.replace(/^[LC]/i, '');
+        return subLeadBase === baseLeadNumber || subLeadNumberClean === baseLeadNumber;
       });
 
       currentLeadMatches = persistedBaseNumber === baseLeadNumber || subLeadMatches;
@@ -900,8 +895,16 @@ const MasterLeadPage: React.FC = () => {
     hasCheckedPersistedDataRef.current = baseLeadNumber;
     prevLeadNumberRef.current = decodedLeadNumber;
 
-    // If we have persisted data for the current lead, skip fetching and set loading to false IMMEDIATELY
-    if (hasPersistedData && currentLeadMatches) {
+    // If we have persisted data for the current lead, we usually skip fetching.
+    // Exception: legacy master routes (numeric base) sometimes persist an incomplete dataset (only the master row),
+    // which would lock the page into "1 lead found" forever. In that case, force a refresh.
+    const persistedLooksIncompleteForLegacy =
+      hasPersistedData &&
+      currentLeadMatches &&
+      currentSubLeads.length === 1 &&
+      /^\d+$/.test(baseLeadNumber);
+
+    if (hasPersistedData && currentLeadMatches && !persistedLooksIncompleteForLegacy) {
       console.log('🔍 MasterLeadPage: Using persisted data, skipping fetch');
       // #region agent log
       fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MasterLeadPage.tsx:365', message: 'Using persisted data - setting loading false IMMEDIATELY', data: { baseLeadNumber, persistedBaseNumber: persistedBaseNumber || 'undefined', hasPersistedData, currentLeadMatches }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
@@ -1030,13 +1033,16 @@ const MasterLeadPage: React.FC = () => {
     if (!lead_number) return [];
 
     const decodedLeadNumber = decodeURIComponent(lead_number);
-    const baseLeadNumber = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+    const baseLeadNumberRaw = decodedLeadNumber.includes('/') ? decodedLeadNumber.split('/')[0] : decodedLeadNumber;
+    const baseLeadNumber = baseLeadNumberRaw.replace(/^[LC]/i, '');
 
     return subLeads.filter(subLead => {
       if (subLead.isLinkedOnly) return true;
       const subLeadNumber = String(subLead.lead_number || subLead.id || '');
-      const subLeadBase = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
-      return subLeadBase === baseLeadNumber || subLeadNumber === baseLeadNumber;
+      const subLeadBaseRaw = subLeadNumber.includes('/') ? subLeadNumber.split('/')[0] : subLeadNumber;
+      const subLeadBase = subLeadBaseRaw.replace(/^[LC]/i, '');
+      const subLeadNumberClean = subLeadNumber.replace(/^[LC]/i, '');
+      return subLeadBase === baseLeadNumber || subLeadNumberClean === baseLeadNumber;
     });
   }, [subLeads, lead_number]);
 
