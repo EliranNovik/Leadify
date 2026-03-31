@@ -20,10 +20,21 @@ import {
   DocumentTextIcon,
   CpuChipIcon,
   ChevronLeftIcon,
-  ChevronRightIcon
+  ChevronRightIcon,
 } from '@heroicons/react/24/outline';
 import { FolderIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../../lib/supabase';
+import { useAuthContext } from '../../contexts/AuthContext';
+import {
+  fetchPublicUserId,
+  fetchFlagTypes,
+  fetchLeadFieldFlagsForLead,
+  setLeadFieldFlagged,
+  setLegacyLeadFieldFlagged,
+  type ContentFlagMeta,
+  type FlagTypeRow,
+} from '../../lib/userContentFlags';
+import FlagTypeFlagButton from '../FlagTypeFlagButton';
 import DocumentModal from '../DocumentModal';
 import ExpertNotesModal from '../ExpertNotesModal';
 import { toast } from 'react-hot-toast';
@@ -1377,6 +1388,146 @@ ${combinedText}`;
 
   // Check if this is a legacy lead (used elsewhere in the component)
   const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+  const legacyLeadNumericId = isLegacyLead
+    ? Number.parseInt(String(client.id).replace(/^legacy_/, ''), 10)
+    : null;
+  const newLeadUuidForFlags = !isLegacyLead && client.id != null ? String(client.id) : null;
+
+  const { user } = useAuthContext();
+  const authUserId = user?.id ?? null;
+  const [publicUserId, setPublicUserId] = useState<string | null>(null);
+  const [leadFieldFlagMeta, setLeadFieldFlagMeta] = useState<Map<string, ContentFlagMeta>>(() => new Map());
+  const [flagTypes, setFlagTypes] = useState<FlagTypeRow[]>([]);
+
+  useEffect(() => {
+    if (!authUserId) {
+      setPublicUserId(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchPublicUserId(supabase, authUserId).then((id) => {
+      if (!cancelled) setPublicUserId(id);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [authUserId]);
+
+  useEffect(() => {
+    if (!publicUserId) {
+      setLeadFieldFlagMeta(new Map());
+      return;
+    }
+    let cancelled = false;
+    void fetchLeadFieldFlagsForLead(supabase, publicUserId, {
+      newLeadId: newLeadUuidForFlags || undefined,
+      legacyLeadId:
+        legacyLeadNumericId != null && !Number.isNaN(legacyLeadNumericId) ? legacyLeadNumericId : undefined,
+    }).then((map) => {
+      if (!cancelled) setLeadFieldFlagMeta(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [publicUserId, newLeadUuidForFlags, legacyLeadNumericId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchFlagTypes(supabase).then((rows) => {
+      if (!cancelled) setFlagTypes(rows);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const addLeadFieldFlag = useCallback(
+    async (fieldKey: 'expert_notes' | 'handler_notes', flagTypeId: number) => {
+      if (!publicUserId) {
+        toast.error('Please sign in to flag items.');
+        return;
+      }
+      if (isLegacyLead && legacyLeadNumericId != null && !Number.isNaN(legacyLeadNumericId)) {
+        const { error } = await setLegacyLeadFieldFlagged(
+          supabase,
+          publicUserId,
+          legacyLeadNumericId,
+          fieldKey,
+          true,
+          flagTypeId
+        );
+        if (error) {
+          toast.error(error.message);
+          return;
+        }
+      } else if (newLeadUuidForFlags) {
+        const { error } = await setLeadFieldFlagged(
+          supabase,
+          publicUserId,
+          newLeadUuidForFlags,
+          fieldKey,
+          true,
+          flagTypeId
+        );
+        if (error) {
+          toast.error(error.message);
+          return;
+        }
+      } else {
+        toast.error('Unable to save flag for this lead.');
+        return;
+      }
+      setLeadFieldFlagMeta((prev) => {
+        const next = new Map(prev);
+        next.set(fieldKey, { createdAt: new Date().toISOString(), flagTypeId });
+        return next;
+      });
+    },
+    [publicUserId, isLegacyLead, legacyLeadNumericId, newLeadUuidForFlags]
+  );
+
+  const removeLeadFieldFlag = useCallback(
+    async (fieldKey: 'expert_notes' | 'handler_notes') => {
+      if (!publicUserId) {
+        toast.error('Please sign in to flag items.');
+        return;
+      }
+      if (isLegacyLead && legacyLeadNumericId != null && !Number.isNaN(legacyLeadNumericId)) {
+        const { error } = await setLegacyLeadFieldFlagged(
+          supabase,
+          publicUserId,
+          legacyLeadNumericId,
+          fieldKey,
+          false
+        );
+        if (error) {
+          toast.error(error.message);
+          return;
+        }
+      } else if (newLeadUuidForFlags) {
+        const { error } = await setLeadFieldFlagged(
+          supabase,
+          publicUserId,
+          newLeadUuidForFlags,
+          fieldKey,
+          false
+        );
+        if (error) {
+          toast.error(error.message);
+          return;
+        }
+      } else {
+        toast.error('Unable to save flag for this lead.');
+        return;
+      }
+      setLeadFieldFlagMeta((prev) => {
+        const next = new Map(prev);
+        next.delete(fieldKey);
+        return next;
+      });
+    },
+    [publicUserId, isLegacyLead, legacyLeadNumericId, newLeadUuidForFlags]
+  );
 
   // Expert name state
   const [expertName, setExpertName] = useState<string>(client.expert || '--');
@@ -2527,10 +2678,22 @@ ${combinedText}`;
             </div>
           </div>
 
-          {/* Expert Notes — full width like Handler Notes */}
-          <div className="w-full">
-            <div className="flex items-center justify-between mb-4">
-              <h4 className="text-base font-semibold text-gray-900">Expert Notes</h4>
+          {/* Expert Opinion — full width like Handler Opinion */}
+          <div className="w-full" id="expert-opinion-section">
+            <div className="flex items-center justify-between mb-4 gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <h4 className="text-base font-semibold text-gray-900">Expert Opinion</h4>
+                <FlagTypeFlagButton
+                  flagTypes={flagTypes}
+                  isFlagged={leadFieldFlagMeta.has('expert_notes')}
+                  disabled={!publicUserId}
+                  onAdd={(flagTypeId) => void addLeadFieldFlag('expert_notes', flagTypeId)}
+                  onRemove={() => void removeLeadFieldFlag('expert_notes')}
+                  titleFlag="Flag expert opinion — choose type"
+                  titleRemove="Remove flag"
+                  className="shrink-0 text-amber-600 hover:bg-amber-50"
+                />
+              </div>
               <div className="flex gap-2">
                 {!isAddingExpertNote && !editingExpertNoteId && (
                   <>
@@ -2663,7 +2826,7 @@ ${combinedText}`;
                   ) : (
                     <div className="text-center py-8 text-gray-500">
                       <div className="min-h-[80px]">
-                        <p className="text-lg font-medium mb-1">No expert notes yet</p>
+                        <p className="text-lg font-medium mb-1">No expert opinion yet</p>
                         <p className="text-base">Expert opinions and assessments will appear here</p>
                       </div>
                     </div>
@@ -2678,10 +2841,22 @@ ${combinedText}`;
             </div>
           </div>
 
-          {/* Handler Notes */}
-          <div className="mt-16">
-            <div className="flex items-center justify-between mb-4">
-              <h4 className="text-base font-semibold text-gray-900">Handler Notes</h4>
+          {/* Handler Opinion */}
+          <div className="mt-16" id="handler-opinion-section">
+            <div className="flex items-center justify-between mb-4 gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <h4 className="text-base font-semibold text-gray-900">Handler Opinion</h4>
+                <FlagTypeFlagButton
+                  flagTypes={flagTypes}
+                  isFlagged={leadFieldFlagMeta.has('handler_notes')}
+                  disabled={!publicUserId}
+                  onAdd={(flagTypeId) => void addLeadFieldFlag('handler_notes', flagTypeId)}
+                  onRemove={() => void removeLeadFieldFlag('handler_notes')}
+                  titleFlag="Flag handler opinion — choose type"
+                  titleRemove="Remove flag"
+                  className="shrink-0 text-amber-600 hover:bg-amber-50"
+                />
+              </div>
               {!isAddingHandlerNote && !editingHandlerNoteId && (
                 <button
                   className="btn btn-ghost btn-sm"
@@ -2762,7 +2937,7 @@ ${combinedText}`;
                   ) : (
                     <div className="text-center py-8 text-gray-500">
                       <div className="min-h-[80px]">
-                        <p className="text-lg font-medium mb-1">No handler notes yet</p>
+                        <p className="text-lg font-medium mb-1">No handler opinion yet</p>
                         <p className="text-base">Case handling notes and updates will appear here</p>
                       </div>
                     </div>

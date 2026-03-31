@@ -1,4 +1,5 @@
 import { Lead } from '../lib/supabase';
+import type { ProbabilitySlidersValues } from '../components/client-tabs/ProbabilitySlidersModal';
 
 export interface Client extends Lead {
   category?: string;
@@ -70,7 +71,15 @@ export interface ClientTabProps {
   interactionsCache?: ClientInteractionsCache | null;
   onInteractionsCacheUpdate?: (cache: ClientInteractionsCache) => void;
   onInteractionCountUpdate?: (count: number) => void;
+  /** When Interactions tab computes flagged timeline rows, parent can show count in header (e.g. ClientHeader). */
+  onFlaggedConversationCountUpdate?: (count: number) => void;
   allEmployees?: any[]; // Employees loaded in parent component
   /** When true, all edit/save/action buttons are hidden and non-functional (e.g. external user modal) */
   readOnly?: boolean;
+  /** Switch client detail tab (e.g. interactions, expert) — used from Info tab for flag flows */
+  onSwitchClientTab?: (tabId: string) => void;
+  /** Flagged timeline count from Interactions (same as header); used to skip 90% probability gate */
+  flaggedConversationCount?: number;
+  /** After 90%+ gate → conversation path: parent stores pending values, switches tab, header shows reminder */
+  onProbabilityConversationPending?: (values: ProbabilitySlidersValues) => void;
 }

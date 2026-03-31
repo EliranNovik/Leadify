@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { XMarkIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, FlagIcon } from '@heroicons/react/24/outline';
 
 export interface ProbabilitySlidersValues {
   legal: number;
@@ -15,6 +15,9 @@ export interface ProbabilitySlidersModalProps {
   initialSeriousness: number;
   initialFinancial: number;
   saving?: boolean;
+  /** Opens chooser for what to flag (expert / handler / conversation) */
+  onFlagClick?: () => void;
+  readOnly?: boolean;
 }
 
 export function clampProbabilityPart(n: number): number {
@@ -76,6 +79,8 @@ const ProbabilitySlidersModal: React.FC<ProbabilitySlidersModalProps> = ({
   initialSeriousness,
   initialFinancial,
   saving = false,
+  onFlagClick,
+  readOnly = false,
 }) => {
   const [legal, setLegal] = useState(0);
   const [seriousness, setSeriousness] = useState(0);
@@ -101,7 +106,7 @@ const ProbabilitySlidersModal: React.FC<ProbabilitySlidersModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[120] flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[120] flex items-center justify-center p-4" data-probability-sliders-modal>
       <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden="true" />
       <div
         className="relative w-full max-w-md rounded-2xl bg-base-100 shadow-2xl border border-base-300"
@@ -173,13 +178,29 @@ const ProbabilitySlidersModal: React.FC<ProbabilitySlidersModalProps> = ({
             </div>
           ))}
 
+          {!readOnly && onFlagClick && (
+            <div className="pt-1">
+              <button
+                type="button"
+                className="btn btn-outline border-amber-200 text-amber-800 hover:bg-amber-50 gap-2 w-full sm:w-auto"
+                onClick={onFlagClick}
+                disabled={saving}
+              >
+                <FlagIcon className="h-5 w-5" />
+                Flag…
+              </button>
+              <p className="text-xs text-base-content/60 mt-1.5">
+                Choose whether to flag expert opinion, handler opinion, or open Interactions to flag a message.
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="flex gap-2 px-5 py-4 border-t border-base-300 bg-base-100 rounded-b-2xl">
           <button type="button" className="btn btn-outline flex-1" onClick={onClose} disabled={saving}>
             Cancel
           </button>
-          <button type="button" className="btn btn-primary flex-1" onClick={handleSave} disabled={saving}>
+          <button type="button" className="btn btn-primary flex-1" onClick={handleSave} disabled={saving || readOnly}>
             {saving ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
           </button>
         </div>

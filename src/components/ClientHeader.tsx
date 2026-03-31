@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import {
     UserIcon,
     EnvelopeIcon,
-    PhoneIcon,
+    PhoneArrowUpRightIcon,
+    ClipboardDocumentIcon,
     TagIcon,
     GlobeAltIcon,
     CurrencyDollarIcon,
@@ -33,6 +35,8 @@ import {
     Bars3Icon,
     DocumentTextIcon,
     LinkIcon,
+    FlagIcon,
+    XMarkIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
@@ -40,11 +44,46 @@ import { getStageName, getStageColour, areStagesEquivalent } from '../lib/stageU
 import { addToHighlights, removeFromHighlights } from '../lib/highlightsUtils';
 import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
 import CallOptionsModal from './CallOptionsModal';
+import LeadTagsModal from './LeadTagsModal';
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
 import type { WhatsAppPageSelectedContact } from '../pages/WhatsAppPage';
 import { FaWhatsapp } from 'react-icons/fa';
 import { fetchUnpaidTotalsByCurrency, pickUnpaidBaseAndVatForCurrency, type UnpaidByCurrencyMap } from '../lib/financeUnpaidTotal';
+import { useAuthContext } from '../contexts/AuthContext';
+import {
+    fetchPublicUserId,
+    fetchLeadFieldFlagsForLead,
+    fetchFlagTypes,
+    formatFlaggedAt,
+    flagTypeLabel,
+    flagTypeBadgeClass,
+    flaggedModalViewButtonClass,
+    type ContentFlagMeta,
+    type FlagTypeRow,
+} from '../lib/userContentFlags';
+import { caseProbabilityFromFactors, type ProbabilitySlidersValues } from './client-tabs/ProbabilitySlidersModal';
+
+const leadFieldFlagLabel = (key: string): string => {
+    const map: Record<string, string> = {
+        expert_notes: 'Expert opinion',
+        handler_notes: 'Handler opinion',
+    };
+    return map[key] ?? key.replace(/_/g, ' ');
+};
+
+const normalizeTagsValue = (value: unknown): string[] => {
+    if (!value) return [];
+    if (Array.isArray(value)) {
+        return value
+            .map((item) => String(item || '').trim())
+            .filter(Boolean);
+    }
+    return String(value)
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+};
 
 /** Outer shell for grey meta rows (border, padding). Inner content uses META_GREY_INNER for true centering. */
 const META_GREY_BOX =
@@ -127,6 +166,14 @@ interface ClientHeaderProps {
     onCombineLeads?: () => void;
     /** Opens app WhatsApp modal for this lead (contact match or lead phone) */
     onOpenWhatsAppForContact?: (payload: WhatsAppPageSelectedContact) => void;
+    /** Count of flagged Interactions timeline rows (from Interactions tab when loaded). */
+    flaggedConversationCount?: number;
+    /** Switch client detail tab (e.g. expert, interactions) for flagged-item navigation. */
+    onSwitchClientTab?: (tabId: string) => void;
+    /** Pending case probability after choosing “conversation” on high-probability gate; save when user flags a message. */
+    pendingProbabilityValues?: ProbabilitySlidersValues | null;
+    pendingProbabilitySaving?: boolean;
+    onDismissPendingProbability?: () => void;
 }
 
 const ClientHeader: React.FC<ClientHeaderProps> = ({
@@ -174,6 +221,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     disableCategoryModal = false,
     onCombineLeads,
     onOpenWhatsAppForContact,
+    flaggedConversationCount = 0,
+    onSwitchClientTab,
+    pendingProbabilityValues = null,
+    pendingProbabilitySaving = false,
+    onDismissPendingProbability,
 }) => {
     const navigate = useNavigate();
     const [isEditingCategory, setIsEditingCategory] = useState(false);
@@ -199,6 +251,124 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             cancelled = true;
         };
     }, [selectedClient?.id, selectedClient?.lead_type]);
+
+    const { user, userFullName } = useAuthContext();
+    const [publicUserId, setPublicUserId] = useState<string | null>(null);
+    /** lead_field_key → metadata (own flags; RLS). */
+    const [leadFieldFlagMeta, setLeadFieldFlagMeta] = useState<Map<string, ContentFlagMeta>>(() => new Map());
+    const [flagTypes, setFlagTypes] = useState<FlagTypeRow[]>([]);
+    const [tagsModalOpen, setTagsModalOpen] = useState(false);
+    const [leadTags, setLeadTags] = useState<string[]>([]);
+
+    useEffect(() => {
+        if (!user?.id) {
+            setPublicUserId(null);
+            return;
+        }
+        let cancelled = false;
+        void fetchPublicUserId(supabase, user.id).then((id) => {
+            if (!cancelled) setPublicUserId(id);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [user?.id]);
+
+    useEffect(() => {
+        if (!publicUserId || !selectedClient?.id) {
+            setLeadFieldFlagMeta(new Map());
+            return;
+        }
+        const isLegacy =
+            selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+        const legacyId = isLegacy
+            ? Number.parseInt(String(selectedClient.id).replace(/^legacy_/, ''), 10)
+            : null;
+        const newUuid = !isLegacy && selectedClient.id != null ? String(selectedClient.id) : null;
+        let cancelled = false;
+        void fetchLeadFieldFlagsForLead(supabase, publicUserId, {
+            newLeadId: newUuid || undefined,
+            legacyLeadId: legacyId != null && !Number.isNaN(legacyId) ? legacyId : undefined,
+        }).then((map) => {
+            if (!cancelled) setLeadFieldFlagMeta(map);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [publicUserId, selectedClient?.id, selectedClient?.lead_type]);
+
+    useEffect(() => {
+        if (!selectedClient?.id) {
+            setLeadTags([]);
+            return;
+        }
+        const rawId = String((selectedClient as any)?.id ?? '');
+        const isLegacy =
+            (selectedClient as any)?.lead_type === 'legacy' ||
+            rawId.startsWith('legacy_') ||
+            (rawId !== '' && !rawId.includes('-') && /^\d+$/.test(rawId));
+
+        let cancelled = false;
+        void (async () => {
+            try {
+                if (isLegacy) {
+                    const legacyId = parseInt(rawId.replace(/^legacy_/, ''), 10);
+                    if (!legacyId || Number.isNaN(legacyId)) {
+                        if (!cancelled) setLeadTags([]);
+                        return;
+                    }
+                    const { data, error } = await supabase
+                        .from('leads_lead_tags')
+                        .select('misc_leadtag(name)')
+                        .eq('lead_id', legacyId);
+                    if (error) throw error;
+                    const tags =
+                        (data || [])
+                            .map((r: any) =>
+                                Array.isArray(r.misc_leadtag) ? r.misc_leadtag[0]?.name : r.misc_leadtag?.name
+                            )
+                            .filter(Boolean) ?? [];
+                    if (!cancelled) setLeadTags(tags);
+                    return;
+                }
+
+                for (const col of ['newlead_id', 'new_lead_id'] as const) {
+                    const { data, error } = await supabase
+                        .from('leads_lead_tags')
+                        .select('misc_leadtag(name)')
+                        .eq(col, rawId);
+                    if (!error) {
+                        const tags =
+                            (data || [])
+                                .map((r: any) =>
+                                    Array.isArray(r.misc_leadtag) ? r.misc_leadtag[0]?.name : r.misc_leadtag?.name
+                                )
+                                .filter(Boolean) ?? [];
+                        if (!cancelled) setLeadTags(tags);
+                        return;
+                    }
+                }
+
+                if (!cancelled) setLeadTags(normalizeTagsValue((selectedClient as any)?.tags));
+            } catch {
+                if (!cancelled) setLeadTags(normalizeTagsValue((selectedClient as any)?.tags));
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [selectedClient?.id, (selectedClient as any)?.lead_type]);
+
+    useEffect(() => {
+        let cancelled = false;
+        void fetchFlagTypes(supabase).then((rows) => {
+            if (!cancelled) setFlagTypes(rows);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     // Local state for employees (matching RolesTab pattern)
     const [localAllEmployees, setLocalAllEmployees] = useState<any[]>(allEmployees || []);
@@ -954,7 +1124,39 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         navigate(`/clients/${encodedIdentifier}/history`);
     };
 
+    const goToFlaggedExpertOpinion = () => {
+        onSwitchClientTab?.('expert');
+        window.setTimeout(() => {
+            document.getElementById('expert-opinion-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 400);
+    };
+    const goToFlaggedHandlerOpinion = () => {
+        onSwitchClientTab?.('expert');
+        window.setTimeout(() => {
+            document.getElementById('handler-opinion-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 400);
+    };
+    const goToFlaggedInteractions = () => {
+        onSwitchClientTab?.('interactions');
+    };
+
+    const openFlaggedConversationsModal = () => {
+        onSwitchClientTab?.('interactions');
+        // Give InteractionsTab a moment to mount after tab switch.
+        window.setTimeout(() => {
+            window.dispatchEvent(new Event('rmq:open-flagged-conversations'));
+        }, 250);
+    };
+
     if (!selectedClient) return null;
+
+    const flaggedByLabel = userFullName ?? user?.email ?? 'You';
+
+    // `flaggedConversationCount` is kept in sync by InteractionsTab and represents the total flagged items
+    // on this lead (flagged conversations + flagged lead fields). Fallback to leadField-only flags when
+    // InteractionsTab hasn't reported yet.
+    const totalFlagBadge = flaggedConversationCount > 0 ? flaggedConversationCount : leadFieldFlagMeta.size;
+    const tagsCount = leadTags.length;
 
     const applicantsCount =
         (selectedClient as any)?.no_of_applicants || selectedClient?.number_of_applicants_meeting || null;
@@ -1009,34 +1211,31 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </>
                                 )}
                             </div>
-                            <div className={`${META_GREY_BOX} w-full max-w-md`}>
-                                <div className={META_GREY_INNER}>
-                                    <TagIcon className="w-4 h-4 shrink-0" />
-                                    <span
-                                        className={
-                                            disableCategoryModal
-                                                ? 'min-w-0 max-w-[min(100%,28rem)] truncate'
-                                                : 'min-w-0 max-w-[min(100%,28rem)] cursor-pointer truncate hover:text-indigo-600'
-                                        }
-                                        onClick={
-                                            disableCategoryModal
-                                                ? undefined
-                                                : () => {
-                                                      setShowCategoryModal(true);
-                                                      setCategoryInputValue(displayCategory);
-                                                  }
-                                        }
-                                    >
-                                        {displayCategory}
-                                    </span>
-                                </div>
+                            <div className="flex w-full max-w-md items-center justify-center">
+                                <button
+                                    type="button"
+                                    className={
+                                        disableCategoryModal
+                                            ? 'inline-flex min-w-0 max-w-[min(100%,28rem)] cursor-default truncate rounded-full border border-gray-200 bg-gray-100 px-3 py-1 text-left text-sm font-medium text-gray-900 shadow-sm dark:border-gray-600 dark:bg-gray-800/90 dark:text-gray-100'
+                                            : 'inline-flex min-w-0 max-w-[min(100%,28rem)] truncate rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-left text-sm font-medium text-gray-900 shadow-sm hover:text-indigo-600 dark:border-gray-600 dark:bg-gray-800/90 dark:text-gray-100'
+                                    }
+                                    onClick={
+                                        disableCategoryModal
+                                            ? undefined
+                                            : () => {
+                                                  setShowCategoryModal(true);
+                                                  setCategoryInputValue(displayCategory);
+                                              }
+                                    }
+                                >
+                                    {displayCategory}
+                                </button>
                             </div>
                             {selectedClient.topic && (
-                                <div className={`${META_GREY_BOX} w-full max-w-md`}>
-                                    <div className={META_GREY_INNER}>
-                                        <DocumentTextIcon className="w-4 h-4 shrink-0" />
-                                        <span className="max-w-[min(100%,28rem)] truncate">{selectedClient.topic}</span>
-                                    </div>
+                                <div className="flex w-full max-w-md items-center justify-center">
+                                    <span className="inline-flex min-w-0 max-w-[min(100%,28rem)] truncate rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-left text-sm font-medium text-gray-900 shadow-sm dark:border-gray-600 dark:bg-gray-800/90 dark:text-gray-100">
+                                        {selectedClient.topic}
+                                    </span>
                                 </div>
                             )}
                         </div>
@@ -1151,6 +1350,35 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </button>
                                     <button
                                         type="button"
+                                        onClick={() => setTagsModalOpen(true)}
+                                        className="btn btn-ghost btn-sm relative h-auto min-h-0 p-1.5 text-purple-700 hover:bg-purple-50 dark:text-purple-200 dark:hover:bg-purple-900/30"
+                                        title="Tags"
+                                        aria-label="Tags"
+                                    >
+                                        <TagIcon className="h-6 w-6" />
+                                        {tagsCount > 0 && (
+                                            <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-purple-600 px-1 text-[11px] font-bold text-white">
+                                                {tagsCount > 99 ? '99+' : tagsCount}
+                                            </span>
+                                        )}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={openFlaggedConversationsModal}
+                                        disabled={!publicUserId}
+                                        className="btn btn-ghost btn-sm relative h-auto min-h-0 p-1.5 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30"
+                                        title={publicUserId ? 'Flagged items on this lead' : 'Sign in to use flags'}
+                                        aria-label="Flagged items"
+                                    >
+                                        <FlagIcon className="h-6 w-6" />
+                                        {totalFlagBadge > 0 && (
+                                            <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-white">
+                                                {totalFlagBadge > 99 ? '99+' : totalFlagBadge}
+                                            </span>
+                                        )}
+                                    </button>
+                                    <button
+                                        type="button"
                                         onClick={handleHistoryClick}
                                         className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
                                         title="View History"
@@ -1177,28 +1405,27 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             <div className="flex w-full min-w-0 flex-col gap-5">
                                 <div className="flex flex-col min-w-0 gap-2">
                                     <div className="flex min-h-[1.75rem] flex-wrap items-center gap-2">
-                                        <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold shrink-0">Email</p>
                                         {displayEmail && (
                                             <div className="flex flex-wrap items-center gap-0.5 shrink-0">
                                                 <button
                                                     type="button"
-                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-gray-600 hover:bg-base-200 transition-colors duration-150 active:scale-[0.98]"
+                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
                                                     title="Copy email"
                                                     aria-label="Copy email"
                                                     onClick={() => {
                                                         void navigator.clipboard.writeText(displayEmail).then(() => toast.success('Email copied'));
                                                     }}
                                                 >
-                                                    <DocumentDuplicateIcon className="w-4 h-4" />
+                                                    <ClipboardDocumentIcon className="h-5 w-5" />
                                                 </button>
                                                 <button
                                                     type="button"
-                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-indigo-600 hover:bg-indigo-50 transition-colors duration-150 active:scale-[0.98]"
+                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-indigo-600 hover:bg-indigo-50 transition-colors duration-150 active:scale-[0.98]"
                                                     title="Compose email"
                                                     aria-label="Compose email"
                                                     onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
                                                 >
-                                                    <EnvelopeIcon className="w-4 h-4" />
+                                                    <EnvelopeIcon className="h-5 w-5" />
                                                 </button>
                                             </div>
                                         )}
@@ -1212,38 +1439,37 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 </div>
                                 <div className="flex flex-col min-w-0 gap-2">
                                     <div className="flex min-h-[1.75rem] flex-wrap items-center gap-2">
-                                        <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold shrink-0">Phone</p>
                                         {displayPhone && (
                                             <div className="flex flex-wrap items-center gap-0.5 shrink-0">
                                                 <button
                                                     type="button"
-                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-gray-600 hover:bg-base-200 transition-colors duration-150 active:scale-[0.98]"
+                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
                                                     title="Copy phone number"
                                                     aria-label="Copy phone number"
                                                     onClick={() => {
                                                         void navigator.clipboard.writeText(displayPhone).then(() => toast.success('Phone copied'));
                                                     }}
                                                 >
-                                                    <DocumentDuplicateIcon className="w-4 h-4" />
+                                                    <ClipboardDocumentIcon className="h-5 w-5" />
                                                 </button>
                                                 <button
                                                     type="button"
-                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-gray-700 hover:bg-base-200 transition-colors duration-150 active:scale-[0.98]"
+                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-700 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
                                                     title="Call — open call options"
                                                     aria-label="Call — open call options"
                                                     onClick={handleCallPrimaryPhone}
                                                 >
-                                                    <PhoneIcon className="w-4 h-4" />
+                                                    <PhoneArrowUpRightIcon className="h-5 w-5" />
                                                 </button>
                                                 {onOpenWhatsAppForContact && (
                                                     <button
                                                         type="button"
-                                                        className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-emerald-700 hover:bg-emerald-50 transition-colors duration-150 active:scale-[0.98]"
+                                                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-emerald-700 hover:bg-emerald-50 transition-colors duration-150 active:scale-[0.98]"
                                                         title="Open WhatsApp"
                                                         aria-label="Open WhatsApp"
                                                         onClick={() => void handleHeaderWhatsAppClick()}
                                                     >
-                                                        <FaWhatsapp className="w-[18px] h-[18px]" aria-hidden />
+                                                        <FaWhatsapp className="h-5 w-5" aria-hidden />
                                                     </button>
                                                 )}
                                             </div>
@@ -1344,7 +1570,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {unpaidOutstandingPair !== null && unpaidGross > 0 && (
                                             <div className="pt-2 border-t border-gray-200/80 dark:border-gray-600">
                                                 <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">
-                                                    Outstanding
+                                                    Remaining Lead Value
                                                 </p>
                                                 <div className="flex items-end justify-end gap-2">
                                                     <p className="text-lg font-bold leading-none text-amber-900 dark:text-amber-200">
@@ -1415,28 +1641,27 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             <div className="flex max-w-xl flex-col gap-2">
                                 <div className="flex flex-col min-w-0 gap-1">
                                     <div className="flex min-h-[1.75rem] flex-wrap items-center gap-2">
-                                        <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold shrink-0">Email</p>
                                         {displayEmail && (
                                             <div className="flex flex-wrap items-center gap-0.5 shrink-0">
                                                 <button
                                                     type="button"
-                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-gray-600 hover:bg-base-200 transition-colors duration-150 active:scale-[0.98]"
+                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
                                                     title="Copy email"
                                                     aria-label="Copy email"
                                                     onClick={() => {
                                                         void navigator.clipboard.writeText(displayEmail).then(() => toast.success('Email copied'));
                                                     }}
                                                 >
-                                                    <DocumentDuplicateIcon className="w-4 h-4" />
+                                                    <ClipboardDocumentIcon className="h-5 w-5" />
                                                 </button>
                                                 <button
                                                     type="button"
-                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-indigo-600 hover:bg-indigo-50 transition-colors duration-150 active:scale-[0.98]"
+                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-indigo-600 hover:bg-indigo-50 transition-colors duration-150 active:scale-[0.98]"
                                                     title="Compose email"
                                                     aria-label="Compose email"
                                                     onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
                                                 >
-                                                    <EnvelopeIcon className="w-4 h-4" />
+                                                    <EnvelopeIcon className="h-5 w-5" />
                                                 </button>
                                             </div>
                                         )}
@@ -1447,38 +1672,37 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 </div>
                                 <div className="flex flex-col min-w-0 gap-1">
                                     <div className="flex min-h-[1.75rem] flex-wrap items-center gap-2">
-                                        <p className="text-xs text-gray-400 uppercase tracking-wide font-semibold shrink-0">Phone</p>
                                         {displayPhone && (
                                             <div className="flex flex-wrap items-center gap-0.5 shrink-0">
                                                 <button
                                                     type="button"
-                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-gray-600 hover:bg-base-200 transition-colors duration-150 active:scale-[0.98]"
+                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
                                                     title="Copy phone number"
                                                     aria-label="Copy phone number"
                                                     onClick={() => {
                                                         void navigator.clipboard.writeText(displayPhone).then(() => toast.success('Phone copied'));
                                                     }}
                                                 >
-                                                    <DocumentDuplicateIcon className="w-4 h-4" />
+                                                    <ClipboardDocumentIcon className="h-5 w-5" />
                                                 </button>
                                                 <button
                                                     type="button"
-                                                    className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-gray-700 hover:bg-base-200 transition-colors duration-150 active:scale-[0.98]"
+                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-700 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
                                                     title="Call — open call options"
                                                     aria-label="Call — open call options"
                                                     onClick={handleCallPrimaryPhone}
                                                 >
-                                                    <PhoneIcon className="w-4 h-4" />
+                                                    <PhoneArrowUpRightIcon className="h-5 w-5" />
                                                 </button>
                                                 {onOpenWhatsAppForContact && (
                                                     <button
                                                         type="button"
-                                                        className="btn btn-ghost btn-sm btn-square h-8 w-8 min-h-0 rounded-lg text-emerald-700 hover:bg-emerald-50 transition-colors duration-150 active:scale-[0.98]"
+                                                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-emerald-700 hover:bg-emerald-50 transition-colors duration-150 active:scale-[0.98]"
                                                         title="Open WhatsApp"
                                                         aria-label="Open WhatsApp"
                                                         onClick={() => void handleHeaderWhatsAppClick()}
                                                     >
-                                                        <FaWhatsapp className="w-[18px] h-[18px]" aria-hidden />
+                                                        <FaWhatsapp className="h-5 w-5" aria-hidden />
                                                     </button>
                                                 )}
                                             </div>
@@ -1529,27 +1753,31 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </>
                                 )}
                             </div>
-                            <div className={`${META_GREY_BOX} w-full max-w-lg mx-auto`}>
-                                <div className={META_GREY_INNER}>
-                                    <TagIcon className="w-4 h-4 shrink-0" />
-                                    <span
-                                        className={`min-w-0 max-w-[min(100%,28rem)] truncate ${disableCategoryModal ? 'cursor-default' : 'cursor-pointer hover:text-indigo-600'}`}
-                                        onClick={disableCategoryModal ? undefined : () => {
-                                            setShowCategoryModal(true);
-                                            setCategoryInputValue(displayCategory);
-                                        }}
-                                    >
-                                        {displayCategory}
-                                    </span>
-                                    {!disableCategoryModal && <PencilIcon className="h-3 w-3 shrink-0 opacity-60" />}
-                                </div>
+                            <div className="flex w-full max-w-lg mx-auto items-center justify-center">
+                                <button
+                                    type="button"
+                                    className={`min-w-0 max-w-[min(100%,28rem)] truncate text-left text-base font-medium text-gray-900 dark:text-gray-100 ${
+                                        disableCategoryModal
+                                            ? 'cursor-default rounded-full border border-gray-200 bg-gray-50 px-3 py-1 shadow-sm dark:border-gray-600 dark:bg-gray-800/90'
+                                            : 'rounded-full border border-gray-200 bg-gray-50 px-3 py-1 shadow-sm hover:text-indigo-600 dark:border-gray-600 dark:bg-gray-800/90'
+                                    }`}
+                                    onClick={
+                                        disableCategoryModal
+                                            ? undefined
+                                            : () => {
+                                                  setShowCategoryModal(true);
+                                                  setCategoryInputValue(displayCategory);
+                                              }
+                                    }
+                                >
+                                    {displayCategory}
+                                </button>
                             </div>
                             {selectedClient.topic && (
-                                <div className={`${META_GREY_BOX} w-full max-w-lg mx-auto`}>
-                                    <div className={META_GREY_INNER}>
-                                        <DocumentTextIcon className="w-4 h-4 shrink-0" />
-                                        <span className="max-w-[min(100%,28rem)] truncate">{selectedClient.topic}</span>
-                                    </div>
+                                <div className="flex w-full max-w-lg mx-auto items-center justify-center">
+                                    <span className="inline-flex min-w-0 max-w-[min(100%,28rem)] truncate rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-left text-base font-medium text-gray-900 shadow-sm dark:border-gray-600 dark:bg-gray-800/90 dark:text-gray-100">
+                                        {selectedClient.topic}
+                                    </span>
                                 </div>
                             )}
                         </div>
@@ -1568,6 +1796,35 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         aria-label="View Timeline"
                                     >
                                         <ClockIcon className="h-6 w-6" />
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setTagsModalOpen(true)}
+                                        className="btn btn-ghost btn-sm relative h-auto min-h-0 p-1.5 text-purple-700 hover:bg-purple-50 dark:text-purple-200 dark:hover:bg-purple-900/30"
+                                        title="Tags"
+                                        aria-label="Tags"
+                                    >
+                                        <TagIcon className="h-6 w-6" />
+                                        {tagsCount > 0 && (
+                                            <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-purple-600 px-1 text-[11px] font-bold text-white">
+                                                {tagsCount > 99 ? '99+' : tagsCount}
+                                            </span>
+                                        )}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={openFlaggedConversationsModal}
+                                        disabled={!publicUserId}
+                                        className="btn btn-ghost btn-sm relative h-auto min-h-0 p-1.5 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30"
+                                        title={publicUserId ? 'Flagged items on this lead' : 'Sign in to use flags'}
+                                        aria-label="Flagged items"
+                                    >
+                                        <FlagIcon className="h-6 w-6" />
+                                        {totalFlagBadge > 0 && (
+                                            <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-white">
+                                                {totalFlagBadge > 99 ? '99+' : totalFlagBadge}
+                                            </span>
+                                        )}
                                     </button>
                                     <button
                                         type="button"
@@ -1791,7 +2048,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {unpaidOutstandingPairDesktop !== null && unpaidGrossDesktop > 0 && (
                                             <div className="pt-1 border-t border-gray-200/80 dark:border-gray-600">
                                                 <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">
-                                                    Outstanding
+                                                Remaining Lead Value
                                                 </p>
                                                 <div className="flex items-end justify-end gap-2">
                                                     <p className="text-2xl font-bold leading-none text-amber-900 dark:text-amber-200">
@@ -2724,6 +2981,75 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     phoneNumber={callPhoneNumber}
                     leadName={callContactName}
                 />
+
+                <LeadTagsModal
+                    isOpen={tagsModalOpen}
+                    onClose={() => setTagsModalOpen(false)}
+                    leadId={(selectedClient as any)?.id}
+                    isLegacyLead={
+                        (() => {
+                            const rawId = String((selectedClient as any)?.id ?? '');
+                            return (
+                                (selectedClient as any)?.lead_type === 'legacy' ||
+                                rawId.startsWith('legacy_') ||
+                                (rawId !== '' && !rawId.includes('-') && /^\d+$/.test(rawId))
+                            );
+                        })()
+                    }
+                    initialTags={leadTags}
+                    onSaved={async (next) => {
+                        setLeadTags(next);
+                        const id = (selectedClient as any)?.id;
+                        if (id != null) {
+                            await refreshClientData(id);
+                        }
+                    }}
+                />
+
+                {pendingProbabilityValues &&
+                    createPortal(
+                        <div className="pointer-events-auto fixed bottom-4 right-4 z-[200] w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-amber-200/90 bg-amber-50/95 p-4 shadow-xl backdrop-blur-sm dark:border-amber-700/50 dark:bg-amber-950/90">
+                            <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0">
+                                    <p className="text-sm font-semibold text-amber-950 dark:text-amber-100">
+                                        Case probability pending
+                                    </p>
+                                    <p className="mt-1 text-xs text-amber-900/85 dark:text-amber-200/90">
+                                        {pendingProbabilitySaving
+                                            ? 'Saving your probability…'
+                                            : flaggedConversationCount > 0
+                                              ? 'Saving…'
+                                              : 'Flag a message on the Interactions timeline — your probability will save automatically.'}
+                                    </p>
+                                    {pendingProbabilitySaving ? (
+                                        <div className="mt-2 flex items-center gap-2">
+                                            <span className="loading loading-spinner loading-sm text-amber-800" />
+                                        </div>
+                                    ) : (
+                                        <p className="mt-2 text-lg font-bold tabular-nums text-amber-950 dark:text-amber-50">
+                                            {caseProbabilityFromFactors(
+                                                pendingProbabilityValues.legal,
+                                                pendingProbabilityValues.seriousness,
+                                                pendingProbabilityValues.financial
+                                            )}
+                                            %
+                                        </p>
+                                    )}
+                                </div>
+                                {onDismissPendingProbability && !pendingProbabilitySaving && (
+                                    <button
+                                        type="button"
+                                        className="btn btn-ghost btn-xs btn-square shrink-0 text-amber-900 dark:text-amber-100"
+                                        onClick={onDismissPendingProbability}
+                                        aria-label="Dismiss"
+                                    >
+                                        <XMarkIcon className="h-4 w-4" />
+                                    </button>
+                                )}
+                            </div>
+                        </div>,
+                        document.body
+                    )}
             </div>
         </div>
     );

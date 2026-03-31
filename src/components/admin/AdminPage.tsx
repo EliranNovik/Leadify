@@ -28,6 +28,7 @@ import MeetingLocationsManager from './MeetingLocationsManager';
 import LanguagesManager from './LanguagesManager';
 import HolidaysManager from './HolidaysManager';
 import LeadTagsManager from './LeadTagsManager';
+import FlagTypesManager from './FlagTypesManager';
 import LeadStageReasonsManager from './LeadStageReasonsManager';
 import MainCategoriesManager from './MainCategoriesManager';
 import SubCategoriesManager from './SubCategoriesManager';
@@ -90,7 +91,21 @@ const ADMIN_TABS: AdminTab[] = [
     label: 'Misc',
     icon: Cog6ToothIcon,
     subcategories: [
-      'Bonus formulas', 'Contract templates', 'Countries', 'Email Templates', 'Email Templates Placement', 'Holidays', 'Languages', 'Lead Stage Reasons', 'Lead Sources', 'Lead Tags', 'Main Categories', 'Public messages', 'sub categories', 'whatsapp template olds'
+      'Bonus formulas',
+      'Contract templates',
+      'Countries',
+      'Email Templates',
+      'Email Templates Placement',
+      'Flag Types',
+      'Holidays',
+      'Languages',
+      'Lead Stage Reasons',
+      'Lead Sources',
+      'Lead Tags',
+      'Main Categories',
+      'Public messages',
+      'sub categories',
+      'whatsapp template olds',
     ],
     requiresAdmin: false, // Everyone can access Misc
   },
@@ -1552,6 +1567,9 @@ const AdminPage: React.FC = () => {
                 ) : selectedTab?.label === 'Misc' &&
                   selectedTab?.subcategories[selected.sub] === 'Lead Tags' ? (
                   <div className="w-full"><LeadTagsManager /></div>
+                ) : selectedTab?.label === 'Misc' &&
+                  selectedTab?.subcategories[selected.sub] === 'Flag Types' ? (
+                  <div className="w-full"><FlagTypesManager /></div>
                 ) : selectedTab?.label === 'Misc' &&
                   selectedTab?.subcategories[selected.sub] === 'Lead Stage Reasons' ? (
                   <div className="w-full"><LeadStageReasonsManager /></div>

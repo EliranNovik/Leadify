@@ -1,8 +1,38 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { ClientTabProps } from '../../types/client';
-import { InformationCircleIcon, ExclamationCircleIcon, PencilIcon, CheckIcon, XMarkIcon, PencilSquareIcon, PlusIcon, TrashIcon, ScaleIcon, ExclamationTriangleIcon, BanknotesIcon } from '@heroicons/react/24/outline';
+import {
+  InformationCircleIcon,
+  ExclamationCircleIcon,
+  PencilIcon,
+  CheckIcon,
+  XMarkIcon,
+  PencilSquareIcon,
+  PlusIcon,
+  TrashIcon,
+  ScaleIcon,
+  ExclamationTriangleIcon,
+  BanknotesIcon,
+  FlagIcon,
+  ChatBubbleLeftRightIcon,
+  UserIcon,
+} from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
+import { toast } from 'react-hot-toast';
+import { useAuthContext } from '../../contexts/AuthContext';
+import {
+  fetchPublicUserId,
+  fetchLeadFieldFlagsForLead,
+  setLeadFieldFlagged,
+  setLegacyLeadFieldFlagged,
+  FLAG_TYPE_PROBABILITY,
+  type ContentFlagMeta,
+} from '../../lib/userContentFlags';
+import {
+  readPendingProbSession,
+  writePendingProbSession,
+  clearPendingProbSession,
+} from '../../lib/pendingProbabilityStorage';
 import ProbabilitySlidersModal, {
   caseProbabilityFromFactors,
   clampProbabilityPart,
@@ -195,19 +225,6 @@ const isLegacyLead = (client: any) => {
   return client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
 };
 
-const normalizeTagsValue = (value: unknown): string[] => {
-  if (!value) return [];
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => String(item || '').trim())
-      .filter(Boolean);
-  }
-  return String(value)
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean);
-};
-
 // Legacy probability may be numeric text or labels like L/M/H/VH (or Low/Medium/High/Very High).
 const parseProbabilityValue = (value: unknown): number | null => {
   if (value == null || value === '') return null;
@@ -230,13 +247,68 @@ const parseProbabilityValue = (value: unknown): number | null => {
   return null;
 };
 
-const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = false }) => {
+const InfoTab: React.FC<ClientTabProps> = ({
+  client,
+  onClientUpdate,
+  readOnly = false,
+  onSwitchClientTab,
+  flaggedConversationCount = 0,
+  onProbabilityConversationPending,
+}) => {
+  const { user } = useAuthContext();
+  const authUserId = user?.id ?? null;
+  const [publicUserId, setPublicUserId] = useState<string | null>(null);
+  const [leadFieldFlagMeta, setLeadFieldFlagMeta] = useState<Map<string, ContentFlagMeta>>(() => new Map());
+  const [pendingProbabilityValues, setPendingProbabilityValues] = useState<ProbabilitySlidersValues | null>(null);
+  const [highProbGateOpen, setHighProbGateOpen] = useState(false);
+  const [flagChooserOpen, setFlagChooserOpen] = useState(false);
+
+  useEffect(() => {
+    if (!authUserId) {
+      setPublicUserId(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchPublicUserId(supabase, authUserId).then((id) => {
+      if (!cancelled) setPublicUserId(id);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [authUserId]);
+
+  useEffect(() => {
+    if (!publicUserId || !client?.id) {
+      setLeadFieldFlagMeta(new Map());
+      return;
+    }
+    const isLeg = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
+    const legacyId = isLeg
+      ? Number.parseInt(String(client.id).replace(/^legacy_/, ''), 10)
+      : null;
+    const newUuid = !isLeg && client.id != null ? String(client.id) : null;
+    let cancelled = false;
+    void fetchLeadFieldFlagsForLead(supabase, publicUserId, {
+      newLeadId: newUuid || undefined,
+      legacyLeadId: legacyId != null && !Number.isNaN(legacyId) ? legacyId : undefined,
+    }).then((map) => {
+      if (!cancelled) setLeadFieldFlagMeta(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [publicUserId, client?.id, client?.lead_type]);
+
   if (!client) {
     return <div className="flex justify-center items-center h-32"><span className="loading loading-spinner loading-md text-primary"></span></div>;
   }
 
   // Check if this is a legacy lead
   const isLegacy = isLegacyLead(client);
+  const legacyLeadNumericId = isLegacy
+    ? Number.parseInt(String(client.id).replace(/^legacy_/, ''), 10)
+    : null;
+  const newLeadUuidForFlags = !isLegacy && client.id != null ? String(client.id) : null;
 
   // Get field values with proper mapping for legacy leads
   const getProbability = () => {
@@ -254,14 +326,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     // For legacy leads, use 'notes' field instead of 'general_notes'
     const notes = isLegacy ? getFieldValue(client, 'notes') : getFieldValue(client, 'general_notes');
     return notes || '';
-  };
-
-  const getTags = () => {
-    // Prefer tags from join (client.tags set by parent when lead fetched with leads_lead_tags + misc_leadtag join)
-    const fromJoin = getFieldValue(client, 'tags');
-    if (fromJoin) return normalizeTagsValue(fromJoin);
-    // No category fallback: tags box should only reflect actual tag relations.
-    return [];
   };
 
   const getAnchor = () => {
@@ -466,7 +530,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
   const [probabilitySaving, setProbabilitySaving] = useState(false);
   const [isEditingSpecialNotes, setIsEditingSpecialNotes] = useState(false);
   const [isEditingGeneralNotes, setIsEditingGeneralNotes] = useState(false);
-  const [isEditingTags, setIsEditingTags] = useState(false);
   const [isEditingAnchor, setIsEditingAnchor] = useState(false);
   const [isEditingFacts, setIsEditingFacts] = useState(false);
   const [eligible, setEligible] = useState(getEligibleStatus());
@@ -480,15 +543,12 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
 
   const [specialNotes, setSpecialNotes] = useState(getSpecialNotes());
   const [generalNotes, setGeneralNotes] = useState(getGeneralNotes());
-  const [tags, setTags] = useState<string[]>(getTags());
   const [anchor, setAnchor] = useState(getAnchor());
   const [factsOfCase, setFactsOfCase] = useState(getFacts());
   const [fileId, setFileId] = useState(getFileId());
 
   const [editedSpecialNotes, setEditedSpecialNotes] = useState(specialNotes.join('\n'));
   const [editedGeneralNotes, setEditedGeneralNotes] = useState(generalNotes);
-  const [editedTags, setEditedTags] = useState<string[]>(tags);
-  const [tagSearchTerm, setTagSearchTerm] = useState('');
   const [editedAnchor, setEditedAnchor] = useState(anchor);
   const [editedFacts, setEditedFacts] = useState(() => {
     const facts = getFacts();
@@ -497,9 +557,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     }
     return '';
   });
-
-  // Tags state and functionality
-  const [allTags, setAllTags] = useState<any[]>([]);
 
   const [isMdUp, setIsMdUp] = useState(() =>
     typeof window !== 'undefined' ? window.matchMedia('(min-width: 768px)').matches : true
@@ -512,238 +569,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
   }, []);
   /** On viewports &lt; md, open edit flows in a modal instead of inline */
   const useMobileEditModal = !readOnly && !isMdUp;
-
-  // Fetch all tags on mount
-  useEffect(() => {
-    const fetchTags = async () => {
-      try {
-        const { data: tagsData, error: tagsError } = await supabase
-          .from('misc_leadtag')
-          .select('id, name, order')
-          .eq('active', true)
-          .order('order', { ascending: true });
-
-        if (!tagsError && tagsData) {
-          setAllTags(tagsData);
-        }
-      } catch (error) {
-        console.error('Error fetching tags:', error);
-      }
-    };
-
-    fetchTags();
-  }, []);
-
-  // Fetch current lead tags
-  const fetchCurrentLeadTags = async (leadId: string | number) => {
-    try {
-      const isLegacyById = leadId.toString().startsWith('legacy_');
-      const isLegacyLeadRecord = isLegacy || isLegacyById;
-      if (INFOTAB_DEBUG) {
-        console.log('🏷️ InfoTab fetchCurrentLeadTags start', {
-          leadId,
-          clientId: client?.id,
-          leadType: client?.lead_type,
-          isLegacyById,
-          isLegacyLeadRecord,
-        });
-      }
-
-      if (isLegacyLeadRecord) {
-        const legacyId = isLegacyById ? parseInt(leadId.toString().replace('legacy_', ''), 10) : Number(leadId);
-        if (Number.isNaN(legacyId)) {
-          throw new Error(`Invalid legacy lead id for tags: ${leadId}`);
-        }
-        if (INFOTAB_DEBUG) {
-          console.log('🏷️ InfoTab fetch legacy tags query', { legacyId });
-        }
-        const { data, error } = await supabase
-          .from('leads_lead_tags')
-          .select(`
-            id,
-            leadtag_id,
-            misc_leadtag (
-              id,
-              name
-            )
-          `)
-          .eq('lead_id', legacyId);
-
-        if (error) throw error;
-        if (INFOTAB_DEBUG) {
-          console.log('🏷️ InfoTab fetch legacy tags result', { legacyId, count: data?.length || 0, data });
-        }
-        if (data) {
-          const tags = data
-            .map((item) => {
-              const rel = item.misc_leadtag as any;
-              if (Array.isArray(rel)) return rel[0]?.name || null;
-              return rel?.name || null;
-            })
-            .filter(Boolean);
-          return tags;
-        }
-      } else {
-        if (INFOTAB_DEBUG) {
-          console.log('🏷️ InfoTab fetch new lead tags query', { leadId });
-        }
-        const { data, error } = await supabase
-          .from('leads_lead_tags')
-          .select(`
-            id,
-            leadtag_id,
-            misc_leadtag (
-              id,
-              name
-            )
-          `)
-          .eq('newlead_id', leadId);
-
-        if (error) throw error;
-        if (INFOTAB_DEBUG) {
-          console.log('🏷️ InfoTab fetch new lead tags result', { leadId, count: data?.length || 0, data });
-        }
-        if (data) {
-          const tags = data
-            .map((item) => {
-              const rel = item.misc_leadtag as any;
-              if (Array.isArray(rel)) return rel[0]?.name || null;
-              return rel?.name || null;
-            })
-            .filter(Boolean);
-          return tags;
-        }
-      }
-      return [] as string[];
-    } catch (error) {
-      console.error('❌ InfoTab error fetching current lead tags:', {
-        leadId,
-        clientId: client?.id,
-        leadType: client?.lead_type,
-        error,
-      });
-      return [] as string[];
-    }
-  };
-
-  // Save lead tags
-  const saveLeadTags = async (leadId: string | number, selectedTags: string[]) => {
-    try {
-      const isLegacyById = leadId.toString().startsWith('legacy_');
-      const isLegacyLeadRecord = isLegacy || isLegacyById;
-      const normalizedTagNames = Array.from(
-        new Set(selectedTags.map((tag) => tag.trim()).filter(Boolean))
-      );
-      if (INFOTAB_DEBUG) {
-        console.log('🏷️ InfoTab saveLeadTags start', {
-          leadId,
-          clientId: client?.id,
-          leadType: client?.lead_type,
-          isLegacyById,
-          isLegacyLeadRecord,
-          selectedTags,
-          normalizedTagNames,
-          allTagsCount: allTags.length,
-        });
-      }
-
-      if (isLegacyLeadRecord) {
-        const legacyId = isLegacyById ? parseInt(leadId.toString().replace('legacy_', ''), 10) : Number(leadId);
-        if (Number.isNaN(legacyId)) {
-          throw new Error(`Invalid legacy lead id for tags save: ${leadId}`);
-        }
-        if (INFOTAB_DEBUG) {
-          console.log('🏷️ InfoTab save legacy delete', { legacyId });
-        }
-        const { error: deleteError } = await supabase
-          .from('leads_lead_tags')
-          .delete()
-          .eq('lead_id', legacyId);
-        if (deleteError) throw deleteError;
-
-        if (normalizedTagNames.length > 0) {
-          const tagIds = normalizedTagNames
-            .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
-            .filter(id => id !== undefined);
-          if (INFOTAB_DEBUG) {
-            console.log('🏷️ InfoTab save legacy resolved tagIds', { legacyId, normalizedTagNames, tagIds });
-          }
-
-          if (tagIds.length > 0) {
-            const tagInserts = tagIds.map(tagId => ({
-              lead_id: legacyId,
-              leadtag_id: tagId
-            }));
-            if (INFOTAB_DEBUG) {
-              console.log('🏷️ InfoTab save legacy insert payload', { tagInserts });
-            }
-            const { error: insertError } = await supabase.from('leads_lead_tags').insert(tagInserts);
-            if (insertError) throw insertError;
-          }
-        }
-      } else {
-        if (INFOTAB_DEBUG) {
-          console.log('🏷️ InfoTab save newlead delete', { leadId });
-        }
-        const { error: deleteError } = await supabase
-          .from('leads_lead_tags')
-          .delete()
-          .eq('newlead_id', leadId);
-        if (deleteError) throw deleteError;
-
-        if (normalizedTagNames.length > 0) {
-          const tagIds = normalizedTagNames
-            .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
-            .filter(id => id !== undefined);
-          if (INFOTAB_DEBUG) {
-            console.log('🏷️ InfoTab save newlead resolved tagIds', { leadId, normalizedTagNames, tagIds });
-          }
-
-          if (tagIds.length > 0) {
-            const tagInserts = tagIds.map(tagId => ({
-              newlead_id: leadId,
-              leadtag_id: tagId
-            }));
-            if (INFOTAB_DEBUG) {
-              console.log('🏷️ InfoTab save newlead insert payload', { tagInserts });
-            }
-            const { error: insertError } = await supabase.from('leads_lead_tags').insert(tagInserts);
-            if (insertError) throw insertError;
-          }
-        }
-      }
-      if (INFOTAB_DEBUG) {
-        console.log('✅ InfoTab saveLeadTags done', { leadId, selectedTags: normalizedTagNames });
-      }
-    } catch (error) {
-      console.error('❌ InfoTab error saving tags:', {
-        leadId,
-        clientId: client?.id,
-        leadType: client?.lead_type,
-        selectedTags,
-        error,
-      });
-      throw error;
-    }
-  };
-
-  // Update tags when client changes: use tags from join (client.tags) when present, else fetch
-  useEffect(() => {
-    const fromJoin = getTags();
-    if (fromJoin.length > 0) {
-      setTags(fromJoin);
-      setEditedTags(fromJoin);
-      return;
-    }
-    const loadTags = async () => {
-      const fetchedTags = await fetchCurrentLeadTags(client.id);
-      setTags(fetchedTags);
-      setEditedTags(fetchedTags);
-    };
-    if (client?.id) {
-      loadTags();
-    }
-  }, [client?.id]);
 
   // When factor columns are not loaded yet, keep probability label in sync with client row
   useEffect(() => {
@@ -1015,7 +840,63 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     return () => { cancelled = true; };
   }, [client?.id]);
 
-  const handleProbabilitySave = async (values: ProbabilitySlidersValues) => {
+  const applyLeadFieldFlag = async (
+    fieldKey: 'expert_notes' | 'handler_notes',
+    flagTypeId: number = FLAG_TYPE_PROBABILITY
+  ): Promise<boolean> => {
+    if (!publicUserId) {
+      toast.error('Please sign in to flag.');
+      return false;
+    }
+    if (leadFieldFlagMeta.has(fieldKey)) {
+      toast.success('Already flagged.');
+      return true;
+    }
+    if (isLegacy && legacyLeadNumericId != null && !Number.isNaN(legacyLeadNumericId)) {
+      const { error } = await setLegacyLeadFieldFlagged(
+        supabase,
+        publicUserId,
+        legacyLeadNumericId,
+        fieldKey,
+        true,
+        flagTypeId
+      );
+      if (error) {
+        toast.error(error.message);
+        return false;
+      }
+    } else if (newLeadUuidForFlags) {
+      const { error } = await setLeadFieldFlagged(
+        supabase,
+        publicUserId,
+        newLeadUuidForFlags,
+        fieldKey,
+        true,
+        flagTypeId
+      );
+      if (error) {
+        toast.error(error.message);
+        return false;
+      }
+    } else {
+      toast.error('Unable to save flag for this lead.');
+      return false;
+    }
+    setLeadFieldFlagMeta((prev) => {
+      const next = new Map(prev);
+      next.set(fieldKey, { createdAt: new Date().toISOString(), flagTypeId });
+      return next;
+    });
+    toast.success('Flag saved.');
+    return true;
+  };
+
+  const highProbGateAlreadySatisfied = (): boolean =>
+    leadFieldFlagMeta.has('expert_notes') ||
+    leadFieldFlagMeta.has('handler_notes') ||
+    (flaggedConversationCount ?? 0) > 0;
+
+  const performProbabilitySave = async (values: ProbabilitySlidersValues) => {
     const L = clampProbabilityPart(values.legal);
     const S = clampProbabilityPart(values.seriousness);
     const F = clampProbabilityPart(values.financial);
@@ -1044,11 +925,15 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
 
       if (error) throw error;
 
+      clearPendingProbSession(client);
+
       setProbFactorLegal(L);
       setProbFactorSeriousness(S);
       setProbFactorFinancial(F);
       setProbability(prob);
       setProbabilityModalOpen(false);
+      setHighProbGateOpen(false);
+      setPendingProbabilityValues(null);
 
       if (onClientUpdate) {
         await onClientUpdate();
@@ -1059,6 +944,61 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     } finally {
       setProbabilitySaving(false);
     }
+  };
+
+  const handleProbabilitySave = async (values: ProbabilitySlidersValues) => {
+    if (readOnly) return;
+    const L = clampProbabilityPart(values.legal);
+    const S = clampProbabilityPart(values.seriousness);
+    const F = clampProbabilityPart(values.financial);
+    const prob = caseProbabilityFromFactors(L, S, F);
+
+    if (prob >= 90 && !highProbGateAlreadySatisfied()) {
+      setPendingProbabilityValues(values);
+      setHighProbGateOpen(true);
+      return;
+    }
+
+    await performProbabilitySave(values);
+  };
+
+  const resolveHighProbGate = async (choice: 'expert_notes' | 'handler_notes' | 'conversation') => {
+    if (!pendingProbabilityValues) return;
+    const values = pendingProbabilityValues;
+
+    if (choice === 'conversation') {
+      setPendingProbabilityValues(null);
+      setHighProbGateOpen(false);
+      setProbabilityModalOpen(false);
+      if (onProbabilityConversationPending) {
+        onProbabilityConversationPending(values);
+      } else {
+        writePendingProbSession(client, values);
+        onSwitchClientTab?.('interactions');
+      }
+      toast.success('Flag a message on the timeline — your probability will save automatically.');
+      return;
+    }
+
+    const ok = await applyLeadFieldFlag(choice);
+    if (!ok) return;
+
+    await performProbabilitySave(values);
+    setPendingProbabilityValues(null);
+  };
+
+  const handleFlagChooserChoice = async (
+    choice: 'expert_notes' | 'handler_notes' | 'conversation'
+  ) => {
+    if (choice === 'conversation') {
+      setFlagChooserOpen(false);
+      setProbabilityModalOpen(false);
+      onSwitchClientTab?.('interactions');
+      toast.success('Use the flag on a message in Interactions.');
+      return;
+    }
+    await applyLeadFieldFlag(choice);
+    setFlagChooserOpen(false);
   };
 
   const handleEligibleToggle = async (newEligible: boolean) => {
@@ -1567,42 +1507,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
     }
   };
 
-  const saveTagsEdits = async () => {
-    try {
-      if (INFOTAB_DEBUG) {
-        console.log('🏷️ InfoTab saveTagsEdits click', {
-          clientId: client?.id,
-          leadType: client?.lead_type,
-          editedTags,
-        });
-      }
-      await saveLeadTags(client.id, editedTags);
-      setTags(Array.from(new Set(editedTags.map((tag) => tag.trim()).filter(Boolean))));
-      setIsEditingTags(false);
-      if (onClientUpdate) await onClientUpdate();
-    } catch (error) {
-      console.error('❌ InfoTab error updating tags (saveTagsEdits):', {
-        clientId: client?.id,
-        leadType: client?.lead_type,
-        editedTags,
-        error,
-      });
-      alert('Failed to update tags');
-    }
-  };
-
-  const visibleTags = allTags.filter((tag) =>
-    String(tag.name || '').toLowerCase().includes(tagSearchTerm.trim().toLowerCase())
-  );
-
-  const toggleEditedTag = (tagName: string) => {
-    setEditedTags((prev) =>
-      prev.includes(tagName)
-        ? prev.filter((tag) => tag !== tagName)
-        : [...prev, tagName]
-    );
-  };
-
   const EditButtons = readOnly
     ? () => null
     : ({ isEditing, onEdit, onSave, onCancel, editButtonClassName, editIconClassName }: {
@@ -1705,6 +1609,11 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
             badgeClass: 'text-rose-700 bg-rose-50 border-rose-100',
             label: 'Low chance',
           };
+
+  const pendingProbStored = readPendingProbSession(client);
+  const probabilityModalInitialLegal = pendingProbStored?.legal ?? probFactorLegal;
+  const probabilityModalInitialSeriousness = pendingProbStored?.seriousness ?? probFactorSeriousness;
+  const probabilityModalInitialFinancial = pendingProbStored?.financial ?? probFactorFinancial;
 
   return (
     <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
@@ -2027,7 +1936,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
           {/* File ID — narrow grey panel (extra row width goes to other Overview columns); full height */}
           <div className="flex min-h-0 w-full max-w-full flex-none flex-col self-stretch overflow-hidden lg:ml-auto lg:max-w-[min(100%,13rem)]">
             <div className="flex min-h-0 flex-1 flex-col px-0 pb-8 pt-2 sm:px-1 lg:pb-6 lg:pl-6 lg:pt-2">
-              <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border border-gray-300/90 bg-gray-200/90 p-4 shadow-sm dark:border-gray-600 dark:bg-gray-800/80">
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border border-gray-200 bg-gray-50 p-4 shadow-sm dark:border-gray-600 dark:bg-gray-800/90">
                 <div className="flex min-h-0 flex-1 flex-col gap-5">
                   <div className="flex shrink-0 items-center justify-between gap-1">
                     <h4 className="text-base font-semibold text-gray-900 dark:text-gray-100">File ID</h4>
@@ -2042,7 +1951,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                         }}
                         onSave={saveFileIdEdits}
                         onCancel={() => setIsEditingFileId(false)}
-                        editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-gray-300/70 dark:hover:bg-gray-700/80 active:scale-95 transition-transform"
+                        editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-gray-200/80 dark:hover:bg-gray-700/80 active:scale-95 transition-transform"
                         editIconClassName="w-4 h-4 text-gray-500 dark:text-gray-400"
                       />
                     )}
@@ -2052,7 +1961,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
                     {isEditingFileId && !useMobileEditModal ? (
                       <input
                         type="text"
-                        className="input input-bordered input-sm w-full max-w-full border-gray-300 bg-gray-100 text-gray-900 placeholder:text-gray-500 dark:border-gray-600 dark:bg-gray-900/50"
+                        className="input input-bordered input-sm w-full max-w-full border-gray-200 bg-white text-gray-900 placeholder:text-gray-500 dark:border-gray-600 dark:bg-gray-900/50"
                         value={editedFileId}
                         onChange={(e) => setEditedFileId(e.target.value)}
                         placeholder="Enter file ID..."
@@ -2367,143 +2276,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
             </div>
           </div>
 
-          {/* Tags */}
-          <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm hover:shadow-md transition-all duration-200">
-            <div className="flex items-center justify-between mb-3">
-              <h4 className="text-base font-semibold text-gray-900">Tags</h4>
-                {useMobileEditModal && isEditingTags ? (
-                  <span className="text-xs text-gray-400 shrink-0">Editing…</span>
-                ) : (
-                  <EditButtons
-                    isEditing={isEditingTags && !useMobileEditModal}
-                    onEdit={() => {
-                      setIsEditingTags(true);
-                      setEditedTags([...tags]);
-                      setTagSearchTerm('');
-                    }}
-                    onSave={saveTagsEdits}
-                    onCancel={() => setIsEditingTags(false)}
-                    editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-gray-100 active:scale-95 transition-transform"
-                    editIconClassName="w-4 h-4 text-gray-400"
-                  />
-                )}
-            </div>
-            <div>
-              {isEditingTags && !useMobileEditModal ? (
-                <div className="space-y-3">
-                  {editedTags.length > 0 && (
-                    <div className="flex flex-wrap gap-2">
-                      {editedTags.map((tagName) => (
-                        <span
-                          key={`selected-${tagName}`}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-primary/10 text-primary text-sm font-medium"
-                        >
-                          {tagName}
-                          <button
-                            type="button"
-                            className="btn btn-ghost btn-xs btn-circle min-h-0 h-5 w-5"
-                            onClick={() => toggleEditedTag(tagName)}
-                            title={`Remove ${tagName}`}
-                            aria-label={`Remove ${tagName}`}
-                          >
-                            <XMarkIcon className="w-3 h-3" />
-                          </button>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    placeholder="Search tags..."
-                    value={tagSearchTerm}
-                    onChange={(e) => setTagSearchTerm(e.target.value)}
-                  />
-                  <div className="max-h-44 overflow-y-auto border border-gray-200 rounded-xl p-2 space-y-1 bg-white">
-                    {visibleTags.map((tag) => {
-                      const isChecked = editedTags.includes(tag.name);
-                      return (
-                        <label
-                          key={tag.id}
-                          className={`flex items-center gap-2 px-2 py-1.5 rounded-lg ${
-                            isChecked ? 'opacity-60 cursor-not-allowed bg-gray-50' : 'hover:bg-gray-50 cursor-pointer'
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            className="checkbox checkbox-sm checkbox-primary"
-                            checked={isChecked}
-                            disabled={isChecked}
-                            onChange={() => toggleEditedTag(tag.name)}
-                          />
-                          <span className="text-sm text-gray-800">{tag.name}</span>
-                          {isChecked && <span className="text-xs text-gray-500">(added)</span>}
-                        </label>
-                      );
-                    })}
-                    {visibleTags.length === 0 && (
-                      <div className="text-sm text-gray-500 px-2 py-2">No tags found</div>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  <div className="min-h-[80px]">
-                    {tags.length > 0 ? (
-                      <div className="mt-3 flex flex-wrap gap-2 items-center">
-                        {tags.map((tagName) => (
-                          <span
-                            key={tagName}
-                            className="px-2.5 py-1 rounded-full bg-primary/10 text-primary text-sm font-medium hover:bg-purple-200 cursor-pointer transition-colors"
-                          >
-                            {tagName}
-                          </span>
-                        ))}
-                        {!readOnly && (
-                          <button
-                            type="button"
-                            className="btn btn-primary btn-sm rounded-md hover:shadow-md active:scale-95 transition-all"
-                            onClick={() => {
-                              setIsEditingTags(true);
-                              setEditedTags([...tags]);
-                              setTagSearchTerm('');
-                            }}
-                          >
-                            <PlusIcon className="w-4 h-4" />
-                            Add Tag
-                          </button>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        <span className="text-gray-500 block">No tags yet</span>
-                        {!readOnly && (
-                          <button
-                            type="button"
-                            className="btn btn-primary btn-sm rounded-md mt-1 hover:shadow-md active:scale-95 transition-all"
-                            onClick={() => {
-                              setIsEditingTags(true);
-                              setEditedTags([...tags]);
-                              setTagSearchTerm('');
-                            }}
-                          >
-                            <PlusIcon className="w-4 h-4" />
-                            Add Tag
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  {(getFieldValue(client, isLegacy ? 'category_last_edited_by' : 'tags_last_edited_by') || getFieldValue(client, isLegacy ? 'category_last_edited_at' : 'tags_last_edited_at')) && (
-                    <div className="text-xs text-gray-400 flex justify-between">
-                      <span>Last updated by {getFieldValue(client, isLegacy ? 'category_last_edited_by' : 'tags_last_edited_by') || 'Unknown'}</span>
-                      <span>{getFieldValue(client, isLegacy ? 'category_last_edited_at' : 'tags_last_edited_at') ? new Date(getFieldValue(client, isLegacy ? 'category_last_edited_at' : 'tags_last_edited_at')).toLocaleDateString() : ''}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
+          {/* Tags moved to ClientHeader modal */}
         </div>
 
         {/* Row 5: Anchor - COMMENTED OUT */}
@@ -2719,83 +2492,161 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, readOnly = 
             />
           </MobileEditModal>
         )}
-        {useMobileEditModal && isEditingTags && (
-          <MobileEditModal
-            open
-            title="Tags"
-            onClose={() => setIsEditingTags(false)}
-            onSave={saveTagsEdits}
-          >
-            {editedTags.length > 0 && (
-              <div className="mb-3 flex flex-wrap gap-2">
-                {editedTags.map((tagName) => (
-                  <span
-                    key={`mobile-selected-${tagName}`}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-primary/10 text-primary text-sm font-medium"
-                  >
-                    {tagName}
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-xs btn-circle min-h-0 h-5 w-5"
-                      onClick={() => toggleEditedTag(tagName)}
-                      title={`Remove ${tagName}`}
-                      aria-label={`Remove ${tagName}`}
-                    >
-                      <XMarkIcon className="w-3 h-3" />
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-            <label className="label">
-              <span className="label-text">Search or select tags</span>
-            </label>
-            <input
-              type="text"
-              className="input input-bordered w-full"
-              placeholder="Search tags..."
-              value={tagSearchTerm}
-              onChange={(e) => setTagSearchTerm(e.target.value)}
-            />
-            <div className="mt-3 max-h-56 overflow-y-auto border border-gray-200 rounded-xl p-2 space-y-1 bg-white">
-              {visibleTags.map((tag) => {
-                const isChecked = editedTags.includes(tag.name);
-                return (
-                  <label
-                    key={`mobile-${tag.id}`}
-                    className={`flex items-center gap-2 px-2 py-1.5 rounded-lg ${
-                      isChecked ? 'opacity-60 cursor-not-allowed bg-gray-50' : 'hover:bg-gray-50 cursor-pointer'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      className="checkbox checkbox-sm checkbox-primary"
-                      checked={isChecked}
-                      disabled={isChecked}
-                      onChange={() => toggleEditedTag(tag.name)}
-                    />
-                    <span className="text-sm text-gray-800">{tag.name}</span>
-                    {isChecked && <span className="text-xs text-gray-500">(added)</span>}
-                  </label>
-                );
-              })}
-              {visibleTags.length === 0 && (
-                <div className="text-sm text-gray-500 px-2 py-2">No tags found</div>
-              )}
-            </div>
-          </MobileEditModal>
-        )}
       </div>
 
       <ProbabilitySlidersModal
         open={probabilityModalOpen}
-        onClose={() => setProbabilityModalOpen(false)}
+        onClose={() => {
+          setProbabilityModalOpen(false);
+          setPendingProbabilityValues(null);
+          setFlagChooserOpen(false);
+          setHighProbGateOpen(false);
+        }}
         onSave={handleProbabilitySave}
-        initialLegal={probFactorLegal}
-        initialSeriousness={probFactorSeriousness}
-        initialFinancial={probFactorFinancial}
+        initialLegal={probabilityModalInitialLegal}
+        initialSeriousness={probabilityModalInitialSeriousness}
+        initialFinancial={probabilityModalInitialFinancial}
         saving={probabilitySaving}
+        readOnly={readOnly}
+        onFlagClick={readOnly ? undefined : () => setFlagChooserOpen(true)}
       />
+
+      {flagChooserOpen &&
+        createPortal(
+          <div className="fixed inset-0 z-[130] flex items-center justify-center p-4">
+            <div
+              className="absolute inset-0 bg-black/50"
+              onClick={() => setFlagChooserOpen(false)}
+              aria-hidden
+            />
+            <div
+              className="relative z-[131] w-full max-w-md rounded-2xl border border-base-300 bg-base-100 p-5 shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="info-flag-chooser-title"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-2 mb-3">
+                <h3 id="info-flag-chooser-title" className="text-lg font-bold text-base-content pr-6">
+                  What do you want to flag?
+                </h3>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-circle btn-ghost shrink-0"
+                  onClick={() => setFlagChooserOpen(false)}
+                  aria-label="Close"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+              <p className="text-sm text-base-content/70 mb-4">
+                Link a flag to expert opinion, handler opinion, or open Interactions to flag a specific message.
+              </p>
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  className="btn btn-outline justify-start gap-2 border-amber-200 text-amber-900 hover:bg-amber-50"
+                  disabled={!publicUserId}
+                  onClick={() => void handleFlagChooserChoice('expert_notes')}
+                >
+                  <UserIcon className="h-5 w-5 shrink-0" />
+                  Expert opinion
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-outline justify-start gap-2 border-amber-200 text-amber-900 hover:bg-amber-50"
+                  disabled={!publicUserId}
+                  onClick={() => void handleFlagChooserChoice('handler_notes')}
+                >
+                  <ScaleIcon className="h-5 w-5 shrink-0" />
+                  Handler opinion
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-outline justify-start gap-2 border-amber-200 text-amber-900 hover:bg-amber-50"
+                  onClick={() => void handleFlagChooserChoice('conversation')}
+                >
+                  <ChatBubbleLeftRightIcon className="h-5 w-5 shrink-0" />
+                  Conversation (Interactions)
+                </button>
+              </div>
+              {!publicUserId && (
+                <p className="text-xs text-warning mt-3">Sign in to flag expert or handler opinion.</p>
+              )}
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {highProbGateOpen &&
+        createPortal(
+          <div className="fixed inset-0 z-[130] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50" aria-hidden />
+            <div
+              className="relative z-[131] w-full max-w-md rounded-2xl border border-base-300 bg-base-100 p-5 shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="info-high-prob-gate-title"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-2 mb-3">
+                <div className="flex items-center gap-2 min-w-0">
+                  <FlagIcon className="h-6 w-6 shrink-0 text-amber-600" />
+                  <h3 id="info-high-prob-gate-title" className="text-lg font-bold text-base-content">
+                    Case probability 90% or higher
+                  </h3>
+                </div>
+              </div>
+              <p className="text-sm text-base-content/80 mb-4">
+                Save requires linking this rating to a flag. Choose expert opinion, handler opinion, or open
+                Interactions to flag a message first — then return to Info to save your probability (unless you
+                already flagged a message on this lead).
+              </p>
+              <div className="flex flex-col gap-2 mb-4">
+                <button
+                  type="button"
+                  className="btn btn-outline justify-start gap-2 border-2 border-[#471CCA] bg-white text-[#471CCA] hover:bg-[#471CCA]/10 hover:border-[#471CCA] disabled:border-base-300 disabled:text-base-content/40 disabled:bg-base-200 dark:bg-base-100 dark:border-[#a78bfa] dark:text-[#c4b5fd] dark:hover:bg-[#471CCA]/20"
+                  disabled={!publicUserId}
+                  onClick={() => void resolveHighProbGate('expert_notes')}
+                >
+                  <UserIcon className="h-5 w-5 shrink-0" />
+                  Flag expert opinion
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-outline justify-start gap-2 border-2 border-[#471CCA] bg-white text-[#471CCA] hover:bg-[#471CCA]/10 hover:border-[#471CCA] disabled:border-base-300 disabled:text-base-content/40 disabled:bg-base-200 dark:bg-base-100 dark:border-[#a78bfa] dark:text-[#c4b5fd] dark:hover:bg-[#471CCA]/20"
+                  disabled={!publicUserId}
+                  onClick={() => void resolveHighProbGate('handler_notes')}
+                >
+                  <ScaleIcon className="h-5 w-5 shrink-0" />
+                  Flag handler opinion
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-outline justify-start gap-2 border-2 border-[#471CCA] bg-white text-[#471CCA] hover:bg-[#471CCA]/10 hover:border-[#471CCA] dark:bg-base-100 dark:border-[#a78bfa] dark:text-[#c4b5fd] dark:hover:bg-[#471CCA]/20"
+                  onClick={() => void resolveHighProbGate('conversation')}
+                >
+                  <ChatBubbleLeftRightIcon className="h-5 w-5 shrink-0" />
+                  Open Interactions to flag a message first
+                </button>
+              </div>
+              {!publicUserId && (
+                <p className="text-xs text-warning mb-3">Sign in to flag expert or handler opinion.</p>
+              )}
+              <button
+                type="button"
+                className="btn btn-outline w-full"
+                onClick={() => {
+                  setHighProbGateOpen(false);
+                  setPendingProbabilityValues(null);
+                }}
+              >
+                Back to adjust sliders
+              </button>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

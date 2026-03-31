@@ -28,6 +28,7 @@ import {
   LinkIcon,
   UserPlusIcon,
   CheckIcon,
+  FlagIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
@@ -60,6 +61,34 @@ import { fetchLeadContacts } from '../../lib/contactHelpers';
 import type { ContactInfo } from '../../lib/contactHelpers';
 import { fetchWhatsAppTemplates, type WhatsAppTemplate } from '../../lib/whatsappTemplates';
 import { replaceEmailTemplateParams } from '../../lib/emailTemplateParams';
+import {
+  interactionRowToConversationFlag,
+  conversationFlagKey,
+  formatFlaggedAt,
+  flagTypeLabel,
+  flagTypeBadgeClass,
+  flaggedModalViewButtonClass,
+  conversationChannelLabel,
+  fetchPublicUserId,
+  fetchLeadFieldFlagsForLead,
+  fetchFlagTypes,
+  fetchConversationFlagsForUser,
+  setConversationFlagged,
+  deleteConversationFlagsForAllUsers,
+  deleteLeadFieldFlagsForAllUsers,
+  type ConversationFlagTarget,
+  type ContentFlagMeta,
+  type FlagTypeRow,
+} from '../../lib/userContentFlags';
+import FlagTypeFlagButton from '../FlagTypeFlagButton';
+
+const leadFieldFlagLabel = (key: string): string => {
+  const map: Record<string, string> = {
+    expert_notes: 'Expert opinion',
+    handler_notes: 'Handler opinion',
+  };
+  return map[key] ?? key.replace(/_/g, ' ');
+};
 
 const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
@@ -1038,6 +1067,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   interactionsCache,
   onInteractionsCacheUpdate,
   onInteractionCountUpdate,
+  onFlaggedConversationCountUpdate,
+  onSwitchClientTab,
   allEmployees: allEmployeesProp = [],
 }) => {
   const { showReconnectModal } = useMailboxReconnect();
@@ -1229,9 +1260,32 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     contact_name: '', // For display
   });
   const [manualInteractionContacts, setManualInteractionContacts] = useState<Array<{ id: number; name: string; email?: string | null; phone?: string | null; mobile?: string | null }>>([]);
-  const { user } = useAuthContext();
+  const { user, userFullName } = useAuthContext();
   const userId = user?.id ?? null;
   const userEmail = user?.email ?? null;
+  const [publicUserId, setPublicUserId] = useState<string | null>(null);
+  /** conversationFlagKey → metadata (own flags only; RLS). */
+  const [conversationFlagMeta, setConversationFlagMeta] = useState<Map<string, ContentFlagMeta>>(
+    () => new Map()
+  );
+  /** lead_field_key → metadata (own flags; RLS). */
+  const [leadFieldFlagMeta, setLeadFieldFlagMeta] = useState<Map<string, ContentFlagMeta>>(() => new Map());
+  const [flagTypes, setFlagTypes] = useState<FlagTypeRow[]>([]);
+  const [flaggedItemsModalOpen, setFlaggedItemsModalOpen] = useState(false);
+  const [pendingFlagDelete, setPendingFlagDelete] = useState<
+    | null
+    | { kind: 'lead_field'; leadFieldKey: string; label: string }
+    | { kind: 'conversation'; row: any; label: string }
+  >(null);
+
+  // Allow ClientHeader (and other components) to open the exact same modal instance.
+  useEffect(() => {
+    const handler = () => setFlaggedItemsModalOpen(true);
+    window.addEventListener('rmq:open-flagged-conversations', handler as EventListener);
+    return () => {
+      window.removeEventListener('rmq:open-flagged-conversations', handler as EventListener);
+    };
+  }, []);
   const [mailboxStatus, setMailboxStatus] = useState<{ connected: boolean; mailbox?: string | null; lastSyncedAt?: string | null }>({
     connected: false,
     mailbox: null,
@@ -1239,6 +1293,125 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   });
   const [isMailboxLoading, setIsMailboxLoading] = useState(false);
   const [mailboxError, setMailboxError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!userId) {
+      setPublicUserId(null);
+      return;
+    }
+    let cancelled = false;
+    void fetchPublicUserId(supabase, userId).then((id) => {
+      if (!cancelled) setPublicUserId(id);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  useEffect(() => {
+    if (!publicUserId || !client?.id) {
+      setLeadFieldFlagMeta(new Map());
+      return;
+    }
+    const isLegacyByType = client.lead_type === 'legacy' || String(client.id).startsWith('legacy_');
+    const rawId = String(client.id);
+    const legacyId = isLegacyByType ? Number.parseInt(rawId.replace(/^legacy_/, ''), 10) : null;
+    const newUuid = !isLegacyByType && client.id != null ? String(client.id) : null;
+
+    let cancelled = false;
+    void fetchLeadFieldFlagsForLead(supabase, publicUserId, {
+      newLeadId: newUuid || undefined,
+      legacyLeadId: legacyId != null && !Number.isNaN(legacyId) ? legacyId : undefined,
+    }).then((map) => {
+      if (!cancelled) setLeadFieldFlagMeta(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [publicUserId, client?.id, client?.lead_type]);
+
+  const goToFlaggedExpertOpinion = () => {
+    setFlaggedItemsModalOpen(false);
+    onSwitchClientTab?.('expert');
+    window.setTimeout(() => {
+      document.getElementById('expert-opinion-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 400);
+  };
+
+  const goToFlaggedHandlerOpinion = () => {
+    setFlaggedItemsModalOpen(false);
+    onSwitchClientTab?.('expert');
+    window.setTimeout(() => {
+      document.getElementById('handler-opinion-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 400);
+  };
+
+  const deleteLeadFieldFlag = useCallback(
+    async (leadFieldKey: string) => {
+      try {
+        if (!publicUserId) {
+          toast.error('Please sign in to manage flags.');
+          return;
+        }
+        const rawId = String(client.id);
+        const legacyId = isLegacyLead ? Number.parseInt(rawId.replace(/^legacy_/, ''), 10) : undefined;
+        const newLeadId = !isLegacyLead ? String(client.id) : undefined;
+        const { error } = await deleteLeadFieldFlagsForAllUsers(
+          supabase,
+          { newLeadId, legacyLeadId: legacyId != null && !Number.isNaN(legacyId) ? legacyId : undefined },
+          leadFieldKey
+        );
+        if (error) throw error;
+        setLeadFieldFlagMeta((prev) => {
+          const next = new Map(prev);
+          next.delete(leadFieldKey);
+          return next;
+        });
+        toast.success('Flag deleted');
+      } catch (e) {
+        console.error('deleteLeadFieldFlag failed', e);
+        toast.error('Failed to delete flag');
+      }
+    },
+    [publicUserId, client?.id, isLegacyLead]
+  );
+
+  const deleteConversationFlag = useCallback(
+    async (row: any) => {
+      try {
+        if (!publicUserId) {
+          toast.error('Please sign in to manage flags.');
+          return;
+        }
+        const t = interactionRowToConversationFlag(row, isLegacyLead);
+        if (!t) return;
+        const { error } = await deleteConversationFlagsForAllUsers(supabase, t);
+        if (error) throw error;
+        const key = conversationFlagKey(t);
+        setConversationFlagMeta((prev) => {
+          const next = new Map(prev);
+          next.delete(key);
+          return next;
+        });
+        toast.success('Flag deleted');
+      } catch (e) {
+        console.error('deleteConversationFlag failed', e);
+        toast.error('Failed to delete flag');
+      }
+    },
+    [publicUserId, isLegacyLead]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchFlagTypes(supabase).then((rows) => {
+      if (!cancelled) setFlagTypes(rows);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const location = useLocation();
   const navigate = useNavigate();
   const [emails, setEmails] = useState<any[]>([]);
@@ -2222,6 +2395,100 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       console.log('✅ WhatsApp messages in renderedInteractions:', renderedInteractions.filter((r: any) => r?.kind === 'whatsapp').slice(0, 3));
     }
   }, [renderedInteractions]);
+
+  useEffect(() => {
+    if (!publicUserId || !sortedInteractions.length) {
+      setConversationFlagMeta(new Map());
+      return;
+    }
+    const targets = sortedInteractions
+      .map((row) => interactionRowToConversationFlag(row, isLegacyLead))
+      .filter((t): t is ConversationFlagTarget => t != null);
+    const externalIds = targets.map((t) => t.external_id);
+    let cancelled = false;
+    void fetchConversationFlagsForUser(supabase, publicUserId, externalIds).then((map) => {
+      if (!cancelled) setConversationFlagMeta(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [publicUserId, sortedInteractions, isLegacyLead]);
+
+  const flaggedTimelineRows = useMemo(() => {
+    return sortedInteractions.filter((row) => {
+      const t = interactionRowToConversationFlag(row, isLegacyLead);
+      if (!t) return false;
+      return conversationFlagMeta.has(conversationFlagKey(t));
+    });
+  }, [sortedInteractions, isLegacyLead, conversationFlagMeta]);
+
+  const flaggedInteractionCount = flaggedTimelineRows.length;
+  const flaggedLeadFieldCount = leadFieldFlagMeta.size;
+  const totalFlaggedCount = flaggedInteractionCount + flaggedLeadFieldCount;
+
+  useEffect(() => {
+    onFlaggedConversationCountUpdate?.(totalFlaggedCount);
+  }, [totalFlaggedCount, onFlaggedConversationCountUpdate]);
+
+  const scrollToFlaggedRow = useCallback(
+    (row: Interaction) => {
+      const idx = sortedInteractions.findIndex((r) => r.id === row.id && r.kind === row.kind);
+      if (idx < 0) return;
+      setVisibleInteractionsCount((prev) => Math.max(prev, idx + 1));
+      setFlaggedItemsModalOpen(false);
+      const t = interactionRowToConversationFlag(row, isLegacyLead);
+      if (!t) return;
+      const key = conversationFlagKey(t);
+      const selector = `[data-interaction-flag-key="${encodeURIComponent(key)}"]`;
+      window.setTimeout(() => {
+        const el = document.querySelector(selector);
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 350);
+    },
+    [sortedInteractions, isLegacyLead]
+  );
+
+  const addConversationFlag = useCallback(
+    async (target: ConversationFlagTarget, flagTypeId: number) => {
+      if (!publicUserId) {
+        toast.error('Please sign in to flag items.');
+        return;
+      }
+      const key = conversationFlagKey(target);
+      const { error } = await setConversationFlagged(supabase, publicUserId, target, true, flagTypeId);
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+      setConversationFlagMeta((prev) => {
+        const next = new Map(prev);
+        next.set(key, { createdAt: new Date().toISOString(), flagTypeId });
+        return next;
+      });
+    },
+    [publicUserId]
+  );
+
+  const removeConversationFlag = useCallback(
+    async (target: ConversationFlagTarget) => {
+      if (!publicUserId) {
+        toast.error('Please sign in to flag items.');
+        return;
+      }
+      const key = conversationFlagKey(target);
+      const { error } = await setConversationFlagged(supabase, publicUserId, target, false);
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+      setConversationFlagMeta((prev) => {
+        const next = new Map(prev);
+        next.delete(key);
+        return next;
+      });
+    },
+    [publicUserId]
+  );
 
   // --- Add: handler for clicking an interaction to jump to message in modal ---
   const handleInteractionClick = async (row: Interaction, idx: number) => {
@@ -7521,6 +7788,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   <ChatBubbleLeftRightIcon className="w-5 h-5" /> Manual Entry
                 </button>
               </div>
+
+              <div className="flex justify-center sm:justify-end w-full sm:w-auto sm:ml-auto">
+                <button
+                  type="button"
+                  className="btn btn-outline gap-2 border-amber-200 text-amber-800 hover:bg-amber-50 dark:text-amber-200 dark:border-amber-700 dark:hover:bg-amber-900/30 relative"
+                  onClick={() => setFlaggedItemsModalOpen(true)}
+                  disabled={!publicUserId || interactionsLoading}
+                  title={publicUserId ? 'View items you flagged on this lead' : 'Sign in to use flags'}
+                >
+                  <FlagIcon className="w-5 h-5" />
+                  <span className="hidden sm:inline">Flagged</span>
+                  {totalFlaggedCount > 0 && (
+                    <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-white">
+                      {totalFlaggedCount > 99 ? '99+' : totalFlaggedCount}
+                    </span>
+                  )}
+                </button>
+              </div>
               
               {/* AI Smart Recap Button */}
               {/* <button 
@@ -7756,12 +8041,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               if (row.kind === 'call' && (!row.employee || row.employee === 'Unknown' || row.employee.length <= 2)) {
                 console.warn(`⚠️ Call ${(row as any).call_log?.id} has suspicious employee name: "${row.employee}"`);
               }
+
+              const flagTarget = interactionRowToConversationFlag(row, isLegacyLead);
+              const flagKey = flagTarget ? conversationFlagKey(flagTarget) : null;
+              const isFlagged = flagKey ? conversationFlagMeta.has(flagKey) : false;
               
               return (
                 <div
                   key={row.id}
                   ref={idx === lastEmailIdx ? lastEmailRef : null}
                   className="relative pl-16 sm:pl-20 md:pl-24 cursor-pointer group"
+                  data-interaction-flag-key={flagTarget ? encodeURIComponent(conversationFlagKey(flagTarget)) : undefined}
                   onClick={() => handleInteractionClick(row, idx)}
                 >
                   {/* Timeline dot and icon, large, left-aligned */}
@@ -7993,6 +8283,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                     </span>
                                   )}
                                 </div>
+                              )}
+                              {flagTarget && publicUserId && (
+                                <FlagTypeFlagButton
+                                  flagTypes={flagTypes}
+                                  isFlagged={isFlagged}
+                                  disabled={!publicUserId}
+                                  onAdd={(flagTypeId) => void addConversationFlag(flagTarget, flagTypeId)}
+                                  onRemove={() => void removeConversationFlag(flagTarget)}
+                                  titleFlag="Flag — choose type"
+                                  titleRemove="Remove my flag"
+                                />
                               )}
                             </div>
                           </div>
@@ -9444,6 +9745,264 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         </div>,
         document.body
       )}
+      {flaggedItemsModalOpen &&
+        createPortal(
+          <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4">
+            <div
+              className="absolute inset-0 bg-black/50"
+              onClick={() => setFlaggedItemsModalOpen(false)}
+              aria-hidden
+            />
+            <div
+              className="relative z-[1001] flex max-h-[90vh] w-full max-w-lg flex-col rounded-2xl border border-base-300 bg-base-100 shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="flagged-items-modal-title"
+            >
+              <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3 sm:px-5 sm:py-4">
+                <div className="flex min-w-0 items-center gap-2">
+                  <FlagIcon className="h-6 w-6 shrink-0 text-amber-600" />
+                  <h2 id="flagged-items-modal-title" className="truncate text-lg font-semibold">
+                    Flagged on this lead
+                  </h2>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-circle btn-ghost btn-sm"
+                  onClick={() => setFlaggedItemsModalOpen(false)}
+                  aria-label="Close"
+                >
+                  <XMarkIcon className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-4">
+                {flaggedTimelineRows.length === 0 && leadFieldFlagMeta.size === 0 ? (
+                  <p className="text-sm text-base-content/70">
+                    No flagged items on this lead yet. Use the flag on a message row or on Expert opinion.
+                  </p>
+                ) : (
+                  <ul className="flex flex-col gap-3">
+                    {[...leadFieldFlagMeta.entries()]
+                      .sort(([a], [b]) => a.localeCompare(b))
+                      .map(([key, meta]) => {
+                        const typeId = meta?.flagTypeId ?? 1;
+                        const typeLabelText = flagTypeLabel(typeId, flagTypes);
+                        const flaggedAtIso = meta?.createdAt;
+                        const labelUpper = leadFieldFlagLabel(key);
+                        const onView =
+                          key === 'expert_notes'
+                            ? goToFlaggedExpertOpinion
+                            : key === 'handler_notes'
+                              ? goToFlaggedHandlerOpinion
+                              : null;
+                        const preview =
+                          key === 'expert_notes'
+                            ? 'Flagged expert opinion on this lead.'
+                            : key === 'handler_notes'
+                              ? 'Flagged handler opinion on this lead.'
+                              : 'Flagged lead field.';
+                        const subline =
+                          key === 'expert_notes' || key === 'handler_notes'
+                            ? 'Expert tab'
+                            : 'Lead field';
+                        return (
+                          <li
+                            key={`leadfield-${key}`}
+                            className="relative flex flex-col gap-2 rounded-xl border border-base-200 bg-base-200/30 p-3"
+                          >
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-xs btn-circle absolute right-2 top-2 text-base-content/40 hover:text-base-content/70 hover:bg-base-200/70"
+                              onClick={() =>
+                                setPendingFlagDelete({
+                                  kind: 'lead_field',
+                                  leadFieldKey: key,
+                                  label: leadFieldFlagLabel(key),
+                                })
+                              }
+                              title="Delete flag"
+                              aria-label="Delete flag"
+                            >
+                              <XMarkIcon className="h-4 w-4" />
+                            </button>
+                            <div className="flex justify-start">
+                              <span className={flagTypeBadgeClass(typeId, flagTypes)}>{typeLabelText}</span>
+                            </div>
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                                  <span className="text-xs font-medium uppercase tracking-wide text-base-content/60">
+                                    {labelUpper}
+                                  </span>
+                                  <span className="text-xs text-base-content/60">{formatFlaggedAt(flaggedAtIso)}</span>
+                                </div>
+                                <div className="text-sm text-base-content/80">{subline}</div>
+                              </div>
+                              <button
+                                type="button"
+                                className={flaggedModalViewButtonClass}
+                                onClick={() => onView?.()}
+                                disabled={!onView}
+                              >
+                                View
+                              </button>
+                            </div>
+                            <p className="line-clamp-3 break-words text-sm text-base-content/90">{preview}</p>
+                            <div className="flex flex-row flex-wrap items-baseline justify-start gap-x-2 border-t border-base-300/50 pt-2 text-xs text-base-content/60">
+                              <span>
+                                <span className="font-medium">Flagged by</span>{' '}
+                                {userFullName ?? userEmail ?? 'You'}
+                              </span>
+                              <span className="text-base-content/35" aria-hidden>
+                                ·
+                              </span>
+                              <span>
+                                <span className="font-medium">At</span> {formatFlaggedAt(flaggedAtIso)}
+                              </span>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    {flaggedTimelineRows.map((row) => {
+                      const t = interactionRowToConversationFlag(row, isLegacyLead);
+                      const flagKey = t ? conversationFlagKey(t) : null;
+                      const flagMeta = flagKey ? conversationFlagMeta.get(flagKey) : undefined;
+                      const flaggedAtIso = flagMeta?.createdAt;
+                      const label = t ? conversationChannelLabel(t.conversation_channel) : row.kind;
+                      const raw =
+                        row.subject?.trim() ||
+                        row.body_preview?.trim() ||
+                        extractVisibleText(row.content) ||
+                        row.content ||
+                        '';
+                      const preview =
+                        raw.length > 160 ? `${raw.slice(0, 160)}…` : raw || '—';
+                      const typeId = flagMeta?.flagTypeId ?? 1;
+                      const typeLabelText = flagTypeLabel(typeId, flagTypes);
+                      return (
+                        <li
+                          key={`${row.kind}-${row.id}`}
+                          className="relative flex flex-col gap-2 rounded-xl border border-base-200 bg-base-200/30 p-3"
+                        >
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-xs btn-circle absolute right-2 top-2 text-base-content/40 hover:text-base-content/70 hover:bg-base-200/70"
+                            onClick={() =>
+                              setPendingFlagDelete({
+                                kind: 'conversation',
+                                row,
+                                label:
+                                  conversationChannelLabel(
+                                    interactionRowToConversationFlag(row, isLegacyLead)?.conversation_channel as any
+                                  ) || String(row.kind || 'Conversation'),
+                              })
+                            }
+                            title="Delete flag"
+                            aria-label="Delete flag"
+                          >
+                            <XMarkIcon className="h-4 w-4" />
+                          </button>
+                          <div className="flex justify-start">
+                            <span className={flagTypeBadgeClass(typeId, flagTypes)}>{typeLabelText}</span>
+                          </div>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                                <span className="text-xs font-medium uppercase tracking-wide text-base-content/60">
+                                  {label}
+                                </span>
+                                <span className="text-xs text-base-content/60">
+                                  {row.date} · {row.time}
+                                </span>
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              className={flaggedModalViewButtonClass}
+                              onClick={() => scrollToFlaggedRow(row)}
+                            >
+                              View
+                            </button>
+                          </div>
+                          <p className="line-clamp-3 break-words text-sm text-base-content/90">{preview}</p>
+                          <div className="flex flex-row flex-wrap items-baseline justify-start gap-x-2 border-t border-base-300/50 pt-2 text-xs text-base-content/60">
+                            <span>
+                              <span className="font-medium">Flagged by</span>{' '}
+                              {userFullName ?? userEmail ?? 'You'}
+                            </span>
+                            <span className="text-base-content/35" aria-hidden>
+                              ·
+                            </span>
+                            <span>
+                              <span className="font-medium">At</span> {formatFlaggedAt(flaggedAtIso)}
+                            </span>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+      {pendingFlagDelete &&
+        createPortal(
+          <div className="fixed inset-0 z-[1100] flex items-center justify-center p-4">
+            <div
+              className="absolute inset-0 bg-black/50"
+              onClick={() => setPendingFlagDelete(null)}
+              aria-hidden
+            />
+            <div
+              className="relative z-[1101] w-full max-w-sm rounded-2xl border border-base-300 bg-base-100 shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="confirm-delete-flag-title"
+            >
+              <div className="flex items-start justify-between gap-3 border-b border-base-300 px-4 py-3">
+                <h3 id="confirm-delete-flag-title" className="text-base font-semibold">
+                  Delete flag?
+                </h3>
+                <button
+                  type="button"
+                  className="btn btn-circle btn-ghost btn-sm"
+                  onClick={() => setPendingFlagDelete(null)}
+                  aria-label="Close"
+                >
+                  <XMarkIcon className="h-5 w-5" />
+                </button>
+              </div>
+              <div className="px-4 py-4 text-sm text-base-content/80">
+                Are you sure you want to delete this flag{pendingFlagDelete.label ? ` (“${pendingFlagDelete.label}”)` : ''}?
+              </div>
+              <div className="flex justify-end gap-2 border-t border-base-300 px-4 py-3">
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setPendingFlagDelete(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-error btn-sm"
+                  onClick={() => {
+                    const p = pendingFlagDelete;
+                    setPendingFlagDelete(null);
+                    if (!p) return;
+                    if (p.kind === 'lead_field') {
+                      void deleteLeadFieldFlag(p.leadFieldKey);
+                      return;
+                    }
+                    void deleteConversationFlag(p.row);
+                  }}
+                >
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
       {/* AI Smart Recap Drawer for Mobile */}
       {/* {aiDrawerOpen && createPortal(
         <div className="fixed inset-0 z-[999] flex lg:hidden">

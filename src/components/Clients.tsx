@@ -9,7 +9,12 @@ import { saveFollowUp } from '../lib/followUpsManager';
 import { usePersistedState } from '../hooks/usePersistedState';
 import BalanceEditModal from './BalanceEditModal';
 import ProbabilityFactorsSliders, { type ProbabilityFactors } from './ProbabilityFactorsSliders';
-import { caseProbabilityFromFactors, clampProbabilityPart, splitProbabilityEvenly } from './client-tabs/ProbabilitySlidersModal';
+import {
+  caseProbabilityFromFactors,
+  clampProbabilityPart,
+  splitProbabilityEvenly,
+  type ProbabilitySlidersValues,
+} from './client-tabs/ProbabilitySlidersModal';
 import {
   PencilIcon,
   TrashIcon,
@@ -108,6 +113,8 @@ import SendPriceOfferModal from './SendPriceOfferModal';
 import { addToHighlights, removeFromHighlights, isInHighlights } from '../lib/highlightsUtils';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
 import { addRecentLead } from '../lib/recentSearchStorage';
+import { saveLeadCaseProbability } from '../lib/saveLeadCaseProbability';
+import { readPendingProbSession, clearPendingProbSession, writePendingProbSession } from '../lib/pendingProbabilityStorage';
 
 // Performance debugging for Clients load: in DEV, logs timings to console. Set window.__CLIENTS_PERF__ = true for Performance tab marks.
 const CLIENT_LOAD_PERF = typeof window !== 'undefined' && import.meta.env.DEV;
@@ -587,6 +594,15 @@ const Clients: React.FC<ClientsProps> = ({
   const [masterLeadNumberForNewLead, setMasterLeadNumberForNewLead] = useState<string | null>(null);
   // State to store master lead number for legacy leads with master_id (not lead_number pattern)
   const [masterLeadNumberForLegacy, setMasterLeadNumberForLegacy] = useState<string | null>(null);
+  /** Last count from Interactions tab (flagged timeline rows) for ClientHeader badge; reset when lead changes. */
+  const [headerFlaggedConversationCount, setHeaderFlaggedConversationCount] = useState(0);
+  /** Pending case probability (conversation path) until user flags an interaction; then auto-saved. */
+  const [pendingProbabilityAfterFlag, setPendingProbabilityAfterFlag] = useState<ProbabilitySlidersValues | null>(null);
+  const [pendingProbabilitySaving, setPendingProbabilitySaving] = useState(false);
+  /** Bump on client switch or dismiss to invalidate in-flight auto-save. */
+  const pendingProbSessionKeyRef = useRef(0);
+  /** Increment each time the auto-save effect runs so stale async completions are ignored. */
+  const pendingProbAutoSaveAttemptRef = useRef(0);
 
   // Cache for category lookups to avoid repeated searches (moved to top level for hook order consistency)
   const categoryCacheRef = useRef<Map<string, string>>(new Map());
@@ -599,6 +615,16 @@ const Clients: React.FC<ClientsProps> = ({
   // Reset badge expansion when selected client changes
   useEffect(() => {
     setIsInactiveBadgeExpanded(false);
+  }, [selectedClient?.id]);
+
+  useEffect(() => {
+    setHeaderFlaggedConversationCount(0);
+    pendingProbSessionKeyRef.current += 1;
+    setPendingProbabilityAfterFlag(null);
+    if (selectedClient) {
+      const v = readPendingProbSession(selectedClient);
+      if (v) setPendingProbabilityAfterFlag(v);
+    }
   }, [selectedClient?.id]);
 
   // Record recently viewed lead for Header mobile search (when viewing a client)
@@ -1577,6 +1603,7 @@ const Clients: React.FC<ClientsProps> = ({
       { replace: true }
     );
   }, [location.pathname, location.search, location.hash, navigate, setActiveTab]);
+
   const [showUpdateDrawer, setShowUpdateDrawer] = useState(false);
   const [meetingNotes, setMeetingNotes] = useState('');
   const [nextFollowup, setNextFollowup] = useState('');
@@ -12335,6 +12362,57 @@ const Clients: React.FC<ClientsProps> = ({
     normalizeCurrencyForForm,
   ]);
 
+  const handleProbabilityConversationPending = useCallback(
+    (values: ProbabilitySlidersValues) => {
+      if (!selectedClient) return;
+      writePendingProbSession(selectedClient, values);
+      setPendingProbabilityAfterFlag(values);
+      setActiveTabWithUrl('interactions');
+    },
+    [selectedClient, setActiveTabWithUrl]
+  );
+
+  const handleDismissPendingProbability = useCallback(() => {
+    if (!selectedClient) return;
+    pendingProbSessionKeyRef.current += 1;
+    clearPendingProbSession(selectedClient);
+    setPendingProbabilityAfterFlag(null);
+  }, [selectedClient]);
+
+  useEffect(() => {
+    if (!selectedClient || !pendingProbabilityAfterFlag) return;
+    if (headerFlaggedConversationCount <= 0) return;
+    const runId = pendingProbSessionKeyRef.current;
+    const attempt = ++pendingProbAutoSaveAttemptRef.current;
+    const client = selectedClient;
+    const values = pendingProbabilityAfterFlag;
+    let cancelled = false;
+    (async () => {
+      try {
+        setPendingProbabilitySaving(true);
+        await saveLeadCaseProbability(client, values);
+        if (cancelled || attempt !== pendingProbAutoSaveAttemptRef.current) return;
+        if (runId !== pendingProbSessionKeyRef.current) return;
+        clearPendingProbSession(client);
+        setPendingProbabilityAfterFlag(null);
+        toast.success('Case probability saved.');
+        await refreshClientData(client.id);
+      } catch (e) {
+        console.error(e);
+        if (!cancelled && attempt === pendingProbAutoSaveAttemptRef.current && runId === pendingProbSessionKeyRef.current) {
+          toast.error('Could not save case probability.');
+        }
+      } finally {
+        if (!cancelled && attempt === pendingProbAutoSaveAttemptRef.current && runId === pendingProbSessionKeyRef.current) {
+          setPendingProbabilitySaving(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedClient, pendingProbabilityAfterFlag, headerFlaggedConversationCount, refreshClientData]);
+
   // Effective lead from URL for route-matching
   const effectiveLeadForMatch = lead_number || fullLeadNumber || requestedLeadNumber;
   // Only show client content when selectedClient matches current route — prevents flash of wrong client when navigating
@@ -14827,6 +14905,11 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Desktop Header - Using new ClientHeader component */}
           <ClientHeader
             selectedClient={selectedClient}
+            flaggedConversationCount={headerFlaggedConversationCount}
+            pendingProbabilityValues={pendingProbabilityAfterFlag}
+            pendingProbabilitySaving={pendingProbabilitySaving}
+            onDismissPendingProbability={handleDismissPendingProbability}
+            onSwitchClientTab={setActiveTabWithUrl}
             refreshClientData={refreshClientData}
             isSubLead={isSubLead}
             masterLeadNumber={masterLeadNumber}
@@ -15420,6 +15503,10 @@ const Clients: React.FC<ClientsProps> = ({
                       interactionsCache={interactionsCacheForLead}
                       onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
                       onInteractionCountUpdate={handleInteractionCountUpdate}
+                      onFlaggedConversationCountUpdate={setHeaderFlaggedConversationCount}
+                      onSwitchClientTab={setActiveTabWithUrl}
+                      onProbabilityConversationPending={handleProbabilityConversationPending}
+                      flaggedConversationCount={headerFlaggedConversationCount}
                       allEmployees={allEmployees}
                       {...financeProps}
                     />
