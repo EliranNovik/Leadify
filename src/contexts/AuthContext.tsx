@@ -13,6 +13,13 @@ import {
 const USER_DETAIL_SELECT =
   'first_name, last_name, full_name, email, tenants_employee!employee_id(photo_url, photo)';
 
+const DEBUG_AUTH = String(import.meta.env.VITE_DEBUG_AUTH || '').toLowerCase() === 'true';
+const debugLog = (...args: any[]) => {
+  if (!DEBUG_AUTH) return;
+  // eslint-disable-next-line no-console
+  console.log(...args);
+};
+
 function profilePhotoFromUsersRow(data: {
   tenants_employee?: { photo_url?: string | null; photo?: string | null } | null;
 }): string | null {
@@ -50,6 +57,7 @@ function buildSyncInitialAuthState(): AuthState {
     isLoading: false,
     isInitialized: true,
     sessionCheckComplete: false,
+    supabaseSessionReady: false,
     sessionRefreshNonce: 0,
   };
   if (typeof window === 'undefined') return empty;
@@ -71,6 +79,8 @@ function buildSyncInitialAuthState(): AuthState {
       isLoading: false,
       isInitialized: true,
       sessionCheckComplete: true,
+      // Cache hydrate allows instant UI, but does not guarantee Supabase has attached JWT yet.
+      supabaseSessionReady: false,
       sessionRefreshNonce: 0,
     };
   }
@@ -95,6 +105,8 @@ interface AuthState {
   isInitialized: boolean;
   /** True only after Supabase INITIAL_SESSION has been processed. Used to avoid redirecting before we know session state. */
   sessionCheckComplete: boolean;
+  /** True only after Supabase has a confirmed hydrated session for this tab. */
+  supabaseSessionReady: boolean;
   /** Bumped after token refresh / visibility refresh so consumers (e.g. Header) refetch profile once. */
   sessionRefreshNonce: number;
 }
@@ -129,6 +141,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     return initial;
   });
+
+  const markSupabaseSessionReady = useCallback((ready: boolean) => {
+    setAuthState((prev) => {
+      if (prev.supabaseSessionReady === ready) return prev;
+      return { ...prev, supabaseSessionReady: ready };
+    });
+  }, []);
 
   const fetchUserDetails = useCallback(async (user: any) => {
     if (!user?.id) return;
@@ -209,7 +228,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // Prevent duplicate updates for the same user
     const userId = session?.user?.id || null;
 
-    console.log('[AuthContext] updateAuthState called, userId:', userId, 'isInitialized:', isInitialized);
+    debugLog('[AuthContext] updateAuthState called, userId:', userId, 'isInitialized:', isInitialized);
 
     // Use functional update to avoid dependency on authState
     setAuthState(prev => {
@@ -220,7 +239,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const userChanged = prev.user?.id !== userId;
       const isSignIn = !prev.user && userId; // Going from no user to a user
 
-      console.log('[AuthContext] updateAuthState check:', {
+      debugLog('[AuthContext] updateAuthState check:', {
         userChanged,
         isSignIn,
         prevUserId: prev.user?.id,
@@ -230,17 +249,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       });
 
       if (!userChanged && !isSignIn && prev.isInitialized && userId === lastUserIdRef.current) {
-        console.log('[AuthContext] Skipping duplicate update');
+        debugLog('[AuthContext] Skipping duplicate update');
         return prev; // No change needed - same user, already initialized
       }
 
-      console.log('[AuthContext] Updating auth state with user:', userId);
+      debugLog('[AuthContext] Updating auth state with user:', userId);
       lastUserIdRef.current = userId;
 
       if (session?.user) {
         // Check if session is expired
         if (sessionManager.isSessionExpired(session)) {
-          console.log('Session is expired - logging out');
+          debugLog('Session is expired - logging out');
           // Only sign out if we actually had a user
           if (prev.user) {
             const uid = prev.user.id;
@@ -283,7 +302,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           userInitials: prev.userInitials || tempInitials || null,
           profilePhotoUrl: prev.profilePhotoUrl ?? tempPhoto,
           isLoading: false,
-          isInitialized
+          isInitialized,
+          // Do NOT set supabaseSessionReady here; cached sessions can call updateAuthState before
+          // Supabase actually re-attaches a JWT for this tab. Ready is flipped only after a real
+          // getSession()/INITIAL_SESSION/refreshSession confirms hydration.
+          supabaseSessionReady: prev.supabaseSessionReady,
         };
       } else {
         // Only clear state if we actually had a user before
@@ -301,6 +324,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           profilePhotoUrl: null,
           isLoading: false,
           isInitialized,
+          supabaseSessionReady: false,
           sessionRefreshNonce: 0,
         };
       }
@@ -308,12 +332,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [fetchUserDetails]);
 
   const handleAuthStateChange = useCallback(async (event: string, session: any) => {
-    console.log('[AuthContext] Auth state change event:', event, 'Session:', session?.user?.id || 'no user');
+    debugLog('[AuthContext] Auth state change event:', event, 'Session:', session?.user?.id || 'no user');
 
     // Always process SIGNED_IN events immediately, even if processing
     // This ensures sign-in works correctly
     if (event === 'SIGNED_IN') {
-      console.log('[AuthContext] Processing SIGNED_IN event, updating auth state');
+      debugLog('[AuthContext] Processing SIGNED_IN event, updating auth state');
       // Ensure sessionStorage flag is set
       if (typeof window !== 'undefined' && session?.user) {
         sessionStorage.setItem('user_signed_in', 'true');
@@ -369,6 +393,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             profilePhotoUrl: null,
             isLoading: false,
             isInitialized: true,
+            supabaseSessionReady: false,
             sessionRefreshNonce: 0,
           };
         });
@@ -561,13 +586,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           lastUserIdRef.current = authState.user.id;
           restoredFromCacheRef.current = true;
           fetchUserDetails(authState.user).catch(() => {});
-          console.log('[AuthContext] Sync-hydrated session (first paint); background user details only');
+          debugLog('[AuthContext] Sync-hydrated session (first paint); background user details only');
+          // above log moved behind debug flag
+
+          // Confirm Supabase has hydrated session for this tab (real getSession()).
+          const t0 = DEBUG_AUTH && typeof performance !== 'undefined' ? performance.now() : 0;
+          supabase.auth.getSession().then(({ data: { session } }) => {
+            if (!isMounted) return;
+            if (session?.user) {
+              markSupabaseSessionReady(true);
+              if (DEBUG_AUTH) {
+                const dt =
+                  (typeof performance !== 'undefined' ? performance.now() : Date.now()) - (t0 || 0);
+                console.log(`[AUTH-DEBUG] getSession() confirmed user after sync hydrate in ${dt.toFixed(1)}ms`);
+              }
+            }
+          }).catch(() => {});
         } else if (cachedSession?.user) {
-          console.log('[AuthContext] Using cached session for instant initialization');
+          debugLog('[AuthContext] Using cached session for instant initialization');
           restoredFromCacheRef.current = true;
           updateAuthState(cachedSession, true);
           setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
           fetchUserDetails(cachedSession.user).catch(() => {});
+
+          // Confirm Supabase has hydrated session for this tab (real getSession()).
+          const t0 = DEBUG_AUTH && typeof performance !== 'undefined' ? performance.now() : 0;
+          supabase.auth.getSession().then(({ data: { session } }) => {
+            if (!isMounted) return;
+            if (session?.user) {
+              markSupabaseSessionReady(true);
+              if (DEBUG_AUTH) {
+                const dt =
+                  (typeof performance !== 'undefined' ? performance.now() : Date.now()) - (t0 || 0);
+                console.log(`[AUTH-DEBUG] getSession() confirmed user after cached session in ${dt.toFixed(1)}ms`);
+              }
+            }
+          }).catch(() => {});
         } else {
           // Even if no cached session, check localStorage for tokens
           // This helps with mobile browsers that might have cleared the cached session
@@ -584,13 +638,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               }
               
               if (hasStoredTokens) {
-                console.log('[AuthContext] Found stored tokens, trying getSession() for deployed env...');
+                debugLog('[AuthContext] Found stored tokens, trying getSession() for deployed env...');
                 // In production INITIAL_SESSION can fire with null; getSession() reads storage directly and is more reliable
                 const { data: { session } } = await supabase.auth.getSession();
                 if (isMounted && session?.user) {
                   restoredFromStorageRef.current = true;
                   updateAuthState(session, true);
                   setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
+                  markSupabaseSessionReady(true);
                 }
               }
             } catch (e) {
@@ -602,16 +657,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         // Set up auth state change listener - INITIAL_SESSION should fire immediately
         const { data: { subscription: authSubscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-          console.log('[AuthContext] onAuthStateChange fired:', event, 'Session:', session?.user?.id || 'no user');
+          debugLog('[AuthContext] onAuthStateChange fired:', event, 'Session:', session?.user?.id || 'no user');
 
           // Handle INITIAL_SESSION - this fires immediately when listener is set up
           if (event === 'INITIAL_SESSION') {
             if (isMounted && !initHandled) {
               initHandled = true;
               if (session?.user) {
-                console.log('[AuthContext] INITIAL_SESSION has user, updating state');
+                debugLog('[AuthContext] INITIAL_SESSION has user, updating state');
                 updateAuthState(session, true);
                 setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
+                markSupabaseSessionReady(true);
               } else {
                 // If we already restored user from cache or getSession(), do not overwrite with null.
                 if (restoredFromStorageRef.current || restoredFromCacheRef.current) {
@@ -622,18 +678,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 // 1) Prefer getSession() first (reads storage, no network) - most reliable in deployed envs.
                 const { data: { session: fromStorage } } = await supabase.auth.getSession();
                 if (isMounted && fromStorage?.user) {
-                  console.log('[AuthContext] Session from getSession() after INITIAL_SESSION null');
+                  debugLog('[AuthContext] Session from getSession() after INITIAL_SESSION null');
                   updateAuthState(fromStorage, true);
                   setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
+                  markSupabaseSessionReady(true);
                   return;
                 }
                 // 2) If still no session, try refresh (network). Do NOT sign out on failure - can clear valid sessions in production.
                 try {
                   const { data: { session: refreshed }, error } = await supabase.auth.refreshSession();
                   if (isMounted && !error && refreshed?.user) {
-                    console.log('[AuthContext] Session refreshed after INITIAL_SESSION null');
+                    debugLog('[AuthContext] Session refreshed after INITIAL_SESSION null');
                     updateAuthState(refreshed, true);
                     setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
+                    markSupabaseSessionReady(true);
                     return;
                   }
                 } catch (e: any) {
@@ -668,9 +726,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     if (!isMounted) return;
                     const { data: { session: lateSession } } = await supabase.auth.getSession();
                     if (lateSession?.user) {
-                      console.log('[AuthContext] Session restored on delayed getSession() after', delayMs, 'ms');
+                      debugLog('[AuthContext] Session restored on delayed getSession() after', delayMs, 'ms');
                       updateAuthState(lateSession, true);
                       setAuthState(prev => ({ ...prev, sessionCheckComplete: true }));
+                      markSupabaseSessionReady(true);
                     }
                   }, delayMs);
                 });

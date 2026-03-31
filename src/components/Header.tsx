@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { useLocation, Link, useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { searchLeads } from '../lib/legacyLeadsApi';
-import { supabase } from '../lib/supabase';
+import { supabase, authRetryQueryOnce } from '../lib/supabase';
 import { readBootstrappedDisplayName } from '../lib/authBootstrap';
 import type { Lead } from '../lib/supabase';
 import type { CombinedLead } from '../lib/legacyLeadsApi';
@@ -293,13 +293,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     // Use the standard StorageEvent.
     window.addEventListener('storage', handleStorageChange as unknown as EventListener);
 
-    const interval = setInterval(checkTheme, 500);
-
     return () => {
       observer.disconnect();
       window.removeEventListener('themechange', handleThemeChange as EventListener);
       window.removeEventListener('storage', handleStorageChange as unknown as EventListener);
-      clearInterval(interval);
     };
   }, []);
 
@@ -325,10 +322,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
       try {
         // Try to load from database first
-        const { data: dismissals, error } = await supabase
-          .from('assignment_notification_dismissals')
-          .select('dismissal_key')
-          .eq('user_id', authUser.id);
+        const { data: dismissals, error } = await authRetryQueryOnce(() =>
+          supabase
+            .from('assignment_notification_dismissals')
+            .select('dismissal_key')
+            .eq('user_id', authUser.id)
+        );
 
         if (!error && dismissals) {
           const dismissedKeys = new Set(dismissals.map((d: any) => d.dismissal_key));

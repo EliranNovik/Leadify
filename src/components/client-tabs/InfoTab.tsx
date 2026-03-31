@@ -2540,27 +2540,9 @@ const InfoTab: React.FC<ClientTabProps> = ({
                 </button>
               </div>
               <p className="text-sm text-base-content/70 mb-4">
-                Link a flag to expert opinion, handler opinion, or open Interactions to flag a specific message.
+                Open Interactions to flag a specific message.
               </p>
               <div className="flex flex-col gap-2">
-                <button
-                  type="button"
-                  className="btn btn-outline justify-start gap-2 border-amber-200 text-amber-900 hover:bg-amber-50"
-                  disabled={!publicUserId}
-                  onClick={() => void handleFlagChooserChoice('expert_notes')}
-                >
-                  <UserIcon className="h-5 w-5 shrink-0" />
-                  Expert opinion
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-outline justify-start gap-2 border-amber-200 text-amber-900 hover:bg-amber-50"
-                  disabled={!publicUserId}
-                  onClick={() => void handleFlagChooserChoice('handler_notes')}
-                >
-                  <ScaleIcon className="h-5 w-5 shrink-0" />
-                  Handler opinion
-                </button>
                 <button
                   type="button"
                   className="btn btn-outline justify-start gap-2 border-amber-200 text-amber-900 hover:bg-amber-50"
@@ -2570,9 +2552,6 @@ const InfoTab: React.FC<ClientTabProps> = ({
                   Conversation (Interactions)
                 </button>
               </div>
-              {!publicUserId && (
-                <p className="text-xs text-warning mt-3">Sign in to flag expert or handler opinion.</p>
-              )}
             </div>
           </div>,
           document.body
@@ -2598,29 +2577,10 @@ const InfoTab: React.FC<ClientTabProps> = ({
                 </div>
               </div>
               <p className="text-sm text-base-content/80 mb-4">
-                Save requires linking this rating to a flag. Choose expert opinion, handler opinion, or open
-                Interactions to flag a message first — then return to Info to save your probability (unless you
-                already flagged a message on this lead).
+                Save requires linking this rating to a flag. Open Interactions to flag a message first — then
+                return to Info to save your probability (unless you already flagged a message on this lead).
               </p>
               <div className="flex flex-col gap-2 mb-4">
-                <button
-                  type="button"
-                  className="btn btn-outline justify-start gap-2 border-2 border-[#471CCA] bg-white text-[#471CCA] hover:bg-[#471CCA]/10 hover:border-[#471CCA] disabled:border-base-300 disabled:text-base-content/40 disabled:bg-base-200 dark:bg-base-100 dark:border-[#a78bfa] dark:text-[#c4b5fd] dark:hover:bg-[#471CCA]/20"
-                  disabled={!publicUserId}
-                  onClick={() => void resolveHighProbGate('expert_notes')}
-                >
-                  <UserIcon className="h-5 w-5 shrink-0" />
-                  Flag expert opinion
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-outline justify-start gap-2 border-2 border-[#471CCA] bg-white text-[#471CCA] hover:bg-[#471CCA]/10 hover:border-[#471CCA] disabled:border-base-300 disabled:text-base-content/40 disabled:bg-base-200 dark:bg-base-100 dark:border-[#a78bfa] dark:text-[#c4b5fd] dark:hover:bg-[#471CCA]/20"
-                  disabled={!publicUserId}
-                  onClick={() => void resolveHighProbGate('handler_notes')}
-                >
-                  <ScaleIcon className="h-5 w-5 shrink-0" />
-                  Flag handler opinion
-                </button>
                 <button
                   type="button"
                   className="btn btn-outline justify-start gap-2 border-2 border-[#471CCA] bg-white text-[#471CCA] hover:bg-[#471CCA]/10 hover:border-[#471CCA] dark:bg-base-100 dark:border-[#a78bfa] dark:text-[#c4b5fd] dark:hover:bg-[#471CCA]/20"
@@ -2630,9 +2590,6 @@ const InfoTab: React.FC<ClientTabProps> = ({
                   Open Interactions to flag a message first
                 </button>
               </div>
-              {!publicUserId && (
-                <p className="text-xs text-warning mb-3">Sign in to flag expert or handler opinion.</p>
-              )}
               <button
                 type="button"
                 className="btn btn-outline w-full"

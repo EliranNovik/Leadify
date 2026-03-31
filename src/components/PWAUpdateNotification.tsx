@@ -1,12 +1,9 @@
 import { useState, useEffect } from 'react';
-import { useLocation } from 'react-router-dom';
 import { ArrowPathIcon, XMarkIcon } from '@heroicons/react/24/outline';
 
 const PWAUpdateNotification: React.FC = () => {
   const [showUpdate, setShowUpdate] = useState(false);
   const [registration, setRegistration] = useState<ServiceWorkerRegistration | null>(null);
-  const location = useLocation();
-
   useEffect(() => {
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.ready.then((reg) => {
@@ -32,11 +29,11 @@ const PWAUpdateNotification: React.FC = () => {
           }
         });
 
-        // Check for updates every 60 seconds (aggressive checking)
+        // Check for updates periodically (avoid aggressive polling on mobile)
         const interval = setInterval(() => {
           console.log('🔄 PWAUpdateNotification: Periodic update check...');
           checkForUpdates();
-        }, 60 * 1000);
+        }, 5 * 60 * 1000);
         checkForUpdates(); // Initial check
 
         // Also check when window regains focus (user switches back to tab/window)
@@ -55,15 +52,7 @@ const PWAUpdateNotification: React.FC = () => {
     }
   }, []);
 
-  // Check for updates whenever route changes
-  useEffect(() => {
-    if (registration && location.pathname) {
-      console.log('🔄 PWAUpdateNotification: Route changed - checking for updates...', location.pathname);
-      registration.update().catch((error) => {
-        console.warn('⚠️ PWAUpdateNotification: Update check failed on route change:', error);
-      });
-    }
-  }, [location.pathname, registration]);
+  // Route-change update checks removed to reduce background churn on mobile.
 
   const handleUpdate = () => {
     if (registration?.waiting) {

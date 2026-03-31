@@ -2,6 +2,10 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const DEBUG_AUTH = String(import.meta.env.VITE_DEBUG_AUTH || '').toLowerCase() === 'true';
+const DEBUG_AUTH_START_MS = typeof performance !== 'undefined' ? performance.now() : Date.now();
+let DEBUG_AUTH_401_COUNT = 0;
+let DEBUG_AUTH_403_COUNT = 0;
 
 if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables');
@@ -154,6 +158,22 @@ const supabaseGlobalFetch: typeof fetch = async (input, init) => {
 
   const performNetworkRequest = async (): Promise<Response> => {
     let response = await baseFetch(input as RequestInfo, init);
+
+    if (DEBUG_AUTH) {
+      const elapsedMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - DEBUG_AUTH_START_MS;
+      if (elapsedMs <= 5000 && (response.status === 401 || response.status === 403)) {
+        if (response.status === 401) DEBUG_AUTH_401_COUNT += 1;
+        if (response.status === 403) DEBUG_AUTH_403_COUNT += 1;
+        const hdrs = new Headers(init?.headers as HeadersInit | undefined);
+        const bearer = (hdrs.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
+        const authKind = !bearer || bearer === supabaseAnonKey ? 'anon_or_missing' : 'user_bearer';
+        console.log(
+          `[AUTH-DEBUG] ${response.status} within first 5s (${authKind}) ` +
+            `401s=${DEBUG_AUTH_401_COUNT} 403s=${DEBUG_AUTH_403_COUNT} ` +
+            `method=${getRequestMethod(input as RequestInfo, init)} path=${requestUrl.pathname}`
+        );
+      }
+    }
 
     if (response.status !== 401) {
       return response;
@@ -436,6 +456,43 @@ export const safeSupabaseQuery = async <T>(
     throw error;
   }
 };
+
+/**
+ * Retry a Supabase query once when it fails due to auth (401/403/JWT), after attempting
+ * a lightweight session refresh. This is intended to recover from cold-start hydration
+ * races on mobile (UI has cached user, but first requests can still go out as anon/stale).
+ *
+ * Important: this does NOT redirect to /login; it returns the final error to the caller.
+ */
+export async function authRetryQueryOnce<T>(
+  queryFn: () => PromiseLike<{ data: T | null; error: any }>
+): Promise<{ data: T | null; error: any }> {
+  const first = await queryFn();
+  if (!first.error) return first;
+
+  // Network errors: let safeSupabaseQuery handle backoff; do not refresh tokens.
+  if (isNetworkError(first.error)) {
+    return first;
+  }
+
+  if (!isAuthError(first.error)) {
+    return first;
+  }
+
+  try {
+    // Prefer storage read first; if session is missing/stale, refresh.
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) {
+      await supabase.auth.refreshSession().catch(() => {});
+    } else {
+      await supabase.auth.refreshSession().catch(() => {});
+    }
+  } catch {
+    // ignore: we return the original error if retry doesn't help
+  }
+
+  return await queryFn();
+}
 
 // Helper to check if error is a network/transient error (not a real auth failure)
 const isNetworkError = (error: any): boolean => {

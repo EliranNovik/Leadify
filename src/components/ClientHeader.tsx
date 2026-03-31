@@ -64,6 +64,18 @@ import {
 } from '../lib/userContentFlags';
 import { caseProbabilityFromFactors, type ProbabilitySlidersValues } from './client-tabs/ProbabilitySlidersModal';
 
+// Lightweight in-memory caches to avoid refetching static dropdown data on mobile.
+let cachedLeadSources: Array<{ id: number | string; name: string }> | null = null;
+let cachedLeadSourcesPromise: Promise<Array<{ id: number | string; name: string }>> | null = null;
+
+let cachedCurrencies: Array<{ id: number | string; name: string; iso_code: string | null }> | null = null;
+let cachedCurrenciesPromise: Promise<
+  Array<{ id: number | string; name: string; iso_code: string | null }>
+> | null = null;
+
+let cachedCategories: any[] | null = null;
+let cachedCategoriesPromise: Promise<any[]> | null = null;
+
 const leadFieldFlagLabel = (key: string): string => {
     const map: Record<string, string> = {
         expert_notes: 'Expert opinion',
@@ -698,14 +710,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     useEffect(() => {
         const fetchSources = async () => {
             try {
-                const { data, error } = await supabase
-                    .from('misc_leadsource')
-                    .select('id, name')
-                    .eq('active', true)
-                    .order('order', { ascending: true, nullsFirst: false });
-
-                if (error) throw error;
-                setAllSources(data || []);
+                if (cachedLeadSources) {
+                    setAllSources(cachedLeadSources);
+                    return;
+                }
+                if (!cachedLeadSourcesPromise) {
+                    cachedLeadSourcesPromise = (async () => {
+                        const { data, error } = await supabase
+                            .from('misc_leadsource')
+                            .select('id, name')
+                            .eq('active', true)
+                            .order('order', { ascending: true, nullsFirst: false });
+                        if (error) throw error;
+                        return data || [];
+                    })();
+                }
+                const rows = await cachedLeadSourcesPromise;
+                cachedLeadSources = rows;
+                setAllSources(rows);
             } catch (error) {
                 console.error('Error fetching sources:', error);
             }
@@ -718,13 +740,23 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     useEffect(() => {
         const fetchCurrencies = async () => {
             try {
-                const { data, error } = await supabase
-                    .from('accounting_currencies')
-                    .select('id, name, iso_code')
-                    .order('order', { ascending: true, nullsFirst: false });
-
-                if (error) throw error;
-                setAllCurrencies(data || []);
+                if (cachedCurrencies) {
+                    setAllCurrencies(cachedCurrencies);
+                    return;
+                }
+                if (!cachedCurrenciesPromise) {
+                    cachedCurrenciesPromise = (async () => {
+                        const { data, error } = await supabase
+                            .from('accounting_currencies')
+                            .select('id, name, iso_code')
+                            .order('order', { ascending: true, nullsFirst: false });
+                        if (error) throw error;
+                        return data || [];
+                    })();
+                }
+                const rows = await cachedCurrenciesPromise;
+                cachedCurrencies = rows;
+                setAllCurrencies(rows);
             } catch (error) {
                 console.error('Error fetching currencies:', error);
             }
@@ -738,17 +770,28 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         const fetchCategories = async () => {
             try {
                 setIsLoadingCategories(true);
-                const { data, error } = await supabase
-                    .from('misc_category')
-                    .select(`
+                if (cachedCategories) {
+                    setAllCategories(cachedCategories);
+                    return;
+                }
+                if (!cachedCategoriesPromise) {
+                    cachedCategoriesPromise = (async () => {
+                        const { data, error } = await supabase
+                            .from('misc_category')
+                            .select(`
             id,
             name,
             misc_maincategory ( id, name )
           `)
-                    .order('name');
+                            .order('name');
 
-                if (error) throw error;
-                setAllCategories(data || []);
+                        if (error) throw error;
+                        return data || [];
+                    })();
+                }
+                const rows = await cachedCategoriesPromise;
+                cachedCategories = rows;
+                setAllCategories(rows);
             } catch (error) {
                 console.error('Error fetching categories:', error);
             } finally {

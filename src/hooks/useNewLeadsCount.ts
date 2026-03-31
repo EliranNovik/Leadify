@@ -83,9 +83,42 @@ export function useNewLeadsCount(): number {
   }, [ensureStageIds]);
 
   useEffect(() => {
-    fetchCount();
-    const interval = setInterval(fetchCount, 30000);
-    return () => clearInterval(interval);
+    let interval: ReturnType<typeof setInterval> | null = null;
+    let cancelled = false;
+
+    const start = () => {
+      if (cancelled) return;
+      if (interval) return;
+      fetchCount();
+      interval = setInterval(fetchCount, 30000);
+    };
+
+    const stop = () => {
+      if (!interval) return;
+      clearInterval(interval);
+      interval = null;
+    };
+
+    const handleVisibility = () => {
+      if (typeof document === 'undefined') return;
+      if (document.visibilityState === 'visible') start();
+      else stop();
+    };
+
+    // Start immediately if visible; otherwise wait until user returns.
+    if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+      start();
+    }
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', handleVisibility);
+
+    return () => {
+      cancelled = true;
+      stop();
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', handleVisibility);
+    };
   }, [fetchCount]);
 
   return count;

@@ -41,6 +41,8 @@ import WhatsAppAvatar from '../components/whatsapp/WhatsAppAvatar';
 import VoiceMessagePlayer from '../components/whatsapp/VoiceMessagePlayer';
 import VoiceMessageRecorder from '../components/whatsapp/VoiceMessageRecorder';
 
+const DEBUG_WA = String(import.meta.env.VITE_DEBUG_WHATSAPP || '').toLowerCase() === 'true';
+
 interface Client {
   id: string;
   lead_number: string;
@@ -214,7 +216,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
   // Debug selectedFile state changes
   useEffect(() => {
-    console.log('📁 selectedFile state changed:', selectedFile);
+    if (DEBUG_WA) {
+      // eslint-disable-next-line no-console
+      console.log('📁 selectedFile state changed:', selectedFile);
+    }
   }, [selectedFile]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [currentUser, setCurrentUser] = useState<any>(null);

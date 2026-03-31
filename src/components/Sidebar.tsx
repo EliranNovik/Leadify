@@ -158,15 +158,12 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
         setTimeout(checkTheme, 100);
       }
     };
-    window.addEventListener('storagechange', handleStorageChange);
-
-    const interval = setInterval(checkTheme, 500);
+    window.addEventListener('storage', handleStorageChange);
 
     return () => {
       observer.disconnect();
       window.removeEventListener('themechange', handleThemeChange as EventListener);
-      window.removeEventListener('storagechange', handleStorageChange);
-      clearInterval(interval);
+      window.removeEventListener('storage', handleStorageChange);
     };
   }, []);
   const location = useLocation();

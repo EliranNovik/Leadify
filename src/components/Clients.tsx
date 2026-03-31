@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useLocation, useNavigate, useParams, useNavigationType } from 'react-router-dom';
-import { supabase, type Lead, isAuthError, tryRefreshThenExpire } from '../lib/supabase';
+import { supabase, type Lead, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
 import { getStageName, fetchStageNames, areStagesEquivalent, normalizeStageName, getStageColour } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { fetchAllLeads, fetchLatestLead, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
@@ -492,19 +492,23 @@ async function fetchCurrentUserFullName() {
     }
 
     // Get user from users table - match by auth_id (more reliable than email)
-    let { data: userData, error } = await supabase
-      .from('users')
-      .select('full_name, first_name, last_name, email')
-      .eq('auth_id', user.id)
-      .maybeSingle();
+    let { data: userData, error } = await authRetryQueryOnce(() =>
+      supabase
+        .from('users')
+        .select('full_name, first_name, last_name, email')
+        .eq('auth_id', user.id)
+        .maybeSingle()
+    );
 
     // Fallback to email if not found by auth_id (for backwards compatibility)
     if ((error || !userData) && user.email) {
-      const { data: userByEmail, error: emailError } = await supabase
-        .from('users')
-        .select('full_name, first_name, last_name, email')
-        .eq('email', user.email)
-        .maybeSingle();
+      const { data: userByEmail, error: emailError } = await authRetryQueryOnce(() =>
+        supabase
+          .from('users')
+          .select('full_name, first_name, last_name, email')
+          .eq('email', user.email)
+          .maybeSingle()
+      );
 
       if (!emailError && userByEmail) {
         userData = userByEmail;
@@ -4659,6 +4663,10 @@ const Clients: React.FC<ClientsProps> = ({
   // Cached in sessionStorage to avoid refetching on navigation
   useEffect(() => {
     const loadBackgroundData = async () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        // Avoid heavy background fetches while the app is backgrounded (mobile battery + cold radio).
+        return;
+      }
       // Check cache first
       const cacheKey = 'clientsPage_backgroundData';
       const cacheTimestampKey = 'clientsPage_backgroundData_timestamp';
@@ -4824,9 +4832,21 @@ const Clients: React.FC<ClientsProps> = ({
           })) : []),
           tags: allTags.length > 0 ? allTags : (tagsResult.data || []),
         };
-        sessionStorage.setItem(cacheKey, JSON.stringify(dataToCache));
-        sessionStorage.setItem(cacheTimestampKey, Date.now().toString());
-        console.log('✅ Background data loading completed and cached');
+        const writeCache = () => {
+          try {
+            sessionStorage.setItem(cacheKey, JSON.stringify(dataToCache));
+            sessionStorage.setItem(cacheTimestampKey, Date.now().toString());
+          } catch {
+            // ignore storage quota / private mode errors
+          }
+        };
+        // Avoid blocking the main thread on mobile with large JSON.stringify.
+        if (typeof (window as any).requestIdleCallback === 'function') {
+          (window as any).requestIdleCallback(writeCache, { timeout: 2000 });
+        } else {
+          setTimeout(writeCache, 0);
+        }
+        if (CLIENTS_DEBUG) console.log('✅ Background data loading completed and cached');
       } catch (error) {
         console.error('Error fetching background data:', error);
       } finally {

@@ -47,16 +47,12 @@ export const useTheme = () => {
         setTimeout(checkTheme, 100);
       }
     };
-    window.addEventListener('storagechange', handleStorageChange);
-
-    // Poll every 500ms as fallback
-    const interval = setInterval(checkTheme, 500);
+    window.addEventListener('storage', handleStorageChange);
 
     return () => {
       observer.disconnect();
       window.removeEventListener('themechange', handleThemeChange as EventListener);
-      window.removeEventListener('storagechange', handleStorageChange);
-      clearInterval(interval);
+      window.removeEventListener('storage', handleStorageChange);
     };
   }, []);
 

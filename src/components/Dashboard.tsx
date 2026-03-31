@@ -10,7 +10,7 @@ import ClockInBox from './ClockInBox';
 const WaitingForPriceOfferMyLeadsWidget = lazy(() => import('./WaitingForPriceOfferMyLeadsWidget'));
 const ClosedDealsWithoutPaymentPlanWidget = lazy(() => import('./ClosedDealsWithoutPaymentPlanWidget'));
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
-import { supabase, isAuthError, tryRefreshThenExpire } from '../lib/supabase';
+import { supabase, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 import { useExternalUser } from '../hooks/useExternalUser';
 import ExternalUserDashboard from './ExternalUserDashboard';
@@ -96,22 +96,18 @@ const Dashboard: React.FC = () => {
     };
     window.addEventListener('themechange', handleThemeChange as EventListener);
 
-    // Also listen to storage changes
+    // Also listen to storage changes (cross-tab)
     const handleStorageChange = (e: StorageEvent) => {
       if (e.key === 'theme') {
         setTimeout(checkTheme, 100);
       }
     };
-    window.addEventListener('storagechange', handleStorageChange);
-
-    // Poll every 500ms as fallback
-    const interval = setInterval(checkTheme, 500);
+    window.addEventListener('storage', handleStorageChange);
 
     return () => {
       observer.disconnect();
       window.removeEventListener('themechange', handleThemeChange as EventListener);
-      window.removeEventListener('storagechange', handleStorageChange);
-      clearInterval(interval);
+      window.removeEventListener('storage', handleStorageChange);
     };
   }, []);
 
@@ -231,9 +227,9 @@ const Dashboard: React.FC = () => {
     const timeoutId = setTimeout(() => {
       const fetchMeetingLocations = async () => {
         try {
-          const { data, error } = await supabase
-            .from('tenants_meetinglocation')
-            .select('name, default_link');
+          const { data, error } = await authRetryQueryOnce(() =>
+            supabase.from('tenants_meetinglocation').select('name, default_link')
+          );
 
           if (error) {
             return;

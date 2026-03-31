@@ -229,9 +229,20 @@ export default function LeadTagsModal({
                 {selected.map((name) => (
                   <span
                     key={name}
-                    className="inline-flex items-center rounded-full bg-primary/10 px-2.5 py-1 text-sm font-medium text-primary"
+                    className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 text-sm font-medium text-primary"
                   >
                     {name}
+                    {!readOnly && (
+                      <button
+                        type="button"
+                        className="ml-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full text-base-content/50 hover:bg-base-200 hover:text-base-content dark:hover:bg-gray-800"
+                        onClick={() => toggle(name)}
+                        aria-label={`Remove tag ${name}`}
+                        title="Remove"
+                      >
+                        <XMarkIcon className="h-4 w-4" />
+                      </button>
+                    )}
                   </span>
                 ))}
               </div>

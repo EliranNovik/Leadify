@@ -22,6 +22,18 @@ import DepartmentList from './DepartmentList';
 import SchedulerWhatsAppModal from './SchedulerWhatsAppModal';
 import SchedulerEmailThreadModal from './SchedulerEmailThreadModal';
 
+const DEBUG_CALENDAR = String(import.meta.env.VITE_DEBUG_CALENDAR || '').toLowerCase() === 'true';
+const calDebug = (...args: any[]) => {
+  if (!DEBUG_CALENDAR) return;
+  // eslint-disable-next-line no-console
+  console.log(...args);
+};
+
+let cachedCalendarEmailToName: Map<string, string> | null = null;
+let cachedCalendarEmailToNameAtMs: number | null = null;
+let cachedCalendarEmailToNamePromise: Promise<Map<string, string>> | null = null;
+const CALENDAR_EMAILMAP_TTL_MS = 30 * 60 * 1000;
+
 // Email templates
 const emailTemplates = [
   {
@@ -1545,7 +1557,7 @@ const CalendarPage: React.FC = () => {
       const legacyLeadId = legacyMeeting.id?.toString().replace('legacy_', '');
       const isDuplicate = existingMeetingIds.has(legacyMeeting.id) || existingLegacyLeadIds.has(legacyLeadId);
       if (isDuplicate) {
-        console.log('🔍 [combineMeetingsWithoutDuplicates] Filtering out duplicate legacy meeting:', {
+        calDebug('🔍 [combineMeetingsWithoutDuplicates] Filtering out duplicate legacy meeting:', {
           id: legacyMeeting.id,
           legacyLeadId,
           reason: existingMeetingIds.has(legacyMeeting.id) ? 'existingMeetingIds' : 'existingLegacyLeadIds'
@@ -1554,7 +1566,7 @@ const CalendarPage: React.FC = () => {
       return !isDuplicate;
     });
 
-    console.log('🔍 [combineMeetingsWithoutDuplicates] Combining:', {
+    calDebug('🔍 [combineMeetingsWithoutDuplicates] Combining:', {
       regularCount: regularMeetings.length,
       legacyInputCount: legacyMeetings.length,
       legacyAfterFilterCount: newLegacyMeetings.length,
@@ -1571,65 +1583,82 @@ const CalendarPage: React.FC = () => {
     setIsStaffMeetingsLoading(true);
 
     try {
-      // Fetch staff meetings from database for date range
-      const { data: allMeetings, error: allMeetingsError } = await supabase
+      // Fetch staff meetings from database for date range (filter in SQL, not client-side).
+      const fromIso = `${fromDate}T00:00:00`;
+      const toIso = `${toDate}T23:59:59`;
+      const { data: staffMeetingsData, error: allMeetingsError } = await supabase
         .from('outlook_teams_meetings')
-        .select('*')
+        .select('teams_meeting_id, start_date_time, subject, location, teams_join_url, attendees, description')
+        .gte('start_date_time', fromIso)
+        .lte('start_date_time', toIso)
         .order('start_date_time');
-
-      // Filter by date range manually
-      const staffMeetingsData = allMeetings?.filter(meeting => {
-        const meetingDate = new Date(meeting.start_date_time).toISOString().split('T')[0];
-        return meetingDate >= fromDate && meetingDate <= toDate;
-      }) || [];
 
       if (allMeetingsError) {
         console.error('Error fetching staff meetings from database:', allMeetingsError);
         return;
       }
 
-
       if (staffMeetingsData && staffMeetingsData.length > 0) {
-        // Fetch all employees and users to match emails with display names
-        const [employeesResult, usersResult] = await Promise.all([
-          supabase
-            .from('tenants_employee')
-            .select('id, display_name')
-            .not('display_name', 'is', null),
-          supabase
-            .from('users')
-            .select('employee_id, email')
-            .not('email', 'is', null)
-        ]);
+        // Cache email->displayName mapping (used to label staff attendees).
+        const now = Date.now();
+        const isFresh =
+          cachedCalendarEmailToName &&
+          typeof cachedCalendarEmailToNameAtMs === 'number' &&
+          now - cachedCalendarEmailToNameAtMs < CALENDAR_EMAILMAP_TTL_MS;
 
-        if (employeesResult.error || usersResult.error) {
-          console.error('Error fetching employees/users for email mapping:', employeesResult.error || usersResult.error);
-          return;
+        if (!isFresh) {
+          if (!cachedCalendarEmailToNamePromise) {
+            cachedCalendarEmailToNamePromise = (async () => {
+              const [employeesResult, usersResult] = await Promise.all([
+                supabase
+                  .from('tenants_employee')
+                  .select('id, display_name')
+                  .not('display_name', 'is', null),
+                supabase
+                  .from('users')
+                  .select('employee_id, email')
+                  .not('email', 'is', null)
+              ]);
+
+              if (employeesResult.error || usersResult.error) {
+                throw employeesResult.error || usersResult.error;
+              }
+
+              const employeeIdToEmail = new Map<number, string>();
+              usersResult.data?.forEach((user: any) => {
+                if (user.employee_id && user.email) {
+                  employeeIdToEmail.set(user.employee_id, String(user.email).toLowerCase());
+                }
+              });
+
+              const emailToNameMap = new Map<string, string>();
+              employeesResult.data?.forEach((emp: any) => {
+                if (!emp.display_name) return;
+                const displayName = String(emp.display_name);
+                const emailFromUsers = employeeIdToEmail.get(emp.id);
+                if (emailFromUsers) {
+                  emailToNameMap.set(emailFromUsers, displayName);
+                }
+                const patternEmail = `${displayName.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
+                emailToNameMap.set(patternEmail, displayName);
+              });
+
+              return emailToNameMap;
+            })().finally(() => {
+              cachedCalendarEmailToNamePromise = null;
+            });
+          }
+
+          try {
+            cachedCalendarEmailToName = await cachedCalendarEmailToNamePromise;
+            cachedCalendarEmailToNameAtMs = Date.now();
+          } catch (e) {
+            console.error('Error fetching employees/users for email mapping:', e);
+            return;
+          }
         }
 
-        // Create employee_id to email mapping from users table
-        const employeeIdToEmail = new Map<number, string>();
-        usersResult.data?.forEach((user: any) => {
-          if (user.employee_id && user.email) {
-            employeeIdToEmail.set(user.employee_id, user.email.toLowerCase());
-          }
-        });
-
-        // Create email to display name mapping
-        const emailToNameMap = new Map<string, string>();
-        employeesResult.data?.forEach((emp: any) => {
-          if (!emp.display_name) return;
-
-          // Method 1: Use email from users table (employee_id match)
-          const emailFromUsers = employeeIdToEmail.get(emp.id);
-          if (emailFromUsers) {
-            emailToNameMap.set(emailFromUsers, emp.display_name);
-          }
-
-          // Method 2: Use pattern matching (display_name.toLowerCase().replace(/\s+/g, '.') + '@lawoffice.org.il')
-          const patternEmail = `${emp.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
-          emailToNameMap.set(patternEmail, emp.display_name);
-        });
+        const emailToNameMap = cachedCalendarEmailToName || new Map<string, string>();
 
         const formattedStaffMeetings = staffMeetingsData.map((meeting: any) => {
           // Extract attendees from JSONB
@@ -1868,12 +1897,12 @@ const CalendarPage: React.FC = () => {
   // Update state when cached data is available
   useEffect(() => {
     if (employeesAndCategoriesData) {
-      console.log('🔍 CalendarPage - Setting employees from cache:', employeesAndCategoriesData.employees.length);
+      calDebug('🔍 CalendarPage - Setting employees from cache:', employeesAndCategoriesData.employees.length);
       setAllEmployees(employeesAndCategoriesData.employees);
       setAllCategories(employeesAndCategoriesData.categories);
     } else {
       // If cached data is not available, fetch employees directly as fallback
-      console.warn('⚠️ CalendarPage - No cached employee data, fetching directly...');
+      calDebug('⚠️ CalendarPage - No cached employee data, fetching directly...');
       const fetchEmployeesFallback = async () => {
         try {
           const { data: allEmployeesData, error: allEmployeesError } = await supabase
@@ -1905,7 +1934,7 @@ const CalendarPage: React.FC = () => {
                 photo_url: emp.photo_url || null,
                 photo: emp.photo || null
               }));
-            console.log('✅ CalendarPage - Fetched staff employees (fallback):', employees.length);
+            calDebug('✅ CalendarPage - Fetched staff employees (fallback):', employees.length);
             setAllEmployees(employees);
           }
         } catch (error) {
@@ -1940,6 +1969,11 @@ const CalendarPage: React.FC = () => {
     prevFetchDepsRef.current = { pathname, appliedFromDate, appliedToDate, datesManuallySet, meetingsRefreshTrigger };
 
     const fetchMeetingsAndStaff = async () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        // Avoid heavy meeting loads while app is backgrounded (mobile).
+        setIsLoading(false);
+        return;
+      }
       setIsLoading(true);
 
       try {
@@ -1995,9 +2029,9 @@ const CalendarPage: React.FC = () => {
           attendance_probability, complexity, car_number, calendar_type, extern1, extern2,
           leads!meetings_client_id_fkey (
             id, name, lead_number, manual_id, master_id, onedrive_folder_link, stage, manager, helper, scheduler, category, category_id,
-            balance, balance_currency, currency_id, expert_notes, expert, probability, phone, email, language, language_id,
+            balance, balance_currency, currency_id, expert, probability, phone, email, language, language_id,
             meeting_confirmation, meeting_confirmation_by, eligibility_status, unactivated_at,
-            manual_interactions, number_of_applicants_meeting, meeting_collection_id,
+            number_of_applicants_meeting, meeting_collection_id,
             meeting_manager_id, meeting_lawyer_id, handler, case_handler_id,
             accounting_currencies!leads_currency_id_fkey (id, name, iso_code),
             misc_category!fk_leads_category_id (id, name, parent_id, misc_maincategory!parent_id (id, name, department_id, tenant_departement!department_id (id, name))),
@@ -2026,13 +2060,18 @@ const CalendarPage: React.FC = () => {
             .lte('meeting_date', dateRangeTo);
         }
 
-        // Run stage names, past stages, and meetings (with joins) in parallel so nothing blocks "today's meetings"
-        const [, { data: allMeetingsData, error: allMeetingsError }, pastStagesData] = await Promise.all([
-          (async () => {
+        // Do NOT block meetings load on stage-names refresh; kick it off in the background.
+        void (async () => {
+          try {
             const stageNames = await fetchStageNames();
             if (!stageNames || Object.keys(stageNames).length === 0) await refreshStageNames();
             setStageNamesLoaded(true);
-          })(),
+          } catch {
+            // non-fatal
+          }
+        })();
+
+        const [{ data: allMeetingsData, error: allMeetingsError }, pastStagesData] = await Promise.all([
           regularMeetingsQuery.order('meeting_date', { ascending: false }),
           fetchPastStagesData()
         ]);
@@ -2962,7 +3001,7 @@ const CalendarPage: React.FC = () => {
           .from('leads')
           .select(`
             id, name, lead_number, stage, manager, helper, scheduler, category, category_id, balance, balance_currency, 
-            expert_notes, expert, probability, phone, email, language, language_id, number_of_applicants_meeting, eligibility_status,
+            expert, probability, phone, email, language, language_id, number_of_applicants_meeting, eligibility_status,
             currency_id,
             accounting_currencies!leads_currency_id_fkey (
               id,

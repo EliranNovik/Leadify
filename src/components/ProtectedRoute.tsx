@@ -7,9 +7,9 @@ import { useAuthContext } from '../contexts/AuthContext';
  * With sync session hydrate, returning users see the app on first paint.
  */
 const ProtectedRoute: React.FC<{ user: any; children: React.ReactNode }> = ({ children }) => {
-  const { user, sessionCheckComplete } = useAuthContext();
+  const { user, sessionCheckComplete, supabaseSessionReady } = useAuthContext();
 
-  if (user) {
+  if (user && supabaseSessionReady) {
     return <>{children}</>;
   }
 
