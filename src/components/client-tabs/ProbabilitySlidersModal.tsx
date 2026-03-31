@@ -106,16 +106,20 @@ const ProbabilitySlidersModal: React.FC<ProbabilitySlidersModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[120] flex items-center justify-center p-4" data-probability-sliders-modal>
+    <div
+      className="fixed inset-0 z-[120] flex items-center justify-center p-3 sm:p-4"
+      style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom, 0px))' }}
+      data-probability-sliders-modal
+    >
       <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden="true" />
       <div
-        className="relative w-full max-w-md rounded-2xl bg-base-100 shadow-2xl border border-base-300"
+        className="relative flex max-h-[min(92dvh,calc(100dvh-1.5rem))] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-base-300 bg-base-100 shadow-2xl"
         role="dialog"
         aria-modal="true"
         aria-labelledby="probability-sliders-title"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between gap-2 px-5 py-4 border-b border-base-300">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-base-300 px-5 py-4">
           <h3 id="probability-sliders-title" className="text-lg font-bold text-base-content">
             Case probability
           </h3>
@@ -124,7 +128,7 @@ const ProbabilitySlidersModal: React.FC<ProbabilitySlidersModalProps> = ({
           </button>
         </div>
 
-        <div className="px-5 py-4 space-y-5">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto overscroll-contain px-5 py-4">
           <p className="text-sm text-base-content/70">
             Move each field independently. <strong>Case probability</strong> combines all three: 
           </p>
@@ -196,7 +200,10 @@ const ProbabilitySlidersModal: React.FC<ProbabilitySlidersModalProps> = ({
           )}
         </div>
 
-        <div className="flex gap-2 px-5 py-4 border-t border-base-300 bg-base-100 rounded-b-2xl">
+        {/* Pinned above browser / home indicator: not in scroll area */}
+        <div
+          className="flex shrink-0 gap-2 border-t border-base-300 bg-base-100 px-5 pt-3 sm:pb-4 shadow-[0_-4px_24px_rgba(0,0,0,0.06)] dark:shadow-[0_-4px_24px_rgba(0,0,0,0.25)] max-sm:pb-[max(1rem,calc(env(safe-area-inset-bottom,0px)+52px))]"
+        >
           <button type="button" className="btn btn-outline flex-1" onClick={onClose} disabled={saving}>
             Cancel
           </button>

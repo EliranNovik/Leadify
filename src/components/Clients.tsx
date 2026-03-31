@@ -5595,7 +5595,7 @@ const Clients: React.FC<ClientsProps> = ({
           : overlayAnchor === 'badge'
             ? 'right-0'
             : 'right-0'
-          } mt-2 w-72 rounded-2xl border border-base-300 bg-white dark:bg-base-100 shadow-2xl z-[60] overflow-hidden`}
+          } mt-2 w-72 rounded-2xl border border-base-300 bg-white dark:bg-base-100 shadow-2xl z-[300] overflow-hidden`}
       >
         <div
           ref={getListRef(overlayAnchor)}
@@ -5626,17 +5626,17 @@ const Clients: React.FC<ClientsProps> = ({
       <div className="relative" ref={dropdownRef}>
         <button
           type="button"
-          className={`badge badge-sm ${anchor === 'mobile' ? 'ml-0 px-3 py-1.5' : 'ml-2 px-4 py-2'} min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${isSuperuser
+          className={`${anchor === 'mobile' ? 'badge badge-md' : 'badge badge-sm'} ${anchor === 'mobile' ? 'ml-0 px-4 py-2.5' : 'ml-2 px-4 py-2'} min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${isSuperuser
             ? 'cursor-pointer hover:scale-[1.02]'
             : 'cursor-default'
             }`}
           style={{
             background: fallbackStageColour,
             color: badgeTextColour,
-            fontSize: anchor === 'mobile' ? '0.75rem' : '0.95rem',
+            fontSize: anchor === 'mobile' ? '1rem' : '0.95rem',
             fontWeight: 600,
             borderRadius: '9999px',
-            minHeight: anchor === 'mobile' ? '1.5rem' : '2rem',
+            minHeight: anchor === 'mobile' ? '2.25rem' : '2rem',
             border: `2px solid ${fallbackStageColour}`,
             boxShadow: '0 8px 22px rgba(17, 24, 39, 0.12)',
           }}
@@ -5651,7 +5651,9 @@ const Clients: React.FC<ClientsProps> = ({
           disabled={!isSuperuser}
         >
           {stageName}
-          {isSuperuser && <ChevronDownIcon className="w-3 h-3 ml-1" />}
+          {isSuperuser && (
+            <ChevronDownIcon className={anchor === 'mobile' ? 'w-4 h-4 ml-1 shrink-0' : 'w-3 h-3 ml-1 shrink-0'} />
+          )}
         </button>
         {isSuperuser && stageDropdownAnchor === anchor && renderTimelineOverlay(anchor)}
       </div>
@@ -15573,7 +15575,7 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
           {/* Schedule Meeting Right Panel */}
           {showScheduleMeetingPanel && (
-            <div className="fixed inset-0 z-50 flex">
+            <div className="fixed inset-0 z-[320] flex">
               {/* Overlay */}
               <div
                 className="fixed inset-0 bg-black/30"
@@ -15993,7 +15995,7 @@ const Clients: React.FC<ClientsProps> = ({
 
           {/* Update Lead Drawer */}
           {showUpdateDrawer && (
-            <div className="fixed inset-0 z-50 flex">
+            <div className="fixed inset-0 z-[320] flex">
               {/* Overlay */}
               <div
                 className="fixed inset-0 bg-black/30"
@@ -16067,7 +16069,7 @@ const Clients: React.FC<ClientsProps> = ({
 
           {/* Meeting Ended Drawer */}
           {showMeetingEndedDrawer && (
-            <div className="fixed inset-0 z-[60] flex">
+            <div className="fixed inset-0 z-[320] flex">
               <div
                 className="fixed inset-0 bg-black/30"
                 onClick={() => setShowMeetingEndedDrawer(false)}
@@ -16259,7 +16261,7 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
           )}
           {showMeetingIrrelevantModal && (
-            <div className="fixed inset-0 z-[70] flex items-center justify-center">
+            <div className="fixed inset-0 z-[320] flex items-center justify-center">
               <div
                 className="fixed inset-0 bg-black/50"
                 onClick={() => {
@@ -16329,7 +16331,7 @@ const Clients: React.FC<ClientsProps> = ({
 
           {/* Client Signed Drawer (New) */}
           {showSuccessDrawer && (
-            <div className="fixed inset-0 z-[60] flex">
+            <div className="fixed inset-0 z-[320] flex">
               <div
                 className="fixed inset-0 bg-black/30"
                 onClick={() => setShowSuccessDrawer(false)}
@@ -16501,7 +16503,7 @@ const Clients: React.FC<ClientsProps> = ({
 
           {/* Client Signed Drawer */}
           {showSignedDrawer && (
-            <div className="fixed inset-0 z-[60] flex">
+            <div className="fixed inset-0 z-[320] flex">
               <div className="fixed inset-0 bg-black/30" onClick={() => setShowSignedDrawer(false)} />
               <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
                 <div className="flex items-center justify-between mb-6">
@@ -16527,7 +16529,7 @@ const Clients: React.FC<ClientsProps> = ({
 
           {/* Client Declined Drawer */}
           {showDeclinedDrawer && (
-            <div className="fixed inset-0 z-[60] flex">
+            <div className="fixed inset-0 z-[320] flex">
               <div className="fixed inset-0 bg-black/30" onClick={() => setShowDeclinedDrawer(false)} />
               <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
                 <div className="flex items-center justify-between mb-6">
@@ -16588,7 +16590,7 @@ const Clients: React.FC<ClientsProps> = ({
 
           {/* Delete Lead Confirmation Modal */}
           {showDeleteModal && (
-            <div className="fixed inset-0 z-[60] flex items-center justify-center">
+            <div className="fixed inset-0 z-[320] flex items-center justify-center">
               <div className="fixed inset-0 bg-black/50" onClick={() => !isDeletingLead && setShowDeleteModal(false)} />
               <div className="relative bg-base-100 rounded-xl shadow-2xl p-8 max-w-md w-full mx-4 z-50">
                 <div className="flex items-center justify-between mb-6">
@@ -16643,88 +16645,110 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
           )}
 
-          {/* Edit Lead Drawer */}
+          {/* Edit Lead Drawer — z-[320] above client header (z-200) so drawers cover header + datalist popups stack */}
           {showEditLeadDrawer && (
-            <div className="fixed inset-0 z-50 flex">
+            <div
+              className="fixed inset-0 z-[320] flex"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="edit-lead-drawer-title"
+            >
               {/* Overlay */}
               <div className="fixed inset-0 bg-black/30" onClick={() => setShowEditLeadDrawer(false)} />
               {/* Drawer */}
-              <div className="ml-auto w-full md:max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
+              <div className="relative z-10 ml-auto flex h-full w-full flex-col bg-base-100 p-8 shadow-2xl animate-slideInRight md:max-w-md">
                 <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-2xl font-bold">Edit Lead</h3>
+                  <h3 id="edit-lead-drawer-title" className="text-2xl font-bold">
+                    Edit Lead
+                  </h3>
                   <button className="btn btn-ghost btn-sm" onClick={() => setShowEditLeadDrawer(false)}>
                     <XMarkIcon className="w-6 h-6" />
                   </button>
                 </div>
-                <div className="flex flex-col gap-4 flex-1 overflow-y-auto">
-                  <div>
-                    <label className="block font-semibold mb-1">Tags</label>
+                <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden">
+                  {(() => {
+                    const dlId = selectedClient?.id != null ? String(selectedClient.id) : 'draft';
+                    const tagsListId = `edit-lead-tags-${dlId}`;
+                    const sourceListId = `edit-lead-source-${dlId}`;
+                    const languageListId = `edit-lead-language-${dlId}`;
+                    const categoryListId = `edit-lead-category-${dlId}`;
+                    return (
+                      <>
+                  <div className="relative mb-1 focus-within:z-[100]">
+                    <label className="mb-1 block font-semibold">Tags</label>
                     <input
                       type="text"
                       className="input input-bordered w-full"
                       placeholder="Search or select tags..."
                       value={editLeadData.tags}
                       onChange={e => handleEditLeadChange('tags', e.target.value)}
-                      list="tags-options"
+                      list={tagsListId}
+                      autoComplete="off"
                     />
-                    <datalist id="tags-options">
+                    <datalist id={tagsListId}>
                       {tagsList.map((name, index) => (
                         <option key={`${name}-${index}`} value={name} />
                       ))}
                     </datalist>
                   </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Source</label>
+                  <div className="relative mb-1 focus-within:z-[100]">
+                    <label className="mb-1 block font-semibold">Source</label>
                     <input
                       type="text"
                       className="input input-bordered w-full"
                       placeholder="Search or select a source..."
                       value={editLeadData.source}
                       onChange={e => handleEditLeadChange('source', e.target.value)}
-                      list="source-options"
+                      list={sourceListId}
+                      autoComplete="off"
                     />
-                    <datalist id="source-options">
+                    <datalist id={sourceListId}>
                       {sources.map((name, index) => (
                         <option key={`${name}-${index}`} value={name} />
                       ))}
                     </datalist>
                   </div>
                   <div>
-                    <label className="block font-semibold mb-1">Client Name</label>
+                    <label className="mb-1 block font-semibold">Client Name</label>
                     <input type="text" className="input input-bordered w-full" value={editLeadData.name} onChange={e => handleEditLeadChange('name', e.target.value)} />
                   </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Language</label>
+                  <div className="relative mb-1 focus-within:z-[100]">
+                    <label className="mb-1 block font-semibold">Language</label>
                     <input
                       type="text"
                       className="input input-bordered w-full"
                       placeholder="Search or select a language..."
                       value={editLeadData.language}
                       onChange={e => handleEditLeadChange('language', e.target.value)}
-                      list="language-options"
+                      list={languageListId}
+                      autoComplete="off"
                     />
-                    <datalist id="language-options">
+                    <datalist id={languageListId}>
                       {languagesList.map((name, index) => (
                         <option key={`${name}-${index}`} value={name} />
                       ))}
                     </datalist>
                   </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Category</label>
+                  <div className="relative mb-1 focus-within:z-[100]">
+                    <label className="mb-1 block font-semibold">Category</label>
                     <input
                       type="text"
                       className="input input-bordered w-full"
                       placeholder="Search or select a category..."
                       value={editLeadData.category}
                       onChange={e => handleEditLeadChange('category', e.target.value)}
-                      list="category-options"
+                      list={categoryListId}
+                      autoComplete="off"
                     />
-                    <datalist id="category-options">
+                    <datalist id={categoryListId}>
                       {mainCategories.map((name, index) => (
                         <option key={`${name}-${index}`} value={name} />
                       ))}
                     </datalist>
                   </div>
+                      </>
+                    );
+                  })()}
                   <div>
                     <label className="block font-semibold mb-1">Topic</label>
                     <input type="text" className="input input-bordered w-full" value={editLeadData.topic} onChange={e => handleEditLeadChange('topic', e.target.value)} />
@@ -16812,7 +16836,7 @@ const Clients: React.FC<ClientsProps> = ({
           <LeadSummaryDrawer isOpen={showLeadSummaryDrawer} onClose={() => setShowLeadSummaryDrawer(false)} client={selectedClient} />
           {/* Price Offer Choice Modal */}
           {showPriceOfferChoiceModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+            <div className="fixed inset-0 z-[320] flex items-center justify-center bg-black/30">
               <div className="bg-base-100 rounded-xl shadow-xl p-6 max-w-md w-full mx-4">
                 <h3 className="text-lg font-semibold mb-4">Send Price Offer</h3>
                 <p className="text-base-content/70 mb-6">How would you like to send the price offer?</p>
@@ -16900,7 +16924,7 @@ const Clients: React.FC<ClientsProps> = ({
             }}
           />
           {showSubLeadDrawer && (
-            <div className="fixed inset-0 z-50 flex">
+            <div className="fixed inset-0 z-[320] flex">
               <div
                 className="fixed inset-0 bg-black/30"
                 onClick={() => {
@@ -17456,7 +17480,7 @@ const Clients: React.FC<ClientsProps> = ({
 
           {/* Activation Modal */}
           {showActivationModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center">
+            <div className="fixed inset-0 z-[320] flex items-center justify-center">
               <div className="fixed inset-0 bg-black/50" onClick={() => setShowActivationModal(false)} />
               <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 z-10">
                 <div className="flex items-center justify-between mb-6">
@@ -17505,7 +17529,7 @@ const Clients: React.FC<ClientsProps> = ({
           )}
           {/* Unactivation Modal */}
           {showUnactivationModal && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center">
+            <div className="fixed inset-0 z-[320] flex items-center justify-center">
               <div className="fixed inset-0 bg-black/50" onClick={() => {
                 setShowUnactivationModal(false);
                 setUnactivationReason('');
@@ -17588,7 +17612,7 @@ const Clients: React.FC<ClientsProps> = ({
 
           {/* Duplicate Contacts Modal */}
           {isDuplicateModalOpen && (
-            <div className="fixed inset-0 z-[100] flex items-center justify-center p-0">
+            <div className="fixed inset-0 z-[320] flex items-center justify-center p-0">
               <div
                 className="fixed inset-0 bg-black/50"
                 onClick={() => setIsDuplicateModalOpen(false)}
@@ -17796,7 +17820,7 @@ const Clients: React.FC<ClientsProps> = ({
 
           {/* Reschedule Meeting Drawer */}
           {showRescheduleDrawer && (
-            <div className="fixed inset-0 z-[60] flex">
+            <div className="fixed inset-0 z-[320] flex">
               <div
                 className="fixed inset-0 bg-black/30"
                 onClick={() => {
@@ -18169,7 +18193,7 @@ const Clients: React.FC<ClientsProps> = ({
           )}
 
           {showCustomLocationModal && (
-            <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+            <div className="fixed inset-0 z-[320] flex items-center justify-center p-4">
               <div className="absolute inset-0 bg-black/40" onClick={() => setShowCustomLocationModal(false)} />
               <div className="relative w-full max-w-md rounded-xl bg-base-100 border border-base-300 shadow-2xl p-5">
                 <div className="flex items-center justify-between mb-4">
@@ -18232,7 +18256,7 @@ const Clients: React.FC<ClientsProps> = ({
           {!showEditLeadDrawer && !isBalanceModalOpen && !showScheduleMeetingPanel && !showRescheduleDrawer && !showUpdateDrawer && (
             <>
               {isMobileTabPanelOpen && (
-                <div className="md:hidden fixed inset-0 z-[50] flex items-center justify-center p-3 sm:p-5">
+                <div className="md:hidden fixed inset-0 z-[320] flex items-center justify-center p-3 sm:p-5">
                   <div
                     className="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
                     onClick={() => setIsMobileTabPanelOpen(false)}

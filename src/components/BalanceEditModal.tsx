@@ -527,12 +527,19 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
   return (
     <>
       {isOpen && (
-        <div className="fixed inset-0 z-50">
-          <div className="fixed inset-0 bg-black bg-opacity-50" onClick={onClose}></div>
-          <div className="fixed right-0 top-0 h-full w-full md:w-96 bg-white shadow-xl transform transition-transform duration-300 ease-in-out">
+        <div
+          className="fixed inset-0 z-[340]"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="balance-edit-modal-title"
+        >
+          <div className="fixed inset-0 z-0 bg-black/50" onClick={onClose} aria-hidden="true" />
+          <div className="fixed right-0 top-0 z-10 flex h-full w-full flex-col bg-base-100 shadow-xl md:w-96 dark:bg-base-100">
             <div className="p-6 h-full overflow-y-auto">
         <div className="flex justify-between items-center mb-6">
-          <h3 className="text-2xl font-bold">Update Lead</h3>
+          <h3 id="balance-edit-modal-title" className="text-2xl font-bold">
+            Update Lead
+          </h3>
           <button onClick={onClose} className="btn btn-ghost btn-sm">
             <XMarkIcon className="w-5 h-5" />
           </button>

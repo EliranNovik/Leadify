@@ -161,11 +161,17 @@ const CombineLeadsModal: React.FC<CombineLeadsModalProps> = ({
   const masterDisplay = currentLead?.lead_number ?? currentLead?.id ?? '—';
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/50">
-      <div className="bg-base-100 rounded-xl shadow-xl border border-base-300 w-full max-w-lg max-h-[85vh] flex flex-col">
-        <div className="flex items-center justify-between p-4 border-b border-base-300">
-          <h2 className="text-lg font-semibold flex items-center gap-2">
-            <LinkIcon className="w-5 h-5" />
+    <div
+      className="fixed inset-0 z-[340] flex items-center justify-center p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="combine-leads-title"
+    >
+      <div className="absolute inset-0 z-0 bg-black/50" onClick={onClose} aria-hidden="true" />
+      <div className="relative z-10 flex max-h-[85vh] w-full max-w-lg flex-col rounded-xl border border-base-300 bg-base-100 shadow-xl">
+        <div className="flex shrink-0 items-center justify-between rounded-t-xl border-b border-base-300 bg-base-100 p-4">
+          <h2 id="combine-leads-title" className="flex items-center gap-2 text-lg font-semibold">
+            <LinkIcon className="h-5 w-5 shrink-0" />
             Combine leads
           </h2>
           <button

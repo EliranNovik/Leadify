@@ -37,6 +37,7 @@ import {
     LinkIcon,
     FlagIcon,
     XMarkIcon,
+    RectangleStackIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
@@ -1215,8 +1216,69 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 <div className="flex flex-col gap-7 md:gap-6 mb-0 md:mb-8">
                     {/* Mobile: stage + meta rows centered on top; then lead row + actions */}
                     <div className="flex md:hidden w-full flex-col gap-7">
-                        <div className="flex w-full flex-col items-center gap-4 px-0.5">
-                            <div className="mb-1 flex w-full justify-center">{renderStageBadge('desktop')}</div>
+                        {/* z-index keeps stage/cog dropdowns above the icon row below (same viewport overlap) */}
+                        <div className="relative z-[200] flex w-full flex-col items-center gap-4 px-0.5">
+                            <div className="relative mb-1 flex w-full min-h-[2.5rem] items-center justify-center px-0.5">
+                                {renderStageBadge('mobile')}
+                                {!hideActionsDropdown && (
+                                    <div className="absolute right-0 top-1/2 -translate-y-1/2">
+                                        <div className="dropdown dropdown-end">
+                                            <label tabIndex={0} className="btn btn-ghost btn-square min-h-10 min-w-10">
+                                                <Cog6ToothIcon className="w-7 h-7" />
+                                            </label>
+                                            <ul tabIndex={0} className="dropdown-content z-[250] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
+                                                {dropdownItems && (
+                                                    <>
+                                                        {dropdownItems}
+                                                        <div className="divider my-1"></div>
+                                                    </>
+                                                )}
+                                                {(() => {
+                                                    const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                                                    const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
+                                                    return isUnactivated ? (
+                                                        <li><a className="text-green-600 font-medium" onClick={handleActivation}><CheckCircleIcon className="w-4 h-4" /> Activate Case</a></li>
+                                                    ) : (
+                                                        <li><a className="text-red-600 font-medium" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-4 h-4" /> Deactivate / Spam</a></li>
+                                                    );
+                                                })()}
+                                                <li>
+                                                    <a onClick={async () => {
+                                                        if (!selectedClient?.id) return;
+                                                        const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                                        const leadId = isLegacyLead ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id) : selectedClient.id;
+                                                        const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+                                                        if (isInHighlightsState) {
+                                                            await removeFromHighlights(leadId, isLegacyLead);
+                                                        } else {
+                                                            await addToHighlights(leadId, leadNumber, isLegacyLead);
+                                                        }
+                                                        (document.activeElement as HTMLElement | null)?.blur();
+                                                    }}>
+                                                        {isInHighlightsState ? (
+                                                            <><StarIcon className="w-4 h-4 fill-current text-purple-600" /> Remove from Highlights</>
+                                                        ) : (
+                                                            <><StarIcon className="w-4 h-4" /> Add to Highlights</>
+                                                        )}
+                                                    </a>
+                                                </li>
+                                                <div className="divider my-1"></div>
+                                                <li><a onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-4 h-4" /> Edit Details</a></li>
+                                                <li><a onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-4 h-4" /> Create Sub-Lead</a></li>
+                                                {onCombineLeads && (
+                                                    <li><a onClick={() => { onCombineLeads(); (document.activeElement as HTMLElement)?.blur(); }}><LinkIcon className="w-4 h-4" /> Combine leads</a></li>
+                                                )}
+                                                {isSuperuser && (
+                                                    <>
+                                                        <div className="divider my-1"></div>
+                                                        <li><a className="text-red-600 hover:bg-red-50" onClick={() => { setShowDeleteModal(true); (document.activeElement as HTMLElement)?.blur(); }}><TrashIcon className="w-4 h-4" /> Delete Lead</a></li>
+                                                    </>
+                                                )}
+                                            </ul>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
                             {/* Language / source / applicants — no grey box */}
                             <div className={`${META_TOP_ROW} w-full max-w-md`}>
                                 {selectedClient.language && (
@@ -1259,8 +1321,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     type="button"
                                     className={
                                         disableCategoryModal
-                                            ? 'inline-flex min-w-0 max-w-[min(100%,28rem)] cursor-default truncate rounded-full border border-gray-200 bg-gray-100 px-3 py-1 text-left text-sm font-medium text-gray-900 shadow-sm dark:border-gray-600 dark:bg-gray-800/90 dark:text-gray-100'
-                                            : 'inline-flex min-w-0 max-w-[min(100%,28rem)] truncate rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-left text-sm font-medium text-gray-900 shadow-sm hover:text-indigo-600 dark:border-gray-600 dark:bg-gray-800/90 dark:text-gray-100'
+                                            ? 'inline-flex min-w-0 max-w-[min(100%,28rem)] cursor-default items-center gap-1.5 truncate text-left text-sm font-medium text-gray-900 dark:text-gray-100'
+                                            : 'inline-flex min-w-0 max-w-[min(100%,28rem)] items-center gap-1.5 truncate text-left text-sm font-medium text-gray-900 hover:text-indigo-600 dark:text-gray-100'
                                     }
                                     onClick={
                                         disableCategoryModal
@@ -1271,115 +1333,25 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                               }
                                     }
                                 >
-                                    {displayCategory}
+                                    <RectangleStackIcon className="h-4 w-4 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden />
+                                    <span className="min-w-0 truncate">{displayCategory}</span>
                                 </button>
                             </div>
                             {selectedClient.topic && (
                                 <div className="flex w-full max-w-md items-center justify-center">
-                                    <span className="inline-flex min-w-0 max-w-[min(100%,28rem)] truncate rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-left text-sm font-medium text-gray-900 shadow-sm dark:border-gray-600 dark:bg-gray-800/90 dark:text-gray-100">
-                                        {selectedClient.topic}
+                                    <span className="inline-flex min-w-0 max-w-[min(100%,28rem)] items-center gap-1.5 truncate text-left text-sm font-medium text-gray-900 dark:text-gray-100">
+                                        <DocumentTextIcon className="h-4 w-4 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden />
+                                        <span className="min-w-0 truncate">{selectedClient.topic}</span>
                                     </span>
                                 </div>
                             )}
                         </div>
-                        {/* Mobile: title row + icons, then contact blocks, then value — stacked for breathing room */}
-                        <div className="flex w-full flex-col gap-7">
-                            <div className="flex w-full min-w-0 flex-row items-start justify-between gap-4">
-                                <div className="flex min-w-0 flex-1 flex-col gap-2">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                    <h1 className="text-xl font-bold text-gray-900 dark:text-white leading-tight">
-                                        {renderLeadNumber()}
-                                        <span className="mx-1.5 text-gray-300">|</span>
-                                        {selectedClient.name || 'Unnamed Lead'}
-                                    </h1>
-                                    {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
-                                        <button
-                                            onClick={() => {
-                                                if (isSubLead && masterLeadNumber) navigate(`/clients/${masterLeadNumber}/master`);
-                                                else if (isMasterLead && selectedClient) {
-                                                    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                                    const identifier = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
-                                                    navigate(`/clients/${encodeURIComponent(identifier)}/master`);
-                                                }
-                                            }}
-                                            className="btn btn-square btn-sm relative bg-red-100 hover:bg-red-200 text-red-700 border-red-300"
-                                            title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
-                                        >
-                                            <Squares2X2Icon className="w-5 h-5" />
-                                            <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">{(subLeadsCount || 0) + 1}</span>
-                                        </button>
-                                    ) : null}
-                                    </div>
-                                </div>
-                                {/* Quick actions — top-right on mobile */}
-                                <div className="flex shrink-0 flex-row flex-wrap items-center justify-end gap-3">
-                        {!hideActionsDropdown && (
-                                <div className="dropdown dropdown-end">
-                                    <label tabIndex={0} className="btn btn-ghost btn-square min-h-10 min-w-10">
-                                        <Cog6ToothIcon className="w-7 h-7" />
-                                    </label>
-                                    <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
-                                    {/* Stage Specific Actions */}
-                                    {dropdownItems && (
-                                        <>
-                                            {dropdownItems}
-                                            <div className="divider my-1"></div>
-                                        </>
-                                    )}
-
-                                    {/* Activation/Spam Toggle */}
-                                    {(() => {
-                                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                                        const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
-                                        return isUnactivated ? (
-                                            <li><a className="text-green-600 font-medium" onClick={handleActivation}><CheckCircleIcon className="w-4 h-4" /> Activate Case</a></li>
-                                        ) : (
-                                            <li><a className="text-red-600 font-medium" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-4 h-4" /> Deactivate / Spam</a></li>
-                                        );
-                                    })()}
-
-                                    {/* Highlights Toggle */}
-                                    <li>
-                                        <a onClick={async () => {
-                                            if (!selectedClient?.id) return;
-                                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                            const leadId = isLegacyLead ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id) : selectedClient.id;
-                                            const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                                            if (isInHighlightsState) {
-                                                await removeFromHighlights(leadId, isLegacyLead);
-                                            } else {
-                                                await addToHighlights(leadId, leadNumber, isLegacyLead);
-                                            }
-                                            (document.activeElement as HTMLElement | null)?.blur();
-                                        }}>
-                                            {isInHighlightsState ? (
-                                                <><StarIcon className="w-4 h-4 fill-current text-purple-600" /> Remove from Highlights</>
-                                            ) : (
-                                                <><StarIcon className="w-4 h-4" /> Add to Highlights</>
-                                            )}
-                                        </a>
-                                    </li>
-
-                                    <div className="divider my-1"></div>
-
-                                    {/* Edit / Sub-Lead */}
-                                    <li><a onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-4 h-4" /> Edit Details</a></li>
-                                    <li><a onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-4 h-4" /> Create Sub-Lead</a></li>
-                                    {onCombineLeads && (
-                                        <li><a onClick={() => { onCombineLeads(); (document.activeElement as HTMLElement)?.blur(); }}><LinkIcon className="w-4 h-4" /> Combine leads</a></li>
-                                    )}
-
-                                    {/* Delete (Superuser only) */}
-                                    {isSuperuser && (
-                                        <>
-                                            <div className="divider my-1"></div>
-                                            <li><a className="text-red-600 hover:bg-red-50" onClick={() => { setShowDeleteModal(true); (document.activeElement as HTMLElement)?.blur(); }}><TrashIcon className="w-4 h-4" /> Delete Lead</a></li>
-                                        </>
-                                    )}
-                                </ul>
-                                </div>
-                        )}
+                        {/* Mobile: icon row first, then lead number + name; then contact blocks, then value */}
+                        <div className="relative z-0 flex w-full flex-col gap-7">
+                            <div className="flex w-full min-w-0 flex-col gap-6">
+                                {/* Mobile: center icon cluster (actions dropdown is next to stage badge) */}
+                                <div className="relative mb-10 flex w-full shrink-0 min-h-[2.5rem] items-center justify-center">
+                                    <div className="flex w-full flex-wrap items-center justify-center gap-3">
                             {!hideHistoryAndTimeline && (
                                 <>
                                     <button
@@ -1442,14 +1414,41 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     <DocumentDuplicateIcon className="w-5 h-5" />
                                 </button>
                             )}
+                                    </div>
+                                </div>
+                                <div className="flex w-full min-w-0 flex-col gap-2 items-center">
+                                    <div className="flex w-full min-w-0 flex-wrap items-center justify-center gap-2">
+                                    <h1 className="text-center text-3xl font-bold tracking-tight text-gray-900 dark:text-white leading-snug">
+                                        {renderLeadNumber()}
+                                        <span className="mx-1.5 text-gray-300">|</span>
+                                        {selectedClient.name || 'Unnamed Lead'}
+                                    </h1>
+                                    {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
+                                        <button
+                                            onClick={() => {
+                                                if (isSubLead && masterLeadNumber) navigate(`/clients/${masterLeadNumber}/master`);
+                                                else if (isMasterLead && selectedClient) {
+                                                    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                                    const identifier = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
+                                                    navigate(`/clients/${encodeURIComponent(identifier)}/master`);
+                                                }
+                                            }}
+                                            className="btn btn-square btn-sm relative shrink-0 bg-red-100 hover:bg-red-200 text-red-700 border-red-300"
+                                            title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
+                                        >
+                                            <Squares2X2Icon className="w-5 h-5" />
+                                            <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">{(subLeadsCount || 0) + 1}</span>
+                                        </button>
+                                    ) : null}
+                                    </div>
                                 </div>
                             </div>
-                            {/* Email + phone — full width */}
-                            <div className="flex w-full min-w-0 flex-col gap-5">
-                                <div className="flex flex-col min-w-0 gap-2">
-                                    <div className="flex min-h-[1.75rem] flex-wrap items-center gap-2">
+                            {/* Email + phone — same row on mobile (two columns), centred */}
+                            <div className="flex w-full min-w-0 flex-row items-stretch justify-center gap-4">
+                                <div className="flex min-w-0 flex-1 flex-col items-center gap-2 text-center">
+                                    <div className="flex min-h-[1.75rem] w-full flex-wrap items-center justify-center gap-2">
                                         {displayEmail && (
-                                            <div className="flex flex-wrap items-center gap-0.5 shrink-0">
+                                            <div className="flex flex-wrap items-center justify-center gap-0.5 shrink-0">
                                                 <button
                                                     type="button"
                                                     className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
@@ -1474,16 +1473,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         )}
                                     </div>
                                     <p
-                                        className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate"
+                                        className="w-full text-center text-sm font-medium text-gray-900 dark:text-gray-100 truncate"
                                         title={displayEmail || ''}
                                     >
                                         {displayEmail || '---'}
                                     </p>
                                 </div>
-                                <div className="flex flex-col min-w-0 gap-2">
-                                    <div className="flex min-h-[1.75rem] flex-wrap items-center gap-2">
+                                <div className="flex min-w-0 flex-1 flex-col items-center gap-2 border-l border-gray-200 pl-3 text-center dark:border-gray-600">
+                                    <div className="flex min-h-[1.75rem] w-full flex-wrap items-center justify-center gap-2">
                                         {displayPhone && (
-                                            <div className="flex flex-wrap items-center gap-0.5 shrink-0">
+                                            <div className="flex flex-wrap items-center justify-center gap-0.5 shrink-0">
                                                 <button
                                                     type="button"
                                                     className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
@@ -1518,7 +1517,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             </div>
                                         )}
                                     </div>
-                                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                                    <p
+                                        className="w-full text-center text-sm font-medium text-gray-900 dark:text-gray-100 truncate"
+                                        title={displayPhone ? formatPhoneNumberDisplay(displayPhone) : ''}
+                                    >
                                         {displayPhone ? formatPhoneNumberDisplay(displayPhone) : '---'}
                                     </p>
                                 </div>
@@ -1599,29 +1601,29 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             return (
                                 <div className="group relative cursor-pointer text-right" onClick={() => setIsBalanceModalOpen(true)}>
                                     <div className="space-y-2">
-                                        <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Total Value</p>
+                                        <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Total Value</p>
                                         <div className="flex items-end justify-end gap-2">
-                                            <p className="text-2xl font-bold leading-none tracking-tight text-gray-900 dark:text-white">
+                                            <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white">
                                                 {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
                                             </p>
                                             {shouldShowVAT && vatAmount > 0 && (
-                                                <p className="pb-0.5 text-xs text-gray-600 dark:text-gray-400">
+                                                <p className="pb-0.5 text-sm text-gray-600 dark:text-gray-400">
                                                     +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
                                                 </p>
                                             )}
                                         </div>
                                         {unpaidOutstandingPair !== null && unpaidGross > 0 && (
                                             <div className="pt-2 border-t border-gray-200/80 dark:border-gray-600">
-                                                <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">
+                                                <p className="text-xs font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">
                                                     Remaining Lead Value
                                                 </p>
                                                 <div className="flex items-end justify-end gap-2">
-                                                    <p className="text-lg font-bold leading-none text-amber-900 dark:text-amber-200">
+                                                    <p className="text-xl font-bold leading-none text-amber-900 dark:text-amber-200">
                                                         {currency}
                                                         {Number(unpaidOutstandingPair.base.toFixed(2)).toLocaleString()}
                                                     </p>
                                                     {unpaidOutstandingPair.vat > 0 && (
-                                                        <p className="pb-0.5 text-xs text-amber-700/85 dark:text-amber-400">
+                                                        <p className="pb-0.5 text-sm text-amber-700/85 dark:text-amber-400">
                                                             +
                                                             {unpaidOutstandingPair.vat.toLocaleString(undefined, {
                                                                 minimumFractionDigits: 0,
@@ -1681,83 +1683,33 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </button>
                                 ) : null}
                             </div>
-                            <div className="flex max-w-xl flex-col gap-2">
-                                <div className="flex flex-col min-w-0 gap-1">
-                                    <div className="flex min-h-[1.75rem] flex-wrap items-center gap-2">
-                                        {displayEmail && (
-                                            <div className="flex flex-wrap items-center gap-0.5 shrink-0">
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
-                                                    title="Copy email"
-                                                    aria-label="Copy email"
-                                                    onClick={() => {
-                                                        void navigator.clipboard.writeText(displayEmail).then(() => toast.success('Email copied'));
-                                                    }}
-                                                >
-                                                    <ClipboardDocumentIcon className="h-5 w-5" />
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-indigo-600 hover:bg-indigo-50 transition-colors duration-150 active:scale-[0.98]"
-                                                    title="Compose email"
-                                                    aria-label="Compose email"
-                                                    onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
-                                                >
-                                                    <EnvelopeIcon className="h-5 w-5" />
-                                                </button>
-                                            </div>
-                                        )}
-                                    </div>
-                                    <p className="text-base font-medium text-gray-900 dark:text-gray-100 truncate" title={displayEmail || ''}>
-                                        {displayEmail || '---'}
-                                    </p>
-                                </div>
-                                <div className="flex flex-col min-w-0 gap-1">
-                                    <div className="flex min-h-[1.75rem] flex-wrap items-center gap-2">
-                                        {displayPhone && (
-                                            <div className="flex flex-wrap items-center gap-0.5 shrink-0">
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
-                                                    title="Copy phone number"
-                                                    aria-label="Copy phone number"
-                                                    onClick={() => {
-                                                        void navigator.clipboard.writeText(displayPhone).then(() => toast.success('Phone copied'));
-                                                    }}
-                                                >
-                                                    <ClipboardDocumentIcon className="h-5 w-5" />
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-700 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
-                                                    title="Call — open call options"
-                                                    aria-label="Call — open call options"
-                                                    onClick={handleCallPrimaryPhone}
-                                                >
-                                                    <PhoneArrowUpRightIcon className="h-5 w-5" />
-                                                </button>
-                                                {onOpenWhatsAppForContact && (
-                                                    <button
-                                                        type="button"
-                                                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-emerald-700 hover:bg-emerald-50 transition-colors duration-150 active:scale-[0.98]"
-                                                        title="Open WhatsApp"
-                                                        aria-label="Open WhatsApp"
-                                                        onClick={() => void handleHeaderWhatsAppClick()}
-                                                    >
-                                                        <FaWhatsapp className="h-5 w-5" aria-hidden />
-                                                    </button>
-                                                )}
-                                            </div>
-                                        )}
-                                    </div>
-                                    <p className="text-base font-medium text-gray-900 dark:text-gray-100">
-                                        {displayPhone ? formatPhoneNumberDisplay(displayPhone) : '---'}
-                                    </p>
-                                </div>
+                            <div className="flex w-full max-w-xl flex-col gap-2 items-start">
+                                <button
+                                    type="button"
+                                    className={`inline-flex min-w-0 max-w-full items-center gap-2 truncate text-left text-base font-medium text-gray-900 dark:text-gray-100 ${
+                                        disableCategoryModal ? 'cursor-default' : 'hover:text-indigo-600'
+                                    }`}
+                                    onClick={
+                                        disableCategoryModal
+                                            ? undefined
+                                            : () => {
+                                                  setShowCategoryModal(true);
+                                                  setCategoryInputValue(displayCategory);
+                                              }
+                                    }
+                                >
+                                    <RectangleStackIcon className="h-4 w-4 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden />
+                                    <span className="min-w-0 truncate">{displayCategory}</span>
+                                </button>
+                                {selectedClient.topic && (
+                                    <span className="inline-flex min-w-0 max-w-full items-center gap-2 truncate text-left text-base font-medium text-gray-900 dark:text-gray-100">
+                                        <DocumentTextIcon className="h-4 w-4 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden />
+                                        <span className="min-w-0 truncate">{selectedClient.topic}</span>
+                                    </span>
+                                )}
                             </div>
                         </div>
-                        {/* Center: stage badge on top, meta rows below (first row plain; category/topic still in grey boxes) */}
+                        {/* Center: stage badge, language/source, action icons */}
                         <div className="flex min-h-0 min-w-0 w-full flex-col items-center gap-2 px-1 pt-0.5">
                             <div className="mb-3 flex w-full justify-center">{renderStageBadge('desktop')}</div>
                             <div className={`${META_TOP_ROW} w-full max-w-lg mx-auto`}>
@@ -1796,38 +1748,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </>
                                 )}
                             </div>
-                            <div className="flex w-full max-w-lg mx-auto items-center justify-center">
-                                <button
-                                    type="button"
-                                    className={`min-w-0 max-w-[min(100%,28rem)] truncate text-left text-base font-medium text-gray-900 dark:text-gray-100 ${
-                                        disableCategoryModal
-                                            ? 'cursor-default rounded-full border border-gray-200 bg-gray-50 px-3 py-1 shadow-sm dark:border-gray-600 dark:bg-gray-800/90'
-                                            : 'rounded-full border border-gray-200 bg-gray-50 px-3 py-1 shadow-sm hover:text-indigo-600 dark:border-gray-600 dark:bg-gray-800/90'
-                                    }`}
-                                    onClick={
-                                        disableCategoryModal
-                                            ? undefined
-                                            : () => {
-                                                  setShowCategoryModal(true);
-                                                  setCategoryInputValue(displayCategory);
-                                              }
-                                    }
-                                >
-                                    {displayCategory}
-                                </button>
-                            </div>
-                            {selectedClient.topic && (
-                                <div className="flex w-full max-w-lg mx-auto items-center justify-center">
-                                    <span className="inline-flex min-w-0 max-w-[min(100%,28rem)] truncate rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-left text-base font-medium text-gray-900 shadow-sm dark:border-gray-600 dark:bg-gray-800/90 dark:text-gray-100">
-                                        {selectedClient.topic}
-                                    </span>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Actions + total value under icons (stage badge lives in center column) */}
-                        <div className="flex min-w-0 shrink-0 flex-col items-end gap-3 justify-self-end self-start">
-                            <div className="flex flex-row flex-wrap items-center justify-end gap-3">
+                            <div className="flex w-full flex-wrap items-center justify-center gap-3 pt-1">
                             {/* Timeline and History Buttons */}
                             {!hideHistoryAndTimeline && (
                                 <>
@@ -1963,158 +1884,149 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 </div>
                             )}
                             </div>
+                        </div>
+
+                        {/* Right column — total value */}
+                        <div className="flex min-w-0 shrink-0 flex-col items-end gap-3 justify-self-end self-start">
                             {(() => {
-                            if (hideTotalValueBadge) return null;
-                            const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
+                                if (hideTotalValueBadge) return null;
+                                const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
 
-                            // Currency Resolution
-                            // For new leads: Always use currency_id -> accounting_currencies.name (default to 1), never use proposal_currency/balance_currency
-                            // For legacy leads: Use currency_id first, then fallback to balance_currency
-                            let currency = ''; // Will be set below
-
-                            // First, try to get from accounting_currencies join data (most reliable)
-                            const accountingCurrencies = (selectedClient as any)?.accounting_currencies;
-                            if (accountingCurrencies) {
-                                const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
-                                if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
-                                    currency = currencyRecord.name.trim();
+                                let currency = '';
+                                const accountingCurrencies = (selectedClient as any)?.accounting_currencies;
+                                if (accountingCurrencies) {
+                                    const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
+                                    if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
+                                        currency = currencyRecord.name.trim();
+                                    }
                                 }
-                            }
 
-                            if (!isLegacyLead) {
-                                // For new leads: Always use currency_id -> accounting_currencies.name (default to 1)
-                                const currencyId = (selectedClient as any)?.currency_id ?? 1;
-                                const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                                if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
-                                    currency = getCurrencyName(numericCurrencyId, accountingCurrencies);
-                                    // Fallback to currency_id 1 if empty
-                                    if (!currency || currency.trim() === '') {
+                                if (!isLegacyLead) {
+                                    const currencyId = (selectedClient as any)?.currency_id ?? 1;
+                                    const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                                    if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
+                                        currency = getCurrencyName(numericCurrencyId, accountingCurrencies);
+                                        if (!currency || currency.trim() === '') {
+                                            currency = getCurrencyName(1);
+                                        }
+                                    } else {
                                         currency = getCurrencyName(1);
                                     }
                                 } else {
-                                    // If currency_id is invalid, default to currency_id 1
-                                    currency = getCurrencyName(1);
-                                }
-                            } else {
-                                // For legacy leads: use currency_id first, then fallback to balance_currency
-                                if (!currency && selectedClient?.currency_id) {
-                                    const currencyFromId = getCurrencyName(selectedClient.currency_id, accountingCurrencies);
-                                    if (currencyFromId && currencyFromId.trim() !== '') {
-                                        currency = currencyFromId;
+                                    if (!currency && selectedClient?.currency_id) {
+                                        const currencyFromId = getCurrencyName(selectedClient.currency_id, accountingCurrencies);
+                                        if (currencyFromId && currencyFromId.trim() !== '') {
+                                            currency = currencyFromId;
+                                        }
+                                    }
+                                    if (!currency || currency.trim() === '') {
+                                        currency = selectedClient?.balance_currency || '';
+                                    }
+                                    if (!currency || currency.trim() === '') {
+                                        currency = getCurrencyName(1);
                                     }
                                 }
 
-                                // Fallback to balance_currency for legacy leads only
-                                if (!currency || currency.trim() === '') {
-                                    currency = selectedClient?.balance_currency || '';
-                                }
+                                let baseAmount: number;
+                                if (isLegacyLead) {
+                                    const currencyId = (selectedClient as any)?.currency_id;
+                                    let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                                    if (!numericCurrencyId || isNaN(numericCurrencyId)) numericCurrencyId = 1;
 
-                                // Final fallback: default to currency_id 1
-                                if (!currency || currency.trim() === '') {
-                                    currency = getCurrencyName(1);
-                                }
-                            }
-
-                            // 2. Base Amount (Gross)
-                            let baseAmount: number;
-                            if (isLegacyLead) {
-                                const currencyId = (selectedClient as any)?.currency_id;
-                                let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                                if (!numericCurrencyId || isNaN(numericCurrencyId)) numericCurrencyId = 1;
-
-                                if (numericCurrencyId === 1) {
-                                    baseAmount = Number((selectedClient as any)?.total_base ?? 0);
-                                } else {
-                                    baseAmount = Number((selectedClient as any)?.total ?? 0);
-                                }
-                            } else {
-                                baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                            }
-
-                            // 3. Subcontractor Fee & Net Amount
-                            const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
-                            const mainAmount = baseAmount - subcontractorFee;
-
-                            // 4. VAT
-                            let vatAmount = 0;
-                            let shouldShowVAT = false;
-                            const vatValue = selectedClient?.vat;
-
-                            if (isLegacyLead) {
-                                shouldShowVAT = true;
-                                if (vatValue !== null && vatValue !== undefined) {
-                                    const vatStr = String(vatValue).toLowerCase().trim();
-                                    if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
-                                }
-                                if (shouldShowVAT) {
-                                    vatAmount = baseAmount * 0.18;
-                                }
-                            } else {
-                                shouldShowVAT = true;
-                                if (vatValue !== null && vatValue !== undefined) {
-                                    const vatStr = String(vatValue).toLowerCase().trim();
-                                    if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
-                                }
-
-                                if (shouldShowVAT) {
-                                    if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
-                                        vatAmount = Number(selectedClient.vat_value);
+                                    if (numericCurrencyId === 1) {
+                                        baseAmount = Number((selectedClient as any)?.total_base ?? 0);
                                     } else {
+                                        baseAmount = Number((selectedClient as any)?.total ?? 0);
+                                    }
+                                } else {
+                                    baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
+                                }
+
+                                const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
+                                const mainAmount = baseAmount - subcontractorFee;
+
+                                let vatAmount = 0;
+                                let shouldShowVAT = false;
+                                const vatValue = selectedClient?.vat;
+
+                                if (isLegacyLead) {
+                                    shouldShowVAT = true;
+                                    if (vatValue !== null && vatValue !== undefined) {
+                                        const vatStr = String(vatValue).toLowerCase().trim();
+                                        if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
+                                    }
+                                    if (shouldShowVAT) {
                                         vatAmount = baseAmount * 0.18;
                                     }
+                                } else {
+                                    shouldShowVAT = true;
+                                    if (vatValue !== null && vatValue !== undefined) {
+                                        const vatStr = String(vatValue).toLowerCase().trim();
+                                        if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
+                                    }
+
+                                    if (shouldShowVAT) {
+                                        if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
+                                            vatAmount = Number(selectedClient.vat_value);
+                                        } else {
+                                            vatAmount = baseAmount * 0.18;
+                                        }
+                                    }
                                 }
-                            }
 
-                            const unpaidOutstandingPairDesktop =
-                                unpaidByCurrency === null
-                                    ? null
-                                    : pickUnpaidBaseAndVatForCurrency(unpaidByCurrency, currency);
-                            const unpaidGrossDesktop =
-                                unpaidOutstandingPairDesktop != null
-                                    ? unpaidOutstandingPairDesktop.base + unpaidOutstandingPairDesktop.vat
-                                    : 0;
+                                const unpaidOutstandingPairDesktop =
+                                    unpaidByCurrency === null
+                                        ? null
+                                        : pickUnpaidBaseAndVatForCurrency(unpaidByCurrency, currency);
+                                const unpaidGrossDesktop =
+                                    unpaidOutstandingPairDesktop != null
+                                        ? unpaidOutstandingPairDesktop.base + unpaidOutstandingPairDesktop.vat
+                                        : 0;
 
-                            return (
-                                <div className="group relative cursor-pointer text-right" onClick={() => setIsBalanceModalOpen(true)}>
-                                    <div className="space-y-1.5">
-                                        <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Total Value</p>
-                                        <div className="flex items-end justify-end gap-2">
-                                            <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white">
-                                                {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
-                                            </p>
-                                            {shouldShowVAT && vatAmount > 0 && (
-                                                <p className="pb-1 text-sm text-gray-600 dark:text-gray-400">
-                                                    +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
+                                return (
+                                    <div
+                                        className="group relative w-full max-w-xs cursor-pointer text-right"
+                                        onClick={() => setIsBalanceModalOpen(true)}
+                                    >
+                                        <div className="space-y-1.5">
+                                            <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Total Value</p>
+                                            <div className="flex items-end justify-end gap-2">
+                                                <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white">
+                                                    {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
                                                 </p>
+                                                {shouldShowVAT && vatAmount > 0 && (
+                                                    <p className="pb-1 text-sm text-gray-600 dark:text-gray-400">
+                                                        +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
+                                                    </p>
+                                                )}
+                                            </div>
+                                            {unpaidOutstandingPairDesktop !== null && unpaidGrossDesktop > 0 && (
+                                                <div className="border-t border-gray-200/80 pt-1 dark:border-gray-600">
+                                                    <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">
+                                                        Remaining Lead Value
+                                                    </p>
+                                                    <div className="flex items-end justify-end gap-2">
+                                                        <p className="text-2xl font-bold leading-none text-amber-900 dark:text-amber-200">
+                                                            {currency}
+                                                            {Number(unpaidOutstandingPairDesktop.base.toFixed(2)).toLocaleString()}
+                                                        </p>
+                                                        {unpaidOutstandingPairDesktop.vat > 0 && (
+                                                            <p className="pb-1 text-sm text-amber-700/85 dark:text-amber-400">
+                                                                +
+                                                                {unpaidOutstandingPairDesktop.vat.toLocaleString(undefined, {
+                                                                    minimumFractionDigits: 0,
+                                                                    maximumFractionDigits: 2,
+                                                                })}{' '}
+                                                                VAT
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                </div>
                                             )}
                                         </div>
-                                        {unpaidOutstandingPairDesktop !== null && unpaidGrossDesktop > 0 && (
-                                            <div className="pt-1 border-t border-gray-200/80 dark:border-gray-600">
-                                                <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">
-                                                Remaining Lead Value
-                                                </p>
-                                                <div className="flex items-end justify-end gap-2">
-                                                    <p className="text-2xl font-bold leading-none text-amber-900 dark:text-amber-200">
-                                                        {currency}
-                                                        {Number(unpaidOutstandingPairDesktop.base.toFixed(2)).toLocaleString()}
-                                                    </p>
-                                                    {unpaidOutstandingPairDesktop.vat > 0 && (
-                                                        <p className="pb-1 text-sm text-amber-700/85 dark:text-amber-400">
-                                                            +
-                                                            {unpaidOutstandingPairDesktop.vat.toLocaleString(undefined, {
-                                                                minimumFractionDigits: 0,
-                                                                maximumFractionDigits: 2,
-                                                            })}{' '}
-                                                            VAT
-                                                        </p>
-                                                    )}
-                                                </div>
-                                            </div>
-                                        )}
                                     </div>
-                                </div>
-                            );
-                        })()}
+                                );
+                            })()}
                         </div>
                     </div>
 
@@ -2175,7 +2087,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     })()}
                 </div>
 
-                {/* Stage Logic Buttons - Mobile: Below timeline/history/stage badge row */}
+                {/* Stage Logic Buttons - Mobile: Below timeline/history/stage badge row (btn-md + text-base for tap targets) */}
                 <div className="flex md:hidden items-center gap-4 flex-wrap mt-7">
                     {/* Check if case is unactivated - show message instead of buttons */}
                     {(() => {
@@ -2220,9 +2132,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 {areStagesEquivalent(currentStageName, 'Handler Set') && (
                                     <button
                                         onClick={handleStartCase}
-                                        className="btn btn-primary btn-sm rounded-full px-4 shadow-lg shadow-indigo-100 hover:shadow-indigo-200 text-white gap-1.5 text-sm transition-all hover:scale-105"
+                                        className="btn btn-primary btn-md rounded-full px-5 shadow-lg shadow-indigo-100 hover:shadow-indigo-200 text-white gap-2 text-base transition-all hover:scale-105"
                                     >
-                                        <PlayIcon className="w-4 h-4" />
+                                        <PlayIcon className="w-5 h-5" />
                                         Start Case
                                     </button>
                                 )}
@@ -2232,14 +2144,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     <>
                                         <button
                                             onClick={() => updateLeadStage('Application submitted')}
-                                            className="btn btn-success btn-sm text-white rounded-full px-3 shadow-lg shadow-green-100 hover:shadow-green-200 gap-1.5 text-sm transition-all hover:scale-105"
+                                            className="btn btn-success btn-md text-white rounded-full px-4 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 text-base transition-all hover:scale-105"
                                         >
                                             <DocumentCheckIcon className="w-4 h-4" />
                                             Application Submitted
                                         </button>
                                         <button
                                             onClick={() => updateLeadStage('Case Closed')}
-                                            className="btn btn-neutral btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                            className="btn btn-neutral btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                         >
                                             <CheckCircleIcon className="w-4 h-4" />
                                             Close Case
@@ -2251,7 +2163,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 {areStagesEquivalent(currentStageName, 'Application submitted') && (
                                     <button
                                         onClick={() => updateLeadStage('Case Closed')}
-                                        className="btn btn-neutral btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                        className="btn btn-neutral btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                     >
                                         <CheckCircleIcon className="w-4 h-4" />
                                         Close Case
@@ -2262,7 +2174,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 {areStagesEquivalent(currentStageName, 'payment_request_sent') && handlePaymentReceivedNewClient && (
                                     <button
                                         onClick={handlePaymentReceivedNewClient}
-                                        className="btn btn-success btn-sm text-white rounded-full px-3 shadow-lg shadow-green-100 hover:shadow-green-200 gap-1.5 text-sm transition-all hover:scale-105"
+                                        className="btn btn-success btn-md text-white rounded-full px-4 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 text-base transition-all hover:scale-105"
                                     >
                                         <CheckCircleIcon className="w-4 h-4" />
                                         Payment Received - new Client !!!
@@ -2275,7 +2187,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {setShowRescheduleDrawer && (
                                             <button
                                                 onClick={() => setShowRescheduleDrawer(true)}
-                                                className="btn btn-outline btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                                className="btn btn-outline btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                             >
                                                 <ArrowPathIcon className="w-4 h-4" />
                                                 Meeting ReScheduling
@@ -2284,7 +2196,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {handleStageUpdate && (
                                             <button
                                                 onClick={() => handleStageUpdate('Meeting Ended')}
-                                                className="btn btn-neutral btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                                className="btn btn-neutral btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                             >
                                                 <CheckCircleIcon className="w-4 h-4" />
                                                 Meeting Ended
@@ -2306,7 +2218,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 scheduleMenuLabel && (
                                                     <button
                                                         onClick={handleScheduleMenuClick}
-                                                        className="btn btn-primary btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                                        className="btn btn-primary btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                                     >
                                                         <CalendarDaysIcon className="w-4 h-4" />
                                                         {scheduleMenuLabel}
@@ -2315,7 +2227,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             {setShowRescheduleDrawer && (
                                                 <button
                                                     onClick={() => setShowRescheduleDrawer(true)}
-                                                    className="btn btn-outline btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                                    className="btn btn-outline btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                                 >
                                                     <ArrowPathIcon className="w-4 h-4" />
                                                     Meeting ReScheduling
@@ -2327,7 +2239,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 (!(areStagesEquivalent(currentStageName, 'Meeting rescheduling') || (isStageNumeric && stageNumeric === 21)) || hasScheduledMeetings) && (
                                                     <button
                                                         onClick={() => handleStageUpdate('Meeting Ended')}
-                                                        className="btn btn-neutral btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                                        className="btn btn-neutral btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                                     >
                                                         <CheckCircleIcon className="w-4 h-4" />
                                                         Meeting Ended
@@ -2340,7 +2252,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && openSendOfferModal && (
                                     <button
                                         onClick={openSendOfferModal}
-                                        className="btn btn-primary btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                        className="btn btn-primary btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                     >
                                         <DocumentCheckIcon className="w-4 h-4" />
                                         Send Price Offer
@@ -2353,7 +2265,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {handleScheduleMenuClick && scheduleMenuLabel && (
                                             <button
                                                 onClick={handleScheduleMenuClick}
-                                                className="btn btn-primary btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                                className="btn btn-primary btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                             >
                                                 <CalendarDaysIcon className="w-4 h-4" />
                                                 {scheduleMenuLabel}
@@ -2362,7 +2274,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {handleStageUpdate && (
                                             <button
                                                 onClick={() => handleStageUpdate('Communication Started')}
-                                                className="btn btn-outline btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                                className="btn btn-outline btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                             >
                                                 <ChatBubbleLeftRightIcon className="w-4 h-4" />
                                                 {isStageNumeric && stageNumeric === 15 ? 'Scheduling Notes' : 'Communication Started'}
@@ -2377,7 +2289,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {handleScheduleMenuClick && scheduleMenuLabel && (
                                             <button
                                                 onClick={handleScheduleMenuClick}
-                                                className="btn btn-primary btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                                className="btn btn-primary btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                             >
                                                 <CalendarDaysIcon className="w-4 h-4" />
                                                 {scheduleMenuLabel}
@@ -2386,7 +2298,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {handleOpenSignedDrawer && (
                                             <button
                                                 onClick={handleOpenSignedDrawer}
-                                                className="btn btn-success btn-sm text-white rounded-full px-3 shadow-lg shadow-green-100 hover:shadow-green-200 gap-1.5 text-sm transition-all hover:scale-105"
+                                                className="btn btn-success btn-md text-white rounded-full px-4 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 text-base transition-all hover:scale-105"
                                             >
                                                 <HandThumbUpIcon className="w-4 h-4" />
                                                 Client signed
@@ -2395,7 +2307,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {handleOpenDeclinedDrawer && (
                                             <button
                                                 onClick={handleOpenDeclinedDrawer}
-                                                className="btn btn-error btn-sm text-white rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                                className="btn btn-error btn-md text-white rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                             >
                                                 <HandThumbDownIcon className="w-4 h-4" />
                                                 Client declined
@@ -2404,7 +2316,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {openSendOfferModal && (
                                             <button
                                                 onClick={openSendOfferModal}
-                                                className="btn btn-outline btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                                className="btn btn-outline btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                             >
                                                 <PencilSquareIcon className="w-4 h-4" />
                                                 Revised price offer
@@ -2419,7 +2331,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     areStagesEquivalent(currentStageName, 'client_signed')) && (
                                         <button
                                             onClick={() => updateLeadStage('payment_request_sent')}
-                                            className="btn btn-primary btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                            className="btn btn-primary btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                         >
                                             <CurrencyDollarIcon className="w-4 h-4" />
                                             Payment request sent
@@ -2449,7 +2361,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             {handleScheduleMenuClick && scheduleMenuLabel && (
                                                 <button
                                                     onClick={handleScheduleMenuClick}
-                                                    className="btn btn-primary btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                                    className="btn btn-primary btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                                 >
                                                     <CalendarDaysIcon className="w-4 h-4" />
                                                     {scheduleMenuLabel}
@@ -2458,7 +2370,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             {handleStageUpdate && (
                                                 <button
                                                     onClick={() => handleStageUpdate('Communication Started')}
-                                                    className="btn btn-outline btn-sm rounded-full px-3 shadow-lg gap-1.5 text-sm transition-all hover:scale-105"
+                                                    className="btn btn-outline btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                                 >
                                                     <ChatBubbleLeftRightIcon className="w-4 h-4" />
                                                     Communication Started
@@ -2480,9 +2392,82 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     </div>
                 )}
 
+                {/* Desktop: email + phone adjacent on one row, directly above the workflow / stage-actions separator */}
+                <div className="mt-6 hidden w-full flex-wrap items-center justify-center gap-x-5 gap-y-2 pb-3 md:mt-8 md:flex md:pb-4">
+                    <div className="flex min-w-0 max-w-[min(100%,28rem)] items-center justify-center gap-2 text-center">
+                        {displayEmail && (
+                            <div className="flex shrink-0 items-center gap-0.5">
+                                <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
+                                    title="Copy email"
+                                    aria-label="Copy email"
+                                    onClick={() => {
+                                        void navigator.clipboard.writeText(displayEmail).then(() => toast.success('Email copied'));
+                                    }}
+                                >
+                                    <ClipboardDocumentIcon className="h-5 w-5" />
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-indigo-600 hover:bg-indigo-50 transition-colors duration-150 active:scale-[0.98]"
+                                    title="Compose email"
+                                    aria-label="Compose email"
+                                    onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
+                                >
+                                    <EnvelopeIcon className="h-5 w-5" />
+                                </button>
+                            </div>
+                        )}
+                        <p className="min-w-0 text-center text-base font-medium text-gray-900 dark:text-gray-100 truncate" title={displayEmail || ''}>
+                            {displayEmail || '---'}
+                        </p>
+                    </div>
+                    <div className="hidden h-8 w-px shrink-0 self-center bg-gray-200 md:block dark:bg-gray-600" aria-hidden />
+                    <div className="flex min-w-0 max-w-[min(100%,22rem)] items-center justify-center gap-2 text-center">
+                        {displayPhone && (
+                            <div className="flex shrink-0 items-center gap-0.5">
+                                <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
+                                    title="Copy phone number"
+                                    aria-label="Copy phone number"
+                                    onClick={() => {
+                                        void navigator.clipboard.writeText(displayPhone).then(() => toast.success('Phone copied'));
+                                    }}
+                                >
+                                    <ClipboardDocumentIcon className="h-5 w-5" />
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-700 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
+                                    title="Call — open call options"
+                                    aria-label="Call — open call options"
+                                    onClick={handleCallPrimaryPhone}
+                                >
+                                    <PhoneArrowUpRightIcon className="h-5 w-5" />
+                                </button>
+                                {onOpenWhatsAppForContact && (
+                                    <button
+                                        type="button"
+                                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-emerald-700 hover:bg-emerald-50 transition-colors duration-150 active:scale-[0.98]"
+                                        title="Open WhatsApp"
+                                        aria-label="Open WhatsApp"
+                                        onClick={() => void handleHeaderWhatsAppClick()}
+                                    >
+                                        <FaWhatsapp className="h-5 w-5" aria-hidden />
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                        <p className="min-w-0 text-center text-base font-medium text-gray-900 dark:text-gray-100 truncate" title={displayPhone ? formatPhoneNumberDisplay(displayPhone) : ''}>
+                            {displayPhone ? formatPhoneNumberDisplay(displayPhone) : '---'}
+                        </p>
+                    </div>
+                </div>
 
                 {/* Workflow Actions Bar - Roles and Quick Actions */}
-                <div className="mt-7 pt-6 md:mt-6 md:pt-6 border-t border-gray-100 dark:border-gray-800 w-full">
+                <div className="mt-7 border-t border-gray-100 pt-6 dark:border-gray-800 md:mt-0 md:pt-6 w-full">
                     <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-4">Assigned Team</p>
                     {(() => {
                         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
