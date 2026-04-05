@@ -7219,7 +7219,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       <>
         <div
           data-mobile-header={isMobile ? 'floating' : undefined}
-          className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-transparent border-b-0 md:bg-base-100 md:border-b-0 pt-safe pb-1.5 shadow-none md:pb-0 md:pt-0"
+          className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-transparent md:bg-base-100 border-b-0 md:border-b-0 pt-safe pb-1.5 shadow-none md:pb-0 md:pt-0"
           style={{ boxShadow: 'none' }}
         >
           {/* Logo and Logout Button */}
@@ -7308,7 +7308,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     <>
       <div
         data-mobile-header={isMobile ? 'floating' : undefined}
-        className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-transparent border-b-0 md:bg-base-100 md:border-b-0 pt-safe pb-1.5 shadow-none md:pb-0 md:pt-0"
+        className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-transparent md:bg-base-100 border-b-0 md:border-b-0 pt-safe pb-1.5 shadow-none md:pb-0 md:pt-0"
         style={{ boxShadow: 'none' }}
       >
         {/* Left section with menu and logo */}

@@ -198,10 +198,34 @@ html,
 
 /* Mobile: theme background in notch/safe-area + rubber-band overscroll (viewport-fit=cover) */
 @media (max-width: 767px) {
-  html,
+  /*
+   * iOS Safari + PWA: the fixed header often uses a transparent mobile bar; the status-bar / Dynamic Island
+   * band must still show the app background. A fixed strip under the header (z-25) paints that region.
+   * Uses DaisyUI --color-base-100 so light/dark/theme-alt stay in sync.
+   */
+  html {
+    @apply bg-base-100;
+    /* Paint behind overscroll and the unsafe top region when content doesn’t reach */
+    background-color: var(--color-base-100, hsl(0 0% 100%));
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 25;
+    height: constant(safe-area-inset-top, 0px);
+    height: env(safe-area-inset-top, 0px);
+    background-color: var(--color-base-100, hsl(0 0% 100%));
+    pointer-events: none;
+  }
+
   body,
   #root {
     @apply bg-base-100;
+    background-color: var(--color-base-100, hsl(0 0% 100%));
     /* Fill safe areas when overscrolling; dvh where supported */
     min-height: 100vh;
     min-height: 100dvh;
@@ -264,12 +288,15 @@ html,
 
 /*
  * Primary scroll region under the fixed app Header.
- * - padding-top: clears the fixed navbar + status / notch (see .navbar rules for ≤640px).
- * - padding-bottom: iOS home indicator + Android gesture bar; extra when bottom tab bar is shown.
+ * padding-top matches Header.tsx mobile navbar: pt-safe + h-11 row (2.75rem) + bottom padding.
+ *   — Navbar uses pb-1.5 on the element but @media (max-width: 640px) .navbar sets padding-bottom: 0.5rem !important.
+ * + 0.75rem gap so the first line of page content clears the header (not under the icons).
+ * constant() + env() for older iOS WebKit. Requires viewport-fit=cover in index.html.
+ * Scrolling: content moves up and may pass behind the fixed header (expected); initial content starts below it.
  */
 .app-main-scroll {
-  padding-top: calc(constant(safe-area-inset-top, 0px) + 2.75rem + 0.375rem + 0.75rem);
-  padding-top: calc(env(safe-area-inset-top, 0px) + 2.75rem + 0.375rem + 0.75rem);
+  padding-top: calc(constant(safe-area-inset-top, 0px) + 2.75rem + 0.5rem + 0.75rem);
+  padding-top: calc(env(safe-area-inset-top, 0px) + 2.75rem + 0.5rem + 0.75rem);
 }
 @media (max-width: 767px) {
   .app-main-scroll {
