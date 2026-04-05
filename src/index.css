@@ -167,15 +167,22 @@ html,
     /* Fill safe areas when overscrolling; dvh where supported */
     min-height: 100vh;
     min-height: 100dvh;
+    /* Stop the page from shifting sideways; wide tables scroll inside .app-main-scroll (overflow-x-auto) */
+    max-width: 100%;
+    overflow-x: hidden;
   }
 }
 
 @media (max-width: 640px) {
+  /*
+   * Taller mobile header. Safe-area must stack above the 4.5rem row — do not fold it into a fixed 4.5rem box
+   * (that was clipping content under the bar and ignoring the notch).
+   */
   .navbar {
-    min-height: 4.5rem !important;
-    height: 4.5rem !important;
-    padding-top: 0.5rem;
-    padding-bottom: 0.5rem;
+    min-height: calc(env(safe-area-inset-top, 0px) + 4.5rem) !important;
+    height: auto !important;
+    padding-top: env(safe-area-inset-top, 0px) !important;
+    padding-bottom: 0.5rem !important;
   }
 
   .navbar img {
@@ -225,28 +232,50 @@ html,
   }
 }
 
-/* Ensure main content can scroll past bottom nav on mobile - nothing hidden behind it */
-@media (max-width: 767px) {
-  .main-with-bottom-nav-padding {
-    padding-bottom: max(4.25rem, calc(3.75rem + env(safe-area-inset-bottom, 0px)));
-  }
-}
-
 /*
- * Space below fixed Header (mobile: safe-area + h-11 + pb-1.5) plus a little extra gap before page content.
+ * Primary scroll region under the fixed app Header.
+ * - padding-top: clears the fixed navbar + status / notch (see .navbar rules for ≤640px).
+ * - padding-bottom: iOS home indicator + Android gesture bar; extra when bottom tab bar is shown.
  */
 .app-main-scroll {
   padding-top: calc(env(safe-area-inset-top, 0px) + 2.75rem + 0.375rem + 0.75rem);
 }
+@media (max-width: 640px) {
+  .app-main-scroll {
+    padding-top: calc(env(safe-area-inset-top, 0px) + 4.5rem + 0.5rem + 0.75rem);
+  }
+}
 @media (max-width: 767px) {
   .app-main-scroll {
     @apply bg-base-100;
+    min-height: 0;
+    /* iOS: momentum scrolling inside main (not the whole document) */
     -webkit-overflow-scrolling: touch;
+    /* Keep scroll gestures inside this pane; bottom inset so content clears the home indicator */
+    overscroll-behavior-y: contain;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  /* Bottom tab bar + safe area — must override padding-bottom above */
+  .app-main-scroll.main-with-bottom-nav-padding {
+    padding-bottom: max(4.25rem, calc(3.75rem + env(safe-area-inset-bottom, 0px)));
   }
 }
 @media (min-width: 768px) {
   .app-main-scroll {
     padding-top: calc(3rem + 0.75rem); /* md:h-12 + breathing room */
+    padding-bottom: 0;
+  }
+}
+
+/* iOS PWA / Safari: fill visible viewport when browser UI hides (pairs with viewport-fit=cover in index.html) */
+@supports (-webkit-touch-callout: none) {
+  @media (max-width: 767px) {
+    html {
+      min-height: -webkit-fill-available;
+    }
+    #root {
+      min-height: -webkit-fill-available;
+    }
   }
 }
 

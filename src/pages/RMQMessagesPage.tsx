@@ -46,7 +46,7 @@ import {
   ArrowUturnLeftIcon,
   FlagIcon
 } from '@heroicons/react/24/outline';
-import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
+import { format, isToday, isYesterday, isSameWeek, formatDistanceToNow } from 'date-fns';
 import EmployeeModal from '../components/EmployeeModal';
 import RmqMessageFlagLeadModal, { type LeadPick } from '../components/RmqMessageFlagLeadModal';
 import {
@@ -238,6 +238,10 @@ const RMQ_CHAT = {
 /** Group consecutive messages from the same sender (Slack-style) if within this gap. */
 const RMQ_GROUP_GAP_MS = 5 * 60 * 1000;
 
+/** WhatsApp-style tick path — shared by chat bubbles and sidebar read previews. */
+const RMQ_READ_RECEIPT_CHECK_D =
+  'M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z';
+
 /** Chats/Groups segmented control — active pill: standard white raised tab. */
 const RMQ_TAB_ACTIVE =
   'bg-white text-base-content shadow-[0_1px_2px_rgba(0,0,0,0.1)] dark:bg-base-100 dark:shadow-[0_1px_4px_rgba(0,0,0,0.3)]';
@@ -317,6 +321,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
   const VIRTUAL_MSG_THRESHOLD = 60;
   const hasRestoredFromCacheRef = useRef<boolean>(false);
   const fetchMessagesInFlightRef = useRef<Map<number, Promise<void>>>(new Map());
+  /** Ignore stale pin fetches when switching conversations quickly. */
+  const pinnedMessagesLoadSeqRef = useRef(0);
   const persistedMessagesRef = useRef(persistedMessages);
   const currentUserForSocketRef = useRef<User | null>(null);
   const allUsersForSocketRef = useRef<User[]>([]);
@@ -735,6 +741,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
 
     // Default to LTR for English and other languages
     return 'ltr';
+  };
+
+  /** Sidebar rows: always visually left-aligned with the name; direction set for Hebrew bidi. */
+  const contactSidebarTextStyle = (dir: 'ltr' | 'rtl' | 'auto', text?: string): React.CSSProperties => {
+    const hasHebrew = text ? /[\u0590-\u05FF]/.test(text) : false;
+    let direction: 'ltr' | 'rtl' = 'ltr';
+    if (dir === 'rtl') direction = 'rtl';
+    else if (dir === 'ltr') direction = 'ltr';
+    else if (dir === 'auto' && hasHebrew) direction = 'rtl';
+    return {
+      textAlign: 'left' as const,
+      unicodeBidi: 'plaintext' as const,
+      direction,
+    };
   };
 
   const isEmojiOnly = (text: string): boolean => {
@@ -1344,34 +1364,71 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
   };
 
   // Render read receipt checkmarks (WhatsApp-style: single icon with one or two hooks)
-  const renderReadReceipts = (message: Message) => {
+  /** `inline`: smaller ticks aligned with timestamp text (same row as time). */
+  const renderReadReceipts = (message: Message, opts?: { inline?: boolean }) => {
     const status = getReadReceiptStatus(message);
-    const singleCheck = (
-      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+    const inline = opts?.inline;
+    const singleClass = inline ? 'h-4 w-4 flex-shrink-0' : 'h-7 w-7 flex-shrink-0';
+    const doubleClass = inline ? 'h-4 w-5 flex-shrink-0' : 'h-7 w-7 flex-shrink-0';
+    const singleCheck = <path fillRule="evenodd" d={RMQ_READ_RECEIPT_CHECK_D} clipRule="evenodd" />;
+    const secondTick = (
+      <path fillRule="evenodd" d={RMQ_READ_RECEIPT_CHECK_D} clipRule="evenodd" transform="translate(5, 0)" />
     );
 
     if (status === 'sent') {
-      // Single check (sent)
       return (
-        <svg className="h-7 w-7 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
+        <svg className={singleClass} fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
           {singleCheck}
         </svg>
       );
     }
     if (status === 'delivered') {
-      // Double check in one icon (delivered) - WhatsApp style, two ticks
       return (
-        <svg className="h-7 w-7 flex-shrink-0" fill="currentColor" viewBox="0 0 25 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
-          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" transform="translate(5, 0)" />
+        <svg className={doubleClass} fill="currentColor" viewBox="0 0 25 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
+          {singleCheck}
+          {secondTick}
         </svg>
       );
     }
-    // Read: double check in one icon, neon green
     return (
-      <svg className="h-7 w-7 flex-shrink-0" fill="currentColor" viewBox="0 0 25 20" style={{ color: '#39ff14' }}>
-        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-        <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" transform="translate(5, 0)" />
+      <svg className={doubleClass} fill="currentColor" viewBox="0 0 25 20" style={{ color: '#39ff14' }}>
+        {singleCheck}
+        {secondTick}
+      </svg>
+    );
+  };
+
+  /** Same tick geometry as `renderReadReceipts`, sized/colored for contact list (light/dark + selected row). */
+  const renderSidebarReadReceipts = (
+    status: 'sent' | 'delivered' | 'read',
+    isSelectedRow: boolean,
+    sizeClass: string
+  ) => {
+    const singleCheck = <path fillRule="evenodd" d={RMQ_READ_RECEIPT_CHECK_D} clipRule="evenodd" />;
+    const secondTick = (
+      <path fillRule="evenodd" d={RMQ_READ_RECEIPT_CHECK_D} clipRule="evenodd" transform="translate(5, 0)" />
+    );
+    const muted = isSelectedRow ? 'rgba(62, 40, 205, 0.65)' : 'rgba(100, 116, 139, 0.88)';
+
+    if (status === 'sent') {
+      return (
+        <svg className={`${sizeClass} flex-shrink-0`} fill="currentColor" viewBox="0 0 20 20" style={{ color: muted }}>
+          {singleCheck}
+        </svg>
+      );
+    }
+    if (status === 'delivered') {
+      return (
+        <svg className={`${sizeClass} flex-shrink-0`} fill="currentColor" viewBox="0 0 25 20" style={{ color: muted }}>
+          {singleCheck}
+          {secondTick}
+        </svg>
+      );
+    }
+    return (
+      <svg className={`${sizeClass} flex-shrink-0`} fill="currentColor" viewBox="0 0 25 20" style={{ color: '#39ff14' }}>
+        {singleCheck}
+        {secondTick}
       </svg>
     );
   };
@@ -1810,6 +1867,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     return format(date, 'HH:mm');
   };
 
+  /** Sidebar list: today = clock; same calendar week (not today) = weekday; older = date. */
+  const formatSidebarConversationTime = (timestamp: string | null | undefined): string => {
+    if (!timestamp) return '';
+    const d = new Date(timestamp);
+    if (Number.isNaN(d.getTime())) return '';
+    const now = new Date();
+    if (isToday(d)) return format(d, 'HH:mm');
+    if (isSameWeek(d, now, { weekStartsOn: 0 })) return format(d, 'EEEE');
+    return format(d, 'MMM d, yyyy');
+  };
+
   /** Flag row in header dropdown: when the flag was created (not internal message id). */
   const formatRmqFlagCreatedAt = (iso: string | undefined): string => {
     if (!iso) return '—';
@@ -1896,7 +1964,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     const items = message.media_attachments!;
     const n = items.length;
     const cellClass =
-      'relative overflow-hidden bg-gray-100 dark:bg-gray-800 min-h-[92px] md:min-h-[72px]';
+      'relative overflow-hidden bg-gray-100 dark:bg-gray-800 min-h-[64px] max-md:min-h-[56px] md:min-h-[72px]';
 
     const cell = (item: RmqMediaAttachmentItem, i: number, extraClass: string) => {
       const isVid = item.type.startsWith('video/');
@@ -1938,39 +2006,57 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     if (n === 1) {
       return (
         <div className="w-full max-w-full">
-          {cell(items[0], 0, 'aspect-video max-h-[min(88vh,26rem)] md:max-h-80')}
+          {cell(
+            items[0],
+            0,
+            'aspect-video max-h-[min(36vh,13rem)] md:max-h-80'
+          )}
         </div>
       );
     }
     if (n === 2) {
       return (
         <div className="grid grid-cols-2 gap-0.5 p-0.5">
-          {items.map((it, i) => cell(it, i, 'aspect-square'))}
+          {items.map((it, i) =>
+            cell(it, i, 'aspect-square max-h-[min(42vw,9.5rem)] md:max-h-none')
+          )}
         </div>
       );
     }
     if (n === 3) {
       return (
         <div className="grid grid-cols-2 gap-0.5 p-0.5">
-          {cell(items[0], 0, 'aspect-square')}
-          {cell(items[1], 1, 'aspect-square')}
-          <div className="col-span-2">{cell(items[2], 2, 'aspect-video max-h-56 md:max-h-48')}</div>
+          {cell(items[0], 0, 'aspect-square max-h-[min(42vw,9.5rem)] md:max-h-none')}
+          {cell(items[1], 1, 'aspect-square max-h-[min(42vw,9.5rem)] md:max-h-none')}
+          <div className="col-span-2">
+            {cell(items[2], 2, 'aspect-video max-h-[10rem] md:max-h-56 lg:max-h-48')}
+          </div>
         </div>
       );
     }
     if (n === 4) {
       return (
         <div className="grid grid-cols-2 gap-0.5 p-0.5">
-          {items.map((it, i) => cell(it, i, 'aspect-square'))}
+          {items.map((it, i) =>
+            cell(it, i, 'aspect-square max-h-[min(42vw,9.5rem)] md:max-h-none')
+          )}
         </div>
       );
     }
     const [first, ...rest] = items;
     return (
       <div className="flex flex-col gap-0.5 p-0.5">
-        <div className="w-full">{cell(first, 0, 'aspect-video max-h-[min(58vh,24rem)] md:max-h-72')}</div>
+        <div className="w-full">
+          {cell(
+            first,
+            0,
+            'aspect-video max-h-[min(32vh,11rem)] md:max-h-72'
+          )}
+        </div>
         <div className="grid grid-cols-3 gap-0.5">
-          {rest.map((it, i) => cell(it, i + 1, 'aspect-square'))}
+          {rest.map((it, i) =>
+            cell(it, i + 1, 'aspect-square max-h-[min(30vw,7rem)] md:max-h-none')
+          )}
         </div>
       </div>
     );
@@ -3359,6 +3445,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
         setRmqPinnedRows([]);
         return;
       }
+      const seq = ++pinnedMessagesLoadSeqRef.current;
       setRmqPinnedLoading(true);
       try {
         const { data: pins, error: pe } = await supabase
@@ -3367,6 +3454,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           .eq('user_id', currentUser.id)
           .eq('conversation_id', conversationId)
           .order('pinned_at', { ascending: false });
+        if (seq !== pinnedMessagesLoadSeqRef.current) return;
         if (pe) {
           console.warn('[RMQ] pin fetch:', pe.message);
           setRmqPinnedRows([]);
@@ -3383,11 +3471,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           .in('id', ids)
           .eq('conversation_id', conversationId)
           .eq('is_deleted', false);
+        if (seq !== pinnedMessagesLoadSeqRef.current) return;
         if (me || !rawMsgs?.length) {
           setRmqPinnedRows([]);
           return;
         }
         const enriched = await enrichRawMessages(rawMsgs as any[], conversationId);
+        if (seq !== pinnedMessagesLoadSeqRef.current) return;
         const byId = new Map(enriched.map(m => [m.id, m]));
         const rows: RmqPinnedRow[] = [];
         for (const pin of pins) {
@@ -3396,7 +3486,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
         }
         setRmqPinnedRows(rows);
       } finally {
-        setRmqPinnedLoading(false);
+        if (seq === pinnedMessagesLoadSeqRef.current) {
+          setRmqPinnedLoading(false);
+        }
       }
     },
     [currentUser?.id, enrichRawMessages]
@@ -7515,9 +7607,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
 
   useEffect(() => {
     if (!selectedConversation?.id || !currentUser?.id) {
+      pinnedMessagesLoadSeqRef.current += 1;
       setRmqPinnedRows([]);
+      setRmqPinnedLoading(false);
       return;
     }
+    // Clear immediately so the strip does not show the previous chat’s pins while loading.
+    setRmqPinnedRows([]);
     loadRmqPinnedMessages(selectedConversation.id);
   }, [selectedConversation?.id, currentUser?.id, loadRmqPinnedMessages]);
 
@@ -7548,10 +7644,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     });
   }, [selectedConversation?.id]);
 
-  const hasPinnedMessagesStrip = rmqPinnedLoading || rmqPinnedRows.length > 0;
+  /** Wrapper only when there are pins to show (no empty loading strip while switching chats). */
+  const hasPinnedMessagesStrip = rmqPinnedRows.length > 0;
 
   const renderPinnedMessagesStrip = (opts?: { forMobile?: boolean }) => {
     if (!rmqPinnedLoading && rmqPinnedRows.length === 0) return null;
+    // Avoid an empty “Pinned messages” strip + spinner when switching chats (load is in-flight, rows cleared).
+    if (rmqPinnedLoading && rmqPinnedRows.length === 0) return null;
     const forMobile = opts?.forMobile;
     const textMuted = chatBackgroundImageUrl ? 'text-white/85' : 'text-base-content/75';
     const boxBg = chatBackgroundImageUrl
@@ -7916,12 +8015,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                   !hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name
                     ? `${userName} · Profile incomplete`
                     : userName;
+                const nameDir = getTextDirection(userName || '');
+                const previewDir = getTextDirection(lastMessagePreview || '');
                 return (
                   <div
                     key={user.id}
                     onClick={() => startDirectConversation(user.id)}
-                    className={`min-h-[72px] border-b border-base-300 px-4 py-3 cursor-pointer transition-colors ${
-                      isSelectedContact ? `${RMQ_SEL_ROW} hover:brightness-[0.99]` : 'bg-base-100 hover:bg-base-200/70'
+                    className={`min-h-[72px] px-4 py-3 cursor-pointer transition-all duration-150 ${
+                      isSelectedContact
+                        ? `${RMQ_SEL_ROW} hover:brightness-[0.99]`
+                        : 'bg-base-100 hover:bg-base-200 hover:shadow-sm dark:hover:bg-base-300/55'
                     }`}
                   >
                     <div className="flex items-start gap-3">
@@ -7945,24 +8048,34 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                       </div>
 
                       <div className="min-w-0 flex-1 py-0.5">
-                        <div className="flex items-start justify-between gap-2">
-                          <span className={`truncate text-sm font-semibold ${isSelectedContact ? RMQ_SEL_TITLE : 'text-base-content'}`} title={contactListTitle}>
+                        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-0.5">
+                          <span
+                            className={`min-w-0 truncate text-sm font-semibold ${isSelectedContact ? RMQ_SEL_TITLE : 'text-base-content'}`}
+                            title={contactListTitle}
+                            dir={nameDir}
+                            style={contactSidebarTextStyle(nameDir, userName || '')}
+                          >
                             {userName || `User ${user.id.slice(-4)}`}
                           </span>
-                          <span className={`shrink-0 pt-0.5 text-[11px] tabular-nums ${isSelectedContact ? RMQ_SEL_TIME : 'text-base-content/45'}`}>
-                            {lastMessageAt ? formatMessageTime(lastMessageAt) : ''}
+                          <span
+                            className={`shrink-0 text-right text-[11px] tabular-nums whitespace-nowrap ${isSelectedContact ? RMQ_SEL_TIME : 'text-base-content/45'}`}
+                            dir="ltr"
+                          >
+                            {lastMessageAt ? formatSidebarConversationTime(lastMessageAt) : ''}
                           </span>
-                        </div>
-                        {!hasCompleteInfo && (
-                          <span className={`mt-0.5 inline-block rounded px-1.5 py-0.5 text-[10px] ${isSelectedContact ? 'bg-[#3E28CD]/12 text-orange-900 dark:bg-white/10 dark:text-orange-200' : 'text-orange-600 dark:text-orange-400'}`}>
-                            Incomplete
-                          </span>
-                        )}
-                        <div className="mt-1 flex items-center gap-2">
-                          <p className={`min-w-0 flex-1 truncate text-sm leading-snug ${isSelectedContact ? RMQ_SEL_PREVIEW : 'text-base-content/70'}`}>
-                            {lastMessagePreview || 'No messages yet'}
+                          {!hasCompleteInfo && (
+                            <span className={`col-span-2 inline-block rounded px-1.5 py-0.5 text-[10px] w-fit ${isSelectedContact ? 'bg-[#3E28CD]/12 text-orange-900 dark:bg-white/10 dark:text-orange-200' : 'text-orange-600 dark:text-orange-400'}`}>
+                              Incomplete
+                            </span>
+                          )}
+                          <p
+                            className={`min-w-0 truncate text-sm leading-snug ${isSelectedContact ? RMQ_SEL_PREVIEW : 'text-base-content/70'}`}
+                            dir={previewDir}
+                            style={contactSidebarTextStyle(previewDir, lastMessagePreview || '')}
+                          >
+                            {lastMessagePreview || ''}
                           </p>
-                          <div className="flex shrink-0 items-center gap-1.5">
+                          <div className="flex shrink-0 flex-col items-end justify-start gap-0.5">
                             {unreadCount > 0 ? (
                               <span
                                 className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1.5 text-[10px] font-semibold text-white"
@@ -7972,29 +8085,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                 {unreadCount > 99 ? '99+' : unreadCount}
                               </span>
                             ) : null}
-                            {lastMessageReadStatus && lastMessageReadStatus !== 'sent' && (
-                              <div className="flex-shrink-0">
-                                {lastMessageReadStatus === 'read' ? (
-                                  <div className="flex items-center -space-x-1">
-                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? '#3E28CD' : '#4ade80' }}>
-                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                    </svg>
-                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? '#3E28CD' : '#4ade80' }}>
-                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                    </svg>
-                                  </div>
-                                ) : (
-                                  <div className="flex items-center -space-x-1">
-                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? 'rgba(62, 40, 205, 0.45)' : 'rgba(156, 163, 175, 0.7)' }}>
-                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                    </svg>
-                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? 'rgba(62, 40, 205, 0.45)' : 'rgba(156, 163, 175, 0.7)' }}>
-                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                    </svg>
-                                  </div>
-                                )}
-                              </div>
-                            )}
+                            {lastMessageReadStatus ? (
+                              <div className="flex-shrink-0">{renderSidebarReadReceipts(lastMessageReadStatus, isSelectedContact, 'h-3.5 w-3.5')}</div>
+                            ) : null}
                           </div>
                         </div>
                       </div>
@@ -8024,6 +8117,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                 }
                 const conversation = item.conversation;
                 const isSelectedGroup = selectedConversation?.id === conversation.id;
+                const groupTitleText = getConversationTitle(conversation);
+                const groupTitleDir = getTextDirection(groupTitleText);
+                const groupPreviewText = conversation.last_message_preview || '';
+                const groupPreviewDir = getTextDirection(groupPreviewText);
                 return (
                 <div
                   key={conversation.id}
@@ -8034,32 +8131,42 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                     fetchMessages(conversation.id, false);
                     setShowMobileConversations(false);
                   }}
-                  className={`p-4 border-b border-base-300 cursor-pointer transition-colors ${
-                    isSelectedGroup ? `${RMQ_SEL_ROW} hover:brightness-[0.99]` : 'bg-base-100 hover:bg-base-200/70'
+                  className={`p-4 cursor-pointer transition-all duration-150 ${
+                    isSelectedGroup
+                      ? `${RMQ_SEL_ROW} hover:brightness-[0.99]`
+                      : 'bg-base-100 hover:bg-base-200 hover:shadow-sm dark:hover:bg-base-300/55'
                   }`}
                 >
                   <div className="flex items-center gap-3">
                     {getConversationAvatar(conversation, 'large')}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between">
-                        <h3 className={`font-semibold truncate ${isSelectedGroup ? RMQ_SEL_TITLE : 'text-base-content'}`}>
-                          {getConversationTitle(conversation)}
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 items-start">
+                        <h3
+                          className={`min-w-0 truncate font-semibold ${isSelectedGroup ? RMQ_SEL_TITLE : 'text-base-content'}`}
+                          dir={groupTitleDir}
+                          style={contactSidebarTextStyle(groupTitleDir, groupTitleText)}
+                        >
+                          {groupTitleText}
                         </h3>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-xs ${isSelectedGroup ? RMQ_SEL_TIME : 'text-base-content/70'}`}>
-                            {formatMessageTime(conversation.last_message_at)}
-                          </span>
+                        <span className={`shrink-0 text-right text-xs tabular-nums whitespace-nowrap ${isSelectedGroup ? RMQ_SEL_TIME : 'text-base-content/70'}`} dir="ltr">
+                          {formatSidebarConversationTime(conversation.last_message_at)}
+                        </span>
+                        <p
+                          className={`min-w-0 truncate text-sm ${isSelectedGroup ? RMQ_SEL_PREVIEW : 'text-base-content/80'}`}
+                          dir={groupPreviewDir}
+                          style={contactSidebarTextStyle(groupPreviewDir, groupPreviewText)}
+                        >
+                          {groupPreviewText}
+                        </p>
+                        <div className="flex flex-col items-end justify-start gap-0.5 shrink-0">
                           {(conversation.unread_count || 0) > 0 && (
-                            <div className="w-5 h-5 text-white rounded-full flex items-center justify-center text-xs font-bold" style={{ backgroundColor: '#3E28CD' }}>
+                            <div className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white" style={{ backgroundColor: '#3E28CD' }}>
                               {conversation.unread_count}
                             </div>
                           )}
                         </div>
                       </div>
-                      <p className={`text-sm truncate mt-1 ${isSelectedGroup ? RMQ_SEL_PREVIEW : 'text-base-content/80'}`}>
-                        {conversation.last_message_preview || 'No messages yet'}
-                      </p>
-                      <p className={`text-xs mt-1 ${isSelectedGroup ? RMQ_SEL_META : 'text-base-content/60'}`}>
+                      <p className={`text-xs ${isSelectedGroup ? RMQ_SEL_META : 'text-base-content/60'}`} dir="ltr">
                         {conversation.participants?.length || 0} members
                       </p>
                     </div>
@@ -8073,11 +8180,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
         </div>
       </div>
 
-      {/* Mobile Sidebar */}
-      <div className={`lg:hidden ${showMobileConversations ? 'block' : 'hidden'} w-full bg-base-100 flex flex-col`}>
-        {/* Mobile header + Chats / Groups segmented control (grey, inset track + raised active pill) */}
-        <div className="border-b border-base-300/60 bg-white px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
-          <div className="mb-3 flex items-start justify-between gap-2">
+      {/* Mobile Sidebar: header + search stay fixed; tabs + list scroll together */}
+      <div className={`lg:hidden ${showMobileConversations ? 'flex' : 'hidden'} flex-1 min-h-0 w-full flex-col bg-base-100`}>
+        <div className="shrink-0 border-b border-base-300/60 bg-white px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
+          <div className="flex items-start justify-between gap-2">
             <div className="flex min-w-0 flex-1 items-center gap-2">
               {activeTab === 'groups' && (
                 <button
@@ -8101,54 +8207,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
               <XMarkIcon className="h-7 w-7" />
             </button>
           </div>
-          <div
-            className="flex gap-0.5 rounded-lg border border-base-300/80 bg-[#e8e8ea] p-0.5 shadow-[inset_0_1px_3px_rgba(0,0,0,0.08)] dark:border-base-content/10 dark:bg-base-300/60 dark:shadow-[inset_0_2px_5px_rgba(0,0,0,0.22)]"
-            role="tablist"
-            aria-label="Conversation type"
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'chats'}
-              onClick={() => setActiveTab('chats')}
-              className={`flex min-h-[2rem] flex-1 items-center justify-center gap-1 rounded-md px-2 text-xs font-medium transition-all duration-200 ${
-                activeTab === 'chats' ? RMQ_TAB_ACTIVE : 'text-base-content/50 hover:text-base-content/75'
-              }`}
-            >
-              <span>Chats</span>
-              <span
-                className={`rounded px-1 py-px text-[10px] font-semibold tabular-nums ${
-                  activeTab === 'chats' ? RMQ_TAB_ACTIVE_COUNT : 'bg-black/[0.06] text-base-content/45 dark:bg-white/10'
-                }`}
-              >
-                {allUsers.length}
-              </span>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={activeTab === 'groups'}
-              onClick={() => setActiveTab('groups')}
-              className={`flex min-h-[2rem] flex-1 items-center justify-center gap-1 rounded-md px-2 text-xs font-medium transition-all duration-200 ${
-                activeTab === 'groups' ? RMQ_TAB_ACTIVE : 'text-base-content/50 hover:text-base-content/75'
-              }`}
-            >
-              <span>Groups</span>
-              {filteredGroupConversations.length > 0 ? (
-                <span
-                  className={`rounded px-1 py-px text-[10px] font-semibold tabular-nums ${
-                    activeTab === 'groups' ? RMQ_TAB_ACTIVE_COUNT : 'bg-black/[0.06] text-base-content/45 dark:bg-white/10'
-                  }`}
-                >
-                  {filteredGroupConversations.length}
-                </span>
-              ) : null}
-            </button>
-          </div>
         </div>
 
-        {/* Mobile Search */}
-        <div className="px-4 pt-1 pb-2 border-b border-base-300 bg-base-100">
+        <div className="shrink-0 border-b border-base-300 bg-base-100 px-4 pt-1 pb-2">
           <div className="relative">
             <MagnifyingGlassIcon
               className="pointer-events-none absolute left-3 top-1/2 z-10 h-5 w-5 -translate-y-1/2 text-base-content/60"
@@ -8158,7 +8219,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
             <input
               type="search"
               placeholder="Search"
-              className="input input-bordered relative z-0 w-full pl-10 input-sm"
+              className="input input-bordered input-md relative z-0 w-full pl-10 text-base"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               aria-label="Search"
@@ -8166,8 +8227,55 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           </div>
         </div>
 
-        {/* Mobile Content - boxes show only when ready */}
-        <div className="flex-1 overflow-y-auto bg-base-100">
+        <div className="min-h-0 flex-1 overflow-y-auto bg-base-100">
+          <div
+            className="border-b border-base-300/50 bg-base-100 px-4 pb-2 pt-2"
+            role="tablist"
+            aria-label="Conversation type"
+          >
+            <div className="flex gap-0.5 rounded-lg border border-base-300/80 bg-[#e8e8ea] p-0.5 shadow-[inset_0_1px_3px_rgba(0,0,0,0.08)] dark:border-base-content/10 dark:bg-base-300/60 dark:shadow-[inset_0_2px_5px_rgba(0,0,0,0.22)]">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'chats'}
+                onClick={() => setActiveTab('chats')}
+                className={`flex min-h-[2.25rem] flex-1 items-center justify-center gap-1 rounded-md px-2 text-sm font-medium transition-all duration-200 ${
+                  activeTab === 'chats' ? RMQ_TAB_ACTIVE : 'text-base-content/50 hover:text-base-content/75'
+                }`}
+              >
+                <span>Chats</span>
+                <span
+                  className={`rounded px-1 py-px text-[11px] font-semibold tabular-nums ${
+                    activeTab === 'chats' ? RMQ_TAB_ACTIVE_COUNT : 'bg-black/[0.06] text-base-content/45 dark:bg-white/10'
+                  }`}
+                >
+                  {allUsers.length}
+                </span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'groups'}
+                onClick={() => setActiveTab('groups')}
+                className={`flex min-h-[2.25rem] flex-1 items-center justify-center gap-1 rounded-md px-2 text-sm font-medium transition-all duration-200 ${
+                  activeTab === 'groups' ? RMQ_TAB_ACTIVE : 'text-base-content/50 hover:text-base-content/75'
+                }`}
+              >
+                <span>Groups</span>
+                {filteredGroupConversations.length > 0 ? (
+                  <span
+                    className={`rounded px-1 py-px text-[11px] font-semibold tabular-nums ${
+                      activeTab === 'groups' ? RMQ_TAB_ACTIVE_COUNT : 'bg-black/[0.06] text-base-content/45 dark:bg-white/10'
+                    }`}
+                  >
+                    {filteredGroupConversations.length}
+                  </span>
+                ) : null}
+              </button>
+            </div>
+          </div>
+
+          {/* Mobile Content - boxes show only when ready */}
           {!showSidebarList ? (
             <div className="p-6 flex flex-col items-center justify-center text-base-content/60 gap-3 min-h-[200px]">
               <span className="loading loading-spinner loading-md" />
@@ -8188,7 +8296,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                   return (
                     <div
                       key={`rmq-m-sec-${item.title}`}
-                      className="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-base-content/45"
+                      className="px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-base-content/45"
                     >
                       {item.title}
                     </div>
@@ -8210,85 +8318,77 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                   !hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name
                     ? `${userName} · Profile incomplete`
                     : userName;
+                const nameDirM = getTextDirection(userName || '');
+                const previewDirM = getTextDirection(lastMessagePreview || '');
                 return (
                   <div
                     key={user.id}
                     onClick={() => startDirectConversation(user.id)}
-                    className={`min-h-[72px] border-b border-base-300 px-4 py-3 cursor-pointer transition-colors ${
+                    className={`min-h-[84px] px-4 py-3.5 cursor-pointer transition-colors ${
                       isSelectedContact ? `${RMQ_SEL_ROW} hover:brightness-[0.99]` : 'bg-base-100 hover:bg-base-200/70 active:bg-base-200'
                     }`}
                   >
-                    <div className="flex items-start gap-3">
+                    <div className="flex items-start gap-3.5">
                       <div className="relative shrink-0">
                         {renderUserAvatar({
                           userId: user.id,
                           name: userName,
                           photoUrl: userPhoto,
-                          sizeClass: 'w-12 h-12',
+                          sizeClass: 'w-14 h-14',
                           borderClass: '',
-                          textClass: 'text-sm',
+                          textClass: 'text-base',
                         })}
                         {isUnavailable && (
-                          <div className={`absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 ${isSelectedContact ? 'border-[#EDE9F8] dark:border-[#3E28CD]/40' : 'border-base-100'}`}>
-                            <ClockIcon className="w-3 h-3 text-white" />
+                          <div className={`absolute -top-0.5 -right-0.5 w-6 h-6 bg-red-500 rounded-full flex items-center justify-center border-2 ${isSelectedContact ? 'border-[#EDE9F8] dark:border-[#3E28CD]/40' : 'border-base-100'}`}>
+                            <ClockIcon className="w-3.5 h-3.5 text-white" />
                           </div>
                         )}
                         {!isUnavailable && isOnline && (
-                          <div className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 bg-emerald-500 ${isSelectedContact ? 'border-[#EDE9F8] dark:border-[#3E28CD]/50' : 'border-base-100'}`} title="Online" />
+                          <div className={`absolute bottom-0 right-0 h-3.5 w-3.5 rounded-full border-2 bg-emerald-500 ${isSelectedContact ? 'border-[#EDE9F8] dark:border-[#3E28CD]/50' : 'border-base-100'}`} title="Online" />
                         )}
                       </div>
 
                       <div className="min-w-0 flex-1 py-0.5">
-                        <div className="flex items-start justify-between gap-2">
-                          <span className={`truncate text-sm font-semibold ${isSelectedContact ? RMQ_SEL_TITLE : 'text-base-content'}`} title={contactListTitle}>
+                        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-0.5">
+                          <span
+                            className={`min-w-0 truncate text-base font-semibold leading-tight ${isSelectedContact ? RMQ_SEL_TITLE : 'text-base-content'}`}
+                            title={contactListTitle}
+                            dir={nameDirM}
+                            style={contactSidebarTextStyle(nameDirM, userName || '')}
+                          >
                             {userName || `User ${user.id.slice(-4)}`}
                           </span>
-                          <span className={`shrink-0 pt-0.5 text-[11px] tabular-nums ${isSelectedContact ? RMQ_SEL_TIME : 'text-base-content/45'}`}>
-                            {lastMessageAt ? formatMessageTime(lastMessageAt) : ''}
+                          <span
+                            className={`shrink-0 text-right text-xs tabular-nums whitespace-nowrap ${isSelectedContact ? RMQ_SEL_TIME : 'text-base-content/45'}`}
+                            dir="ltr"
+                          >
+                            {lastMessageAt ? formatSidebarConversationTime(lastMessageAt) : ''}
                           </span>
-                        </div>
-                        {!hasCompleteInfo && (
-                          <span className={`mt-0.5 inline-block rounded px-1.5 py-0.5 text-[10px] ${isSelectedContact ? 'bg-[#3E28CD]/12 text-orange-900 dark:bg-white/10 dark:text-orange-200' : 'text-orange-600 dark:text-orange-400'}`}>
-                            Incomplete
-                          </span>
-                        )}
-                        <div className="mt-1 flex items-center gap-2">
-                          <p className={`min-w-0 flex-1 truncate text-xs leading-snug ${isSelectedContact ? RMQ_SEL_PREVIEW : 'text-base-content/70'}`}>
-                            {lastMessagePreview || 'No messages yet'}
+                          {!hasCompleteInfo && (
+                            <span className={`col-span-2 inline-block rounded px-1.5 py-0.5 text-xs w-fit ${isSelectedContact ? 'bg-[#3E28CD]/12 text-orange-900 dark:bg-white/10 dark:text-orange-200' : 'text-orange-600 dark:text-orange-400'}`}>
+                              Incomplete
+                            </span>
+                          )}
+                          <p
+                            className={`min-w-0 truncate text-sm leading-snug ${isSelectedContact ? RMQ_SEL_PREVIEW : 'text-base-content/70'}`}
+                            dir={previewDirM}
+                            style={contactSidebarTextStyle(previewDirM, lastMessagePreview || '')}
+                          >
+                            {lastMessagePreview || ''}
                           </p>
-                          <div className="flex shrink-0 items-center gap-1.5">
+                          <div className="flex shrink-0 flex-col items-end justify-start gap-0.5">
                             {unreadCount > 0 ? (
                               <span
-                                className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1.5 text-[10px] font-semibold text-white"
+                                className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-full px-1.5 text-xs font-semibold text-white"
                                 style={{ backgroundColor: '#3E28CD' }}
                                 title={`${unreadCount} unread`}
                               >
                                 {unreadCount > 99 ? '99+' : unreadCount}
                               </span>
                             ) : null}
-                            {lastMessageReadStatus && lastMessageReadStatus !== 'sent' && (
-                              <div className="flex-shrink-0">
-                                {lastMessageReadStatus === 'read' ? (
-                                  <div className="flex items-center -space-x-1">
-                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? '#3E28CD' : '#4ade80' }}>
-                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                    </svg>
-                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? '#3E28CD' : '#4ade80' }}>
-                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                    </svg>
-                                  </div>
-                                ) : (
-                                  <div className="flex items-center -space-x-1">
-                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? 'rgba(62, 40, 205, 0.45)' : 'rgba(156, 163, 175, 0.7)' }}>
-                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                    </svg>
-                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? 'rgba(62, 40, 205, 0.45)' : 'rgba(156, 163, 175, 0.7)' }}>
-                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                    </svg>
-                                  </div>
-                                )}
-                              </div>
-                            )}
+                            {lastMessageReadStatus ? (
+                              <div className="flex-shrink-0">{renderSidebarReadReceipts(lastMessageReadStatus, isSelectedContact, 'h-4 w-4')}</div>
+                            ) : null}
                           </div>
                         </div>
                       </div>
@@ -8310,7 +8410,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                   return (
                     <div
                       key={`rmq-m-grp-${item.title}`}
-                      className="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-base-content/45"
+                      className="px-4 pt-3 pb-1 text-xs font-semibold uppercase tracking-wide text-base-content/45"
                     >
                       {item.title}
                     </div>
@@ -8318,6 +8418,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                 }
                 const conversation = item.conversation;
                 const isSelectedGroup = selectedConversation?.id === conversation.id;
+                const groupTitleTextM = getConversationTitle(conversation);
+                const groupTitleDirM = getTextDirection(groupTitleTextM);
+                const groupPreviewTextM = conversation.last_message_preview || '';
+                const groupPreviewDirM = getTextDirection(groupPreviewTextM);
                 return (
                 <div
                   key={conversation.id}
@@ -8328,32 +8432,40 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                     fetchMessages(conversation.id, false);
                     setShowMobileConversations(false);
                   }}
-                  className={`p-4 border-b border-base-300 cursor-pointer transition-colors ${
+                  className={`px-4 py-4 cursor-pointer transition-colors ${
                     isSelectedGroup ? `${RMQ_SEL_ROW} hover:brightness-[0.99]` : 'bg-base-100 hover:bg-base-200/70 active:bg-base-200'
                   }`}
                 >
-                  <div className="flex items-center gap-3">
-                    {getConversationAvatar(conversation, 'large')}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between">
-                        <h3 className={`font-semibold truncate ${isSelectedGroup ? RMQ_SEL_TITLE : 'text-base-content'}`}>
-                          {getConversationTitle(conversation)}
+                  <div className="flex items-center gap-3.5">
+                    {getConversationAvatar(conversation, 'xlarge')}
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 items-start">
+                        <h3
+                          className={`min-w-0 truncate text-lg font-semibold leading-tight ${isSelectedGroup ? RMQ_SEL_TITLE : 'text-base-content'}`}
+                          dir={groupTitleDirM}
+                          style={contactSidebarTextStyle(groupTitleDirM, groupTitleTextM)}
+                        >
+                          {groupTitleTextM}
                         </h3>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-xs ${isSelectedGroup ? RMQ_SEL_TIME : 'text-base-content/70'}`}>
-                            {formatMessageTime(conversation.last_message_at)}
-                          </span>
+                        <span className={`shrink-0 text-right text-sm tabular-nums whitespace-nowrap ${isSelectedGroup ? RMQ_SEL_TIME : 'text-base-content/70'}`} dir="ltr">
+                          {formatSidebarConversationTime(conversation.last_message_at)}
+                        </span>
+                        <p
+                          className={`min-w-0 truncate text-base leading-snug ${isSelectedGroup ? RMQ_SEL_PREVIEW : 'text-base-content/80'}`}
+                          dir={groupPreviewDirM}
+                          style={contactSidebarTextStyle(groupPreviewDirM, groupPreviewTextM)}
+                        >
+                          {groupPreviewTextM}
+                        </p>
+                        <div className="flex flex-col items-end justify-start gap-0.5 shrink-0">
                           {(conversation.unread_count || 0) > 0 && (
-                            <div className="w-5 h-5 text-white rounded-full flex items-center justify-center text-xs font-bold" style={{ backgroundColor: '#3E28CD' }}>
+                            <div className="flex min-w-[1.5rem] h-6 items-center justify-center rounded-full px-1 text-xs font-bold text-white" style={{ backgroundColor: '#3E28CD' }}>
                               {conversation.unread_count}
                             </div>
                           )}
                         </div>
                       </div>
-                      <p className={`text-sm truncate mt-1 ${isSelectedGroup ? RMQ_SEL_PREVIEW : 'text-base-content/80'}`}>
-                        {conversation.last_message_preview || 'No messages yet'}
-                      </p>
-                      <p className={`text-xs mt-1 ${isSelectedGroup ? RMQ_SEL_META : 'text-base-content/60'}`}>
+                      <p className={`text-sm ${isSelectedGroup ? RMQ_SEL_META : 'text-base-content/60'}`} dir="ltr">
                         {conversation.participants?.length || 0} members
                       </p>
                     </div>
@@ -8692,10 +8804,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
               ) : displayMessages.length === 0 ? (
                 <div className="text-center py-12">
                   <ChatBubbleLeftRightIcon className="w-16 h-16 mx-auto mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.7)' : '#d1d5db' }} />
-                  <p className="font-medium" style={{ color: chatBackgroundImageUrl ? 'white' : '#6b7280' }}>
-                    {messages.length > 0 && chatSearchQuery.trim() ? 'No messages match your search' : 'No messages yet'}
-                  </p>
-                  <p className="text-sm" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : '#9ca3af' }}>Start the conversation!</p>
+                  {messages.length > 0 && chatSearchQuery.trim() ? (
+                    <p className="font-medium" style={{ color: chatBackgroundImageUrl ? 'white' : '#6b7280' }}>
+                      No messages match your search
+                    </p>
+                  ) : null}
+                  {!(messages.length > 0 && chatSearchQuery.trim()) && (
+                    <p className="text-sm" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : '#9ca3af' }}>Start the conversation!</p>
+                  )}
                 </div>
               ) : (
                 <AnimatePresence initial={false}>
@@ -8798,7 +8914,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                   {renderMessageCommentFooter(message, 'media')}
                                 </div>
                               </div>
-                              {isOwn && <div className="flex items-center gap-1 mt-1 justify-end">{renderReadReceipts(message)}</div>}
+                              {isOwn && (
+                                <div className="flex items-center gap-1 mt-1 justify-end">
+                                  {renderReadReceipts(message, { inline: true })}
+                                </div>
+                              )}
                             </div>
                           </div>
                         ) : isImageMessage(message) ? (
@@ -8870,7 +8990,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                               </div>
                               {isOwn && (
                                 <div className="flex items-center gap-1 mt-1 justify-end">
-                                  {renderReadReceipts(message)}
+                                  {renderReadReceipts(message, { inline: true })}
                                 </div>
                               )}
                             </div>
@@ -9022,7 +9142,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                               </div>
                               {isOwn && (
                                 <div className="flex items-center gap-1 mt-1 justify-end">
-                                  {renderReadReceipts(message)}
+                                  {renderReadReceipts(message, { inline: true })}
                                 </div>
                               )}
                             </div>
@@ -9036,19 +9156,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                             <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} min-w-0`}>
                             <div className="text-6xl leading-none inline-block text-left">
                               {renderMessageContent(message.content || '', isOwn)}
-                              <span
-                                className={`inline text-xs sm:text-[11px] font-medium tabular-nums ml-2 align-baseline ${isOwn ? '' : 'text-gray-500'}`}
-                                style={
-                                  isOwn
-                                    ? { color: 'rgba(255, 255, 255, 0.65)' }
-                                    : { textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }
-                                }
-                              >
-                                {formatMessageTime(message.sent_at)}
-                              </span>
-                              {isOwn && (
-                                <span className="inline-flex translate-y-[2px] align-baseline ml-1 [&_svg]:!h-7 [&_svg]:!w-7">
-                                  {renderReadReceipts(message)}
+                              {isOwn ? (
+                                <span className="inline-flex items-center gap-1 ml-2 align-middle">
+                                  <span className="text-xs sm:text-[11px] font-medium tabular-nums" style={{ color: 'rgba(255, 255, 255, 0.65)' }}>
+                                    {formatMessageTime(message.sent_at)}
+                                  </span>
+                                  {renderReadReceipts(message, { inline: true })}
+                                </span>
+                              ) : (
+                                <span
+                                  className="inline text-xs sm:text-[11px] font-medium tabular-nums ml-2 align-baseline text-gray-500"
+                                  style={{ textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }}
+                                >
+                                  {formatMessageTime(message.sent_at)}
                                 </span>
                               )}
                             </div>
@@ -9198,21 +9318,26 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                       }}
                                     >
                                       {renderMessageContent(message.content, isOwn)}
-                                      <span
-                                        className={`inline text-[11px] sm:text-[11px] font-medium tabular-nums select-none whitespace-nowrap align-baseline ml-1.5 ${isOwn ? '' : 'text-gray-500'}`}
-                                        style={
-                                          isOwn
-                                            ? { color: 'rgba(255, 255, 255, 0.62)' }
-                                            : chatBackgroundImageUrl
+                                      {isOwn ? (
+                                        <span className="inline-flex items-center gap-1 ml-1.5 align-middle">
+                                          <span
+                                            className="text-[11px] sm:text-[11px] font-medium tabular-nums select-none whitespace-nowrap"
+                                            style={{ color: 'rgba(255, 255, 255, 0.62)' }}
+                                          >
+                                            {formatMessageTime(message.sent_at)}
+                                          </span>
+                                          {renderReadReceipts(message, { inline: true })}
+                                        </span>
+                                      ) : (
+                                        <span
+                                          className={`inline text-[11px] sm:text-[11px] font-medium tabular-nums select-none whitespace-nowrap align-baseline ml-1.5 text-gray-500`}
+                                          style={
+                                            chatBackgroundImageUrl
                                               ? { textShadow: '0 1px 1px rgba(0,0,0,0.2)' }
                                               : undefined
-                                        }
-                                      >
-                                        {formatMessageTime(message.sent_at)}
-                                      </span>
-                                      {isOwn && (
-                                        <span className="inline-flex translate-y-px align-baseline ml-0.5 [&_svg]:!h-7 [&_svg]:!w-7">
-                                          {renderReadReceipts(message)}
+                                          }
+                                        >
+                                          {formatMessageTime(message.sent_at)}
                                         </span>
                                       )}
                                     </div>
@@ -9372,7 +9497,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                       >
                                         {formatMessageTime(message.sent_at)}
                                       </span>
-                                      {isOwn && renderReadReceipts(message)}
+                                      {isOwn && renderReadReceipts(message, { inline: true })}
                                     </div>
                                   )}
 
@@ -10232,10 +10357,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
               ) : displayMessages.length === 0 ? (
                 <div className="text-center py-12">
                   <ChatBubbleLeftRightIcon className="w-16 h-16 mx-auto mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.7)' : '#d1d5db' }} />
-                  <p className="font-medium" style={{ color: chatBackgroundImageUrl ? 'white' : '#6b7280' }}>
-                    {messages.length > 0 && chatSearchQuery.trim() ? 'No messages match your search' : 'No messages yet'}
-                  </p>
-                  <p className="text-sm" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : '#9ca3af' }}>Start the conversation!</p>
+                  {messages.length > 0 && chatSearchQuery.trim() ? (
+                    <p className="font-medium" style={{ color: chatBackgroundImageUrl ? 'white' : '#6b7280' }}>
+                      No messages match your search
+                    </p>
+                  ) : null}
+                  {!(messages.length > 0 && chatSearchQuery.trim()) && (
+                    <p className="text-sm" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : '#9ca3af' }}>Start the conversation!</p>
+                  )}
                 </div>
               ) : (
                 <AnimatePresence initial={false}>
@@ -10346,7 +10475,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                 )}
                                 {renderMessageCommentFooter(message, 'media')}
                               </div>
-                              {isOwn && <div className="flex items-center gap-1 mt-1 justify-end">{renderReadReceipts(message)}</div>}
+                              {isOwn && (
+                                <div className="flex items-center gap-1 mt-1 justify-end">
+                                  {renderReadReceipts(message, { inline: true })}
+                                </div>
+                              )}
                             </div>
                           </div>
                         ) : isImageMessage(message) ? (
@@ -10427,7 +10560,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                               </div>
                               {isOwn && (
                                 <div className="flex items-center gap-1 mt-1 justify-end">
-                                  {renderReadReceipts(message)}
+                                  {renderReadReceipts(message, { inline: true })}
                                 </div>
                               )}
                             </div>
@@ -10583,7 +10716,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                               </div>
                               {isOwn && (
                                 <div className="flex items-center gap-1 mt-1 justify-end">
-                                  {renderReadReceipts(message)}
+                                  {renderReadReceipts(message, { inline: true })}
                                 </div>
                               )}
                             </div>
@@ -10596,19 +10729,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                           >
                             <div className="text-6xl leading-none inline-block text-left">
                               {renderMessageContent(message.content || '', isOwn)}
-                              <span
-                                className={`inline text-xs font-medium tabular-nums ml-2 align-baseline ${isOwn ? '' : 'text-gray-500'}`}
-                                style={
-                                  isOwn
-                                    ? { color: 'rgba(255, 255, 255, 0.65)' }
-                                    : { textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }
-                                }
-                              >
-                                {formatMessageTime(message.sent_at)}
-                              </span>
-                              {isOwn && (
-                                <span className="inline-flex translate-y-[2px] align-baseline ml-1 [&_svg]:!h-7 [&_svg]:!w-7">
-                                  {renderReadReceipts(message)}
+                              {isOwn ? (
+                                <span className="inline-flex items-center gap-1 ml-2 align-middle">
+                                  <span className="text-xs font-medium tabular-nums" style={{ color: 'rgba(255, 255, 255, 0.65)' }}>
+                                    {formatMessageTime(message.sent_at)}
+                                  </span>
+                                  {renderReadReceipts(message, { inline: true })}
+                                </span>
+                              ) : (
+                                <span
+                                  className="inline text-xs font-medium tabular-nums ml-2 align-baseline text-gray-500"
+                                  style={{ textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }}
+                                >
+                                  {formatMessageTime(message.sent_at)}
                                 </span>
                               )}
                             </div>
@@ -10750,15 +10883,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                       }}
                                     >
                                       {renderMessageContent(message.content, isOwn)}
-                                      <span
-                                        className={`inline-flex items-baseline gap-0.5 text-[11px] font-medium tabular-nums ml-1.5 align-baseline ${isOwn ? '' : 'text-gray-500'}`}
-                                        style={isOwn ? { color: 'rgba(255, 255, 255, 0.62)' } : {}}
-                                      >
-                                        {formatMessageTime(message.sent_at)}
-                                      </span>
-                                      {isOwn && (
-                                        <span className="inline-flex translate-y-px align-baseline ml-0.5 [&_svg]:!h-7 [&_svg]:!w-7">
-                                          {renderReadReceipts(message)}
+                                      {isOwn ? (
+                                        <span className="inline-flex items-center gap-1 ml-1.5 align-middle">
+                                          <span
+                                            className="text-[11px] font-medium tabular-nums"
+                                            style={{ color: 'rgba(255, 255, 255, 0.62)' }}
+                                          >
+                                            {formatMessageTime(message.sent_at)}
+                                          </span>
+                                          {renderReadReceipts(message, { inline: true })}
+                                        </span>
+                                      ) : (
+                                        <span className="inline text-[11px] font-medium tabular-nums ml-1.5 align-baseline text-gray-500">
+                                          {formatMessageTime(message.sent_at)}
                                         </span>
                                       )}
                                     </div>
@@ -10920,7 +11057,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                       >
                                         {formatMessageTime(message.sent_at)}
                                       </span>
-                                      {isOwn && renderReadReceipts(message)}
+                                      {isOwn && renderReadReceipts(message, { inline: true })}
                                     </div>
                                   )}
 
