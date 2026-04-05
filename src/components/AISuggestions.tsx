@@ -3,6 +3,7 @@ import { SparklesIcon, ArrowRightIcon, CheckCircleIcon, ExclamationCircleIcon, C
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { useTheme } from '../hooks/useTheme';
+import { DASHBOARD_AI_NOTIFICATIONS_FETCH_ENABLED } from '../lib/dashboardAiFeatureFlags';
 
 interface Suggestion {
   id: string;
@@ -380,6 +381,13 @@ const AISuggestions = forwardRef<unknown, AISuggestionsProps>((props, ref) => {
 
   // Fetch once on mount and when user identity changes; no auto-reload (only manual page refresh)
   useEffect(() => {
+    if (!DASHBOARD_AI_NOTIFICATIONS_FETCH_ENABLED) {
+      setIsLoading(false);
+      setIsLoadingPublicMessages(false);
+      setSuggestions([]);
+      setPublicMessages([]);
+      return;
+    }
     fetchNotifications();
     fetchPublicMessages();
   }, [currentUserEmployeeId, currentUserDisplayName]);
@@ -527,11 +535,12 @@ const AISuggestions = forwardRef<unknown, AISuggestionsProps>((props, ref) => {
           <button 
             className="btn btn-sm btn-ghost" 
             onClick={() => {
+              if (!DASHBOARD_AI_NOTIFICATIONS_FETCH_ENABLED) return;
               fetchNotifications();
               fetchPublicMessages();
             }}
-            disabled={isLoading || isLoadingPublicMessages}
-            title="Refresh notifications and announcements"
+            disabled={isLoading || isLoadingPublicMessages || !DASHBOARD_AI_NOTIFICATIONS_FETCH_ENABLED}
+            title={DASHBOARD_AI_NOTIFICATIONS_FETCH_ENABLED ? 'Refresh notifications and announcements' : 'AI notifications are disabled (see dashboardAiFeatureFlags.ts)'}
           >
             <ArrowPathIcon className={`w-4 h-4 ${(isLoading || isLoadingPublicMessages) ? 'animate-spin' : ''}`} />
           </button>

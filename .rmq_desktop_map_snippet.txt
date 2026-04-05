@@ -1,0 +1,647 @@
+                  {messages.map((message, index) => {
+                    const isOwn = message.sender_id === currentUser?.id;
+                    const senderName = message.sender?.tenants_employee?.display_name ||
+                      message.sender?.full_name ||
+                      'Unknown User';
+                    const senderPhoto = message.sender?.tenants_employee?.photo_url;
+
+                    const showDateSeparator = index === 0 ||
+                      new Date(message.sent_at).toDateString() !== new Date(messages[index - 1].sent_at).toDateString();
+
+                    return (
+                      <motion.div
+                        key={message.id}
+                        initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        transition={{
+                          duration: 0.3,
+                          ease: [0.4, 0, 0.2, 1]
+                        }}
+                        className="relative"
+                        data-message-id={message.id}
+                      >
+                        {showDateSeparator && (
+                          <div className="flex justify-center my-4">
+                            <span className={`text-sm ${chatBackgroundImageUrl ? 'text-white' : 'text-gray-400'}`}>{formatDateSeparator(message.sent_at)}</span>
+                          </div>
+                        )}
+                        {/* Unread messages indicator - Desktop */}
+                        {firstUnreadMessageIdRef.current === message.id && (
+                          <div className="flex items-center gap-3 my-4 px-2">
+                            <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
+                            <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/10 rounded-full border border-blue-500/30">
+                              <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                              <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">New messages</span>
+                            </div>
+                            <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
+                          </div>
+                        )}
+
+                        {/* Image, video and emoji messages - render outside bubble */}
+                        {isImageMessage(message) ? (
+                          <div className={`flex ${isOwn ? 'flex-col items-end ml-auto' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} max-w-[94%] sm:max-w-md`}>
+                            {/* Group received: avatar below on left; name on top of media */}
+                            {!isOwn && selectedConversation.type !== 'direct' && (
+                              <div className="flex-shrink-0 self-end">
+                                {renderUserAvatar({
+                                  userId: message.sender_id,
+                                  name: senderName,
+                                  photoUrl: senderPhoto,
+                                  sizeClass: 'w-8 h-8',
+                                  borderClass: 'border border-base-300',
+                                  textClass: 'text-xs',
+                                  loading: 'lazy',
+                                })}
+                              </div>
+                            )}
+                            <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
+                              <div className="rounded-lg border border-base-300 overflow-hidden bg-white dark:bg-base-100">
+                                {selectedConversation.type !== 'direct' && (
+                                  <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
+                                    <span className="text-sm font-medium" style={{ color: isOwn ? undefined : getSenderColor(message.sender_id) }}>
+                                      {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
+                                    </span>
+                                  </div>
+                                )}
+                                <div className="relative cursor-pointer group w-full min-h-[120px] md:min-h-[200px]" onClick={() => openMediaModal(message)}>
+                                  <img
+                                    src={message.attachment_url}
+                                    alt={message.attachment_name}
+                                    className="w-full max-w-full max-h-80 md:max-h-[600px] object-contain block"
+                                    loading={index >= messages.length - 10 ? "eager" : "lazy"}
+                                    decoding="async"
+                                    onLoad={(e) => {
+                                      const img = e.target as HTMLImageElement;
+                                      img.style.opacity = '1';
+                                      img.style.display = 'block';
+                                    }}
+                                    onError={(e) => {
+                                      const img = e.target as HTMLImageElement;
+                                      img.style.opacity = '0.5';
+                                    }}
+                                    style={{ opacity: 1, transition: 'opacity 0.2s ease-in-out', display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '320px' }}
+                                  />
+                                  <span className="absolute bottom-2 right-2 text-xs font-medium text-gray-500 drop-shadow-md">
+                                    {formatMessageTime(message.sent_at)}
+                                  </span>
+                                </div>
+                              </div>
+                              {isOwn && (
+                                <div className="flex items-center gap-1 mt-1 justify-end">
+                                  {renderReadReceipts(message)}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ) : isVideoMessage(message) ? (
+                          <div className={`flex ${isOwn ? 'flex-col items-end ml-auto' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} max-w-[94%] sm:max-w-md`}>
+                            {/* Group received: avatar below on left; name on top of media */}
+                            {!isOwn && selectedConversation.type !== 'direct' && (
+                              <div className="flex-shrink-0 self-end">
+                                {renderUserAvatar({
+                                  userId: message.sender_id,
+                                  name: senderName,
+                                  photoUrl: senderPhoto,
+                                  sizeClass: 'w-8 h-8',
+                                  borderClass: 'border border-base-300',
+                                  textClass: 'text-xs',
+                                  loading: 'lazy',
+                                })}
+                              </div>
+                            )}
+                            <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
+                              <div className="rounded-lg border border-base-300 overflow-hidden bg-white dark:bg-base-100">
+                                {selectedConversation.type !== 'direct' && (
+                                  <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
+                                    <span className="text-sm font-medium" style={{ color: isOwn ? undefined : getSenderColor(message.sender_id) }}>
+                                      {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
+                                    </span>
+                                  </div>
+                                )}
+                            <div
+                              className="relative cursor-pointer group w-full"
+                              onClick={() => openMediaModal(message)}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openMediaModal(message); } }}
+                            >
+                              <video
+                                data-message-id={message.id}
+                                src={message.attachment_url}
+                                crossOrigin="anonymous"
+                                className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] object-cover bg-gray-100 dark:bg-gray-800 relative z-10 pointer-events-none"
+                                preload="metadata"
+                                playsInline
+                                onLoadedMetadata={(e) => {
+                                  const video = e.target as HTMLVideoElement;
+                                  addLoadedVideo(message.id);
+                                  // Hide loading immediately
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                  video.setAttribute('data-ready', 'true');
+                                }}
+                                onLoadedData={(e) => {
+                                  const video = e.target as HTMLVideoElement;
+                                  addLoadedVideo(message.id);
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onCanPlay={(e) => {
+                                  addLoadedVideo(message.id);
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onPlay={(e) => {
+                                  // Hide loading immediately when play starts
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onPlaying={(e) => {
+                                  // Ensure loading is hidden
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onError={(e) => {
+                                  console.error('Video load error:', e);
+                                  const video = e.target as HTMLVideoElement;
+                                  video.style.display = 'none';
+                                  setLoadingVideos(prev => {
+                                    const next = new Set(prev);
+                                    next.delete(message.id);
+                                    return next;
+                                  });
+                                }}
+                                onMouseEnter={(e) => {
+                                  // Start loading full video data on hover for instant playback (lazy videos only)
+                                  const video = e.target as HTMLVideoElement;
+                                  if (index < messages.length - 3 && video.preload !== 'auto') {
+                                    video.preload = 'auto';
+                                    // Force reload to start downloading
+                                    if (video.readyState >= 1) {
+                                      video.load();
+                                    }
+                                  }
+                                }}
+                                onTouchStart={(e) => {
+                                  // Start loading full video data on touch for mobile (lazy videos only)
+                                  const video = e.target as HTMLVideoElement;
+                                  if (index < messages.length - 3 && video.preload !== 'auto') {
+                                    video.preload = 'auto';
+                                    // Force reload to start downloading
+                                    if (video.readyState >= 1) {
+                                      video.load();
+                                    }
+                                  }
+                                }}
+                              />
+                              {loadingVideos.has(message.id) && (
+                                <div className="absolute inset-0 bg-gray-100 dark:bg-gray-800 rounded-lg flex items-center justify-center pointer-events-none z-0">
+                                  <div className="loading loading-spinner loading-lg" style={{ color: '#3E28CD' }}></div>
+                                </div>
+                              )}
+                              <span className="absolute bottom-2 right-2 text-xs font-medium text-gray-500 drop-shadow-md z-10">
+                                {formatMessageTime(message.sent_at)}
+                              </span>
+                            </div>
+                              </div>
+                              {isOwn && (
+                                <div className="flex items-center gap-1 mt-1 justify-end">
+                                  {renderReadReceipts(message)}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ) : isEmojiOnly(message.content || '') ? (
+                          <div
+                            className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-[94%] sm:max-w-md`}
+                            dir={getTextDirection(message.content || '')}
+                          >
+                            <div className="text-6xl">
+                              {renderMessageContent(message.content || '', isOwn)}
+                            </div>
+                            {/* Timestamp and read receipts at bottom of emoji */}
+                            <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                              <span className="text-sm sm:text-xs text-gray-500" style={{
+                                textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
+                              }}>
+                                {formatMessageTime(message.sent_at)}
+                              </span>
+                              {isOwn && renderReadReceipts(message)}
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            className={`flex gap-3 group ${isOwn ? 'flex-row-reverse' : 'flex-row'} ${!isOwn && selectedConversation.type !== 'direct' ? 'items-end' : ''}`}
+                          >
+
+                            {/* Avatar below message box on left (group chats, received only) */}
+                            {!isOwn && selectedConversation.type !== 'direct' && (
+                              <div className="flex-shrink-0 self-end">
+                                {renderUserAvatar({
+                                  userId: message.sender_id,
+                                  name: senderName,
+                                  photoUrl: senderPhoto,
+                                  sizeClass: 'w-8 h-8',
+                                  borderClass: 'border border-base-300',
+                                  textClass: 'text-xs',
+                                  loading: 'lazy',
+                                })}
+                              </div>
+                            )}
+
+                            <div className={`max-w-[94%] sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
+                              <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative`}>
+                                {/* Message actions dropdown - positioned directly next to message box */}
+                                {/* For sent messages (isOwn): left side, for received messages: right side */}
+                                <div className={`absolute ${isOwn ? '-left-8 top-1/2 -translate-y-1/2' : '-right-8 top-1/2 -translate-y-1/2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}>
+                                  <div className="relative message-action-menu">
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setMessageActionMenu(messageActionMenu === message.id ? null : message.id);
+                                      }}
+                                      className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
+                                      title="Message options"
+                                    >
+                                      <EllipsisVerticalIcon className="w-4 h-4 text-gray-700" />
+                                    </button>
+
+                                    {/* Dropdown menu */}
+                                    {messageActionMenu === message.id && (
+                                      <div className={`absolute bottom-full ${isOwn ? 'left-0' : 'right-0'} mb-1 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[140px] z-50`}>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setMessageToForward(message);
+                                            setShowForwardModal(true);
+                                            setMessageActionMenu(null);
+                                          }}
+                                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                        >
+                                          <ArrowRightIcon className="w-4 h-4" />
+                                          Forward
+                                        </button>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setMessageToReply(message);
+                                            setMessageActionMenu(null);
+                                            // Focus input field
+                                            setTimeout(() => {
+                                              if (messageInputRef.current) {
+                                                messageInputRef.current.focus();
+                                              }
+                                              if (mobileMessageInputRef.current) {
+                                                mobileMessageInputRef.current.focus();
+                                              }
+                                            }, 100);
+                                          }}
+                                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                        >
+                                          <ChatBubbleBottomCenterTextIcon className="w-4 h-4" />
+                                          Reply
+                                        </button>
+                                        {isOwn && (
+                                          <>
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setMessageToEdit(message);
+                                                setEditingMessageText(message.content || '');
+                                                setMessageActionMenu(null);
+                                                // Focus input field
+                                                setTimeout(() => {
+                                                  if (messageInputRef.current) {
+                                                    messageInputRef.current.focus();
+                                                  }
+                                                  if (mobileMessageInputRef.current) {
+                                                    mobileMessageInputRef.current.focus();
+                                                  }
+                                                }, 100);
+                                              }}
+                                              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                            >
+                                              <PencilIcon className="w-4 h-4" />
+                                              Edit
+                                            </button>
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                handleDeleteMessage(message.id);
+                                                setMessageActionMenu(null);
+                                              }}
+                                              className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors text-left"
+                                            >
+                                              <TrashIcon className="w-4 h-4" />
+                                              Delete
+                                            </button>
+                                          </>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div
+                                  data-message-id={message.id}
+                                  onClick={() => {
+                                    setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
+                                    setReactingMessageId(message.id);
+                                  }}
+                                  className={`px-2 sm:px-2.5 py-2 rounded-2xl shadow-sm cursor-pointer hover:shadow-md transition-shadow relative ${isOwn
+                                    ? isEmojiOnly(message.content)
+                                      ? 'bg-base-100 text-base-content rounded-br-md'
+                                      : 'text-white rounded-br-md'
+                                    : 'border rounded-bl-md bg-white border-gray-200 text-base-content shadow-sm'
+                                    }`}
+                                  style={isOwn && !isEmojiOnly(message.content)
+                                    ? { background: 'linear-gradient(to bottom right, #065f46, #0d5c52)' }
+                                    : {}
+                                  }
+                                >
+                                  {/* Display name inside bubble (group chats, received only); (edited) next to name */}
+                                  {!isOwn && selectedConversation.type !== 'direct' && (
+                                    <div className="text-sm font-semibold mb-1 flex items-baseline gap-1.5 flex-wrap" style={{ color: getSenderColor(message.sender_id) }}>
+                                      <span>{senderName}</span>
+                                      {message.edited_at && (
+                                        <span className="text-xs font-normal opacity-70 italic">(edited)</span>
+                                      )}
+                                    </div>
+                                  )}
+                                  {isOwn && message.edited_at && (
+                                    <div className="text-xs opacity-70 italic mb-1">(edited)</div>
+                                  )}
+                                  {/* Reply preview - only show if message actually has a reply with valid data */}
+                                  {(() => {
+                                    const hasReplyId = !!message.reply_to_message_id;
+
+                                    // Handle both array and object cases from Supabase
+                                    let replyMessage: Message | null = null;
+                                    if (message.reply_to_message) {
+                                      // Supabase might return it as an array or object
+                                      if (Array.isArray(message.reply_to_message)) {
+                                        replyMessage = message.reply_to_message.length > 0 ? message.reply_to_message[0] : null;
+                                      } else {
+                                        replyMessage = message.reply_to_message;
+                                      }
+                                    }
+
+                                    const hasValidReplyData = replyMessage &&
+                                      (replyMessage.sender || replyMessage.content || replyMessage.attachment_url);
+
+                                    // Debug logging
+                                    if (hasReplyId && !hasValidReplyData) {
+                                      console.warn('🔍 [Reply Debug] Message has reply_to_message_id but invalid reply data:', {
+                                        messageId: message.id,
+                                        replyToMessageId: message.reply_to_message_id,
+                                        replyToMessageRaw: message.reply_to_message,
+                                        replyToMessageProcessed: replyMessage,
+                                        isArray: Array.isArray(message.reply_to_message)
+                                      });
+                                    }
+
+                                    return hasReplyId && hasValidReplyData && replyMessage ? (
+                                      <div className={`mb-2 p-2 rounded-lg border-l-4 ${isOwn ? 'bg-white/20 border-white/40' : 'bg-green-50 border-green-300'
+                                        }`}>
+                                        <div className="text-sm sm:text-xs font-semibold opacity-80 mb-1">
+                                          {replyMessage.sender?.tenants_employee?.display_name ||
+                                            replyMessage.sender?.full_name ||
+                                            'Unknown'}
+                                        </div>
+                                        {/* Only show content if it exists, don't show "Media" placeholder */}
+                                        {replyMessage.content && (
+                                          <div className="text-sm sm:text-xs opacity-70 line-clamp-2">
+                                            {replyMessage.content}
+                                          </div>
+                                        )}
+                                        {/* Show attachment indicator if no content but has attachment */}
+                                        {!replyMessage.content && replyMessage.attachment_url && (
+                                          <div className="text-sm sm:text-xs opacity-70 italic">
+                                            {replyMessage.message_type === 'image' ? '📷 Image' :
+                                              replyMessage.message_type === 'voice' ? '🎤 Voice message' :
+                                                replyMessage.message_type === 'file' ? '📎 File' : '📎 Attachment'}
+                                          </div>
+                                        )}
+                                      </div>
+                                    ) : null;
+                                  })()}
+
+                                  {/* Message content */}
+                                  {message.content && (
+                                    <div className="flex items-end gap-2">
+                                      <div
+                                        className="break-words text-lg sm:text-base whitespace-pre-wrap flex-1"
+                                        dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
+                                        style={{
+                                          textAlign: getTextDirection(message.content) === 'rtl' ? 'right' :
+                                            getTextDirection(message.content) === 'auto' ? 'start' : 'left',
+                                          ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
+                                          lineHeight: '1.5',
+                                          wordBreak: 'break-word',
+                                          overflowWrap: 'break-word',
+                                          whiteSpace: 'pre-wrap',
+                                          unicodeBidi: 'plaintext' // Ensures proper bidirectional text handling
+                                        }}
+                                      >
+                                        {renderMessageContent(message.content, isOwn)}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* File attachment */}
+                                  {message.attachment_url && (
+                                    <div className={`mt-2 rounded-lg ${`border ${isOwn ? 'bg-white/10 border-white/20' : 'bg-gray-50 border-gray-200'}`
+                                      }`}>
+                                      {message.message_type === 'voice' ? (
+                                        // Voice message player
+                                        <div className="p-3 flex items-center gap-3">
+                                          {/* Employee image for own messages (all conversation types) and group chats */}
+                                          {(isOwn || selectedConversation.type !== 'direct') && (
+                                            <div className="flex-shrink-0">
+                                              {renderUserAvatar({
+                                                userId: message.sender_id,
+                                                name: isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName,
+                                                photoUrl: isOwn ? (currentUser?.tenants_employee?.photo_url) : senderPhoto,
+                                                sizeClass: 'w-8 h-8',
+                                                borderClass: 'border border-base-300',
+                                                textClass: 'text-xs',
+                                                loading: 'lazy',
+                                              })}
+                                            </div>
+                                          )}
+                                          <button
+                                            onClick={() => playVoiceMessage(message.id)}
+                                            className={`p-2 rounded-full transition-all flex-shrink-0 ${isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'text-white hover:opacity-80'
+                                              }`}
+                                            style={!isOwn ? { backgroundColor: '#3E28CD' } : {}}
+                                            onMouseEnter={(e) => {
+                                              if (!isOwn) {
+                                                e.currentTarget.style.opacity = '0.8';
+                                              }
+                                            }}
+                                            onMouseLeave={(e) => {
+                                              if (!isOwn) {
+                                                e.currentTarget.style.opacity = '1';
+                                              }
+                                            }}
+                                            title={playingVoiceId === message.id ? "Pause voice message" : "Play voice message"}
+                                          >
+                                            {playingVoiceId === message.id ? (
+                                              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                                <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+                                              </svg>
+                                            ) : (
+                                              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                                                <path d="M8 5v14l11-7z" />
+                                              </svg>
+                                            )}
+                                          </button>
+                                          <div className="flex-1"></div>
+                                          <div className="flex items-center gap-2">
+                                            {/* Waveform visualization */}
+                                            <div className="flex-1 flex items-end gap-0.5 h-8 px-1">
+                                              {(() => {
+                                                const waveform = message.voice_waveform?.waveform ||
+                                                  (Array.isArray(message.voice_waveform) ? message.voice_waveform : null) ||
+                                                  Array(50).fill(0).map(() => Math.random() * 0.5 + 0.3);
+                                                const isPlaying = playingVoiceId === message.id;
+                                                const progress = voiceProgress[message.id] || 0;
+
+                                                return waveform.map((value: number, index: number) => {
+                                                  const barHeight = Math.max(value * 100, 15); // Min 15% height
+                                                  const isActive = isPlaying && (index / waveform.length) * 100 <= progress;
+
+                                                  return (
+                                                    <div
+                                                      key={index}
+                                                      className="transition-all duration-75"
+                                                      style={{
+                                                        width: '2px',
+                                                        height: `${barHeight}%`,
+                                                        minHeight: '3px',
+                                                        borderRadius: '1px',
+                                                        backgroundColor: isOwn
+                                                          ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.4)')
+                                                          : chatBackgroundImageUrl
+                                                            ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.5)')
+                                                            : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
+                                                      }}
+                                                    />
+                                                  );
+                                                });
+                                              })()}
+                                            </div>
+                                            <span className="text-sm font-mono whitespace-nowrap" style={{
+                                              color: isOwn
+                                                ? 'rgba(255, 255, 255, 0.8)'
+                                                : chatBackgroundImageUrl
+                                                  ? 'rgba(255, 255, 255, 0.9)'
+                                                  : '#4b5563'
+                                            }}>
+                                              {formatVoiceDuration(message.voice_duration)}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        // File attachment
+                                        <div className="flex items-center gap-3 p-3">
+                                          <div className={`p-3 rounded-lg ${isOwn ? 'bg-white/20' : chatBackgroundImageUrl ? 'bg-white/10' : 'bg-gray-100'
+                                            }`}>
+                                            <PaperClipIcon className={`w-5 h-5 ${isOwn ? 'text-white' : chatBackgroundImageUrl ? 'text-white' : 'text-gray-600'
+                                              }`} />
+                                          </div>
+                                          <div className="flex-1 min-w-0">
+                                            <button
+                                              onClick={() => window.open(message.attachment_url, '_blank')}
+                                              className="text-sm font-medium hover:underline truncate block"
+                                              style={{ color: chatBackgroundImageUrl ? 'white' : 'inherit' }}
+                                            >
+                                              {message.attachment_name}
+                                            </button>
+                                            <p className="text-xs opacity-75" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
+                                              {Math.round((message.attachment_size || 0) / 1024)} KB •
+                                              {message.attachment_type?.split('/')[1]?.toUpperCase() || 'FILE'}
+                                            </p>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+
+                                  {/* Timestamp inside message bubble */}
+                                  <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                                    <span className={`text-sm sm:text-xs ${isOwn
+                                      ? ''
+                                      : 'text-gray-500'
+                                      }`}
+                                      style={isOwn ? { color: 'rgba(255, 255, 255, 0.7)' } : {}}
+                                    >
+                                      {formatMessageTime(message.sent_at)}
+                                    </span>
+                                    {isOwn && renderReadReceipts(message)}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Reaction picker */}
+                              {showReactionPicker === message.id && (
+                                <div className={`reaction-picker-container absolute ${isOwn ? 'bottom-6 right-0' : 'bottom-6 left-0'} bg-white border border-gray-200 rounded-lg shadow-lg p-2 flex gap-1 z-50`}>
+                                  {['👍', '❤️', '😂', '😮', '😢', '😡', '👏'].map((emoji) => (
+                                    <button
+                                      key={emoji}
+                                      onClick={() => handleAddReaction(message.id, emoji)}
+                                      className="p-2 hover:bg-base-200 rounded transition-colors"
+                                      title={`React with ${emoji}`}
+                                    >
+                                      <span className="text-lg">{emoji}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+
+
+                              {/* Reactions */}
+                              {message.reactions && message.reactions.length > 0 && (
+                                <div className={`flex flex-wrap gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                                  {Object.entries(getReactionsByEmoji(message.reactions)).map(([emoji, reactions]) => (
+                                    <button
+                                      key={emoji}
+                                      onClick={() => {
+                                        if (hasUserReacted(message.reactions, emoji)) {
+                                          handleRemoveReaction(message.id, emoji);
+                                        } else {
+                                          handleAddReaction(message.id, emoji);
+                                        }
+                                      }}
+                                      className={`flex items-center gap-1 px-2 py-1 rounded-full text-xs border transition-colors ${hasUserReacted(message.reactions, emoji)
+                                        ? 'bg-blue-100 border-blue-300 text-blue-700'
+                                        : 'bg-gray-100 border-gray-200 text-gray-600 hover:bg-gray-200'
+                                        }`}
+                                    >
+                                      <span>{emoji}</span>
+                                      <span>{reactions.length}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </motion.div>
+                    );

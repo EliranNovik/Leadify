@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
 import Meetings from './Meetings';
-import AIAssistantBox from './AIAssistantBox';
-import AISuggestionsModal from './AISuggestionsModal';
 import OverdueFollowups from './OverdueFollowups';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
 import ClockInBox from './ClockInBox';
@@ -9,7 +7,7 @@ import ClockInBox from './ClockInBox';
 // Lazy load bottom components for faster initial render
 const WaitingForPriceOfferMyLeadsWidget = lazy(() => import('./WaitingForPriceOfferMyLeadsWidget'));
 const ClosedDealsWithoutPaymentPlanWidget = lazy(() => import('./ClosedDealsWithoutPaymentPlanWidget'));
-import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 import { useExternalUser } from '../hooks/useExternalUser';
@@ -118,23 +116,15 @@ const Dashboard: React.FC = () => {
   const [meetingsToday, setMeetingsToday] = useState(0);
   const [overdueFollowups, setOverdueFollowups] = useState(0);
   const [newMessages, setNewMessages] = useState(0);
-  const [aiActions, setAIActions] = useState(0);
   const [latestMessages, setLatestMessages] = useState<any[]>([]);
 
   // State for expanded sections
-  const [expanded, setExpanded] = useState<'meetings' | 'overdue' | 'ai' | 'messages' | null>(null);
-
-  // State for AI container collapse/expand
-  const [aiContainerCollapsed, setAiContainerCollapsed] = useState(false);
-
-  const aiSuggestionsRef = useRef<any>(null);
+  const [expanded, setExpanded] = useState<'meetings' | 'overdue' | 'messages' | null>(null);
 
   const [isLoading, setIsLoading] = useState(true);
   const [leads, setLeads] = useState<any[]>([]);
   const [meetings, setMeetings] = useState<any[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
-  const [showAllSuggestions, setShowAllSuggestions] = useState(false);
-  const [isAISuggestionsModalOpen, setIsAISuggestionsModalOpen] = useState(false);
   const [isUnavailableEmployeesModalOpen, setIsUnavailableEmployeesModalOpen] = useState(false);
   const [isMyAvailabilityModalOpen, setIsMyAvailabilityModalOpen] = useState(false);
   const [isSickDaysUploadModalOpen, setIsSickDaysUploadModalOpen] = useState(false);
@@ -210,11 +200,6 @@ const Dashboard: React.FC = () => {
   const [editingFollowUpId, setEditingFollowUpId] = useState<string | number | null>(null);
   const [editFollowUpDate, setEditFollowUpDate] = useState<string>('');
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-
-  // Additional state hooks (must be declared before any conditional returns)
-  const [showAISuggestionsModal, setShowAISuggestionsModal] = useState(false);
-  const [filterType, setFilterType] = useState<'all' | 'urgent' | 'important' | 'reminder'>('all');
-  const [searchTerm, setSearchTerm] = useState('');
 
   // Skip redundant auth check - ProtectedRoute already handles authentication
   // Just rely on AuthContext state for faster page loads
@@ -2251,28 +2236,6 @@ const Dashboard: React.FC = () => {
         setNewMessages(mockMessages.length);
       }
     })();
-    // Fetch AI actions count
-    (async () => {
-      try {
-        const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ai-notifications`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
-          },
-          body: JSON.stringify({ action: 'get_notifications' })
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          setAIActions(data.count || 0);
-        } else {
-          setAIActions(0);
-        }
-      } catch (error) {
-        setAIActions(0);
-      }
-    })();
   }, []);
 
   // Graph data (mocked)
@@ -2293,15 +2256,6 @@ const Dashboard: React.FC = () => {
 
 
 
-
-  // Handler to open AI Suggestions modal
-  const handleAISuggestionsExpand = () => {
-    setExpanded('ai');
-    setTimeout(() => {
-      aiSuggestionsRef.current?.openModal?.();
-      aiSuggestionsRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
-    }, 100);
-  };
 
   // Calculate date array for last 30 days
   const today = new Date();
@@ -5246,150 +5200,8 @@ const Dashboard: React.FC = () => {
     );
   };
 
-  // Refs and state for matching AI Suggestions height
-  const aiRef = useRef<HTMLDivElement>(null);
-  const performanceDashboardRef = useRef<HTMLDivElement>(null);
-  const [aiHeight, setAiHeight] = useState<number | undefined>(undefined);
-
-  useEffect(() => {
-    function updateHeight() {
-      // Only match heights on desktop (md breakpoint and above)
-      // On mobile, let AI box have natural height
-      const isMobile = window.innerWidth < 768; // md breakpoint
-
-      if (!isMobile && performanceDashboardRef.current && aiRef.current && !aiContainerCollapsed) {
-        const performanceHeight = performanceDashboardRef.current.offsetHeight;
-        setAiHeight(performanceHeight);
-      } else {
-        // On mobile or when collapsed, don't set fixed height
-        setAiHeight(undefined);
-      }
-    }
-
-    // Initial update with delay to ensure DOM is ready
-    const timeoutId = setTimeout(updateHeight, 100);
-
-    // Update on resize
-    window.addEventListener('resize', updateHeight);
-
-    // Use ResizeObserver for more accurate height tracking
-    let resizeObserver: ResizeObserver | null = null;
-    if (performanceDashboardRef.current) {
-      resizeObserver = new ResizeObserver(() => {
-        // Small delay to ensure DOM is updated
-        setTimeout(updateHeight, 50);
-      });
-      resizeObserver.observe(performanceDashboardRef.current);
-    }
-
-    return () => {
-      clearTimeout(timeoutId);
-      window.removeEventListener('resize', updateHeight);
-      if (resizeObserver) {
-        resizeObserver.disconnect();
-      }
-    };
-  }, [aiContainerCollapsed]);
-
   // NO LOADING SCREEN - render immediately, data will load in background
   // AuthContext is now instant, so we can always render
-
-  // Extended list for the modal view
-  const allSuggestions = [
-    {
-      id: '1',
-      type: 'urgent',
-      message: 'Contract for David Lee (L122324) needs immediate review',
-      action: 'Review Contract',
-      dueDate: 'Today',
-      context: 'Client meeting scheduled for tomorrow'
-    },
-    {
-      id: '2',
-      type: 'important',
-      message: 'Follow up with Emma Wilson about the Service Agreement proposal',
-      action: 'Send Follow-up',
-      dueDate: 'Within 24 hours',
-      context: 'Last contact was 5 days ago'
-    },
-    {
-      id: '3',
-      type: 'reminder',
-      message: "Prepare documentation for John Smith's software implementation meeting",
-      action: 'Prepare Docs',
-      dueDate: 'Before 10:00 AM',
-      context: 'Meeting scheduled for today'
-    },
-    {
-      id: '4',
-      type: 'important',
-      message: 'Update client profile with new information from recent meeting',
-      action: 'Update Profile',
-      dueDate: 'Today',
-      context: 'Meeting notes available'
-    },
-    {
-      id: '5',
-      type: 'urgent',
-      message: 'Critical deadline approaching for Sarah Parker case review',
-      action: 'Review Case',
-      dueDate: 'Tomorrow',
-      context: 'Documents submitted last week pending review'
-    },
-    {
-      id: '6',
-      type: 'important',
-      message: 'Schedule quarterly review meeting with Tom Anderson',
-      action: 'Schedule Meeting',
-      dueDate: 'This week',
-      context: 'Last review was 3 months ago'
-    },
-    {
-      id: '7',
-      type: 'reminder',
-      message: 'Update team availability calendar for next month',
-      action: 'Update Calendar',
-      dueDate: 'By Friday',
-      context: 'Required for resource planning'
-    },
-    {
-      id: '8',
-      type: 'urgent',
-      message: 'Respond to urgent inquiry from Rachel Green regarding contract terms',
-      action: 'Respond',
-      dueDate: 'Today',
-      context: 'Client awaiting response for 24 hours'
-    },
-    {
-      id: '9',
-      type: 'important',
-      message: 'Review and approve new marketing materials for upcoming campaign',
-      action: 'Review Materials',
-      dueDate: 'Next 48 hours',
-      context: 'Campaign launch scheduled next week'
-    },
-    {
-      id: '10',
-      type: 'reminder',
-      message: 'Complete monthly performance reports for team members',
-      action: 'Complete Reports',
-      dueDate: 'End of month',
-      context: 'Required for performance reviews'
-    }
-  ];
-
-  const getTypeIcon = (type: string) => {
-    switch (type) {
-      case 'urgent':
-        return <ExclamationTriangleIcon className="w-5 h-5 text-red-500" />;
-      case 'important':
-        return <ExclamationTriangleIcon className="w-5 h-5 text-yellow-500" />;
-      case 'reminder':
-        return <ClockIcon className={`w-5 h-5 ${isAltTheme ? 'text-green-500' : 'text-blue-500'}`} />;
-      default:
-        return null;
-    }
-  };
 
   // Split department name at space near middle for two-line header on mobile (saves column width)
   const splitCategoryTwoLines = (name: string): [string, string] => {
@@ -5521,45 +5333,6 @@ const Dashboard: React.FC = () => {
       </div>
     );
   };
-
-  const filteredSuggestions = allSuggestions.filter(suggestion => {
-    const matchesType = filterType === 'all' || suggestion.type === filterType;
-    const matchesSearch = suggestion.message.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      suggestion.context?.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesType && matchesSearch;
-  });
-
-  const SuggestionCard = ({ suggestion }: { suggestion: any }) => (
-    <div className="card bg-white hover:bg-gray-50 transition-colors border border-gray-200">
-      <div className="card-body p-4">
-        <div className="flex items-start gap-3">
-          {getTypeIcon(suggestion.type)}
-          <div className="flex-1">
-            <div className="flex items-center justify-between">
-              <span className="badge badge-sm bg-gray-100 text-gray-800 font-semibold border-none">
-                {suggestion.type.charAt(0).toUpperCase() + suggestion.type.slice(1)}
-              </span>
-              {suggestion.dueDate && (
-                <span className="text-sm text-gray-600">
-                  Due: {suggestion.dueDate}
-                </span>
-              )}
-            </div>
-            <p className="mt-2 text-sm text-gray-900 font-semibold">{suggestion.message}</p>
-            {suggestion.context && (
-              <p className="mt-1 text-sm text-gray-700">
-                {suggestion.context}
-              </p>
-            )}
-            <button className="btn btn-primary btn-sm mt-3 gap-2">
-              {suggestion.action}
-              <ArrowTrendingUpIcon className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 
   // 2. Add effect to fetch real signed leads when showLeadsList is true
   useEffect(() => {
@@ -6379,24 +6152,6 @@ const Dashboard: React.FC = () => {
           </div>
           {/* SVG Circle Placeholder */}
           <svg className="absolute bottom-2 right-2 w-10 h-10 md:w-10 md:h-10 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" /><text x="16" y="21" textAnchor="middle" fontSize="10" fill="white" opacity="0.7">99+</text></svg>
-        </div>
-
-        {/* Action Required */}
-        <div
-          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] bg-gradient-to-tr ${isAltTheme ? 'from-green-600 via-emerald-600 to-lime-600' : 'from-[#4b2996] via-[#6c4edb] to-[#3b28c7]'} text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto`}
-          onClick={() => setIsAISuggestionsModalOpen(true)}
-        >
-          <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20">
-              <ArrowTrendingUpIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />
-            </div>
-            <div>
-              <div className="text-3xl md:text-4xl font-extrabold text-white leading-tight">{aiActions}</div>
-              <div className="text-white/80 text-sm md:text-sm font-medium mt-1">Action Required</div>
-            </div>
-          </div>
-          {/* SVG Line Chart Placeholder */}
-          <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-16 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><polyline points="2,28 16,20 32,24 48,10 62,18" /></svg>
         </div>
       </div>
 
@@ -7239,25 +6994,9 @@ const Dashboard: React.FC = () => {
         </div>
       )}
 
-      {/* 2. AI Suggestions (left) and Scoreboard (right) side by side */}
-      <div className="flex flex-col md:flex-row mb-6 md:mb-10 w-full relative transition-all duration-500 ease-in-out md:items-start gap-4 md:gap-0">
-        {/* AI Suggestions Box */}
-        {!aiContainerCollapsed && (
-          <AIAssistantBox
-            ref={aiRef}
-            height={aiHeight}
-            onClose={() => setAiContainerCollapsed(true)}
-            currentUserEmployeeId={currentUserEmployeeId}
-            currentUserDisplayName={currentUserFullName || undefined}
-          />
-        )}
-
-        {/* Professional CRM Scoreboard - no big box; title and tabs on background */}
-        <div
-          ref={performanceDashboardRef}
-          className={`transition-all duration-500 ease-in-out ${aiContainerCollapsed ? 'w-full' : 'w-full md:w-4/5'
-            } ${aiContainerCollapsed ? 'ml-0' : 'md:ml-8'}`}
-        >
+      {/* Performance scoreboard (full width; archived AI column: `dashboard/DashboardAiSuggestionsArchive.tsx`) */}
+      <div className="mb-6 md:mb-10 w-full relative transition-all duration-500 ease-in-out">
+        <div className="w-full transition-all duration-500 ease-in-out">
           <div className="p-4 md:p-6">
             {/* Header - simple on background */}
             <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-4">
@@ -7737,7 +7476,7 @@ const Dashboard: React.FC = () => {
         <ClockInBox employeeId={currentUserEmployeeId} />
       </div> */}
 
-      {/* My Contribution - below AI assistant, above Team Availability */}
+      {/* My Contribution - above Team Availability */}
       <div className="w-full mt-8">
         <MyContribution
           employeeId={currentUserEmployeeId}
@@ -8276,25 +8015,6 @@ const Dashboard: React.FC = () => {
         )
       }
 
-
-      {/* Floating button to reopen AI container */}
-      {
-        aiContainerCollapsed && (
-          <button
-            onClick={() => setAiContainerCollapsed(false)}
-            className="fixed right-8 top-1/2 transform -translate-y-1/2 z-50 btn btn-circle btn-lg bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 border-none"
-            title="Open AI Assistant"
-          >
-            <ChatBubbleLeftRightIcon className="w-6 h-6" />
-          </button>
-        )
-      }
-
-      {/* AI Suggestions Modal */}
-      <AISuggestionsModal
-        isOpen={isAISuggestionsModalOpen}
-        onClose={() => setIsAISuggestionsModalOpen(false)}
-      />
 
       {/* Unavailable Employees Modal */}
       <UnavailableEmployeesModal

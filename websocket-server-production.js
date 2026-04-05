@@ -66,7 +66,7 @@ io.on("connection", (socket) => {
   });
 
   // Send message
-  socket.on("send_message", async ({ conversation_id, sender_id, content, message_type, sent_at, attachment_url, attachment_name, attachment_type, attachment_size }) => {
+  socket.on("send_message", async ({ conversation_id, sender_id, content, message_type, sent_at, attachment_url, attachment_name, attachment_type, attachment_size, media_attachments }) => {
     console.log(`📨 Received message from ${sender_id} for conversation ${conversation_id}: ${content} (Type: ${message_type})`);
     
     const messageData = {
@@ -79,6 +79,7 @@ io.on("connection", (socket) => {
       attachment_name,
       attachment_type,
       attachment_size,
+      media_attachments: media_attachments ?? null,
     };
     
     // Broadcast message to all participants in the conversation room

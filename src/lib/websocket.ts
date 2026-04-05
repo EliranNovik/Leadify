@@ -1,11 +1,18 @@
 import { io, Socket } from 'socket.io-client';
 
+export type RmqMediaAttachmentItem = {
+  url: string;
+  name: string;
+  type: string;
+  size: number;
+};
+
 export interface MessageData {
   id: number;
   conversation_id: number;
   sender_id: string;
   content: string;
-  message_type: 'text' | 'file' | 'image' | 'system';
+  message_type: 'text' | 'file' | 'image' | 'system' | 'album';
   sent_at: string;
   edited_at?: string;
   is_deleted: boolean;
@@ -13,6 +20,7 @@ export interface MessageData {
   attachment_name?: string;
   attachment_type?: string;
   attachment_size?: number;
+  media_attachments?: RmqMediaAttachmentItem[] | null;
   reply_to_message_id?: number;
   reactions: any[];
   sender: {
@@ -232,11 +240,14 @@ class WebSocketService {
   sendMessage(
     conversationId: number, 
     content: string, 
-    messageType: 'text' | 'file' | 'image' | 'system' = 'text', 
+    messageType: 'text' | 'file' | 'image' | 'system' | 'album' = 'text', 
     attachmentUrl?: string, 
     attachmentType?: string, 
     attachmentSize?: number,
-    replyToMessageId?: number
+    replyToMessageId?: number,
+    mediaAttachments?: RmqMediaAttachmentItem[],
+    /** When content is a caption, pass the real file name so attachment_name is not the caption */
+    attachmentFileName?: string
   ): void {
     if (!this.socket?.connected) {
       console.error('🔌 WebSocket not connected, cannot send message');
@@ -247,6 +258,13 @@ class WebSocketService {
     console.log('📤 Socket connected:', this.socket.connected);
     console.log('📤 Socket ID:', this.socket.id);
     console.log('📤 User ID:', this.userId);
+
+    const attachment_name =
+      mediaAttachments && mediaAttachments.length > 0
+        ? mediaAttachments[0].name
+        : attachmentUrl
+          ? (attachmentFileName ?? content)
+          : content;
     
     this.socket.emit('send_message', {
       conversation_id: conversationId,
@@ -255,9 +273,10 @@ class WebSocketService {
       message_type: messageType,
       sent_at: new Date().toISOString(),
       attachment_url: attachmentUrl,
-      attachment_name: content, // Use content as attachment name for now
+      attachment_name,
       attachment_type: attachmentType,
       attachment_size: attachmentSize,
+      media_attachments: mediaAttachments ?? null,
       reply_to_message_id: replyToMessageId || null,
     });
     

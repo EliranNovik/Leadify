@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { SparklesIcon, ArrowRightIcon, CheckCircleIcon, ExclamationCircleIcon, ClockIcon, XMarkIcon, FunnelIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import { useNavigate } from 'react-router-dom';
-import { supabase } from '../lib/supabase';
 import { useTheme } from '../hooks/useTheme';
+import { DASHBOARD_AI_NOTIFICATIONS_FETCH_ENABLED } from '../lib/dashboardAiFeatureFlags';
 
 interface Suggestion {
   id: string;
@@ -75,8 +75,12 @@ const AISuggestionsModal: React.FC<AISuggestionsModalProps> = ({ isOpen, onClose
 
   // Fetch notifications when modal opens
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && DASHBOARD_AI_NOTIFICATIONS_FETCH_ENABLED) {
       fetchNotifications();
+    } else if (isOpen && !DASHBOARD_AI_NOTIFICATIONS_FETCH_ENABLED) {
+      setIsLoading(false);
+      setSuggestions([]);
+      setAiMessage('');
     }
   }, [isOpen]);
 
