@@ -158,6 +158,44 @@ html,
   font-variation-settings: "wdth" 100;
 }
 
+/*
+ * iOS 11.2–11.4: `constant()` — newer WebKit: `env()`.
+ * Use both so safe-area insets work in Safari + installed PWA with viewport-fit=cover.
+ */
+.pt-safe {
+  padding-top: constant(safe-area-inset-top, 0px);
+  padding-top: env(safe-area-inset-top, 0px);
+}
+/* DaisyUI `.navbar { padding: .5rem }` can win over `.pt-safe` depending on order — force notch inset on real iOS. */
+@media (max-width: 767px) {
+  .navbar.pt-safe {
+    padding-top: constant(safe-area-inset-top, 0px) !important;
+    padding-top: env(safe-area-inset-top, 0px) !important;
+  }
+}
+.pb-safe {
+  padding-bottom: constant(safe-area-inset-bottom, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+/* Horizontal safe areas (Dynamic Island “ears”, landscape) — use with horizontal padding, not alone */
+.pl-safe {
+  padding-left: constant(safe-area-inset-left, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+}
+.pr-safe {
+  padding-right: constant(safe-area-inset-right, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+/* At least 0.5rem (Tailwind px-2) or device inset — keeps controls off the curved edges */
+@media (max-width: 767px) {
+  .navbar-safe-x {
+    padding-left: max(0.5rem, constant(safe-area-inset-left, 0px));
+    padding-left: max(0.5rem, env(safe-area-inset-left, 0px));
+    padding-right: max(0.5rem, constant(safe-area-inset-right, 0px));
+    padding-right: max(0.5rem, env(safe-area-inset-right, 0px));
+  }
+}
+
 /* Mobile: theme background in notch/safe-area + rubber-band overscroll (viewport-fit=cover) */
 @media (max-width: 767px) {
   html,
@@ -175,20 +213,12 @@ html,
 
 @media (max-width: 640px) {
   /*
-   * Taller mobile header. Safe-area must stack above the 4.5rem row — do not fold it into a fixed 4.5rem box
-   * (that was clipping content under the bar and ignoring the notch).
+   * Mobile header row: h-11 (2.75rem) + pb-1.5 — do not inflate min-height / img height; that desyncs
+   * `.app-main-scroll` padding from the real fixed bar and breaks safe-area alignment on iPhone.
    */
   .navbar {
-    min-height: calc(env(safe-area-inset-top, 0px) + 4.5rem) !important;
     height: auto !important;
-    padding-top: env(safe-area-inset-top, 0px) !important;
     padding-bottom: 0.5rem !important;
-  }
-
-  .navbar img {
-    height: 4.5rem !important;
-    max-height: 4.5rem !important;
-    margin-top: 0 !important;
   }
 
   .navbar .btn,
@@ -238,12 +268,8 @@ html,
  * - padding-bottom: iOS home indicator + Android gesture bar; extra when bottom tab bar is shown.
  */
 .app-main-scroll {
+  padding-top: calc(constant(safe-area-inset-top, 0px) + 2.75rem + 0.375rem + 0.75rem);
   padding-top: calc(env(safe-area-inset-top, 0px) + 2.75rem + 0.375rem + 0.75rem);
-}
-@media (max-width: 640px) {
-  .app-main-scroll {
-    padding-top: calc(env(safe-area-inset-top, 0px) + 4.5rem + 0.5rem + 0.75rem);
-  }
 }
 @media (max-width: 767px) {
   .app-main-scroll {
@@ -253,10 +279,12 @@ html,
     -webkit-overflow-scrolling: touch;
     /* Keep scroll gestures inside this pane; bottom inset so content clears the home indicator */
     overscroll-behavior-y: contain;
+    padding-bottom: constant(safe-area-inset-bottom, 0px);
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
   /* Bottom tab bar + safe area — must override padding-bottom above */
   .app-main-scroll.main-with-bottom-nav-padding {
+    padding-bottom: max(4.25rem, calc(3.75rem + constant(safe-area-inset-bottom, 0px)));
     padding-bottom: max(4.25rem, calc(3.75rem + env(safe-area-inset-bottom, 0px)));
   }
 }
@@ -407,11 +435,13 @@ html.dark div.fixed.left-4 {
   backdrop-filter: none !important;
 }
 
-/* Header/navbar styling */
-html.dark .navbar {
-  background: rgba(11, 30, 61, 0.95) !important;
-  color: #ffffff !important;
-  backdrop-filter: blur(10px) !important;
+/* Header/navbar: solid chrome on desktop only — mobile uses transparent shell + floating glass pills in Header.tsx */
+@media (min-width: 768px) {
+  html.dark .navbar {
+    background: rgba(11, 30, 61, 0.95) !important;
+    color: #ffffff !important;
+    backdrop-filter: blur(10px) !important;
+  }
 }
 
 /* Modern input fields */

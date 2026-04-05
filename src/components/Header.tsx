@@ -7219,8 +7219,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       <>
         <div
           data-mobile-header={isMobile ? 'floating' : undefined}
-          className="navbar px-2 md:px-0 h-11 md:h-12 fixed top-0 left-0 w-full z-50 md:bg-base-100 bg-transparent border-0 shadow-none pt-[env(safe-area-inset-top,0px)] pb-1.5 md:pb-0 md:pt-0"
-          style={{ boxShadow: 'none', borderBottom: 'none' }}
+          className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-transparent border-b-0 md:bg-base-100 md:border-b-0 pt-safe pb-1.5 shadow-none md:pb-0 md:pt-0"
+          style={{ boxShadow: 'none' }}
         >
           {/* Logo and Logout Button */}
           <div className="flex-1 justify-start flex items-center gap-2 md:gap-4">
@@ -7308,8 +7308,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     <>
       <div
         data-mobile-header={isMobile ? 'floating' : undefined}
-        className="navbar px-2 md:px-0 h-11 md:h-12 fixed top-0 left-0 w-full z-50 md:bg-base-100 bg-transparent border-0 shadow-none pt-[env(safe-area-inset-top,0px)] pb-1.5 md:pb-0 md:pt-0"
-        style={{ boxShadow: 'none', borderBottom: 'none' }}
+        className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-transparent border-b-0 md:bg-base-100 md:border-b-0 pt-safe pb-1.5 shadow-none md:pb-0 md:pt-0"
+        style={{ boxShadow: 'none' }}
       >
         {/* Left section with menu and logo */}
         <div className={`flex-1 justify-start flex items-center gap-2 md:gap-4 overflow-hidden md:overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
@@ -7327,8 +7327,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             </button>
           </div>
 
-          {/* Profile + dropdown: mobile only — avatar only (no chip, no chevron) */}
+          {/* Profile + dropdown: mobile only — same floating glass pill as menu / search */}
           <div className="relative flex items-center flex-shrink-0 md:hidden" ref={profileDropdownRef}>
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-sm bg-white/45 backdrop-blur-2xl backdrop-saturate-150 border border-white/60 ring-1 ring-white/30 dark:bg-white/[0.12] dark:backdrop-blur-2xl dark:border-white/20 dark:ring-white/10 overflow-hidden">
             <button
               ref={profileButtonRefMobile}
               type="button"
@@ -7371,6 +7372,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 )}
               </span>
             </button>
+            </div>
             {showProfileDropdown && isMobile && createPortal(
               <div
                 data-profile-dropdown-mobile
