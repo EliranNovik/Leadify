@@ -135,6 +135,9 @@ const AppContentInner: React.FC = () => {
   const [isEmailThreadOpen, setIsEmailThreadOpen] = useState(false);
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
   const [isMessagingOpen, setIsMessagingOpen] = useState(false);
+  /** Open RMQ to a specific thread/message (e.g. from CRM “Flagged” modal). */
+  const [rmqInitialConversationId, setRmqInitialConversationId] = useState<number | undefined>();
+  const [rmqInitialScrollToMessageId, setRmqInitialScrollToMessageId] = useState<number | undefined>();
   const [selectedClient, setSelectedClient] = useState<any>(null);
 
   // Clear selectedClient when navigating away from Clients page to prevent flash of stale client data
@@ -524,6 +527,25 @@ const AppContentInner: React.FC = () => {
     setIsMessagingOpen(true);
   }, []);
 
+  const handleCloseMessaging = useCallback(() => {
+    setIsMessagingOpen(false);
+    setRmqInitialConversationId(undefined);
+    setRmqInitialScrollToMessageId(undefined);
+  }, []);
+
+  useEffect(() => {
+    const onOpenRmqMessage = (e: Event) => {
+      const ce = e as CustomEvent<{ conversationId: number; messageId: number }>;
+      const d = ce.detail;
+      if (d == null || typeof d.conversationId !== 'number') return;
+      setRmqInitialConversationId(d.conversationId);
+      setRmqInitialScrollToMessageId(typeof d.messageId === 'number' ? d.messageId : undefined);
+      setIsMessagingOpen(true);
+    };
+    window.addEventListener('rmq:open-conversation-message', onOpenRmqMessage as EventListener);
+    return () => window.removeEventListener('rmq:open-conversation-message', onOpenRmqMessage as EventListener);
+  }, []);
+
   const navItems = [
     { href: '/', label: 'Home', icon: HomeIcon },
     { href: '/clients', label: 'Clients', icon: UserGroupIcon },
@@ -733,7 +755,9 @@ const AppContentInner: React.FC = () => {
             </div>
             <RMQMessagesPage
               isOpen={isMessagingOpen}
-              onClose={() => setIsMessagingOpen(false)}
+              onClose={handleCloseMessaging}
+              initialConversationId={rmqInitialConversationId}
+              initialScrollToMessageId={rmqInitialScrollToMessageId}
             />
           </div>
         </ProtectedRoute>
@@ -817,7 +841,9 @@ const AppContentInner: React.FC = () => {
             />
             <RMQMessagesPage
               isOpen={isMessagingOpen}
-              onClose={() => setIsMessagingOpen(false)}
+              onClose={handleCloseMessaging}
+              initialConversationId={rmqInitialConversationId}
+              initialScrollToMessageId={rmqInitialScrollToMessageId}
             />
             <CTIPopupModal />
           </div>
@@ -971,7 +997,9 @@ const AppContentInner: React.FC = () => {
               />
               <RMQMessagesPage
                 isOpen={isMessagingOpen}
-                onClose={() => setIsMessagingOpen(false)}
+                onClose={handleCloseMessaging}
+                initialConversationId={rmqInitialConversationId}
+                initialScrollToMessageId={rmqInitialScrollToMessageId}
               />
               {/* CTI Popup Modal - shows on any authenticated page when phone parameter is present */}
               <CTIPopupModal />

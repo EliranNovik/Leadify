@@ -63,6 +63,7 @@ import {
     type ContentFlagMeta,
     type FlagTypeRow,
 } from '../lib/userContentFlags';
+import { fetchRmqFlagCountForLead } from '../lib/rmqMessageLeadFlags';
 import { caseProbabilityFromFactors, type ProbabilitySlidersValues } from './client-tabs/ProbabilitySlidersModal';
 
 // Lightweight in-memory caches to avoid refetching static dropdown data on mobile.
@@ -272,6 +273,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [flagTypes, setFlagTypes] = useState<FlagTypeRow[]>([]);
     const [tagsModalOpen, setTagsModalOpen] = useState(false);
     const [leadTags, setLeadTags] = useState<string[]>([]);
+    /** RMQ chat messages flagged to this lead (all users). */
+    const [rmqMessageFlagCount, setRmqMessageFlagCount] = useState(0);
 
     useEffect(() => {
         if (!user?.id) {
@@ -309,6 +312,30 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             cancelled = true;
         };
     }, [publicUserId, selectedClient?.id, selectedClient?.lead_type]);
+
+    useEffect(() => {
+        if (!selectedClient?.id) {
+            setRmqMessageFlagCount(0);
+            return;
+        }
+        const rawId = String((selectedClient as any)?.id ?? '');
+        const isLegacy =
+            (selectedClient as any)?.lead_type === 'legacy' ||
+            rawId.startsWith('legacy_') ||
+            (rawId !== '' && !rawId.includes('-') && /^\d+$/.test(rawId));
+        const legacyId = isLegacy ? parseInt(rawId.replace(/^legacy_/, ''), 10) : null;
+        const newUuid = !isLegacy && rawId.includes('-') ? rawId : null;
+        let cancelled = false;
+        void fetchRmqFlagCountForLead(supabase, {
+            newLeadId: newUuid || undefined,
+            legacyLeadId: legacyId != null && !Number.isNaN(legacyId) ? legacyId : undefined,
+        }).then((n) => {
+            if (!cancelled) setRmqMessageFlagCount(n);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [selectedClient?.id, selectedClient?.lead_type]);
 
     useEffect(() => {
         if (!selectedClient?.id) {
@@ -1199,7 +1226,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     // `flaggedConversationCount` is kept in sync by InteractionsTab and represents the total flagged items
     // on this lead (flagged conversations + flagged lead fields). Fallback to leadField-only flags when
     // InteractionsTab hasn't reported yet.
-    const totalFlagBadge = flaggedConversationCount > 0 ? flaggedConversationCount : leadFieldFlagMeta.size;
+    const totalFlagBadge =
+        (flaggedConversationCount > 0 ? flaggedConversationCount : leadFieldFlagMeta.size) + rmqMessageFlagCount;
     const tagsCount = leadTags.length;
 
     const applicantsCount =
@@ -2066,8 +2094,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </div>
                                 )}
                                 {(selectedClient?.unactivated_by || selectedClient?.unactivated_at) && (
-                                    <div className="backdrop-blur-md bg-white/30 bg-opacity-30 rounded-lg px-3 py-1.5 border border-white/20">
-                                        <div className="text-xs font-normal text-center text-gray-700">
+                                    <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 dark:border-gray-700 dark:bg-gray-800">
+                                        <div className="text-xs font-normal text-center text-gray-700 dark:text-gray-300">
                                             by {selectedClient.unactivated_by || '---'}
                                             {selectedClient.unactivated_by && selectedClient.unactivated_at && ' / '}
                                             {selectedClient.unactivated_at && (

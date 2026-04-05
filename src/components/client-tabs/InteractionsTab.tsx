@@ -80,6 +80,12 @@ import {
   type ContentFlagMeta,
   type FlagTypeRow,
 } from '../../lib/userContentFlags';
+import {
+  fetchRmqMessageFlagsForLead,
+  deleteRmqMessageLeadFlag,
+  rmqFlaggerDisplayName,
+  type RmqMessageLeadFlagWithPreview,
+} from '../../lib/rmqMessageLeadFlags';
 import FlagTypeFlagButton from '../FlagTypeFlagButton';
 
 const leadFieldFlagLabel = (key: string): string => {
@@ -1276,7 +1282,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     | null
     | { kind: 'lead_field'; leadFieldKey: string; label: string }
     | { kind: 'conversation'; row: any; label: string }
+    | { kind: 'rmq'; flagId: string; label: string }
   >(null);
+  /** RMQ chat messages flagged to this lead (all users). */
+  const [rmqLeadMessageFlags, setRmqLeadMessageFlags] = useState<RmqMessageLeadFlagWithPreview[]>([]);
 
   // Allow ClientHeader (and other components) to open the exact same modal instance.
   useEffect(() => {
@@ -1330,6 +1339,30 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     };
   }, [publicUserId, client?.id, client?.lead_type]);
 
+  useEffect(() => {
+    if (!client?.id) {
+      setRmqLeadMessageFlags([]);
+      return;
+    }
+    const raw = String(client.id);
+    const isLegacy =
+      client.lead_type === 'legacy' ||
+      raw.startsWith('legacy_') ||
+      (raw !== '' && !raw.includes('-') && /^\d+$/.test(raw));
+    const legacyId = isLegacy ? Number.parseInt(raw.replace(/^legacy_/, ''), 10) : null;
+    const newUuid = !isLegacy && raw.includes('-') ? raw : null;
+    let cancelled = false;
+    void fetchRmqMessageFlagsForLead(supabase, {
+      newLeadId: newUuid || undefined,
+      legacyLeadId: legacyId != null && !Number.isNaN(legacyId) ? legacyId : undefined,
+    }).then(rows => {
+      if (!cancelled) setRmqLeadMessageFlags(rows);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [client?.id, client?.lead_type]);
+
   const goToFlaggedExpertOpinion = () => {
     setFlaggedItemsModalOpen(false);
     onSwitchClientTab?.('expert');
@@ -1345,6 +1378,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       document.getElementById('handler-opinion-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 400);
   };
+
+  const openRmqFlaggedMessage = useCallback((rmqRow: RmqMessageLeadFlagWithPreview) => {
+    setFlaggedItemsModalOpen(false);
+    window.dispatchEvent(
+      new CustomEvent('rmq:open-conversation-message', {
+        detail: { conversationId: rmqRow.conversation_id, messageId: rmqRow.message_id },
+      })
+    );
+  }, []);
 
   const deleteLeadFieldFlag = useCallback(
     async (leadFieldKey: string) => {
@@ -2425,6 +2467,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const flaggedInteractionCount = flaggedTimelineRows.length;
   const flaggedLeadFieldCount = leadFieldFlagMeta.size;
   const totalFlaggedCount = flaggedInteractionCount + flaggedLeadFieldCount;
+  /** Includes RMQ message flags (ClientHeader badge adds the same count via RPC — keep modal + tab button in sync). */
+  const totalFlaggedCountWithRmq = totalFlaggedCount + rmqLeadMessageFlags.length;
 
   useEffect(() => {
     onFlaggedConversationCountUpdate?.(totalFlaggedCount);
@@ -7799,9 +7843,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 >
                   <FlagIcon className="w-5 h-5" />
                   <span className="hidden sm:inline">Flagged</span>
-                  {totalFlaggedCount > 0 && (
+                  {totalFlaggedCountWithRmq > 0 && (
                     <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-white">
-                      {totalFlaggedCount > 99 ? '99+' : totalFlaggedCount}
+                      {totalFlaggedCountWithRmq > 99 ? '99+' : totalFlaggedCountWithRmq}
                     </span>
                   )}
                 </button>
@@ -9776,7 +9820,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 </button>
               </div>
               <div className="flex-1 overflow-y-auto p-4">
-                {flaggedTimelineRows.length === 0 && leadFieldFlagMeta.size === 0 ? (
+                {flaggedTimelineRows.length === 0 && leadFieldFlagMeta.size === 0 && rmqLeadMessageFlags.length === 0 ? (
                   <p className="text-sm text-base-content/70">
                     No flagged items on this lead yet. Use the flag on a message row or on Expert opinion.
                   </p>
@@ -9940,6 +9984,73 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                         </li>
                       );
                     })}
+                    {rmqLeadMessageFlags.map(rmqRow => {
+                      const typeId = rmqRow.flag_type ?? 1;
+                      const typeLabelText = flagTypeLabel(typeId, flagTypes);
+                      const raw = (rmqRow._messagePreview || '').trim();
+                      const preview =
+                        raw.length > 160 ? `${raw.slice(0, 160)}…` : raw || '—';
+                      const canDelete = Boolean(publicUserId && rmqRow.user_id === publicUserId);
+                      return (
+                        <li
+                          key={`rmq-flag-${rmqRow.id}`}
+                          className="relative flex flex-col gap-2 rounded-xl border border-base-200 bg-base-200/30 p-3"
+                        >
+                          {canDelete ? (
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-xs btn-circle absolute right-2 top-2 text-base-content/40 hover:text-base-content/70 hover:bg-base-200/70"
+                              onClick={() =>
+                                setPendingFlagDelete({
+                                  kind: 'rmq',
+                                  flagId: rmqRow.id,
+                                  label: 'RMQ message',
+                                })
+                              }
+                              title="Delete flag"
+                              aria-label="Delete flag"
+                            >
+                              <XMarkIcon className="h-4 w-4" />
+                            </button>
+                          ) : null}
+                          <div className="flex justify-start">
+                            <span className={flagTypeBadgeClass(typeId, flagTypes)}>{typeLabelText}</span>
+                          </div>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                                <span className="text-xs font-medium uppercase tracking-wide text-base-content/60">
+                                  RMQ
+                                </span>
+                                <span className="text-xs text-base-content/60">
+                                  {formatFlaggedAt(rmqRow.created_at)}
+                                </span>
+                              </div>
+                              <div className="text-sm text-base-content/80">Chat message</div>
+                            </div>
+                            <button
+                              type="button"
+                              className={flaggedModalViewButtonClass}
+                              onClick={() => openRmqFlaggedMessage(rmqRow)}
+                            >
+                              View
+                            </button>
+                          </div>
+                          <p className="line-clamp-3 break-words text-sm text-base-content/90">{preview}</p>
+                          <div className="flex flex-row flex-wrap items-baseline justify-start gap-x-2 border-t border-base-300/50 pt-2 text-xs text-base-content/60">
+                            <span>
+                              <span className="font-medium">Flagged by</span> {rmqFlaggerDisplayName(rmqRow)}
+                            </span>
+                            <span className="text-base-content/35" aria-hidden>
+                              ·
+                            </span>
+                            <span>
+                              <span className="font-medium">At</span> {formatFlaggedAt(rmqRow.created_at)}
+                            </span>
+                          </div>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </div>
@@ -9991,6 +10102,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     if (!p) return;
                     if (p.kind === 'lead_field') {
                       void deleteLeadFieldFlag(p.leadFieldKey);
+                      return;
+                    }
+                    if (p.kind === 'rmq') {
+                      void (async () => {
+                        const { error } = await deleteRmqMessageLeadFlag(supabase, p.flagId);
+                        if (error) {
+                          toast.error(error.message);
+                          return;
+                        }
+                        toast.success('Flag removed');
+                        setRmqLeadMessageFlags(prev => prev.filter(x => x.id !== p.flagId));
+                      })();
                       return;
                     }
                     void deleteConversationFlag(p.row);

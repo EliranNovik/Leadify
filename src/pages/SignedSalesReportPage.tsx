@@ -166,6 +166,44 @@ const computeDateBounds = (fromDate?: string, toDate?: string) => {
   return { startIso, endIso };
 };
 
+/** YYYY-MM-DD in the user's local calendar for an ISO/DB timestamp (avoids pure-UTC day mismatches). */
+const toLocalCalendarDateKey = (value: string | null | undefined): string | null => {
+  if (!value) return null;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString('en-CA');
+};
+
+const addCalendarDays = (isoDate: string, delta: number): string => {
+  const [y, m, day] = isoDate.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, day + delta));
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getUTCDate()).padStart(2, '0');
+  return `${yy}-${mm}-${dd}`;
+};
+
+/**
+ * Strict match: sign moment (date or cdate) falls on a local calendar day within [fromDate, toDate].
+ * Used after a widened SQL fetch so rows with NULL `date` (legacy) or TZ-shifted timestamps aren't dropped.
+ */
+const stageRecordMatchesSignDateRange = (
+  record: { date?: string | null; cdate?: string | null },
+  fromDate?: string,
+  toDate?: string
+): boolean => {
+  if (!fromDate && !toDate) return true;
+  const raw = record.date ?? record.cdate;
+  if (!raw) return false;
+  const key = toLocalCalendarDateKey(raw);
+  if (!key) return false;
+  const from = fromDate || toDate;
+  const to = toDate || fromDate;
+  if (from && key < from) return false;
+  if (to && key > to) return false;
+  return true;
+};
+
 const extractCurrencyCandidate = (candidate: any): any => {
   if (candidate === null || candidate === undefined) return null;
   if (Array.isArray(candidate)) {
@@ -960,7 +998,11 @@ const SignedSalesReportPage: React.FC = () => {
     if (!employeeName) return true;
     const normalizedName = normalizeString(employeeName);
     const employeeId = employeeNameToId.get(normalizedName);
-    if (!employeeId) return false;
+    // If the selected label doesn't resolve (stale session, typo), don't hide every legacy row.
+    if (!employeeId) {
+      console.warn('[SignedSalesReport] Employee filter not found in directory; skipping employee filter for legacy leads:', employeeName);
+      return true;
+    }
     const numericId = Number(employeeId);
     const legacyIds = [
       lead.meeting_scheduler_id,
@@ -1100,31 +1142,84 @@ const resolveLegacyLanguage = (lead: any) => {
       const categoryFilter = filters.category;
       const languageFilter = filters.language;
       const { startIso, endIso } = computeDateBounds(fromDate, toDate);
+      const anyCalendarFilter = Boolean(fromDate || toDate);
+      const rangeDayLo = fromDate || toDate;
+      const rangeDayHi = toDate || fromDate;
 
-      // Fetch ALL stage 60 records from leads_leadstage filtered by date
-      // This is the authoritative source for signed agreements
-      let stage60Query = supabase
-        .from('leads_leadstage')
-        .select('id, lead_id, newlead_id, stage, cdate, date')
-        .eq('stage', 60); // Stage 60 = Client signed agreement
+      // Widen SQL range by ±1 calendar day so timestamps stored near UTC midnight still match
+      // after we apply strict local-calendar filtering below (fixes Israel/EU off-by-one vs UTC-only bounds).
+      const wideStartIso =
+        anyCalendarFilter && rangeDayLo ? toStartOfDayIso(addCalendarDays(rangeDayLo, -1)) : startIso;
+      const wideEndIso =
+        anyCalendarFilter && rangeDayHi ? toEndOfDayIso(addCalendarDays(rangeDayHi, 1)) : endIso;
 
-      // Filter by date column (not cdate)
-      // Include full day: from 00:00:00.000 to 23:59:59.999
-      if (startIso) {
-        stage60Query = stage60Query.gte('date', startIso);
+      // Stage 60 = Client signed agreement. Legacy rows sometimes have `date` NULL and only `cdate` set;
+      // filtering only `date` excludes those rows in PostgREST (NULL fails gte/lte).
+      const stage60Select = 'id, lead_id, newlead_id, stage, cdate, date';
+
+      let allStage60Records: any[] = [];
+
+      if (anyCalendarFilter && wideStartIso && wideEndIso) {
+        const qDate = supabase
+          .from('leads_leadstage')
+          .select(stage60Select)
+          .eq('stage', 60)
+          .gte('date', wideStartIso)
+          .lte('date', wideEndIso);
+
+        const qCdateWhenDateNull = supabase
+          .from('leads_leadstage')
+          .select(stage60Select)
+          .eq('stage', 60)
+          .is('date', null)
+          .gte('cdate', wideStartIso)
+          .lte('cdate', wideEndIso);
+
+        const [resDate, resCdate] = await Promise.all([qDate, qCdateWhenDateNull]);
+
+        if (resDate.error) {
+          console.error('Failed to load stage 60 (date):', resDate.error);
+          throw resDate.error;
+        }
+        if (resCdate.error) {
+          console.error('Failed to load stage 60 (cdate, date null):', resCdate.error);
+          throw resCdate.error;
+        }
+
+        const rDate = resDate.data;
+        const rCdate = resCdate.data;
+
+        const byId = new Map<number, any>();
+        for (const row of [...(rDate || []), ...(rCdate || [])]) {
+          const id = Number(row.id);
+          if (Number.isFinite(id)) byId.set(id, row);
+        }
+        allStage60Records = Array.from(byId.values());
+
+        const beforeStrict = allStage60Records.length;
+        allStage60Records = allStage60Records.filter(row =>
+          stageRecordMatchesSignDateRange(row, fromDate || undefined, toDate || undefined)
+        );
+        console.log(
+          `[SignedSalesReport] Stage 60: ${beforeStrict} rows in widened SQL window → ${allStage60Records.length} after local-calendar filter (${fromDate} … ${toDate})`
+        );
+      } else {
+        let stage60Query = supabase.from('leads_leadstage').select(stage60Select).eq('stage', 60);
+        if (startIso) {
+          stage60Query = stage60Query.gte('date', startIso);
+        }
+        if (endIso) {
+          stage60Query = stage60Query.lte('date', endIso);
+        }
+        const { data, error: stage60Error } = await stage60Query;
+        if (stage60Error) {
+          console.error('Failed to load stage 60 records:', stage60Error);
+          throw stage60Error;
+        }
+        allStage60Records = data || [];
       }
-      if (endIso) {
-        stage60Query = stage60Query.lte('date', endIso);
-      }
 
-      const { data: allStage60Records, error: stage60Error } = await stage60Query;
-      
-      if (stage60Error) {
-        console.error('Failed to load stage 60 records:', stage60Error);
-        throw stage60Error;
-      }
-
-      console.log(`✅ Fetched ${allStage60Records?.length || 0} stage 60 records with date filter`);
+      console.log(`✅ Fetched ${allStage60Records.length} stage 60 records for signed-sales query`);
 
       // Separate legacy and new leads, and track sign dates (use date from stage 60 record)
       const legacyLeadIdsSet = new Set<number>();

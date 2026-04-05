@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, startTransition } from 'react';
+import { createPortal } from 'react-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import websocketService, { MessageData, TypingData, RmqMediaAttachmentItem } from '../lib/websocket';
@@ -41,10 +42,21 @@ import {
   PencilIcon,
   SparklesIcon,
   BookmarkIcon,
-  ChevronRightIcon
+  ChevronRightIcon,
+  ArrowUturnLeftIcon,
+  FlagIcon
 } from '@heroicons/react/24/outline';
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
 import EmployeeModal from '../components/EmployeeModal';
+import RmqMessageFlagLeadModal, { type LeadPick } from '../components/RmqMessageFlagLeadModal';
+import {
+  fetchRmqMessageFlagsForConversation,
+  insertRmqMessageLeadFlag,
+  deleteRmqMessageLeadFlag,
+  rmqFlaggerDisplayName,
+  type RmqMessageLeadFlagRow,
+} from '../lib/rmqMessageLeadFlags';
+import { fetchFlagTypes, flagTypeLabel, type FlagTypeRow } from '../lib/userContentFlags';
 import { useExternalUser } from '../hooks/useExternalUser';
 
 interface User {
@@ -195,13 +207,60 @@ interface MessagingModalProps {
   isOpen: boolean;
   onClose: () => void;
   initialConversationId?: number;
+  /** When opening from CRM “flagged RMQ message”, scroll this chat to this message id. */
+  initialScrollToMessageId?: number;
   initialUserId?: string;
   initialMessage?: string;
   initialLeadNumber?: string;
   initialLeadName?: string;
 }
 
-const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initialConversationId, initialUserId, initialMessage, initialLeadNumber, initialLeadName }) => {
+/** RMQ chat UI tokens — restrained radius; bubble column capped for readability, aligned to thread edges (not centered). */
+const RMQ_CHAT = {
+  bubbleR: 'rounded-[10px]',
+  bubblePad: 'px-3 py-2',
+  /** Sent bubble fill — purple aligned with RMQ header/chat icon (#4829CC). */
+  sentBg: '#4829CC',
+  /** Links in received message text (olive; not tied to sent bubble color). */
+  recvLinkColor: '#4F5C47',
+  /** Links inside own (sent) bubbles — same sky as “Leave a Comment” on group messages (`text-sky-200`). */
+  linkOwn: 'underline font-semibold text-sky-200 hover:text-sky-100',
+  recv: 'bg-[#F5F5F5] text-[#111827]',
+  /** Per-message column width cap — full width of chat pane up to ~48rem; own msgs stay right-aligned, others left. */
+  bubbleMax: 'w-full min-w-0 max-w-[min(100%,48rem)]',
+  /** Single image/video: shrink-wrap to media width (still capped). */
+  mediaColumn: 'w-fit min-w-0 max-w-[min(100%,48rem)]',
+  /** Media bubble: use full column width (bubbleMax), not a fixed ~220px strip. */
+  image: 'w-full min-w-0 max-w-full',
+  imageR: 'rounded-[10px]',
+} as const;
+
+/** Group consecutive messages from the same sender (Slack-style) if within this gap. */
+const RMQ_GROUP_GAP_MS = 5 * 60 * 1000;
+
+/** Chats/Groups segmented control — active pill: standard white raised tab. */
+const RMQ_TAB_ACTIVE =
+  'bg-white text-base-content shadow-[0_1px_2px_rgba(0,0,0,0.1)] dark:bg-base-100 dark:shadow-[0_1px_4px_rgba(0,0,0,0.3)]';
+const RMQ_TAB_ACTIVE_COUNT =
+  'bg-neutral-200/90 text-base-content/70 dark:bg-base-300/80';
+/** Selected contact or group row — brand lavender (separate from tab pill). */
+const RMQ_SEL_ROW =
+  'bg-[#EDE9F8] text-[#3E28CD] shadow-[0_1px_2px_rgba(62,40,205,0.14)] dark:bg-[#3E28CD]/22 dark:text-[#e8e2ff] dark:shadow-[0_1px_4px_rgba(0,0,0,0.32)]';
+const RMQ_SEL_TITLE = 'text-[#3E28CD] dark:text-[#e8e2ff]';
+const RMQ_SEL_TIME = 'text-[#3E28CD]/60 dark:text-[#e8e2ff]/65';
+const RMQ_SEL_PREVIEW = 'text-[#3E28CD]/78 dark:text-[#e8e2ff]/78';
+const RMQ_SEL_META = 'text-[#3E28CD]/58 dark:text-[#e8e2ff]/58';
+
+const RMQMessagesPage: React.FC<MessagingModalProps> = ({
+  isOpen,
+  onClose,
+  initialConversationId,
+  initialScrollToMessageId,
+  initialUserId,
+  initialMessage,
+  initialLeadNumber,
+  initialLeadName,
+}) => {
   // Check if user is external
   const { isExternalUser } = useExternalUser();
 
@@ -357,15 +416,42 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [messageToForward, setMessageToForward] = useState<Message | null>(null);
   const [forwardSearchQuery, setForwardSearchQuery] = useState('');
 
+  /** Flag message → lead (same flag_types as CRM) */
+  const [rmqMessageFlagTypes, setRmqMessageFlagTypes] = useState<FlagTypeRow[]>([]);
+  const [rmqMessageLeadFlags, setRmqMessageLeadFlags] = useState<RmqMessageLeadFlagRow[]>([]);
+  const [rmqMessageLeadFlagsLoading, setRmqMessageLeadFlagsLoading] = useState(false);
+  const [showRmqFlagLeadModal, setShowRmqFlagLeadModal] = useState(false);
+  const [messageToFlag, setMessageToFlag] = useState<Message | null>(null);
+  const [flagLeadSearchBusy, setFlagLeadSearchBusy] = useState(false);
+
+  const rmqFlaggedMessageIds = useMemo(
+    () => new Set(rmqMessageLeadFlags.map(f => f.message_id)),
+    [rmqMessageLeadFlags]
+  );
+
   // Message actions state (reply, edit, delete)
   const [messageToReply, setMessageToReply] = useState<Message | null>(null);
   const [messageToEdit, setMessageToEdit] = useState<Message | null>(null);
   const [editingMessageText, setEditingMessageText] = useState('');
   const [messageActionMenu, setMessageActionMenu] = useState<number | null>(null);
+  /** Viewport anchor for desktop message ⋯ menu (portal + fixed; avoids scroll/overflow clipping). */
+  const [messageMenuAnchor, setMessageMenuAnchor] = useState<{
+    left: number;
+    right: number;
+    top: number;
+    isOwn: boolean;
+  } | null>(null);
+  const messageActionMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [mobileMessageActionMessage, setMobileMessageActionMessage] = useState<Message | null>(null);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressMessageRef = useRef<Message | null>(null);
   const longPressHandledRef = useRef<boolean>(false);
+
+  const closeMessageActionMenu = useCallback(() => {
+    setMessageActionMenu(null);
+    setMessageMenuAnchor(null);
+    messageActionMenuButtonRef.current = null;
+  }, []);
 
   // Online status state
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
@@ -419,11 +505,51 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const mobileToolsRef = useRef<HTMLDivElement>(null);
   const desktopToolsRef = useRef<HTMLDivElement>(null);
 
+  /** Scroll the visible chat pane to a message. Must query inside the active container — both desktop and mobile trees render [data-message-id], and document.querySelector picks the hidden one first on phone. */
+  const scrollToMessage = useCallback((messageId: number, behavior: 'smooth' | 'instant' = 'instant') => {
+    const sel = `[data-message-id="${messageId}"]`;
+    const isMobileViewport = typeof window !== 'undefined' && window.innerWidth < 1024;
+    const ordered: (HTMLDivElement | null)[] = isMobileViewport
+      ? [mobileMessagesContainerRef.current, desktopMessagesContainerRef.current, messagesContainerRef.current]
+      : [desktopMessagesContainerRef.current, mobileMessagesContainerRef.current, messagesContainerRef.current];
+
+    let container: HTMLElement | null = null;
+    let messageElement: Element | null = null;
+    for (const c of ordered) {
+      if (!c || !c.offsetParent) continue;
+      const el = c.querySelector(sel);
+      if (el) {
+        container = c;
+        messageElement = el;
+        break;
+      }
+    }
+
+    if (!messageElement || !container) {
+      return;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const messageRect = messageElement.getBoundingClientRect();
+    const relativeTop = messageRect.top - containerRect.top + container.scrollTop - 8;
+
+    if (behavior === 'instant') {
+      container.scrollTop = relativeTop;
+    } else {
+      container.scrollTo({
+        top: Math.max(0, relativeTop),
+        behavior: 'smooth',
+      });
+    }
+  }, []);
+
   // Auto-scroll state
   const [isUserScrolling, setIsUserScrolling] = useState(false);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
   const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const initialLoadRef = useRef<number | null>(null);
+  /** Avoid repeating smooth-scroll when CRM reopens the same flagged message. */
+  const rmqLeadScrollDoneRef = useRef<string | null>(null);
   const firstUnreadMessageIdRef = useRef<number | null>(null);
   const lastScrollPositionRef = useRef<number>(0);
   const scrollPositionCheckRef = useRef<NodeJS.Timeout | null>(null);
@@ -650,8 +776,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           href={url}
           target="_blank"
           rel="noopener noreferrer"
-          className={isOwn ? "underline font-semibold" : "text-green-700 dark:text-green-600 hover:text-green-800 dark:hover:text-green-500 underline"}
-          style={isOwn ? { color: '#a7f3d0' } : undefined}
+          className={isOwn ? RMQ_CHAT.linkOwn : 'underline font-semibold hover:opacity-90'}
+          style={isOwn ? undefined : { color: RMQ_CHAT.recvLinkColor }}
         >
           {match[0]}
         </a>
@@ -702,8 +828,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             href={match[2]}
             target="_blank"
             rel="noopener noreferrer"
-            className={isOwn ? "underline font-semibold" : "text-green-700 dark:text-green-600 hover:text-green-800 dark:hover:text-green-500 underline"}
-            style={isOwn ? { color: '#a7f3d0' } : undefined}
+            className={isOwn ? RMQ_CHAT.linkOwn : 'underline font-semibold hover:opacity-90'}
+            style={isOwn ? undefined : { color: RMQ_CHAT.recvLinkColor }}
           >
             {match[1]}
           </a>
@@ -1227,7 +1353,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     if (status === 'sent') {
       // Single check (sent)
       return (
-        <svg className="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
+        <svg className="h-7 w-7 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
           {singleCheck}
         </svg>
       );
@@ -1235,7 +1361,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     if (status === 'delivered') {
       // Double check in one icon (delivered) - WhatsApp style, two ticks
       return (
-        <svg className="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 25 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
+        <svg className="h-7 w-7 flex-shrink-0" fill="currentColor" viewBox="0 0 25 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
           <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
           <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" transform="translate(5, 0)" />
         </svg>
@@ -1243,7 +1369,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
     // Read: double check in one icon, neon green
     return (
-      <svg className="w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 25 20" style={{ color: '#39ff14' }}>
+      <svg className="h-7 w-7 flex-shrink-0" fill="currentColor" viewBox="0 0 25 20" style={{ color: '#39ff14' }}>
         <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
         <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" transform="translate(5, 0)" />
       </svg>
@@ -1684,6 +1810,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return format(date, 'HH:mm');
   };
 
+  /** Flag row in header dropdown: when the flag was created (not internal message id). */
+  const formatRmqFlagCreatedAt = (iso: string | undefined): string => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
+    return format(d, 'MMM d, yyyy · HH:mm');
+  };
+
   // Helper function to check if two dates are on the same day
   const isSameDay = (date1: Date, date2: Date): boolean => {
     return date1.getFullYear() === date2.getFullYear() &&
@@ -1880,7 +2014,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       return (
         <div className={`flex w-full ${isOwn ? 'justify-end' : 'justify-start'}`}>
           <div
-            className={`rounded-lg border border-base-300 overflow-hidden w-full max-w-full sm:max-w-md ${
+            className={`${RMQ_CHAT.bubbleR} border border-base-300/80 overflow-hidden w-full max-w-full sm:max-w-md ${
               isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'
             }`}
           >
@@ -1908,13 +2042,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       return (
         <div className={`flex w-full ${isOwn ? 'justify-end' : 'justify-start'}`}>
           <div
-            className={`rounded-lg border border-base-300 overflow-hidden w-full max-w-full sm:max-w-md ${
+            className={`${RMQ_CHAT.bubbleR} w-fit max-w-full min-w-0 overflow-hidden border border-base-300/80 ${
               isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'
             }`}
           >
             {nameHeaderInMediaCard}
             <div
-              className="relative cursor-pointer w-full min-h-[80px]"
+              className="relative w-fit min-h-0 max-w-full cursor-pointer transition-transform duration-150 hover:scale-[1.02]"
               onClick={() => openMediaModal(message)}
               role="button"
               tabIndex={0}
@@ -1928,7 +2062,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               <img
                 src={message.attachment_url}
                 alt={message.attachment_name || ''}
-                className="w-full max-w-full max-h-80 object-contain block bg-gray-100 dark:bg-gray-800"
+                className={`${RMQ_CHAT.imageR} h-auto w-auto max-w-full max-h-[min(48vh,18rem)] object-contain object-center block bg-gray-100 dark:bg-gray-800`}
                 loading="lazy"
                 decoding="async"
               />
@@ -1945,13 +2079,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       return (
         <div className={`flex w-full ${isOwn ? 'justify-end' : 'justify-start'}`}>
           <div
-            className={`rounded-lg border border-base-300 overflow-hidden w-full max-w-full sm:max-w-md ${
+            className={`${RMQ_CHAT.bubbleR} w-fit max-w-full min-w-0 overflow-hidden border border-base-300/80 ${
               isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'
             }`}
           >
             {nameHeaderInMediaCard}
             <div
-              className="relative cursor-pointer w-full"
+              className="relative w-fit max-w-full cursor-pointer transition-transform duration-150 hover:scale-[1.02]"
               onClick={() => openMediaModal(message)}
               role="button"
               tabIndex={0}
@@ -1964,12 +2098,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             >
               <video
                 src={message.attachment_url}
-                className="max-w-full max-h-72 w-full object-cover bg-gray-100 dark:bg-gray-800 relative z-10 pointer-events-none"
+                className={`${RMQ_CHAT.imageR} h-auto w-auto max-w-full max-h-[min(48vh,18rem)] object-contain bg-gray-100 dark:bg-gray-800 relative z-10 pointer-events-none`}
                 muted
                 playsInline
                 preload="metadata"
               />
-              <span className="absolute bottom-2 right-2 text-xs font-medium text-white drop-shadow-md z-10 pointer-events-none">
+              <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md pointer-events-none">
                 {formatMessageTime(message.sent_at)}
               </span>
             </div>
@@ -1980,15 +2114,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
     const contentStr = message.content || '';
     const emojiOnly = contentStr.trim().length > 0 && isEmojiOnly(contentStr);
-    const bubbleBase = `overflow-hidden px-2.5 py-2 rounded-2xl shadow-sm max-w-full w-full sm:max-w-md ${
+    const bubbleBase = `overflow-hidden ${RMQ_CHAT.bubblePad} ${RMQ_CHAT.bubbleR} shadow-none border-0 w-full max-w-full ${
       isOwn
         ? emojiOnly
-          ? 'bg-base-100 text-base-content rounded-br-md'
-          : 'text-white rounded-br-md'
-        : 'border rounded-bl-md bg-gray-50 dark:bg-base-100 border-gray-100 dark:border-base-300 text-base-content shadow-sm'
+          ? 'bg-base-100 text-base-content'
+          : 'text-white border-0'
+        : `${RMQ_CHAT.recv} border-0 dark:bg-base-200/80 dark:text-base-content`
     }`;
     const bubbleStyle: React.CSSProperties | undefined =
-      isOwn && !emojiOnly ? { background: 'linear-gradient(to bottom right, #065f46, #0d5c52)' } : undefined;
+      isOwn && !emojiOnly ? { background: RMQ_CHAT.sentBg } : undefined;
 
     const textBlock =
       contentStr.trim().length > 0 &&
@@ -1998,12 +2132,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         </div>
       ) : (
         <div
-          className="break-words text-base whitespace-pre-wrap"
+          className="break-words text-sm whitespace-pre-wrap leading-[1.4]"
           dir={getTextDirection(contentStr) as 'ltr' | 'rtl' | 'auto'}
           style={{
             textAlign: getTextDirection(contentStr) === 'rtl' ? 'right' : getTextDirection(contentStr) === 'auto' ? 'start' : 'left',
             ...(getTextDirection(contentStr) !== 'auto' && { direction: getTextDirection(contentStr) as 'ltr' | 'rtl' }),
-            lineHeight: 1.5,
+            lineHeight: 1.4,
             wordBreak: 'break-word',
             overflowWrap: 'break-word',
             whiteSpace: 'pre-wrap',
@@ -3300,10 +3434,112 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     [selectedConversation, currentUser?.id, rmqPinnedRows, loadRmqPinnedMessages]
   );
 
-  const scrollToMessageInChat = useCallback((messageId: number) => {
-    const el = document.querySelector(`[data-message-id="${messageId}"]`);
-    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const loadRmqMessageLeadFlags = useCallback(async (conversationId: number) => {
+    setRmqMessageLeadFlagsLoading(true);
+    try {
+      const rows = await fetchRmqMessageFlagsForConversation(supabase, conversationId);
+      const newIds = [...new Set(rows.map(r => r.new_lead_id).filter(Boolean))] as string[];
+      const legIds = [...new Set(rows.map(r => r.legacy_lead_id).filter((x): x is number => x != null))];
+      const num = new Map<string, string>();
+      if (newIds.length) {
+        const { data } = await supabase.from('leads').select('id, lead_number').in('id', newIds);
+        (data || []).forEach((l: { id: string; lead_number?: string | number | null }) =>
+          num.set(`n:${l.id}`, String(l.lead_number ?? ''))
+        );
+      }
+      if (legIds.length) {
+        const { data } = await supabase.from('leads_lead').select('id, lead_number').in('id', legIds);
+        (data || []).forEach((l: { id: number; lead_number?: string | number | null }) =>
+          num.set(`l:${l.id}`, String(l.lead_number ?? ''))
+        );
+      }
+      const enriched = rows.map(r => ({
+        ...r,
+        _leadNum:
+          r.new_lead_id != null
+            ? num.get(`n:${r.new_lead_id}`)
+            : r.legacy_lead_id != null
+              ? num.get(`l:${r.legacy_lead_id}`)
+              : undefined,
+      }));
+      setRmqMessageLeadFlags(enriched);
+    } finally {
+      setRmqMessageLeadFlagsLoading(false);
+    }
   }, []);
+
+  const searchLeadsForFlagModal = useCallback(async (query: string): Promise<LeadPick[]> => {
+    setFlagLeadSearchBusy(true);
+    try {
+      const q = query.replace(/%/g, '');
+      const { data: leadsData } = await supabase
+        .from('leads')
+        .select('id, lead_number, name, email')
+        .or(`lead_number.ilike.%${q}%,name.ilike.%${q}%,email.ilike.%${q}%`)
+        .limit(10);
+      const { data: legacyLeadsData } = await supabase
+        .from('leads_lead')
+        .select('id, lead_number, name, email')
+        .or(`lead_number.ilike.%${q}%,name.ilike.%${q}%,email.ilike.%${q}%`)
+        .limit(10);
+      const a: LeadPick[] = (leadsData || []).map(l => ({ ...l, isLegacy: false }));
+      const b: LeadPick[] = (legacyLeadsData || []).map(l => ({ ...l, isLegacy: true }));
+      return [...a, ...b].slice(0, 12);
+    } finally {
+      setFlagLeadSearchBusy(false);
+    }
+  }, []);
+
+  const submitRmqMessageFlag = useCallback(
+    async (lead: LeadPick, flagTypeId: number) => {
+      if (!messageToFlag || !selectedConversation || !currentUser?.id) return;
+      const { error } = await insertRmqMessageLeadFlag(supabase, {
+        userId: currentUser.id,
+        messageId: messageToFlag.id,
+        conversationId: selectedConversation.id,
+        newLeadId: lead.isLegacy ? null : String(lead.id),
+        legacyLeadId: lead.isLegacy ? Number(lead.id) : null,
+        flagTypeId,
+      });
+      if (error) {
+        const code = 'code' in error ? (error as { code?: string }).code : undefined;
+        const dup =
+          code === '23505' ||
+          error.message.includes('duplicate') ||
+          error.message.includes('unique');
+        toast.error(dup ? 'You already flagged this message' : error.message);
+        throw error;
+      }
+      toast.success('Message flagged to lead');
+      setMessageToFlag(null);
+      await loadRmqMessageLeadFlags(selectedConversation.id);
+    },
+    [messageToFlag, selectedConversation, currentUser?.id, loadRmqMessageLeadFlags]
+  );
+
+  const removeRmqMessageLeadFlagRow = useCallback(
+    async (flagId: string) => {
+      const { error } = await deleteRmqMessageLeadFlag(supabase, flagId);
+      if (error) {
+        toast.error(error.message);
+        return;
+      }
+      toast.success('Flag removed');
+      if (selectedConversation?.id) await loadRmqMessageLeadFlags(selectedConversation.id);
+    },
+    [selectedConversation?.id, loadRmqMessageLeadFlags]
+  );
+
+  useEffect(() => {
+    void fetchFlagTypes(supabase).then(setRmqMessageFlagTypes);
+  }, []);
+
+  const scrollToMessageInChat = useCallback(
+    (messageId: number) => {
+      scrollToMessage(messageId, 'smooth');
+    },
+    [scrollToMessage]
+  );
 
   const loadRmqMessageCommentCounts = useCallback(async (conversationId: number) => {
     try {
@@ -3440,54 +3676,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     [rmqMessageCommentsModal]
   );
 
-  /** Attached to the message bubble: divider + “Leave a Comment” (reference: unified card, blue accents, chevron). */
-  const renderMessageCommentFooter = useCallback(
-    (message: Message, tone: 'media' | 'textOwn' | 'textOther') => {
-      const count = rmqMessageCommentCounts[message.id] ?? 0;
-      const toneClass =
-        tone === 'textOwn'
-          ? 'border-t border-white/20 bg-black/10 hover:bg-black/20'
-          : tone === 'textOther'
-            ? 'border-t border-base-300/70 bg-base-200/55 dark:bg-base-300/35 hover:bg-base-200/80 dark:hover:bg-base-300/50'
-            : 'border-t border-base-300/70 bg-base-200/55 dark:bg-base-300/35 hover:bg-base-200/80 dark:hover:bg-base-300/50';
-      const labelClass =
-        tone === 'textOwn'
-          ? 'text-sky-200'
-          : 'text-sky-600 dark:text-sky-400';
-      const iconClass = tone === 'textOwn' ? 'text-sky-200' : 'text-sky-600 dark:text-sky-400';
-      const chevronClass = tone === 'textOwn' ? 'text-sky-300/90' : 'text-sky-500/90 dark:text-sky-400/90';
-      return (
-        <button
-          type="button"
-          className={`flex w-full items-center justify-between gap-3 px-3 py-3 text-left ${toneClass}`}
-          onClick={e => {
-            e.stopPropagation();
-            openRmqMessageCommentsModal(message);
-          }}
-        >
-          <div className="flex min-w-0 flex-1 items-center gap-2.5">
-            <ChatBubbleLeftRightIcon className={`h-5 w-5 shrink-0 ${iconClass}`} strokeWidth={2} />
-            <span className={`text-sm font-medium ${labelClass}`}>Leave a Comment</span>
-            {count > 0 ? (
-              <span
-                className={`rounded-full border px-2 py-0.5 text-xs font-semibold tabular-nums ${
-                  tone === 'textOwn'
-                    ? 'border-white/25 bg-white/10 text-white/90'
-                    : 'border-base-300/60 bg-base-100/90 text-base-content/80 dark:bg-base-100/30'
-                }`}
-              >
-                {count}
-              </span>
-            ) : null}
-          </div>
-          <ChevronRightIcon className={`h-5 w-5 shrink-0 ${chevronClass}`} />
-        </button>
-      );
-    },
-    [rmqMessageCommentCounts, openRmqMessageCommentsModal]
-  );
-
-  /** Desktop: same ellipsis menu for every message (Reply, Forward, Pin; Edit/Delete for own). */
+  /** Desktop: same ellipsis menu for every message (Reply, Forward, Pin; Edit/Delete for own). Menu is portaled to body (fixed) so it is not clipped by overflow. */
   const renderDesktopMessageDropdown = (message: Message, isOwn: boolean) => {
     const isPinned = rmqPinnedRows.some(r => r.message.id === message.id);
     const focusComposer = () => {
@@ -3496,6 +3685,108 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         mobileMessageInputRef.current?.focus();
       }, 100);
     };
+    const menuPanel =
+      messageActionMenu === message.id && messageMenuAnchor ? (
+        <div
+          className="message-action-menu fixed bg-white border border-gray-200 rounded-lg shadow-lg min-w-[140px] z-[10000]"
+          style={
+            messageMenuAnchor.isOwn
+              ? {
+                  left: messageMenuAnchor.left,
+                  top: messageMenuAnchor.top - 4,
+                  transform: 'translateY(-100%)',
+                }
+              : {
+                  left: messageMenuAnchor.right,
+                  top: messageMenuAnchor.top - 4,
+                  transform: 'translate(-100%, -100%)',
+                }
+          }
+        >
+          <button
+            type="button"
+            onClick={e => {
+              e.stopPropagation();
+              setMessageToReply(message);
+              closeMessageActionMenu();
+              focusComposer();
+            }}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+          >
+            <ChatBubbleBottomCenterTextIcon className="w-4 h-4" />
+            Reply
+          </button>
+          <button
+            type="button"
+            onClick={e => {
+              e.stopPropagation();
+              setMessageToForward(message);
+              setShowForwardModal(true);
+              closeMessageActionMenu();
+            }}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+          >
+            <ArrowRightIcon className="w-4 h-4" />
+            Forward
+          </button>
+          <button
+            type="button"
+            onClick={e => {
+              e.stopPropagation();
+              togglePinMessage(message);
+              closeMessageActionMenu();
+            }}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+          >
+            <BookmarkIcon className={`w-4 h-4 ${isPinned ? 'text-amber-500' : ''}`} />
+            {isPinned ? 'Unpin message' : 'Pin message'}
+          </button>
+          <button
+            type="button"
+            onClick={e => {
+              e.stopPropagation();
+              setMessageToFlag(message);
+              setShowRmqFlagLeadModal(true);
+              closeMessageActionMenu();
+            }}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+          >
+            <FlagIcon className="w-4 h-4 text-amber-600" />
+            Flag to lead…
+          </button>
+          {isOwn && (
+            <>
+              <button
+                type="button"
+                onClick={e => {
+                  e.stopPropagation();
+                  setMessageToEdit(message);
+                  setEditingMessageText(message.content || '');
+                  closeMessageActionMenu();
+                  focusComposer();
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+              >
+                <PencilIcon className="w-4 h-4" />
+                Edit
+              </button>
+              <button
+                type="button"
+                onClick={e => {
+                  e.stopPropagation();
+                  handleDeleteMessage(message.id);
+                  closeMessageActionMenu();
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors text-left"
+              >
+                <TrashIcon className="w-4 h-4" />
+                Delete
+              </button>
+            </>
+          )}
+        </div>
+      ) : null;
+
     return (
       <div
         className={`absolute ${isOwn ? '-left-8 top-1/2 -translate-y-1/2' : '-right-8 top-1/2 -translate-y-1/2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}
@@ -3503,89 +3794,32 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         <div className="relative message-action-menu">
           <button
             type="button"
+            ref={el => {
+              if (messageActionMenu === message.id) {
+                messageActionMenuButtonRef.current = el;
+              }
+            }}
             onClick={e => {
               e.stopPropagation();
-              setMessageActionMenu(messageActionMenu === message.id ? null : message.id);
+              if (messageActionMenu === message.id) {
+                closeMessageActionMenu();
+              } else {
+                const r = e.currentTarget.getBoundingClientRect();
+                setMessageMenuAnchor({
+                  left: r.left,
+                  right: r.right,
+                  top: r.top,
+                  isOwn,
+                });
+                setMessageActionMenu(message.id);
+              }
             }}
             className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
             title="Message options"
           >
             <EllipsisVerticalIcon className="w-4 h-4 text-gray-700" />
           </button>
-          {messageActionMenu === message.id && (
-            <div
-              className={`absolute bottom-full ${isOwn ? 'left-0' : 'right-0'} mb-1 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[140px] z-50`}
-            >
-              <button
-                type="button"
-                onClick={e => {
-                  e.stopPropagation();
-                  setMessageToReply(message);
-                  setMessageActionMenu(null);
-                  focusComposer();
-                }}
-                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-              >
-                <ChatBubbleBottomCenterTextIcon className="w-4 h-4" />
-                Reply
-              </button>
-              <button
-                type="button"
-                onClick={e => {
-                  e.stopPropagation();
-                  setMessageToForward(message);
-                  setShowForwardModal(true);
-                  setMessageActionMenu(null);
-                }}
-                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-              >
-                <ArrowRightIcon className="w-4 h-4" />
-                Forward
-              </button>
-              <button
-                type="button"
-                onClick={e => {
-                  e.stopPropagation();
-                  togglePinMessage(message);
-                  setMessageActionMenu(null);
-                }}
-                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-              >
-                <BookmarkIcon className={`w-4 h-4 ${isPinned ? 'text-amber-500' : ''}`} />
-                {isPinned ? 'Unpin message' : 'Pin message'}
-              </button>
-              {isOwn && (
-                <>
-                  <button
-                    type="button"
-                    onClick={e => {
-                      e.stopPropagation();
-                      setMessageToEdit(message);
-                      setEditingMessageText(message.content || '');
-                      setMessageActionMenu(null);
-                      focusComposer();
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
-                  >
-                    <PencilIcon className="w-4 h-4" />
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={e => {
-                      e.stopPropagation();
-                      handleDeleteMessage(message.id);
-                      setMessageActionMenu(null);
-                    }}
-                    className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors text-left"
-                  >
-                    <TrashIcon className="w-4 h-4" />
-                    Delete
-                  </button>
-                </>
-              )}
-            </div>
-          )}
+          {menuPanel && createPortal(menuPanel, document.body)}
         </div>
       </div>
     );
@@ -5887,61 +6121,143 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return unreadMessages[0] || null;
   }, [selectedConversation, currentUser, messages]);
 
-  // Scroll to a specific message by ID
-  const scrollToMessage = useCallback((messageId: number, behavior: 'smooth' | 'instant' = 'instant') => {
-    // Find the message element in the DOM
-    const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
-
-    if (messageElement) {
-      // Get the container
-      let container: HTMLElement | null = null;
-
-      if (desktopMessagesContainerRef.current) {
-        const desktopContainer = desktopMessagesContainerRef.current;
-        if (desktopContainer.offsetWidth > 0 && desktopContainer.offsetHeight > 0) {
-          container = desktopContainer;
-        }
-      }
-
-      if (!container && mobileMessagesContainerRef.current) {
-        const mobileContainer = mobileMessagesContainerRef.current;
-        if (mobileContainer.offsetWidth > 0 && mobileContainer.offsetHeight > 0) {
-          container = mobileContainer;
-        }
-      }
-
-      if (!container && messagesContainerRef.current) {
-        const fallbackContainer = messagesContainerRef.current;
-        if (fallbackContainer.offsetWidth > 0 && fallbackContainer.offsetHeight > 0) {
-          container = fallbackContainer;
-        }
-      }
-
-      if (container && messageElement) {
-        // Calculate the position to scroll to (message at top of viewport)
-        const containerRect = container.getBoundingClientRect();
-        const messageRect = messageElement.getBoundingClientRect();
-        const scrollTop = container.scrollTop;
-        const relativeTop = messageRect.top - containerRect.top + scrollTop;
-
-        if (behavior === 'instant') {
-          container.scrollTop = relativeTop;
-        } else {
-          container.scrollTo({
-            top: relativeTop,
-            behavior: 'smooth'
-          });
-        }
+  /** In-chat thread replies: messages whose reply_to_message_id points to a parent; count + oldest reply id for “go to replies”. */
+  const replyThreadStats = useMemo(() => {
+    const countByParent: Record<number, number> = {};
+    const firstReplyIdByParent: Record<number, number> = {};
+    for (const m of messages) {
+      if (m.is_deleted) continue;
+      const pid = m.reply_to_message_id;
+      if (!pid) continue;
+      countByParent[pid] = (countByParent[pid] || 0) + 1;
+      const t = new Date(m.sent_at).getTime();
+      const existingId = firstReplyIdByParent[pid];
+      if (!existingId) {
+        firstReplyIdByParent[pid] = m.id;
       } else {
-        // Fallback: use scrollIntoView
-        messageElement.scrollIntoView({
-          behavior: behavior === 'instant' ? 'auto' : behavior,
-          block: 'start',
-          inline: 'nearest'
-        });
+        const existingMsg = messages.find(x => x.id === existingId);
+        if (existingMsg && t < new Date(existingMsg.sent_at).getTime()) {
+          firstReplyIdByParent[pid] = m.id;
+        }
       }
     }
-  }, []);
+    return { countByParent, firstReplyIdByParent };
+  }, [messages]);
+
+  /** Attached to the message bubble: optional thread-reply strip + (group chats only) “Leave a Comment”. */
+  const renderMessageCommentFooter = useCallback(
+    (message: Message, tone: 'media' | 'textOwn' | 'textOther') => {
+      const isGroupChat = selectedConversation?.type === 'group';
+      const count = rmqMessageCommentCounts[message.id] ?? 0;
+      const replyCount = replyThreadStats.countByParent[message.id] ?? 0;
+      const firstReplyId = replyThreadStats.firstReplyIdByParent[message.id];
+      const toneClass =
+        tone === 'textOwn'
+          ? 'border-t border-white/20 bg-black/10 hover:bg-black/20'
+          : tone === 'textOther'
+            ? 'border-t border-base-300/70 bg-base-200/55 dark:bg-base-300/35 hover:bg-base-200/80 dark:hover:bg-base-300/50'
+            : 'border-t border-base-300/70 bg-base-200/55 dark:bg-base-300/35 hover:bg-base-200/80 dark:hover:bg-base-300/50';
+      /** Thread reply strip — same lavender / brand purple as tabs & sidebar selection (not mint). */
+      const replyStripClass =
+        tone === 'textOwn'
+          ? 'border-t border-white/20 bg-white/10 hover:bg-white/16'
+          : tone === 'textOther'
+            ? 'border-t border-[#3E28CD]/12 bg-[#EDE9F8]/95 hover:bg-[#E2D8F5] dark:border-[#3E28CD]/25 dark:bg-[#3E28CD]/20 dark:hover:bg-[#3E28CD]/28'
+            : 'border-t border-[#3E28CD]/12 bg-[#EDE9F8]/95 hover:bg-[#E2D8F5] dark:border-[#3E28CD]/25 dark:bg-[#3E28CD]/20 dark:hover:bg-[#3E28CD]/28';
+      const labelClass =
+        tone === 'textOwn'
+          ? 'text-sky-200'
+          : 'text-sky-600 dark:text-sky-400';
+      const iconClass = tone === 'textOwn' ? 'text-sky-200' : 'text-sky-600 dark:text-sky-400';
+      const chevronClass = tone === 'textOwn' ? 'text-sky-300/90' : 'text-sky-500/90 dark:text-sky-400/90';
+      const replyLabelClass =
+        tone === 'textOwn'
+          ? 'text-sky-200'
+          : 'text-[#3E28CD] dark:text-[#d4ccff]';
+      const replyIconClass =
+        tone === 'textOwn' ? 'text-sky-200' : 'text-[#3E28CD] dark:text-[#c9b8ff]';
+
+      const replyStrip =
+        replyCount > 0 ? (
+          <button
+            type="button"
+            className={`flex w-full items-center gap-2 px-3 py-2.5 text-left ${replyStripClass}`}
+            onClick={e => {
+              e.stopPropagation();
+              if (firstReplyId) scrollToMessage(firstReplyId, 'smooth');
+            }}
+            title="Go to replies"
+          >
+            <ArrowUturnLeftIcon className={`h-5 w-5 shrink-0 ${replyIconClass}`} strokeWidth={2} />
+            <span className={`text-sm font-semibold ${replyLabelClass}`}>
+              {replyCount} {replyCount === 1 ? 'reply' : 'replies'}
+            </span>
+          </button>
+        ) : null;
+
+      /** Same lavender / brand strip as “1 reply”, full-width at bottom of bubble. */
+      const showLeadFlag = rmqFlaggedMessageIds.has(message.id);
+      const flagStrip = showLeadFlag ? (
+        <div
+          role="status"
+          className={`flex w-full items-center gap-2.5 px-3 py-2.5 ${replyStripClass}`}
+        >
+          <FlagIcon className={`h-6 w-6 shrink-0 ${replyIconClass}`} strokeWidth={2} />
+          <span className={`text-sm font-semibold ${replyLabelClass}`}>Flagged to lead</span>
+        </div>
+      ) : null;
+
+      if (!isGroupChat) {
+        if (!replyStrip && !flagStrip) return null;
+        return (
+          <div className="flex w-full flex-col">
+            {replyStrip}
+            {flagStrip}
+          </div>
+        );
+      }
+
+      return (
+        <div className="flex w-full flex-col">
+          {replyStrip}
+          <button
+            type="button"
+            className={`flex w-full items-center justify-between gap-3 px-3 py-3 text-left ${toneClass}`}
+            onClick={e => {
+              e.stopPropagation();
+              openRmqMessageCommentsModal(message);
+            }}
+          >
+            <div className="flex min-w-0 flex-1 items-center gap-2.5">
+              <ChatBubbleLeftRightIcon className={`h-5 w-5 shrink-0 ${iconClass}`} strokeWidth={2} />
+              <span className={`text-sm font-medium ${labelClass}`}>Leave a Comment</span>
+              {count > 0 ? (
+                <span
+                  className={`rounded-full border px-2 py-0.5 text-xs font-semibold tabular-nums ${
+                    tone === 'textOwn'
+                      ? 'border-white/25 bg-white/10 text-white/90'
+                      : 'border-base-300/60 bg-base-100/90 text-base-content/80 dark:bg-base-100/30'
+                  }`}
+                >
+                  {count}
+                </span>
+              ) : null}
+            </div>
+            <ChevronRightIcon className={`h-5 w-5 shrink-0 ${chevronClass}`} />
+          </button>
+          {flagStrip}
+        </div>
+      );
+    },
+    [
+      rmqMessageCommentCounts,
+      openRmqMessageCommentsModal,
+      replyThreadStats,
+      scrollToMessage,
+      selectedConversation?.type,
+      rmqFlaggedMessageIds,
+    ]
+  );
 
   // Smart auto-scroll logic - scrolls the visible container (desktop or mobile)
   const scrollToBottom = useCallback((behavior: 'smooth' | 'instant' = 'smooth') => {
@@ -6422,6 +6738,33 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
   }, [selectedConversation?.id, messages.length, isLoadingMessages, isPreloadingImages, findNewestUnreadMessage, scrollToMessage, scrollToBottom]);
 
+  useEffect(() => {
+    if (!isOpen) rmqLeadScrollDoneRef.current = null;
+  }, [isOpen]);
+
+  /** Opened from CRM “Flagged” modal: scroll to the flagged chat message after the thread loads. */
+  useEffect(() => {
+    if (!isOpen || initialScrollToMessageId == null || initialConversationId == null) return;
+    if (selectedConversation?.id !== initialConversationId) return;
+    if (isLoadingMessages) return;
+    if (!messages.some(m => m.id === initialScrollToMessageId)) return;
+    const key = `${initialConversationId}-${initialScrollToMessageId}`;
+    if (rmqLeadScrollDoneRef.current === key) return;
+    const tid = window.setTimeout(() => {
+      scrollToMessage(initialScrollToMessageId, 'smooth');
+      rmqLeadScrollDoneRef.current = key;
+    }, 650);
+    return () => clearTimeout(tid);
+  }, [
+    isOpen,
+    initialScrollToMessageId,
+    initialConversationId,
+    selectedConversation?.id,
+    messages,
+    isLoadingMessages,
+    scrollToMessage,
+  ]);
+
   // Set initial message when conversation is selected and initialMessage/lead info is provided
   useEffect(() => {
     if (selectedConversation && (initialMessage || (initialLeadNumber && initialLeadName)) && newMessage === '') {
@@ -6578,13 +6921,36 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
   };
 
-  // Close message action menu when clicking outside
+  // Keep portaled message ⋯ menu aligned with its button on scroll/resize
+  useLayoutEffect(() => {
+    if (messageActionMenu === null) return;
+
+    const updatePosition = () => {
+      const btn = messageActionMenuButtonRef.current;
+      if (!btn) return;
+      const r = btn.getBoundingClientRect();
+      setMessageMenuAnchor(prev =>
+        prev ? { ...prev, left: r.left, right: r.right, top: r.top } : null
+      );
+    };
+
+    updatePosition();
+    const scrollArea = document.querySelector('.rmq-messages-area');
+    scrollArea?.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+    return () => {
+      scrollArea?.removeEventListener('scroll', updatePosition, true);
+      window.removeEventListener('resize', updatePosition);
+    };
+  }, [messageActionMenu]);
+
+  // Close message action menu when clicking outside (includes portaled menu; .message-action-menu on button + panel)
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (messageActionMenu !== null) {
         const target = event.target as HTMLElement;
         if (!target.closest('.message-action-menu')) {
-          setMessageActionMenu(null);
+          closeMessageActionMenu();
         }
       }
     };
@@ -6595,7 +6961,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         document.removeEventListener('mousedown', handleClickOutside);
       };
     }
-  }, [messageActionMenu]);
+  }, [messageActionMenu, closeMessageActionMenu]);
+
+  // Close message ⋯ menu on Escape
+  useEffect(() => {
+    if (messageActionMenu === null) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeMessageActionMenu();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [messageActionMenu, closeMessageActionMenu]);
 
   // Close emoji picker, lead search, and reaction picker when clicking outside
   useEffect(() => {
@@ -7093,6 +7469,50 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     });
   }, [messages, chatSearchQuery]);
 
+  const sidebarContactRowsUnread = useMemo(
+    () => contactsWithLastMessage.filter(c => c.unreadCount > 0),
+    [contactsWithLastMessage]
+  );
+  const sidebarContactRowsRecent = useMemo(
+    () => contactsWithLastMessage.filter(c => c.unreadCount === 0),
+    [contactsWithLastMessage]
+  );
+  const sidebarGroupsUnread = useMemo(
+    () => filteredGroupConversations.filter(c => (c.unread_count || 0) > 0),
+    [filteredGroupConversations]
+  );
+  const sidebarGroupsRecent = useMemo(
+    () => filteredGroupConversations.filter(c => (c.unread_count || 0) === 0),
+    [filteredGroupConversations]
+  );
+
+  type SidebarContactRow = (typeof contactsWithLastMessage)[number];
+  const sidebarContactFlat = useMemo(() => {
+    const items: Array<{ kind: 'section'; title: string } | { kind: 'row'; data: SidebarContactRow }> = [];
+    if (sidebarContactRowsUnread.length) {
+      items.push({ kind: 'section', title: 'Unread' });
+      sidebarContactRowsUnread.forEach(r => items.push({ kind: 'row', data: r }));
+    }
+    if (sidebarContactRowsRecent.length) {
+      items.push({ kind: 'section', title: 'Recent' });
+      sidebarContactRowsRecent.forEach(r => items.push({ kind: 'row', data: r }));
+    }
+    return items;
+  }, [sidebarContactRowsUnread, sidebarContactRowsRecent]);
+
+  const sidebarGroupsFlat = useMemo(() => {
+    const items: Array<{ kind: 'section'; title: string } | { kind: 'row'; conversation: Conversation }> = [];
+    if (sidebarGroupsUnread.length) {
+      items.push({ kind: 'section', title: 'Unread' });
+      sidebarGroupsUnread.forEach(c => items.push({ kind: 'row', conversation: c }));
+    }
+    if (sidebarGroupsRecent.length) {
+      items.push({ kind: 'section', title: 'Recent' });
+      sidebarGroupsRecent.forEach(c => items.push({ kind: 'row', conversation: c }));
+    }
+    return items;
+  }, [sidebarGroupsUnread, sidebarGroupsRecent]);
+
   useEffect(() => {
     if (!selectedConversation?.id || !currentUser?.id) {
       setRmqPinnedRows([]);
@@ -7100,6 +7520,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
     loadRmqPinnedMessages(selectedConversation.id);
   }, [selectedConversation?.id, currentUser?.id, loadRmqPinnedMessages]);
+
+  useEffect(() => {
+    if (!selectedConversation?.id) {
+      setRmqMessageLeadFlags([]);
+      return;
+    }
+    void loadRmqMessageLeadFlags(selectedConversation.id);
+  }, [selectedConversation?.id, loadRmqMessageLeadFlags]);
 
   useEffect(() => {
     if (!selectedConversation?.id) {
@@ -7340,7 +7768,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   if (isLoading) {
     return (
-      <div className="fixed inset-0 z-50 bg-white dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)]">
+      <div className="fixed inset-0 z-[300] bg-white dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)]">
         <div className="flex items-center justify-center h-full">
           <div className="text-center">
             <div className="loading loading-spinner loading-lg text-primary mb-4"></div>
@@ -7353,7 +7781,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   return (
     <div
-      className={`fixed inset-0 z-50 bg-white dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)] flex overflow-hidden transition-all duration-200 ${isDragOver ? 'bg-blue-50/50 dark:bg-blue-900/20' : ''
+      className={`fixed inset-0 z-[300] bg-white dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)] flex overflow-hidden transition-all duration-200 ${isDragOver ? 'bg-blue-50/50 dark:bg-blue-900/20' : ''
         }`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
@@ -7361,74 +7789,85 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     >
       {/* Sidebar - Desktop */}
       <div className="hidden lg:flex w-96 bg-base-100 border-r border-base-300 flex-col shadow-lg">
-        {/* Header */}
-        <div className="p-6 bg-base-100">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
+        {/* Header + Chats / Groups segmented control (grey, inset track + raised active pill) */}
+        <div className="bg-base-100 px-4 pt-4 pb-3 border-b border-base-300/60">
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <div className="flex min-w-0 items-center gap-3">
               {activeTab === 'groups' && (
                 <button
+                  type="button"
                   onClick={() => setShowCreateGroupModal(true)}
-                  className="btn btn-ghost btn-circle text-base-content/70 hover:bg-base-200"
+                  className="btn btn-ghost btn-circle btn-sm shrink-0 text-base-content/70 hover:bg-base-200"
                   title="Create Group"
                 >
                   <PlusIcon className="w-6 h-6" style={{ color: '#3E28CD' }} />
                 </button>
               )}
-              <ChatBubbleLeftRightIcon className="w-8 h-8" style={{ color: '#3E28CD' }} />
-              <div>
-                <h1 className="text-xl font-bold text-base-content">RMQ Messages</h1>
-                <p className="text-sm text-base-content/70">Internal Communications</p>
-              </div>
+              <ChatBubbleLeftRightIcon className="h-8 w-8 shrink-0" style={{ color: '#3E28CD' }} />
+              <h1 className="min-w-0 truncate text-xl font-bold text-base-content">RMQ Messages</h1>
             </div>
           </div>
-        </div>
-
-        {/* Tabs - Modern Style */}
-        <div className="flex gap-2 p-2 bg-base-100 rounded-lg mx-4 mt-3 mb-0">
-          <button
-            onClick={() => setActiveTab('chats')}
-            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${activeTab === 'chats'
-              ? 'text-white shadow-md'
-              : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
-              }`}
-            style={activeTab === 'chats' ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' } : {}}
+          <div
+            className="flex gap-0.5 rounded-lg border border-base-300/80 bg-[#e8e8ea] p-0.5 shadow-[inset_0_1px_3px_rgba(0,0,0,0.08)] dark:border-base-content/10 dark:bg-base-300/60 dark:shadow-[inset_0_2px_5px_rgba(0,0,0,0.22)]"
+            role="tablist"
+            aria-label="Conversation type"
           >
-            Chats
-            <span className={`ml-2 text-xs ${activeTab === 'chats' ? 'text-white/80' : 'text-base-content/60'
-              }`}>
-              {allUsers.length}
-            </span>
-          </button>
-          <button
-            onClick={() => setActiveTab('groups')}
-            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${activeTab === 'groups'
-              ? 'text-white shadow-md'
-              : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'chats'}
+              onClick={() => setActiveTab('chats')}
+              className={`flex min-h-[2rem] flex-1 items-center justify-center gap-1 rounded-md px-2 text-xs font-medium transition-all duration-200 ${
+                activeTab === 'chats' ? RMQ_TAB_ACTIVE : 'text-base-content/50 hover:text-base-content/75'
               }`}
-            style={activeTab === 'groups' ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' } : {}}
-          >
-            Groups
-            {filteredGroupConversations.length > 0 && (
-              <span className={`ml-2 text-xs rounded-full px-2 py-0.5 ${activeTab === 'groups'
-                ? 'bg-white/20 text-white'
-                : 'bg-base-200 text-base-content/80'
-                }`}>
-                {filteredGroupConversations.length}
+            >
+              <span>Chats</span>
+              <span
+                className={`rounded px-1 py-px text-[10px] font-semibold tabular-nums ${
+                  activeTab === 'chats' ? RMQ_TAB_ACTIVE_COUNT : 'bg-black/[0.06] text-base-content/45 dark:bg-white/10'
+                }`}
+              >
+                {allUsers.length}
               </span>
-            )}
-          </button>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'groups'}
+              onClick={() => setActiveTab('groups')}
+              className={`flex min-h-[2rem] flex-1 items-center justify-center gap-1 rounded-md px-2 text-xs font-medium transition-all duration-200 ${
+                activeTab === 'groups' ? RMQ_TAB_ACTIVE : 'text-base-content/50 hover:text-base-content/75'
+              }`}
+            >
+              <span>Groups</span>
+              {filteredGroupConversations.length > 0 ? (
+                <span
+                  className={`rounded px-1 py-px text-[10px] font-semibold tabular-nums ${
+                    activeTab === 'groups' ? RMQ_TAB_ACTIVE_COUNT : 'bg-black/[0.06] text-base-content/45 dark:bg-white/10'
+                  }`}
+                >
+                  {filteredGroupConversations.length}
+                </span>
+              ) : null}
+            </button>
+          </div>
         </div>
 
         {/* Search */}
         <div className="px-4 pt-1 pb-2 border-b border-base-300 bg-base-100">
           <div className="relative">
-            <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-base-content/60" />
+            <MagnifyingGlassIcon
+              className="pointer-events-none absolute left-3 top-1/2 z-10 h-5 w-5 -translate-y-1/2 text-base-content/60"
+              strokeWidth={2}
+              aria-hidden
+            />
             <input
-              type="text"
-              placeholder={activeTab === 'chats' ? 'Search contacts...' : 'Search groups...'}
-              className="input input-bordered w-full pl-10 input-sm"
+              type="search"
+              placeholder="Search"
+              className="input input-bordered relative z-0 w-full pl-10 input-sm"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              aria-label="Search"
             />
           </div>
         </div>
@@ -7450,116 +7889,114 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <p className="text-sm">Try adjusting your search</p>
               </div>
             ) : (
-              contactsWithLastMessage.map(({ user, lastMessageAt, lastMessagePreview, lastMessageReadStatus, unreadCount }) => {
+              sidebarContactFlat.map((item) => {
+                if (item.kind === 'section') {
+                  return (
+                    <div
+                      key={`rmq-sec-${item.title}`}
+                      className="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-base-content/45"
+                    >
+                      {item.title}
+                    </div>
+                  );
+                }
+                const { user, lastMessageAt, lastMessagePreview, lastMessageReadStatus, unreadCount } = item.data;
                 const rawDisplayName = user.tenants_employee?.display_name || user.full_name;
                 const userName = (rawDisplayName && rawDisplayName.trim().length > 1)
                   ? rawDisplayName.trim()
                   : `User ${user.id.slice(-4)}`;
 
-                const rawRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
-                const userRole = rawRole && rawRole.trim().length > 0 ? rawRole.trim() : 'Employee';
                 const userPhoto = user.tenants_employee?.photo_url;
                 const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
                 const isUnavailable = contactAvailabilityMap[user.tenants_employee?.display_name || ''] || false;
                 const isOnline = onlineUsers.has(String(user.id));
                 const isSelectedContact = selectedConversation?.type === 'direct' && selectedConversation.participants?.some(p => p.user_id === user.id);
 
+                const contactListTitle =
+                  !hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name
+                    ? `${userName} · Profile incomplete`
+                    : userName;
                 return (
                   <div
                     key={user.id}
                     onClick={() => startDirectConversation(user.id)}
-                    className={`p-4 border-b border-base-300 cursor-pointer hover:bg-base-200 transition-colors ${isSelectedContact ? 'bg-green-50 dark:bg-green-900/20 border-l-4 border-l-green-500' : 'bg-base-100'}`}
+                    className={`min-h-[72px] border-b border-base-300 px-4 py-3 cursor-pointer transition-colors ${
+                      isSelectedContact ? `${RMQ_SEL_ROW} hover:brightness-[0.99]` : 'bg-base-100 hover:bg-base-200/70'
+                    }`}
                   >
-                    <div className="flex items-center gap-3">
-                      <div className="relative">
+                    <div className="flex items-start gap-3">
+                      <div className="relative shrink-0">
                         {renderUserAvatar({
                           userId: user.id,
                           name: userName,
                           photoUrl: userPhoto,
-                          sizeClass: 'w-14 h-14',
+                          sizeClass: 'w-12 h-12',
                           borderClass: '',
-                          textClass: 'text-base',
+                          textClass: 'text-sm',
                         })}
                         {isUnavailable && (
-                            <div className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 border-base-100">
+                            <div className={`absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 ${isSelectedContact ? 'border-[#EDE9F8] dark:border-[#3E28CD]/40' : 'border-base-100'}`}>
                               <ClockIcon className="w-3 h-3 text-white" />
                             </div>
                           )}
                         {!isUnavailable && isOnline && (
-                          <div className="absolute bottom-0 right-0 w-4 h-4 bg-green-500 rounded-full border-2 border-base-100 flex items-center justify-center">
-                            <span className="w-2 h-2 bg-base-100 rounded-full"></span>
-                          </div>
+                          <div className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 bg-emerald-500 ${isSelectedContact ? 'border-[#EDE9F8] dark:border-[#3E28CD]/50' : 'border-base-100'}`} title="Online" />
                         )}
                       </div>
 
-                      <div className="flex-1 min-w-0">
-                        <div className="font-semibold text-base-content truncate flex items-center gap-2 flex-wrap">
-                          {userName || `User ${user.id.slice(-4)}`}
-                          {!hasCompleteInfo && (
-                            <span className="text-xs text-orange-500 dark:text-orange-400 bg-orange-100 dark:bg-orange-900/30 px-2 py-1 rounded-full">
-                              Incomplete Profile
-                            </span>
-                          )}
-                          {isOnline && (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200">
-                              <span className="relative flex h-1.5 w-1.5">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500"></span>
-                              </span>
-                              Online
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <p className="text-sm text-base-content/70 truncate">
-                            {userRole}
-                            {!hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name && (
-                              <span className="text-orange-500"> Profile setup needed</span>
-                            )}
-                          </p>
-                          <span className="text-xs text-base-content/60 ml-2 whitespace-nowrap">
+                      <div className="min-w-0 flex-1 py-0.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <span className={`truncate text-sm font-semibold ${isSelectedContact ? RMQ_SEL_TITLE : 'text-base-content'}`} title={contactListTitle}>
+                            {userName || `User ${user.id.slice(-4)}`}
+                          </span>
+                          <span className={`shrink-0 pt-0.5 text-[11px] tabular-nums ${isSelectedContact ? RMQ_SEL_TIME : 'text-base-content/45'}`}>
                             {lastMessageAt ? formatMessageTime(lastMessageAt) : ''}
                           </span>
                         </div>
-                        <div className="flex items-center gap-1 mt-1">
-                          <p className="text-sm text-base-content/80 truncate flex-1">
+                        {!hasCompleteInfo && (
+                          <span className={`mt-0.5 inline-block rounded px-1.5 py-0.5 text-[10px] ${isSelectedContact ? 'bg-[#3E28CD]/12 text-orange-900 dark:bg-white/10 dark:text-orange-200' : 'text-orange-600 dark:text-orange-400'}`}>
+                            Incomplete
+                          </span>
+                        )}
+                        <div className="mt-1 flex items-center gap-2">
+                          <p className={`min-w-0 flex-1 truncate text-sm leading-snug ${isSelectedContact ? RMQ_SEL_PREVIEW : 'text-base-content/70'}`}>
                             {lastMessagePreview || 'No messages yet'}
                           </p>
-                          {lastMessageReadStatus && lastMessageReadStatus !== 'sent' && (
-                            <div className="flex-shrink-0">
-                              {lastMessageReadStatus === 'read' ? (
-                                <div className="flex items-center -space-x-1">
-                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#4ade80' }}>
-                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                  </svg>
-                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#4ade80' }}>
-                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                  </svg>
-                                </div>
-                              ) : (
-                                <div className="flex items-center -space-x-1">
-                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(156, 163, 175, 0.7)' }}>
-                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                  </svg>
-                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(156, 163, 175, 0.7)' }}>
-                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                  </svg>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-1">
-                        <ChatBubbleLeftRightIcon className="w-5 h-5 text-base-content/60" />
-                        {unreadCount > 0 ? (
-                          <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold" style={{ backgroundColor: '#3E28CD' }}>
-                            {unreadCount > 99 ? '99+' : unreadCount}
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            {unreadCount > 0 ? (
+                              <span
+                                className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1.5 text-[10px] font-semibold text-white"
+                                style={{ backgroundColor: '#3E28CD' }}
+                                title={`${unreadCount} unread`}
+                              >
+                                {unreadCount > 99 ? '99+' : unreadCount}
+                              </span>
+                            ) : null}
+                            {lastMessageReadStatus && lastMessageReadStatus !== 'sent' && (
+                              <div className="flex-shrink-0">
+                                {lastMessageReadStatus === 'read' ? (
+                                  <div className="flex items-center -space-x-1">
+                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? '#3E28CD' : '#4ade80' }}>
+                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                    </svg>
+                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? '#3E28CD' : '#4ade80' }}>
+                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                    </svg>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center -space-x-1">
+                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? 'rgba(62, 40, 205, 0.45)' : 'rgba(156, 163, 175, 0.7)' }}>
+                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                    </svg>
+                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? 'rgba(62, 40, 205, 0.45)' : 'rgba(156, 163, 175, 0.7)' }}>
+                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                    </svg>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
-                        ) : (
-                          <span className="text-xs text-base-content/60 font-medium">0</span>
-                        )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -7574,7 +8011,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <p className="text-sm">Use the button above to create one</p>
               </div>
             ) : (
-              filteredGroupConversations.map((conversation) => {
+              sidebarGroupsFlat.map((item) => {
+                if (item.kind === 'section') {
+                  return (
+                    <div
+                      key={`rmq-grp-${item.title}`}
+                      className="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-base-content/45"
+                    >
+                      {item.title}
+                    </div>
+                  );
+                }
+                const conversation = item.conversation;
                 const isSelectedGroup = selectedConversation?.id === conversation.id;
                 return (
                 <div
@@ -7586,17 +8034,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     fetchMessages(conversation.id, false);
                     setShowMobileConversations(false);
                   }}
-                  className={`p-4 border-b border-base-300 cursor-pointer hover:bg-base-200 transition-colors ${isSelectedGroup ? 'bg-green-50 dark:bg-green-900/20 border-l-4 border-l-green-500' : 'bg-base-100'}`}
+                  className={`p-4 border-b border-base-300 cursor-pointer transition-colors ${
+                    isSelectedGroup ? `${RMQ_SEL_ROW} hover:brightness-[0.99]` : 'bg-base-100 hover:bg-base-200/70'
+                  }`}
                 >
                   <div className="flex items-center gap-3">
                     {getConversationAvatar(conversation, 'large')}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
-                        <h3 className="font-semibold text-base-content truncate">
+                        <h3 className={`font-semibold truncate ${isSelectedGroup ? RMQ_SEL_TITLE : 'text-base-content'}`}>
                           {getConversationTitle(conversation)}
                         </h3>
                         <div className="flex items-center gap-2">
-                          <span className="text-xs text-base-content/70">
+                          <span className={`text-xs ${isSelectedGroup ? RMQ_SEL_TIME : 'text-base-content/70'}`}>
                             {formatMessageTime(conversation.last_message_at)}
                           </span>
                           {(conversation.unread_count || 0) > 0 && (
@@ -7606,10 +8056,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           )}
                         </div>
                       </div>
-                      <p className="text-sm text-base-content/80 truncate mt-1">
+                      <p className={`text-sm truncate mt-1 ${isSelectedGroup ? RMQ_SEL_PREVIEW : 'text-base-content/80'}`}>
                         {conversation.last_message_preview || 'No messages yet'}
                       </p>
-                      <p className="text-xs text-base-content/60 mt-1">
+                      <p className={`text-xs mt-1 ${isSelectedGroup ? RMQ_SEL_META : 'text-base-content/60'}`}>
                         {conversation.participants?.length || 0} members
                       </p>
                     </div>
@@ -7625,83 +8075,93 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       {/* Mobile Sidebar */}
       <div className={`lg:hidden ${showMobileConversations ? 'block' : 'hidden'} w-full bg-base-100 flex flex-col`}>
-        {/* Mobile Header */}
-        <div className="p-4 bg-white">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
+        {/* Mobile header + Chats / Groups segmented control (grey, inset track + raised active pill) */}
+        <div className="border-b border-base-300/60 bg-white px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
+          <div className="mb-3 flex items-start justify-between gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               {activeTab === 'groups' && (
                 <button
+                  type="button"
                   onClick={() => setShowCreateGroupModal(true)}
-                  className="btn btn-ghost btn-circle text-base-content/70 hover:bg-base-200"
+                  className="btn btn-ghost btn-circle btn-sm shrink-0 text-base-content/70 hover:bg-base-200"
                   title="Create Group"
                 >
-                  <PlusIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                  <PlusIcon className="h-5 w-5" style={{ color: '#3E28CD' }} />
                 </button>
               )}
-              <ChatBubbleLeftRightIcon className="w-7 h-7" style={{ color: '#3E28CD' }} />
-              <div>
-                <h1 className="text-lg font-bold text-base-content">Messages</h1>
-                <p className="text-xs text-base-content/70">Internal Communications</p>
-              </div>
+              <ChatBubbleLeftRightIcon className="h-7 w-7 shrink-0" style={{ color: '#3E28CD' }} />
+              <h1 className="min-w-0 truncate text-lg font-bold text-base-content">Messages</h1>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={onClose}
-                className="btn btn-ghost btn-circle text-gray-500 hover:bg-gray-100"
-                title="Close Messages"
-              >
-                <XMarkIcon className="w-7 h-7" />
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="btn btn-ghost btn-circle btn-sm shrink-0 text-base-content/60 hover:bg-base-200"
+              title="Close Messages"
+            >
+              <XMarkIcon className="h-7 w-7" />
+            </button>
           </div>
-        </div>
-
-        {/* Mobile Tabs */}
-        <div className="flex gap-2 p-2 bg-base-100 rounded-lg mx-4 mt-3 mb-0">
-          <button
-            onClick={() => setActiveTab('chats')}
-            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${activeTab === 'chats'
-              ? 'text-white shadow-md'
-              : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
-              }`}
-            style={activeTab === 'chats' ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' } : {}}
+          <div
+            className="flex gap-0.5 rounded-lg border border-base-300/80 bg-[#e8e8ea] p-0.5 shadow-[inset_0_1px_3px_rgba(0,0,0,0.08)] dark:border-base-content/10 dark:bg-base-300/60 dark:shadow-[inset_0_2px_5px_rgba(0,0,0,0.22)]"
+            role="tablist"
+            aria-label="Conversation type"
           >
-            Chats
-            <span className={`ml-2 text-xs ${activeTab === 'chats' ? 'text-white/80' : 'text-base-content/60'
-              }`}>
-              {allUsers.length}
-            </span>
-          </button>
-          <button
-            onClick={() => setActiveTab('groups')}
-            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${activeTab === 'groups'
-              ? 'text-white shadow-md'
-              : 'text-base-content/80 hover:text-base-content hover:bg-base-200/50'
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'chats'}
+              onClick={() => setActiveTab('chats')}
+              className={`flex min-h-[2rem] flex-1 items-center justify-center gap-1 rounded-md px-2 text-xs font-medium transition-all duration-200 ${
+                activeTab === 'chats' ? RMQ_TAB_ACTIVE : 'text-base-content/50 hover:text-base-content/75'
               }`}
-            style={activeTab === 'groups' ? { background: 'linear-gradient(to bottom right, #047857, #0f766e)' } : {}}
-          >
-            Groups
-            {filteredGroupConversations.length > 0 && (
-              <span className={`ml-2 text-xs rounded-full px-2 py-0.5 ${activeTab === 'groups'
-                ? 'bg-white/20 text-white'
-                : 'bg-base-200 text-base-content/80'
-                }`}>
-                {filteredGroupConversations.length}
+            >
+              <span>Chats</span>
+              <span
+                className={`rounded px-1 py-px text-[10px] font-semibold tabular-nums ${
+                  activeTab === 'chats' ? RMQ_TAB_ACTIVE_COUNT : 'bg-black/[0.06] text-base-content/45 dark:bg-white/10'
+                }`}
+              >
+                {allUsers.length}
               </span>
-            )}
-          </button>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'groups'}
+              onClick={() => setActiveTab('groups')}
+              className={`flex min-h-[2rem] flex-1 items-center justify-center gap-1 rounded-md px-2 text-xs font-medium transition-all duration-200 ${
+                activeTab === 'groups' ? RMQ_TAB_ACTIVE : 'text-base-content/50 hover:text-base-content/75'
+              }`}
+            >
+              <span>Groups</span>
+              {filteredGroupConversations.length > 0 ? (
+                <span
+                  className={`rounded px-1 py-px text-[10px] font-semibold tabular-nums ${
+                    activeTab === 'groups' ? RMQ_TAB_ACTIVE_COUNT : 'bg-black/[0.06] text-base-content/45 dark:bg-white/10'
+                  }`}
+                >
+                  {filteredGroupConversations.length}
+                </span>
+              ) : null}
+            </button>
+          </div>
         </div>
 
         {/* Mobile Search */}
         <div className="px-4 pt-1 pb-2 border-b border-base-300 bg-base-100">
           <div className="relative">
-            <MagnifyingGlassIcon className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-base-content/60" />
+            <MagnifyingGlassIcon
+              className="pointer-events-none absolute left-3 top-1/2 z-10 h-5 w-5 -translate-y-1/2 text-base-content/60"
+              strokeWidth={2}
+              aria-hidden
+            />
             <input
-              type="text"
-              placeholder={activeTab === 'chats' ? 'Search contacts...' : 'Search groups...'}
-              className="input input-bordered w-full pl-9 input-sm"
+              type="search"
+              placeholder="Search"
+              className="input input-bordered relative z-0 w-full pl-10 input-sm"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              aria-label="Search"
             />
           </div>
         </div>
@@ -7723,116 +8183,114 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <p className="text-sm">Try adjusting your search</p>
               </div>
             ) : (
-              contactsWithLastMessage.map(({ user, lastMessageAt, lastMessagePreview, lastMessageReadStatus, unreadCount }) => {
+              sidebarContactFlat.map((item) => {
+                if (item.kind === 'section') {
+                  return (
+                    <div
+                      key={`rmq-m-sec-${item.title}`}
+                      className="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-base-content/45"
+                    >
+                      {item.title}
+                    </div>
+                  );
+                }
+                const { user, lastMessageAt, lastMessagePreview, lastMessageReadStatus, unreadCount } = item.data;
                 const rawDisplayName = user.tenants_employee?.display_name || user.full_name;
                 const userName = (rawDisplayName && rawDisplayName.trim().length > 1)
                   ? rawDisplayName.trim()
                   : `User ${user.id.slice(-4)}`;
 
-                const rawRole = getRoleDisplayName(user.tenants_employee?.bonuses_role || '');
-                const userRole = rawRole && rawRole.trim().length > 0 ? rawRole.trim() : 'Employee';
                 const userPhoto = user.tenants_employee?.photo_url;
                 const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
                 const isUnavailable = contactAvailabilityMap[user.tenants_employee?.display_name || ''] || false;
                 const isOnline = onlineUsers.has(String(user.id));
                 const isSelectedContact = selectedConversation?.type === 'direct' && selectedConversation.participants?.some(p => p.user_id === user.id);
 
+                const contactListTitle =
+                  !hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name
+                    ? `${userName} · Profile incomplete`
+                    : userName;
                 return (
                   <div
                     key={user.id}
                     onClick={() => startDirectConversation(user.id)}
-                    className={`p-4 border-b border-base-300 cursor-pointer hover:bg-base-200 active:bg-base-200 transition-colors ${isSelectedContact ? 'bg-green-50 dark:bg-green-900/20 border-l-4 border-l-green-500' : 'bg-base-100'}`}
+                    className={`min-h-[72px] border-b border-base-300 px-4 py-3 cursor-pointer transition-colors ${
+                      isSelectedContact ? `${RMQ_SEL_ROW} hover:brightness-[0.99]` : 'bg-base-100 hover:bg-base-200/70 active:bg-base-200'
+                    }`}
                   >
-                    <div className="flex items-center gap-3">
-                      <div className="relative">
+                    <div className="flex items-start gap-3">
+                      <div className="relative shrink-0">
                         {renderUserAvatar({
                           userId: user.id,
                           name: userName,
                           photoUrl: userPhoto,
-                          sizeClass: 'w-14 h-14',
+                          sizeClass: 'w-12 h-12',
                           borderClass: '',
-                          textClass: 'text-base',
+                          textClass: 'text-sm',
                         })}
                         {isUnavailable && (
-                          <div className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 border-base-100">
+                          <div className={`absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 ${isSelectedContact ? 'border-[#EDE9F8] dark:border-[#3E28CD]/40' : 'border-base-100'}`}>
                             <ClockIcon className="w-3 h-3 text-white" />
                           </div>
                         )}
                         {!isUnavailable && isOnline && (
-                          <div className="absolute bottom-0 right-0 w-4 h-4 bg-green-500 rounded-full border-2 border-base-100 flex items-center justify-center">
-                            <span className="w-2 h-2 bg-base-100 rounded-full"></span>
-                          </div>
+                          <div className={`absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 bg-emerald-500 ${isSelectedContact ? 'border-[#EDE9F8] dark:border-[#3E28CD]/50' : 'border-base-100'}`} title="Online" />
                         )}
                       </div>
 
-                      <div className="flex-1 min-w-0">
-                        <div className="font-semibold text-base-content truncate flex items-center gap-2 flex-wrap">
-                          {userName || `User ${user.id.slice(-4)}`}
-                          {!hasCompleteInfo && (
-                            <span className="text-xs text-orange-500 dark:text-orange-400 bg-orange-100 dark:bg-orange-900/30 px-1 py-0.5 rounded">
-                              Incomplete
-                            </span>
-                          )}
-                          {isOnline && (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200">
-                              <span className="relative flex h-1.5 w-1.5">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500"></span>
-                              </span>
-                              Online
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="text-sm text-base-content/70 truncate">
-                            {userRole}
-                            {!hasCompleteInfo && !user.tenants_employee?.bonuses_role && !user.tenants_employee?.tenant_departement?.name && (
-                              <span className="text-orange-500"> Setup needed</span>
-                            )}
-                          </p>
-                          <span className="text-xs text-base-content/60 whitespace-nowrap">
+                      <div className="min-w-0 flex-1 py-0.5">
+                        <div className="flex items-start justify-between gap-2">
+                          <span className={`truncate text-sm font-semibold ${isSelectedContact ? RMQ_SEL_TITLE : 'text-base-content'}`} title={contactListTitle}>
+                            {userName || `User ${user.id.slice(-4)}`}
+                          </span>
+                          <span className={`shrink-0 pt-0.5 text-[11px] tabular-nums ${isSelectedContact ? RMQ_SEL_TIME : 'text-base-content/45'}`}>
                             {lastMessageAt ? formatMessageTime(lastMessageAt) : ''}
                           </span>
                         </div>
-                        <div className="flex items-center gap-1 mt-1">
-                          <p className="text-xs text-base-content/80 truncate flex-1">
+                        {!hasCompleteInfo && (
+                          <span className={`mt-0.5 inline-block rounded px-1.5 py-0.5 text-[10px] ${isSelectedContact ? 'bg-[#3E28CD]/12 text-orange-900 dark:bg-white/10 dark:text-orange-200' : 'text-orange-600 dark:text-orange-400'}`}>
+                            Incomplete
+                          </span>
+                        )}
+                        <div className="mt-1 flex items-center gap-2">
+                          <p className={`min-w-0 flex-1 truncate text-xs leading-snug ${isSelectedContact ? RMQ_SEL_PREVIEW : 'text-base-content/70'}`}>
                             {lastMessagePreview || 'No messages yet'}
                           </p>
-                          {lastMessageReadStatus && lastMessageReadStatus !== 'sent' && (
-                            <div className="flex-shrink-0">
-                              {lastMessageReadStatus === 'read' ? (
-                                <div className="flex items-center -space-x-1">
-                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#4ade80' }}>
-                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                  </svg>
-                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#4ade80' }}>
-                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                  </svg>
-                                </div>
-                              ) : (
-                                <div className="flex items-center -space-x-1">
-                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(156, 163, 175, 0.7)' }}>
-                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                  </svg>
-                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(156, 163, 175, 0.7)' }}>
-                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                                  </svg>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-1">
-                        <ChatBubbleLeftRightIcon className="w-5 h-5 text-base-content/60" />
-                        {unreadCount > 0 ? (
-                          <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold" style={{ backgroundColor: '#3E28CD' }}>
-                            {unreadCount > 99 ? '99+' : unreadCount}
+                          <div className="flex shrink-0 items-center gap-1.5">
+                            {unreadCount > 0 ? (
+                              <span
+                                className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1.5 text-[10px] font-semibold text-white"
+                                style={{ backgroundColor: '#3E28CD' }}
+                                title={`${unreadCount} unread`}
+                              >
+                                {unreadCount > 99 ? '99+' : unreadCount}
+                              </span>
+                            ) : null}
+                            {lastMessageReadStatus && lastMessageReadStatus !== 'sent' && (
+                              <div className="flex-shrink-0">
+                                {lastMessageReadStatus === 'read' ? (
+                                  <div className="flex items-center -space-x-1">
+                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? '#3E28CD' : '#4ade80' }}>
+                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                    </svg>
+                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? '#3E28CD' : '#4ade80' }}>
+                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                    </svg>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center -space-x-1">
+                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? 'rgba(62, 40, 205, 0.45)' : 'rgba(156, 163, 175, 0.7)' }}>
+                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                    </svg>
+                                    <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: isSelectedContact ? 'rgba(62, 40, 205, 0.45)' : 'rgba(156, 163, 175, 0.7)' }}>
+                                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                    </svg>
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
-                        ) : (
-                          <span className="text-xs text-base-content/60 font-medium">0</span>
-                        )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -7847,7 +8305,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <p className="text-sm">Use the button above to create one</p>
               </div>
             ) : (
-              filteredGroupConversations.map((conversation) => {
+              sidebarGroupsFlat.map((item) => {
+                if (item.kind === 'section') {
+                  return (
+                    <div
+                      key={`rmq-m-grp-${item.title}`}
+                      className="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-base-content/45"
+                    >
+                      {item.title}
+                    </div>
+                  );
+                }
+                const conversation = item.conversation;
                 const isSelectedGroup = selectedConversation?.id === conversation.id;
                 return (
                 <div
@@ -7859,17 +8328,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     fetchMessages(conversation.id, false);
                     setShowMobileConversations(false);
                   }}
-                  className={`p-4 border-b border-base-300 cursor-pointer hover:bg-base-200 active:bg-base-200 transition-colors ${isSelectedGroup ? 'bg-green-50 dark:bg-green-900/20 border-l-4 border-l-green-500' : 'bg-base-100'}`}
+                  className={`p-4 border-b border-base-300 cursor-pointer transition-colors ${
+                    isSelectedGroup ? `${RMQ_SEL_ROW} hover:brightness-[0.99]` : 'bg-base-100 hover:bg-base-200/70 active:bg-base-200'
+                  }`}
                 >
                   <div className="flex items-center gap-3">
                     {getConversationAvatar(conversation, 'large')}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
-                        <h3 className="font-semibold text-base-content truncate">
+                        <h3 className={`font-semibold truncate ${isSelectedGroup ? RMQ_SEL_TITLE : 'text-base-content'}`}>
                           {getConversationTitle(conversation)}
                         </h3>
                         <div className="flex items-center gap-2">
-                          <span className="text-xs text-base-content/70">
+                          <span className={`text-xs ${isSelectedGroup ? RMQ_SEL_TIME : 'text-base-content/70'}`}>
                             {formatMessageTime(conversation.last_message_at)}
                           </span>
                           {(conversation.unread_count || 0) > 0 && (
@@ -7879,10 +8350,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           )}
                         </div>
                       </div>
-                      <p className="text-sm text-base-content/80 truncate mt-1">
+                      <p className={`text-sm truncate mt-1 ${isSelectedGroup ? RMQ_SEL_PREVIEW : 'text-base-content/80'}`}>
                         {conversation.last_message_preview || 'No messages yet'}
                       </p>
-                      <p className="text-xs text-base-content/60 mt-1">
+                      <p className={`text-xs mt-1 ${isSelectedGroup ? RMQ_SEL_META : 'text-base-content/60'}`}>
                         {conversation.participants?.length || 0} members
                       </p>
                     </div>
@@ -7903,12 +8374,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             {/* Chat Header */}
             {(() => {
               return (
-            <div
-              className="py-1.5 px-2 border-b border-base-300 bg-base-100 relative z-20 w-full flex-shrink-0"
-              style={{
-                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
-              }}
-            >
+            <div className="relative z-20 w-full flex-shrink-0 border-b border-base-200/90 bg-base-100 py-1.5 px-2 shadow-sm">
               <div className="relative grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1">
                 <div className="flex items-center gap-2 min-w-0 justify-self-start">
                   <button
@@ -7928,6 +8394,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           if (otherUserId && process.env.NODE_ENV === 'development') {
                           }
 
+                          const peerRole = getRoleDisplayName(op.user.tenants_employee?.bonuses_role || '');
                           return (
                             <>
                               <div className="flex flex-wrap items-center gap-2 text-base-content">
@@ -7935,26 +8402,26 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   {getConversationTitle(selectedConversation)}
                                 </h2>
                               </div>
-                              {isOnline ? (
-                                <div className="flex items-center gap-1.5 mt-1">
-                                  <span className="relative flex h-2 w-2">
-                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                              {!isEmployeeUnavailable ? (
+                                <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-base-content/65">
+                                  <span className={isOnline ? 'font-medium text-emerald-600' : 'text-base-content/50'}>
+                                    {isOnline ? '● Online' : '● Offline'}
                                   </span>
-                                  <span className="text-xs font-medium text-green-600">Online</span>
-                                </div>
-                              ) : !isEmployeeUnavailable ? (
-                                <div className="flex items-center gap-1.5 mt-1">
-                                  <span className="relative flex h-2 w-2">
-                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-gray-400"></span>
+                                  <span className="text-base-content/30" aria-hidden>
+                                    ·
                                   </span>
-                                  <span className="text-xs font-medium text-base-content/70">
-                                    {otherUserId && lastOnlineTimes.has(otherUserId)
-                                      ? `Last online: ${formatLastOnlineTime(lastOnlineTimes.get(otherUserId)!)}`
-                                      : 'Offline'
-                                    }
-                                  </span>
-                                </div>
+                                  <span className="text-base-content/75">{peerRole || 'Member'}</span>
+                                  {!isOnline && otherUserId && lastOnlineTimes.has(otherUserId) && (
+                                    <>
+                                      <span className="text-base-content/30" aria-hidden>
+                                        ·
+                                      </span>
+                                      <span className="text-base-content/55">
+                                        Last {formatLastOnlineTime(lastOnlineTimes.get(otherUserId)!)}
+                                      </span>
+                                    </>
+                                  )}
+                                </p>
                               ) : null}
                               {isEmployeeUnavailable && (
                                 <div className="flex items-center gap-1.5 px-2 py-1 bg-orange-100 dark:bg-orange-900/30 rounded-full mt-1 w-fit" title={unavailabilityReason || 'Currently unavailable'}>
@@ -8016,6 +8483,54 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   />
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end justify-self-end min-w-0">
+                  <div className="dropdown dropdown-end">
+                    <label tabIndex={0} className="btn btn-ghost btn-sm btn-circle relative text-amber-700 hover:bg-amber-500/15" title="Flags on this chat">
+                      <FlagIcon className="w-5 h-5" />
+                      {rmqMessageLeadFlags.length > 0 && (
+                        <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-600 px-1 text-[10px] font-bold text-white">
+                          {rmqMessageLeadFlags.length > 99 ? '99+' : rmqMessageLeadFlags.length}
+                        </span>
+                      )}
+                    </label>
+                    <ul
+                      tabIndex={0}
+                      className="dropdown-content z-[300] menu max-h-72 min-w-[14rem] overflow-y-auto rounded-box border border-base-300 bg-base-100 p-2 shadow-lg"
+                    >
+                      {rmqMessageLeadFlagsLoading ? (
+                        <li className="px-2 py-1 text-sm text-base-content/60">Loading…</li>
+                      ) : rmqMessageLeadFlags.length === 0 ? (
+                        <li className="px-2 py-1 text-sm text-base-content/60">No message flags yet</li>
+                      ) : (
+                        rmqMessageLeadFlags.map(f => (
+                          <li key={f.id} className="py-1">
+                            <div className="flex flex-col gap-1 rounded-lg px-2 py-1.5 hover:bg-base-200">
+                              <button
+                                type="button"
+                                className="text-left text-sm"
+                                onClick={() => scrollToMessage(f.message_id, 'smooth')}
+                              >
+                                <span className="font-semibold text-base-content">
+                                  {flagTypeLabel(f.flag_type, rmqMessageFlagTypes)} · #{f._leadNum || '—'}
+                                </span>
+                                <span className="block text-[11px] text-base-content/55">
+                                  {rmqFlaggerDisplayName(f)} · {formatRmqFlagCreatedAt(f.created_at)}
+                                </span>
+                              </button>
+                              {currentUser?.id === f.user_id && (
+                                <button
+                                  type="button"
+                                  className="btn btn-ghost btn-xs text-error self-start"
+                                  onClick={() => void removeRmqMessageLeadFlagRow(f.id)}
+                                >
+                                  Remove my flag
+                                </button>
+                              )}
+                            </div>
+                          </li>
+                        ))
+                      )}
+                    </ul>
+                  </div>
                   {/* Background Image Upload Button */}
                   <button
                     onClick={() => backgroundImageInputRef.current?.click()}
@@ -8159,7 +8674,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             <div
               ref={desktopMessagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 min-h-0 overflow-y-auto p-2 sm:p-4 pb-4 space-y-4 relative rmq-messages-area"
+              className="flex-1 min-h-0 overflow-y-auto p-2 sm:p-4 pb-4 space-y-2 relative rmq-messages-area"
               style={{
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
                 backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#ffffff'),
@@ -8206,19 +8721,30 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     const showDateSeparator = index === 0 ||
                       new Date(message.sent_at).toDateString() !== new Date(displayMessages[index - 1].sent_at).toDateString();
 
+                    const prevMessage = index > 0 ? displayMessages[index - 1] : null;
+                    const isMessageClusterContinuation =
+                      !!prevMessage &&
+                      prevMessage.sender_id === message.sender_id &&
+                      new Date(message.sent_at).getTime() - new Date(prevMessage.sent_at).getTime() < RMQ_GROUP_GAP_MS &&
+                      !showDateSeparator;
+
                     return (
                       <motion.div
                         key={getMessageListKey(message)}
-                        initial={{ opacity: 0, y: 10 }}
+                        initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0 }}
-                        transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
-                        className="relative [content-visibility:auto]"
+                        transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                        className={`relative [content-visibility:auto] ${isMessageClusterContinuation ? '!mt-1' : ''}`}
                         data-message-id={message.id}
                       >
                         {showDateSeparator && (
-                          <div className="flex justify-center my-4">
-                            <span className={`text-sm ${chatBackgroundImageUrl ? 'text-white' : 'text-gray-400'}`}>{formatDateSeparator(message.sent_at)}</span>
+                          <div className="flex justify-center my-4 px-2">
+                            <span
+                              className={`text-[11px] font-medium tracking-wide text-base-content/45 ${chatBackgroundImageUrl ? 'bg-white/15 text-white/90' : 'bg-base-200/70 dark:bg-base-300/50'} rounded-full px-3 py-1`}
+                            >
+                              {formatDateSeparator(message.sent_at)}
+                            </span>
                           </div>
                         )}
                         {/* Unread messages indicator - Desktop */}
@@ -8235,17 +8761,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
                         {/* Image, video and emoji messages - render outside bubble */}
                         {isAlbumMessage(message) ? (
-                          <div className={`flex ${isOwn ? 'flex-col items-end ml-auto' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} max-w-[94%] sm:max-w-md group`}>
-                            {!isOwn && selectedConversation.type !== 'direct' && (
-                              <div className="flex-shrink-0 self-end">
-                                {renderUserAvatar({ userId: message.sender_id, name: senderName, photoUrl: senderPhoto, sizeClass: 'w-8 h-8', borderClass: 'border border-base-300', textClass: 'text-xs', loading: 'lazy' })}
-                              </div>
-                            )}
+                          <div className={`flex ${isOwn ? 'flex-col items-end ml-auto' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} ${RMQ_CHAT.bubbleMax} w-full group`}>
+                            {!isOwn && selectedConversation.type !== 'direct' &&
+                              (isMessageClusterContinuation ? (
+                                <div className="w-8 flex-shrink-0 self-end" aria-hidden />
+                              ) : (
+                                <div className="flex-shrink-0 self-end">
+                                  {renderUserAvatar({ userId: message.sender_id, name: senderName, photoUrl: senderPhoto, sizeClass: 'w-8 h-8', borderClass: 'border border-base-300', textClass: 'text-xs', loading: 'lazy' })}
+                                </div>
+                              ))}
                             <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} w-full min-w-0`}>
                               <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative w-full`}>
                                 {renderDesktopMessageDropdown(message, isOwn)}
-                                <div className={`rounded-lg border border-base-300 overflow-hidden min-w-0 flex-1 max-w-full ${isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'}`}>
-                                  {selectedConversation.type !== 'direct' && (
+                                <div className={`${RMQ_CHAT.bubbleR} border border-base-300/80 overflow-hidden min-w-0 flex-1 max-w-full ${isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'}`}>
+                                  {selectedConversation.type !== 'direct' && !isMessageClusterContinuation && (
                                     <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
                                       <span className="text-sm font-medium" style={{ color: isOwn ? undefined : getSenderColor(message.sender_id) }}>
                                         {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
@@ -8254,7 +8783,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   )}
                                   <div className="relative w-full">
                                     {renderAlbumMessageContent(message, index)}
-                                    <span className="absolute bottom-2 right-2 text-xs font-medium text-white drop-shadow-md pointer-events-none z-10">{formatMessageTime(message.sent_at)}</span>
+                                    <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md pointer-events-none">
+                                      {formatMessageTime(message.sent_at)}
+                                    </span>
                                   </div>
                                   {getAlbumUserCaption(message) && (
                                     <div
@@ -8271,41 +8802,44 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </div>
                           </div>
                         ) : isImageMessage(message) ? (
-                          <div className={`flex ${isOwn ? 'flex-col items-end ml-auto' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} max-w-[94%] sm:max-w-md group`}>
+                          <div className={`flex ${isOwn ? 'flex-col items-end ml-auto' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} ${RMQ_CHAT.mediaColumn} group`}>
                             {/* Group received: avatar below on left; name on top of media */}
-                            {!isOwn && selectedConversation.type !== 'direct' && (
-                              <div className="flex-shrink-0 self-end">
-                                {renderUserAvatar({
-                                  userId: message.sender_id,
-                                  name: senderName,
-                                  photoUrl: senderPhoto,
-                                  sizeClass: 'w-8 h-8',
-                                  borderClass: 'border border-base-300',
-                                  textClass: 'text-xs',
-                                  loading: 'lazy',
-                                })}
-                              </div>
-                            )}
-                            <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} w-full min-w-0`}>
-                              <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative w-full`}>
+                            {!isOwn && selectedConversation.type !== 'direct' &&
+                              (isMessageClusterContinuation ? (
+                                <div className="w-8 flex-shrink-0 self-end" aria-hidden />
+                              ) : (
+                                <div className="flex-shrink-0 self-end">
+                                  {renderUserAvatar({
+                                    userId: message.sender_id,
+                                    name: senderName,
+                                    photoUrl: senderPhoto,
+                                    sizeClass: 'w-8 h-8',
+                                    borderClass: 'border border-base-300',
+                                    textClass: 'text-xs',
+                                    loading: 'lazy',
+                                  })}
+                                </div>
+                              ))}
+                            <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} w-fit min-w-0`}>
+                              <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative w-fit`}>
                                 {renderDesktopMessageDropdown(message, isOwn)}
                                 <div
-                                  className={`rounded-lg border border-base-300 overflow-hidden min-w-0 flex-1 max-w-full ${
+                                  className={`${RMQ_CHAT.bubbleR} border border-base-300/80 overflow-hidden min-w-0 w-fit max-w-full ${
                                     isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'
                                   }`}
                                 >
-                                {selectedConversation.type !== 'direct' && (
+                                {selectedConversation.type !== 'direct' && !isMessageClusterContinuation && (
                                   <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
                                     <span className="text-sm font-medium" style={{ color: isOwn ? undefined : getSenderColor(message.sender_id) }}>
                                       {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
                                     </span>
                                   </div>
                                 )}
-                                <div className="relative cursor-pointer w-full min-h-[120px] md:min-h-[200px]" onClick={() => openMediaModal(message)}>
+                                <div className="relative cursor-pointer w-fit min-h-0 max-w-full transition-transform duration-150 hover:scale-[1.02]" onClick={() => openMediaModal(message)}>
                                   <img
                                     src={message.attachment_url}
                                     alt={message.attachment_name}
-                                    className="w-full max-w-full max-h-80 md:max-h-[600px] object-contain block"
+                                    className={`${RMQ_CHAT.imageR} h-auto w-auto max-w-full max-h-[min(48vh,18rem)] object-contain object-center block bg-gray-100 dark:bg-gray-800`}
                                     loading={index >= displayMessages.length - 10 ? "eager" : "lazy"}
                                     decoding="async"
                                     onLoad={(e) => {
@@ -8317,9 +8851,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                       const img = e.target as HTMLImageElement;
                                       img.style.opacity = '0.5';
                                     }}
-                                    style={{ opacity: 1, transition: 'opacity 0.2s ease-in-out', display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '320px' }}
+                                    style={{ opacity: 1, transition: 'opacity 0.2s ease-in-out' }}
                                   />
-                                  <span className="absolute bottom-2 right-2 text-xs font-medium text-white drop-shadow-md">
+                                  <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md">
                                     {formatMessageTime(message.sent_at)}
                                   </span>
                                 </div>
@@ -8342,30 +8876,33 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </div>
                           </div>
                         ) : isVideoMessage(message) ? (
-                          <div className={`flex ${isOwn ? 'flex-col items-end ml-auto' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} max-w-[94%] sm:max-w-md group`}>
+                          <div className={`flex ${isOwn ? 'flex-col items-end ml-auto' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} ${RMQ_CHAT.mediaColumn} group`}>
                             {/* Group received: avatar below on left; name on top of media */}
-                            {!isOwn && selectedConversation.type !== 'direct' && (
-                              <div className="flex-shrink-0 self-end">
-                                {renderUserAvatar({
-                                  userId: message.sender_id,
-                                  name: senderName,
-                                  photoUrl: senderPhoto,
-                                  sizeClass: 'w-8 h-8',
-                                  borderClass: 'border border-base-300',
-                                  textClass: 'text-xs',
-                                  loading: 'lazy',
-                                })}
-                              </div>
-                            )}
-                            <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} w-full min-w-0`}>
-                              <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative w-full`}>
+                            {!isOwn && selectedConversation.type !== 'direct' &&
+                              (isMessageClusterContinuation ? (
+                                <div className="w-8 flex-shrink-0 self-end" aria-hidden />
+                              ) : (
+                                <div className="flex-shrink-0 self-end">
+                                  {renderUserAvatar({
+                                    userId: message.sender_id,
+                                    name: senderName,
+                                    photoUrl: senderPhoto,
+                                    sizeClass: 'w-8 h-8',
+                                    borderClass: 'border border-base-300',
+                                    textClass: 'text-xs',
+                                    loading: 'lazy',
+                                  })}
+                                </div>
+                              ))}
+                            <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} w-fit min-w-0`}>
+                              <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative w-fit`}>
                                 {renderDesktopMessageDropdown(message, isOwn)}
                                 <div
-                                  className={`rounded-lg border border-base-300 overflow-hidden min-w-0 flex-1 max-w-full ${
+                                  className={`${RMQ_CHAT.bubbleR} border border-base-300/80 overflow-hidden min-w-0 w-fit max-w-full ${
                                     isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'
                                   }`}
                                 >
-                                {selectedConversation.type !== 'direct' && (
+                                {selectedConversation.type !== 'direct' && !isMessageClusterContinuation && (
                                   <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
                                     <span className="text-sm font-medium" style={{ color: isOwn ? undefined : getSenderColor(message.sender_id) }}>
                                       {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
@@ -8373,7 +8910,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   </div>
                                 )}
                             <div
-                              className="relative cursor-pointer w-full"
+                              className="relative cursor-pointer w-fit min-h-[100px] max-w-full transition-transform duration-150 hover:scale-[1.01]"
                               onClick={() => openMediaModal(message)}
                               role="button"
                               tabIndex={0}
@@ -8383,7 +8920,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 data-message-id={message.id}
                                 src={message.attachment_url}
                                 crossOrigin="anonymous"
-                                className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] object-cover bg-gray-100 dark:bg-gray-800 relative z-10 pointer-events-none"
+                                className={`${RMQ_CHAT.imageR} h-auto w-auto max-w-full max-h-[min(48vh,18rem)] min-h-[100px] object-contain bg-gray-100 dark:bg-gray-800 relative z-10 pointer-events-none`}
                                 preload="metadata"
                                 playsInline
                                 onLoadedMetadata={(e) => {
@@ -8468,7 +9005,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   <div className="loading loading-spinner loading-lg" style={{ color: '#3E28CD' }}></div>
                                 </div>
                               )}
-                              <span className="absolute bottom-2 right-2 text-xs font-medium text-white drop-shadow-md z-10">
+                              <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md">
                                 {formatMessageTime(message.sent_at)}
                               </span>
                             </div>
@@ -8492,49 +9029,60 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           </div>
                         ) : isEmojiOnly(message.content || '') ? (
                           <div
-                            className={`flex gap-3 group ${isOwn ? 'flex-row-reverse' : 'flex-row'} items-end max-w-[94%] sm:max-w-md`}
+                            className={`flex gap-3 group ${isOwn ? 'flex-row-reverse' : 'flex-row'} items-end ${RMQ_CHAT.bubbleMax} w-full`}
                             dir={getTextDirection(message.content || '')}
                           >
                             {renderDesktopMessageDropdown(message, isOwn)}
                             <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} min-w-0`}>
-                            <div className="text-6xl">
+                            <div className="text-6xl leading-none inline-block text-left">
                               {renderMessageContent(message.content || '', isOwn)}
-                            </div>
-                            {/* Timestamp and read receipts at bottom of emoji */}
-                            <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                              <span className="text-sm sm:text-xs text-gray-500" style={{
-                                textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                              }}>
+                              <span
+                                className={`inline text-xs sm:text-[11px] font-medium tabular-nums ml-2 align-baseline ${isOwn ? '' : 'text-gray-500'}`}
+                                style={
+                                  isOwn
+                                    ? { color: 'rgba(255, 255, 255, 0.65)' }
+                                    : { textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }
+                                }
+                              >
                                 {formatMessageTime(message.sent_at)}
                               </span>
-                              {isOwn && renderReadReceipts(message)}
+                              {isOwn && (
+                                <span className="inline-flex translate-y-[2px] align-baseline ml-1 [&_svg]:!h-7 [&_svg]:!w-7">
+                                  {renderReadReceipts(message)}
+                                </span>
+                              )}
                             </div>
-                            <div className="mt-2 w-full max-w-[min(100%,20rem)] overflow-hidden rounded-lg border border-base-300/70">
-                              {renderMessageCommentFooter(message, 'textOther')}
+                            <div className="mt-2 w-full min-w-0 overflow-hidden rounded-lg border border-base-300/70">
+                              {renderMessageCommentFooter(message, isOwn ? 'textOwn' : 'textOther')}
                             </div>
                             </div>
                           </div>
                         ) : (
                           <div
-                            className={`flex gap-3 group ${isOwn ? 'flex-row-reverse' : 'flex-row'} ${!isOwn && selectedConversation.type !== 'direct' ? 'items-end' : ''}`}
+                            className={`flex w-full min-w-0 gap-3 group ${isOwn ? 'flex-row-reverse' : 'flex-row'} ${!isOwn && selectedConversation.type !== 'direct' ? 'items-end' : ''}`}
                           >
 
                             {/* Avatar below message box on left (group chats, received only) */}
-                            {!isOwn && selectedConversation.type !== 'direct' && (
-                              <div className="flex-shrink-0 self-end">
-                                {renderUserAvatar({
-                                  userId: message.sender_id,
-                                  name: senderName,
-                                  photoUrl: senderPhoto,
-                                  sizeClass: 'w-8 h-8',
-                                  borderClass: 'border border-base-300',
-                                  textClass: 'text-xs',
-                                  loading: 'lazy',
-                                })}
-                              </div>
-                            )}
+                            {!isOwn && selectedConversation.type !== 'direct' &&
+                              (isMessageClusterContinuation ? (
+                                <div className="w-8 flex-shrink-0 self-end" aria-hidden />
+                              ) : (
+                                <div className="flex-shrink-0 self-end">
+                                  {renderUserAvatar({
+                                    userId: message.sender_id,
+                                    name: senderName,
+                                    photoUrl: senderPhoto,
+                                    sizeClass: 'w-8 h-8',
+                                    borderClass: 'border border-base-300',
+                                    textClass: 'text-xs',
+                                    loading: 'lazy',
+                                  })}
+                                </div>
+                              ))}
 
-                            <div className={`max-w-[94%] sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
+                            <div
+                              className={`${RMQ_CHAT.bubbleMax} ${!isOwn && selectedConversation.type !== 'direct' ? 'flex-1 min-w-0' : 'w-full'} ${isOwn ? 'items-end ml-auto' : 'items-start'} flex flex-col`}
+                            >
                               <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative`}>
                                 {/* Message actions dropdown - positioned directly next to message box */}
                                 {/* For sent messages (isOwn): left side, for received messages: right side */}
@@ -8546,19 +9094,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
                                     setReactingMessageId(message.id);
                                   }}
-                                  className={`overflow-hidden px-2 sm:px-2.5 py-2 rounded-2xl shadow-sm cursor-pointer hover:shadow-md transition-shadow relative ${isOwn
+                                  className={`w-full max-w-full overflow-hidden ${RMQ_CHAT.bubblePad} ${RMQ_CHAT.bubbleR} cursor-pointer transition-opacity hover:opacity-[0.97] relative border-0 shadow-none ${isOwn
                                     ? isEmojiOnly(message.content)
-                                      ? 'bg-base-100 text-base-content rounded-br-md'
-                                      : 'text-white rounded-br-md'
-                                    : 'border rounded-bl-md bg-gray-50 dark:bg-base-100 border-gray-100 dark:border-base-300 text-base-content shadow-sm'
+                                      ? 'bg-base-100 text-base-content'
+                                      : 'text-white'
+                                    : `${RMQ_CHAT.recv} dark:bg-base-200/80 dark:text-base-content`
                                     }`}
                                   style={isOwn && !isEmojiOnly(message.content)
-                                    ? { background: 'linear-gradient(to bottom right, #065f46, #0d5c52)' }
+                                    ? { background: RMQ_CHAT.sentBg }
                                     : {}
                                   }
                                 >
                                   {/* Display name inside bubble (group chats, received only); (edited) next to name */}
-                                  {!isOwn && selectedConversation.type !== 'direct' && (
+                                  {!isOwn && selectedConversation.type !== 'direct' && !isMessageClusterContinuation && (
                                     <div className="text-sm font-semibold mb-1 flex items-baseline gap-1.5 flex-wrap" style={{ color: getSenderColor(message.sender_id) }}>
                                       <span>{senderName}</span>
                                       {message.edited_at && (
@@ -8566,10 +9114,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                       )}
                                     </div>
                                   )}
+                                  {!isOwn && selectedConversation.type !== 'direct' && isMessageClusterContinuation && message.edited_at && (
+                                    <div className="text-xs opacity-70 italic mb-1">(edited)</div>
+                                  )}
                                   {isOwn && message.edited_at && (
                                     <div className="text-xs opacity-70 italic mb-1">(edited)</div>
                                   )}
-                                  {/* Reply preview - only show if message actually has a reply with valid data */}
+                                  {/* Reply preview — inline (Slack-style), no card */}
                                   {(() => {
                                     const hasReplyId = !!message.reply_to_message_id;
 
@@ -8599,51 +9150,71 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     }
 
                                     return hasReplyId && hasValidReplyData && replyMessage ? (
-                                      <div className={`mb-2 p-2 rounded-lg border-l-4 ${isOwn ? 'bg-white/20 border-white/40' : 'bg-green-50 border-green-300'
-                                        }`}>
-                                        <div className="text-sm sm:text-xs font-semibold opacity-80 mb-1">
+                                      <button
+                                        type="button"
+                                        className={`mb-1.5 w-full border-0 bg-transparent p-0 pl-2 text-left shadow-none rounded-none border-l-2 transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3E28CD]/30 ${isOwn ? 'border-l-white/40' : 'border-[#3E28CD]/45 dark:border-[#3E28CD]/55'}`}
+                                        onClick={e => {
+                                          e.stopPropagation();
+                                          if (replyMessage.id) scrollToMessage(replyMessage.id, 'smooth');
+                                        }}
+                                        title="Go to original message"
+                                      >
+                                        <div className={`text-[12px] font-medium leading-tight ${isOwn ? 'text-white/85' : 'text-[#6B7280] dark:text-base-content/60'}`}>
                                           {replyMessage.sender?.tenants_employee?.display_name ||
                                             replyMessage.sender?.full_name ||
                                             'Unknown'}
                                         </div>
-                                        {/* Only show content if it exists, don't show "Media" placeholder */}
                                         {replyMessage.content && (
-                                          <div className="text-sm sm:text-xs opacity-70 line-clamp-2">
+                                          <div className={`text-[12px] line-clamp-2 leading-snug mt-0.5 ${isOwn ? 'text-white/75' : 'text-[#6B7280] dark:text-base-content/55'}`}>
                                             {replyMessage.content}
                                           </div>
                                         )}
-                                        {/* Show attachment indicator if no content but has attachment */}
                                         {!replyMessage.content && replyMessage.attachment_url && (
-                                          <div className="text-sm sm:text-xs opacity-70 italic">
+                                          <div className={`text-[12px] italic mt-0.5 ${isOwn ? 'text-white/70' : 'text-[#6B7280]'}`}>
                                             {replyMessage.message_type === 'album' ? '🖼️ Album' :
                                               replyMessage.message_type === 'image' ? '📷 Image' :
                                               replyMessage.message_type === 'voice' ? '🎤 Voice message' :
                                                 replyMessage.message_type === 'file' ? '📎 File' : '📎 Attachment'}
                                           </div>
                                         )}
-                                      </div>
+                                      </button>
                                     ) : null;
                                   })()}
 
-                                  {/* Message content */}
+                                  {/* Message text + time on last line (Telegram-style inline meta) */}
                                   {message.content && (
-                                    <div className="flex items-end gap-2">
-                                      <div
-                                        className="break-words text-lg sm:text-base whitespace-pre-wrap flex-1"
-                                        dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
-                                        style={{
-                                          textAlign: getTextDirection(message.content) === 'rtl' ? 'right' :
-                                            getTextDirection(message.content) === 'auto' ? 'start' : 'left',
-                                          ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
-                                          lineHeight: '1.5',
-                                          wordBreak: 'break-word',
-                                          overflowWrap: 'break-word',
-                                          whiteSpace: 'pre-wrap',
-                                          unicodeBidi: 'plaintext' // Ensures proper bidirectional text handling
-                                        }}
+                                    <div
+                                      className="break-words text-sm whitespace-pre-wrap"
+                                      dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
+                                      style={{
+                                        textAlign: getTextDirection(message.content) === 'rtl' ? 'right' :
+                                          getTextDirection(message.content) === 'auto' ? 'start' : 'left',
+                                        ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
+                                        lineHeight: '1.45',
+                                        wordBreak: 'break-word',
+                                        overflowWrap: 'break-word',
+                                        whiteSpace: 'pre-wrap',
+                                        unicodeBidi: 'plaintext',
+                                      }}
+                                    >
+                                      {renderMessageContent(message.content, isOwn)}
+                                      <span
+                                        className={`inline text-[11px] sm:text-[11px] font-medium tabular-nums select-none whitespace-nowrap align-baseline ml-1.5 ${isOwn ? '' : 'text-gray-500'}`}
+                                        style={
+                                          isOwn
+                                            ? { color: 'rgba(255, 255, 255, 0.62)' }
+                                            : chatBackgroundImageUrl
+                                              ? { textShadow: '0 1px 1px rgba(0,0,0,0.2)' }
+                                              : undefined
+                                        }
                                       >
-                                        {renderMessageContent(message.content, isOwn)}
-                                      </div>
+                                        {formatMessageTime(message.sent_at)}
+                                      </span>
+                                      {isOwn && (
+                                        <span className="inline-flex translate-y-px align-baseline ml-0.5 [&_svg]:!h-7 [&_svg]:!w-7">
+                                          {renderReadReceipts(message)}
+                                        </span>
+                                      )}
                                     </div>
                                   )}
 
@@ -8792,18 +9363,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     </div>
                                   )}
 
-                                  {/* Timestamp inside message bubble */}
-                                  <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                                    <span className={`text-sm sm:text-xs ${isOwn
-                                      ? ''
-                                      : 'text-gray-500'
-                                      }`}
-                                      style={isOwn ? { color: 'rgba(255, 255, 255, 0.7)' } : {}}
-                                    >
-                                      {formatMessageTime(message.sent_at)}
-                                    </span>
-                                    {isOwn && renderReadReceipts(message)}
-                                  </div>
+                                  {/* Time + receipts: separate row only when there is no text (media-only / empty body) */}
+                                  {!(message.content && String(message.content).trim()) && (
+                                    <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                                      <span
+                                        className={`text-sm sm:text-xs ${isOwn ? '' : 'text-gray-500'}`}
+                                        style={isOwn ? { color: 'rgba(255, 255, 255, 0.7)' } : {}}
+                                      >
+                                        {formatMessageTime(message.sent_at)}
+                                      </span>
+                                      {isOwn && renderReadReceipts(message)}
+                                    </div>
+                                  )}
 
                                   {renderMessageCommentFooter(message, isOwn ? 'textOwn' : 'textOther')}
                                 </div>
@@ -8835,7 +9406,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
               {/* Typing indicator */}
               {selectedConversation && typingUsers.has(selectedConversation.id) && (
-                <div className="flex items-center gap-2 px-4 py-2">
+                <div className="flex w-full items-center gap-2 px-4 py-2">
                   <div className="flex items-center gap-2">
                     <div className="flex gap-1">
                       <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
@@ -8858,14 +9429,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       setShouldAutoScroll(true);
                       scrollToBottom('smooth');
                     }}
-                    className="text-white rounded-full p-3 shadow-lg transition-all"
-                    style={{ backgroundColor: '#3C00B8' }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.backgroundColor = '#4a00d4';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.backgroundColor = '#3C00B8';
-                    }}
+                    className="rounded-full border border-base-300/90 bg-base-100/95 p-2.5 text-base-content/70 shadow-md backdrop-blur-sm transition-colors hover:bg-base-200 hover:text-base-content"
                     title="Scroll to bottom"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -8879,8 +9443,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             </div>
 
             {/* Message Input - Desktop Only (flex sibling so messages area height = remaining space) */}
-            <div className="hidden lg:flex flex-shrink-0 p-2 z-10">
-              <div className="flex items-center gap-2 relative w-full">
+            <div className="hidden lg:flex flex-shrink-0 z-10 border-t border-base-200/80 bg-base-100/95 p-2">
+              <div className="flex w-full min-w-0 items-center gap-2 relative">
                 <button
                   type="button"
                   className="btn btn-ghost btn-circle w-10 h-10 min-h-0 flex-shrink-0 text-base-content hover:bg-base-200"
@@ -9122,24 +9686,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   )}
                   {/* Reply preview - Desktop */}
                   {(messageToReply || messageToEdit) && (
-                    <div className="flex items-start gap-2 p-2.5 bg-gray-100 rounded-lg border-l-4 border-blue-500">
+                    <div className="flex items-start gap-2 p-2.5 rounded-lg border border-[#3E28CD]/15 bg-[#EDE9F8]/90 border-l-4 border-l-[#3E28CD] dark:border-[#3E28CD]/30 dark:bg-[#3E28CD]/15">
                       <div className="flex-1 min-w-0">
                         {messageToReply && (
                           <>
-                            <div className="text-sm font-semibold text-gray-600 mb-1">
+                            <div className="text-sm font-semibold text-[#3E28CD] dark:text-[#d4ccff] mb-1">
                               Replying to {messageToReply.sender?.tenants_employee?.display_name || messageToReply.sender?.full_name || 'Unknown'}
                             </div>
-                            <div className="text-base text-gray-700 truncate">
+                            <div className="text-base text-base-content/85 truncate">
                               {messageToReply.content || 'Media'}
                             </div>
                           </>
                         )}
                         {messageToEdit && (
                           <>
-                            <div className="text-sm font-semibold text-gray-600 mb-1">
+                            <div className="text-sm font-semibold text-[#3E28CD] dark:text-[#d4ccff] mb-1">
                               Editing message
                             </div>
-                            <div className="text-base text-gray-700 truncate">
+                            <div className="text-base text-base-content/85 truncate">
                               {messageToEdit.content}
                             </div>
                           </>
@@ -9151,9 +9715,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           setMessageToEdit(null);
                           setEditingMessageText('');
                         }}
-                        className="flex-shrink-0 p-1 hover:bg-gray-200 rounded transition-colors"
+                        className="flex-shrink-0 p-1 rounded transition-colors hover:bg-[#3E28CD]/10"
                       >
-                        <XMarkIcon className="w-4 h-4 text-gray-600" />
+                        <XMarkIcon className="w-4 h-4 text-[#3E28CD]/70 dark:text-[#e8e2ff]/80" />
                       </button>
                     </div>
                   )}
@@ -9178,14 +9742,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           : 'Type a message...'
                     }
                     dir={containsHebrew(messageToEdit ? editingMessageText : newMessage) ? 'rtl' : 'ltr'}
-                    className="textarea w-full resize-none max-h-28 border-0 outline-none focus:outline-none focus:ring-0 rounded-2xl text-base text-gray-900 placeholder:text-gray-500 !bg-white"
+                    className="textarea w-full resize-none max-h-28 rounded-2xl border border-[#E5E7EB] bg-white text-sm text-[#111827] outline-none ring-0 transition-colors placeholder:text-gray-500 focus:border-gray-300 focus:outline-none focus:ring-0"
                     rows={1}
                     disabled={isSending}
                     style={{
-                      height: '40px',
-                      minHeight: '40px',
-                      fontSize: '1rem',
-                      padding: '8px 12px',
+                      height: '44px',
+                      minHeight: '44px',
+                      fontSize: '0.9375rem',
+                      padding: '12px 14px',
                       boxSizing: 'border-box',
                       backgroundColor: '#ffffff'
                     }}
@@ -9322,51 +9886,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         )}
       </div>
 
-      {/* Mobile Full Screen Chat — single scroll layer; header + pinned sticky so thread scrolls underneath */}
-      <div className={`lg:hidden ${!showMobileConversations && selectedConversation ? 'flex' : 'hidden'} flex-col w-full fixed inset-0 z-40 overflow-hidden bg-white`}>
+      {/* Mobile Full Screen Chat — solid fixed top bar + scrollable thread */}
+      <div className={`lg:hidden ${!showMobileConversations && selectedConversation ? 'flex' : 'hidden'} flex-col w-full fixed inset-0 z-40 overflow-hidden bg-base-100`}>
         {selectedConversation && (
           <>
-            <div
-              ref={mobileMessagesContainerRef}
-              onScroll={handleScroll}
-              className="flex-1 overflow-y-auto min-h-0 overscroll-contain relative rmq-messages-area pb-[calc(7.25rem+env(safe-area-inset-bottom,0px))] bg-white p-2 sm:p-4 space-y-4"
-              style={{
-                WebkitOverflowScrolling: 'touch',
-                backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
-                backgroundColor: chatBackgroundImageUrl ? 'transparent' : '#ffffff',
-                backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
-                backgroundPosition: chatBackgroundImageUrl ? 'center' : 'auto',
-                backgroundRepeat: chatBackgroundImageUrl ? 'no-repeat' : 'repeat',
-                backgroundAttachment: chatBackgroundImageUrl ? 'fixed' : 'scroll'
-              }}
-            >
-              <div className="sticky top-0 z-30 -mx-2 sm:-mx-4 mb-2 pt-[env(safe-area-inset-top,0px)] pointer-events-none">
-            <div
-              className={`relative w-full flex-shrink-0 ${selectedConversation.type === 'group' ? 'py-2 px-3 bg-white/95 backdrop-blur-md border-b border-gray-200 shadow-sm pointer-events-auto' : 'py-2 px-3 pointer-events-none'}`}
-              style={selectedConversation.type === 'group' ? { boxShadow: '0 2px 8px rgba(0, 0, 0, 0.06)' } : {}}
-            >
+            <header className="flex-shrink-0 z-30 border-b border-base-300 bg-base-100 pt-[env(safe-area-inset-top)] shadow-sm">
+              <div className="w-full px-2 sm:px-3">
               {selectedConversation.type === 'direct' ? (
-                /* New Layout for Direct Chats - 4 Parts Separately Hovering */
-                <div className="flex items-center justify-between pointer-events-auto">
-                  {/* Left: Back Button - Separate Floating Box */}
-                  <div className="flex-shrink-0">
-                    <button
-                      onClick={() => setShowMobileConversations(true)}
-                      className="btn btn-circle w-10 h-10 min-h-0 h-10 text-gray-600 shadow-lg hover:shadow-xl transition-shadow"
-                      style={{
-                        backgroundColor: 'rgba(255, 255, 255, 0.8)',
-                        backdropFilter: 'blur(10px)',
-                        WebkitBackdropFilter: 'blur(10px)',
-                        borderColor: 'rgba(255, 255, 255, 0.3)',
-                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
-                      }}
-                    >
-                      <ArrowLeftIcon className="w-5 h-5" />
-                    </button>
-                  </div>
-
-                  {/* Center: Profile Image with Name - Separate Floating Box */}
-                  <div className="flex-1 flex flex-col items-center justify-center min-w-0 px-2 pointer-events-auto">
+                <div className="flex items-center gap-2 py-2 min-h-[3rem]">
+                  <button
+                    type="button"
+                    onClick={() => setShowMobileConversations(true)}
+                    className="btn btn-ghost btn-sm btn-circle text-base-content/80 hover:bg-base-200 flex-shrink-0"
+                    aria-label="Back to conversations"
+                  >
+                    <ArrowLeftIcon className="w-5 h-5" />
+                  </button>
+                  <div className="flex-1 min-w-0 flex items-center justify-center">
                     {(() => {
                       const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
                       if (otherParticipant?.user) {
@@ -9381,7 +9917,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         const handleAvatarClick = async () => {
                           const employee = otherParticipant.user?.tenants_employee;
                           if (employee) {
-                            // Fetch background photo from tenants_employee table
                             let backgroundPhoto = null;
                             if (otherParticipant.user.employee_id) {
                               try {
@@ -9418,112 +9953,146 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           }
                         };
                         return (
-                          <div
-                            className="flex flex-col items-center px-3 py-1.5 rounded-2xl shadow-lg hover:shadow-xl transition-shadow cursor-pointer"
+                          <button
+                            type="button"
                             onClick={handleAvatarClick}
-                            style={{
-                              backgroundColor: 'rgba(255, 255, 255, 0.8)',
-                              backdropFilter: 'blur(10px)',
-                              WebkitBackdropFilter: 'blur(10px)',
-                              borderColor: 'rgba(255, 255, 255, 0.3)',
-                              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
-                            }}
+                            className="flex max-w-full min-w-0 items-center gap-2.5 rounded-lg px-1 py-0.5 text-left hover:bg-base-200/90 transition-colors"
                             title={`View ${name}'s profile`}
                           >
-                            {/* Avatar with Online/Offline Indicator */}
-                            <div className="relative">
+                            <div className="relative flex-shrink-0">
                               {renderUserAvatar({
                                 userId: avatarKey,
                                 name,
                                 photoUrl,
-                                sizeClass: 'w-10 h-10',
-                                borderClass: '',
+                                sizeClass: 'w-9 h-9',
+                                borderClass: 'border border-base-300',
                                 textClass: 'text-sm',
                               })}
-                              {/* Online/Offline Indicator Circle */}
                               <div
-                                className="absolute -top-1 -right-1 w-4 h-4 rounded-full border-2 border-white shadow-sm"
+                                className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-base-100 shadow-sm"
                                 style={{
                                   backgroundColor: isOnline ? '#10b981' : '#9ca3af'
                                 }}
                               />
                             </div>
-                            <h2 className="font-semibold text-sm text-gray-900 truncate w-full text-center mt-1" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
+                            <h2 className="font-semibold text-sm text-base-content truncate">
                               {name}
                             </h2>
-                          </div>
+                          </button>
                         );
                       }
                       return null;
                     })()}
                   </div>
-
-                  {/* Right: Exit Button - Separate Floating Box (image change button removed on mobile) */}
-                  <div className="flex-shrink-0 flex items-center gap-2 pointer-events-auto">
-                    {/* Exit Button - Separate Floating Box */}
-                    <button
-                      onClick={onClose}
-                      className="btn btn-circle w-10 h-10 min-h-0 h-10 text-gray-600 shadow-lg hover:shadow-xl transition-shadow"
-                      style={{
-                        backgroundColor: 'rgba(255, 255, 255, 0.8)',
-                        backdropFilter: 'blur(10px)',
-                        WebkitBackdropFilter: 'blur(10px)',
-                        borderColor: 'rgba(255, 255, 255, 0.3)',
-                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
-                      }}
-                      title="Close Messages"
-                    >
-                      <XMarkIcon className="w-5 h-5" />
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="btn btn-ghost btn-sm btn-circle text-base-content/80 hover:bg-base-200 flex-shrink-0"
+                    title="Close Messages"
+                    aria-label="Close messages"
+                  >
+                    <XMarkIcon className="w-5 h-5" />
+                  </button>
                 </div>
               ) : (
-                /* Original Layout for Group Chats */
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
+                <>
+                  <div className="flex items-center gap-1 py-2 min-h-[3rem] sm:gap-1.5">
                     <button
+                      type="button"
                       onClick={() => setShowMobileConversations(true)}
-                      className="btn btn-ghost btn-sm btn-circle text-base-content/70 hover:bg-base-200"
+                      className="btn btn-ghost btn-sm btn-circle shrink-0 text-base-content/80 hover:bg-base-200"
+                      aria-label="Back to conversations"
                     >
-                      <ArrowLeftIcon className="w-5 h-5" />
+                      <ArrowLeftIcon className="h-5 w-5" />
                     </button>
-                    {getConversationAvatar(selectedConversation)}
-                    <div className="flex-1 min-w-0">
-                      <h2 className="font-semibold text-gray-900 truncate text-sm">
+                    <div className="shrink-0">{getConversationAvatar(selectedConversation)}</div>
+                    <div className="min-w-0 flex-1">
+                      <h2 className="truncate text-sm font-semibold leading-tight text-base-content">
                         {getConversationTitle(selectedConversation)}
                       </h2>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2">
+                    <div className="dropdown dropdown-end shrink-0">
+                      <label tabIndex={0} className="btn btn-ghost btn-sm btn-circle relative h-9 min-h-9 text-amber-700">
+                        <FlagIcon className="h-5 w-5" />
+                        {rmqMessageLeadFlags.length > 0 && (
+                          <span className="absolute -top-0.5 -right-0.5 flex h-3.5 min-w-[0.875rem] items-center justify-center rounded-full bg-amber-600 px-0.5 text-[9px] font-bold leading-none text-white">
+                            {rmqMessageLeadFlags.length > 99 ? '99+' : rmqMessageLeadFlags.length}
+                          </span>
+                        )}
+                      </label>
+                      <ul
+                        tabIndex={0}
+                        className="dropdown-content z-[300] menu max-h-72 min-w-[13rem] overflow-y-auto rounded-box border border-base-300 bg-base-100 p-2 shadow-lg"
+                      >
+                        {rmqMessageLeadFlagsLoading ? (
+                          <li className="px-2 py-1 text-xs text-base-content/60">Loading…</li>
+                        ) : rmqMessageLeadFlags.length === 0 ? (
+                          <li className="px-2 py-1 text-xs text-base-content/60">No message flags yet</li>
+                        ) : (
+                          rmqMessageLeadFlags.map(f => (
+                            <li key={f.id} className="py-0.5">
+                              <div className="flex flex-col gap-0.5 rounded-lg px-1 py-1">
+                                <button
+                                  type="button"
+                                  className="text-left text-xs"
+                                  onClick={() => scrollToMessage(f.message_id, 'smooth')}
+                                >
+                                  <span className="font-semibold">{flagTypeLabel(f.flag_type, rmqMessageFlagTypes)} · #{f._leadNum || '—'}</span>
+                                  <span className="block text-[10px] text-base-content/55">
+                                    {rmqFlaggerDisplayName(f)} · {formatRmqFlagCreatedAt(f.created_at)}
+                                  </span>
+                                </button>
+                                {currentUser?.id === f.user_id && (
+                                  <button
+                                    type="button"
+                                    className="btn btn-ghost btn-xs text-error min-h-0 h-7 px-1"
+                                    onClick={() => void removeRmqMessageLeadFlagRow(f.id)}
+                                  >
+                                    Remove
+                                  </button>
+                                )}
+                              </div>
+                            </li>
+                          ))
+                        )}
+                      </ul>
+                    </div>
+                    {selectedConversation.participants && selectedConversation.participants.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowMobileGroupMembers(!showMobileGroupMembers)}
+                        className="btn btn-ghost btn-sm h-9 min-h-9 shrink-0 gap-0.5 rounded-lg px-1.5 text-base-content/80 hover:bg-base-200"
+                        aria-expanded={showMobileGroupMembers}
+                        aria-label={showMobileGroupMembers ? 'Hide members' : 'Show members'}
+                      >
+                        <span className="whitespace-nowrap text-[11px] font-medium sm:text-xs">
+                          {selectedConversation.participants.length}{' '}
+                          {selectedConversation.participants.length === 1 ? 'member' : 'members'}
+                        </span>
+                        {showMobileGroupMembers ? (
+                          <ChevronUpIcon className="h-4 w-4 shrink-0 opacity-70" />
+                        ) : (
+                          <ChevronDownIcon className="h-4 w-4 shrink-0 opacity-70" />
+                        )}
+                      </button>
+                    )}
                     <button
+                      type="button"
                       onClick={onClose}
-                      className="btn btn-ghost btn-circle text-base-content/70 hover:bg-base-200"
+                      className="btn btn-ghost btn-sm btn-circle shrink-0 text-base-content/80 hover:bg-base-200"
                       title="Close Messages"
+                      aria-label="Close messages"
                     >
-                      <XMarkIcon className="w-7 h-7" />
+                      <XMarkIcon className="h-5 w-5" />
                     </button>
                   </div>
-                </div>
-              )}
 
-              {/* Group Members List - Mobile (Collapsible) */}
-              {selectedConversation.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 && (
-                <div className="mt-3 border-t border-gray-200">
-                  <button
-                    onClick={() => setShowMobileGroupMembers(!showMobileGroupMembers)}
-                    className="w-full flex items-center justify-between p-3 hover:bg-gray-50 transition-colors"
-                  >
-                    <span className="text-sm font-medium text-gray-700">
-                      {selectedConversation.participants.length} {selectedConversation.participants.length === 1 ? 'member' : 'members'}
-                    </span>
-                    {showMobileGroupMembers ? (
-                      <ChevronUpIcon className="w-5 h-5 text-gray-500" />
-                    ) : (
-                      <ChevronDownIcon className="w-5 h-5 text-gray-500" />
-                    )}
-                  </button>
-                  {showMobileGroupMembers && (
-                    <div className="px-3 pb-3">
+                  {/* Group members strip + actions (only when expanded; toggle lives in header row above) */}
+                  {selectedConversation.type === 'group' &&
+                    selectedConversation.participants &&
+                    selectedConversation.participants.length > 0 &&
+                    showMobileGroupMembers && (
+                    <div className="border-t border-base-300 bg-base-100 px-3 pb-3 pt-2">
                       <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
                         <div className="flex gap-4 pb-2 min-w-max">
                           {selectedConversation.participants.map((participant) => {
@@ -9631,16 +10200,30 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       </div>
                     </div>
                   )}
-                </div>
+                </>
               )}
             </div>
+            </header>
 
+            <div
+              ref={mobileMessagesContainerRef}
+              onScroll={handleScroll}
+              className="flex-1 overflow-y-auto min-h-0 overscroll-contain relative rmq-messages-area pb-[calc(7.25rem+env(safe-area-inset-bottom,0px))] bg-white p-2 sm:p-4 space-y-2"
+              style={{
+                WebkitOverflowScrolling: 'touch',
+                backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
+                backgroundColor: chatBackgroundImageUrl ? 'transparent' : '#ffffff',
+                backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
+                backgroundPosition: chatBackgroundImageUrl ? 'center' : 'auto',
+                backgroundRepeat: chatBackgroundImageUrl ? 'no-repeat' : 'repeat',
+                backgroundAttachment: chatBackgroundImageUrl ? 'fixed' : 'scroll'
+              }}
+            >
             {hasPinnedMessagesStrip && (
-              <div className="pointer-events-auto border-b border-gray-200 bg-white/90 backdrop-blur-md">
-                <div className="px-2 sm:px-4 py-2">{renderPinnedMessagesStrip({ forMobile: true })}</div>
+              <div className="sticky top-0 z-20 -mx-2 sm:-mx-4 mb-2 border-b border-base-300 bg-base-100/95 px-2 sm:px-4 backdrop-blur-sm">
+                <div className="py-2">{renderPinnedMessagesStrip({ forMobile: true })}</div>
               </div>
             )}
-              </div>
               {isLoadingMessages ? (
                 <div className={`absolute inset-0 flex flex-col items-center justify-center min-h-[200px] z-10 ${chatBackgroundImageUrl ? 'bg-base-100/80 dark:bg-base-300/50' : 'bg-white/95'}`}>
                   <div className="loading loading-spinner loading-lg mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.9)' : '#3E28CD' }} />
@@ -9678,19 +10261,30 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     const showDateSeparator = index === 0 ||
                       new Date(message.sent_at).toDateString() !== new Date(displayMessages[index - 1].sent_at).toDateString();
 
+                    const prevMessage = index > 0 ? displayMessages[index - 1] : null;
+                    const isMessageClusterContinuation =
+                      !!prevMessage &&
+                      prevMessage.sender_id === message.sender_id &&
+                      new Date(message.sent_at).getTime() - new Date(prevMessage.sent_at).getTime() < RMQ_GROUP_GAP_MS &&
+                      !showDateSeparator;
+
                     return (
                       <motion.div
                         key={getMessageListKey(message)}
-                        initial={{ opacity: 0, y: 10 }}
+                        initial={{ opacity: 0, y: 8 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0 }}
-                        transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
-                        className="[content-visibility:auto]"
+                        transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
+                        className={`[content-visibility:auto] ${isMessageClusterContinuation ? '!mt-1' : ''}`}
                         data-message-id={message.id}
                       >
                         {showDateSeparator && (
-                          <div className="flex justify-center my-4">
-                            <span className={`text-sm ${chatBackgroundImageUrl ? 'text-white' : 'text-gray-400'}`}>{formatDateSeparator(message.sent_at)}</span>
+                          <div className="flex justify-center my-4 px-2">
+                            <span
+                              className={`text-[11px] font-medium tracking-wide text-base-content/45 ${chatBackgroundImageUrl ? 'bg-white/15 text-white/90' : 'bg-base-200/70 dark:bg-base-300/50'} rounded-full px-3 py-1`}
+                            >
+                              {formatDateSeparator(message.sent_at)}
+                            </span>
                           </div>
                         )}
                         {/* Unread messages indicator - Mobile */}
@@ -9714,19 +10308,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 : 'flex-col items-stretch'
                             }`}
                           >
-                            {!isOwn && selectedConversation.type !== 'direct' && (
-                              <div className="flex-shrink-0 self-end">
-                                {renderUserAvatar({ userId: message.sender_id, name: senderName, photoUrl: senderPhoto, sizeClass: 'w-8 h-8', borderClass: 'border border-base-300', textClass: 'text-xs', loading: 'lazy' })}
-                              </div>
-                            )}
+                            {!isOwn && selectedConversation.type !== 'direct' &&
+                              (isMessageClusterContinuation ? (
+                                <div className="w-8 flex-shrink-0 self-end" aria-hidden />
+                              ) : (
+                                <div className="flex-shrink-0 self-end">
+                                  {renderUserAvatar({ userId: message.sender_id, name: senderName, photoUrl: senderPhoto, sizeClass: 'w-8 h-8', borderClass: 'border border-base-300', textClass: 'text-xs', loading: 'lazy' })}
+                                </div>
+                              ))}
                             <div
                               className={`flex w-full min-w-0 flex-col ${isOwn ? 'items-end' : 'items-start'} ${selectedConversation.type !== 'direct' ? 'flex-1' : ''}`}
                               {...getMobileMessageActionHandlers(message)}
                             >
                               <div
-                                className={`w-full max-w-full rounded-lg border border-base-300 overflow-hidden ${isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'}`}
+                                className={`w-full max-w-full ${RMQ_CHAT.bubbleR} border border-base-300/80 overflow-hidden ${isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'}`}
                               >
-                                {selectedConversation.type !== 'direct' && (
+                                {selectedConversation.type !== 'direct' && !isMessageClusterContinuation && (
                                   <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
                                     <span className="text-sm font-medium" style={{ color: isOwn ? undefined : getSenderColor(message.sender_id) }}>
                                       {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
@@ -9735,7 +10332,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 )}
                                 <div className="relative w-full">
                                   {renderAlbumMessageContent(message, index)}
-                                  <span className="absolute bottom-2 right-2 text-xs font-medium text-white drop-shadow-md pointer-events-none z-10">{formatMessageTime(message.sent_at)}</span>
+                                  <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md pointer-events-none">
+                                    {formatMessageTime(message.sent_at)}
+                                  </span>
                                 </div>
                                 {getAlbumUserCaption(message) && (
                                   <div
@@ -9751,30 +10350,33 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </div>
                           </div>
                         ) : isImageMessage(message) ? (
-                          <div className={`flex ${isOwn ? 'flex-col items-end' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} max-w-[75%]`}>
-                            {!isOwn && selectedConversation.type !== 'direct' && (
-                              <div className="flex-shrink-0 self-end">
-                                {renderUserAvatar({
-                                  userId: message.sender_id,
-                                  name: senderName,
-                                  photoUrl: senderPhoto,
-                                  sizeClass: 'w-8 h-8',
-                                  borderClass: 'border border-base-300',
-                                  textClass: 'text-xs',
-                                  loading: 'lazy',
-                                })}
-                              </div>
-                            )}
+                          <div className={`flex ${isOwn ? 'flex-col items-end ml-auto' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} ${RMQ_CHAT.mediaColumn}`}>
+                            {!isOwn && selectedConversation.type !== 'direct' &&
+                              (isMessageClusterContinuation ? (
+                                <div className="w-8 flex-shrink-0 self-end" aria-hidden />
+                              ) : (
+                                <div className="flex-shrink-0 self-end">
+                                  {renderUserAvatar({
+                                    userId: message.sender_id,
+                                    name: senderName,
+                                    photoUrl: senderPhoto,
+                                    sizeClass: 'w-8 h-8',
+                                    borderClass: 'border border-base-300',
+                                    textClass: 'text-xs',
+                                    loading: 'lazy',
+                                  })}
+                                </div>
+                              ))}
                             <div
-                              className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}
+                              className={`flex w-fit min-w-0 flex-col ${isOwn ? 'items-end' : 'items-start'}`}
                               {...getMobileMessageActionHandlers(message)}
                             >
                               <div
-                                className={`rounded-lg border border-base-300 overflow-hidden ${
+                                className={`${RMQ_CHAT.bubbleR} w-fit max-w-full min-w-0 overflow-hidden border border-base-300/80 ${
                                   isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'
                                 }`}
                               >
-                                {selectedConversation.type !== 'direct' && (
+                                {selectedConversation.type !== 'direct' && !isMessageClusterContinuation && (
                                   <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
                                     <span className="text-sm font-medium" style={{ color: isOwn ? undefined : getSenderColor(message.sender_id) }}>
                                       {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
@@ -9782,7 +10384,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   </div>
                                 )}
                                 <div
-                              className="relative cursor-pointer group w-full min-h-[120px] md:min-h-[200px]"
+                              className="relative cursor-pointer group w-fit min-h-0 max-w-full transition-transform duration-150 hover:scale-[1.02]"
                               onClick={() => {
                                 if (longPressHandledRef.current) {
                                   longPressHandledRef.current = false;
@@ -9794,29 +10396,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               <img
                                 src={message.attachment_url}
                                 alt={message.attachment_name}
-                                className="w-full max-w-full max-h-80 object-contain block bg-gray-100 dark:bg-gray-800"
+                                className={`${RMQ_CHAT.imageR} h-auto w-auto max-w-full max-h-[min(48vh,18rem)] object-contain object-center block bg-gray-100 dark:bg-gray-800`}
                                 loading={index >= displayMessages.length - 10 ? "eager" : "lazy"}
                                 decoding="async"
                                 onLoad={(e) => {
-                                  // Image loaded successfully - ensure it's visible
                                   const img = e.target as HTMLImageElement;
                                   img.style.opacity = '1';
                                   img.style.display = 'block';
-                                  img.style.width = 'auto';
-                                  img.style.height = 'auto';
-                                  img.style.maxWidth = '100%';
-                                  img.style.maxHeight = '320px';
                                 }}
                                 onError={(e) => {
-                                  // Handle image load errors gracefully - show placeholder instead of hiding
                                   const img = e.target as HTMLImageElement;
                                   console.error('Image load error:', message.attachment_url);
-                                  // Set a placeholder or show error state
                                   img.style.opacity = '0.5';
                                 }}
-                                style={{ opacity: 1, transition: 'opacity 0.2s ease-in-out', display: 'block', width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '320px' }}
+                                style={{ opacity: 1, transition: 'opacity 0.2s ease-in-out' }}
                               />
-                              <span className="absolute bottom-2 right-2 text-xs font-medium text-white drop-shadow-md">
+                              <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md">
                                 {formatMessageTime(message.sent_at)}
                               </span>
                             </div>
@@ -9838,30 +10433,33 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </div>
                           </div>
                         ) : isVideoMessage(message) ? (
-                          <div className={`flex ${isOwn ? 'flex-col items-end' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} max-w-[75%]`}>
-                            {!isOwn && selectedConversation.type !== 'direct' && (
-                              <div className="flex-shrink-0 self-end">
-                                {renderUserAvatar({
-                                  userId: message.sender_id,
-                                  name: senderName,
-                                  photoUrl: senderPhoto,
-                                  sizeClass: 'w-8 h-8',
-                                  borderClass: 'border border-base-300',
-                                  textClass: 'text-xs',
-                                  loading: 'lazy',
-                                })}
-                              </div>
-                            )}
+                          <div className={`flex ${isOwn ? 'flex-col items-end ml-auto' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} ${RMQ_CHAT.mediaColumn}`}>
+                            {!isOwn && selectedConversation.type !== 'direct' &&
+                              (isMessageClusterContinuation ? (
+                                <div className="w-8 flex-shrink-0 self-end" aria-hidden />
+                              ) : (
+                                <div className="flex-shrink-0 self-end">
+                                  {renderUserAvatar({
+                                    userId: message.sender_id,
+                                    name: senderName,
+                                    photoUrl: senderPhoto,
+                                    sizeClass: 'w-8 h-8',
+                                    borderClass: 'border border-base-300',
+                                    textClass: 'text-xs',
+                                    loading: 'lazy',
+                                  })}
+                                </div>
+                              ))}
                             <div
-                              className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}
+                              className={`flex w-fit min-w-0 flex-col ${isOwn ? 'items-end' : 'items-start'}`}
                               {...getMobileMessageActionHandlers(message)}
                             >
                               <div
-                                className={`rounded-lg border border-base-300 overflow-hidden ${
+                                className={`${RMQ_CHAT.bubbleR} w-fit max-w-full min-w-0 overflow-hidden border border-base-300/80 ${
                                   isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'
                                 }`}
                               >
-                                {selectedConversation.type !== 'direct' && (
+                                {selectedConversation.type !== 'direct' && !isMessageClusterContinuation && (
                                   <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
                                     <span className="text-sm font-medium" style={{ color: isOwn ? undefined : getSenderColor(message.sender_id) }}>
                                       {isOwn ? (currentUser?.tenants_employee?.display_name || currentUser?.full_name || 'You') : senderName}
@@ -9869,7 +10467,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   </div>
                                 )}
                                 <div
-                                  className="relative cursor-pointer group w-full"
+                                  className="relative cursor-pointer group w-fit min-h-[100px] max-w-full transition-transform duration-150 hover:scale-[1.01]"
                                   onClick={() => {
                                     if (longPressHandledRef.current) {
                                       longPressHandledRef.current = false;
@@ -9885,7 +10483,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 data-message-id={message.id}
                                 src={message.attachment_url}
                                 crossOrigin="anonymous"
-                                className="max-w-full max-h-80 md:max-h-[600px] min-h-[200px] md:min-h-[300px] rounded-lg object-cover bg-gray-100 dark:bg-gray-800 relative z-10 pointer-events-none"
+                                className={`${RMQ_CHAT.imageR} h-auto w-auto max-w-full max-h-[min(48vh,18rem)] min-h-[100px] object-contain bg-gray-100 dark:bg-gray-800 relative z-10 pointer-events-none`}
                                 preload="metadata"
                                 playsInline
                                 onLoadedMetadata={(e) => {
@@ -9969,7 +10567,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   <div className="loading loading-spinner loading-lg" style={{ color: '#3E28CD' }}></div>
                                 </div>
                               )}
-                              <span className="absolute bottom-2 right-2 text-xs font-medium text-white drop-shadow-md z-10">
+                              <span className="absolute bottom-2 right-2 z-10 text-xs font-medium text-white drop-shadow-md">
                                 {formatMessageTime(message.sent_at)}
                               </span>
                             </div>
@@ -9992,47 +10590,58 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           </div>
                         ) : isEmojiOnly(message.content || '') ? (
                           <div
-                            className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}
+                            className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} ${RMQ_CHAT.bubbleMax} w-full`}
                             dir={getTextDirection(message.content || '')}
                             {...getMobileMessageActionHandlers(message)}
                           >
-                            <div className="text-6xl">
+                            <div className="text-6xl leading-none inline-block text-left">
                               {renderMessageContent(message.content || '', isOwn)}
-                            </div>
-                            {/* Timestamp and read receipts at bottom of emoji - Mobile */}
-                            <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                              <span className="text-xs text-gray-500" style={{
-                                textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
-                              }}>
+                              <span
+                                className={`inline text-xs font-medium tabular-nums ml-2 align-baseline ${isOwn ? '' : 'text-gray-500'}`}
+                                style={
+                                  isOwn
+                                    ? { color: 'rgba(255, 255, 255, 0.65)' }
+                                    : { textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none' }
+                                }
+                              >
                                 {formatMessageTime(message.sent_at)}
                               </span>
-                              {isOwn && renderReadReceipts(message)}
+                              {isOwn && (
+                                <span className="inline-flex translate-y-[2px] align-baseline ml-1 [&_svg]:!h-7 [&_svg]:!w-7">
+                                  {renderReadReceipts(message)}
+                                </span>
+                              )}
                             </div>
                             <div className="mt-2 w-full overflow-hidden rounded-lg border border-base-300/70">
-                              {renderMessageCommentFooter(message, 'textOther')}
+                              {renderMessageCommentFooter(message, isOwn ? 'textOwn' : 'textOther')}
                             </div>
                           </div>
                         ) : (
                           <div
-                            className={`flex gap-2 group ${isOwn ? 'flex-row-reverse' : 'flex-row'} ${!isOwn && selectedConversation.type !== 'direct' ? 'items-end' : ''}`}
+                            className={`flex w-full min-w-0 gap-2 group ${isOwn ? 'flex-row-reverse' : 'flex-row'} ${!isOwn && selectedConversation.type !== 'direct' ? 'items-end' : ''}`}
                           >
 
                             {/* Avatar below message box on left - Mobile group chats */}
-                            {!isOwn && selectedConversation.type !== 'direct' && (
-                              <div className="flex-shrink-0 self-end">
-                                {renderUserAvatar({
-                                  userId: message.sender_id,
-                                  name: senderName,
-                                  photoUrl: message.sender?.tenants_employee?.photo_url,
-                                  sizeClass: 'w-8 h-8',
-                                  borderClass: 'border border-gray-200',
-                                  textClass: 'text-xs',
-                                  loading: 'lazy',
-                                })}
-                              </div>
-                            )}
+                            {!isOwn && selectedConversation.type !== 'direct' &&
+                              (isMessageClusterContinuation ? (
+                                <div className="w-8 flex-shrink-0 self-end" aria-hidden />
+                              ) : (
+                                <div className="flex-shrink-0 self-end">
+                                  {renderUserAvatar({
+                                    userId: message.sender_id,
+                                    name: senderName,
+                                    photoUrl: message.sender?.tenants_employee?.photo_url,
+                                    sizeClass: 'w-8 h-8',
+                                    borderClass: 'border border-gray-200',
+                                    textClass: 'text-xs',
+                                    loading: 'lazy',
+                                  })}
+                                </div>
+                              ))}
 
-                            <div className={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
+                            <div
+                              className={`${RMQ_CHAT.bubbleMax} ${!isOwn && selectedConversation.type !== 'direct' ? 'flex-1 min-w-0' : 'w-full'} ${isOwn ? 'items-end ml-auto' : 'items-start'} flex flex-col`}
+                            >
                               <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative group`}>
                                 {/* Mobile: long-press on bubble opens action modal (no hover ellipsis) */}
 
@@ -10047,19 +10656,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     setShowReactionPicker(showReactionPicker === message.id ? null : message.id);
                                     setReactingMessageId(message.id);
                                   }}
-                                  className={`overflow-hidden px-2 py-2 rounded-2xl text-base cursor-pointer hover:shadow-md transition-shadow relative select-none ${isOwn
+                                  className={`w-full max-w-full overflow-hidden ${RMQ_CHAT.bubblePad} ${RMQ_CHAT.bubbleR} text-sm cursor-pointer transition-opacity hover:opacity-[0.97] relative select-none border-0 shadow-none ${isOwn
                                     ? isEmojiOnly(message.content)
-                                      ? 'bg-base-100 text-base-content rounded-br-md'
-                                      : 'text-white rounded-br-md'
-                                    : 'border rounded-bl-md bg-gray-50 dark:bg-base-100 border-gray-100 dark:border-base-300 text-base-content shadow-sm'
+                                      ? 'bg-base-100 text-base-content'
+                                      : 'text-white'
+                                    : `${RMQ_CHAT.recv} dark:bg-base-200/80 dark:text-base-content`
                                     }`}
                                   style={isOwn && !isEmojiOnly(message.content)
-                                    ? { background: 'linear-gradient(to bottom right, #065f46, #0d5c52)' }
+                                    ? { background: RMQ_CHAT.sentBg }
                                     : {}
                                   }
                                 >
                                   {/* Display name inside bubble (group chats, received only); (edited) next to name - Mobile */}
-                                  {!isOwn && selectedConversation.type !== 'direct' && (
+                                  {!isOwn && selectedConversation.type !== 'direct' && !isMessageClusterContinuation && (
                                     <div className="text-sm font-semibold mb-1 flex items-baseline gap-1.5 flex-wrap" style={{ color: getSenderColor(message.sender_id) }}>
                                       <span>{senderName}</span>
                                       {message.edited_at && (
@@ -10067,10 +10676,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                       )}
                                     </div>
                                   )}
+                                  {!isOwn && selectedConversation.type !== 'direct' && isMessageClusterContinuation && message.edited_at && (
+                                    <div className="text-xs opacity-70 italic mb-1">(edited)</div>
+                                  )}
                                   {isOwn && message.edited_at && (
                                     <div className="text-xs opacity-70 italic mb-1">(edited)</div>
                                   )}
-                                  {/* Reply preview - Mobile - only show if message actually has a reply with valid data */}
+                                  {/* Reply preview — inline, Mobile */}
                                   {(() => {
                                     const hasReplyId = !!message.reply_to_message_id;
 
@@ -10089,50 +10701,66 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                       (replyMessage.sender || replyMessage.content || replyMessage.attachment_url);
 
                                     return hasReplyId && hasValidReplyData && replyMessage ? (
-                                      <div className={`mb-2 p-2 rounded-lg border-l-4 ${isOwn ? 'bg-white/20 border-white/40' : 'bg-green-50 border-green-300'
-                                        }`}>
-                                        <div className="text-xs font-semibold opacity-80 mb-1">
+                                      <button
+                                        type="button"
+                                        className={`mb-1.5 w-full border-0 bg-transparent p-0 pl-2 text-left shadow-none rounded-none border-l-2 transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3E28CD]/30 ${isOwn ? 'border-l-white/40' : 'border-[#3E28CD]/45 dark:border-[#3E28CD]/55'}`}
+                                        onClick={e => {
+                                          e.stopPropagation();
+                                          if (replyMessage.id) scrollToMessage(replyMessage.id, 'smooth');
+                                        }}
+                                        title="Go to original message"
+                                      >
+                                        <div className={`text-[12px] font-medium leading-tight ${isOwn ? 'text-white/85' : 'text-[#6B7280] dark:text-base-content/60'}`}>
                                           {replyMessage.sender?.tenants_employee?.display_name ||
                                             replyMessage.sender?.full_name ||
                                             'Unknown'}
                                         </div>
-                                        {/* Only show content if it exists, don't show "Media" placeholder */}
                                         {replyMessage.content && (
-                                          <div className="text-xs opacity-70 line-clamp-2">
+                                          <div className={`text-[12px] line-clamp-2 leading-snug mt-0.5 ${isOwn ? 'text-white/75' : 'text-[#6B7280] dark:text-base-content/55'}`}>
                                             {replyMessage.content}
                                           </div>
                                         )}
-                                        {/* Show attachment indicator if no content but has attachment */}
                                         {!replyMessage.content && replyMessage.attachment_url && (
-                                          <div className="text-xs opacity-70 italic">
+                                          <div className={`text-[12px] italic mt-0.5 ${isOwn ? 'text-white/70' : 'text-[#6B7280]'}`}>
                                             {replyMessage.message_type === 'album' ? '🖼️ Album' :
                                               replyMessage.message_type === 'image' ? '📷 Image' :
                                               replyMessage.message_type === 'voice' ? '🎤 Voice message' :
                                                 replyMessage.message_type === 'file' ? '📎 File' : '📎 Attachment'}
                                           </div>
                                         )}
-                                      </div>
+                                      </button>
                                     ) : null;
                                   })()}
 
-                                  {/* Message content - Mobile: larger text */}
+                                  {/* Message text + time on last line — Mobile */}
                                   {message.content && (
                                     <div
-                                      className="break-words text-lg whitespace-pre-wrap"
+                                      className="break-words text-sm whitespace-pre-wrap"
                                       dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
                                       style={{
                                         textAlign: getTextDirection(message.content) === 'rtl' ? 'right' :
                                           getTextDirection(message.content) === 'auto' ? 'start' : 'left',
                                         ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
                                         fontSize: '1.125rem',
-                                        lineHeight: '1.5',
+                                        lineHeight: '1.45',
                                         wordBreak: 'break-word',
                                         overflowWrap: 'break-word',
                                         whiteSpace: 'pre-wrap',
-                                        unicodeBidi: 'plaintext' // Ensures proper bidirectional text handling
+                                        unicodeBidi: 'plaintext',
                                       }}
                                     >
                                       {renderMessageContent(message.content, isOwn)}
+                                      <span
+                                        className={`inline-flex items-baseline gap-0.5 text-[11px] font-medium tabular-nums ml-1.5 align-baseline ${isOwn ? '' : 'text-gray-500'}`}
+                                        style={isOwn ? { color: 'rgba(255, 255, 255, 0.62)' } : {}}
+                                      >
+                                        {formatMessageTime(message.sent_at)}
+                                      </span>
+                                      {isOwn && (
+                                        <span className="inline-flex translate-y-px align-baseline ml-0.5 [&_svg]:!h-7 [&_svg]:!w-7">
+                                          {renderReadReceipts(message)}
+                                        </span>
+                                      )}
                                     </div>
                                   )}
 
@@ -10281,17 +10909,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     </div>
                                   )}
 
-                                  {/* Timestamp inside message bubble - Mobile */}
-                                  <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                                    <span className="text-xs" style={{
-                                      color: isOwn
-                                        ? 'rgba(255, 255, 255, 0.7)'
-                                        : '#6b7280'
-                                    }}>
-                                      {formatMessageTime(message.sent_at)}
-                                    </span>
-                                    {isOwn && renderReadReceipts(message)}
-                                  </div>
+                                  {/* Time + receipts: separate row only when no text — Mobile */}
+                                  {!(message.content && String(message.content).trim()) && (
+                                    <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                                      <span
+                                        className="text-xs"
+                                        style={{
+                                          color: isOwn ? 'rgba(255, 255, 255, 0.7)' : '#6b7280',
+                                        }}
+                                      >
+                                        {formatMessageTime(message.sent_at)}
+                                      </span>
+                                      {isOwn && renderReadReceipts(message)}
+                                    </div>
+                                  )}
 
                                   {renderMessageCommentFooter(message, isOwn ? 'textOwn' : 'textOther')}
                                 </div>
@@ -10330,8 +10961,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       setShouldAutoScroll(true);
                       scrollToBottom('smooth');
                     }}
-                    className="text-white rounded-full p-3 shadow-lg transition-all relative"
-                    style={{ background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' }}
+                    className="rounded-full border border-base-300/90 bg-base-100/95 p-2.5 text-base-content/70 shadow-md backdrop-blur-sm transition-colors hover:bg-base-200 hover:text-base-content"
                     title="Scroll to bottom"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -10471,20 +11101,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     )}
                     {/* Reply preview - Mobile */}
                     {(messageToReply || messageToEdit) && (
-                      <div className="flex items-start gap-2 p-2.5 bg-gray-100 rounded-lg border-l-4 border-blue-500">
+                      <div className="flex items-start gap-2 p-2.5 rounded-lg border border-[#3E28CD]/15 bg-[#EDE9F8]/90 border-l-4 border-l-[#3E28CD] dark:border-[#3E28CD]/30 dark:bg-[#3E28CD]/15">
                         <div className="flex-1 min-w-0">
                           {messageToReply && (
                             <>
-                              <div className="text-sm font-semibold text-gray-600 mb-1">
+                              <div className="text-sm font-semibold text-[#3E28CD] dark:text-[#d4ccff] mb-1">
                                 Replying to {messageToReply.sender?.tenants_employee?.display_name || messageToReply.sender?.full_name || 'Unknown'}
                               </div>
                               {messageToReply.content && (
-                                <div className="text-base text-gray-700 truncate">
+                                <div className="text-base text-base-content/85 truncate">
                                   {messageToReply.content}
                                 </div>
                               )}
                               {!messageToReply.content && messageToReply.attachment_url && (
-                                <div className="text-base text-gray-700 italic">
+                                <div className="text-base text-base-content/85 italic">
                                   {messageToReply.message_type === 'image' ? '📷 Image' :
                                     messageToReply.message_type === 'voice' ? '🎤 Voice message' :
                                       messageToReply.message_type === 'file' ? '📎 File' : '📎 Attachment'}
@@ -10494,10 +11124,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           )}
                           {messageToEdit && (
                             <>
-                              <div className="text-sm font-semibold text-gray-600 mb-1">
+                              <div className="text-sm font-semibold text-[#3E28CD] dark:text-[#d4ccff] mb-1">
                                 Editing message
                               </div>
-                              <div className="text-base text-gray-700 truncate">
+                              <div className="text-base text-base-content/85 truncate">
                                 {messageToEdit.content}
                               </div>
                             </>
@@ -10509,9 +11139,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             setMessageToEdit(null);
                             setEditingMessageText('');
                           }}
-                          className="flex-shrink-0 p-1 hover:bg-gray-200 rounded transition-colors"
+                          className="flex-shrink-0 p-1 rounded transition-colors hover:bg-[#3E28CD]/10"
                         >
-                          <XMarkIcon className="w-4 h-4 text-gray-600" />
+                          <XMarkIcon className="w-4 h-4 text-[#3E28CD]/70 dark:text-[#e8e2ff]/80" />
                         </button>
                       </div>
                     )}
@@ -10537,17 +11167,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               : 'Type a message...'
                         }
                         dir={containsHebrew(messageToEdit ? editingMessageText : newMessage) ? 'rtl' : 'ltr'}
-                        className="textarea w-full resize-none max-h-32 rounded-2xl text-base text-gray-900 placeholder:text-gray-400 border border-gray-200 focus:border-gray-300 focus:outline-none focus:ring-0"
+                        className="textarea w-full resize-none max-h-32 rounded-2xl border border-[#E5E7EB] bg-white text-sm text-[#111827] placeholder:text-gray-400 focus:border-gray-300 focus:outline-none focus:ring-0"
                         rows={1}
                         disabled={isSending}
                         style={{
-                          height: '40px',
-                          minHeight: '40px',
-                          fontSize: '1rem',
-                          lineHeight: '1.4',
+                          height: '44px',
+                          minHeight: '44px',
+                          fontSize: '0.9375rem',
+                          lineHeight: '1.45',
                           color: '#111827',
-                          backgroundColor: '#f3f4f6',
-                          padding: '8px 12px',
+                          padding: '12px 14px',
                           boxSizing: 'border-box'
                         }}
                       />
@@ -11010,6 +11639,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             </div>
           </div>
         </div>
+      )}
+
+      {showRmqFlagLeadModal && messageToFlag && (
+        <RmqMessageFlagLeadModal
+          open={showRmqFlagLeadModal}
+          onClose={() => {
+            setShowRmqFlagLeadModal(false);
+            setMessageToFlag(null);
+          }}
+          messagePreview={(messageToFlag.content || '').slice(0, 280)}
+          flagTypes={rmqMessageFlagTypes}
+          searchLeads={searchLeadsForFlagModal}
+          isSearching={flagLeadSearchBusy}
+          onSubmit={submitRmqMessageFlag}
+        />
       )}
 
       {/* Message comments (thread on a chat message) */}
@@ -11988,6 +12632,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 rmqPinnedRows.some(r => r.message.id === mobileMessageActionMessage.id)
                   ? 'Unpin message'
                   : 'Pin message'}
+              </button>
+              <button
+                onClick={() => {
+                  setMessageToFlag(mobileMessageActionMessage);
+                  setShowRmqFlagLeadModal(true);
+                  setMobileMessageActionMessage(null);
+                }}
+                className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-base font-medium text-base-content hover:bg-base-200 transition-colors text-left"
+              >
+                <FlagIcon className="w-5 h-5 text-amber-600" />
+                Flag to lead…
               </button>
               {mobileMessageActionMessage.sender_id === currentUser?.id && (
                 <>
