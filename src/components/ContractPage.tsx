@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom/client';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
@@ -1014,33 +1014,50 @@ const ContractPage: React.FC = () => {
     );
   };
 
-  // Helper function to get currency name from accounting_currencies table (same logic as ClientHeader.tsx)
-  const getCurrencyName = (currencyId: string | number | null | undefined): string => {
-    if (!currencyId || currencyId === null || currencyId === undefined) {
-      return '₪'; // Default fallback
+  // Same as ClientHeader: accounting_currencies join first, then allCurrencies lookup
+  const getCurrencyName = (currencyId: string | number | null | undefined, accountingCurrencies?: any): string => {
+    const finalCurrencyId = currencyId ?? 1;
+    if (accountingCurrencies) {
+      const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
+      if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
+        return currencyRecord.name.trim();
+      }
     }
-
     if (!allCurrencies || allCurrencies.length === 0) {
-      return '₪'; // Default fallback until currencies load
+      return '';
     }
-
-    const currencyIdNum = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+    const currencyIdNum = typeof finalCurrencyId === 'string' ? parseInt(finalCurrencyId, 10) : Number(finalCurrencyId);
     if (isNaN(currencyIdNum)) {
-      return '₪'; // Default fallback
+      const defaultCurrency = allCurrencies.find((curr: any) => {
+        if (!curr || !curr.id) return false;
+        const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
+        const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
+        return !isNaN(currIdNum) && currIdNum === 1;
+      });
+      if (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '') {
+        return defaultCurrency.name.trim();
+      }
+      return '';
     }
-
     const currency = allCurrencies.find((curr: any) => {
       if (!curr || !curr.id) return false;
       const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
       const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
       return !isNaN(currIdNum) && currIdNum === currencyIdNum;
     });
-
     if (currency && currency.name && currency.name.trim() !== '') {
       return currency.name.trim();
     }
-
-    return '₪';
+    const defaultCurrency = allCurrencies.find((curr: any) => {
+      if (!curr || !curr.id) return false;
+      const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
+      const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
+      return !isNaN(currIdNum) && currIdNum === 1;
+    });
+    if (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '') {
+      return defaultCurrency.name.trim();
+    }
+    return '';
   };
 
   const [signaturePads, setSignaturePads] = useState<{ [key: string]: any }>({});
@@ -1198,45 +1215,37 @@ const ContractPage: React.FC = () => {
   const lastContentHashRef = useRef<string>('');
   const lastEditingStateRef = useRef<boolean>(false);
 
-  // Ref to measure header height for sidebar positioning
   const headerRef = useRef<HTMLDivElement>(null);
-  const [headerHeight, setHeaderHeight] = useState(80);
 
   // Ref for contract content area (for PDF generation)
   const contractContentRef = useRef<HTMLDivElement>(null);
 
+  /** Viewport top offset so fixed right rail lines up with #contract-print-area */
+  const [rightRailTopPx, setRightRailTopPx] = useState(120);
+
   // PDF loading state
   const [pdfLoading, setPdfLoading] = useState(false);
 
-  // Measure header height for sidebar positioning
-  useEffect(() => {
-    const updateHeaderHeight = () => {
-      if (headerRef.current) {
-        const height = headerRef.current.offsetHeight;
-        setHeaderHeight(height);
-      }
-    };
+  // Lock viewport `top` to the card’s initial screen position — do NOT tie to scroll or the rail
+  // creeps up with the document. Still update on resize / layout (ResizeObserver).
+  const updateRightRailTop = useCallback(() => {
+    const card = contractContentRef.current;
+    if (!card) return;
+    setRightRailTopPx(Math.max(0, Math.round(card.getBoundingClientRect().top)));
+  }, []);
 
-    // Initial measurement
-    updateHeaderHeight();
-
-    // Update on window resize
-    window.addEventListener('resize', updateHeaderHeight);
-
-    // Use ResizeObserver for more accurate measurements
-    const resizeObserver = new ResizeObserver(() => {
-      updateHeaderHeight();
-    });
-
-    if (headerRef.current) {
-      resizeObserver.observe(headerRef.current);
-    }
-
+  useLayoutEffect(() => {
+    updateRightRailTop();
+    const schedule = () => requestAnimationFrame(updateRightRailTop);
+    window.addEventListener('resize', schedule);
+    const ro = new ResizeObserver(schedule);
+    if (contractContentRef.current) ro.observe(contractContentRef.current);
+    if (headerRef.current) ro.observe(headerRef.current);
     return () => {
-      window.removeEventListener('resize', updateHeaderHeight);
-      resizeObserver.disconnect();
+      window.removeEventListener('resize', schedule);
+      ro.disconnect();
     };
-  }, []); // ResizeObserver handles all changes automatically
+  }, [updateRightRailTop, contract?.id, loading]);
 
   // Fetch client data
   useEffect(() => {
@@ -5232,84 +5241,78 @@ const ContractPage: React.FC = () => {
   // In the side panel and contract, show total as final_amount + archival_research_fee
   const totalWithArchival = (customPricing?.final_amount || 0) + (customPricing?.archival_research_fee || 0);
 
+  const mainContactDisplay =
+    (contract?.contact_name && String(contract.contact_name).trim()) ||
+    (client?.name && String(client.name).trim()) ||
+    '—';
+
+  const barCategory = client ? getCategoryDisplayName(client.category_id, client.category) : '';
+  const barTopic = client?.topic?.trim() || '';
+
   return (
-    <div className="min-h-screen bg-white">
-      {/* Header */}
+    <div className="min-h-screen bg-gray-100 print:bg-white">
+      {/* Sticky top bar — single row incl. category & topic */}
       <div
         ref={headerRef}
-        className="print-hide px-4 sm:px-6 pt-4 pb-2"
+        className="print-hide sticky top-0 z-[45] border-b border-gray-200/70 bg-white/85 shadow-[0_2px_16px_rgba(15,23,42,0.04)] backdrop-blur-xl supports-[backdrop-filter]:bg-white/65"
       >
-        <div className="flex justify-between items-center">
-          <div className="flex items-center space-x-1 sm:space-x-4 flex-1 min-w-0">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-                {status === 'signed' && (
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 dark:bg-emerald-400/20 text-emerald-700 dark:text-emerald-300 border border-emerald-400/40 dark:border-emerald-400/30 px-3.5 py-1.5 text-sm font-semibold shadow-sm">
-                    <CheckIcon className="w-4 h-4 shrink-0" />
-                    Signed
-                  </span>
-                )}
-                {status === 'draft' && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={goToLeadPage}
-                      className="btn btn-ghost btn-sm sm:btn-sm p-2 sm:p-2"
-                      title="Back to client"
-                    >
-                      <ArrowLeftIcon className="w-5 h-5 sm:w-5 sm:h-5" />
-                    </button>
-                    <span className="badge badge-md sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">Draft</span>
-                  </>
-                )}
-                <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
-                  <div className="flex items-center gap-1.5">
-                    <UserIcon className="w-5 h-5 sm:w-5 sm:h-5 text-gray-600" />
-                    <span className="text-sm sm:text-lg font-bold text-gray-900">{client?.name || 'Client'}</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <ClipboardDocumentIcon className="w-5 h-5 sm:w-5 sm:h-5 text-gray-600" />
-                    <span className="text-sm sm:text-lg font-bold text-gray-900">#{renderLeadNumber()}</span>
-                  </div>
-                  {(() => {
-                    const displayCategory = getCategoryDisplayName(client?.category_id, client?.category);
-                    return displayCategory ? (
-                      <div className="flex items-center gap-1.5">
-                        <TagIcon className="w-5 h-5 sm:w-5 sm:h-5 text-gray-600" />
-                        <span className="text-sm sm:text-lg font-bold text-gray-900">{displayCategory}</span>
-                      </div>
-                    ) : null;
-                  })()}
-                  {client?.topic && (
-                    <div className="flex items-center gap-1.5">
-                      <DocumentTextIcon className="w-5 h-5 sm:w-5 sm:h-5 text-gray-600" />
-                      <span className="text-sm sm:text-lg font-bold text-gray-900">{client.topic}</span>
-                    </div>
-                  )}
-                </div>
-                {(leadNumber || client) && (
-                  <button
-                    type="button"
-                    onClick={goToLeadPage}
-                    className="btn btn-outline btn-sm gap-1.5 print-hide"
-                    title="Go to lead page"
-                  >
-                    <ArrowLeftIcon className="w-5 h-5 sm:w-5 sm:h-5 shrink-0 sm:hidden" />
-                    <span className="hidden sm:inline">Back to lead</span>
-                  </button>
-                )}
-              </div>
+        <div className="mx-auto flex max-w-[1920px] flex-wrap items-center gap-x-2 gap-y-2 px-3 py-2.5 sm:gap-x-3 sm:px-5 sm:py-3">
+          <button
+            type="button"
+            onClick={goToLeadPage}
+            className="btn btn-sm h-9 min-h-9 gap-1.5 rounded-full border-0 bg-gray-900 px-3 text-sm font-medium text-white shadow-sm hover:bg-gray-800 print-hide sm:px-4"
+            title="Back to lead"
+          >
+            <ArrowLeftIcon className="h-4 w-4 shrink-0 opacity-90" />
+            <span>Back to lead</span>
+          </button>
+          <span className="hidden h-7 w-px shrink-0 bg-gray-200 sm:block" aria-hidden />
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1.5 sm:gap-x-4">
+            <div className="min-w-0 max-w-[min(100%,16rem)]">
+              <p className="text-[10px] font-semibold uppercase leading-none tracking-[0.12em] text-gray-400">Main contact</p>
+              <p className="truncate text-base font-semibold leading-snug text-gray-900">{mainContactDisplay}</p>
             </div>
+            <div className="shrink-0">
+              <p className="text-[10px] font-semibold uppercase leading-none tracking-[0.12em] text-gray-400">Lead</p>
+              <p className="font-mono text-base font-bold tabular-nums leading-snug text-gray-900">#{renderLeadNumber()}</p>
+            </div>
+            {barCategory ? (
+              <span className="inline-flex max-w-[min(100%,12rem)] items-center gap-1 rounded-md border border-gray-200/80 bg-gray-50/90 px-2.5 py-1 text-xs font-medium leading-snug text-gray-700 sm:max-w-[14rem]">
+                <TagIcon className="h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden />
+                <span className="truncate">{barCategory}</span>
+              </span>
+            ) : null}
+            {barTopic ? (
+              <span className="inline-flex max-w-[min(100%,14rem)] items-center gap-1 rounded-md border border-gray-200/80 bg-gray-50/90 px-2.5 py-1 text-xs font-medium leading-snug text-gray-700 sm:max-w-[18rem]">
+                <DocumentTextIcon className="h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden />
+                <span className="truncate">{barTopic}</span>
+              </span>
+            ) : null}
+          </div>
+          <div className="ml-auto flex shrink-0 items-center">
+            {status === 'signed' ? (
+              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-400/35 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-800 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-200">
+                <CheckIcon className="h-3.5 w-3.5 shrink-0" />
+                Signed
+              </span>
+            ) : (
+              <span className="rounded-full bg-gradient-to-r from-fuchsia-600 via-violet-600 to-indigo-600 px-2.5 py-1 text-xs font-semibold text-white shadow-sm shadow-violet-500/20">
+                Draft
+              </span>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Main Content */}
-      <div className="w-full px-2 sm:px-6 py-8 pb-24 xl:pb-20 print-content-wrapper">
-        <div className="relative min-h-screen">
-          {/* Contract Content */}
-          <div className="w-full transition-all duration-300 xl:pr-[280px]">
-            <div ref={contractContentRef} id="contract-print-area" className="text-gray-900 leading-relaxed [&_.ProseMirror_p]:mb-3 [&_p]:mb-3 text-sm sm:text-base [&_*]:text-sm sm:[&_*]:text-base">
+      {/* Main Content — centered white card; fixed right rail is metadata only (Share/Edit on desktop bottom bar) */}
+      <div className="print-content-wrapper w-full bg-gray-100 px-3 py-8 pb-24 sm:px-6 xl:pb-20 print:bg-transparent">
+        <div className="relative min-h-[60vh]">
+          <div className="flex w-full justify-center transition-all duration-300">
+            <div
+              ref={contractContentRef}
+              id="contract-print-area"
+              className="w-full max-w-full border border-gray-200/90 bg-white text-gray-900 shadow-sm sm:max-w-[min(100%,44rem)] md:max-w-[min(100%,48rem)] lg:max-w-[min(100%,52rem)] xl:max-w-[56rem] 2xl:max-w-[60rem] rounded-2xl px-5 py-6 sm:px-8 sm:py-8 leading-relaxed print:max-w-none print:rounded-none print:border-0 print:shadow-none [&_.ProseMirror_p]:mb-3 [&_p]:mb-3 text-sm sm:text-base [&_*]:text-sm sm:[&_*]:text-base"
+            >
               {editing ? (
                 <>
                   {/* Editor Toolbar with Field Insertion - Fixed at top */}
@@ -5456,10 +5459,10 @@ const ContractPage: React.FC = () => {
                 // For signed contracts, show the filled-in content using custom rendering
                 // Wrap in ProseMirror class to match edit mode styling
                 <div
-                  className="ProseMirror"
+                  className="ProseMirror contract-page-prosemirror"
                   contentEditable="false"
                   key={`signed-${renderKey}-${customPricing?.final_amount}-${customPricing?.applicant_count}`}
-                  style={{ padding: '1.5rem', minHeight: '100%' }}
+                  style={{ minHeight: '100%' }}
                 >
                   {contract.custom_content ? (
                     (() => {
@@ -5478,10 +5481,10 @@ const ContractPage: React.FC = () => {
                 // Key includes pricing tiers hash to force re-render when any tier price changes
                 // Wrap in ProseMirror class to match edit mode styling
                 <div
-                  className="ProseMirror"
+                  className="ProseMirror contract-page-prosemirror"
                   contentEditable="false"
                   key={`readonly-${renderKey}-${template?.id || 'no-template'}-${contract?.template_id || contract?.custom_pricing?.legacy_template_id || 'no-id'}-${customPricing?.final_amount || 0}-${customPricing?.applicant_count || 0}-${customPricing?.pricing_tiers ? Object.values(customPricing.pricing_tiers).join('-') : ''}`}
-                  style={{ padding: '1.5rem', minHeight: '100%' }}
+                  style={{ minHeight: '100%' }}
                 >
                   {(() => {
                     // Get content from contract.custom_content (saved content) or template content
@@ -5509,94 +5512,33 @@ const ContractPage: React.FC = () => {
           {/* Sidebar - Fixed to right edge of viewport - Only show button, no background */}
           {!showDetailsAndPricingModal && (
             <>
-              {/* Desktop buttons */}
+              {/* Desktop right rail: pricing summary & contact actions only */}
               <div
                 className="fixed top-0 right-0 z-[60] transition-all duration-300 ease-in-out hidden xl:block print-hide"
                 style={{
-                  top: `${headerHeight + 32}px`,
+                  top: `${rightRailTopPx}px`,
                   paddingRight: '16px',
-                  height: `calc(100vh - ${headerHeight + 32}px)`
+                  height: `calc(100vh - ${rightRailTopPx}px - 12px)`
                 }}
               >
                 <div className="flex flex-col h-full relative">
-                  <div className="flex flex-col gap-3">
-                    {/* Button to open Contract Details & Pricing Modal */}
-                    {/* <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setShowDetailsAndPricingModal(true)}
-                        className="btn btn-circle btn-primary"
-                        title="Contract Details & Pricing"
-                      >
-                        <Cog6ToothIcon className="w-6 h-6" />
-                      </button>
-                      <span className="text-sm text-black font-medium">Pricing</span>
-                    </div> */}
+                  {/* Share / Edit / Save / Cancel moved to desktop bottom bar */}
 
-                    {/* Share button */}
-                      <button
-                      className="btn btn-circle btn-ghost"
-                        onClick={handleShareContractLink}
-                        title="Copy public contract link"
-                      >
-                      <ShareIcon className="w-6 h-6 text-black" />
-                      </button>
+                  {/* Closer, applicants, total — card panel with generous spacing */}
+                  <div className="mt-1 w-[min(100%,15.5rem)] pr-1">
+                    <div className="rounded-2xl border border-gray-200/90 bg-white/85 shadow-[0_1px_3px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-sm px-5 py-7 space-y-8">
+                    {/* Lead + main contact (matches top bar) */}
+                    <div className="space-y-5 border-b border-gray-100/90 pb-7">
+                      <div className="space-y-1.5">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400/90">Main contact</p>
+                        <p className="text-sm font-semibold leading-snug text-gray-900 line-clamp-3">{mainContactDisplay}</p>
+                      </div>
+                      <div className="space-y-1.5">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400/90">Lead number</p>
+                        <p className="font-mono text-base font-bold tabular-nums text-gray-900">#{renderLeadNumber()}</p>
+                      </div>
+                    </div>
 
-                    {!editing && status === 'draft' && (
-                        <button
-                        className="btn btn-circle btn-ghost"
-                          onClick={() => {
-                            setEditing(true);
-                            // Focus editor after entering edit mode
-                            setTimeout(() => {
-                              if (editor) {
-                                editor.commands.focus();
-                              }
-                            }, 100);
-                          }}
-                        title="Edit"
-                        >
-                        <PencilIcon className="w-6 h-6 text-black" />
-                        </button>
-                    )}
-
-                    {editing && (
-                      <>
-                          <button
-                          className="btn btn-circle btn-success"
-                            onClick={handleSaveEdit}
-                          title="Save"
-                          >
-                            <CheckIcon className="w-6 h-6" />
-                          </button>
-                          <button
-                          className="btn btn-circle btn-error"
-                            onClick={async () => {
-                              setEditing(false);
-                              // Reload contract content to discard changes without full page reload
-                              if (contract?.id && editor) {
-                                const { data: contractData } = await supabase
-                                  .from('contracts')
-                                  .select('*, contract_templates(*)')
-                                  .eq('id', contract.id)
-                                  .single();
-                                if (contractData) {
-                                  // Update contract state - this will trigger the useEffect to reprocess content
-                                  setContract(contractData);
-                                  // Force content reprocessing by incrementing renderKey
-                                  setRenderKey(prev => prev + 1);
-                                }
-                              }
-                            }}
-                          title="Cancel"
-                          >
-                            <XMarkIcon className="w-6 h-6" />
-                          </button>
-                      </>
-                    )}
-                  </div>
-
-                  {/* Closer Role, Applicants, and Total Value */}
-                  <div className="mt-6 pt-6 space-y-4">
                     {/* Closer Role */}
                     {(() => {
                       if (!client) return null;
@@ -5630,11 +5572,13 @@ const ContractPage: React.FC = () => {
                       if (!closerId || closerDisplay === '---' || closerDisplay === '') return null;
 
                       return (
-                        <div className="flex flex-col items-start">
-                          <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Closer</p>
-                          <div className="flex items-center gap-2 h-12">
-                            <EmployeeAvatar employeeId={closerId} size="md" />
-                            <p className="font-medium truncate text-sm leading-5">{closerDisplay}</p>
+                        <div className="flex flex-col items-stretch gap-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400/90">Closer</p>
+                          <div className="flex items-center gap-3 min-h-[3rem]">
+                            <div className="ring-2 ring-white shadow-md rounded-full shrink-0">
+                              <EmployeeAvatar employeeId={closerId} size="md" />
+                            </div>
+                            <p className="font-semibold text-gray-900 text-sm leading-snug truncate">{closerDisplay}</p>
                           </div>
                         </div>
                       );
@@ -5646,10 +5590,10 @@ const ContractPage: React.FC = () => {
                       if (!applicantCount || applicantCount === 0) return null;
 
                       return (
-                        <div className="flex flex-col items-start">
-                          <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Applicants</p>
-                          <div className="flex items-center gap-2">
-                            <span className="badge badge-sm badge-ghost font-medium text-xs px-2 py-0.5 border-gray-200 text-gray-600">
+                        <div className="flex flex-col items-stretch gap-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400/90">Applicants</p>
+                          <div>
+                            <span className="inline-flex items-center rounded-full border border-gray-200/80 bg-gray-50/90 px-3.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm">
                               {applicantCount} {applicantCount === 1 ? 'Applicant' : 'Applicants'}
                             </span>
                           </div>
@@ -5657,103 +5601,83 @@ const ContractPage: React.FC = () => {
                       );
                     })()}
 
-                    {/* Total Value with VAT */}
+                    {/* Total Value — same currency/amount/VAT logic and styling as ClientHeader (desktop) */}
                     {(() => {
-                      if (!client || !customPricing) return null;
-
-                      const isLegacyLead = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
-
-                      // 1. Currency Resolution
+                      if (!client) return null;
+                      const isLegacyLead = client?.id?.toString().startsWith('legacy_');
                       let currency = '';
-                      if (client?.currency_id) {
-                        const currencyFromId = getCurrencyName(client.currency_id);
-                        if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
-                          currency = currencyFromId;
+                      const accountingCurrencies = (client as any)?.accounting_currencies;
+                      if (accountingCurrencies) {
+                        const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
+                        if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
+                          currency = currencyRecord.name.trim();
                         }
                       }
-                      if (isLegacyLead && (client as any)?.currency_id && !currency) {
-                        const currencyFromId = getCurrencyName((client as any).currency_id);
-                        if (currencyFromId && currencyFromId.trim() !== '' && currencyFromId !== '₪') {
-                          currency = currencyFromId;
+                      if (!isLegacyLead) {
+                        const currencyId = (client as any)?.currency_id ?? 1;
+                        const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                        if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
+                          currency = getCurrencyName(numericCurrencyId, accountingCurrencies);
+                          if (!currency || currency.trim() === '') currency = getCurrencyName(1);
+                        } else {
+                          currency = getCurrencyName(1);
                         }
+                      } else {
+                        if (!currency && client?.currency_id) {
+                          const currencyFromId = getCurrencyName(client.currency_id, accountingCurrencies);
+                          if (currencyFromId && currencyFromId.trim() !== '') currency = currencyFromId;
+                        }
+                        if (!currency || currency.trim() === '') currency = client?.balance_currency || '';
+                        if (!currency || currency.trim() === '') currency = getCurrencyName(1);
                       }
-                      if (!currency) {
-                        currency = client?.proposal_currency ?? client?.balance_currency ?? customPricing?.currency ?? '';
-                      }
-                      if (!currency || currency.trim() === '') {
-                        const defaultCurrency = allCurrencies.find((curr: any) => {
-                          if (!curr || !curr.id) return false;
-                          const currId = typeof curr.id === 'bigint' ? Number(curr.id) : curr.id;
-                          const currIdNum = typeof currId === 'string' ? parseInt(currId, 10) : Number(currId);
-                          return !isNaN(currIdNum) && currIdNum === 1;
-                        });
-                        currency = (defaultCurrency && defaultCurrency.name && defaultCurrency.name.trim() !== '')
-                          ? defaultCurrency.name.trim()
-                          : '₪';
-                      }
-
-                      // 2. Base Amount
                       let baseAmount: number;
                       if (isLegacyLead) {
                         const currencyId = (client as any)?.currency_id;
                         let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
                         if (!numericCurrencyId || isNaN(numericCurrencyId)) numericCurrencyId = 1;
-
-                        if (numericCurrencyId === 1) {
-                          baseAmount = Number((client as any)?.total_base ?? 0);
-                        } else {
-                          baseAmount = Number((client as any)?.total ?? 0);
-                        }
+                        baseAmount =
+                          numericCurrencyId === 1
+                            ? Number((client as any)?.total_base ?? 0)
+                            : Number((client as any)?.total ?? 0);
                       } else {
-                        baseAmount = Number(client?.balance || client?.proposal_total || customPricing?.total_amount || 0);
+                        baseAmount = Number(client?.balance || client?.proposal_total || 0);
                       }
-
-                      // 3. Subcontractor Fee & Net Amount
                       const subcontractorFee = Number(client?.subcontractor_fee ?? 0);
                       const mainAmount = baseAmount - subcontractorFee;
-
-                      // 4. VAT
                       let vatAmount = 0;
                       let shouldShowVAT = false;
                       const vatValue = client?.vat;
-
                       if (isLegacyLead) {
                         shouldShowVAT = true;
                         if (vatValue !== null && vatValue !== undefined) {
                           const vatStr = String(vatValue).toLowerCase().trim();
                           if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
                         }
-                        if (shouldShowVAT) {
-                          vatAmount = baseAmount * 0.18;
-                        }
+                        if (shouldShowVAT) vatAmount = baseAmount * 0.18;
                       } else {
                         shouldShowVAT = true;
                         if (vatValue !== null && vatValue !== undefined) {
                           const vatStr = String(vatValue).toLowerCase().trim();
                           if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
                         }
-
                         if (shouldShowVAT) {
-                          if (client?.vat_value && Number(client.vat_value) > 0) {
-                            vatAmount = Number(client.vat_value);
-                          } else {
-                            vatAmount = baseAmount * 0.18;
-                          }
+                          vatAmount =
+                            client?.vat_value && Number(client.vat_value) > 0
+                              ? Number(client.vat_value)
+                              : baseAmount * 0.18;
                         }
                       }
-
-                      if (mainAmount === 0 && vatAmount === 0) return null;
-
                       return (
-                        <div className="flex flex-col items-start">
-                          <p className="text-[10px] text-gray-400 uppercase tracking-wide font-semibold h-4 leading-4 mb-1">Total Value</p>
-                          <div className="space-y-1">
+                        <div className="flex flex-col items-stretch gap-3">
+                          <div className="space-y-1.5">
+                            <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Total Value</p>
                             <div className="flex items-end gap-2">
-                              <p className="text-2xl font-bold text-gray-900 leading-none tracking-tight">
-                                {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
+                              <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white">
+                                {currency}
+                                {Number(mainAmount.toFixed(2)).toLocaleString()}
                               </p>
                               {shouldShowVAT && vatAmount > 0 && (
-                                <p className="text-sm text-gray-600 pb-1">
+                                <p className="pb-1 text-sm text-gray-600 dark:text-gray-400">
                                   +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
                                 </p>
                               )}
@@ -5763,9 +5687,8 @@ const ContractPage: React.FC = () => {
                       );
                     })()}
 
-                    {/* Call and Email Icons - Directly under value badge */}
-                    <div className="flex items-center gap-2 pt-2">
-                    {/* Call Icon */}
+                    {/* Call and Email — grouped action row */}
+                    <div className="flex items-center gap-3">
                       <button
                         onClick={async () => {
                           if (!client) return;
@@ -5777,7 +5700,6 @@ const ContractPage: React.FC = () => {
                               ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
                               : client.id;
                             const contacts = await fetchLeadContacts(leadId, isLegacyLead);
-                            // Filter contacts with phone numbers
                             const contactsWithPhone = contacts.filter(c => (c.phone || c.mobile) && (c.phone?.trim() || c.mobile?.trim()));
                             setAvailableContacts(contactsWithPhone.length > 0 ? contactsWithPhone : contacts);
                           } catch (error) {
@@ -5787,13 +5709,11 @@ const ContractPage: React.FC = () => {
                             setLoadingContacts(false);
                           }
                         }}
-                        className="btn btn-circle btn-ghost"
+                        className="btn btn-circle h-11 w-11 min-h-11 border border-gray-200/90 bg-gray-50/80 text-gray-800 shadow-sm hover:bg-white hover:border-gray-300 hover:shadow"
                         title="Call"
                       >
-                        <PhoneIcon className="w-6 h-6 text-black" />
+                        <PhoneIcon className="w-5 h-5" />
                       </button>
-
-                    {/* Email Icon */}
                       <button
                         onClick={async () => {
                           if (!client) return;
@@ -5805,7 +5725,6 @@ const ContractPage: React.FC = () => {
                               ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
                               : client.id;
                             const contacts = await fetchLeadContacts(leadId, isLegacyLead);
-                            // Filter contacts with emails
                             const contactsWithEmail = contacts.filter(c => c.email && c.email.trim());
                             setAvailableContacts(contactsWithEmail.length > 0 ? contactsWithEmail : contacts);
                           } catch (error) {
@@ -5815,11 +5734,12 @@ const ContractPage: React.FC = () => {
                             setLoadingContacts(false);
                           }
                         }}
-                        className="btn btn-circle btn-ghost"
+                        className="btn btn-circle h-11 w-11 min-h-11 border border-gray-200/90 bg-gray-50/80 text-gray-800 shadow-sm hover:bg-white hover:border-gray-300 hover:shadow"
                         title="Email"
                       >
-                        <EnvelopeIcon className="w-6 h-6 text-black" />
+                        <EnvelopeIcon className="w-5 h-5" />
                       </button>
+                    </div>
                     </div>
                   </div>
                 </div>
@@ -6222,6 +6142,10 @@ const ContractPage: React.FC = () => {
           padding: 1.5rem;
           outline: none;
         }
+        /* Card (#contract-print-area) already has padding — avoid double inset */
+        #contract-print-area .ProseMirror {
+          padding: 0 !important;
+        }
         
         /* RTL support for Hebrew/Arabic text */
         .ProseMirror p[dir="rtl"],
@@ -6447,37 +6371,101 @@ const ContractPage: React.FC = () => {
             </div>
               </div>
 
-          {/* Desktop: Keep original styling */}
+          {/* Desktop / tablet: bottom bar incl. Share & Edit (right rail is metadata-only on xl+) */}
           <div className="hidden sm:block">
             <div className="backdrop-blur-md bg-white/95 rounded-2xl shadow-lg border border-white/20 px-4 py-3">
-              <div className="flex items-center justify-between gap-4 flex-wrap">
-              {/* Desktop: Created Date, Change Template Button, Delete Button */}
-                <div className="flex items-center gap-4 flex-wrap">
-                <div className="flex items-center gap-2">
-                  <CalendarIcon className="w-4 h-4 text-gray-500" />
-                  <p className="text-xs sm:text-sm text-gray-600">
-                    {new Date(contract.created_at).toLocaleDateString()}
-                  </p>
-                </div>
-                {status === 'draft' && (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowChangeTemplateModal(true);
-                    }}
+              <div className="flex items-center justify-center gap-4 flex-wrap">
+                <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-center">
+                  <div className="flex items-center gap-2">
+                    <CalendarIcon className="w-4 h-4 text-gray-500" />
+                    <p className="text-xs sm:text-sm text-gray-600">
+                      {new Date(contract.created_at).toLocaleDateString()}
+                    </p>
+                  </div>
+
+                  {!showDetailsAndPricingModal && (
+                    <>
+                      <button
+                        className="btn btn-circle btn-ghost"
+                        onClick={handleShareContractLink}
+                        title="Copy public contract link"
+                      >
+                        <ShareIcon className="w-5 h-5 text-black" />
+                      </button>
+
+                      {!editing && status === 'draft' && (
+                        <button
+                          className="btn btn-circle btn-ghost"
+                          onClick={() => {
+                            setEditing(true);
+                            setTimeout(() => {
+                              if (editor) {
+                                editor.commands.focus();
+                              }
+                            }, 100);
+                          }}
+                          title="Edit"
+                        >
+                          <PencilIcon className="w-5 h-5 text-black" />
+                        </button>
+                      )}
+
+                      {editing && (
+                        <>
+                          <button
+                            className="btn btn-circle btn-success"
+                            onClick={handleSaveEdit}
+                            title="Save"
+                          >
+                            <CheckIcon className="w-5 h-5" />
+                          </button>
+                          <button
+                            className="btn btn-circle btn-error"
+                            onClick={async () => {
+                              setEditing(false);
+                              if (contract?.id && editor) {
+                                const { data: contractData } = await supabase
+                                  .from('contracts')
+                                  .select('*, contract_templates(*)')
+                                  .eq('id', contract.id)
+                                  .single();
+                                if (contractData) {
+                                  setContract(contractData);
+                                  if (contractData.contract_templates) {
+                                    setTemplate(contractData.contract_templates);
+                                  }
+                                  setRenderKey(prev => prev + 1);
+                                }
+                              }
+                            }}
+                            title="Cancel"
+                          >
+                            <XMarkIcon className="w-5 h-5" />
+                          </button>
+                        </>
+                      )}
+                    </>
+                  )}
+
+                  {status === 'draft' && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowChangeTemplateModal(true);
+                      }}
                       className="btn btn-circle btn-ghost"
                       title="Change Template"
-                  >
+                    >
                       <ClipboardDocumentIcon className="w-5 h-5 text-black" />
-                  </button>
-                )}
-                <button
-                  onClick={handleDeleteContract}
+                    </button>
+                  )}
+                  <button
+                    onClick={handleDeleteContract}
                     className="btn btn-circle btn-error"
-                  title="Delete Contract"
-                >
+                    title="Delete Contract"
+                  >
                     <TrashIcon className="w-5 h-5" />
-                </button>
+                  </button>
                 </div>
               </div>
             </div>
