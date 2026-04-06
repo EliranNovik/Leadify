@@ -457,7 +457,7 @@ const HighlightsPanel: React.FC<HighlightsPanelProps> = ({ isOpen, onClose }) =>
     
     return (
       <span 
-        className="badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
+        className="stage-badge badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
         style={{
           backgroundColor: backgroundColor,
           borderColor: backgroundColor,

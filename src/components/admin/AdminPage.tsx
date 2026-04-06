@@ -25,6 +25,10 @@ import EmployeesManager from './EmployeesManager';
 import SourcesManager from './SourcesManager';
 import BankAccountsManager from './BankAccountsManager';
 import MeetingLocationsManager from './MeetingLocationsManager';
+import FirmTypesManager from './FirmTypesManager';
+import FirmsManager from './FirmsManager';
+import FirmContactsManager from './FirmContactsManager';
+import ChannelsManager from './ChannelsManager';
 import LanguagesManager from './LanguagesManager';
 import HolidaysManager from './HolidaysManager';
 import LeadTagsManager from './LeadTagsManager';
@@ -112,7 +116,17 @@ const ADMIN_TABS: AdminTab[] = [
   {
     label: 'Tenants',
     icon: BuildingOffice2Icon,
-    subcategories: ['Bank accounts', 'Departements', 'Employees', 'Employee Field Assignments', 'Firms', 'Meeting Locations'],
+    subcategories: [
+      'Bank accounts',
+      'Departements',
+      'Employees',
+      'Employee Field Assignments',
+      'Firm types',
+      'Firms',
+      'Firm contacts',
+      'Channels',
+      'Meeting Locations',
+    ],
     requiresAdmin: true,
   },
   {
@@ -1556,8 +1570,30 @@ const AdminPage: React.FC = () => {
                   selectedTab?.subcategories[selected.sub] === 'Bank accounts' ? (
                   <div className="w-full"><BankAccountsManager /></div>
                 ) : selectedTab?.label === 'Tenants' &&
+                  selectedTab?.subcategories[selected.sub] === 'Firm types' ? (
+                  <div className="w-full">
+                    <FirmTypesManager />
+                  </div>
+                ) : selectedTab?.label === 'Tenants' &&
+                  selectedTab?.subcategories[selected.sub] === 'Firms' ? (
+                  <div className="w-full">
+                    <FirmsManager />
+                  </div>
+                ) : selectedTab?.label === 'Tenants' &&
+                  selectedTab?.subcategories[selected.sub] === 'Firm contacts' ? (
+                  <div className="w-full">
+                    <FirmContactsManager />
+                  </div>
+                ) : selectedTab?.label === 'Tenants' &&
+                  selectedTab?.subcategories[selected.sub] === 'Channels' ? (
+                  <div className="w-full">
+                    <ChannelsManager />
+                  </div>
+                ) : selectedTab?.label === 'Tenants' &&
                   selectedTab?.subcategories[selected.sub] === 'Meeting Locations' ? (
-                  <div className="w-full"><MeetingLocationsManager /></div>
+                  <div className="w-full">
+                    <MeetingLocationsManager />
+                  </div>
                 ) : selectedTab?.label === 'Misc' &&
                   selectedTab?.subcategories[selected.sub] === 'Languages' ? (
                   <div className="w-full"><LanguagesManager /></div>

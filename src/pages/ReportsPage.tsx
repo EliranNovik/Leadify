@@ -84,7 +84,7 @@ const StageSearchReport = () => {
     const stageText = stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     return (
       <span
-        className="badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
+        className="badge stage-badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
         style={{ backgroundColor: '#3b28c7', minWidth: 'fit-content' }}
       >
         {stageText}
@@ -267,7 +267,7 @@ const AnchorSearchReport = () => {
     const stageText = stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     return (
       <span
-        className="badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
+        className="badge stage-badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
         style={{ backgroundColor: '#3b28c7', minWidth: 'fit-content' }}
       >
         {stageText}
@@ -523,7 +523,7 @@ const DuplicateSearchReport = () => {
     const stageText = stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     return (
       <span
-        className="badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
+        className="badge stage-badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
         style={{ backgroundColor: '#3b28c7', minWidth: 'fit-content' }}
       >
         {stageText}
@@ -1253,7 +1253,7 @@ const CategorySourceReport = () => {
   const getStageBadge = (stage: string) => {
     return (
       <span
-        className="badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
+        className="badge stage-badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
         style={{ backgroundColor: '#3b28c7', minWidth: 'fit-content' }}
       >
         {stage}
@@ -3814,7 +3814,7 @@ const BonusesV4Report = () => {
     const stageText = stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     return (
       <span
-        className="badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
+        className="badge stage-badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
         style={{ backgroundColor: '#3b28c7', minWidth: 'fit-content' }}
       >
         {stageText}

@@ -71,7 +71,7 @@ const renderStageBadge = (stageValue: string | number | null | undefined) => {
 
   return (
     <span
-      className="inline-flex items-center px-3 py-1 rounded-lg text-xs font-semibold shadow-sm"
+      className="stage-badge inline-flex items-center px-3 py-1 rounded-lg text-xs font-semibold shadow-sm"
       style={{ backgroundColor: stageColour, color: badgeTextColour }}
     >
       {stageName}

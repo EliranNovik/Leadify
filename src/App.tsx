@@ -865,7 +865,7 @@ const AppContentInner: React.FC = () => {
                   mobileOnly={sidebarMobileOnly}
                 />
               </div>
-              <div className={`flex min-h-0 flex-1 flex-col overflow-hidden ${!isAdminPage && !isReportsPage && !isSignedSalesPage && !isCaseManagerPage && !isContractPage ? 'md:pl-24' : ''}`}>
+              <div className={`flex min-h-0 flex-1 flex-col overflow-hidden bg-base-100 ${!isAdminPage && !isReportsPage && !isSignedSalesPage && !isCaseManagerPage && !isContractPage ? 'md:pl-24' : ''}`}>
                 <Header
                   onMenuClick={handleMenuClick}
                   onSearchClick={handleSearchClick}

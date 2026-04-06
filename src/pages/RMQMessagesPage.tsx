@@ -244,12 +244,12 @@ const RMQ_READ_RECEIPT_CHECK_D =
 
 /** Chats/Groups segmented control — active pill: standard white raised tab. */
 const RMQ_TAB_ACTIVE =
-  'bg-white text-base-content shadow-[0_1px_2px_rgba(0,0,0,0.1)] dark:bg-base-100 dark:shadow-[0_1px_4px_rgba(0,0,0,0.3)]';
+  'rmq-tab-pill bg-white text-base-content shadow-[0_1px_2px_rgba(0,0,0,0.1)] dark:bg-base-100 dark:shadow-[0_1px_4px_rgba(0,0,0,0.3)]';
 const RMQ_TAB_ACTIVE_COUNT =
   'bg-neutral-200/90 text-base-content/70 dark:bg-base-300/80';
 /** Selected contact or group row — brand lavender (separate from tab pill). */
 const RMQ_SEL_ROW =
-  'bg-[#EDE9F8] text-[#3E28CD] shadow-[0_1px_2px_rgba(62,40,205,0.14)] dark:bg-[#3E28CD]/22 dark:text-[#e8e2ff] dark:shadow-[0_1px_4px_rgba(0,0,0,0.32)]';
+  'rmq-thread-selected bg-[#EDE9F8] text-[#3E28CD] shadow-[0_1px_2px_rgba(62,40,205,0.14)] dark:bg-[#3E28CD]/22 dark:text-[#e8e2ff] dark:shadow-[0_1px_4px_rgba(0,0,0,0.32)]';
 const RMQ_SEL_TITLE = 'text-[#3E28CD] dark:text-[#e8e2ff]';
 const RMQ_SEL_TIME = 'text-[#3E28CD]/60 dark:text-[#e8e2ff]/65';
 const RMQ_SEL_PREVIEW = 'text-[#3E28CD]/78 dark:text-[#e8e2ff]/78';
@@ -2200,7 +2200,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
 
     const contentStr = message.content || '';
     const emojiOnly = contentStr.trim().length > 0 && isEmojiOnly(contentStr);
-    const bubbleBase = `overflow-hidden ${RMQ_CHAT.bubblePad} ${RMQ_CHAT.bubbleR} shadow-none border-0 w-full max-w-full ${
+    const bubbleRole = isOwn ? (emojiOnly ? '' : ' rmq-bubble-sent') : ' rmq-bubble-recv';
+    const bubbleBase = `overflow-hidden ${RMQ_CHAT.bubblePad} ${RMQ_CHAT.bubbleR} shadow-none border-0 w-full max-w-full${bubbleRole} ${
       isOwn
         ? emojiOnly
           ? 'bg-base-100 text-base-content'
@@ -6254,8 +6255,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
         tone === 'textOwn'
           ? 'border-t border-white/20 bg-white/10 hover:bg-white/16'
           : tone === 'textOther'
-            ? 'border-t border-[#3E28CD]/12 bg-[#EDE9F8]/95 hover:bg-[#E2D8F5] dark:border-[#3E28CD]/25 dark:bg-[#3E28CD]/20 dark:hover:bg-[#3E28CD]/28'
-            : 'border-t border-[#3E28CD]/12 bg-[#EDE9F8]/95 hover:bg-[#E2D8F5] dark:border-[#3E28CD]/25 dark:bg-[#3E28CD]/20 dark:hover:bg-[#3E28CD]/28';
+            ? 'rmq-thread-reply-strip border-t border-[#3E28CD]/12 bg-[#EDE9F8]/95 hover:bg-[#E2D8F5] dark:border-[#3E28CD]/25 dark:bg-[#3E28CD]/20 dark:hover:bg-[#3E28CD]/28'
+            : 'rmq-thread-reply-strip border-t border-[#3E28CD]/12 bg-[#EDE9F8]/95 hover:bg-[#E2D8F5] dark:border-[#3E28CD]/25 dark:bg-[#3E28CD]/20 dark:hover:bg-[#3E28CD]/28';
       const labelClass =
         tone === 'textOwn'
           ? 'text-sky-200'
@@ -9217,8 +9218,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                   className={`w-full max-w-full overflow-hidden ${RMQ_CHAT.bubblePad} ${RMQ_CHAT.bubbleR} cursor-pointer transition-opacity hover:opacity-[0.97] relative border-0 shadow-none ${isOwn
                                     ? isEmojiOnly(message.content)
                                       ? 'bg-base-100 text-base-content'
-                                      : 'text-white'
-                                    : `${RMQ_CHAT.recv} dark:bg-base-200/80 dark:text-base-content`
+                                      : `text-white rmq-bubble-sent`
+                                    : `${RMQ_CHAT.recv} dark:bg-base-200/80 dark:text-base-content rmq-bubble-recv`
                                     }`}
                                   style={isOwn && !isEmojiOnly(message.content)
                                     ? { background: RMQ_CHAT.sentBg }
@@ -9811,7 +9812,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                   )}
                   {/* Reply preview - Desktop */}
                   {(messageToReply || messageToEdit) && (
-                    <div className="flex items-start gap-2 p-2.5 rounded-lg border border-[#3E28CD]/15 bg-[#EDE9F8]/90 border-l-4 border-l-[#3E28CD] dark:border-[#3E28CD]/30 dark:bg-[#3E28CD]/15">
+                    <div className="rmq-reply-preview flex items-start gap-2 p-2.5 rounded-lg border border-[#3E28CD]/15 bg-[#EDE9F8]/90 border-l-4 border-l-[#3E28CD] dark:border-[#3E28CD]/30 dark:bg-[#3E28CD]/15">
                       <div className="flex-1 min-w-0">
                         {messageToReply && (
                           <>
@@ -10792,8 +10793,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                   className={`w-full max-w-full overflow-hidden ${RMQ_CHAT.bubblePad} ${RMQ_CHAT.bubbleR} text-sm cursor-pointer transition-opacity hover:opacity-[0.97] relative select-none border-0 shadow-none ${isOwn
                                     ? isEmojiOnly(message.content)
                                       ? 'bg-base-100 text-base-content'
-                                      : 'text-white'
-                                    : `${RMQ_CHAT.recv} dark:bg-base-200/80 dark:text-base-content`
+                                      : `text-white rmq-bubble-sent`
+                                    : `${RMQ_CHAT.recv} dark:bg-base-200/80 dark:text-base-content rmq-bubble-recv`
                                     }`}
                                   style={isOwn && !isEmojiOnly(message.content)
                                     ? { background: RMQ_CHAT.sentBg }
@@ -11238,7 +11239,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                     )}
                     {/* Reply preview - Mobile */}
                     {(messageToReply || messageToEdit) && (
-                      <div className="flex items-start gap-2 p-2.5 rounded-lg border border-[#3E28CD]/15 bg-[#EDE9F8]/90 border-l-4 border-l-[#3E28CD] dark:border-[#3E28CD]/30 dark:bg-[#3E28CD]/15">
+                      <div className="rmq-reply-preview flex items-start gap-2 p-2.5 rounded-lg border border-[#3E28CD]/15 bg-[#EDE9F8]/90 border-l-4 border-l-[#3E28CD] dark:border-[#3E28CD]/30 dark:bg-[#3E28CD]/15">
                         <div className="flex-1 min-w-0">
                           {messageToReply && (
                             <>

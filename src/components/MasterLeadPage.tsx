@@ -359,7 +359,7 @@ const MasterLeadPage: React.FC = () => {
   const getStageBadge = (stage?: string | number) => {
     if (!stage && stage !== 0) {
       return (
-        <span className="badge badge-sm bg-gray-100 text-gray-600">
+        <span className="stage-badge badge badge-sm bg-gray-100 text-gray-600">
           No Stage
         </span>
       );
@@ -375,7 +375,7 @@ const MasterLeadPage: React.FC = () => {
 
     return (
       <span
-        className="badge badge-sm text-xs px-2 py-1"
+        className="stage-badge badge badge-sm text-xs px-2 py-1"
         style={{
           backgroundColor: backgroundColor,
           color: textColor,
@@ -400,7 +400,7 @@ const MasterLeadPage: React.FC = () => {
     const useInactiveStyle = isInactiveLead(lead);
     if (useInactiveStyle) {
       return (
-        <span className="badge badge-sm px-2 py-0.5 bg-gray-300 text-black border border-gray-400">
+        <span className="stage-badge badge badge-sm px-2 py-0.5 bg-gray-300 text-black border border-gray-400">
           {stageName}
         </span>
       );
@@ -412,7 +412,7 @@ const MasterLeadPage: React.FC = () => {
     const textColor = getContrastingTextColor(backgroundColor);
     return (
       <span
-        className="badge badge-sm text-xs px-2 py-0.5"
+        className="stage-badge badge badge-sm text-xs px-2 py-0.5"
         style={{ backgroundColor, color: textColor, borderColor: backgroundColor }}
       >
         {stageName}

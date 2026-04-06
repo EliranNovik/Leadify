@@ -19,14 +19,14 @@ loadRouteCacheFromStorage();
 const savedTheme = (() => {
   try {
     const stored = localStorage.getItem('theme');
-    return stored === 'dark' || stored === 'alternative' ? stored : 'light';
+    return stored === 'dark' || stored === 'dark2' || stored === 'alternative' ? stored : 'light';
   } catch {
     return 'light';
   }
 })();
 document.documentElement.setAttribute('data-theme', savedTheme);
 const applyThemeClass = (theme: string) => {
-  const isDark = theme === 'dark';
+  const isDark = theme === 'dark' || theme === 'dark2';
   const isAlt = theme === 'alternative';
   document.documentElement.classList.toggle('dark', isDark);
   document.body.classList.toggle('dark', isDark);
@@ -35,6 +35,11 @@ const applyThemeClass = (theme: string) => {
   document.documentElement.classList.toggle('theme-alt', isAlt);
   document.body.classList.toggle('theme-alt', isAlt);
   document.getElementById('root')?.classList.toggle('theme-alt', isAlt);
+
+  const isDark2 = theme === 'dark2';
+  document.documentElement.classList.toggle('theme-dark2', isDark2);
+  document.body.classList.toggle('theme-dark2', isDark2);
+  document.getElementById('root')?.classList.toggle('theme-dark2', isDark2);
 };
 applyThemeClass(savedTheme);
 

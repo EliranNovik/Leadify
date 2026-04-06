@@ -28,7 +28,7 @@
       (function () {
         const applyThemeClasses = (theme) => {
           const rootEl = document.getElementById('root');
-          const isDark = theme === 'dark';
+          const isDark = theme === 'dark' || theme === 'dark2';
           const isAlt = theme === 'alternative';
 
           document.documentElement.setAttribute('data-theme', theme);
@@ -39,11 +39,18 @@
           document.documentElement.classList.toggle('theme-alt', isAlt);
           document.body.classList.toggle('theme-alt', isAlt);
           rootEl?.classList.toggle('theme-alt', isAlt);
+
+          document.documentElement.classList.toggle('theme-dark2', theme === 'dark2');
+          document.body.classList.toggle('theme-dark2', theme === 'dark2');
+          rootEl?.classList.toggle('theme-dark2', theme === 'dark2');
         };
 
         try {
           const storedTheme = localStorage.getItem('theme');
-          const savedTheme = storedTheme === 'dark' || storedTheme === 'alternative' ? storedTheme : 'light';
+          const savedTheme =
+            storedTheme === 'dark' || storedTheme === 'dark2' || storedTheme === 'alternative'
+              ? storedTheme
+              : 'light';
           applyThemeClasses(savedTheme);
         } catch (err) {
           applyThemeClasses('light');

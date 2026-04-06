@@ -30,7 +30,6 @@ import {
     HandThumbDownIcon,
     ClockIcon,
     ArchiveBoxIcon,
-    Cog6ToothIcon,
     EllipsisHorizontalIcon,
     Bars3Icon,
     DocumentTextIcon,
@@ -99,34 +98,9 @@ const normalizeTagsValue = (value: unknown): string[] => {
         .filter(Boolean);
 };
 
-/** Outer shell for grey meta rows (border, padding). Inner content uses META_GREY_INNER for true centering. */
-const META_GREY_BOX =
-    'w-full rounded-xl border border-gray-200 bg-gray-100 px-3 py-2.5 text-sm text-gray-700 shadow-sm dark:border-gray-600 dark:bg-gray-800/90 dark:text-gray-200';
-/** Centers icon + text clusters like the stage badge pill below */
-const META_GREY_INNER =
-    'flex w-full min-w-0 flex-wrap items-center justify-center gap-2 text-center';
-/** Language / source / applicants — same wrap layout as grey rows, without border/background */
-const META_TOP_ROW =
-    'flex w-full min-w-0 flex-wrap items-center justify-center gap-2 text-center py-1 text-sm text-gray-700 dark:text-gray-200';
-
-// Helper to get contrasting text color
-const getContrastingTextColor = (hexColor?: string | null) => {
-    if (!hexColor) return '#111827';
-    let sanitized = hexColor.trim();
-    if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
-    if (sanitized.length === 3) {
-        sanitized = sanitized.split('').map(char => char + char).join('');
-    }
-    if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
-        return '#111827';
-    }
-    const r = parseInt(sanitized.slice(0, 2), 16) / 255;
-    const g = parseInt(sanitized.slice(2, 4), 16) / 255;
-    const b = parseInt(sanitized.slice(4, 6), 16) / 255;
-
-    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    return luminance > 0.55 ? '#111827' : '#ffffff';
-};
+/** Neutral meta chips (language, source, applicants, category, topic) — primary stage colour stays on stage badge only */
+const META_CHIP =
+    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-1 rounded-full px-2.5 py-1.5 text-[13px] font-medium text-gray-700 bg-[#F3F4F6] dark:bg-gray-700/90 dark:text-gray-200';
 
 interface ClientHeaderProps {
     selectedClient: any;
@@ -1232,126 +1206,454 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     const applicantsCount =
         (selectedClient as any)?.no_of_applicants || selectedClient?.number_of_applicants_meeting || null;
-    /** Same base colour as "Application submitted" stage (150) badge */
-    const applicationSubmittedStageColour = getStageColour('150') || '#EFFF2D';
-    const applicantsBadgeTextColour = getContrastingTextColor(applicationSubmittedStageColour);
+    const blurDropdown = () => (document.activeElement as HTMLElement | null)?.blur();
+
+    const moreActionsMenuUlClass =
+        'dropdown-content z-[250] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2';
+
+    const moreActionsMenuItems = (
+        <>
+            {!hideHistoryAndTimeline && (
+                <>
+                    <li>
+                        <a
+                            onClick={() => {
+                                handleTimelineClick();
+                                blurDropdown();
+                            }}
+                        >
+                            <ClockIcon className="h-4 w-4" /> Timeline
+                        </a>
+                    </li>
+                    <li>
+                        <a
+                            onClick={() => {
+                                handleHistoryClick();
+                                blurDropdown();
+                            }}
+                        >
+                            <ArchiveBoxIcon className="h-4 w-4" /> History
+                        </a>
+                    </li>
+                    <div className="divider my-1" />
+                </>
+            )}
+            {duplicateContacts && duplicateContacts.length > 0 && !hideActionsDropdown && (
+                <>
+                    <li>
+                        <a
+                            className="text-amber-800"
+                            onClick={() => {
+                                setIsDuplicateModalOpen(true);
+                                blurDropdown();
+                            }}
+                        >
+                            <DocumentDuplicateIcon className="h-4 w-4" />
+                            Duplicate contacts ({duplicateContacts.length})
+                        </a>
+                    </li>
+                    <div className="divider my-1" />
+                </>
+            )}
+            {!hideActionsDropdown && (
+                <>
+                    {dropdownItems && (
+                        <>
+                            {dropdownItems}
+                            <div className="divider my-1" />
+                        </>
+                    )}
+                    {(() => {
+                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                        const isUnactivated = isLegacy ? selectedClient?.status === 10 : selectedClient?.status === 'inactive';
+                        return isUnactivated ? (
+                            <li>
+                                <a className="font-medium text-green-600" onClick={() => { handleActivation(); blurDropdown(); }}>
+                                    <CheckCircleIcon className="h-4 w-4" /> Activate Case
+                                </a>
+                            </li>
+                        ) : (
+                            <li>
+                                <a className="font-medium text-red-600" onClick={() => { setShowUnactivationModal(true); blurDropdown(); }}>
+                                    <NoSymbolIcon className="h-4 w-4" /> Deactivate / Spam
+                                </a>
+                            </li>
+                        );
+                    })()}
+                    <li>
+                        <a
+                            onClick={async () => {
+                                if (!selectedClient?.id) return;
+                                const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                const leadId = isLegacyLead
+                                    ? typeof selectedClient.id === 'string'
+                                        ? parseInt(selectedClient.id.replace('legacy_', ''), 10)
+                                        : selectedClient.id
+                                    : selectedClient.id;
+                                const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+                                if (isInHighlightsState) {
+                                    await removeFromHighlights(leadId, isLegacyLead);
+                                } else {
+                                    await addToHighlights(leadId, leadNumber, isLegacyLead);
+                                }
+                                blurDropdown();
+                            }}
+                        >
+                            {isInHighlightsState ? (
+                                <>
+                                    <StarIcon className="h-4 w-4 fill-current text-purple-600" /> Remove from Highlights
+                                </>
+                            ) : (
+                                <>
+                                    <StarIcon className="h-4 w-4" /> Add to Highlights
+                                </>
+                            )}
+                        </a>
+                    </li>
+                    <div className="divider my-1" />
+                    <li>
+                        <a
+                            onClick={() => {
+                                openEditLeadDrawer();
+                                blurDropdown();
+                            }}
+                        >
+                            <PencilSquareIcon className="h-4 w-4" /> Edit Details
+                        </a>
+                    </li>
+                    <li>
+                        <a
+                            onClick={() => {
+                                setShowSubLeadDrawer(true);
+                                blurDropdown();
+                            }}
+                        >
+                            <Squares2X2Icon className="h-4 w-4" /> Create Sub-Lead
+                        </a>
+                    </li>
+                    {onCombineLeads && (
+                        <li>
+                            <a
+                                onClick={() => {
+                                    onCombineLeads();
+                                    blurDropdown();
+                                }}
+                            >
+                                <LinkIcon className="h-4 w-4" /> Combine leads
+                            </a>
+                        </li>
+                    )}
+                    {isSuperuser && (
+                        <>
+                            <div className="divider my-1" />
+                            <li>
+                                <a
+                                    className="text-red-600 hover:bg-red-50"
+                                    onClick={() => {
+                                        setShowDeleteModal(true);
+                                        blurDropdown();
+                                    }}
+                                >
+                                    <TrashIcon className="h-4 w-4" /> Delete Lead
+                                </a>
+                            </li>
+                        </>
+                    )}
+                </>
+            )}
+        </>
+    );
+
+    const renderMoreActionsDropdown = (triggerClassName: string) => (
+        <div className="dropdown dropdown-end">
+            <label tabIndex={0} className={triggerClassName} aria-label="More actions">
+                <EllipsisHorizontalIcon className="h-5 w-5" />
+            </label>
+            <ul tabIndex={0} className={moreActionsMenuUlClass}>
+                {moreActionsMenuItems}
+            </ul>
+        </div>
+    );
+
+    const renderCompactHistoryIconRow = () => {
+        const dup = duplicateContacts && duplicateContacts.length > 0;
+        if (hideHistoryAndTimeline && !dup) return null;
+        return (
+            <div className="flex flex-wrap items-center justify-end gap-1">
+                {!hideHistoryAndTimeline && (
+                    <>
+                        <button
+                            type="button"
+                            onClick={handleTimelineClick}
+                            className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
+                            title="View Timeline"
+                            aria-label="View Timeline"
+                        >
+                            <ClockIcon className="h-5 w-5" />
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setTagsModalOpen(true)}
+                            className="btn btn-ghost btn-sm relative h-auto min-h-0 p-1.5 text-purple-700 hover:bg-purple-50 dark:text-purple-200 dark:hover:bg-purple-900/30"
+                            title="Tags"
+                            aria-label="Tags"
+                        >
+                            <TagIcon className="h-5 w-5" />
+                            {tagsCount > 0 && (
+                                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-purple-600 px-0.5 text-[10px] font-bold text-white">
+                                    {tagsCount > 99 ? '99+' : tagsCount}
+                                </span>
+                            )}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={openFlaggedConversationsModal}
+                            disabled={!publicUserId}
+                            className="btn btn-ghost btn-sm relative h-auto min-h-0 p-1.5 text-amber-700 hover:bg-amber-50 disabled:pointer-events-none disabled:opacity-40 dark:text-amber-300 dark:hover:bg-amber-900/30"
+                            title={publicUserId ? 'Flagged items on this lead' : 'Sign in to use flags'}
+                            aria-label="Flagged items"
+                        >
+                            <FlagIcon className="h-5 w-5" />
+                            {totalFlagBadge > 0 && (
+                                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-0.5 text-[10px] font-bold text-white">
+                                    {totalFlagBadge > 99 ? '99+' : totalFlagBadge}
+                                </span>
+                            )}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleHistoryClick}
+                            className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
+                            title="View History"
+                            aria-label="View History"
+                        >
+                            <ArchiveBoxIcon className="h-5 w-5" />
+                        </button>
+                    </>
+                )}
+                {dup && (
+                    <button
+                        type="button"
+                        onClick={() => setIsDuplicateModalOpen(true)}
+                        className="btn btn-circle btn-warning btn-sm"
+                        title={
+                            duplicateContacts.length === 1
+                                ? `Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`
+                                : `${duplicateContacts.length} Duplicate Contacts`
+                        }
+                        aria-label="Duplicate contacts"
+                    >
+                        <DocumentDuplicateIcon className="w-5 h-5" />
+                    </button>
+                )}
+            </div>
+        );
+    };
+
+    const stageAdjacentTagsFlags =
+        !hideHistoryAndTimeline ? (
+            <div className="flex shrink-0 items-center gap-1">
+                <button
+                    type="button"
+                    onClick={() => setTagsModalOpen(true)}
+                    className="btn btn-ghost btn-sm relative h-auto min-h-0 p-2 text-purple-700 hover:bg-purple-50 dark:text-purple-200 dark:hover:bg-purple-900/30 md:p-1.5"
+                    title="Tags"
+                    aria-label="Tags"
+                >
+                    <TagIcon className="h-6 w-6 md:h-7 md:w-7" />
+                    {tagsCount > 0 && (
+                        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-purple-600 px-0.5 text-[10px] font-bold text-white">
+                            {tagsCount > 99 ? '99+' : tagsCount}
+                        </span>
+                    )}
+                </button>
+                <button
+                    type="button"
+                    onClick={openFlaggedConversationsModal}
+                    disabled={!publicUserId}
+                    className="btn btn-ghost btn-sm relative h-auto min-h-0 p-2 text-amber-700 hover:bg-amber-50 disabled:pointer-events-none disabled:opacity-40 dark:text-amber-300 dark:hover:bg-amber-900/30 md:p-1.5"
+                    title={publicUserId ? 'Flagged items on this lead' : 'Sign in to use flags'}
+                    aria-label="Flagged items"
+                >
+                    <FlagIcon className="h-6 w-6 md:h-7 md:w-7" />
+                    {totalFlagBadge > 0 && (
+                        <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-0.5 text-[10px] font-bold text-white">
+                            {totalFlagBadge > 99 ? '99+' : totalFlagBadge}
+                        </span>
+                    )}
+                </button>
+            </div>
+        ) : null;
 
     return (
-        <div className="bg-white dark:bg-gray-900">
-            <div className="w-full mx-auto px-4 sm:px-6 lg:px-8 pt-7 pb-10 md:py-6 space-y-10 md:space-y-8">
+        <div className="bg-transparent">
+            <div className="w-full px-4 sm:px-6 lg:px-8 py-5 space-y-8 md:space-y-6 md:py-6">
 
                 {/* Top Row: Identity & Status */}
-                <div className="flex flex-col gap-7 md:gap-6 mb-0 md:mb-8">
-                    {/* Mobile: stage + meta rows centered on top; then lead row + actions */}
-                    <div className="flex md:hidden w-full flex-col gap-7">
-                        {/* z-index keeps stage/cog dropdowns above the icon row below (same viewport overlap) */}
-                        <div className="relative z-[200] flex w-full flex-col items-center gap-4 px-0.5">
-                            <div className="relative mb-1 flex w-full min-h-[2.5rem] items-center justify-center px-0.5">
-                                {renderStageBadge('mobile')}
-                                {!hideActionsDropdown && (
-                                    <div className="absolute right-0 top-1/2 -translate-y-1/2">
-                                        <div className="dropdown dropdown-end">
-                                            <label tabIndex={0} className="btn btn-ghost btn-square min-h-10 min-w-10">
-                                                <Cog6ToothIcon className="w-7 h-7" />
-                                            </label>
-                                            <ul tabIndex={0} className="dropdown-content z-[250] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
-                                                {dropdownItems && (
-                                                    <>
-                                                        {dropdownItems}
-                                                        <div className="divider my-1"></div>
-                                                    </>
-                                                )}
-                                                {(() => {
-                                                    const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                                                    const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
-                                                    return isUnactivated ? (
-                                                        <li><a className="text-green-600 font-medium" onClick={handleActivation}><CheckCircleIcon className="w-4 h-4" /> Activate Case</a></li>
-                                                    ) : (
-                                                        <li><a className="text-red-600 font-medium" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-4 h-4" /> Deactivate / Spam</a></li>
-                                                    );
-                                                })()}
-                                                <li>
-                                                    <a onClick={async () => {
-                                                        if (!selectedClient?.id) return;
-                                                        const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                                        const leadId = isLegacyLead ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id) : selectedClient.id;
-                                                        const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-                                                        if (isInHighlightsState) {
-                                                            await removeFromHighlights(leadId, isLegacyLead);
-                                                        } else {
-                                                            await addToHighlights(leadId, leadNumber, isLegacyLead);
-                                                        }
-                                                        (document.activeElement as HTMLElement | null)?.blur();
-                                                    }}>
-                                                        {isInHighlightsState ? (
-                                                            <><StarIcon className="w-4 h-4 fill-current text-purple-600" /> Remove from Highlights</>
-                                                        ) : (
-                                                            <><StarIcon className="w-4 h-4" /> Add to Highlights</>
-                                                        )}
-                                                    </a>
-                                                </li>
-                                                <div className="divider my-1"></div>
-                                                <li><a onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-4 h-4" /> Edit Details</a></li>
-                                                <li><a onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-4 h-4" /> Create Sub-Lead</a></li>
-                                                {onCombineLeads && (
-                                                    <li><a onClick={() => { onCombineLeads(); (document.activeElement as HTMLElement)?.blur(); }}><LinkIcon className="w-4 h-4" /> Combine leads</a></li>
-                                                )}
-                                                {isSuperuser && (
-                                                    <>
-                                                        <div className="divider my-1"></div>
-                                                        <li><a className="text-red-600 hover:bg-red-50" onClick={() => { setShowDeleteModal(true); (document.activeElement as HTMLElement)?.blur(); }}><TrashIcon className="w-4 h-4" /> Delete Lead</a></li>
-                                                    </>
-                                                )}
-                                            </ul>
-                                        </div>
-                                    </div>
-                                )}
+                <div className="mb-0 flex flex-col gap-6 md:mb-6 md:gap-5">
+                    {/* Mobile: SaaS header — identity, contact card, stage + chips */}
+                    <div className="flex w-full flex-col gap-6 md:hidden">
+                        <header className="relative z-[200] flex w-full min-w-0 flex-col gap-0">
+                            <div className="flex w-full min-w-0 items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1 pr-1 text-left">
+                                    <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500 dark:text-gray-400">
+                                        Lead ID
+                                    </p>
+                                    <p className="mt-1.5 text-sm font-semibold tabular-nums tracking-tight text-gray-700 dark:text-gray-200">
+                                        {renderLeadNumber()}
+                                    </p>
+                                </div>
+                                <div className="flex shrink-0 flex-col items-end gap-2 self-start pt-0.5">
+                                    {stageAdjacentTagsFlags}
+                                    {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
+                                        <button
+                                            onClick={() => {
+                                                if (isSubLead && masterLeadNumber) navigate(`/clients/${masterLeadNumber}/master`);
+                                                else if (isMasterLead && selectedClient) {
+                                                    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                                    const identifier = isLegacyLead
+                                                        ? selectedClient.id.toString().replace('legacy_', '')
+                                                        : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
+                                                    navigate(`/clients/${encodeURIComponent(identifier)}/master`);
+                                                }
+                                            }}
+                                            className="btn btn-square btn-sm relative shrink-0 border-red-300 bg-red-100 text-red-700 hover:bg-red-200"
+                                            title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
+                                        >
+                                            <Squares2X2Icon className="h-5 w-5" />
+                                            <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-600 px-1 text-xs font-bold text-white">
+                                                {(subLeadsCount || 0) + 1}
+                                            </span>
+                                        </button>
+                                    ) : null}
+                                </div>
                             </div>
-                            {/* Language / source / applicants — no grey box */}
-                            <div className={`${META_TOP_ROW} w-full max-w-md`}>
-                                {selectedClient.language && (
-                                    <>
-                                        <span className="inline-flex items-center gap-1 shrink-0">
-                                            <GlobeAltIcon className="w-4 h-4 shrink-0" />
-                                            {selectedClient.language}
-                                        </span>
-                                        <span className="text-gray-400 dark:text-gray-500" aria-hidden>
-                                            •
-                                        </span>
-                                    </>
-                                )}
-                                <span className="inline-flex min-w-0 max-w-[min(100%,20rem)] items-center justify-center gap-1">
-                                    <LinkIcon className="w-4 h-4 shrink-0" />
-                                    <span className="truncate">{getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---'}</span>
-                                </span>
-                                {applicantsCount != null && Number(applicantsCount) > 0 && (
-                                    <>
-                                        <span className="text-gray-400 dark:text-gray-500" aria-hidden>
-                                            •
-                                        </span>
-                                        <span
-                                            className="inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold shadow-sm"
-                                            style={{
-                                                backgroundColor: applicationSubmittedStageColour,
-                                                color: applicantsBadgeTextColour,
-                                                border: `2px solid ${applicationSubmittedStageColour}`,
-                                                boxShadow: '0 8px 22px rgba(17, 24, 39, 0.12)',
+                            <div className="mt-3 flex w-full min-w-0 items-center justify-between gap-3">
+                                <h1 className="min-w-0 flex-1 text-left text-2xl font-semibold leading-[1.2] tracking-tight text-gray-900 dark:text-white">
+                                    {selectedClient.name || 'Unnamed Lead'}
+                                </h1>
+                                <div className="flex shrink-0 items-center justify-end">{renderStageBadge('mobile')}</div>
+                            </div>
+                        </header>
+
+                        <div className="rounded-2xl border border-base-200/90 bg-base-100 px-4 py-5 shadow-sm dark:border-base-300/55 dark:bg-base-200/20 dark:shadow-none">
+                            <div className="flex flex-col gap-4">
+                                <div className="flex min-w-0 items-center gap-3">
+                                    {displayEmail ? (
+                                        <button
+                                            type="button"
+                                            className="btn btn-ghost btn-sm h-auto min-h-0 shrink-0 p-2 text-gray-500 hover:bg-base-200 hover:text-gray-900 dark:text-gray-400"
+                                            title="Copy email"
+                                            aria-label="Copy email"
+                                            onClick={() => {
+                                                void navigator.clipboard.writeText(displayEmail).then(() => toast.success('Email copied'));
                                             }}
                                         >
-                                            <UserIcon className="h-3 w-3 shrink-0" style={{ color: applicantsBadgeTextColour }} />
-                                            {applicantsCount} Applicants
-                                        </span>
-                                    </>
-                                )}
+                                            <ClipboardDocumentIcon className="h-5 w-5" />
+                                        </button>
+                                    ) : null}
+                                    <p
+                                        className="min-w-0 flex-1 text-[15px] font-medium leading-snug text-gray-900 dark:text-gray-100"
+                                        title={displayEmail || ''}
+                                    >
+                                        {displayEmail || '—'}
+                                    </p>
+                                </div>
+                                <div className="flex min-w-0 items-center gap-3">
+                                    {displayPhone ? (
+                                        <button
+                                            type="button"
+                                            className="btn btn-ghost btn-sm h-auto min-h-0 shrink-0 p-2 text-gray-500 hover:bg-base-200 hover:text-gray-900 dark:text-gray-400"
+                                            title="Copy phone number"
+                                            aria-label="Copy phone number"
+                                            onClick={() => {
+                                                void navigator.clipboard.writeText(displayPhone).then(() => toast.success('Phone copied'));
+                                            }}
+                                        >
+                                            <ClipboardDocumentIcon className="h-5 w-5" />
+                                        </button>
+                                    ) : null}
+                                    <p
+                                        className="min-w-0 flex-1 text-[15px] font-medium leading-snug text-gray-900 dark:text-gray-100"
+                                        title={displayPhone ? formatPhoneNumberDisplay(displayPhone) : ''}
+                                    >
+                                        {displayPhone ? formatPhoneNumberDisplay(displayPhone) : '—'}
+                                    </p>
+                                </div>
+                                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-base-200/80 pt-4 dark:border-base-300/45">
+                                    <div className="flex flex-wrap items-center gap-3">
+                                        {displayPhone ? (
+                                            <button
+                                                type="button"
+                                                className="btn btn-outline btn-square min-h-[3rem] min-w-[3rem] rounded-full border-2 border-base-300 p-0"
+                                                title="Call"
+                                                aria-label="Call"
+                                                onClick={handleCallPrimaryPhone}
+                                            >
+                                                <PhoneArrowUpRightIcon className="h-6 w-6" aria-hidden />
+                                            </button>
+                                        ) : null}
+                                        {onOpenWhatsAppForContact && displayPhone ? (
+                                            <button
+                                                type="button"
+                                                className="btn btn-outline btn-square min-h-[3rem] min-w-[3rem] rounded-full border-2 border-base-300 p-0 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50"
+                                                title="WhatsApp"
+                                                aria-label="WhatsApp"
+                                                onClick={() => void handleHeaderWhatsAppClick()}
+                                            >
+                                                <FaWhatsapp className="h-6 w-6" aria-hidden />
+                                            </button>
+                                        ) : null}
+                                        {displayEmail ? (
+                                            <button
+                                                type="button"
+                                                className="btn btn-outline btn-square min-h-[3rem] min-w-[3rem] rounded-full border-2 border-base-300 p-0"
+                                                title="Email"
+                                                aria-label="Email"
+                                                onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
+                                            >
+                                                <EnvelopeIcon className="h-6 w-6" aria-hidden />
+                                            </button>
+                                        ) : null}
+                                    </div>
+                                    <div className="flex shrink-0 items-center gap-2">
+                                        {!hideActionsDropdown &&
+                                            renderMoreActionsDropdown(
+                                                'btn btn-square rounded-full border-2 border-base-300 btn-ghost min-h-[3rem] min-w-[3rem]'
+                                            )}
+                                        {hideActionsDropdown ? renderCompactHistoryIconRow() : null}
+                                    </div>
+                                </div>
                             </div>
-                            <div className="flex w-full max-w-md items-center justify-center">
+                        </div>
+
+                        <div className="relative z-[200] flex flex-col gap-4 pt-1">
+                            <div className="flex flex-wrap justify-center gap-2 px-0.5">
+                                {selectedClient.language && (
+                                    <span className={META_CHIP}>
+                                        <GlobeAltIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                                        <span className="truncate">{selectedClient.language}</span>
+                                    </span>
+                                )}
+                                <span className={META_CHIP}>
+                                    <LinkIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                                    <span className="min-w-0 max-w-[14rem] truncate">
+                                        {getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---'}
+                                    </span>
+                                </span>
+                                {applicantsCount != null && Number(applicantsCount) > 0 && (
+                                    <span className={META_CHIP}>
+                                        <UserIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                                        {applicantsCount} Applicants
+                                    </span>
+                                )}
                                 <button
                                     type="button"
-                                    className={
+                                    className={`${META_CHIP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
                                         disableCategoryModal
-                                            ? 'inline-flex min-w-0 max-w-[min(100%,28rem)] cursor-default items-center gap-1.5 truncate text-left text-sm font-medium text-gray-900 dark:text-gray-100'
-                                            : 'inline-flex min-w-0 max-w-[min(100%,28rem)] items-center gap-1.5 truncate text-left text-sm font-medium text-gray-900 hover:text-indigo-600 dark:text-gray-100'
-                                    }
+                                            ? 'cursor-default'
+                                            : 'cursor-pointer hover:bg-gray-200/90 dark:hover:bg-gray-600'
+                                    }`}
                                     onClick={
                                         disableCategoryModal
                                             ? undefined
@@ -1361,200 +1663,20 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                               }
                                     }
                                 >
-                                    <RectangleStackIcon className="h-4 w-4 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden />
-                                    <span className="min-w-0 truncate">{displayCategory}</span>
+                                    <RectangleStackIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                                    <span className="min-w-0 max-w-[14rem] truncate">{displayCategory}</span>
                                 </button>
-                            </div>
-                            {selectedClient.topic && (
-                                <div className="flex w-full max-w-md items-center justify-center">
-                                    <span className="inline-flex min-w-0 max-w-[min(100%,28rem)] items-center gap-1.5 truncate text-left text-sm font-medium text-gray-900 dark:text-gray-100">
-                                        <DocumentTextIcon className="h-4 w-4 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden />
-                                        <span className="min-w-0 truncate">{selectedClient.topic}</span>
+                                {selectedClient.topic ? (
+                                    <span className={META_CHIP}>
+                                        <DocumentTextIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                                        <span className="min-w-0 max-w-[14rem] truncate">{selectedClient.topic}</span>
                                     </span>
-                                </div>
-                            )}
+                                ) : null}
+                            </div>
                         </div>
-                        {/* Mobile: icon row first, then lead number + name; then contact blocks, then value */}
-                        <div className="relative z-0 flex w-full flex-col gap-7">
-                            <div className="flex w-full min-w-0 flex-col gap-6">
-                                {/* Mobile: center icon cluster (actions dropdown is next to stage badge) */}
-                                <div className="relative mb-10 flex w-full shrink-0 min-h-[2.5rem] items-center justify-center">
-                                    <div className="flex w-full flex-wrap items-center justify-center gap-3">
-                            {!hideHistoryAndTimeline && (
-                                <>
-                                    <button
-                                        type="button"
-                                        onClick={handleTimelineClick}
-                                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
-                                        title="View Timeline"
-                                        aria-label="View Timeline"
-                                    >
-                                        <ClockIcon className="h-6 w-6" />
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => setTagsModalOpen(true)}
-                                        className="btn btn-ghost btn-sm relative h-auto min-h-0 p-1.5 text-purple-700 hover:bg-purple-50 dark:text-purple-200 dark:hover:bg-purple-900/30"
-                                        title="Tags"
-                                        aria-label="Tags"
-                                    >
-                                        <TagIcon className="h-6 w-6" />
-                                        {tagsCount > 0 && (
-                                            <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-purple-600 px-1 text-[11px] font-bold text-white">
-                                                {tagsCount > 99 ? '99+' : tagsCount}
-                                            </span>
-                                        )}
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={openFlaggedConversationsModal}
-                                        disabled={!publicUserId}
-                                        className="btn btn-ghost btn-sm relative h-auto min-h-0 p-1.5 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30"
-                                        title={publicUserId ? 'Flagged items on this lead' : 'Sign in to use flags'}
-                                        aria-label="Flagged items"
-                                    >
-                                        <FlagIcon className="h-6 w-6" />
-                                        {totalFlagBadge > 0 && (
-                                            <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-white">
-                                                {totalFlagBadge > 99 ? '99+' : totalFlagBadge}
-                                            </span>
-                                        )}
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={handleHistoryClick}
-                                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
-                                        title="View History"
-                                        aria-label="View History"
-                                    >
-                                        <ArchiveBoxIcon className="h-6 w-6" />
-                                    </button>
-                                </>
-                            )}
-                            {duplicateContacts && duplicateContacts.length > 0 && (
-                                <button
-                                    onClick={() => setIsDuplicateModalOpen(true)}
-                                    className="btn btn-circle btn-warning btn-sm"
-                                    title={duplicateContacts.length === 1
-                                        ? `Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`
-                                        : `${duplicateContacts.length} Duplicate Contacts`}
-                                >
-                                    <DocumentDuplicateIcon className="w-5 h-5" />
-                                </button>
-                            )}
-                                    </div>
-                                </div>
-                                <div className="flex w-full min-w-0 flex-col gap-2 items-center">
-                                    <div className="flex w-full min-w-0 flex-wrap items-center justify-center gap-2">
-                                    <h1 className="text-center text-3xl font-bold tracking-tight text-gray-900 dark:text-white leading-snug">
-                                        {renderLeadNumber()}
-                                        <span className="mx-1.5 text-gray-300">|</span>
-                                        {selectedClient.name || 'Unnamed Lead'}
-                                    </h1>
-                                    {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
-                                        <button
-                                            onClick={() => {
-                                                if (isSubLead && masterLeadNumber) navigate(`/clients/${masterLeadNumber}/master`);
-                                                else if (isMasterLead && selectedClient) {
-                                                    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                                    const identifier = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
-                                                    navigate(`/clients/${encodeURIComponent(identifier)}/master`);
-                                                }
-                                            }}
-                                            className="btn btn-square btn-sm relative shrink-0 bg-red-100 hover:bg-red-200 text-red-700 border-red-300"
-                                            title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
-                                        >
-                                            <Squares2X2Icon className="w-5 h-5" />
-                                            <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">{(subLeadsCount || 0) + 1}</span>
-                                        </button>
-                                    ) : null}
-                                    </div>
-                                </div>
-                            </div>
-                            {/* Email + phone — same row on mobile (two columns), centred */}
-                            <div className="flex w-full min-w-0 flex-row items-stretch justify-center gap-4">
-                                <div className="flex min-w-0 flex-1 flex-col items-center gap-2 text-center">
-                                    <div className="flex min-h-[1.75rem] w-full flex-wrap items-center justify-center gap-2">
-                                        {displayEmail && (
-                                            <div className="flex flex-wrap items-center justify-center gap-0.5 shrink-0">
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
-                                                    title="Copy email"
-                                                    aria-label="Copy email"
-                                                    onClick={() => {
-                                                        void navigator.clipboard.writeText(displayEmail).then(() => toast.success('Email copied'));
-                                                    }}
-                                                >
-                                                    <ClipboardDocumentIcon className="h-5 w-5" />
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-indigo-600 hover:bg-indigo-50 transition-colors duration-150 active:scale-[0.98]"
-                                                    title="Compose email"
-                                                    aria-label="Compose email"
-                                                    onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
-                                                >
-                                                    <EnvelopeIcon className="h-5 w-5" />
-                                                </button>
-                                            </div>
-                                        )}
-                                    </div>
-                                    <p
-                                        className="w-full text-center text-sm font-medium text-gray-900 dark:text-gray-100 truncate"
-                                        title={displayEmail || ''}
-                                    >
-                                        {displayEmail || '---'}
-                                    </p>
-                                </div>
-                                <div className="flex min-w-0 flex-1 flex-col items-center gap-2 border-l border-gray-200 pl-3 text-center dark:border-gray-600">
-                                    <div className="flex min-h-[1.75rem] w-full flex-wrap items-center justify-center gap-2">
-                                        {displayPhone && (
-                                            <div className="flex flex-wrap items-center justify-center gap-0.5 shrink-0">
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
-                                                    title="Copy phone number"
-                                                    aria-label="Copy phone number"
-                                                    onClick={() => {
-                                                        void navigator.clipboard.writeText(displayPhone).then(() => toast.success('Phone copied'));
-                                                    }}
-                                                >
-                                                    <ClipboardDocumentIcon className="h-5 w-5" />
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-700 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
-                                                    title="Call — open call options"
-                                                    aria-label="Call — open call options"
-                                                    onClick={handleCallPrimaryPhone}
-                                                >
-                                                    <PhoneArrowUpRightIcon className="h-5 w-5" />
-                                                </button>
-                                                {onOpenWhatsAppForContact && (
-                                                    <button
-                                                        type="button"
-                                                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-emerald-700 hover:bg-emerald-50 transition-colors duration-150 active:scale-[0.98]"
-                                                        title="Open WhatsApp"
-                                                        aria-label="Open WhatsApp"
-                                                        onClick={() => void handleHeaderWhatsAppClick()}
-                                                    >
-                                                        <FaWhatsapp className="h-5 w-5" aria-hidden />
-                                                    </button>
-                                                )}
-                                            </div>
-                                        )}
-                                    </div>
-                                    <p
-                                        className="w-full text-center text-sm font-medium text-gray-900 dark:text-gray-100 truncate"
-                                        title={displayPhone ? formatPhoneNumberDisplay(displayPhone) : ''}
-                                    >
-                                        {displayPhone ? formatPhoneNumberDisplay(displayPhone) : '---'}
-                                    </p>
-                                </div>
-                            </div>
+
                         {!hideTotalValueBadge && (
-                            <div className="w-full border-t border-gray-100 dark:border-gray-800 pt-4">
+                            <div className="w-full border-t border-gray-100 pb-8 pt-4 dark:border-gray-800">
                             {(() => {
                             const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
                             let currency = '';
@@ -1669,16 +1791,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         })()}
                             </div>
                         )}
-                        </div>
                     </div>
 
-                    {/* Desktop: symmetric grid — center column = stage badge above grey boxes (true horizontal center) */}
-                    <div className="hidden md:grid md:grid-cols-3 md:items-start md:gap-4 lg:gap-6">
-                        <div className="flex min-w-0 flex-col gap-3 justify-self-start">
-                            <div className="flex items-center gap-2">
-                                <h1 className="text-2xl font-bold text-gray-900 dark:text-white leading-none">
+                    {/* Desktop: SaaS three-zone header */}
+                    <div className="hidden md:grid md:grid-cols-[minmax(0,1.05fr)_minmax(0,1.5fr)_minmax(0,1fr)] md:items-start md:gap-6 lg:gap-8">
+                        <div className="flex min-w-0 flex-col gap-1.5 justify-self-start text-left">
+                            <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
+                                <span className="text-sm font-medium tabular-nums text-gray-500 dark:text-gray-400">
                                     {renderLeadNumber()}
-                                    <span className="mx-2 text-gray-300">|</span>
+                                </span>
+                                <h1 className="min-w-0 text-[1.375rem] font-semibold leading-snug tracking-tight text-gray-900 dark:text-white">
                                     {selectedClient.name || 'Unnamed Lead'}
                                 </h1>
                                 {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
@@ -1697,7 +1819,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 navigate(`/clients/${encodeURIComponent(identifier)}/master`);
                                             }
                                         }}
-                                        className="btn btn-square btn-sm relative bg-red-100 hover:bg-red-200 text-red-700 border-red-300"
+                                        className="btn btn-square btn-sm relative shrink-0 bg-red-100 hover:bg-red-200 text-red-700 border-red-300"
                                         title={
                                             isSubLead
                                                 ? `View master dashboard (${(subLeadsCount || 0) + 1} total leads)`
@@ -1705,17 +1827,123 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         }
                                     >
                                         <Squares2X2Icon className="w-5 h-5" />
-                                        <span className="absolute -top-1 -right-1 bg-red-600 text-white text-xs font-bold rounded-full min-w-[1.25rem] h-5 flex items-center justify-center px-1">
+                                        <span className="absolute -top-1 -right-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-600 px-1 text-xs font-bold text-white">
                                             {(subLeadsCount || 0) + 1}
                                         </span>
                                     </button>
                                 ) : null}
                             </div>
-                            <div className="flex w-full max-w-xl flex-col gap-2 items-start">
+                            <div className="mt-3 flex w-full min-w-0 flex-col gap-3">
+                                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                    {displayEmail ? (
+                                        <button
+                                            type="button"
+                                            className="btn btn-ghost btn-sm h-auto min-h-0 shrink-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
+                                            title="Copy email"
+                                            aria-label="Copy email"
+                                            onClick={() => {
+                                                void navigator.clipboard.writeText(displayEmail).then(() => toast.success('Email copied'));
+                                            }}
+                                        >
+                                            <ClipboardDocumentIcon className="h-5 w-5" />
+                                        </button>
+                                    ) : null}
+                                    <p
+                                        className="min-w-0 flex-1 truncate text-sm font-medium leading-normal text-gray-900 dark:text-gray-100"
+                                        title={displayEmail || ''}
+                                    >
+                                        {displayEmail || '—'}
+                                    </p>
+                                </div>
+                                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                    {displayPhone ? (
+                                        <button
+                                            type="button"
+                                            className="btn btn-ghost btn-sm h-auto min-h-0 shrink-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
+                                            title="Copy phone number"
+                                            aria-label="Copy phone number"
+                                            onClick={() => {
+                                                void navigator.clipboard.writeText(displayPhone).then(() => toast.success('Phone copied'));
+                                            }}
+                                        >
+                                            <ClipboardDocumentIcon className="h-5 w-5" />
+                                        </button>
+                                    ) : null}
+                                    <p
+                                        className="min-w-0 flex-1 truncate text-sm font-medium leading-normal text-gray-900 dark:text-gray-100"
+                                        title={displayPhone ? formatPhoneNumberDisplay(displayPhone) : ''}
+                                    >
+                                        {displayPhone ? formatPhoneNumberDisplay(displayPhone) : '—'}
+                                    </p>
+                                </div>
+                                <div className="flex min-w-0 flex-wrap items-center gap-3">
+                                    {displayPhone ? (
+                                        <button
+                                            type="button"
+                                            className="btn btn-outline btn-square min-h-11 min-w-11 rounded-full border-2 border-base-300 p-0"
+                                            title="Call"
+                                            aria-label="Call"
+                                            onClick={handleCallPrimaryPhone}
+                                        >
+                                            <PhoneArrowUpRightIcon className="h-5 w-5" aria-hidden />
+                                        </button>
+                                    ) : null}
+                                    {onOpenWhatsAppForContact && displayPhone ? (
+                                        <button
+                                            type="button"
+                                            className="btn btn-outline btn-square min-h-11 min-w-11 rounded-full border-2 border-base-300 p-0 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50"
+                                            title="WhatsApp"
+                                            aria-label="WhatsApp"
+                                            onClick={() => void handleHeaderWhatsAppClick()}
+                                        >
+                                            <FaWhatsapp className="h-5 w-5" aria-hidden />
+                                        </button>
+                                    ) : null}
+                                    {displayEmail ? (
+                                        <button
+                                            type="button"
+                                            className="btn btn-outline btn-square min-h-11 min-w-11 rounded-full border-2 border-base-300 p-0"
+                                            title="Email"
+                                            aria-label="Email"
+                                            onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
+                                        >
+                                            <EnvelopeIcon className="h-5 w-5" aria-hidden />
+                                        </button>
+                                    ) : null}
+                                </div>
+                            </div>
+                        </div>
+                        {/* CENTER — stage + meta chips (language, source, applicants, category, topic) */}
+                        <div className="flex min-h-0 min-w-0 flex-col items-center gap-3 px-2 pt-0.5">
+                            <div className="flex w-full flex-wrap items-center justify-center gap-2">
+                                <div className="flex shrink-0 justify-center">{renderStageBadge('desktop')}</div>
+                                {stageAdjacentTagsFlags}
+                            </div>
+                            <div className="flex w-full max-w-xl flex-wrap items-center justify-center gap-2">
+                                {selectedClient.language && (
+                                    <span className={META_CHIP}>
+                                        <GlobeAltIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                                        <span className="truncate">{selectedClient.language}</span>
+                                    </span>
+                                )}
+                                <span className={META_CHIP}>
+                                    <LinkIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                                    <span className="min-w-0 max-w-[12rem] truncate lg:max-w-[16rem]">
+                                        {getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---'}
+                                    </span>
+                                </span>
+                                {applicantsCount != null && Number(applicantsCount) > 0 && (
+                                    <span className={META_CHIP}>
+                                        <UserIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                                        {applicantsCount} Applicants
+                                    </span>
+                                )}
                                 <button
                                     type="button"
-                                    className={`inline-flex min-w-0 max-w-full items-center gap-2 truncate text-left text-base font-medium text-gray-900 dark:text-gray-100 ${
-                                        disableCategoryModal ? 'cursor-default' : 'hover:text-indigo-600'
+                                    className={`${META_CHIP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
+                                        disableCategoryModal
+                                            ? 'cursor-default'
+                                            : 'cursor-pointer hover:bg-gray-200/90 dark:hover:bg-gray-600'
                                     }`}
                                     onClick={
                                         disableCategoryModal
@@ -1726,196 +1954,20 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                               }
                                     }
                                 >
-                                    <RectangleStackIcon className="h-4 w-4 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden />
-                                    <span className="min-w-0 truncate">{displayCategory}</span>
+                                    <RectangleStackIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                                    <span className="min-w-0 max-w-[12rem] truncate lg:max-w-[16rem]">{displayCategory}</span>
                                 </button>
-                                {selectedClient.topic && (
-                                    <span className="inline-flex min-w-0 max-w-full items-center gap-2 truncate text-left text-base font-medium text-gray-900 dark:text-gray-100">
-                                        <DocumentTextIcon className="h-4 w-4 shrink-0 text-gray-500 dark:text-gray-400" aria-hidden />
-                                        <span className="min-w-0 truncate">{selectedClient.topic}</span>
+                                {selectedClient.topic ? (
+                                    <span className={META_CHIP}>
+                                        <DocumentTextIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                                        <span className="min-w-0 max-w-[12rem] truncate lg:max-w-[16rem]">{selectedClient.topic}</span>
                                     </span>
-                                )}
-                            </div>
-                        </div>
-                        {/* Center: stage badge, language/source, action icons */}
-                        <div className="flex min-h-0 min-w-0 w-full flex-col items-center gap-2 px-1 pt-0.5">
-                            <div className="mb-3 flex w-full justify-center">{renderStageBadge('desktop')}</div>
-                            <div className={`${META_TOP_ROW} w-full max-w-lg mx-auto`}>
-                                {selectedClient.language && (
-                                    <>
-                                        <span className="inline-flex items-center gap-1 shrink-0">
-                                            <GlobeAltIcon className="w-4 h-4 shrink-0" />
-                                            {selectedClient.language}
-                                        </span>
-                                        <span className="text-gray-400 dark:text-gray-500" aria-hidden>
-                                            •
-                                        </span>
-                                    </>
-                                )}
-                                <span className="inline-flex min-w-0 max-w-[min(100%,20rem)] items-center justify-center gap-1">
-                                    <LinkIcon className="w-4 h-4 shrink-0" />
-                                    <span className="truncate">{getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---'}</span>
-                                </span>
-                                {applicantsCount != null && Number(applicantsCount) > 0 && (
-                                    <>
-                                        <span className="text-gray-400 dark:text-gray-500" aria-hidden>
-                                            •
-                                        </span>
-                                        <span
-                                            className="inline-flex shrink-0 items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold shadow-sm"
-                                            style={{
-                                                backgroundColor: applicationSubmittedStageColour,
-                                                color: applicantsBadgeTextColour,
-                                                border: `2px solid ${applicationSubmittedStageColour}`,
-                                                boxShadow: '0 8px 22px rgba(17, 24, 39, 0.12)',
-                                            }}
-                                        >
-                                            <UserIcon className="h-3 w-3 shrink-0" style={{ color: applicantsBadgeTextColour }} />
-                                            {applicantsCount} Applicants
-                                        </span>
-                                    </>
-                                )}
-                            </div>
-                            <div className="flex w-full flex-wrap items-center justify-center gap-3 pt-1">
-                            {/* Timeline and History Buttons */}
-                            {!hideHistoryAndTimeline && (
-                                <>
-                                    <button
-                                        type="button"
-                                        onClick={handleTimelineClick}
-                                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
-                                        title="View Timeline"
-                                        aria-label="View Timeline"
-                                    >
-                                        <ClockIcon className="h-6 w-6" />
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => setTagsModalOpen(true)}
-                                        className="btn btn-ghost btn-sm relative h-auto min-h-0 p-1.5 text-purple-700 hover:bg-purple-50 dark:text-purple-200 dark:hover:bg-purple-900/30"
-                                        title="Tags"
-                                        aria-label="Tags"
-                                    >
-                                        <TagIcon className="h-6 w-6" />
-                                        {tagsCount > 0 && (
-                                            <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-purple-600 px-1 text-[11px] font-bold text-white">
-                                                {tagsCount > 99 ? '99+' : tagsCount}
-                                            </span>
-                                        )}
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={openFlaggedConversationsModal}
-                                        disabled={!publicUserId}
-                                        className="btn btn-ghost btn-sm relative h-auto min-h-0 p-1.5 text-amber-700 hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-900/30"
-                                        title={publicUserId ? 'Flagged items on this lead' : 'Sign in to use flags'}
-                                        aria-label="Flagged items"
-                                    >
-                                        <FlagIcon className="h-6 w-6" />
-                                        {totalFlagBadge > 0 && (
-                                            <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-bold text-white">
-                                                {totalFlagBadge > 99 ? '99+' : totalFlagBadge}
-                                            </span>
-                                        )}
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={handleHistoryClick}
-                                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
-                                        title="View History"
-                                        aria-label="View History"
-                                    >
-                                        <ArchiveBoxIcon className="h-6 w-6" />
-                                    </button>
-                                </>
-                            )}
-
-                            {/* Duplicate Contact Button - Yellow */}
-                            {duplicateContacts && duplicateContacts.length > 0 && (
-                                <button
-                                    onClick={() => setIsDuplicateModalOpen(true)}
-                                    className="btn btn-circle btn-warning btn-sm"
-                                    title={duplicateContacts.length === 1
-                                        ? `Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`
-                                        : `${duplicateContacts.length} Duplicate Contacts`}
-                                >
-                                    <DocumentDuplicateIcon className="w-5 h-5" />
-                                </button>
-                            )}
-
-                            {/* Actions Dropdown */}
-                            {!hideActionsDropdown && (
-                                <div className="dropdown dropdown-end">
-                                    <label tabIndex={0} className="btn btn-ghost btn-square">
-                                        <Cog6ToothIcon className="w-6 h-6" />
-                                    </label>
-                                    <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2">
-                                        {/* Stage Specific Actions */}
-                                        {dropdownItems && (
-                                            <>
-                                                {dropdownItems}
-                                                <div className="divider my-1"></div>
-                                            </>
-                                        )}
-
-                                        {/* Activation/Spam Toggle */}
-                                        {(() => {
-                                            const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                                            const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
-                                            return isUnactivated ? (
-                                                <li><a className="text-green-600 font-medium" onClick={handleActivation}><CheckCircleIcon className="w-4 h-4" /> Activate Case</a></li>
-                                            ) : (
-                                                <li><a className="text-red-600 font-medium" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-4 h-4" /> Deactivate / Spam</a></li>
-                                            );
-                                        })()}
-
-                                        {/* Highlights Toggle */}
-                                        <li>
-                                            <a onClick={async () => {
-                                                if (!selectedClient?.id) return;
-                                                const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                                const leadId = isLegacyLead ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id) : selectedClient.id;
-                                                const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                                                if (isInHighlightsState) {
-                                                    await removeFromHighlights(leadId, isLegacyLead);
-                                                } else {
-                                                    await addToHighlights(leadId, leadNumber, isLegacyLead);
-                                                }
-                                                (document.activeElement as HTMLElement | null)?.blur();
-                                            }}>
-                                                {isInHighlightsState ? (
-                                                    <><StarIcon className="w-4 h-4 fill-current text-purple-600" /> Remove from Highlights</>
-                                                ) : (
-                                                    <><StarIcon className="w-4 h-4" /> Add to Highlights</>
-                                                )}
-                                            </a>
-                                        </li>
-
-                                        <div className="divider my-1"></div>
-
-                                        {/* Edit / Sub-Lead */}
-                                        <li><a onClick={() => { openEditLeadDrawer(); (document.activeElement as HTMLElement)?.blur(); }}><PencilSquareIcon className="w-4 h-4" /> Edit Details</a></li>
-                                        <li><a onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-4 h-4" /> Create Sub-Lead</a></li>
-                                        {onCombineLeads && (
-                                            <li><a onClick={() => { onCombineLeads(); (document.activeElement as HTMLElement)?.blur(); }}><LinkIcon className="w-4 h-4" /> Combine leads</a></li>
-                                        )}
-
-                                        {/* Delete (Superuser only) */}
-                                        {isSuperuser && (
-                                            <>
-                                                <div className="divider my-1"></div>
-                                                <li><a className="text-red-600 hover:bg-red-50" onClick={() => { setShowDeleteModal(true); (document.activeElement as HTMLElement)?.blur(); }}><TrashIcon className="w-4 h-4" /> Delete Lead</a></li>
-                                            </>
-                                        )}
-                                    </ul>
-                                </div>
-                            )}
+                                ) : null}
                             </div>
                         </div>
 
-                        {/* Right column — total value */}
-                        <div className="flex min-w-0 shrink-0 flex-col items-end gap-3 justify-self-end self-start">
+                        {/* RIGHT — total value + more actions */}
+                        <div className="flex min-w-0 max-w-sm flex-col items-end gap-3 justify-self-end self-start">
                             {(() => {
                                 if (hideTotalValueBadge) return null;
                                 const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
@@ -2055,6 +2107,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </div>
                                 );
                             })()}
+                            <div className="flex w-full max-w-xs flex-wrap items-center justify-end gap-2 border-t border-gray-200/80 pt-3 dark:border-gray-600">
+                                {!hideActionsDropdown &&
+                                    renderMoreActionsDropdown(
+                                        'btn btn-sm btn-square rounded-full border border-base-300 btn-ghost min-h-9 min-w-9'
+                                    )}
+                                {hideActionsDropdown ? renderCompactHistoryIconRow() : null}
+                            </div>
                         </div>
                     </div>
 
@@ -2419,80 +2478,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         </div>
                     </div>
                 )}
-
-                {/* Desktop: email + phone adjacent on one row, directly above the workflow / stage-actions separator */}
-                <div className="mt-6 hidden w-full flex-wrap items-center justify-center gap-x-5 gap-y-2 pb-3 md:mt-8 md:flex md:pb-4">
-                    <div className="flex min-w-0 max-w-[min(100%,28rem)] items-center justify-center gap-2 text-center">
-                        {displayEmail && (
-                            <div className="flex shrink-0 items-center gap-0.5">
-                                <button
-                                    type="button"
-                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
-                                    title="Copy email"
-                                    aria-label="Copy email"
-                                    onClick={() => {
-                                        void navigator.clipboard.writeText(displayEmail).then(() => toast.success('Email copied'));
-                                    }}
-                                >
-                                    <ClipboardDocumentIcon className="h-5 w-5" />
-                                </button>
-                                <button
-                                    type="button"
-                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-indigo-600 hover:bg-indigo-50 transition-colors duration-150 active:scale-[0.98]"
-                                    title="Compose email"
-                                    aria-label="Compose email"
-                                    onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
-                                >
-                                    <EnvelopeIcon className="h-5 w-5" />
-                                </button>
-                            </div>
-                        )}
-                        <p className="min-w-0 text-center text-base font-medium text-gray-900 dark:text-gray-100 truncate" title={displayEmail || ''}>
-                            {displayEmail || '---'}
-                        </p>
-                    </div>
-                    <div className="hidden h-8 w-px shrink-0 self-center bg-gray-200 md:block dark:bg-gray-600" aria-hidden />
-                    <div className="flex min-w-0 max-w-[min(100%,22rem)] items-center justify-center gap-2 text-center">
-                        {displayPhone && (
-                            <div className="flex shrink-0 items-center gap-0.5">
-                                <button
-                                    type="button"
-                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
-                                    title="Copy phone number"
-                                    aria-label="Copy phone number"
-                                    onClick={() => {
-                                        void navigator.clipboard.writeText(displayPhone).then(() => toast.success('Phone copied'));
-                                    }}
-                                >
-                                    <ClipboardDocumentIcon className="h-5 w-5" />
-                                </button>
-                                <button
-                                    type="button"
-                                    className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-700 hover:bg-base-200 hover:text-gray-900 transition-colors duration-150 active:scale-[0.98]"
-                                    title="Call — open call options"
-                                    aria-label="Call — open call options"
-                                    onClick={handleCallPrimaryPhone}
-                                >
-                                    <PhoneArrowUpRightIcon className="h-5 w-5" />
-                                </button>
-                                {onOpenWhatsAppForContact && (
-                                    <button
-                                        type="button"
-                                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-emerald-700 hover:bg-emerald-50 transition-colors duration-150 active:scale-[0.98]"
-                                        title="Open WhatsApp"
-                                        aria-label="Open WhatsApp"
-                                        onClick={() => void handleHeaderWhatsAppClick()}
-                                    >
-                                        <FaWhatsapp className="h-5 w-5" aria-hidden />
-                                    </button>
-                                )}
-                            </div>
-                        )}
-                        <p className="min-w-0 text-center text-base font-medium text-gray-900 dark:text-gray-100 truncate" title={displayPhone ? formatPhoneNumberDisplay(displayPhone) : ''}>
-                            {displayPhone ? formatPhoneNumberDisplay(displayPhone) : '---'}
-                        </p>
-                    </div>
-                </div>
 
                 {/* Workflow Actions Bar - Roles and Quick Actions */}
                 <div className="mt-7 border-t border-gray-100 pt-6 dark:border-gray-800 md:mt-0 md:pt-6 w-full">

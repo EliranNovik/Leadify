@@ -71,11 +71,13 @@ const Dashboard: React.FC = () => {
 
   // Check if alternative (green) theme is active - make it reactive
   const [isAltTheme, setIsAltTheme] = useState(() => document.documentElement.classList.contains('theme-alt'));
+  const [isDark2Theme, setIsDark2Theme] = useState(() => document.documentElement.classList.contains('theme-dark2'));
 
   useEffect(() => {
     const checkTheme = () => {
-      const hasThemeAlt = document.documentElement.classList.contains('theme-alt');
-      setIsAltTheme(hasThemeAlt);
+      const root = document.documentElement;
+      setIsAltTheme(root.classList.contains('theme-alt'));
+      setIsDark2Theme(root.classList.contains('theme-dark2'));
     };
 
     // Check on mount
@@ -6023,12 +6025,16 @@ const Dashboard: React.FC = () => {
   }
 
   return (
-    <div className="p-0 md:p-6 space-y-8 animate-fade-in">
+    <div className="min-h-screen bg-base-100 p-0 md:p-6 space-y-8 animate-fade-in">
       {/* 1. Summary Boxes: 4 columns */}
       <div className="flex md:grid md:grid-cols-4 gap-3 md:gap-6 mb-8 w-full mt-6 md:mt-0 overflow-x-auto scrollbar-hide pb-2 md:pb-0 overflow-y-visible">
         {/* Meetings Today */}
         <div
-          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-600 to-lime-600' : 'from-pink-500 via-purple-500 to-purple-600'} text-white relative overflow-visible p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ml-4 md:ml-0`}
+          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] relative overflow-visible p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ml-4 md:ml-0 ${
+            isDark2Theme
+              ? 'border border-base-300 bg-base-200 text-base-content shadow-none'
+              : `bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-600 to-lime-600' : 'from-pink-500 via-purple-500 to-purple-600'} text-white`
+          }`}
           onClick={() => setExpanded(expanded === 'meetings' ? null : 'meetings')}
         >
           {/* Meetings in Next Hour Badge - Desktop: top, Mobile: bottom */}
@@ -6037,12 +6043,16 @@ const Dashboard: React.FC = () => {
               {/* Desktop: Top Right */}
               <div className="hidden md:flex absolute top-1 right-2 z-10 group items-center gap-2 flex-wrap justify-end max-w-[calc(100%-1rem)]">
                 {/* Text Badge - Active - Only show first meeting */}
-                <span className="inline-flex items-center px-2.5 py-1 text-white text-xs font-semibold whitespace-nowrap break-words">
+                <span
+                  className={`inline-flex items-center px-2.5 py-1 text-xs font-semibold whitespace-nowrap break-words ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
+                >
                   Meeting {formatTimeUntil(nextHourMeetings[0].meetingDateTime)} with {nextHourMeetings[0].name} ({nextHourMeetings[0].lead})
                 </span>
                 {/* Count Badge */}
                 <span
-                  className="inline-flex items-center justify-center min-w-[28px] h-7 px-2.5 bg-white text-red-500 text-xs font-bold rounded-full shadow-lg animate-pulse ring-2 ring-white ring-opacity-75 cursor-help flex-shrink-0"
+                  className={`inline-flex items-center justify-center min-w-[28px] h-7 px-2.5 text-red-500 text-xs font-bold rounded-full shadow-lg animate-pulse cursor-help flex-shrink-0 ${
+                    isDark2Theme ? 'bg-base-200 ring-2 ring-base-300' : 'bg-white ring-2 ring-white ring-opacity-75'
+                  }`}
                   title={nextHourMeetings.map((meeting: any) =>
                     `Meeting ${formatTimeUntil(meeting.meetingDateTime)} with ${meeting.name} (${meeting.lead})`
                   ).join('\n')}
@@ -6071,7 +6081,9 @@ const Dashboard: React.FC = () => {
               {/* Mobile: Count Badge - Top Right */}
               <div className="md:hidden absolute top-2 right-2 z-10 group">
                 <span
-                  className="inline-flex items-center justify-center min-w-[24px] h-6 px-2 bg-white text-red-500 text-[10px] font-bold rounded-full shadow-lg animate-pulse ring-2 ring-white ring-opacity-75 cursor-help flex-shrink-0"
+                  className={`inline-flex items-center justify-center min-w-[24px] h-6 px-2 text-red-500 text-[10px] font-bold rounded-full shadow-lg animate-pulse cursor-help flex-shrink-0 ${
+                    isDark2Theme ? 'bg-base-200 ring-2 ring-base-300' : 'bg-white ring-2 ring-white ring-opacity-75'
+                  }`}
                   title={nextHourMeetings.map((meeting: any) =>
                     `Meeting ${formatTimeUntil(meeting.meetingDateTime)} with ${meeting.name} (${meeting.lead})`
                   ).join('\n')}
@@ -6099,59 +6111,144 @@ const Dashboard: React.FC = () => {
 
               {/* Mobile: Text Notice - Bottom */}
               <div className="md:hidden absolute bottom-1 left-0 right-0 z-10 flex items-center justify-center px-2">
-                <span className="inline-flex items-center px-2 py-0.5 text-white text-[9px] font-semibold whitespace-normal break-words text-center leading-tight">
+                <span
+                  className={`inline-flex items-center px-2 py-0.5 text-[9px] font-semibold whitespace-normal break-words text-center leading-tight ${
+                    isDark2Theme ? 'text-base-content' : 'text-white'
+                  }`}
+                >
                   Meeting {formatTimeUntil(nextHourMeetings[0].meetingDateTime)} with {nextHourMeetings[0].name} ({nextHourMeetings[0].lead})
                 </span>
               </div>
             </>
           )}
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20">
-              <CalendarIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />
+            <div
+              className={`flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full ${
+                isDark2Theme ? 'border border-base-300 bg-base-200/40' : 'bg-white/20'
+              }`}
+            >
+              <CalendarIcon
+                className={`w-7 h-7 md:w-7 md:h-7 opacity-90 ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
+              />
             </div>
             <div>
-              <div className="text-3xl md:text-4xl font-extrabold text-white leading-tight">{meetingsToday}</div>
-              <div className="text-white/80 text-sm md:text-sm font-medium mt-1">Meetings Today</div>
+              <div
+                className={`text-3xl md:text-4xl font-extrabold leading-tight ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
+              >
+                {meetingsToday}
+              </div>
+              <div
+                className={`text-sm md:text-sm font-medium mt-1 ${isDark2Theme ? 'text-base-content/70' : 'text-white/80'}`}
+              >
+                Meetings Today
+              </div>
             </div>
           </div>
           {/* SVG Graph Placeholder */}
-          <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-16 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
+          <svg
+            className={`absolute bottom-2 right-2 w-10 h-5 md:w-16 md:h-8 ${isDark2Theme ? 'text-base-content/35' : 'text-white/40'}`}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            viewBox="0 0 64 32"
+          >
+            <path d="M2 28 Q16 8 32 20 T62 8" />
+          </svg>
         </div>
 
         {/* Follow ups */}
         <div
-          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] bg-gradient-to-tr ${isAltTheme ? 'from-emerald-600 via-green-600 to-green-500' : 'from-purple-600 via-blue-600 to-blue-500'} text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto`}
+          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ${
+            isDark2Theme
+              ? 'border border-base-300 bg-base-200 text-base-content shadow-none'
+              : `bg-gradient-to-tr ${isAltTheme ? 'from-emerald-600 via-green-600 to-green-500' : 'from-purple-600 via-blue-600 to-blue-500'} text-white`
+          }`}
           onClick={() => setExpanded(expanded === 'overdue' ? null : 'overdue')}
         >
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20">
-              <ExclamationTriangleIcon className="w-7 h-7 md:w-7 md:h-7 text-white opacity-90" />
+            <div
+              className={`flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full ${
+                isDark2Theme ? 'border border-base-300 bg-base-200/40' : 'bg-white/20'
+              }`}
+            >
+              <ExclamationTriangleIcon
+                className={`w-7 h-7 md:w-7 md:h-7 opacity-90 ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
+              />
             </div>
             <div>
-              <div className="text-3xl md:text-4xl font-extrabold text-white leading-tight">{overdueFollowups}</div>
-              <div className="text-white/80 text-sm md:text-sm font-medium mt-1">Today's Follow ups</div>
+              <div
+                className={`text-3xl md:text-4xl font-extrabold leading-tight ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
+              >
+                {overdueFollowups}
+              </div>
+              <div
+                className={`text-sm md:text-sm font-medium mt-1 ${isDark2Theme ? 'text-base-content/70' : 'text-white/80'}`}
+              >
+                Today's Follow ups
+              </div>
             </div>
           </div>
           {/* SVG Bar Chart Placeholder */}
-          <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-12 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 48 32"><rect x="2" y="20" width="4" height="10" /><rect x="10" y="10" width="4" height="20" /><rect x="18" y="16" width="4" height="14" /><rect x="26" y="6" width="4" height="24" /><rect x="34" y="14" width="4" height="16" /></svg>
+          <svg
+            className={`absolute bottom-2 right-2 w-10 h-5 md:w-12 md:h-8 ${isDark2Theme ? 'text-base-content/35' : 'text-white/40'}`}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            viewBox="0 0 48 32"
+          >
+            <rect x="2" y="20" width="4" height="10" />
+            <rect x="10" y="10" width="4" height="20" />
+            <rect x="18" y="16" width="4" height="14" />
+            <rect x="26" y="6" width="4" height="24" />
+            <rect x="34" y="14" width="4" height="16" />
+          </svg>
         </div>
 
         {/* New Messages */}
         <div
-          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-500 to-lime-400' : 'from-blue-500 via-cyan-500 to-teal-400'} text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto`}
+          className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ${
+            isDark2Theme
+              ? 'border border-base-300 bg-base-200 text-base-content shadow-none'
+              : `bg-gradient-to-tr ${isAltTheme ? 'from-green-500 via-emerald-500 to-lime-400' : 'from-blue-500 via-cyan-500 to-teal-400'} text-white`
+          }`}
           onClick={() => setExpanded(expanded === 'messages' ? null : 'messages')}
         >
           <div className="flex items-center gap-2 md:gap-4">
-            <div className="flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full bg-white/20">
-              <ChatBubbleLeftRightIcon className="w-7 h-7 md:w-7 md:h-7 mr-1 text-white" />
+            <div
+              className={`flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full ${
+                isDark2Theme ? 'border border-base-300 bg-base-200/40' : 'bg-white/20'
+              }`}
+            >
+              <ChatBubbleLeftRightIcon
+                className={`w-7 h-7 md:w-7 md:h-7 mr-1 ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
+              />
             </div>
             <div>
-              <div className="text-3xl md:text-4xl font-extrabold text-white leading-tight">{latestMessages.length}</div>
-              <div className="text-white/80 text-sm md:text-sm font-medium mt-1">New Messages</div>
+              <div
+                className={`text-3xl md:text-4xl font-extrabold leading-tight ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
+              >
+                {latestMessages.length}
+              </div>
+              <div
+                className={`text-sm md:text-sm font-medium mt-1 ${isDark2Theme ? 'text-base-content/70' : 'text-white/80'}`}
+              >
+                New Messages
+              </div>
             </div>
           </div>
           {/* SVG Circle Placeholder */}
-          <svg className="absolute bottom-2 right-2 w-10 h-10 md:w-10 md:h-10 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" /><text x="16" y="21" textAnchor="middle" fontSize="10" fill="white" opacity="0.7">99+</text></svg>
+          <svg
+            className={`absolute bottom-2 right-2 w-10 h-10 md:w-10 md:h-10 ${isDark2Theme ? 'text-base-content/35' : 'text-white/40'}`}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            viewBox="0 0 32 32"
+          >
+            <circle cx="16" cy="16" r="12" />
+            <text x="16" y="21" textAnchor="middle" fontSize="10" fill="currentColor" opacity="0.7">
+              99+
+            </text>
+          </svg>
         </div>
       </div>
 
@@ -8058,7 +8155,7 @@ const Dashboard: React.FC = () => {
         }}
       />
 
-    </div >
+    </div>
   );
 };
 

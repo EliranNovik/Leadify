@@ -2726,7 +2726,7 @@ const CalendarPage: React.FC = () => {
     if (!hasStage) {
       return (
         <span
-          className="inline-flex items-center px-1.5 py-0.5 sm:px-2 sm:py-0.5 rounded-md text-[10px] sm:text-xs font-semibold border"
+          className="stage-badge inline-flex items-center px-1.5 py-0.5 sm:px-2 sm:py-0.5 rounded-md text-[10px] sm:text-xs font-semibold border"
           style={{ backgroundColor: NEUTRAL_STAGE_BG, color: NEUTRAL_STAGE_TEXT, borderColor: '#e5e7eb' }}
         >
           No Stage
@@ -2739,7 +2739,7 @@ const CalendarPage: React.FC = () => {
 
     return (
       <span
-        className="inline-flex items-center px-1.5 py-0.5 sm:px-2 sm:py-0.5 rounded-md text-[10px] sm:text-xs font-semibold shadow-sm"
+        className="stage-badge inline-flex items-center px-1.5 py-0.5 sm:px-2 sm:py-0.5 rounded-md text-[10px] sm:text-xs font-semibold shadow-sm"
         style={{ backgroundColor: stageColour, color: textColour, border: `1px solid ${stageColour}` }}
       >
         {label}

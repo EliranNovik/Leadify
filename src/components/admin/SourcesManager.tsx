@@ -94,6 +94,18 @@ const SourcesManager: React.FC = () => {
       placeholder: 'e.g., CAMP123'
     },
     {
+      name: 'channel_id',
+      label: 'Channel',
+      type: 'select' as const,
+      required: false,
+      searchableSelect: true,
+      foreignKey: {
+        table: 'channels',
+        valueField: 'id',
+        displayField: 'label',
+      },
+    },
+    {
       name: 'priority',
       label: 'Priority',
       type: 'number' as const,

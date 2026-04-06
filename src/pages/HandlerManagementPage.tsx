@@ -2425,7 +2425,7 @@ const HandlerManagementPage: React.FC = () => {
                           : (stageColour ? getContrastingTextColor(stageColour) : '#ffffff');
                         return (
                           <span
-                            className="badge text-xs px-2 py-0.5"
+                            className="stage-badge badge text-xs px-2 py-0.5"
                             style={{ backgroundColor, borderColor: backgroundColor, color: textColor }}
                           >
                             {stageName}

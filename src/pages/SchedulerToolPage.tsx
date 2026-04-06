@@ -1772,7 +1772,7 @@ const SchedulerToolPage: React.FC = () => {
 
     return (
       <span
-        className="badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
+        className="stage-badge badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
         style={{
           backgroundColor: fallbackStageColour,
           borderColor: fallbackStageColour,

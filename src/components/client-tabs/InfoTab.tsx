@@ -1636,8 +1636,9 @@ const InfoTab: React.FC<ClientTabProps> = ({
           <h3 className="text-xs font-semibold tracking-wide text-gray-500 uppercase">Overview</h3>
           <div className="h-px w-full bg-gradient-to-r from-transparent via-gray-300/45 to-transparent" />
         </div>
-        {/* Row 1: Case Probability, Follow-up Status, Eligibility Status, File ID — flat layout, dividers only */}
-        <div className="flex flex-col lg:flex-row lg:items-stretch divide-y lg:divide-y-0 lg:divide-x divide-gray-200/50 mb-10 lg:mb-16">
+        {/* Overview: row 1 = Case Probability + Follow-up; row 2 = Eligibility + File ID */}
+        <div className="mb-10 flex flex-col gap-10 lg:mb-16 lg:gap-14">
+          <div className="flex flex-col divide-y divide-gray-200/50 lg:flex-row lg:divide-x lg:divide-y-0 lg:items-stretch">
           {/* Case Probability */}
           <div className="flex-1 min-w-0 overflow-hidden">
             <div className="px-0 sm:px-1 pt-2 pb-8 lg:py-2 lg:pr-6 lg:pb-6 space-y-5">
@@ -1856,10 +1857,12 @@ const InfoTab: React.FC<ClientTabProps> = ({
               )}
             </div>
           </div>
+          </div>
 
+          <div className="flex flex-col divide-y divide-gray-200/50 border-t border-gray-200/50 pt-10 lg:flex-row lg:divide-x lg:divide-y-0 lg:items-stretch lg:pt-14">
           {/* Eligibility */}
           <div className="flex-1 min-w-0 overflow-hidden">
-            <div className="px-0 sm:px-1 pt-2 pb-8 lg:py-2 lg:px-6 lg:pb-6 space-y-5">
+            <div className="space-y-5 px-0 pb-8 pt-2 sm:px-1 lg:pb-6 lg:pl-0 lg:pr-6 lg:pt-2">
               <h4 className="text-lg font-semibold text-gray-900">Eligibility Status</h4>
 
               <div className="space-y-4">
@@ -1933,9 +1936,9 @@ const InfoTab: React.FC<ClientTabProps> = ({
             </div>
           </div>
 
-          {/* File ID — narrow grey panel (extra row width goes to other Overview columns); full height */}
-          <div className="flex min-h-0 w-full max-w-full flex-none flex-col self-stretch overflow-hidden lg:ml-auto lg:max-w-[min(100%,13rem)]">
-            <div className="flex min-h-0 flex-1 flex-col px-0 pb-8 pt-2 sm:px-1 lg:pb-6 lg:pl-6 lg:pt-2">
+          {/* File ID — same row as Eligibility; grey panel fills column */}
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col self-stretch overflow-hidden">
+            <div className="flex min-h-0 flex-1 flex-col px-0 pb-8 pt-2 sm:px-1 lg:pb-6 lg:pl-6 lg:pr-0 lg:pt-2">
               <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border border-gray-200 bg-gray-50 p-4 shadow-sm dark:border-gray-600 dark:bg-gray-800/90">
                 <div className="flex min-h-0 flex-1 flex-col gap-5">
                   <div className="flex shrink-0 items-center justify-between gap-1">
@@ -2010,6 +2013,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
                 </div>
               </div>
             </div>
+          </div>
           </div>
         </div>
 

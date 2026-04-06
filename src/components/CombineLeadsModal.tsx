@@ -148,7 +148,7 @@ const CombineLeadsModal: React.FC<CombineLeadsModalProps> = ({
     const bg = stageColor || '#6b7280';
     return (
       <span
-        className="badge badge-sm text-xs px-2 py-0.5 text-white border-0"
+        className="stage-badge badge badge-sm text-xs px-2 py-0.5 text-white border-0"
         style={{ backgroundColor: bg }}
       >
         {stageName}

@@ -5626,7 +5626,7 @@ const Clients: React.FC<ClientsProps> = ({
       <div className="relative" ref={dropdownRef}>
         <button
           type="button"
-          className={`${anchor === 'mobile' ? 'badge badge-md' : 'badge badge-sm'} ${anchor === 'mobile' ? 'ml-0 px-4 py-2.5' : 'ml-2 px-4 py-2'} min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${isSuperuser
+          className={`stage-badge ${anchor === 'mobile' ? 'badge badge-md' : 'badge badge-sm'} ${anchor === 'mobile' ? 'ml-0 px-4 py-2.5' : 'ml-2 px-4 py-2'} min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${isSuperuser
             ? 'cursor-pointer hover:scale-[1.02]'
             : 'cursor-default'
             }`}
@@ -17651,7 +17651,7 @@ const Clients: React.FC<ClientsProps> = ({
 
                           return (
                             <span
-                              className="badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
+                              className="stage-badge badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
                               style={{
                                 backgroundColor,
                                 borderColor: backgroundColor,

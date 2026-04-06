@@ -880,14 +880,14 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             const { data: currentUser, error: userError } = await supabase.auth.getUser();
             console.log(`Current user:`, currentUser);
             
-            // Check the current user's role in the users table
+            // Check the current user's role in the users table (auth.users.id matches users.auth_id, not users.id)
             let currentUserRecord = null;
             if (currentUser?.user?.id) {
               const { data: userRecord, error: currentUserError } = await supabase
                 .from('users')
                 .select('id, email, role, is_staff, is_superuser')
-                .eq('id', currentUser.user.id)
-                .single();
+                .eq('auth_id', currentUser.user.id)
+                .maybeSingle();
               
               currentUserRecord = userRecord;
               console.log(`Current user record from users table:`, { currentUserRecord, currentUserError });
@@ -901,15 +901,17 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             
             console.log(`Select test result:`, { selectData, selectError });
             
-            // Try a minimal update to test if it's a field-specific issue
-            console.log(`Testing minimal update with just one field...`);
-            const { data: testUpdateData, error: testUpdateError } = await supabase
-              .from(tableName)
-              .update({ updated_at: new Date().toISOString() })
-              .eq('id', String(editingRecord.id))
-              .select();
-            
-            console.log(`Test update result:`, { testUpdateData, testUpdateError });
+            if (existingRecord && 'updated_at' in existingRecord) {
+              console.log(`Testing minimal update with updated_at...`);
+              const { data: testUpdateData, error: testUpdateError } = await supabase
+                .from(tableName)
+                .update({ updated_at: new Date().toISOString() })
+                .eq('id', String(editingRecord.id))
+                .select();
+              console.log(`Test update result:`, { testUpdateData, testUpdateError });
+            } else {
+              console.log(`Skipping minimal update test (no updated_at column on ${tableName})`);
+            }
             
             // Show user-friendly error message based on available information
             if (currentUserRecord) {
@@ -946,11 +948,15 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             last_login, 
             groups, 
             user_permissions, 
-            password_hash,
             updated_by,
             preferred_category, // Remove preferred_category as it's stored in separate table
             ...updateData
           } = record;
+
+          // users.password_hash is managed by auth/backend — never PATCH from this form
+          if (tableName === 'users') {
+            delete (updateData as any).password_hash;
+          }
 
           // First, check if the record exists and get its structure
           const { data: existingRecord, error: checkError } = await supabase
@@ -1013,14 +1019,14 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             const { data: currentUser, error: userError } = await supabase.auth.getUser();
             console.log(`Current user:`, currentUser);
             
-            // Check the current user's role in the users table
+            // Check the current user's role in the users table (auth.users.id matches users.auth_id, not users.id)
             let currentUserRecord = null;
             if (currentUser?.user?.id) {
               const { data: userRecord, error: currentUserError } = await supabase
                 .from('users')
                 .select('id, email, role, is_staff, is_superuser')
-                .eq('id', currentUser.user.id)
-                .single();
+                .eq('auth_id', currentUser.user.id)
+                .maybeSingle();
               
               currentUserRecord = userRecord;
               console.log(`Current user record from users table:`, { currentUserRecord, currentUserError });
@@ -1034,15 +1040,17 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             
             console.log(`Select test result:`, { selectData, selectError });
             
-            // Try a minimal update to test if it's a field-specific issue
-            console.log(`Testing minimal update with just one field...`);
-            const { data: testUpdateData, error: testUpdateError } = await supabase
-              .from(tableName)
-              .update({ updated_at: new Date().toISOString() })
-              .eq('id', String(editingRecord.id))
-              .select();
-            
-            console.log(`Test update result:`, { testUpdateData, testUpdateError });
+            if (existingRecord && 'updated_at' in existingRecord) {
+              console.log(`Testing minimal update with updated_at...`);
+              const { data: testUpdateData, error: testUpdateError } = await supabase
+                .from(tableName)
+                .update({ updated_at: new Date().toISOString() })
+                .eq('id', String(editingRecord.id))
+                .select();
+              console.log(`Test update result:`, { testUpdateData, testUpdateError });
+            } else {
+              console.log(`Skipping minimal update test (no updated_at column on ${tableName})`);
+            }
             
             // Show user-friendly error message based on available information
             if (currentUserRecord) {

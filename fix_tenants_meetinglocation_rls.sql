@@ -19,19 +19,16 @@ CREATE POLICY "Allow anon users to read meeting locations" ON public.tenants_mee
     TO anon
     USING (true);
 
--- Optional: Add policies for insert/update/delete if needed
+-- Write policies: run sql/tenants_meetinglocation_rls_write_policies.sql in Supabase (idempotent).
+-- Or uncomment the block below if applying this file as a one-off:
+
+-- DROP POLICY IF EXISTS "Allow authenticated users to insert meeting locations" ON public.tenants_meetinglocation;
 -- CREATE POLICY "Allow authenticated users to insert meeting locations" ON public.tenants_meetinglocation
---     FOR INSERT
---     TO authenticated
---     WITH CHECK (true);
-
+--     FOR INSERT TO authenticated WITH CHECK (true);
+-- DROP POLICY IF EXISTS "Allow authenticated users to update meeting locations" ON public.tenants_meetinglocation;
 -- CREATE POLICY "Allow authenticated users to update meeting locations" ON public.tenants_meetinglocation
---     FOR UPDATE
---     TO authenticated
---     USING (true)
---     WITH CHECK (true);
-
+--     FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+-- DROP POLICY IF EXISTS "Allow authenticated users to delete meeting locations" ON public.tenants_meetinglocation;
 -- CREATE POLICY "Allow authenticated users to delete meeting locations" ON public.tenants_meetinglocation
---     FOR DELETE
---     TO authenticated
---     USING (true);
+--     FOR DELETE TO authenticated USING (true);
+-- GRANT INSERT, UPDATE, DELETE ON TABLE public.tenants_meetinglocation TO authenticated;

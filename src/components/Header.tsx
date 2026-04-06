@@ -143,8 +143,10 @@ interface RMQMessage {
 const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpen, setIsSearchOpen, appJustLoggedIn, onOpenAIChat, isMenuOpen, onOpenEmailThread, onOpenWhatsApp, onOpenMessaging }) => {
   // Check if alternative (green) theme is active - make it reactive
   const [isAltTheme, setIsAltTheme] = useState(() => document.documentElement.classList.contains('theme-alt'));
-  // Dark mode: for search bar active border; app uses data-theme="dark"
-  const [isDarkMode, setIsDarkMode] = useState(() => document.documentElement.getAttribute('data-theme') === 'dark');
+  // Dark mode: Tailwind `dark` class is set for both dark and Dark 2 themes
+  const [isDarkMode, setIsDarkMode] = useState(() =>
+    typeof document !== 'undefined' && document.documentElement.classList.contains('dark')
+  );
   const location = useLocation();
   const navigate = useNavigate();
   const { sendNotificationForNewMessage } = usePushNotifications();
@@ -270,7 +272,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     const checkTheme = () => {
       const el = document.documentElement;
       setIsAltTheme(el.classList.contains('theme-alt'));
-      setIsDarkMode(el.getAttribute('data-theme') === 'dark');
+      setIsDarkMode(el.classList.contains('dark'));
     };
 
     checkTheme();
@@ -7170,7 +7172,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
     if (useInactiveStyle) {
       return (
-        <span className="badge badge-xs md:badge-sm text-xs md:text-sm px-1.5 py-0.5 md:px-2 md:py-1 bg-gray-300 text-black border border-gray-400">
+        <span className="stage-badge badge badge-xs md:badge-sm text-xs md:text-sm px-1.5 py-0.5 md:px-2 md:py-1 bg-gray-300 text-black border border-gray-400">
           {stageName}
         </span>
       );
@@ -7180,7 +7182,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     if (isContact) {
       return (
         <span
-          className="badge badge-xs md:badge-sm text-xs md:text-sm px-1.5 py-0.5 md:px-2 md:py-1 bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white border-none"
+          className="stage-badge badge badge-xs md:badge-sm text-xs md:text-sm px-1.5 py-0.5 md:px-2 md:py-1 bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white border-none"
         >
           {stageName}
         </span>
@@ -7199,7 +7201,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
     return (
       <span
-        className="badge badge-xs md:badge-sm text-xs md:text-sm px-1.5 py-0.5 md:px-2 md:py-1"
+        className="stage-badge badge badge-xs md:badge-sm text-xs md:text-sm px-1.5 py-0.5 md:px-2 md:py-1"
         style={{
           backgroundColor: backgroundColor,
           color: textColor,

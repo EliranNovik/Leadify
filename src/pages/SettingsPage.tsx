@@ -53,7 +53,7 @@ const getValidatedTheme = (): string => {
   try {
     const storedTheme = localStorage.getItem('theme');
     // Only accept valid theme values - explicitly check each valid option
-    const validThemes: string[] = ['light', 'dark', 'alternative'];
+    const validThemes: string[] = ['light', 'dark', 'dark2', 'alternative'];
     if (storedTheme && validThemes.includes(storedTheme)) {
       return storedTheme;
     }
@@ -116,12 +116,13 @@ const SettingsPage: React.FC = () => {
         {
           id: 'theme',
           label: 'Theme',
-          description: 'Choose between light and dark mode',
+          description: 'Choose light, dark, Dark 2 (minimal black/grey), or alternative green',
           type: 'select',
           value: settings.theme,
           options: [
             { label: 'Light', value: 'light' },
             { label: 'Dark', value: 'dark' },
+            { label: 'Dark 2', value: 'dark2' },
             { label: 'Alternative (Green)', value: 'alternative' },
           ]
         },
@@ -330,24 +331,31 @@ const SettingsPage: React.FC = () => {
   // Apply theme changes immediately - explicitly remove all theme classes first to prevent stale classes
   useEffect(() => {
     const theme = settings.theme;
-    const isDark = theme === 'dark';
+    const isDark = theme === 'dark' || theme === 'dark2';
+    const isDark2 = theme === 'dark2';
     const isAlt = theme === 'alternative';
     const rootEl = document.getElementById('root');
 
     // First, explicitly remove all theme classes to prevent stale classes from previous sessions
-    document.documentElement.classList.remove('dark', 'theme-alt');
-    document.body.classList.remove('dark', 'theme-alt');
-    rootEl?.classList.remove('dark', 'theme-alt');
+    document.documentElement.classList.remove('dark', 'theme-alt', 'theme-dark2');
+    document.body.classList.remove('dark', 'theme-alt', 'theme-dark2');
+    rootEl?.classList.remove('dark', 'theme-alt', 'theme-dark2');
 
     // Set the data-theme attribute
     document.documentElement.setAttribute('data-theme', theme);
 
-    // Then apply the correct theme classes
+    // Then apply the correct theme classes (dark2 uses Tailwind `dark` + Daisy theme `dark2`)
     if (isDark) {
       document.documentElement.classList.add('dark');
       document.body.classList.add('dark');
       rootEl?.classList.add('dark');
-    } else if (isAlt) {
+    }
+    if (isDark2) {
+      document.documentElement.classList.add('theme-dark2');
+      document.body.classList.add('theme-dark2');
+      rootEl?.classList.add('theme-dark2');
+    }
+    if (isAlt) {
       document.documentElement.classList.add('theme-alt');
       document.body.classList.add('theme-alt');
       rootEl?.classList.add('theme-alt');
@@ -361,6 +369,7 @@ const SettingsPage: React.FC = () => {
     // Debug log to help troubleshoot theme issues
     console.log('Theme applied:', theme, {
       isDark,
+      isDark2,
       isAlt,
       hasDarkClass: document.documentElement.classList.contains('dark'),
       hasAltClass: document.documentElement.classList.contains('theme-alt'),
@@ -464,19 +473,27 @@ const SettingsPage: React.FC = () => {
     localStorage.setItem(settingId, value.toString());
   };
 
+  const isDarkMode = settings.theme === 'dark';
+  const isDark2Mode = settings.theme === 'dark2';
+  const isAltTheme = settings.theme === 'alternative';
+
   const renderSettingItem = (item: SettingItem) => {
-    const labelClass = isDarkMode ? 'text-white' : isAltTheme ? 'text-emerald-900' : 'text-base-content';
-    const descClass = isDarkMode ? 'text-white/70' : isAltTheme ? 'text-emerald-700' : 'text-base-content/70';
-    const inputClass = isDarkMode
-      ? 'input input-bordered w-full bg-white/10 border-white/20 text-white placeholder-white/50 focus:bg-white/15 focus:border-white/40'
-      : isAltTheme
-        ? 'input input-bordered w-full bg-white border-emerald-200 text-emerald-900 placeholder-emerald-500 focus:border-lime-500 focus:ring-emerald-400'
-        : 'input input-bordered w-full';
-    const selectClass = isDarkMode
-      ? 'select select-bordered w-full bg-white/10 border-white/20 text-white focus:bg-white/15 focus:border-white/40'
-      : isAltTheme
-        ? 'select select-bordered w-full bg-white border-emerald-200 text-emerald-900 focus:border-lime-500 focus:ring-emerald-400'
-        : 'select select-bordered w-full';
+    const labelClass = isDark2Mode ? 'text-zinc-200' : isDarkMode ? 'text-white' : isAltTheme ? 'text-emerald-900' : 'text-base-content';
+    const descClass = isDark2Mode ? 'text-zinc-400' : isDarkMode ? 'text-white/70' : isAltTheme ? 'text-emerald-700' : 'text-base-content/70';
+    const inputClass = isDark2Mode
+      ? 'input input-bordered w-full bg-zinc-950 border-zinc-700 text-zinc-200 placeholder-zinc-500 focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/30'
+      : isDarkMode
+        ? 'input input-bordered w-full bg-white/10 border-white/20 text-white placeholder-white/50 focus:bg-white/15 focus:border-white/40'
+        : isAltTheme
+          ? 'input input-bordered w-full bg-white border-emerald-200 text-emerald-900 placeholder-emerald-500 focus:border-lime-500 focus:ring-emerald-400'
+          : 'input input-bordered w-full';
+    const selectClass = isDark2Mode
+      ? 'select select-bordered w-full bg-zinc-950 border-zinc-700 text-zinc-200 focus:border-violet-500/60 focus:ring-1 focus:ring-violet-500/30'
+      : isDarkMode
+        ? 'select select-bordered w-full bg-white/10 border-white/20 text-white focus:bg-white/15 focus:border-white/40'
+        : isAltTheme
+          ? 'select select-bordered w-full bg-white border-emerald-200 text-emerald-900 focus:border-lime-500 focus:ring-emerald-400'
+          : 'select select-bordered w-full';
     const toggleClass = `toggle ${isAltTheme ? 'toggle-success' : 'toggle-primary'}`;
 
     switch (item.type) {
@@ -535,12 +552,16 @@ const SettingsPage: React.FC = () => {
               </label>
               <div className="flex flex-col gap-2">
                 <p className={`text-sm ${descClass}`}>{item.description}</p>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
                   {item.options?.map(option => {
                     const isActive = item.value === option.value;
                     const baseClasses = `w-full px-4 py-3 rounded-xl border transition-all duration-200 text-center font-semibold focus:outline-none focus-visible:outline focus-visible:outline-2`;
                     let stateClasses = '';
-                    if (isDarkMode) {
+                    if (isDark2Mode) {
+                      stateClasses = isActive
+                        ? 'bg-zinc-800 text-white border-violet-500/80 shadow-lg'
+                        : 'bg-zinc-950/90 text-zinc-400 border-zinc-700 hover:bg-zinc-800 hover:text-zinc-200';
+                    } else if (isDarkMode) {
                       stateClasses = isActive
                         ? 'bg-white text-purple-700 border-white shadow-lg'
                         : 'bg-white/10 text-white/80 border-white/30 hover:bg-white/15';
@@ -582,7 +603,7 @@ const SettingsPage: React.FC = () => {
               onChange={(e) => updateSetting(item.id, e.target.value)}
             >
               {item.options?.map(option => (
-                <option key={option.value} value={option.value} className={isDarkMode ? 'bg-purple-900 text-white' : ''}>
+                <option key={option.value} value={option.value} className={isDark2Mode ? 'bg-zinc-900 text-zinc-200' : isDarkMode ? 'bg-purple-900 text-white' : ''}>
                   {option.label}
                 </option>
               ))}
@@ -637,74 +658,90 @@ const SettingsPage: React.FC = () => {
   };
 
   const activeSettingsSection = settingsSections.find(section => section.id === activeSection);
-  const isDarkMode = settings.theme === 'dark';
-  const isAltTheme = settings.theme === 'alternative';
 
   const pageWrapperClass = `min-h-screen transition-all duration-500 ${activeSection === 'calendar' ? 'p-0 sm:p-6' : 'p-3 sm:p-6'
-    } ${isDarkMode
-      ? 'bg-gradient-to-br from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] text-white'
-      : isAltTheme
-        ? 'bg-[#f7fbf5] text-emerald-900'
-        : 'bg-base-100 text-base-content'
+    } ${isDark2Mode
+      ? 'bg-base-100 text-zinc-200'
+      : isDarkMode
+        ? 'bg-gradient-to-br from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] text-white'
+        : isAltTheme
+          ? 'bg-[#f7fbf5] text-emerald-900'
+          : 'bg-base-100 text-base-content'
     }`;
 
-  const shellCardClass = `rounded-xl shadow-lg transition-all duration-300 ${isDarkMode
-    ? 'p-3 sm:p-4 bg-white/10 border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
-    : isAltTheme
-      ? 'p-3 sm:p-4 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border border-lime-300 shadow-[0_20px_45px_rgba(6,95,70,0.35)]'
-      : 'p-3 sm:p-4'
+  const shellCardClass = `rounded-xl shadow-lg transition-all duration-300 ${isDark2Mode
+    ? 'p-3 sm:p-4 bg-zinc-900 border border-zinc-800 text-zinc-200 shadow-[0_12px_40px_rgba(0,0,0,0.5)]'
+    : isDarkMode
+      ? 'p-3 sm:p-4 bg-white/10 border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
+      : isAltTheme
+        ? 'p-3 sm:p-4 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border border-lime-300 shadow-[0_20px_45px_rgba(6,95,70,0.35)]'
+        : 'p-3 sm:p-4'
     }`;
 
   const contentShellClass = `rounded-xl transition-all duration-300 ${activeSection === 'calendar'
-    ? (isDarkMode
-      ? 'p-0 sm:p-6 bg-white/10 border-0 sm:border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
+    ? (isDark2Mode
+      ? 'p-0 sm:p-6 bg-zinc-900 border-0 sm:border border-zinc-800 shadow-[0_12px_40px_rgba(0,0,0,0.5)]'
+      : isDarkMode
+        ? 'p-0 sm:p-6 bg-white/10 border-0 sm:border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
+        : isAltTheme
+          ? 'p-0 sm:p-6 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border-0 sm:border border-lime-300 shadow-[0_30px_60px_rgba(6,95,70,0.35)]'
+          : 'p-0 sm:p-6')
+    : (isDark2Mode
+      ? 'p-3 sm:p-6 bg-zinc-900 border border-zinc-800 shadow-[0_12px_40px_rgba(0,0,0,0.5)]'
+      : isDarkMode
+        ? 'p-3 sm:p-6 bg-white/10 border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
+        : isAltTheme
+          ? 'p-3 sm:p-6 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border border-lime-300 shadow-[0_30px_60px_rgba(6,95,70,0.35)]'
+          : 'p-3 sm:p-6')
+    }`;
+
+  const innerCardClass = `rounded-lg transition-all duration-300 ${isDark2Mode
+    ? 'p-3 sm:p-4 bg-zinc-950/80 border border-zinc-800 text-zinc-200 shadow-inner'
+    : isDarkMode
+      ? 'p-3 sm:p-4 bg-white/5 border border-white/10 shadow-md'
       : isAltTheme
-        ? 'p-0 sm:p-6 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border-0 sm:border border-lime-300 shadow-[0_30px_60px_rgba(6,95,70,0.35)]'
-        : 'p-0 sm:p-6')
-    : (isDarkMode
-      ? 'p-3 sm:p-6 bg-white/10 border border-white/20 backdrop-blur-md shadow-[0_8px_32px_rgba(0,0,0,0.3)]'
+        ? 'p-3 sm:p-4 bg-emerald-950/60 border border-lime-400/60 text-white shadow-[0_12px_30px_rgba(0,0,0,0.35)]'
+        : 'p-3 sm:p-4 bg-base-100'
+    }`;
+
+  const headerBadgeClass = `rounded-xl transition-all duration-300 ${isDark2Mode ? 'bg-zinc-800 text-zinc-200 border border-zinc-700' : isDarkMode ? 'bg-white/20 text-white' : isAltTheme ? 'bg-gradient-to-r from-emerald-900 to-lime-500 text-white shadow' : 'bg-primary/10 text-primary'
+    }`;
+
+  const headerTextClass = isDark2Mode ? 'text-zinc-100' : isDarkMode ? 'text-white' : isAltTheme ? 'text-emerald-900' : 'text-base-content';
+  const mutedTextClass = isDark2Mode ? 'text-zinc-400' : isDarkMode ? 'text-white/80' : isAltTheme ? 'text-emerald-700' : 'text-base-content/70';
+
+  const navButtonBase = isDark2Mode
+    ? 'text-zinc-300 hover:bg-zinc-800 border border-transparent transition-all duration-200'
+    : isDarkMode
+      ? 'text-white/90 hover:bg-white/15 transition-all duration-200'
       : isAltTheme
-        ? 'p-3 sm:p-6 bg-gradient-to-br from-emerald-950 via-emerald-900 to-lime-600 text-white border border-lime-300 shadow-[0_30px_60px_rgba(6,95,70,0.35)]'
-        : 'p-3 sm:p-6')
-    }`;
+        ? 'text-emerald-800 border border-emerald-200 bg-white/80 hover:bg-lime-50 transition-all duration-200'
+        : 'text-base-content hover:bg-base-300';
+  const navButtonActive = isDark2Mode
+    ? 'bg-zinc-800 text-white border border-zinc-600 shadow-lg font-semibold'
+    : isDarkMode
+      ? 'bg-white text-purple-700 shadow-lg font-semibold'
+      : isAltTheme
+        ? 'bg-gradient-to-r from-emerald-900 to-lime-500 text-white shadow-lg font-semibold border border-lime-200'
+        : 'bg-primary text-primary-content font-medium';
 
-  const innerCardClass = `rounded-lg transition-all duration-300 ${isDarkMode
-    ? 'p-3 sm:p-4 bg-white/5 border border-white/10 shadow-md'
-    : isAltTheme
-      ? 'p-3 sm:p-4 bg-emerald-950/60 border border-lime-400/60 text-white shadow-[0_12px_30px_rgba(0,0,0,0.35)]'
-      : 'p-3 sm:p-4 bg-base-100'
-    }`;
+  const tabBorderClass = isDark2Mode ? 'border-zinc-800' : isDarkMode ? 'border-white/20' : isAltTheme ? 'border-emerald-200' : 'border-base-300';
+  const tabInactiveClass = isDark2Mode
+    ? 'border-transparent text-zinc-500 hover:text-zinc-200'
+    : isDarkMode
+      ? 'border-transparent text-white/70 hover:text-white'
+      : isAltTheme
+        ? 'border-transparent text-emerald-700 hover:text-emerald-900'
+        : 'border-transparent text-base-content/70 hover:text-base-content';
+  const tabActiveClass = isDark2Mode ? 'border-violet-400 text-zinc-100' : isDarkMode ? 'border-white text-white' : isAltTheme ? 'border-lime-500 text-emerald-900' : 'border-primary text-base-content';
 
-  const headerBadgeClass = `rounded-xl transition-all duration-300 ${isDarkMode ? 'bg-white/20 text-white' : isAltTheme ? 'bg-gradient-to-r from-emerald-900 to-lime-500 text-white shadow' : 'bg-primary/10 text-primary'
-    }`;
-
-  const headerTextClass = isDarkMode ? 'text-white' : isAltTheme ? 'text-emerald-900' : 'text-base-content';
-  const mutedTextClass = isDarkMode ? 'text-white/80' : isAltTheme ? 'text-emerald-700' : 'text-base-content/70';
-
-  const navButtonBase = isDarkMode
-    ? 'text-white/90 hover:bg-white/15 transition-all duration-200'
-    : isAltTheme
-      ? 'text-emerald-800 border border-emerald-200 bg-white/80 hover:bg-lime-50 transition-all duration-200'
-      : 'text-base-content hover:bg-base-300';
-  const navButtonActive = isDarkMode
-    ? 'bg-white text-purple-700 shadow-lg font-semibold'
-    : isAltTheme
-      ? 'bg-gradient-to-r from-emerald-900 to-lime-500 text-white shadow-lg font-semibold border border-lime-200'
-      : 'bg-primary text-primary-content font-medium';
-
-  const tabBorderClass = isDarkMode ? 'border-white/20' : isAltTheme ? 'border-emerald-200' : 'border-base-300';
-  const tabInactiveClass = isDarkMode
-    ? 'border-transparent text-white/70 hover:text-white'
-    : isAltTheme
-      ? 'border-transparent text-emerald-700 hover:text-emerald-900'
-      : 'border-transparent text-base-content/70 hover:text-base-content';
-  const tabActiveClass = isDarkMode ? 'border-white text-white' : isAltTheme ? 'border-lime-500 text-emerald-900' : 'border-primary text-primary';
-
-  const saveNoticeClass = isDarkMode
-    ? 'p-3 sm:p-4 bg-white/10 border border-white/20 text-white shadow-lg backdrop-blur-md'
-    : isAltTheme
-      ? 'p-3 sm:p-4 bg-gradient-to-r from-emerald-900 to-lime-500 text-white border border-lime-200 shadow-lg'
-      : 'p-3 sm:p-4 bg-info/10 border border-info/20 text-info';
+  const saveNoticeClass = isDark2Mode
+    ? 'p-3 sm:p-4 bg-zinc-900 border border-zinc-700 text-zinc-200 shadow-lg'
+    : isDarkMode
+      ? 'p-3 sm:p-4 bg-white/10 border border-white/20 text-white shadow-lg backdrop-blur-md'
+      : isAltTheme
+        ? 'p-3 sm:p-4 bg-gradient-to-r from-emerald-900 to-lime-500 text-white border border-lime-200 shadow-lg'
+        : 'p-3 sm:p-4 bg-info/10 border border-info/20 text-info';
 
   return (
     <>
@@ -714,7 +751,7 @@ const SettingsPage: React.FC = () => {
           <div className="mb-6 sm:mb-8">
             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 sm:gap-4 mb-4">
               <div className={`hidden sm:flex p-2 sm:p-3 ${headerBadgeClass}`}>
-                <Cog6ToothIcon className={`w-6 h-6 sm:w-8 sm:h-8 ${isDarkMode ? 'text-white' : 'text-primary'}`} />
+                <Cog6ToothIcon className={`w-6 h-6 sm:w-8 sm:h-8 ${isDark2Mode || isDarkMode ? 'text-white' : 'text-primary'}`} />
               </div>
               <div className="px-2 sm:px-0">
                 <h1 className={`text-2xl sm:text-3xl font-bold ${headerTextClass}`}>Settings</h1>
@@ -786,7 +823,7 @@ const SettingsPage: React.FC = () => {
               {activeSettingsSection && (
                 <div className={contentShellClass}>
                   <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3 mb-4 sm:mb-6 px-2 sm:px-0">
-                    <activeSettingsSection.icon className={`hidden sm:block w-5 h-5 sm:w-6 sm:h-6 ${isDarkMode ? 'text-white' : 'text-primary'}`} />
+                    <activeSettingsSection.icon className={`hidden sm:block w-5 h-5 sm:w-6 sm:h-6 ${isDark2Mode || isDarkMode ? 'text-white' : 'text-primary'}`} />
                     <h2 className={`text-xl sm:text-2xl font-semibold ${headerTextClass}`}>
                       {activeSettingsSection.title}
                     </h2>
@@ -810,11 +847,13 @@ const SettingsPage: React.FC = () => {
 
                     {/* Special case for Calendar section - add tabbed interface */}
                     {activeSection === 'calendar' && (
-                      <div className={`${activeSection === 'calendar' ? 'p-2 sm:p-4' : innerCardClass} ${isDarkMode
-                        ? 'bg-white/5 border border-white/10 shadow-md'
-                        : isAltTheme
-                          ? 'bg-emerald-950/60 border border-lime-400/60 text-white shadow-[0_12px_30px_rgba(0,0,0,0.35)]'
-                          : 'bg-base-100'
+                      <div className={`${activeSection === 'calendar' ? 'p-2 sm:p-4' : innerCardClass} ${isDark2Mode
+                        ? 'bg-zinc-950/80 border border-zinc-800 text-zinc-200 shadow-inner'
+                        : isDarkMode
+                          ? 'bg-white/5 border border-white/10 shadow-md'
+                          : isAltTheme
+                            ? 'bg-emerald-950/60 border border-lime-400/60 text-white shadow-[0_12px_30px_rgba(0,0,0,0.35)]'
+                            : 'bg-base-100'
                         } rounded-lg transition-all duration-300`}>
                         {/* Tab Navigation */}
                         <div className={`flex border-b ${tabBorderClass} mb-4 sm:mb-6 overflow-x-auto`}>
@@ -889,13 +928,13 @@ const SettingsPage: React.FC = () => {
 
           {/* Save Notice */}
           <div className={`mt-4 sm:mt-6 rounded-lg ${saveNoticeClass}`}>
-            <div className={`flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-info'}`}>
+            <div className={`flex items-center gap-2 ${isDark2Mode || isDarkMode ? 'text-white' : 'text-info'}`}>
               <svg className="w-4 h-4 sm:w-5 sm:h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <span className="font-medium text-sm sm:text-base">Auto-Save Enabled</span>
             </div>
-            <p className={`${isDarkMode ? 'text-white/70' : 'text-info/80'} text-xs sm:text-sm mt-1`}>
+            <p className={`${isDark2Mode ? 'text-zinc-400' : isDarkMode ? 'text-white/70' : 'text-info/80'} text-xs sm:text-sm mt-1`}>
               All settings are automatically saved to your browser's local storage.
             </p>
           </div>

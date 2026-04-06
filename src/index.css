@@ -384,27 +384,42 @@ html,
 
 /* --- DARK MODE STYLING --- */
 /* Apply gradient background to root elements in dark mode */
-html.dark:not(.theme-alt) {
+html.dark:not(.theme-alt):not(.theme-dark2) {
   background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%);
 }
 
-html.dark:not(.theme-alt) body {
+html.dark:not(.theme-alt):not(.theme-dark2) body {
   background: transparent;
   color: #ffffff;
 }
 
 /* Page containers - transparent to show gradient */
-html.dark:not(.theme-alt) .bg-base-100,
-html.dark:not(.theme-alt) .bg-white,
-html.dark:not(.theme-alt) .min-h-screen,
-html.dark:not(.theme-alt) .h-screen {
+html.dark:not(.theme-alt):not(.theme-dark2) .bg-base-100,
+html.dark:not(.theme-alt):not(.theme-dark2) .bg-white,
+html.dark:not(.theme-alt):not(.theme-dark2) .min-h-screen,
+html.dark:not(.theme-alt):not(.theme-dark2) .h-screen {
   background: transparent !important;
   color: #ffffff !important;
 }
 
 /* Ensure main content is visible */
-html.dark:not(.theme-alt) main {
+html.dark:not(.theme-alt):not(.theme-dark2) main {
   background: transparent !important;
+}
+
+/* Dark 2: black canvas (#000); chrome + panels use #18181b (see theme-dark2 rules below) */
+html.dark.theme-dark2 {
+  background: #000000;
+}
+html.dark.theme-dark2 body {
+  background: #000000;
+  color: #e4e4e7;
+}
+html.dark.theme-dark2 #root {
+  background: #000000 !important;
+}
+html.dark.theme-dark2 main.app-main-scroll {
+  background: #000000 !important;
 }
 
 /* Alternative theme - force white background */
@@ -417,24 +432,24 @@ html.theme-alt main {
 }
 
 /* Secondary containers with glassmorphism */
-html.dark:not(.theme-alt) .bg-gray-50,
-html.dark:not(.theme-alt) .bg-gray-100,
-html.dark:not(.theme-alt) .bg-base-200,
-html.dark:not(.theme-alt) .bg-base-300,
-html.dark:not(.theme-alt) .bg-slate-50,
-html.dark:not(.theme-alt) .bg-slate-100 {
+html.dark:not(.theme-alt):not(.theme-dark2) .bg-gray-50,
+html.dark:not(.theme-alt):not(.theme-dark2) .bg-gray-100,
+html.dark:not(.theme-alt):not(.theme-dark2) .bg-base-200,
+html.dark:not(.theme-alt):not(.theme-dark2) .bg-base-300,
+html.dark:not(.theme-alt):not(.theme-dark2) .bg-slate-50,
+html.dark:not(.theme-alt):not(.theme-dark2) .bg-slate-100 {
   background: rgba(255, 255, 255, 0.05) !important;
   color: #ffffff !important;
   border: 1px solid rgba(255, 255, 255, 0.1) !important;
 }
 
 /* Cards and rounded elements with glassmorphism styling */
-html.dark:not(.theme-alt) .card,
-html.dark:not(.theme-alt) .glass-card,
-html.dark:not(.theme-alt) .suggestion-card,
-html.dark:not(.theme-alt) .rounded-2xl,
-html.dark:not(.theme-alt) .rounded-xl,
-html.dark:not(.theme-alt) .rounded-lg {
+html.dark:not(.theme-alt):not(.theme-dark2) .card,
+html.dark:not(.theme-alt):not(.theme-dark2) .glass-card,
+html.dark:not(.theme-alt):not(.theme-dark2) .suggestion-card,
+html.dark:not(.theme-alt):not(.theme-dark2) .rounded-2xl,
+html.dark:not(.theme-alt):not(.theme-dark2) .rounded-xl,
+html.dark:not(.theme-alt):not(.theme-dark2) .rounded-lg {
   background: rgba(255, 255, 255, 0.1) !important;
   color: #ffffff !important;
   border: 1px solid rgba(255, 255, 255, 0.2) !important;
@@ -444,9 +459,9 @@ html.dark:not(.theme-alt) .rounded-lg {
 }
 
 /* Card hover effects */
-html.dark:not(.theme-alt) .card:hover,
-html.dark:not(.theme-alt) .glass-card:hover,
-html.dark:not(.theme-alt) .suggestion-card:hover {
+html.dark:not(.theme-alt):not(.theme-dark2) .card:hover,
+html.dark:not(.theme-alt):not(.theme-dark2) .glass-card:hover,
+html.dark:not(.theme-alt):not(.theme-dark2) .suggestion-card:hover {
   transform: translateY(-2px) !important;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4) !important;
   border-color: rgba(255, 255, 255, 0.3) !important;
@@ -472,26 +487,26 @@ html.dark div.fixed.left-4 {
 }
 
 /* Modern input fields */
-html.dark:not(.theme-alt) input,
-html.dark:not(.theme-alt) textarea,
-html.dark:not(.theme-alt) select {
+html.dark:not(.theme-alt):not(.theme-dark2) input,
+html.dark:not(.theme-alt):not(.theme-dark2) textarea,
+html.dark:not(.theme-alt):not(.theme-dark2) select {
   background: rgba(255, 255, 255, 0.1) !important;
   color: #ffffff !important;
   border: 1px solid rgba(255, 255, 255, 0.2) !important;
   border-radius: 12px !important;
 }
 
-html.dark:not(.theme-alt) input:focus,
-html.dark:not(.theme-alt) textarea:focus,
-html.dark:not(.theme-alt) select:focus {
+html.dark:not(.theme-alt):not(.theme-dark2) input:focus,
+html.dark:not(.theme-alt):not(.theme-dark2) textarea:focus,
+html.dark:not(.theme-alt):not(.theme-dark2) select:focus {
   background: rgba(255, 255, 255, 0.15) !important;
   border: 2px solid rgba(255, 255, 255, 0.4) !important;
   outline: none !important;
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1) !important;
 }
 
-html.dark:not(.theme-alt) input::placeholder,
-html.dark:not(.theme-alt) textarea::placeholder {
+html.dark:not(.theme-alt):not(.theme-dark2) input::placeholder,
+html.dark:not(.theme-alt):not(.theme-dark2) textarea::placeholder {
   color: rgba(255, 255, 255, 0.6) !important;
 }
 
@@ -913,6 +928,121 @@ html.dark .z-40 .bg-gray-50.text-gray-500 {
   color: rgba(255, 255, 255, 0.7) !important;
 }
 
+/* === RMQ — Dark 2 (zinc; message bubbles + chrome; targets classes from RMQMessagesPage.tsx) === */
+html.dark.theme-dark2 .z-50.fixed.inset-0.bg-gradient-to-br {
+  background: #000000 !important;
+  background-image: none !important;
+}
+
+html.dark.theme-dark2 .z-40.fixed.inset-0 {
+  background: #000000 !important;
+}
+
+html.dark.theme-dark2 .z-50 .bg-base-100,
+html.dark.theme-dark2 .z-50 .bg-white {
+  background: #18181b !important;
+  color: #e4e4e7 !important;
+}
+
+html.dark.theme-dark2 .z-50 .hover\:bg-gray-50:hover,
+html.dark.theme-dark2 .z-40 .hover\:bg-gray-50:hover {
+  background: #27272a !important;
+}
+
+html.dark.theme-dark2 .z-50 input,
+html.dark.theme-dark2 .z-50 textarea,
+html.dark.theme-dark2 .z-40 input,
+html.dark.theme-dark2 .z-40 textarea {
+  background: #27272a !important;
+  border-color: #3f3f46 !important;
+  color: #e4e4e7 !important;
+}
+
+html.dark.theme-dark2 .z-50 input:focus,
+html.dark.theme-dark2 .z-50 textarea:focus,
+html.dark.theme-dark2 .z-40 input:focus,
+html.dark.theme-dark2 .z-40 textarea:focus {
+  background: #27272a !important;
+  border-color: #52525b !important;
+}
+
+/* Sent / received bubbles (override inline purple / light grey) */
+html.dark.theme-dark2 .rmq-bubble-sent {
+  background: #3f3f46 !important;
+  background-color: #3f3f46 !important;
+  color: #f4f4f5 !important;
+}
+
+html.dark.theme-dark2 .rmq-bubble-recv {
+  background: #27272a !important;
+  background-color: #27272a !important;
+  color: #e4e4e7 !important;
+  border: 1px solid #3f3f46 !important;
+}
+
+html.dark.theme-dark2 .rmq-bubble-recv a,
+html.dark.theme-dark2 .rmq-bubble-recv .underline {
+  color: #93c5fd !important;
+}
+
+html.dark.theme-dark2 .rmq-messages-area .bg-white.rounded-2xl,
+html.dark.theme-dark2 .rmq-messages-area .bg-white.rounded-bl-md,
+html.dark.theme-dark2 .rmq-messages-area .border.bg-white,
+html.dark.theme-dark2 .z-50 .rmq-messages-area .bg-white,
+html.dark.theme-dark2 .z-40 .rmq-messages-area .bg-white {
+  background: #27272a !important;
+  border-color: #3f3f46 !important;
+  color: #e4e4e7 !important;
+}
+
+html.dark.theme-dark2 .rmq-messages-area .bg-base-100.rounded-2xl,
+html.dark.theme-dark2 .rmq-messages-area .bg-base-100.rounded-br-md {
+  background: #27272a !important;
+  color: #e4e4e7 !important;
+}
+
+/* Sidebar / list selection (lavender → zinc) */
+html.dark.theme-dark2 .rmq-thread-selected {
+  background: #27272a !important;
+  color: #e4e4e7 !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4) !important;
+}
+
+html.dark.theme-dark2 .rmq-thread-selected .font-semibold {
+  color: #e4e4e7 !important;
+}
+
+html.dark.theme-dark2 .rmq-thread-selected .text-base-content\/45,
+html.dark.theme-dark2 .rmq-thread-selected .text-base-content\/70,
+html.dark.theme-dark2 .rmq-thread-selected .text-base-content\/80 {
+  color: #a1a1aa !important;
+}
+
+/* Chats / Groups tab pill */
+html.dark.theme-dark2 .rmq-tab-pill {
+  background: #18181b !important;
+  color: #e4e4e7 !important;
+  border: 1px solid #3f3f46 !important;
+  box-shadow: none !important;
+}
+
+/* Reply preview bar + thread reply strip */
+html.dark.theme-dark2 .rmq-reply-preview,
+html.dark.theme-dark2 .rmq-thread-reply-strip {
+  background: #27272a !important;
+  border-color: #3f3f46 !important;
+  color: #e4e4e7 !important;
+}
+
+html.dark.theme-dark2 .rmq-reply-preview .font-semibold {
+  color: #d4d4d8 !important;
+}
+
+html.dark.theme-dark2 .z-50 .btn-ghost:hover,
+html.dark.theme-dark2 .z-40 .btn-ghost:hover {
+  background: #3f3f46 !important;
+}
+
 /* Tab styling */
 html.dark .tabs .tab {
   color: rgba(255, 255, 255, 0.7) !important;
@@ -1047,7 +1177,7 @@ html.theme-alt .sidebar-frosted-glass {
 }
 
 /* Sidebar frosted glass - Dark mode */
-html.dark:not(.theme-alt) .sidebar-frosted-glass {
+html.dark:not(.theme-alt):not(.theme-dark2) .sidebar-frosted-glass {
   background: rgba(15, 23, 42, 0.7) !important;
   backdrop-filter: blur(20px) !important;
   -webkit-backdrop-filter: blur(20px) !important;
@@ -1318,6 +1448,271 @@ html.theme-alt .input-bordered:focus {
   background: white !important;
   border-color: #9ca3af !important;
   outline-color: #9ca3af !important;
+}
+
+/* --- Dark 2: global chrome & surfaces (header, sidebar, modals, tables, hardcoded bg-white) --- */
+html.theme-dark2,
+html[data-theme='dark2'] {
+  color-scheme: dark;
+}
+
+/* Header — dark grey bar vs black canvas (all breakpoints) */
+html.dark.theme-dark2 .navbar {
+  background: #18181b !important;
+  color: #e4e4e7 !important;
+  border-bottom: 1px solid #27272a !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Sidebar — dark grey vs black gutter/canvas */
+html.dark.theme-dark2 .sidebar-frosted-glass {
+  background: #18181b !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+}
+
+/* Dropdowns & popovers */
+html.dark.theme-dark2 .dropdown-content {
+  background: #18181b !important;
+  border: 1px solid #3f3f46 !important;
+  color: #e4e4e7 !important;
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
+}
+
+html.dark.theme-dark2 .notification-dropdown,
+html.dark.theme-dark2 .search-dropdown,
+html.dark.theme-dark2 .filter-dropdown,
+html.dark.theme-dark2 [data-dropdown-menu] {
+  background: #18181b !important;
+  border-color: #3f3f46 !important;
+  color: #e4e4e7 !important;
+}
+
+/* Modals */
+html.dark.theme-dark2 .modal-box {
+  background: #18181b !important;
+  color: #e4e4e7 !important;
+  border: 1px solid #3f3f46 !important;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.65) !important;
+}
+
+html.dark.theme-dark2 .modal,
+html.dark.theme-dark2 .modal.modal-open {
+  background: rgba(0, 0, 0, 0.75) !important;
+  backdrop-filter: blur(6px) !important;
+  -webkit-backdrop-filter: blur(6px) !important;
+}
+
+html.dark.theme-dark2 .modal::backdrop,
+html.dark.theme-dark2 dialog::backdrop {
+  background: rgba(0, 0, 0, 0.75) !important;
+}
+
+html.dark.theme-dark2 .z-\[9999\].fixed.inset-0.bg-white,
+html.dark.theme-dark2 .z-\[9999\].fixed.inset-0 {
+  background: rgba(0, 0, 0, 0.94) !important;
+}
+
+html.dark.theme-dark2 .z-\[9998\].fixed.inset-0,
+html.dark.theme-dark2 .z-\[9999\] .fixed.inset-0.bg-black\/50 {
+  background: rgba(0, 0, 0, 0.78) !important;
+}
+
+/* Collapse / menu (otherwise slate-blue from html.dark .menu) */
+html.dark.theme-dark2 .collapse-title,
+html.dark.theme-dark2 .collapse-content,
+html.dark.theme-dark2 .menu {
+  background: #18181b !important;
+  color: #e4e4e7 !important;
+}
+
+/* Slide-over drawers */
+html.dark.theme-dark2 .animate-slideInRight.bg-base-100,
+html.dark.theme-dark2 .animate-slideInRight.bg-white {
+  background: #18181b !important;
+  color: #e4e4e7 !important;
+  border: 1px solid #3f3f46 !important;
+}
+
+/* Tables — dark grey panels vs black page */
+html.dark.theme-dark2 .table {
+  background: #18181b !important;
+  color: #e4e4e7 !important;
+}
+
+html.dark.theme-dark2 .table thead th,
+html.dark.theme-dark2 .table th {
+  color: #a1a1aa !important;
+  background-color: #18181b !important;
+}
+
+html.dark.theme-dark2 .table-zebra tbody tr:nth-child(even) {
+  background: #141414 !important;
+}
+
+html.dark.theme-dark2 .table-zebra tbody tr:nth-child(odd) {
+  background: #18181b !important;
+}
+
+html.dark.theme-dark2 .table tbody tr:hover {
+  background-color: #27272a !important;
+}
+
+/* Calendar: meetings table sits on black canvas (no full-width grey sheet) */
+html.dark.theme-dark2 .calendar-meetings-table {
+  background-color: transparent !important;
+  box-shadow: none !important;
+}
+
+html.dark.theme-dark2 .calendar-meetings-table thead,
+html.dark.theme-dark2 .calendar-meetings-table thead tr,
+html.dark.theme-dark2 .calendar-meetings-table thead th {
+  background-color: transparent !important;
+}
+
+/* Dashboard department tables use <table class="min-w-full"> without Daisy .table */
+html.dark.theme-dark2 table.min-w-full {
+  background-color: #18181b !important;
+}
+
+html.dark.theme-dark2 table.min-w-full thead,
+html.dark.theme-dark2 table.min-w-full thead th {
+  background-color: #18181b !important;
+}
+
+/* DaisyUI cards */
+html.dark.theme-dark2 .card {
+  background-color: #18181b !important;
+  color: #e4e4e7 !important;
+  border-color: #3f3f46 !important;
+}
+
+html.dark.theme-dark2 .glass-card {
+  background: #18181b !important;
+  border: 1px solid #3f3f46 !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) !important;
+}
+
+/* Pages that hardcode Tailwind light surfaces (e.g. Performance dashboards) */
+html.dark.theme-dark2 .bg-white {
+  background-color: #18181b !important;
+  color: #e4e4e7 !important;
+}
+
+html.dark.theme-dark2 .bg-gray-50,
+html.dark.theme-dark2 .bg-slate-50 {
+  background-color: #18181b !important;
+  color: #e4e4e7 !important;
+}
+
+html.dark.theme-dark2 .bg-gray-100,
+html.dark.theme-dark2 .bg-slate-100 {
+  background-color: #18181b !important;
+  color: #e4e4e7 !important;
+}
+
+/* md:bg-white — Performance Dashboard dept tables */
+html.dark.theme-dark2 .md\:bg-white {
+  background-color: #18181b !important;
+  color: #e4e4e7 !important;
+}
+
+/* Department performance tables (Agreement signed / Invoiced): slate borders & row hover */
+html.dark.theme-dark2 .divide-slate-100 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #27272a !important;
+}
+
+html.dark.theme-dark2 .border-slate-200 {
+  border-color: #3f3f46 !important;
+}
+
+html.dark.theme-dark2 .hover\:bg-slate-50:hover {
+  background-color: #27272a !important;
+}
+
+/* Target row — same surface family */
+html.dark.theme-dark2 tbody tr.bg-white {
+  background-color: #18181b !important;
+}
+
+html.dark.theme-dark2 [class*='bg-white/'] {
+  background-color: rgb(24 24 27 / 0.94) !important;
+  color: #e4e4e7 !important;
+}
+
+html.dark.theme-dark2 .text-gray-900,
+html.dark.theme-dark2 .text-gray-800,
+html.dark.theme-dark2 .text-gray-700 {
+  color: #e4e4e7 !important;
+}
+
+html.dark.theme-dark2 .text-gray-600,
+html.dark.theme-dark2 .text-gray-500 {
+  color: #a1a1aa !important;
+}
+
+html.dark.theme-dark2 .border-gray-100,
+html.dark.theme-dark2 .border-gray-200,
+html.dark.theme-dark2 .border-gray-300 {
+  border-color: #3f3f46 !important;
+}
+
+html.dark.theme-dark2 .hover\:bg-gray-200:hover {
+  background-color: #27272a !important;
+}
+
+html.dark.theme-dark2 .divide-gray-100 > :not([hidden]) ~ :not([hidden]) {
+  border-color: #3f3f46 !important;
+}
+
+/* Dark 2 — stage badges (inline colours from DB; neutral zinc in this theme) */
+html.dark.theme-dark2 .stage-badge,
+html.dark.theme-dark2 .badge.stage-badge {
+  background-color: #3f3f46 !important;
+  background-image: none !important;
+  color: #e4e4e7 !important;
+  border-color: #52525b !important;
+  border: 1px solid #52525b !important;
+  box-shadow: none !important;
+}
+
+html.dark.theme-dark2 button.badge.stage-badge {
+  background: #3f3f46 !important;
+  color: #e4e4e7 !important;
+  border: 1px solid #52525b !important;
+  box-shadow: none !important;
+}
+
+/* Dark 2 — row / list hover (avoid bright white; short transition) */
+html.dark.theme-dark2 .table tbody tr {
+  transition: background-color 0.16s ease, color 0.16s ease;
+}
+
+html.dark.theme-dark2 .hover\:bg-gray-50:hover,
+html.dark.theme-dark2 .hover\:bg-slate-50:hover,
+html.dark.theme-dark2 .hover\:bg-slate-100:hover {
+  background-color: #27272a !important;
+  color: #e4e4e7 !important;
+}
+
+html.dark.theme-dark2 .hover\:bg-white:hover {
+  background-color: #27272a !important;
+  color: #e4e4e7 !important;
+}
+
+html.dark.theme-dark2 .hover\:bg-gray-100:hover {
+  background-color: #27272a !important;
+  color: #e4e4e7 !important;
+}
+
+html.dark.theme-dark2 .hover\:bg-base-200:hover {
+  background-color: #27272a !important;
 }
 
 /* --- Print styles for ProformaViewPage --- */

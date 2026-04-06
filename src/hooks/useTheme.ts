@@ -56,7 +56,7 @@ export const useTheme = () => {
     };
   }, []);
 
-  const isDarkTheme = theme === 'dark';
+  const isDarkTheme = theme === 'dark' || theme === 'dark2';
 
   return { theme, isAltTheme, isDarkTheme };
 };

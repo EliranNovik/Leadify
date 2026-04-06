@@ -57,7 +57,7 @@ const getStageBadge = (stage: string | undefined) => {
     
     if (!stage) {
         return (
-            <span className="badge badge-md ml-2" style={style}>
+            <span className="stage-badge badge badge-md ml-2" style={style}>
                 No Stage
             </span>
         );
@@ -67,7 +67,7 @@ const getStageBadge = (stage: string | undefined) => {
     const stageName = getStageName(stage);
     
     return (
-        <span className="badge badge-md ml-2" style={style}>
+        <span className="stage-badge badge badge-md ml-2" style={style}>
             {stageName}
         </span>
     );
