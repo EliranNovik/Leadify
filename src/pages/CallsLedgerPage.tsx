@@ -38,13 +38,18 @@ interface CallLog {
   url?: string;
   call_id?: string;
   duration?: number;
+  /** Legacy CRM (leads_lead.id) */
   lead_id?: number;
+  /** New CRM lead (public.leads.id) — set by 1com sync when phone matches */
+  client_id?: string | null;
   lead_interaction_id?: number;
   employee_id?: number;
   employee?: {
     display_name: string;
     photo_url?: string | null;
   };
+  /** When client_id is set and FK embed resolves */
+  leads?: { lead_number: string | null } | null;
 }
 
 // Helper component for employee avatar with image error fallback
@@ -216,11 +221,13 @@ const CallsLedgerPage: React.FC = () => {
           action,
           duration,
           lead_id,
+          client_id,
           employee_id,
           tenants_employee!employee_id (
             display_name,
             photo_url
-          )
+          ),
+          leads:client_id ( lead_number )
         `)
         .gte('date', appliedFromDate)
         .lte('date', appliedToDate);
@@ -242,10 +249,16 @@ const CallsLedgerPage: React.FC = () => {
       }
 
       // Process the data to flatten the employee join
-      const processedData = data?.map((call: any) => ({
-        ...call,
-        employee: Array.isArray(call.tenants_employee) ? call.tenants_employee[0] : call.tenants_employee
-      })) || [];
+      const processedData = data?.map((call: any) => {
+        const leadEmbed = call.leads;
+        const leadRow = Array.isArray(leadEmbed) ? leadEmbed[0] : leadEmbed;
+        const { leads: _l, tenants_employee: te, ...rest } = call;
+        return {
+          ...rest,
+          leads: leadRow || null,
+          employee: Array.isArray(te) ? te[0] : te
+        };
+      }) || [];
 
       setCallLogs(processedData);
 
@@ -303,8 +316,22 @@ const CallsLedgerPage: React.FC = () => {
     setAppliedToDate(today);
   };
 
-  const handleLeadClick = (leadId: number) => {
-    navigate(`/clients/${leadId}`);
+  const handleLeadClick = (call: CallLog) => {
+    if (call.client_id) {
+      navigate(`/clients/${encodeURIComponent(call.client_id)}`);
+    } else if (call.lead_id != null && call.lead_id !== undefined) {
+      navigate(`/clients/${call.lead_id}`);
+    }
+  };
+
+  const leadColumnLabel = (call: CallLog): string => {
+    const ln = call.leads && !Array.isArray(call.leads) ? call.leads.lead_number : null;
+    if (call.client_id) {
+      if (ln) return ln;
+      return call.client_id.slice(0, 8) + '…';
+    }
+    if (call.lead_id != null) return String(call.lead_id);
+    return '';
   };
 
   const formatDuration = (seconds: number): string => {
@@ -804,12 +831,13 @@ const CallsLedgerPage: React.FC = () => {
                           {call.duration ? formatDuration(call.duration) : '---'}
                         </td>
                         <td className="px-2 py-2">
-                          {call.lead_id ? (
+                          {call.client_id || call.lead_id != null ? (
                             <button
+                              type="button"
                               className="text-blue-600 hover:text-blue-800 underline font-medium text-sm"
-                              onClick={() => handleLeadClick(call.lead_id!)}
+                              onClick={() => handleLeadClick(call)}
                             >
-                              {call.lead_id}
+                              {leadColumnLabel(call) || 'Open'}
                             </button>
                           ) : (
                             <span className="text-sm">---</span>

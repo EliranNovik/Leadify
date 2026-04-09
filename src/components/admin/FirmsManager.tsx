@@ -1,5 +1,6 @@
 import React from 'react';
 import GenericCRUDManager from './GenericCRUDManager';
+import FirmLeadSourcesField from './FirmLeadSourcesField';
 
 const FirmsManager: React.FC = () => {
   const fields = [
@@ -79,6 +80,16 @@ const FirmsManager: React.FC = () => {
       type: 'textarea' as const,
       required: false,
       placeholder: 'Internal notes',
+    },
+    {
+      name: 'lead_source_ids',
+      label: 'Lead sources (marketing)',
+      type: 'custom' as const,
+      required: false,
+      hideInTable: true,
+      hideInAdd: false,
+      customComponent: FirmLeadSourcesField,
+      defaultValue: () => [] as number[],
     },
     {
       name: 'is_active',

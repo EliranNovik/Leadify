@@ -3046,12 +3046,10 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
             }
           })() : Promise.resolve({ data: [], error: null }),
 
-          // Call logs query - only fetch essential fields
-          // Note: call_logs.lead_id is BIGINT and only stores legacy lead IDs
-          // For new leads, skip this query as call_logs doesn't support UUID lead_ids
-          client?.id && isLegacyLead ? (async () => {
+          // Call logs: legacy → lead_id; new leads → client_id (1com sync)
+          client?.id ? (async () => {
             try {
-              const query = supabase
+              let query = supabase
                 .from('call_logs')
                 .select(`
                   id,
@@ -3068,9 +3066,15 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
                     photo_url
                   )
                 `)
-                .eq('lead_id', legacyId)
                 .limit(FETCH_BATCH_SIZE);
-              
+              if (isLegacyLead) {
+                if (legacyId === null || legacyId === undefined) {
+                  return { data: [], error: null };
+                }
+                query = query.eq('lead_id', legacyId);
+              } else {
+                query = query.eq('client_id', client.id);
+              }
               const { data, error } = await query.order('cdate', { ascending: false });
               return { data, error };
             } catch (error) {

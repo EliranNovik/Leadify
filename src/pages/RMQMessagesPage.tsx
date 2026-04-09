@@ -226,17 +226,43 @@ const RMQ_CHAT = {
   /** Links inside own (sent) bubbles — same sky as “Leave a Comment” on group messages (`text-sky-200`). */
   linkOwn: 'underline font-semibold text-sky-200 hover:text-sky-100',
   recv: 'bg-[#F5F5F5] text-[#111827]',
-  /** Per-message column width cap — full width of chat pane up to ~48rem; own msgs stay right-aligned, others left. */
-  bubbleMax: 'w-full min-w-0 max-w-[min(100%,48rem)]',
+  /** Per-message column: full width on lg+ desktop; on smaller viewports cap width (chat bubble), L/R via parent flex. */
+  bubbleMax:
+    'min-w-0 max-w-[min(100%,48rem)] max-lg:max-w-[min(88%,24rem)] max-lg:w-fit lg:w-full',
   /** Single image/video: shrink-wrap to media width (still capped). */
-  mediaColumn: 'w-fit min-w-0 max-w-[min(100%,48rem)]',
+  mediaColumn:
+    'w-fit min-w-0 max-w-[min(100%,48rem)] max-lg:max-w-[min(88%,24rem)]',
+  /**
+   * Direct-chat album column: explicit width (not `w-fit`) so grids don’t intrinsic-shrink in embedded layouts;
+   * cap matches text bubbles — smaller than full viewport width.
+   */
+  albumColumnDirect:
+    'min-w-0 max-lg:w-[min(88%,24rem)] max-lg:max-w-[min(88%,24rem)] max-lg:shrink-0',
   /** Media bubble: use full column width (bubbleMax), not a fixed ~220px strip. */
   image: 'w-full min-w-0 max-w-full',
   imageR: 'rounded-[10px]',
+  /**
+   * Reply-to snippet (inside bubbles) — sky palette, same family as “Leave a Comment”
+   * (`text-sky-200` / `text-sky-600` in group footers).
+   */
+  replyPreviewInBubble:
+    'mb-1.5 w-full rounded-md border border-sky-300/50 bg-sky-50 px-2.5 py-2 text-left border-l-4 border-l-sky-500 shadow-none transition-opacity hover:opacity-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/35 dark:border-sky-500/45 dark:bg-sky-950/55',
+  replyPreviewInBubbleName: 'text-[12px] font-semibold leading-tight text-sky-800 dark:text-sky-200',
+  replyPreviewInBubbleText:
+    'text-[12px] leading-snug text-sky-700 dark:text-sky-300/95 line-clamp-2 mt-0.5',
+  replyPreviewInBubbleMeta: 'text-[12px] italic mt-0.5 text-sky-600 dark:text-sky-400',
+  /** Composer “Replying to…” strip above the input — same sky treatment. */
+  replyPreviewComposer:
+    'rmq-reply-preview flex items-start gap-2 rounded-lg border border-sky-300/50 bg-sky-50 p-2.5 border-l-4 border-l-sky-500 dark:border-sky-500/45 dark:bg-sky-950/55',
+  replyPreviewComposerTitle: 'text-sm font-semibold text-sky-800 dark:text-sky-200 mb-1',
+  replyPreviewComposerBody: 'text-base text-sky-800/90 dark:text-sky-200/90 truncate',
 } as const;
 
 /** Group consecutive messages from the same sender (Slack-style) if within this gap. */
 const RMQ_GROUP_GAP_MS = 5 * 60 * 1000;
+
+/** Eager-load images for the last N messages so lazy decode does not resize the thread while scrolling. */
+const RMQ_EAGER_IMAGE_TAIL = 42;
 
 /** WhatsApp-style tick path — shared by chat bubbles and sidebar read previews. */
 const RMQ_READ_RECEIPT_CHECK_D =
@@ -452,6 +478,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressMessageRef = useRef<Message | null>(null);
   const longPressHandledRef = useRef<boolean>(false);
+  /** Touch start position — cancel long-press if finger moves (scroll intent). */
+  const longPressTouchStartRef = useRef<{ x: number; y: number } | null>(null);
+  /** Suppress synthetic mouse events right after touch (avoids double-opening the actions modal). */
+  const lastTouchEndTimeRef = useRef<number>(0);
 
   const closeMessageActionMenu = useCallback(() => {
     setMessageActionMenu(null);
@@ -1991,7 +2021,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
               src={item.url}
               alt=""
               className="absolute inset-0 w-full h-full object-cover"
-              loading={messageListIndex >= messages.length - 10 ? 'eager' : 'lazy'}
+              loading={messageListIndex >= messages.length - RMQ_EAGER_IMAGE_TAIL ? 'eager' : 'lazy'}
             />
           )}
           {isVid && (
@@ -2009,7 +2039,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           {cell(
             items[0],
             0,
-            'aspect-video max-h-[min(36vh,13rem)] md:max-h-80'
+            'aspect-video max-h-[min(36vh,14rem)] md:max-h-80'
           )}
         </div>
       );
@@ -2018,7 +2048,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       return (
         <div className="grid grid-cols-2 gap-0.5 p-0.5">
           {items.map((it, i) =>
-            cell(it, i, 'aspect-square max-h-[min(42vw,9.5rem)] md:max-h-none')
+            cell(it, i, 'aspect-square max-h-[min(42vw,10.5rem)] md:max-h-none')
           )}
         </div>
       );
@@ -2026,10 +2056,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     if (n === 3) {
       return (
         <div className="grid grid-cols-2 gap-0.5 p-0.5">
-          {cell(items[0], 0, 'aspect-square max-h-[min(42vw,9.5rem)] md:max-h-none')}
-          {cell(items[1], 1, 'aspect-square max-h-[min(42vw,9.5rem)] md:max-h-none')}
+          {cell(items[0], 0, 'aspect-square max-h-[min(42vw,10.5rem)] md:max-h-none')}
+          {cell(items[1], 1, 'aspect-square max-h-[min(42vw,10.5rem)] md:max-h-none')}
           <div className="col-span-2">
-            {cell(items[2], 2, 'aspect-video max-h-[10rem] md:max-h-56 lg:max-h-48')}
+            {cell(items[2], 2, 'aspect-video max-h-[min(32vh,11rem)] md:max-h-56 lg:max-h-48')}
           </div>
         </div>
       );
@@ -2038,7 +2068,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       return (
         <div className="grid grid-cols-2 gap-0.5 p-0.5">
           {items.map((it, i) =>
-            cell(it, i, 'aspect-square max-h-[min(42vw,9.5rem)] md:max-h-none')
+            cell(it, i, 'aspect-square max-h-[min(42vw,10.5rem)] md:max-h-none')
           )}
         </div>
       );
@@ -2050,12 +2080,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           {cell(
             first,
             0,
-            'aspect-video max-h-[min(32vh,11rem)] md:max-h-72'
+            'aspect-video max-h-[min(32vh,12rem)] md:max-h-72'
           )}
         </div>
         <div className="grid grid-cols-3 gap-0.5">
           {rest.map((it, i) =>
-            cell(it, i + 1, 'aspect-square max-h-[min(30vw,7rem)] md:max-h-none')
+            cell(it, i + 1, 'aspect-square max-h-[min(32vw,8rem)] md:max-h-none')
           )}
         </div>
       </div>
@@ -3919,64 +3949,93 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
   };
 
   /** Mobile: long-press / context menu to open the same actions as desktop (used on all message types). */
-  const getMobileMessageActionHandlers = (message: Message) => ({
-    onContextMenu: (e: React.MouseEvent) => {
-      e.preventDefault();
-      e.stopPropagation();
+  const getMobileMessageActionHandlers = (message: Message) => {
+    const LONG_PRESS_MS_TOUCH = 620;
+    const LONG_PRESS_MS_MOUSE = 480;
+    const MOVE_CANCEL_PX = 14;
+
+    const clearLongPressTimer = () => {
+      if (longPressTimerRef.current) {
+        clearTimeout(longPressTimerRef.current);
+        longPressTimerRef.current = null;
+      }
+      longPressMessageRef.current = null;
+      longPressTouchStartRef.current = null;
+    };
+
+    const fireMobileActions = () => {
+      longPressTimerRef.current = null;
+      longPressTouchStartRef.current = null;
+      longPressMessageRef.current = null;
+      try {
+        if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+          navigator.vibrate(14);
+        }
+      } catch {
+        /* ignore */
+      }
       setMobileMessageActionMessage(message);
       longPressHandledRef.current = true;
-    },
-    onTouchStart: () => {
-      longPressMessageRef.current = message;
-      longPressTimerRef.current = setTimeout(() => {
+    };
+
+    return {
+      onContextMenu: (e: React.MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        try {
+          if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+            navigator.vibrate(12);
+          }
+        } catch {
+          /* ignore */
+        }
         setMobileMessageActionMessage(message);
         longPressHandledRef.current = true;
-        if (longPressTimerRef.current) {
-          clearTimeout(longPressTimerRef.current);
-          longPressTimerRef.current = null;
+      },
+      onTouchStart: (e: React.TouchEvent) => {
+        if (e.touches.length !== 1) return;
+        const t = e.touches[0];
+        longPressTouchStartRef.current = { x: t.clientX, y: t.clientY };
+        longPressMessageRef.current = message;
+        longPressTimerRef.current = setTimeout(fireMobileActions, LONG_PRESS_MS_TOUCH);
+      },
+      onTouchMove: (e: React.TouchEvent) => {
+        if (!longPressTimerRef.current || !longPressTouchStartRef.current) return;
+        const t = e.touches[0];
+        if (!t) return;
+        const { x, y } = longPressTouchStartRef.current;
+        if (
+          Math.abs(t.clientX - x) > MOVE_CANCEL_PX ||
+          Math.abs(t.clientY - y) > MOVE_CANCEL_PX
+        ) {
+          clearLongPressTimer();
         }
-      }, 400);
-    },
-    onTouchEnd: () => {
-      if (longPressTimerRef.current) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
-      }
-      longPressMessageRef.current = null;
-    },
-    onTouchCancel: () => {
-      if (longPressTimerRef.current) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
-      }
-      longPressMessageRef.current = null;
-    },
-    onMouseDown: () => {
-      longPressMessageRef.current = message;
-      longPressTimerRef.current = setTimeout(() => {
-        setMobileMessageActionMessage(message);
-        longPressHandledRef.current = true;
-        if (longPressTimerRef.current) {
-          clearTimeout(longPressTimerRef.current);
-          longPressTimerRef.current = null;
+      },
+      onTouchEnd: () => {
+        lastTouchEndTimeRef.current = Date.now();
+        clearLongPressTimer();
+      },
+      onTouchCancel: () => {
+        clearLongPressTimer();
+      },
+      onMouseDown: () => {
+        if (typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches) {
+          return;
         }
-      }, 400);
-    },
-    onMouseUp: () => {
-      if (longPressTimerRef.current) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
-      }
-      longPressMessageRef.current = null;
-    },
-    onMouseLeave: () => {
-      if (longPressTimerRef.current) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
-      }
-      longPressMessageRef.current = null;
-    },
-  });
+        if (Date.now() - lastTouchEndTimeRef.current < 500) {
+          return;
+        }
+        longPressMessageRef.current = message;
+        longPressTimerRef.current = setTimeout(fireMobileActions, LONG_PRESS_MS_MOUSE);
+      },
+      onMouseUp: () => {
+        clearLongPressTimer();
+      },
+      onMouseLeave: () => {
+        clearLongPressTimer();
+      },
+    };
+  };
 
   // Fetch messages for selected conversation
   const fetchMessages = useCallback(async (conversationId: number, forceRefresh = false) => {
@@ -4228,11 +4287,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
         };
       });
 
+      const getOlderScrollEl = () =>
+        mobileMessagesContainerRef.current?.offsetParent
+          ? mobileMessagesContainerRef.current
+          : desktopMessagesContainerRef.current;
+      let lastScrollHeight = prevScrollHeight;
+      const bumpScrollForPrependedContent = () => {
+        const c = getOlderScrollEl();
+        if (!c) return;
+        const h = c.scrollHeight;
+        const delta = h - lastScrollHeight;
+        if (delta > 0) c.scrollTop += delta;
+        lastScrollHeight = c.scrollHeight;
+      };
       requestAnimationFrame(() => {
-        const c = mobileMessagesContainerRef.current?.offsetParent ? mobileMessagesContainerRef.current : desktopMessagesContainerRef.current;
-        if (c) {
-          c.scrollTop += c.scrollHeight - prevScrollHeight;
-        }
+        bumpScrollForPrependedContent();
+        requestAnimationFrame(() => bumpScrollForPrependedContent());
+        window.setTimeout(() => bumpScrollForPrependedContent(), 150);
       });
     } finally {
       setIsLoadingOlderMessages(false);
@@ -6637,6 +6708,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
         const INITIAL_SCROLL_DELAY_MS = isMobileViewport ? 500 : 250;
         scrollStabilizationUntilRef.current = Date.now() + STABILIZATION_MS;
         const tid = window.setTimeout(() => {
+          if (isUserScrollingRef.current || !shouldAutoScrollRef.current) {
+            initialScrollTimeoutRef.current = null;
+            return;
+          }
           scrollToBottom('instant');
           initialScrollTimeoutRef.current = null;
         }, INITIAL_SCROLL_DELAY_MS);
@@ -8787,7 +8862,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
             <div
               ref={desktopMessagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 min-h-0 overflow-y-auto p-2 sm:p-4 pb-4 space-y-2 relative rmq-messages-area"
+              className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-2 sm:p-4 pb-4 space-y-2 relative rmq-messages-area"
               style={{
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
                 backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#ffffff'),
@@ -8852,7 +8927,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-                        className={`relative [content-visibility:auto] ${isMessageClusterContinuation ? '!mt-1' : ''}`}
+                        className={`relative ${isMessageClusterContinuation ? '!mt-1' : ''}`}
                         data-message-id={message.id}
                       >
                         {showDateSeparator && (
@@ -8878,7 +8953,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
 
                         {/* Image, video and emoji messages - render outside bubble */}
                         {isAlbumMessage(message) ? (
-                          <div className={`flex ${isOwn ? 'flex-col items-end ml-auto' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} ${RMQ_CHAT.bubbleMax} w-full group`}>
+                          <div className={`flex ${isOwn ? 'flex-col items-end ml-auto' : selectedConversation.type !== 'direct' ? 'flex-row items-end gap-3' : 'flex-col items-start'} ${RMQ_CHAT.bubbleMax} group`}>
                             {!isOwn && selectedConversation.type !== 'direct' &&
                               (isMessageClusterContinuation ? (
                                 <div className="w-8 flex-shrink-0 self-end" aria-hidden />
@@ -8961,7 +9036,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                     src={message.attachment_url}
                                     alt={message.attachment_name}
                                     className={`${RMQ_CHAT.imageR} h-auto w-auto max-w-full max-h-[min(48vh,18rem)] object-contain object-center block bg-gray-100 dark:bg-gray-800`}
-                                    loading={index >= displayMessages.length - 10 ? "eager" : "lazy"}
+                                    loading={index >= displayMessages.length - RMQ_EAGER_IMAGE_TAIL ? 'eager' : 'lazy'}
                                     decoding="async"
                                     onLoad={(e) => {
                                       const img = e.target as HTMLImageElement;
@@ -9150,7 +9225,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                           </div>
                         ) : isEmojiOnly(message.content || '') ? (
                           <div
-                            className={`flex gap-3 group ${isOwn ? 'flex-row-reverse' : 'flex-row'} items-end ${RMQ_CHAT.bubbleMax} w-full`}
+                            className={`flex gap-3 group ${isOwn ? 'flex-row-reverse' : 'flex-row'} items-end ${RMQ_CHAT.bubbleMax}`}
                             dir={getTextDirection(message.content || '')}
                           >
                             {renderDesktopMessageDropdown(message, isOwn)}
@@ -9202,7 +9277,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                               ))}
 
                             <div
-                              className={`${RMQ_CHAT.bubbleMax} ${!isOwn && selectedConversation.type !== 'direct' ? 'flex-1 min-w-0' : 'w-full'} ${isOwn ? 'items-end ml-auto' : 'items-start'} flex flex-col`}
+                              className={`${RMQ_CHAT.bubbleMax} ${!isOwn && selectedConversation.type !== 'direct' ? 'flex-1 min-w-0' : ''} ${isOwn ? 'items-end ml-auto' : 'items-start'} flex flex-col`}
                             >
                               <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative`}>
                                 {/* Message actions dropdown - positioned directly next to message box */}
@@ -9273,25 +9348,25 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                     return hasReplyId && hasValidReplyData && replyMessage ? (
                                       <button
                                         type="button"
-                                        className={`mb-1.5 w-full border-0 bg-transparent p-0 pl-2 text-left shadow-none rounded-none border-l-2 transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3E28CD]/30 ${isOwn ? 'border-l-white/40' : 'border-[#3E28CD]/45 dark:border-[#3E28CD]/55'}`}
+                                        className={RMQ_CHAT.replyPreviewInBubble}
                                         onClick={e => {
                                           e.stopPropagation();
                                           if (replyMessage.id) scrollToMessage(replyMessage.id, 'smooth');
                                         }}
                                         title="Go to original message"
                                       >
-                                        <div className={`text-[12px] font-medium leading-tight ${isOwn ? 'text-white/85' : 'text-[#6B7280] dark:text-base-content/60'}`}>
+                                        <div className={RMQ_CHAT.replyPreviewInBubbleName}>
                                           {replyMessage.sender?.tenants_employee?.display_name ||
                                             replyMessage.sender?.full_name ||
                                             'Unknown'}
                                         </div>
                                         {replyMessage.content && (
-                                          <div className={`text-[12px] line-clamp-2 leading-snug mt-0.5 ${isOwn ? 'text-white/75' : 'text-[#6B7280] dark:text-base-content/55'}`}>
+                                          <div className={RMQ_CHAT.replyPreviewInBubbleText}>
                                             {replyMessage.content}
                                           </div>
                                         )}
                                         {!replyMessage.content && replyMessage.attachment_url && (
-                                          <div className={`text-[12px] italic mt-0.5 ${isOwn ? 'text-white/70' : 'text-[#6B7280]'}`}>
+                                          <div className={RMQ_CHAT.replyPreviewInBubbleMeta}>
                                             {replyMessage.message_type === 'album' ? '🖼️ Album' :
                                               replyMessage.message_type === 'image' ? '📷 Image' :
                                               replyMessage.message_type === 'voice' ? '🎤 Voice message' :
@@ -9571,19 +9646,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
             {/* Message Input - Desktop Only (flex sibling so messages area height = remaining space) */}
             <div className="hidden lg:flex flex-shrink-0 z-10 border-t border-base-200/80 bg-base-100/95 p-2">
               <div className="flex w-full min-w-0 items-center gap-2 relative">
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-circle w-10 h-10 min-h-0 flex-shrink-0 text-base-content hover:bg-base-200"
-                  title="AI suggestion"
-                  disabled={rmqAiLoading || !selectedConversation}
-                  onClick={() => handleRmqAiSuggestions()}
-                >
-                  {rmqAiLoading ? (
-                    <span className="loading loading-spinner loading-sm" />
-                  ) : (
-                    <SparklesIcon className="w-6 h-6 text-amber-600" />
-                  )}
-                </button>
                 {/* Consolidated Tools Button */}
                 <div className="relative flex-shrink-0" ref={desktopToolsRef}>
                   {!isRecording ? (
@@ -9812,26 +9874,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                   )}
                   {/* Reply preview - Desktop */}
                   {(messageToReply || messageToEdit) && (
-                    <div className="rmq-reply-preview flex items-start gap-2 p-2.5 rounded-lg border border-[#3E28CD]/15 bg-[#EDE9F8]/90 border-l-4 border-l-[#3E28CD] dark:border-[#3E28CD]/30 dark:bg-[#3E28CD]/15">
+                    <div className={RMQ_CHAT.replyPreviewComposer}>
                       <div className="flex-1 min-w-0">
                         {messageToReply && (
                           <>
-                            <div className="text-sm font-semibold text-[#3E28CD] dark:text-[#d4ccff] mb-1">
+                            <div className={RMQ_CHAT.replyPreviewComposerTitle}>
                               Replying to {messageToReply.sender?.tenants_employee?.display_name || messageToReply.sender?.full_name || 'Unknown'}
                             </div>
-                            <div className="text-base text-base-content/85 truncate">
+                            <div className={RMQ_CHAT.replyPreviewComposerBody}>
                               {messageToReply.content || 'Media'}
                             </div>
                           </>
                         )}
                         {messageToEdit && (
                           <>
-                            <div className="text-sm font-semibold text-[#3E28CD] dark:text-[#d4ccff] mb-1">
-                              Editing message
-                            </div>
-                            <div className="text-base text-base-content/85 truncate">
-                              {messageToEdit.content}
-                            </div>
+                            <div className={RMQ_CHAT.replyPreviewComposerTitle}>Editing message</div>
+                            <div className={RMQ_CHAT.replyPreviewComposerBody}>{messageToEdit.content}</div>
                           </>
                         )}
                       </div>
@@ -9841,9 +9899,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                           setMessageToEdit(null);
                           setEditingMessageText('');
                         }}
-                        className="flex-shrink-0 p-1 rounded transition-colors hover:bg-[#3E28CD]/10"
+                        className="flex-shrink-0 p-1 rounded transition-colors hover:bg-sky-200/60 dark:hover:bg-sky-900/40"
                       >
-                        <XMarkIcon className="w-4 h-4 text-[#3E28CD]/70 dark:text-[#e8e2ff]/80" />
+                        <XMarkIcon className="w-4 h-4 text-sky-600 dark:text-sky-400" />
                       </button>
                     </div>
                   )}
@@ -10405,7 +10463,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.15, ease: [0.4, 0, 0.2, 1] }}
-                        className={`[content-visibility:auto] ${isMessageClusterContinuation ? '!mt-1' : ''}`}
+                        className={isMessageClusterContinuation ? '!mt-1' : ''}
                         data-message-id={message.id}
                       >
                         {showDateSeparator && (
@@ -10432,10 +10490,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                         {/* Image, video and emoji messages - render outside bubble - Mobile */}
                         {isAlbumMessage(message) ? (
                           <div
-                            className={`flex w-full min-w-0 max-w-none -mx-2 sm:-mx-4 ${
+                            className={`flex w-full min-w-0 max-w-none ${
                               selectedConversation.type !== 'direct'
                                 ? 'flex-row items-end gap-2'
-                                : 'flex-col items-stretch'
+                                : `flex-col ${isOwn ? 'items-end' : 'items-start'}`
                             }`}
                           >
                             {!isOwn && selectedConversation.type !== 'direct' &&
@@ -10447,11 +10505,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                 </div>
                               ))}
                             <div
-                              className={`flex w-full min-w-0 flex-col ${isOwn ? 'items-end' : 'items-start'} ${selectedConversation.type !== 'direct' ? 'flex-1' : ''}`}
+                              className={`flex min-w-0 flex-col ${isOwn ? 'items-end' : 'items-start'} ${
+                                selectedConversation.type !== 'direct'
+                                  ? 'flex-1 w-full min-w-0'
+                                  : `${RMQ_CHAT.albumColumnDirect} ${isOwn ? 'max-lg:ml-auto' : 'max-lg:mr-auto'}`
+                              }`}
                               {...getMobileMessageActionHandlers(message)}
                             >
                               <div
-                                className={`w-full max-w-full ${RMQ_CHAT.bubbleR} border border-base-300/80 overflow-hidden ${isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'}`}
+                                className={`w-full min-w-0 max-w-full ${RMQ_CHAT.bubbleR} border border-base-300/80 overflow-hidden ${isOwn ? 'bg-white dark:bg-base-100' : 'bg-gray-50 dark:bg-base-100'}`}
                               >
                                 {selectedConversation.type !== 'direct' && !isMessageClusterContinuation && (
                                   <div className={`px-2 py-1 border-b border-base-300 ${isOwn ? 'text-right' : ''}`}>
@@ -10531,7 +10593,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                 src={message.attachment_url}
                                 alt={message.attachment_name}
                                 className={`${RMQ_CHAT.imageR} h-auto w-auto max-w-full max-h-[min(48vh,18rem)] object-contain object-center block bg-gray-100 dark:bg-gray-800`}
-                                loading={index >= displayMessages.length - 10 ? "eager" : "lazy"}
+                                loading={index >= displayMessages.length - RMQ_EAGER_IMAGE_TAIL ? 'eager' : 'lazy'}
                                 decoding="async"
                                 onLoad={(e) => {
                                   const img = e.target as HTMLImageElement;
@@ -10724,7 +10786,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                           </div>
                         ) : isEmojiOnly(message.content || '') ? (
                           <div
-                            className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} ${RMQ_CHAT.bubbleMax} w-full`}
+                            className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} ${RMQ_CHAT.bubbleMax}`}
                             dir={getTextDirection(message.content || '')}
                             {...getMobileMessageActionHandlers(message)}
                           >
@@ -10774,7 +10836,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                               ))}
 
                             <div
-                              className={`${RMQ_CHAT.bubbleMax} ${!isOwn && selectedConversation.type !== 'direct' ? 'flex-1 min-w-0' : 'w-full'} ${isOwn ? 'items-end ml-auto' : 'items-start'} flex flex-col`}
+                              className={`${RMQ_CHAT.bubbleMax} ${!isOwn && selectedConversation.type !== 'direct' ? 'flex-1 min-w-0' : ''} ${isOwn ? 'items-end ml-auto' : 'items-start'} flex flex-col`}
                             >
                               <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative group`}>
                                 {/* Mobile: long-press on bubble opens action modal (no hover ellipsis) */}
@@ -10837,25 +10899,25 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                                     return hasReplyId && hasValidReplyData && replyMessage ? (
                                       <button
                                         type="button"
-                                        className={`mb-1.5 w-full border-0 bg-transparent p-0 pl-2 text-left shadow-none rounded-none border-l-2 transition-opacity hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3E28CD]/30 ${isOwn ? 'border-l-white/40' : 'border-[#3E28CD]/45 dark:border-[#3E28CD]/55'}`}
+                                        className={RMQ_CHAT.replyPreviewInBubble}
                                         onClick={e => {
                                           e.stopPropagation();
                                           if (replyMessage.id) scrollToMessage(replyMessage.id, 'smooth');
                                         }}
                                         title="Go to original message"
                                       >
-                                        <div className={`text-[12px] font-medium leading-tight ${isOwn ? 'text-white/85' : 'text-[#6B7280] dark:text-base-content/60'}`}>
+                                        <div className={RMQ_CHAT.replyPreviewInBubbleName}>
                                           {replyMessage.sender?.tenants_employee?.display_name ||
                                             replyMessage.sender?.full_name ||
                                             'Unknown'}
                                         </div>
                                         {replyMessage.content && (
-                                          <div className={`text-[12px] line-clamp-2 leading-snug mt-0.5 ${isOwn ? 'text-white/75' : 'text-[#6B7280] dark:text-base-content/55'}`}>
+                                          <div className={RMQ_CHAT.replyPreviewInBubbleText}>
                                             {replyMessage.content}
                                           </div>
                                         )}
                                         {!replyMessage.content && replyMessage.attachment_url && (
-                                          <div className={`text-[12px] italic mt-0.5 ${isOwn ? 'text-white/70' : 'text-[#6B7280]'}`}>
+                                          <div className={RMQ_CHAT.replyPreviewInBubbleMeta}>
                                             {replyMessage.message_type === 'album' ? '🖼️ Album' :
                                               replyMessage.message_type === 'image' ? '📷 Image' :
                                               replyMessage.message_type === 'voice' ? '🎤 Voice message' :
@@ -11239,20 +11301,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                     )}
                     {/* Reply preview - Mobile */}
                     {(messageToReply || messageToEdit) && (
-                      <div className="rmq-reply-preview flex items-start gap-2 p-2.5 rounded-lg border border-[#3E28CD]/15 bg-[#EDE9F8]/90 border-l-4 border-l-[#3E28CD] dark:border-[#3E28CD]/30 dark:bg-[#3E28CD]/15">
+                      <div className={RMQ_CHAT.replyPreviewComposer}>
                         <div className="flex-1 min-w-0">
                           {messageToReply && (
                             <>
-                              <div className="text-sm font-semibold text-[#3E28CD] dark:text-[#d4ccff] mb-1">
+                              <div className={RMQ_CHAT.replyPreviewComposerTitle}>
                                 Replying to {messageToReply.sender?.tenants_employee?.display_name || messageToReply.sender?.full_name || 'Unknown'}
                               </div>
                               {messageToReply.content && (
-                                <div className="text-base text-base-content/85 truncate">
+                                <div className={RMQ_CHAT.replyPreviewComposerBody}>
                                   {messageToReply.content}
                                 </div>
                               )}
                               {!messageToReply.content && messageToReply.attachment_url && (
-                                <div className="text-base text-base-content/85 italic">
+                                <div className={`${RMQ_CHAT.replyPreviewComposerBody} italic`}>
                                   {messageToReply.message_type === 'image' ? '📷 Image' :
                                     messageToReply.message_type === 'voice' ? '🎤 Voice message' :
                                       messageToReply.message_type === 'file' ? '📎 File' : '📎 Attachment'}
@@ -11262,12 +11324,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                           )}
                           {messageToEdit && (
                             <>
-                              <div className="text-sm font-semibold text-[#3E28CD] dark:text-[#d4ccff] mb-1">
-                                Editing message
-                              </div>
-                              <div className="text-base text-base-content/85 truncate">
-                                {messageToEdit.content}
-                              </div>
+                              <div className={RMQ_CHAT.replyPreviewComposerTitle}>Editing message</div>
+                              <div className={RMQ_CHAT.replyPreviewComposerBody}>{messageToEdit.content}</div>
                             </>
                           )}
                         </div>
@@ -11277,9 +11335,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                             setMessageToEdit(null);
                             setEditingMessageText('');
                           }}
-                          className="flex-shrink-0 p-1 rounded transition-colors hover:bg-[#3E28CD]/10"
+                          className="flex-shrink-0 p-1 rounded transition-colors hover:bg-sky-200/60 dark:hover:bg-sky-900/40"
                         >
-                          <XMarkIcon className="w-4 h-4 text-[#3E28CD]/70 dark:text-[#e8e2ff]/80" />
+                          <XMarkIcon className="w-4 h-4 text-sky-600 dark:text-sky-400" />
                         </button>
                       </div>
                     )}
@@ -11348,20 +11406,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                       )}
                     </div>
                   </div>
-
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-circle w-11 h-11 min-h-0 flex-shrink-0 disabled:opacity-50 text-amber-600 hover:bg-amber-50 border-0"
-                    title="AI suggestion"
-                    disabled={rmqAiLoading || !selectedConversation}
-                    onClick={() => handleRmqAiSuggestions()}
-                  >
-                    {rmqAiLoading ? (
-                      <span className="loading loading-spinner loading-sm" />
-                    ) : (
-                      <SparklesIcon className="w-6 h-6 text-amber-500" />
-                    )}
-                  </button>
 
                   <button
                     onClick={() => {

@@ -415,9 +415,14 @@ class OneComSyncService {
       console.log(`⚠️  No employee match found for call ${onecomRecord.uniqueid} using fields: ${uniqueCallLogFields.join(', ')}`);
     }
     
-    // Map lead_id from destination number (call_logs table only supports legacy lead_id, not client_id)
-    const leadMapping = await this.mapDestinationToLeadId(cleanDestinationField);
-    const leadId = leadMapping.leadId; // Only use leadId for legacy leads (call_logs table structure)
+    const leadMapping = await this.mapCallPartiesToLead(
+      cleanSourceField,
+      cleanDestinationField,
+      cleanIncomingDidField,
+      direction
+    );
+    const leadId = leadMapping.leadId;
+    const clientId = leadMapping.clientId;
 
     // Try to get recording URL if available
     let recordingUrl = '';
@@ -450,15 +455,13 @@ class OneComSyncService {
       action: onecomRecord.disposition || '',
       // Map employee_id from cleaned source extension
       employee_id: employeeId,
-      // Map lead_id from destination number (only for legacy leads - call_logs table doesn't have client_id column)
-      lead_id: leadId || null,
+      lead_id: leadId != null ? leadId : null,
+      client_id: clientId != null ? clientId : null,
       // Store original 1com data for reference
       onecom_uniqueid: onecomRecord.uniqueid,
       onecom_te_id: onecomRecord.call_id?.toString() || '', // Convert to string to avoid integer overflow
       onecom_raw_data: JSON.stringify(onecomRecord)
     };
-
-    return dbRecord;
   }
 
   /**
@@ -717,6 +720,54 @@ class OneComSyncService {
       
       return 0;
     })[0];
+  }
+
+  /** True if field looks like an external phone (not a short PBX extension). */
+  isPhoneLikeForLeadMapping(field) {
+    if (!field || field === '---') return false;
+    const digits = String(field).replace(/\D/g, '');
+    return digits.length >= 5;
+  }
+
+  /**
+   * Try source / destination / caller ID in order suitable for inbound vs outbound
+   * so we match the customer leg, not only dst.
+   */
+  async mapCallPartiesToLead(cleanSourceField, cleanDestinationField, cleanIncomingDidField, direction) {
+    const tryOrder = [];
+    const seenNorm = new Set();
+    const pushUnique = (v) => {
+      if (!this.isPhoneLikeForLeadMapping(v)) return;
+      const norm = this.normalizePhoneNumber(v);
+      if (!norm || norm.length < 5) return;
+      if (seenNorm.has(norm)) return;
+      seenNorm.add(norm);
+      tryOrder.push(String(v).trim());
+    };
+
+    const d = (direction || '').toLowerCase();
+    if (d === 'inbound' || d === 'queue' || d === 'voicemail') {
+      pushUnique(cleanIncomingDidField);
+      pushUnique(cleanSourceField);
+      pushUnique(cleanDestinationField);
+    } else if (d === 'outbound') {
+      pushUnique(cleanDestinationField);
+      pushUnique(cleanSourceField);
+      pushUnique(cleanIncomingDidField);
+    } else {
+      pushUnique(cleanDestinationField);
+      pushUnique(cleanSourceField);
+      pushUnique(cleanIncomingDidField);
+    }
+
+    let leadMapping = { leadId: null, clientId: null };
+    for (const phone of tryOrder) {
+      leadMapping = await this.mapDestinationToLeadId(phone);
+      if (leadMapping.leadId != null || leadMapping.clientId != null) {
+        return leadMapping;
+      }
+    }
+    return { leadId: null, clientId: null };
   }
 
   /**

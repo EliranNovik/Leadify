@@ -23,6 +23,8 @@ DROP POLICY IF EXISTS "channels_authenticated_delete" ON public.channels;
 DROP POLICY IF EXISTS "firm_firm_type_authenticated_all" ON public.firm_firm_type;
 DROP POLICY IF EXISTS "firm_channel_authenticated_all" ON public.firm_channel;
 
+DROP POLICY IF EXISTS "sources_firms_authenticated_all" ON public.sources_firms;
+
 DROP POLICY IF EXISTS "firm_contacts_authenticated_select" ON public.firm_contacts;
 DROP POLICY IF EXISTS "firm_contacts_authenticated_insert" ON public.firm_contacts;
 DROP POLICY IF EXISTS "firm_contacts_authenticated_update" ON public.firm_contacts;
@@ -33,6 +35,7 @@ ALTER TABLE public.firm_types ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.channels ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.firm_firm_type ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.firm_channel ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.sources_firms ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.firm_contacts ENABLE ROW LEVEL SECURITY;
 
 -- Authenticated full access (tighten to admin role when you have it in JWT / users table)
@@ -55,6 +58,8 @@ CREATE POLICY "channels_authenticated_delete" ON public.channels FOR DELETE TO a
 CREATE POLICY "firm_firm_type_authenticated_all" ON public.firm_firm_type FOR ALL TO authenticated USING (true) WITH CHECK (true);
 CREATE POLICY "firm_channel_authenticated_all" ON public.firm_channel FOR ALL TO authenticated USING (true) WITH CHECK (true);
 
+CREATE POLICY "sources_firms_authenticated_all" ON public.sources_firms FOR ALL TO authenticated USING (true) WITH CHECK (true);
+
 CREATE POLICY "firm_contacts_authenticated_select" ON public.firm_contacts FOR SELECT TO authenticated USING (true);
 CREATE POLICY "firm_contacts_authenticated_insert" ON public.firm_contacts FOR INSERT TO authenticated WITH CHECK (true);
 CREATE POLICY "firm_contacts_authenticated_update" ON public.firm_contacts FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
@@ -65,4 +70,5 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON public.firm_types TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.channels TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.firm_firm_type TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.firm_channel TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.sources_firms TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.firm_contacts TO authenticated;

@@ -830,14 +830,10 @@ router.get('/lookup', async (req, res) => {
     // Combine all leads
     const allLeads = [...newLeadsData, ...legacyLeadsData];
 
-    // Fetch last 5 calls for this phone number or related leads
+    // Fetch last 5 calls for this phone number or related leads (legacy: lead_id; new: client_id)
     let recentCalls = [];
     try {
-      const leadIds = allLeads.map(l => l.leadType === 'legacy' ? l.id : null).filter(id => id !== null);
-      
-      let callsQuery = supabase
-        .from('call_logs')
-        .select(`
+      const callsSelect = `
           id,
           cdate,
           date,
@@ -850,61 +846,56 @@ router.get('/lookup', async (req, res) => {
           url,
           call_id,
           lead_id,
+          client_id,
           employee_id,
           tenants_employee!employee_id (
             display_name
           )
-        `)
-        .order('cdate', { ascending: false })
-        .limit(5);
+        `;
+      const mapCallRow = (call) => ({
+        ...call,
+        employee: Array.isArray(call.tenants_employee) ? call.tenants_employee[0] : call.tenants_employee
+      });
+      const byId = new Map();
+      const legacyIds = allLeads.filter((l) => l.leadType === 'legacy').map((l) => l.id);
+      const newLeadUuids = allLeads.filter((l) => l.leadType === 'new').map((l) => l.id);
 
-      // If we have lead IDs, query by lead_id
-      if (leadIds.length > 0) {
-        const { data: callsByLeadId } = await callsQuery.in('lead_id', leadIds);
-        if (callsByLeadId && callsByLeadId.length > 0) {
-          recentCalls = callsByLeadId.map(call => ({
-            ...call,
-            employee: Array.isArray(call.tenants_employee) ? call.tenants_employee[0] : call.tenants_employee
-          }));
-        }
+      if (legacyIds.length > 0) {
+        const { data: byLegacy } = await supabase
+          .from('call_logs')
+          .select(callsSelect)
+          .in('lead_id', legacyIds)
+          .order('cdate', { ascending: false })
+          .limit(5);
+        (byLegacy || []).forEach((c) => byId.set(c.id, mapCallRow(c)));
+      }
+      if (newLeadUuids.length > 0) {
+        const { data: byNew } = await supabase
+          .from('call_logs')
+          .select(callsSelect)
+          .in('client_id', newLeadUuids)
+          .order('cdate', { ascending: false })
+          .limit(5);
+        (byNew || []).forEach((c) => byId.set(c.id, mapCallRow(c)));
       }
 
-      // If no calls found by lead_id, try by destination phone number (last 8 digits)
+      recentCalls = Array.from(byId.values())
+        .sort((a, b) => new Date(b.cdate).getTime() - new Date(a.cdate).getTime())
+        .slice(0, 5);
+
+      // If no calls linked to leads, try by destination/source phone (last 8 digits)
       if (recentCalls.length === 0 && last8Digits) {
         const { data: callsByPhone } = await supabase
           .from('call_logs')
-          .select(`
-            id,
-            cdate,
-            date,
-            time,
-            source,
-            destination,
-            direction,
-            status,
-            duration,
-            url,
-            call_id,
-            lead_id,
-            employee_id,
-            tenants_employee!employee_id (
-              display_name
-            )
-          `)
+          .select(callsSelect)
           .or(`destination.ilike.%${last8Digits}%,source.ilike.%${last8Digits}%`)
           .order('cdate', { ascending: false })
           .limit(5);
-        
+
         if (callsByPhone && callsByPhone.length > 0) {
-          recentCalls = callsByPhone.map(call => ({
-            ...call,
-            employee: Array.isArray(call.tenants_employee) ? call.tenants_employee[0] : call.tenants_employee
-          }));
+          recentCalls = callsByPhone.map(mapCallRow);
         }
       }
-
-      // Limit to last 5
-      recentCalls = recentCalls.slice(0, 5);
     } catch (error) {
       console.error('Error fetching recent calls:', error);
     }

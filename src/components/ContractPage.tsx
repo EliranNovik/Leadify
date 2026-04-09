@@ -1223,6 +1223,17 @@ const ContractPage: React.FC = () => {
   /** Viewport top offset so fixed right rail lines up with #contract-print-area */
   const [rightRailTopPx, setRightRailTopPx] = useState(120);
 
+  /** Right metadata rail only at xl+ — not mounted on mobile/tablet */
+  const [showDesktopSideRail, setShowDesktopSideRail] = useState(false);
+  useLayoutEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mq = window.matchMedia('(min-width: 1280px)');
+    const sync = () => setShowDesktopSideRail(mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+
   // PDF loading state
   const [pdfLoading, setPdfLoading] = useState(false);
 
@@ -3503,13 +3514,7 @@ const ContractPage: React.FC = () => {
                     <img
                       src="/חתימה מסמכים (5).png"
                       alt="Stamp"
-                      style={{
-                        width: 'auto',
-                        height: 150,
-                        maxWidth: 250,
-                        display: 'block',
-                        objectFit: 'contain'
-                      }}
+                      className="block h-20 w-auto max-w-[100px] object-contain sm:h-24 sm:max-w-[120px] md:h-[150px] md:max-w-[250px]"
                     />
                   </div>
                 </span>
@@ -3563,13 +3568,7 @@ const ContractPage: React.FC = () => {
                     <img
                       src="/חתימה מסמכים (5).png"
                       alt="Stamp"
-                      style={{
-                        width: 'auto',
-                        height: 150,
-                        maxWidth: 250,
-                        display: 'block',
-                        objectFit: 'contain'
-                      }}
+                      className="block h-20 w-auto max-w-[100px] object-contain sm:h-24 sm:max-w-[120px] md:h-[150px] md:max-w-[250px]"
                     />
                   </div>
                   {!isReadOnly && (
@@ -3865,13 +3864,7 @@ const ContractPage: React.FC = () => {
                     <img
                       src="/חתימה מסמכים (5).png"
                       alt="Stamp"
-                      style={{
-                        width: 'auto',
-                        height: 150,
-                        maxWidth: 250,
-                        display: 'block',
-                        objectFit: 'contain'
-                      }}
+                      className="block h-20 w-auto max-w-[100px] object-contain sm:h-24 sm:max-w-[120px] md:h-[150px] md:max-w-[250px]"
                     />
                   </div>
                 </span>
@@ -3916,13 +3909,7 @@ const ContractPage: React.FC = () => {
                     <img
                       src="/חתימה מסמכים (5).png"
                       alt="Stamp"
-                      style={{
-                        width: 'auto',
-                        height: 150,
-                        maxWidth: 250,
-                        display: 'block',
-                        objectFit: 'contain'
-                      }}
+                      className="block h-20 w-auto max-w-[100px] object-contain sm:h-24 sm:max-w-[120px] md:h-[150px] md:max-w-[250px]"
                     />
                   </div>
                   {!isReadOnly && (
@@ -4723,13 +4710,7 @@ const ContractPage: React.FC = () => {
                     <img
                       src="/חתימה מסמכים (5).png"
                       alt="Stamp"
-                      style={{
-                        width: 'auto',
-                        height: 150,
-                        maxWidth: 250,
-                        display: 'block',
-                        objectFit: 'contain'
-                      }}
+                      className="block h-20 w-auto max-w-[100px] object-contain sm:h-24 sm:max-w-[120px] md:h-[150px] md:max-w-[250px]"
                     />
                   </div>
                 </span>
@@ -4745,13 +4726,7 @@ const ContractPage: React.FC = () => {
                     <img
                       src="/חתימה מסמכים (5).png"
                       alt="Stamp"
-                      style={{
-                        width: 'auto',
-                        height: 150,
-                        maxWidth: 250,
-                        display: 'block',
-                        objectFit: 'contain'
-                      }}
+                      className="block h-20 w-auto max-w-[100px] object-contain sm:h-24 sm:max-w-[120px] md:h-[150px] md:max-w-[250px]"
                     />
                   </div>
                 </span>
@@ -4794,13 +4769,7 @@ const ContractPage: React.FC = () => {
                 <img
                   src="/חתימה מסמכים (5).png"
                   alt="Stamp"
-                  style={{
-                    width: 'auto',
-                    height: 150,
-                    maxWidth: 250,
-                    display: 'block',
-                    objectFit: 'contain'
-                  }}
+                  className="block h-20 w-auto max-w-[100px] object-contain sm:h-24 sm:max-w-[120px] md:h-[150px] md:max-w-[250px]"
                 />
               </div>
             </span>
@@ -5251,10 +5220,10 @@ const ContractPage: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gray-100 print:bg-white">
-      {/* Sticky top bar — single row incl. category & topic */}
+      {/* Top bar — scrolls with page on mobile; sticky from md */}
       <div
         ref={headerRef}
-        className="print-hide sticky top-0 z-[45] border-b border-gray-200/70 bg-white/85 shadow-[0_2px_16px_rgba(15,23,42,0.04)] backdrop-blur-xl supports-[backdrop-filter]:bg-white/65"
+        className="print-hide relative z-[45] border-b border-gray-200/70 bg-white/85 shadow-[0_2px_16px_rgba(15,23,42,0.04)] backdrop-blur-xl supports-[backdrop-filter]:bg-white/65 md:sticky md:top-0"
       >
         <div className="mx-auto flex max-w-[1920px] flex-wrap items-center gap-x-2 gap-y-2 px-3 py-2.5 sm:gap-x-3 sm:px-5 sm:py-3">
           <button
@@ -5277,13 +5246,13 @@ const ContractPage: React.FC = () => {
               <p className="font-mono text-base font-bold tabular-nums leading-snug text-gray-900">#{renderLeadNumber()}</p>
             </div>
             {barCategory ? (
-              <span className="inline-flex max-w-[min(100%,12rem)] items-center gap-1 rounded-md border border-gray-200/80 bg-gray-50/90 px-2.5 py-1 text-xs font-medium leading-snug text-gray-700 sm:max-w-[14rem]">
+              <span className="hidden max-w-[min(100%,12rem)] items-center gap-1 rounded-md border border-gray-200/80 bg-gray-50/90 px-2.5 py-1 text-xs font-medium leading-snug text-gray-700 md:inline-flex sm:max-w-[14rem]">
                 <TagIcon className="h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden />
                 <span className="truncate">{barCategory}</span>
               </span>
             ) : null}
             {barTopic ? (
-              <span className="inline-flex max-w-[min(100%,14rem)] items-center gap-1 rounded-md border border-gray-200/80 bg-gray-50/90 px-2.5 py-1 text-xs font-medium leading-snug text-gray-700 sm:max-w-[18rem]">
+              <span className="hidden max-w-[min(100%,14rem)] items-center gap-1 rounded-md border border-gray-200/80 bg-gray-50/90 px-2.5 py-1 text-xs font-medium leading-snug text-gray-700 md:inline-flex sm:max-w-[18rem]">
                 <DocumentTextIcon className="h-3.5 w-3.5 shrink-0 text-gray-500" aria-hidden />
                 <span className="truncate">{barTopic}</span>
               </span>
@@ -5509,12 +5478,12 @@ const ContractPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Sidebar - Fixed to right edge of viewport - Only show button, no background */}
-          {!showDetailsAndPricingModal && (
+          {/* Sidebar — xl+ only (not mounted on mobile/tablet) */}
+          {!showDetailsAndPricingModal && showDesktopSideRail && (
             <>
               {/* Desktop right rail: pricing summary & contact actions only */}
               <div
-                className="fixed top-0 right-0 z-[60] transition-all duration-300 ease-in-out hidden xl:block print-hide"
+                className="fixed top-0 right-0 z-[60] transition-all duration-300 ease-in-out print-hide"
                 style={{
                   top: `${rightRailTopPx}px`,
                   paddingRight: '16px',

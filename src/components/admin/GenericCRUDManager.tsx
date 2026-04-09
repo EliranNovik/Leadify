@@ -490,6 +490,36 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     }
   };
 
+  /** PG `integer` / `misc_leadsource.id` safe range; rejects ms timestamps mistaken for ids. */
+  const normalizeFirmSourceIds = (raw: number[]): number[] => {
+    const MAX = 2147483647;
+    return raw
+      .map((n) => (typeof n === 'number' ? n : parseInt(String(n), 10)))
+      .filter((n) => Number.isFinite(n) && n >= 1 && n <= MAX && n === Math.floor(n));
+  };
+
+  const syncFirmLeadSources = async (firmId: string, sourceIds: number[]) => {
+    try {
+      if (!firmId) return;
+      const { error: deleteError } = await supabase.from('sources_firms').delete().eq('firm_id', firmId);
+      if (deleteError) {
+        console.error('Error clearing sources_firms:', deleteError);
+        throw deleteError;
+      }
+      const clean = normalizeFirmSourceIds(sourceIds || []);
+      if (!clean.length) return;
+      const rows = clean.map((source_id) => ({ firm_id: firmId, source_id }));
+      const { error: insertError } = await supabase.from('sources_firms').insert(rows);
+      if (insertError) {
+        console.error('Error inserting sources_firms:', insertError);
+        throw insertError;
+      }
+    } catch (error) {
+      console.error('syncFirmLeadSources:', error);
+      toast.error('Firm saved, but linking lead sources failed. Check permissions and run sql/sources_firms.sql.');
+    }
+  };
+
   const updatePreferredCategories = async (employeeId: string, categoryIds: string[]) => {
     try {
       if (!employeeId) return;
@@ -659,6 +689,27 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           ? [rawValue]
           : [];
       delete record.preferred_category;
+    }
+
+    let firmLeadSourceIds: number[] | undefined;
+    if (tableName === 'firms' && 'lead_source_ids' in record) {
+      const raw = (record as any).lead_source_ids;
+      const MAX = 2147483647;
+      const rawArr = Array.isArray(raw) ? raw : [];
+      const parsed = rawArr.map((x: unknown) =>
+        typeof x === 'string' ? parseInt(x, 10) : Number(x)
+      );
+      const finite = parsed.filter((n: number) => Number.isFinite(n) && !Number.isNaN(n));
+      firmLeadSourceIds = finite.filter(
+        (n: number) => n >= 1 && n <= MAX && n === Math.floor(n)
+      );
+      if (finite.length !== (firmLeadSourceIds?.length ?? 0)) {
+        toast(
+          'Some lead source ids were invalid (must be real source numbers, 1–2147483647) and were ignored.',
+          { duration: 5000 }
+        );
+      }
+      delete (record as any).lead_source_ids;
     }
 
     // Handle array fields for Postgres
@@ -1085,7 +1136,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           // Regular create for other tables
           // Remove preferred_category from the insert as it's stored in separate table
           // Also remove id for new records - let database auto-generate it for identity columns
-          const { preferred_category, id, ...insertRecord } = record;
+          const { preferred_category, lead_source_ids, id, ...insertRecord } = record;
           
           // Explicitly ensure id is not included (even if it was undefined/null in destructuring)
           // Use multiple methods to ensure id is completely removed
@@ -1236,6 +1287,14 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         const targetId = editingRecord?.id ? String(editingRecord.id) : String((result as any)?.id);
         if (targetId) {
           await updatePreferredCategories(targetId, preferredCategories);
+          await fetchRecords();
+        }
+      }
+
+      if (tableName === 'firms' && firmLeadSourceIds !== undefined) {
+        const targetFirmId = editingRecord?.id ? String(editingRecord.id) : String((result as any)?.id);
+        if (targetFirmId) {
+          await syncFirmLeadSources(targetFirmId, firmLeadSourceIds);
           await fetchRecords();
         }
       }
@@ -1398,6 +1457,25 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         console.error('Error fetching preferred categories:', error);
       }
     }
+
+    if (record && tableName === 'firms') {
+      try {
+        const { data, error } = await supabase
+          .from('sources_firms')
+          .select('source_id')
+          .eq('firm_id', record.id);
+        if (error) {
+          console.error('Error fetching sources_firms:', error);
+        } else {
+          const MAX = 2147483647;
+          (record as any).lead_source_ids = (data || [])
+            .map((r: { source_id: number }) => Number(r.source_id))
+            .filter((n: number) => Number.isFinite(n) && n >= 1 && n <= MAX && n === Math.floor(n));
+        }
+      } catch (error) {
+        console.error('Error fetching sources_firms:', error);
+      }
+    }
     
     // If creating new record, initialize with default values from fields
     if (!record) {
@@ -1413,6 +1491,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
               : field.defaultValue;
         } else if (tableName === 'tenants_employee' && field.name === 'preferred_category') {
           defaultRecord[field.name] = [];
+        } else if (tableName === 'firms' && field.name === 'lead_source_ids') {
+          defaultRecord[field.name] = [];
         }
       });
       // Explicitly ensure id is not set
@@ -1425,6 +1505,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           transformedRecord[field.name] = field.prepareValueForForm(record[field.name], record);
         } else if (tableName === 'tenants_employee' && field.name === 'preferred_category') {
           transformedRecord[field.name] = (record as any).preferred_category || [];
+        } else if (tableName === 'firms' && field.name === 'lead_source_ids') {
+          transformedRecord[field.name] = (record as any).lead_source_ids || [];
         }
         // Ensure required fields with defaults are initialized if missing
         if (field.required && field.defaultValue !== undefined && (transformedRecord[field.name] === null || transformedRecord[field.name] === undefined || transformedRecord[field.name] === '')) {
