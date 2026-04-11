@@ -11,7 +11,6 @@ import { toast } from 'react-hot-toast';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import Siriwave from 'react-siriwave';
 import {
-  ArrowLeftIcon,
   Bars3Icon,
   MagnifyingGlassIcon,
   BellIcon,
@@ -26,6 +25,7 @@ import {
   UserGroupIcon,
   FunnelIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
   BoltIcon,
   ChatBubbleLeftRightIcon,
   StarIcon,
@@ -7221,18 +7221,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       <>
         <div
           data-mobile-header={isMobile ? 'floating' : undefined}
-          className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-transparent md:bg-base-100 border-b-0 md:border-b-0 pt-safe pb-1.5 shadow-none md:pb-0 md:pt-0"
-          style={{ boxShadow: 'none' }}
+          className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b border-base-200 dark:border-base-300 pt-safe pb-1.5 shadow-sm md:pb-0 md:pt-0 md:shadow-none"
         >
           {/* Logo and Logout Button */}
           <div className="flex-1 justify-start flex items-center gap-2 md:gap-4">
-            <div className="rounded-2xl shadow-sm bg-white/45 backdrop-blur-2xl backdrop-saturate-150 border border-white/60 ring-1 ring-white/30 dark:bg-white/[0.12] dark:backdrop-blur-2xl dark:border-white/20 dark:ring-white/10 md:rounded-none md:shadow-none md:bg-transparent md:border-0 md:ring-0 md:backdrop-blur-none flex h-11 md:h-12 items-center gap-2 md:gap-3 px-2 md:px-0">
+            <div className="flex h-11 md:h-12 items-center gap-2 md:gap-3 px-1 md:px-0">
               <Link to="/" className="flex items-center gap-2">
                 <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
               </Link>
               <button
                 onClick={handleSignOut}
-                className="btn btn-ghost btn-sm btn-circle border-0"
+                className="btn btn-ghost btn-sm border-0 min-h-0 h-9 w-9 p-0 text-base-content/80 hover:text-base-content"
                 title="Sign Out"
               >
                 <ArrowRightOnRectangleIcon className="w-5 h-5" />
@@ -7310,32 +7309,29 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     <>
       <div
         data-mobile-header={isMobile ? 'floating' : undefined}
-        className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-transparent md:bg-base-100 border-b-0 md:border-b-0 pt-safe pb-1.5 shadow-none md:pb-0 md:pt-0"
-        style={{ boxShadow: 'none' }}
+        className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b border-base-200 dark:border-base-300 pt-safe pb-1.5 shadow-sm md:pb-0 md:pt-0 md:shadow-none"
       >
         {/* Left section with menu and logo */}
         <div className={`flex-1 justify-start flex items-center gap-2 md:gap-4 overflow-hidden md:overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
-          <div className="md:hidden flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-sm bg-white/45 backdrop-blur-2xl backdrop-saturate-150 border border-white/60 ring-1 ring-white/30 dark:bg-white/[0.12] dark:backdrop-blur-2xl dark:border-white/20 dark:ring-white/10">
-            <button
-              className="btn btn-ghost btn-square min-h-0 h-10 w-10 p-0 rounded-full border-0"
-              onClick={onMenuClick}
-              aria-label={isMenuOpen ? "Close menu" : "Open menu"}
-            >
-              {isMenuOpen ? (
-                <XMarkIcon className="w-6 h-6" />
-              ) : (
-                <Bars3Icon className="w-6 h-6" />
-              )}
-            </button>
-          </div>
+          <button
+            type="button"
+            className="btn btn-ghost md:hidden min-h-0 h-10 w-10 p-0 border-0 text-base-content/90 hover:bg-base-200/60 dark:hover:bg-base-300/40 rounded-lg"
+            onClick={onMenuClick}
+            aria-label={isMenuOpen ? "Close menu" : "Open menu"}
+          >
+            {isMenuOpen ? (
+              <XMarkIcon className="w-6 h-6" />
+            ) : (
+              <Bars3Icon className="w-6 h-6" />
+            )}
+          </button>
 
-          {/* Profile + dropdown: mobile only — same floating glass pill as menu / search */}
+          {/* Profile + dropdown: mobile only */}
           <div className="relative flex items-center flex-shrink-0 md:hidden" ref={profileDropdownRef}>
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-sm bg-white/45 backdrop-blur-2xl backdrop-saturate-150 border border-white/60 ring-1 ring-white/30 dark:bg-white/[0.12] dark:backdrop-blur-2xl dark:border-white/20 dark:ring-white/10 overflow-hidden">
             <button
               ref={profileButtonRefMobile}
               type="button"
-              className="btn btn-ghost min-h-0 h-10 w-10 p-0 rounded-full border-0 flex items-center justify-center overflow-hidden ring-0 hover:bg-transparent"
+              className="btn btn-ghost min-h-0 h-10 w-10 p-0 rounded-full border-0 flex items-center justify-center overflow-hidden ring-0 hover:bg-base-200/50 dark:hover:bg-base-300/30"
               onClick={(e) => {
                 e.stopPropagation();
                 setShowProfileDropdown((v) => !v);
@@ -7374,7 +7370,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 )}
               </span>
             </button>
-            </div>
             {showProfileDropdown && isMobile && createPortal(
               <div
                 data-profile-dropdown-mobile
@@ -7841,7 +7836,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 isSearchActive
                   ? `w-full overflow-hidden bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-600 ${isMobile ? 'shadow-none' : 'shadow-md'}`
                   : isMobile
-                    ? 'w-full min-h-9 h-9 shadow-sm bg-white/45 backdrop-blur-2xl backdrop-saturate-150 border border-white/60 ring-1 ring-white/30 dark:bg-white/[0.12] dark:backdrop-blur-2xl dark:border-white/20 dark:ring-white/10 box-border'
+                    ? 'w-full min-h-9 h-9 border-0 bg-transparent shadow-none box-border'
                     : 'w-12 min-w-12 md:w-48 md:min-w-48 overflow-visible md:bg-white dark:md:bg-gray-800 md:border-2 md:border-gray-200 dark:md:border-gray-600 md:shadow-md'
               }`}
               style={isSearchActive && isDarkMode ? { borderColor: 'rgba(96, 165, 250, 0.75)' } : undefined}
@@ -8357,7 +8352,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           {/* WhatsApp Button */}
           <div className="relative hidden md:block">
             <button
-              className="btn btn-ghost btn-circle flex items-center justify-center"
+              type="button"
+              className="btn btn-ghost border-0 min-h-0 h-10 w-10 p-0 rounded-lg flex items-center justify-center text-base-content/90 hover:bg-base-200/70"
               title="Open WhatsApp"
               onClick={onOpenWhatsApp}
             >
@@ -8372,7 +8368,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
           <div className="relative hidden md:block">
             <button
-              className="btn btn-ghost btn-circle flex items-center justify-center"
+              type="button"
+              className="btn btn-ghost border-0 min-h-0 h-10 w-10 p-0 rounded-lg flex items-center justify-center text-base-content/90 hover:bg-base-200/70"
               title="Open RMQ Messages"
               onClick={onOpenMessaging}
             >
@@ -8388,7 +8385,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           {/* Email Thread Button */}
           <div className="relative hidden md:block">
             <button
-              className="btn btn-ghost btn-circle flex items-center justify-center"
+              type="button"
+              className="btn btn-ghost border-0 min-h-0 h-10 w-10 p-0 rounded-lg flex items-center justify-center text-base-content/90 hover:bg-base-200/70"
               title="Open Email Thread"
               onClick={onOpenEmailThread}
             >
@@ -8402,26 +8400,24 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           </div>
 
           {/* Mobile: search opens from icon only (sits next to bell); desktop search stays in center */}
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-sm bg-white/45 backdrop-blur-2xl backdrop-saturate-150 border border-white/60 ring-1 ring-white/30 dark:bg-white/[0.12] dark:backdrop-blur-2xl dark:border-white/20 dark:ring-white/10 md:hidden">
-            <button
-              type="button"
-              className="btn btn-ghost btn-square min-h-0 h-10 w-10 p-0 rounded-full border-0"
-              aria-label="Search"
-              onClick={() => {
-                setIsSearchOpen(true);
-                setIsSearchActive(true);
-                window.setTimeout(() => searchInputRef.current?.focus(), 0);
-              }}
-            >
-              <MagnifyingGlassIcon className="w-6 h-6" />
-            </button>
-          </div>
+          <button
+            type="button"
+            className="btn btn-ghost md:hidden min-h-0 h-10 w-10 p-0 border-0 text-base-content/90 hover:bg-base-200/60 dark:hover:bg-base-300/40 rounded-lg"
+            aria-label="Search"
+            onClick={() => {
+              setIsSearchOpen(true);
+              setIsSearchActive(true);
+              window.setTimeout(() => searchInputRef.current?.focus(), 0);
+            }}
+          >
+            <MagnifyingGlassIcon className="w-6 h-6" />
+          </button>
 
           {/* Notifications */}
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-sm bg-white/45 backdrop-blur-2xl backdrop-saturate-150 border border-white/60 ring-1 ring-white/30 dark:bg-white/[0.12] dark:backdrop-blur-2xl dark:border-white/20 dark:ring-white/10 md:h-auto md:w-auto md:rounded-none md:shadow-none md:bg-transparent md:border-0 md:ring-0 md:backdrop-blur-none">
-          <div className="relative" ref={notificationsRef}>
+          <div className="relative flex h-10 w-10 shrink-0 items-center justify-center md:h-auto md:w-auto" ref={notificationsRef}>
             <button
-              className="btn btn-ghost btn-circle h-10 w-10 min-h-10 min-w-10 p-0 border-0 mr-0 md:mr-1 md:h-12 md:w-12 md:min-h-12 md:min-w-12"
+              type="button"
+              className="btn btn-ghost h-10 w-10 min-h-10 min-w-10 p-0 border-0 mr-0 rounded-lg text-base-content/90 hover:bg-base-200/60 dark:hover:bg-base-300/40 md:mr-1 md:h-12 md:w-12 md:min-h-12 md:min-w-12 md:rounded-full"
               onClick={handleNotificationClick}
             >
               <div className="indicator">
@@ -8728,20 +8724,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               </div>
             )}
           </div>
-          </div>
 
           {/* Mobile back button - right corner inside header (hidden on login) */}
           {location.pathname !== '/login' && (
-            <div className="md:hidden flex h-10 w-10 shrink-0 items-center justify-center rounded-full shadow-sm bg-white/45 backdrop-blur-2xl backdrop-saturate-150 border border-white/60 ring-1 ring-white/30 dark:bg-white/[0.12] dark:backdrop-blur-2xl dark:border-white/20 dark:ring-white/10">
             <button
               type="button"
               onClick={() => navigate(-1)}
-              className="btn btn-ghost btn-square min-h-0 h-10 w-10 p-0 rounded-full border-0 flex items-center justify-center flex-shrink-0"
+              className="btn btn-ghost md:hidden min-h-0 h-10 w-10 p-0 border-0 text-base-content/90 hover:bg-base-200/60 dark:hover:bg-base-300/40 rounded-lg flex-shrink-0"
               aria-label="Go back"
             >
-              <ArrowLeftIcon className="w-6 h-6" />
+              <ChevronLeftIcon className="w-6 h-6" aria-hidden />
             </button>
-            </div>
           )}
         </div>
       </div>

@@ -5702,8 +5702,7 @@ const CalendarPage: React.FC = () => {
       <div
         className="flex items-center justify-between gap-2 md:gap-4 mb-6 md:mb-6 rounded-full bg-white/60 dark:bg-base-300/50 backdrop-blur-xl border border-white/30 dark:border-base-content/10 shadow-xl px-4 py-3 md:px-6 md:py-3.5 md:rounded-none md:bg-transparent md:backdrop-blur-none md:border-0 md:shadow-none fixed left-1/2 -translate-x-1/2 z-40 md:static md:left-auto md:translate-x-0 md:top-auto w-[calc(100%-2rem)] md:w-full max-w-4xl md:max-w-none mx-auto"
         style={{
-          top: 'max(4.75rem, calc(76px + env(safe-area-inset-top, 0px)))',
-          paddingTop: 'max(0.25rem, env(safe-area-inset-top, 0px))'
+          top: 'calc(env(safe-area-inset-top, 0px) + 2.75rem + 0.5rem)',
         }}
       >
         <div className="flex-shrink-0 flex items-center">

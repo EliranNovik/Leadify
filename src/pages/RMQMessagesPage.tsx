@@ -6523,7 +6523,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       loadOlderMessages();
     }
 
-    const nearBottom = isNearBottom();
+    const NEAR_BOTTOM_PX = 100;
+    const nearBottom =
+      container != null
+        ? (() => {
+            const { scrollTop, scrollHeight, clientHeight } = container;
+            return scrollHeight - scrollTop - clientHeight < NEAR_BOTTOM_PX;
+          })()
+        : isNearBottom();
 
     const currentScrollPosition = container ? container.scrollTop : 0;
     const scrollPositionChanged = Math.abs(currentScrollPosition - lastScrollPositionRef.current) > 1;
@@ -10387,6 +10394,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                 </>
               )}
             </div>
+
             </header>
 
             <div

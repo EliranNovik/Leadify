@@ -1493,7 +1493,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 <div className="mb-0 flex flex-col gap-6 md:mb-6 md:gap-5">
                     {/* Mobile: SaaS header — identity, contact card, stage + chips */}
                     <div className="flex w-full flex-col gap-6 md:hidden">
-                        <header className="relative z-[200] flex w-full min-w-0 flex-col gap-0">
+                        <header className="relative z-0 flex w-full min-w-0 flex-col gap-0">
                             <div className="flex w-full min-w-0 items-start justify-between gap-3">
                                 <div className="min-w-0 flex-1 pr-1 text-left">
                                     <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500 dark:text-gray-400">
@@ -1627,7 +1627,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             </div>
                         </div>
 
-                        <div className="relative z-[200] flex flex-col gap-4 pt-1">
+                        <div className="relative z-0 flex flex-col gap-4 pt-1">
                             <div className="flex flex-wrap justify-center gap-2 px-0.5">
                                 {selectedClient.language && (
                                     <span className={META_CHIP}>
@@ -2948,7 +2948,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                 {/* Category Edit Modal */}
                 {showCategoryModal && (
-                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[200]" onClick={() => setShowCategoryModal(false)}>
+                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[330]" onClick={() => setShowCategoryModal(false)}>
                         <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
                             <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">Edit Category</h3>
 
@@ -3049,7 +3049,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                 {pendingProbabilityValues &&
                     createPortal(
-                        <div className="pointer-events-auto fixed bottom-4 right-4 z-[200] w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-amber-200/90 bg-amber-50/95 p-4 shadow-xl backdrop-blur-sm dark:border-amber-700/50 dark:bg-amber-950/90">
+                        <div className="pointer-events-auto fixed bottom-4 right-4 z-[330] w-[min(22rem,calc(100vw-2rem))] rounded-2xl border border-amber-200/90 bg-amber-50/95 p-4 shadow-xl backdrop-blur-sm dark:border-amber-700/50 dark:bg-amber-950/90">
                             <div className="flex items-start justify-between gap-2">
                                 <div className="min-w-0">
                                     <p className="text-sm font-semibold text-amber-950 dark:text-amber-100">
