@@ -524,7 +524,6 @@ const CalendarPage: React.FC = () => {
   // Staff meeting edit modal state
   const [isStaffMeetingEditModalOpen, setIsStaffMeetingEditModalOpen] = useState(false);
   const [selectedStaffMeeting, setSelectedStaffMeeting] = useState<any>(null);
-  const [stageNamesLoaded, setStageNamesLoaded] = useState(false);
 
   // Action menu dropdown state
   const [showActionMenuDropdown, setShowActionMenuDropdown] = useState(false);
@@ -1598,11 +1597,16 @@ const CalendarPage: React.FC = () => {
 
       if (allMeetingsError) {
         console.error('Error fetching staff meetings from database:', allMeetingsError);
+        setStaffMeetings([]);
         return;
       }
 
-      if (staffMeetingsData && staffMeetingsData.length > 0) {
-        // Cache email->displayName mapping (used to label staff attendees).
+      if (!staffMeetingsData || staffMeetingsData.length === 0) {
+        setStaffMeetings([]);
+        return;
+      }
+
+      // Cache email->displayName mapping (used to label staff attendees).
         const now = Date.now();
         const isFresh =
           cachedCalendarEmailToName &&
@@ -1657,7 +1661,7 @@ const CalendarPage: React.FC = () => {
             cachedCalendarEmailToNameAtMs = Date.now();
           } catch (e) {
             console.error('Error fetching employees/users for email mapping:', e);
-            return;
+            // Continue with empty map so staff meetings still list (raw emails / subject)
           }
         }
 
@@ -1729,9 +1733,9 @@ const CalendarPage: React.FC = () => {
         });
 
         setStaffMeetings(formattedStaffMeetings);
-      }
     } catch (error) {
       console.error('Error fetching staff meetings:', error);
+      setStaffMeetings([]);
     } finally {
       setIsStaffMeetingsLoading(false);
     }
@@ -1976,8 +1980,6 @@ const CalendarPage: React.FC = () => {
         // Avoid heavy meeting loads while app is backgrounded (mobile).
         skippedCalendarFetchWhileHiddenRef.current = true;
         setIsLoading(false);
-        // Stage-name IIFE below does not run — unblock cards view until a visible refetch loads real labels.
-        setStageNamesLoaded(true);
         return;
       }
       setIsLoading(true);
@@ -2073,9 +2075,6 @@ const CalendarPage: React.FC = () => {
             if (!stageNames || Object.keys(stageNames).length === 0) await refreshStageNames();
           } catch (e) {
             calDebug('CalendarPage: stage names load failed (non-fatal)', e);
-          } finally {
-            // Cards view gates on stageNamesLoaded; always clear so we never spin forever on error/hang.
-            setStageNamesLoaded(true);
           }
         })();
 
@@ -2321,8 +2320,8 @@ const CalendarPage: React.FC = () => {
             if (msg.includes('timeout') || err?.code === '57014') setLegacyLoadingDisabled(true);
           });
 
-        // Fetch staff meetings for today
-        await fetchStaffMeetings(today, today);
+        // Staff meetings: same window as applied dates (was today-only and raced the range effect).
+        await fetchStaffMeetings(dateRangeFrom, dateRangeTo);
 
         // Fetch all staff from tenants_employee table for the main calendar filter
         const { data: allStaffData, error: allStaffError } = await supabase
@@ -2458,13 +2457,9 @@ const CalendarPage: React.FC = () => {
     }
   }, [expandedMeetingId, meetings, isNotesModalOpen, selectedMeetingForNotes]);
 
-  // Load staff meetings and legacy meetings when applied date range changes
+  // Legacy meetings when applied date range changes (staff meetings load inside fetchMeetingsAndStaff with the same range)
   useEffect(() => {
-    // Only fetch data when both applied dates are set and user has manually set them
     if (appliedFromDate && appliedToDate && appliedFromDate.trim() !== '' && appliedToDate.trim() !== '' && datesManuallySet) {
-      // Always load staff meetings for the date range
-      fetchStaffMeetings(appliedFromDate, appliedToDate);
-      // Load legacy meetings automatically when date range changes
       loadLegacyForDateRange(appliedFromDate, appliedToDate);
     }
   }, [appliedFromDate, appliedToDate, datesManuallySet]);
@@ -6222,12 +6217,10 @@ const CalendarPage: React.FC = () => {
         {/* Cards View - Show when viewMode is 'cards' */}
         {viewMode === 'cards' && (
           <div>
-            {isLoading || !stageNamesLoaded ? (
+            {isLoading ? (
               <div className="text-center p-8">
                 <div className="loading loading-spinner loading-lg"></div>
-                <p className="mt-4 text-base-content/60">
-                  {isLoading ? 'Loading meetings...' : 'Loading stage names...'}
-                </p>
+                <p className="mt-4 text-base-content/60">Loading meetings...</p>
               </div>
             ) : filteredMeetings.length > 0 ? (
               <>

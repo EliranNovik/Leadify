@@ -6,6 +6,7 @@ import { Search, Loader2 } from 'lucide-react';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import { useTheme } from '../hooks/useTheme';
+import { MOBILE_BOTTOM_NAV_Z_INDEX } from '../components/MobileBottomNav';
 
 // Static dropdown options - moved outside component to prevent re-creation on every render
 const REASON_OPTIONS = ["Inquiry", "Follow-up", "Complaint", "Consultation", "Other"];
@@ -4136,13 +4137,16 @@ const LeadSearchPage: React.FC = () => {
 
     const cardClasses = [
       'card',
+      'w-full',
+      'max-w-full',
+      'rounded-xl',
+      'border-0',
       'shadow-lg',
-      'hover:shadow-2xl',
+      'hover:shadow-xl',
+      'md:hover:-translate-y-0.5',
       'transition-all',
       'duration-300',
-      'ease-in-out',
-      'transform',
-      'hover:-translate-y-1',
+      'ease-out',
       'cursor-pointer',
       'group',
       // Inactive card: light grey background, all text black; stage badges grey with black text
@@ -4227,7 +4231,7 @@ const LeadSearchPage: React.FC = () => {
   };
 
   return (
-    <div className="p-6 md:p-10">
+    <div className="w-full max-w-full pt-6 pb-6 px-3 sm:px-4 md:p-10 min-w-0">
       {/* Fixed Search Bar with Date Filters - Desktop: always visible, Mobile: appears when scrolled down */}
       {/* Desktop Version - Always visible */}
       <div className="hidden md:flex fixed top-16 left-0 right-0 z-[35] justify-center px-4 transition-all duration-300 ease-in-out">
@@ -4306,27 +4310,39 @@ const LeadSearchPage: React.FC = () => {
       {/* Mobile: scrolled down = single circle opens full bar; scrolled up = full bar. Circle click does not search. */}
       <div className="md:hidden fixed top-16 left-0 right-0 z-[35] flex justify-center px-4 transition-all duration-300 ease-in-out">
         {showStickySearchButton ? (
-          /* Scrolled down: one big glass circle – opens full bar; show spinner if search still running */
+          /* Scrolled down: one frosted glass circle (no outer wrapper); grey icon */
           <button
             type="button"
-            className={`min-w-[56px] min-h-[56px] w-14 h-14 rounded-full shadow-2xl flex items-center justify-center border border-base-200/50 bg-white/90 backdrop-blur-md transition-all duration-300 dark:bg-gray-800/90 active:scale-95 ${
-              isAltTheme ? 'text-white' : 'text-primary'
-            }`}
-            style={isAltTheme ? { background: 'rgba(80, 93, 87, 0.92)' } : undefined}
+            className="min-w-[60px] min-h-[60px] w-[60px] h-[60px] rounded-full flex items-center justify-center border border-white/55 dark:border-white/12 bg-white/28 dark:bg-gray-900/28 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.05)] ring-1 ring-black/[0.04] dark:ring-white/[0.07] transition-all duration-300 active:scale-95"
+            style={
+              isAltTheme
+                ? {
+                    background: 'rgba(80, 93, 87, 0.36)',
+                    backdropFilter: 'blur(20px)',
+                    WebkitBackdropFilter: 'blur(20px)',
+                  }
+                : undefined
+            }
             onClick={() => setShowStickySearchButton(false)}
             title={isSearching ? 'Search in progress — tap to open bar' : 'Open search bar'}
             aria-label={isSearching ? 'Search in progress' : 'Open search bar'}
             aria-busy={isSearching}
           >
             {isSearching ? (
-              <Loader2 className={`w-7 h-7 animate-spin ${isAltTheme ? 'text-white' : 'text-primary'}`} aria-hidden />
+              <Loader2
+                className={`w-8 h-8 animate-spin ${isAltTheme ? 'text-zinc-200' : 'text-zinc-500 dark:text-zinc-400'}`}
+                aria-hidden
+              />
             ) : (
-              <Search className="w-7 h-7" strokeWidth={2.25} />
+              <Search
+                className={`w-8 h-8 ${isAltTheme ? 'text-zinc-200' : 'text-zinc-500 dark:text-zinc-400'}`}
+                strokeWidth={2.25}
+              />
             )}
           </button>
         ) : (
-          /* Scrolled up: full bar with From/To dates, smaller view toggle, search */
-          <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl px-4 py-3 transition-all duration-300 ease-in-out flex items-center gap-3 min-h-[52px]">
+          /* Scrolled up: full bar with From/To dates + search (cards/table toggle is fixed bottom-right on mobile) */
+          <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl px-4 py-3 transition-all duration-300 ease-in-out flex items-center gap-3 min-h-[56px]">
             <input
               type="date"
               className="input input-sm w-24 text-sm min-h-[40px]"
@@ -4341,43 +4357,19 @@ const LeadSearchPage: React.FC = () => {
               onChange={e => handleFilterChange('toDate', e.target.value)}
               title="To date"
             />
-            <div className="flex items-center gap-0.5 rounded-full p-0.5">
-              <button
-                className={`btn btn-circle min-w-[36px] min-h-[36px] w-9 h-9 transition-all duration-300 ${
-                  viewMode === 'cards'
-                    ? (isAltTheme ? 'bg-[#505d57] text-white shadow-md hover:bg-[#3d4743]' : 'btn-primary shadow-md')
-                    : 'btn-ghost'
-                }`}
-                onClick={() => setViewMode('cards')}
-                title="Cards View"
-              >
-                <Squares2X2Icon className="w-4 h-4" />
-              </button>
-              <button
-                className={`btn btn-circle min-w-[36px] min-h-[36px] w-9 h-9 transition-all duration-300 ${
-                  viewMode === 'table'
-                    ? (isAltTheme ? 'bg-[#505d57] text-white shadow-md hover:bg-[#3d4743]' : 'btn-primary shadow-md')
-                    : 'btn-ghost'
-                }`}
-                onClick={() => setViewMode('table')}
-                title="Table View"
-              >
-                <TableCellsIcon className="w-4 h-4" />
-              </button>
-            </div>
             <button
               type="button"
-              className={`flex min-h-[44px] min-w-[44px] h-11 w-11 shrink-0 items-center justify-center rounded-full border border-base-200/60 bg-white/90 shadow-inner backdrop-blur-md transition-all duration-300 dark:border-base-200/40 dark:bg-gray-800/90 ${
-                isAltTheme
-                  ? 'text-white hover:bg-[#505d57]/95'
-                  : 'text-primary hover:bg-white dark:hover:bg-gray-700/95'
+              className={`flex min-h-[48px] min-w-[48px] h-12 w-12 shrink-0 items-center justify-center rounded-full border border-white/55 dark:border-white/12 bg-white/28 dark:bg-gray-900/28 backdrop-blur-xl shadow-[0_4px_24px_rgba(0,0,0,0.05)] ring-1 ring-black/[0.04] dark:ring-white/[0.07] transition-all duration-300 ${
+                isAltTheme ? 'hover:opacity-95' : 'active:scale-95'
               } ${isSearching ? 'cursor-wait' : ''} disabled:opacity-70`}
               style={
-                isAltTheme && !isSearching
-                  ? { background: 'rgba(80, 93, 87, 0.92)' }
-                  : isAltTheme && isSearching
-                    ? { background: 'rgba(80, 93, 87, 0.85)' }
-                    : undefined
+                isAltTheme
+                  ? {
+                      background: 'rgba(80, 93, 87, 0.36)',
+                      backdropFilter: 'blur(20px)',
+                      WebkitBackdropFilter: 'blur(20px)',
+                    }
+                  : undefined
               }
               onClick={() => {
                 handleSearch();
@@ -4389,19 +4381,68 @@ const LeadSearchPage: React.FC = () => {
               aria-label={isSearching ? 'Searching…' : 'Search'}
             >
               {isSearching ? (
-                <Loader2 className={`h-6 w-6 animate-spin ${isAltTheme ? 'text-white' : 'text-primary'}`} aria-hidden />
+                <Loader2
+                  className={`h-7 w-7 animate-spin ${isAltTheme ? 'text-zinc-200' : 'text-zinc-500 dark:text-zinc-400'}`}
+                  aria-hidden
+                />
               ) : (
-                <Search className={`h-6 w-6 ${isAltTheme ? 'text-white' : ''}`} strokeWidth={2.25} />
+                <Search
+                  className={`h-7 w-7 ${isAltTheme ? 'text-zinc-200' : 'text-zinc-500 dark:text-zinc-400'}`}
+                  strokeWidth={2.25}
+                />
               )}
             </button>
           </div>
         )}
       </div>
 
-      <h1 className="text-3xl font-bold mb-6">Leads Search</h1>
+      {/* Mobile only: cards / table toggle — floating box bottom-right, above fixed tab bar */}
+      <div
+        className="md:hidden fixed right-3 flex items-center gap-0.5 rounded-2xl border border-base-200/80 dark:border-base-content/12 bg-base-100/88 dark:bg-base-300/75 backdrop-blur-md shadow-lg px-1.5 py-1.5 pointer-events-auto"
+        style={{
+          zIndex: MOBILE_BOTTOM_NAV_Z_INDEX + 5,
+          bottom: 'max(4.5rem, calc(3.75rem + env(safe-area-inset-bottom, 0px) + 0.5rem))',
+        }}
+        role="toolbar"
+        aria-label="Result view mode"
+      >
+        <button
+          type="button"
+          className={`btn btn-circle btn-sm min-w-[40px] min-h-[40px] w-10 h-10 border-0 transition-all duration-300 ${
+            viewMode === 'cards'
+              ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
+              : 'btn-ghost'
+          }`}
+          onClick={() => setViewMode('cards')}
+          title="Cards view"
+          aria-pressed={viewMode === 'cards'}
+        >
+          <Squares2X2Icon className="w-5 h-5" />
+        </button>
+        <button
+          type="button"
+          className={`btn btn-circle btn-sm min-w-[40px] min-h-[40px] w-10 h-10 border-0 transition-all duration-300 ${
+            viewMode === 'table'
+              ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
+              : 'btn-ghost'
+          }`}
+          onClick={() => setViewMode('table')}
+          title="Table view"
+          aria-pressed={viewMode === 'table'}
+        >
+          <TableCellsIcon className="w-5 h-5" />
+        </button>
+      </div>
+
+      <h1
+        className={`text-3xl font-bold mb-6 md:px-0 ${isSearching ? 'hidden md:block' : ''}`}
+      >
+        Leads Search
+      </h1>
 
       {/* Search Form - on mobile: 2 columns; Main Category and Category full width; rest in two columns */}
-      <div className="mb-8">
+      {/* Mobile: hide entire filter grid while search runs — only spinner shows until results */}
+      <div className={`mb-8 md:px-0 ${isSearching ? 'hidden md:block' : ''}`}>
         <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
           {/* Main Category and Category: full width on mobile */}
           <div className="col-span-2 lg:col-span-1">
@@ -4715,37 +4756,51 @@ const LeadSearchPage: React.FC = () => {
       {/* Results */}
       {searchPerformed && (
         <div ref={resultsRef}>
-          {results.length > 0 ? (
-            <>
-              <h2 className="text-2xl font-bold mb-4">
-                Found {results.length} lead{results.length !== 1 && 's'}
-              </h2>
-              {isSearching ? (
-                <div className="flex justify-center p-8">
-                  <Loader2 className="w-10 h-10 animate-spin text-primary" aria-hidden />
-                </div>
-              ) : (
-                viewMode === 'table' ? (
-                  <div ref={tableResultsRef}>
-                    <TableView leads={results} selectedColumns={selectedColumns} onLeadClick={handleLeadClick} />
+          {/* Mobile: dedicated loading surface — no filter fields, no stale "Found N" while fetching */}
+          {isSearching && (
+            <div
+              className="md:hidden flex flex-col items-center justify-center gap-4 py-16 px-6 min-h-[min(60vh,28rem)]"
+              aria-busy="true"
+              aria-live="polite"
+            >
+              <Loader2 className="w-14 h-14 animate-spin text-primary shrink-0" aria-hidden />
+              <span className="text-sm font-medium text-base-content/60">Searching leads…</span>
+            </div>
+          )}
+
+          <div className={isSearching ? 'hidden md:block' : ''}>
+            {results.length > 0 ? (
+              <>
+                <h2 className="text-2xl font-bold mb-4 md:px-0">
+                  Found {results.length} lead{results.length !== 1 && 's'}
+                </h2>
+                {isSearching ? (
+                  <div className="flex justify-center p-8">
+                    <Loader2 className="w-10 h-10 animate-spin text-primary" aria-hidden />
                   </div>
                 ) : (
-                  <div
-                    ref={cardsGridRef}
-                    className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
-                  >
-                    {results.map(renderResultCard)}
-                  </div>
-                )
-              )}
-            </>
-          ) : (
-            !isSearching && (
-              <div className="text-center p-8 bg-base-200 rounded-lg">
-                No leads found matching your criteria.
-              </div>
-            )
-          )}
+                  viewMode === 'table' ? (
+                    <div ref={tableResultsRef}>
+                      <TableView leads={results} selectedColumns={selectedColumns} onLeadClick={handleLeadClick} />
+                    </div>
+                  ) : (
+                    <div
+                      ref={cardsGridRef}
+                      className="grid w-full min-w-0 max-md:max-w-lg max-md:mx-auto md:mx-0 grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4"
+                    >
+                      {results.map(renderResultCard)}
+                    </div>
+                  )
+                )}
+              </>
+            ) : (
+              !isSearching && (
+                <div className="text-center p-8 bg-base-200 rounded-lg md:mx-0">
+                  No leads found matching your criteria.
+                </div>
+              )
+            )}
+          </div>
         </div>
       )}
     </div>
