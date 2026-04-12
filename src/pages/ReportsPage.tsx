@@ -8266,7 +8266,7 @@ const reports: ReportSection[] = [
     category: 'Contribution',
     items: [
       { label: 'All', icon: RectangleStackIcon, component: AllContributionReport },
-      { label: 'Sales Contribution', icon: ChartBarIcon, route: '/reports/sales-contribution' },
+      { label: 'M&M Contribution profitability', icon: ChartBarIcon, route: '/reports/sales-contribution' },
     ],
   },
   // {
@@ -8418,11 +8418,11 @@ export default function ReportsPage() {
           return true;
         })
         .map((section) => {
-          // Filter out Sales Contribution from Contribution category if not superuser
+          // Filter out M&M Contribution profitability from Contribution category if not superuser
           if (section.category === 'Contribution') {
             return {
               ...section,
-              items: section.items.filter(item => item.label !== 'Sales Contribution'),
+              items: section.items.filter(item => item.label !== 'M&M Contribution profitability'),
             };
           }
           // Filter Tools items based on permissions
@@ -8804,7 +8804,7 @@ export default function ReportsPage() {
                                       </span>
                                     )}
                                   {/* Admin Access Only Badge */}
-                                  {(item.label === 'Sales Contribution' ||
+                                  {(item.label === 'M&M Contribution profitability' ||
                                     item.label === 'Edit Contracts' ||
                                     item.label === 'Employee Unavailabilities' ||
                                     item.label === 'Employee Salaries') && (

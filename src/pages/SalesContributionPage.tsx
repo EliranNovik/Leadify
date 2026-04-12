@@ -1135,14 +1135,21 @@ const SalesContributionPage = () => {
     return next;
   }, []);
 
-  // After departmentData updates, if sum of total row salary budgets is not 40% of income, scale adjustable contributions (max 15 iterations; require within 1 NIS). If still off by a small amount, apply gap fix.
+  // When invoiced income changes, allow salary-budget reconciliation to run a full pass again (was capped at 15 on prior income).
   useEffect(() => {
+    salaryBudgetAdjustmentIterationsRef.current = 0;
+  }, [totalIncome]);
+
+  // After departmentData updates, if sum of total row salary budgets is not 40% of income, scale adjustable contributions (max 40 iterations; require within 1 NIS). If still off by a small amount, apply gap fix.
+  useEffect(() => {
+    if (loading || loadingInvoicedIncome) return;
     const target = (totalIncome || 0) * 0.4;
     if (target <= 0 || !departmentData.size) return;
     const current = totalSalaryBudgetFromTotalRows;
     const epsilon = 1; // require within 1 NIS of target for "perfect" 40%
     if (Math.abs(current - target) <= epsilon) return;
-    if (salaryBudgetAdjustmentIterationsRef.current >= 15) return;
+    const maxIterations = 40;
+    if (salaryBudgetAdjustmentIterationsRef.current >= maxIterations) return;
     // Avoid Infinity/NaN when scaling before contributions exist (e.g. income loaded but rows not yet)
     if (!Number.isFinite(current) || current <= 0) return;
     // When within 2000 NIS but not exact (e.g. rounding left 569 short), add the gap to one adjustable employee so total is exactly 40%
@@ -1154,7 +1161,7 @@ const SalesContributionPage = () => {
     const factor = target / current;
     salaryBudgetAdjustmentIterationsRef.current += 1;
     setDepartmentData((prev) => applyContributionScaleToMatchTarget(prev, factor));
-  }, [departmentData, totalIncome, totalSalaryBudgetFromTotalRows, applyContributionScaleToMatchTarget, applyGapFixToHitTarget]);
+  }, [departmentData, totalIncome, totalSalaryBudgetFromTotalRows, loading, loadingInvoicedIncome, applyContributionScaleToMatchTarget, applyGapFixToHitTarget]);
 
   const marketingLinkedModalRows = useMemo((): MarketingLinkedContributionRow[] => {
     const amount1 = marketingFixedDeductedByEmployee.get(1) ?? 0;
@@ -2180,7 +2187,7 @@ const SalesContributionPage = () => {
           const leadRoles = {
             closer: lead.closer,
             scheduler: lead.scheduler,
-            manager: lead.meeting_manager_id, // Meeting Manager is stored as meeting_manager_id (numeric) in new leads
+            manager: lead.manager || lead.meeting_manager_id,
             expert: lead.expert,
             handler: lead.handler, // Handler role
             helperCloser: lead.helper ?? lead.meeting_lawyer_id, // Helper Closer: helper or meeting_lawyer_id in new leads
@@ -2192,7 +2199,8 @@ const SalesContributionPage = () => {
             leadRoles,
             employeeId,
             false, // isLegacy = false for new leads
-            rolePercentages // Pass role percentages from database
+            rolePercentages,
+            employeeName
           );
 
           totalSignedPortion += signedPortion;
@@ -2233,7 +2241,8 @@ const SalesContributionPage = () => {
             leadRoles,
             employeeId,
             true, // isLegacy = true for legacy leads
-            rolePercentages // Pass role percentages from database
+            rolePercentages,
+            employeeName
           );
 
           totalSignedPortion += signedPortion;
@@ -4720,11 +4729,14 @@ const SalesContributionPage = () => {
               });
             });
 
-            // Scale only contribution (not contribution fixed) in Sales and Handlers so total (contribution + fixed) = income.
-            // Handlers: reduce contribution for all employees except 175, 176, 174, 61.
-            // Sales: reduce contribution for all employees except 32.
+            // Cap total (contribution + contribution fixed) to invoiced income.
+            // Prefer scaling only variable contribution on Sales/Handlers (excluding a few employee IDs).
+            // If the required reduction is larger than that pool, the old formula clamped scale to 0 and zeroed
+            // many rows; fall back to proportional scaling of ALL employees' contribution (fixed unchanged).
             const incomeAmount = totalIncome || 0;
             let totalBasis = 0;
+            let totalContribAll = 0;
+            let totalFixedAll = 0;
             let reducibleContribution = 0;
             const handlersExcludedIds = new Set([175, 176, 174, 61]);
             const salesExcludedId = 32;
@@ -4732,6 +4744,8 @@ const SalesContributionPage = () => {
               deptData.employees.forEach((emp) => {
                 const contrib = emp.contribution ?? 0;
                 const fixed = emp.contributionFixed ?? 0;
+                totalContribAll += contrib;
+                totalFixedAll += fixed;
                 totalBasis += contrib + fixed;
                 if (deptName === 'Handlers' && !handlersExcludedIds.has(emp.employeeId)) {
                   reducibleContribution += contrib;
@@ -4741,41 +4755,75 @@ const SalesContributionPage = () => {
               });
             });
             const reductionNeeded = totalBasis - incomeAmount;
-            if (incomeAmount > 0 && reductionNeeded > 0 && reducibleContribution > 0) {
-              const contributionScale = Math.max(0, Math.min(1, 1 - reductionNeeded / reducibleContribution));
-              updated.forEach((deptData, deptName) => {
-                if (deptName !== 'Sales' && deptName !== 'Handlers') return;
-                const scaledEmployees = deptData.employees.map((emp) => {
-                  let contrib = emp.contribution ?? 0;
-                  if (deptName === 'Handlers' && !handlersExcludedIds.has(emp.employeeId)) {
-                    contrib = Math.round(contrib * contributionScale * 100) / 100;
-                  } else if (deptName === 'Sales' && emp.employeeId !== salesExcludedId) {
-                    contrib = Math.round(contrib * contributionScale * 100) / 100;
-                  }
-                  const contributionTotal = contrib + (emp.contributionFixed ?? 0);
-                  const salaryBudget = Math.round(contributionTotal * 0.4 * 100) / 100;
-                  const totalSalaryCost = emp.totalSalaryCost ?? 0;
-                  return {
-                    ...emp,
-                    contribution: contrib,
-                    salaryBudget,
-                    maxIncentives: salaryBudget - totalSalaryCost,
-                  };
+            if (incomeAmount > 0 && reductionNeeded > 0 && totalContribAll > 0) {
+              const selectiveScale =
+                reducibleContribution > 0
+                  ? Math.max(0, Math.min(1, 1 - reductionNeeded / reducibleContribution))
+                  : 0;
+              const selectiveCannotAbsorbReduction =
+                reducibleContribution <= 0 || reductionNeeded > reducibleContribution;
+
+              const applySalaryFromContribution = (emp: EmployeeData, contrib: number): EmployeeData => {
+                const contributionTotal = contrib + (emp.contributionFixed ?? 0);
+                const salaryBudget = Math.round(contributionTotal * 0.4 * 100) / 100;
+                const totalSalaryCost = emp.totalSalaryCost ?? 0;
+                return {
+                  ...emp,
+                  contribution: contrib,
+                  salaryBudget,
+                  maxIncentives: salaryBudget - totalSalaryCost,
+                };
+              };
+
+              if (selectiveCannotAbsorbReduction) {
+                const targetVar = Math.max(0, incomeAmount - totalFixedAll);
+                const globalScale = Math.max(0, Math.min(1, targetVar / totalContribAll));
+                updated.forEach((deptData, deptName) => {
+                  const scaledEmployees = deptData.employees.map((emp) => {
+                    const contrib = Math.round((emp.contribution ?? 0) * globalScale * 100) / 100;
+                    return applySalaryFromContribution(emp, contrib);
+                  });
+                  const deptContribution = scaledEmployees.reduce((sum, emp) => sum + (emp.contribution ?? 0), 0);
+                  const deptSalaryBudget = scaledEmployees.reduce((sum, emp) => sum + (emp.salaryBudget ?? 0), 0);
+                  const deptMaxIncentives = scaledEmployees.reduce((sum, emp) => sum + (emp.maxIncentives ?? 0), 0);
+                  updated.set(deptName, {
+                    ...deptData,
+                    employees: scaledEmployees,
+                    totals: {
+                      ...deptData.totals,
+                      contribution: deptContribution,
+                      salaryBudget: deptSalaryBudget,
+                      maxIncentives: deptMaxIncentives,
+                    },
+                  });
                 });
-                const deptContribution = scaledEmployees.reduce((sum, emp) => sum + (emp.contribution ?? 0), 0);
-                const deptSalaryBudget = scaledEmployees.reduce((sum, emp) => sum + (emp.salaryBudget ?? 0), 0);
-                const deptMaxIncentives = scaledEmployees.reduce((sum, emp) => sum + (emp.maxIncentives ?? 0), 0);
-                updated.set(deptName, {
-                  ...deptData,
-                  employees: scaledEmployees,
-                  totals: {
-                    ...deptData.totals,
-                    contribution: deptContribution,
-                    salaryBudget: deptSalaryBudget,
-                    maxIncentives: deptMaxIncentives,
-                  },
+              } else if (selectiveScale < 1) {
+                updated.forEach((deptData, deptName) => {
+                  if (deptName !== 'Sales' && deptName !== 'Handlers') return;
+                  const scaledEmployees = deptData.employees.map((emp) => {
+                    let contrib = emp.contribution ?? 0;
+                    if (deptName === 'Handlers' && !handlersExcludedIds.has(emp.employeeId)) {
+                      contrib = Math.round(contrib * selectiveScale * 100) / 100;
+                    } else if (deptName === 'Sales' && emp.employeeId !== salesExcludedId) {
+                      contrib = Math.round(contrib * selectiveScale * 100) / 100;
+                    }
+                    return applySalaryFromContribution(emp, contrib);
+                  });
+                  const deptContribution = scaledEmployees.reduce((sum, emp) => sum + (emp.contribution ?? 0), 0);
+                  const deptSalaryBudget = scaledEmployees.reduce((sum, emp) => sum + (emp.salaryBudget ?? 0), 0);
+                  const deptMaxIncentives = scaledEmployees.reduce((sum, emp) => sum + (emp.maxIncentives ?? 0), 0);
+                  updated.set(deptName, {
+                    ...deptData,
+                    employees: scaledEmployees,
+                    totals: {
+                      ...deptData.totals,
+                      contribution: deptContribution,
+                      salaryBudget: deptSalaryBudget,
+                      maxIncentives: deptMaxIncentives,
+                    },
+                  });
                 });
-              });
+              }
             }
 
             return updated;
@@ -5633,10 +5681,10 @@ const SalesContributionPage = () => {
           const leadRoles = {
             closer: lead.closer,
             scheduler: lead.scheduler,
-            manager: lead.manager,
+            manager: lead.manager || lead.meeting_manager_id,
             expert: lead.expert,
             handler: lead.handler, // Handler role
-            helperCloser: lead.helper,
+            helperCloser: lead.helper ?? lead.meeting_lawyer_id,
           };
 
           // Get all unique employee IDs from this lead
@@ -5644,9 +5692,11 @@ const SalesContributionPage = () => {
           if (lead.closer) employeeIds.add(typeof lead.closer === 'string' ? 0 : Number(lead.closer));
           if (lead.scheduler) employeeIds.add(typeof lead.scheduler === 'string' ? 0 : Number(lead.scheduler));
           if (lead.manager) employeeIds.add(typeof lead.manager === 'string' ? 0 : Number(lead.manager));
+          if (lead.meeting_manager_id != null) employeeIds.add(Number(lead.meeting_manager_id));
           if (lead.expert) employeeIds.add(Number(lead.expert));
           if (lead.handler) employeeIds.add(typeof lead.handler === 'string' ? 0 : Number(lead.handler));
           if (lead.helper) employeeIds.add(typeof lead.helper === 'string' ? 0 : Number(lead.helper));
+          if (lead.meeting_lawyer_id != null) employeeIds.add(Number(lead.meeting_lawyer_id));
 
           // Calculate signed portion for each employee and sum them
           let leadTotalSignedPortion = 0;
@@ -7810,7 +7860,7 @@ const SalesContributionPage = () => {
         {/* Row 1: Title top left, toggle + 3 buttons on the same line */}
         <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl md:text-3xl font-bold">M&M Contribution</h1>
+            <h1 className="text-2xl md:text-3xl font-bold">M&M Contribution profitability</h1>
             <button
               onClick={() => navigate('/reports')}
               className="btn btn-ghost btn-sm"

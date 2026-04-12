@@ -670,7 +670,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
         <div className="hidden md:block">
           <div
             ref={sidebarRef}
-            className={`fixed top-20 left-4 flex flex-col min-h-0 overflow-hidden shadow-2xl z-40 ${isSidebarHovered ? 'w-64' : 'w-20'} transition-all duration-300 group/sidebar rounded-2xl h-[calc(100vh-5rem)] max-h-[calc(100vh-5rem)] min-h-[120px] border sidebar-frosted-glass`}
+            className={`fixed top-20 bottom-6 left-4 flex flex-col min-h-0 overflow-hidden shadow-2xl z-40 ${isSidebarHovered ? 'w-64' : 'w-20'} transition-all duration-300 group/sidebar rounded-2xl min-h-[120px] border sidebar-frosted-glass`}
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
           >

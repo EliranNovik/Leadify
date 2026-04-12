@@ -183,6 +183,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     userInitials: authUserInitials,
     profilePhotoUrl: authProfilePhotoUrl,
     sessionRefreshNonce,
+    supabaseSessionReady,
   } = useAuthContext();
   const [isMsalLoading, setIsMsalLoading] = useState(false);
   const [userAccount, setUserAccount] = useState<any>(null);
@@ -701,7 +702,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       { label: 'Sales Pipeline', category: 'Pipelines', route: '/reports/closer-super-pipeline' },
       { label: 'Experts Results', category: 'Experts' },
       { label: 'All', category: 'Contribution' },
-      { label: 'Sales Contribution', category: 'Contribution', route: '/reports/sales-contribution' },
+      { label: 'M&M Contribution profitability', category: 'Contribution', route: '/reports/sales-contribution' },
       { label: 'Collection', category: 'Finances', route: '/reports/collection-finances' },
       { label: 'Collection Due', category: 'Finances', route: '/reports/collection-due' },
       { label: 'Edit Contracts', category: 'Tools', route: '/reports/edit-contracts' },
@@ -3655,6 +3656,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       return;
     }
 
+    // Avoid searchLeads / RLS empty results while JWT is not attached yet; effect re-runs when session is ready.
+    if (!supabaseSessionReady) {
+      setIsSearching(false);
+      isSearchingRef.current = false;
+      return;
+    }
+
     // Check if this is an extension of the previous query (user is continuing to type)
     // An extension means: the new query is longer AND starts with the previous query
     // In this case, filter existing results client-side instead of searching again
@@ -4531,7 +4539,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         }
       }
     })();
-  }, [searchValue]);
+  }, [searchValue, supabaseSessionReady, sessionRefreshNonce]);
 
   // Keep search active when filter dropdown is open
   useEffect(() => {
@@ -4540,108 +4548,56 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   }, [showFilterDropdown, isSearchActive]);
 
-  // Fetch stage options from lead_stages table
+  // Advanced search filter dropdowns — refetch when session hydrates or token refreshes (RLS + joins need JWT).
   useEffect(() => {
-    const fetchStageOptions = async () => {
+    if (!supabaseSessionReady) return;
+    let cancelled = false;
+
+    const loadOne = async (
+      table: string,
+      setter: React.Dispatch<React.SetStateAction<string[]>>,
+      fallback: string[]
+    ) => {
       try {
-        const { data, error } = await supabase
-          .from('lead_stages')
-          .select('name')
-          .order('name');
-
+        const { data, error } = await supabase.from(table).select('name').order('name');
         if (error) throw error;
-
-        const stages = data?.map(stage => stage.name) || [];
-        setStageOptions(stages);
+        if (cancelled) return;
+        const names = (data ?? []).map((row: { name?: string }) => row.name).filter(Boolean) as string[];
+        setter(names);
       } catch (error) {
-        console.error('Error fetching stage options:', error);
-        // Fallback to hardcoded options if database fetch fails
-        setStageOptions([
-          "created", "scheduler_assigned", "meeting_scheduled", "meeting_paid",
-          "unactivated", "communication_started", "another_meeting", "revised_offer",
-          "offer_sent", "waiting_for_mtng_sum", "client_signed", "client_declined",
-          "lead_summary", "meeting_rescheduled", "meeting_ended"
-        ]);
+        console.error(`Error fetching ${table} options:`, error);
+        if (!cancelled) setter(fallback);
       }
     };
 
-    fetchStageOptions();
-  }, []);
+    void Promise.all([
+      loadOne(
+        'lead_stages',
+        setStageOptions,
+        [
+          'created', 'scheduler_assigned', 'meeting_scheduled', 'meeting_paid',
+          'unactivated', 'communication_started', 'another_meeting', 'revised_offer',
+          'offer_sent', 'waiting_for_mtng_sum', 'client_signed', 'client_declined',
+          'lead_summary', 'meeting_rescheduled', 'meeting_ended',
+        ]
+      ),
+      loadOne(
+        'misc_category',
+        setCategoryOptions,
+        ['German Citizenship', 'Austrian Citizenship', 'Inquiry', 'Consultation', 'Other']
+      ),
+      loadOne('sources', setSourceOptions, ['Manual', 'AI Assistant', 'Referral', 'Website', 'Other']),
+      loadOne(
+        'misc_language',
+        setLanguageOptions,
+        ['English', 'Hebrew', 'German', 'French', 'Russian', 'Other']
+      ),
+    ]);
 
-  // Fetch category options from misc_category table
-  useEffect(() => {
-    const fetchCategoryOptions = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('misc_category')
-          .select('name')
-          .order('name');
-
-        if (error) throw error;
-
-        const categories = data?.map(category => category.name) || [];
-        setCategoryOptions(categories);
-      } catch (error) {
-        console.error('Error fetching category options:', error);
-        // Fallback to hardcoded options if database fetch fails
-        setCategoryOptions([
-          "German Citizenship", "Austrian Citizenship", "Inquiry", "Consultation", "Other"
-        ]);
-      }
+    return () => {
+      cancelled = true;
     };
-
-    fetchCategoryOptions();
-  }, []);
-
-  // Fetch source options from sources table
-  useEffect(() => {
-    const fetchSourceOptions = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('sources')
-          .select('name')
-          .order('name');
-
-        if (error) throw error;
-
-        const sources = data?.map(source => source.name) || [];
-        setSourceOptions(sources);
-      } catch (error) {
-        console.error('Error fetching source options:', error);
-        // Fallback to hardcoded options if database fetch fails
-        setSourceOptions([
-          "Manual", "AI Assistant", "Referral", "Website", "Other"
-        ]);
-      }
-    };
-
-    fetchSourceOptions();
-  }, []);
-
-  // Fetch language options from misc_language table
-  useEffect(() => {
-    const fetchLanguageOptions = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('misc_language')
-          .select('name')
-          .order('name');
-
-        if (error) throw error;
-
-        const languages = data?.map(language => language.name) || [];
-        setLanguageOptions(languages);
-      } catch (error) {
-        console.error('Error fetching language options:', error);
-        // Fallback to hardcoded options if database fetch fails
-        setLanguageOptions([
-          "English", "Hebrew", "German", "French", "Russian", "Other"
-        ]);
-      }
-    };
-
-    fetchLanguageOptions();
-  }, []);
+  }, [supabaseSessionReady, sessionRefreshNonce]);
 
   useEffect(() => {
     const initializeMsal = async () => {
@@ -6034,6 +5990,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   // Also refetch when employees are loaded (needed for filtering)
   // IMPORTANT: Wait for employees to be loaded before calculating count
   useEffect(() => {
+    if (!supabaseSessionReady) return;
     // Only fetch if we have employees loaded OR if we're still waiting (to avoid blocking)
     // The fetchNewLeadsCount function will fetch employees if needed, but it's better to wait
     if (allEmployees.length > 0 || currentUser) {
@@ -6045,7 +6002,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
     }, 30000);
     return () => clearInterval(interval);
-  }, [allEmployees, fetchNewLeadsCount, currentUser]);
+  }, [allEmployees, fetchNewLeadsCount, currentUser, supabaseSessionReady, sessionRefreshNonce]);
 
   useEffect(() => {
     if (!isSearchActive || !searchContainerRef.current) return;
@@ -7221,7 +7178,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       <>
         <div
           data-mobile-header={isMobile ? 'floating' : undefined}
-          className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b border-base-200 dark:border-base-300 pt-safe pb-1.5 shadow-sm md:pb-0 md:pt-0 md:shadow-none"
+          className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b md:border-base-200 md:dark:border-base-300 pt-safe pb-1.5 md:pb-0 md:pt-0"
         >
           {/* Logo and Logout Button */}
           <div className="flex-1 justify-start flex items-center gap-2 md:gap-4">
@@ -7309,7 +7266,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     <>
       <div
         data-mobile-header={isMobile ? 'floating' : undefined}
-        className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b border-base-200 dark:border-base-300 pt-safe pb-1.5 shadow-sm md:pb-0 md:pt-0 md:shadow-none"
+        className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b md:border-base-200 md:dark:border-base-300 pt-safe pb-1.5 md:pb-0 md:pt-0"
       >
         {/* Left section with menu and logo */}
         <div className={`flex-1 justify-start flex items-center gap-2 md:gap-4 overflow-hidden md:overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
@@ -7320,9 +7277,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             aria-label={isMenuOpen ? "Close menu" : "Open menu"}
           >
             {isMenuOpen ? (
-              <XMarkIcon className="w-6 h-6" />
+              <XMarkIcon className="w-7 h-7" />
             ) : (
-              <Bars3Icon className="w-6 h-6" />
+              <Bars3Icon className="w-7 h-7" />
             )}
           </button>
 
@@ -7834,12 +7791,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             <div
               className={`relative flex items-center rounded-full transition-all duration-[700ms] ease-in-out ${
                 isSearchActive
-                  ? `w-full overflow-hidden bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-600 ${isMobile ? 'shadow-none' : 'shadow-md'}`
+                  ? isMobile
+                    ? 'w-full overflow-hidden bg-white dark:bg-gray-800 border-2 border-gray-200 dark:border-gray-600 shadow-none'
+                    : 'w-full overflow-hidden border border-base-300/60 dark:border-base-content/12 bg-base-200/60 dark:bg-base-300/20 shadow-inner'
                   : isMobile
                     ? 'w-full min-h-9 h-9 border-0 bg-transparent shadow-none box-border'
-                    : 'w-12 min-w-12 md:w-48 md:min-w-48 overflow-visible md:bg-white dark:md:bg-gray-800 md:border-2 md:border-gray-200 dark:md:border-gray-600 md:shadow-md'
+                    : 'w-12 min-w-12 md:w-48 md:min-w-48 overflow-visible md:border md:border-base-300/60 dark:md:border-base-content/12 md:bg-base-200/60 dark:md:bg-base-300/20 md:shadow-inner'
               }`}
-              style={isSearchActive && isDarkMode ? { borderColor: 'rgba(96, 165, 250, 0.75)' } : undefined}
+              style={isSearchActive && isDarkMode && isMobile ? { borderColor: 'rgba(96, 165, 250, 0.75)' } : undefined}
             >
               {/* Search icon left — mobile: always; desktop active: Siriwave; desktop idle: icon */}
               {isMobile ? (
@@ -7852,10 +7811,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               ) : !isMobile && isSearchActive ? (
                 <span className="absolute left-2 top-1/2 -translate-y-1/2 flex items-center justify-center z-10 w-9 h-9 flex-shrink-0 pointer-events-none" aria-hidden>
                   <div
-                    className="w-9 h-9 rounded-full flex items-center justify-center shadow-sm overflow-hidden flex-shrink-0 ring-2"
+                    className="w-9 h-9 rounded-full flex items-center justify-center overflow-hidden flex-shrink-0 ring-1 ring-base-content/10"
                     style={{
                       backgroundColor: isDarkMode ? '#ffffff' : '#4218cc',
-                      boxShadow: isDarkMode ? '0 0 0 2px rgba(255,255,255,0.4)' : '0 0 0 2px rgba(66,24,204,0.4)',
                     }}
                   >
                     <div className="w-7 h-7 overflow-hidden rounded-full flex items-center justify-center [&>div]:!flex [&>div]:!items-center [&>div]:!justify-center [&_canvas]:!block">
@@ -8410,7 +8368,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               window.setTimeout(() => searchInputRef.current?.focus(), 0);
             }}
           >
-            <MagnifyingGlassIcon className="w-6 h-6" />
+            <MagnifyingGlassIcon className="w-7 h-7" />
           </button>
 
           {/* Notifications */}
@@ -8421,7 +8379,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               onClick={handleNotificationClick}
             >
               <div className="indicator">
-                <BellIcon className="w-6 h-6 md:w-7 md:h-7" />
+                <BellIcon className="w-7 h-7" />
                 {unreadCount > 0 && (
                   <span className="indicator-item badge badge-primary min-w-[1rem] h-4 md:min-w-[1.375rem] md:h-5.5 text-[11px] md:text-xs flex items-center justify-center px-1">{unreadCount}</span>
                 )}
@@ -8733,7 +8691,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               className="btn btn-ghost md:hidden min-h-0 h-10 w-10 p-0 border-0 text-base-content/90 hover:bg-base-200/60 dark:hover:bg-base-300/40 rounded-lg flex-shrink-0"
               aria-label="Go back"
             >
-              <ChevronLeftIcon className="w-6 h-6" aria-hidden />
+              <ChevronLeftIcon className="w-7 h-7" aria-hidden />
             </button>
           )}
         </div>

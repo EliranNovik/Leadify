@@ -525,7 +525,7 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
                 manager: lead.manager || lead.meeting_manager_id, // For new leads, use 'manager' field, fallback to 'meeting_manager_id'
                 expert: lead.expert,
                 handler: lead.handler,
-                helperCloser: lead.helper,
+                helperCloser: lead.helper ?? lead.meeting_lawyer_id,
             };
 
             const signedPortion = calculateSignedPortionAmount(
@@ -720,18 +720,14 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
     const dueNormalizedPercentageValue = (dueNormalizedPercentage || 0) / 100;
     const dueNormalized = totalDue * dueNormalizedPercentageValue;
 
-    // Step 5: Calculate portions
-    // IMPORTANT: Calculate percentages from normalized values, not from raw totals
-
-    // Signed portion: Calculate percentage from signedNormalized (excluding handler/helper handler)
-    // We calculate what percentage of totalSigned this employee should get, then apply to signedNormalized
-    let signedPortionNormalized = 0;
-    if (totalSigned > 0) {
-        // Calculate the percentage of totalSigned that this employee should get
-        const signedPortionPercentage = totalSignedPortion / totalSigned;
-        // Apply that percentage to signedNormalized
-        signedPortionNormalized = signedNormalized * signedPortionPercentage;
-    }
+    // Step 5: Portions from normalized signed/due (then department % applies later)
+    // Signed: share of this employee's role-weighted amounts in their signed total, applied to signedNormalized
+    // (same as totalSignedPortion * normalizationRatio when totalSigned > 0). If totalSigned is 0 but we still have
+    // role-weighted amounts, keep the income-capped share via normalizationRatio only.
+    const signedPortionNormalized =
+        totalSigned > 0
+            ? signedNormalized * (totalSignedPortion / totalSigned)
+            : totalSignedPortion * normalizationRatio;
 
 
     // Due portion: Calculate percentage from dueNormalized (handler/helper handler roles + Expert exception)

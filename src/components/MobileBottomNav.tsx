@@ -181,7 +181,8 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
   return (
     <nav
       ref={navRef}
-      className="md:hidden fixed bottom-0 left-0 right-0 border-t border-base-200 bg-base-100 pointer-events-auto"
+      data-mobile-bottom-nav
+      className="md:hidden fixed bottom-0 left-0 right-0 border-0 shadow-none bg-base-100 pointer-events-auto"
       style={{
         zIndex: MOBILE_BOTTOM_NAV_Z_INDEX,
         paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom, 0px))',

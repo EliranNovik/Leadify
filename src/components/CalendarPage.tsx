@@ -676,6 +676,9 @@ const CalendarPage: React.FC = () => {
     meetingsRefreshTrigger,
   });
 
+  /** When fetch was skipped because the tab was hidden, refetch once the user returns. */
+  const skippedCalendarFetchWhileHiddenRef = useRef(false);
+
   // Helper component for employee avatar with image error fallback (like CallsLedgerPage)
   const EmployeeAvatar: React.FC<{
     employeeId: string | number | null | undefined;
@@ -1971,7 +1974,10 @@ const CalendarPage: React.FC = () => {
     const fetchMeetingsAndStaff = async () => {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
         // Avoid heavy meeting loads while app is backgrounded (mobile).
+        skippedCalendarFetchWhileHiddenRef.current = true;
         setIsLoading(false);
+        // Stage-name IIFE below does not run — unblock cards view until a visible refetch loads real labels.
+        setStageNamesLoaded(true);
         return;
       }
       setIsLoading(true);
@@ -2065,9 +2071,11 @@ const CalendarPage: React.FC = () => {
           try {
             const stageNames = await fetchStageNames();
             if (!stageNames || Object.keys(stageNames).length === 0) await refreshStageNames();
+          } catch (e) {
+            calDebug('CalendarPage: stage names load failed (non-fatal)', e);
+          } finally {
+            // Cards view gates on stageNamesLoaded; always clear so we never spin forever on error/hang.
             setStageNamesLoaded(true);
-          } catch {
-            // non-fatal
           }
         })();
 
@@ -2349,6 +2357,29 @@ const CalendarPage: React.FC = () => {
     // fetchMeetingCountsAndPreviousManagers().catch(error => {
     // });
   }, [location.pathname, appliedFromDate, appliedToDate, datesManuallySet, meetingsRefreshTrigger]); // Run when pathname/date range changes or when explicitly refreshed (e.g. after Teams modal close)
+
+  // If fetch was skipped while the tab was hidden, run again once the user returns.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
+      if (skippedCalendarFetchWhileHiddenRef.current) {
+        skippedCalendarFetchWhileHiddenRef.current = false;
+        setMeetingsRefreshTrigger((t) => t + 1);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
+
+  // Refetch when the user signs in to Supabase so meetings are not stuck empty after auth catches up.
+  useEffect(() => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_IN') {
+        setMeetingsRefreshTrigger((t) => t + 1);
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, []);
 
   // Re-render when categories are loaded to update category names
   useEffect(() => {

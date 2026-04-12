@@ -248,6 +248,10 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   },
 });
 
+// For reads that can run before the tab has a hydrated JWT, pair queries with AuthContext:
+// `useRefetchOnSupabaseSession` (hooks/useRefetchOnSupabaseSession.ts) or depend on
+// `supabaseSessionReady` + `sessionRefreshNonce` from useAuthContext().
+
 supabaseForFetch = supabase;
 
 // Sync session across tabs - Supabase handles this automatically via localStorage
