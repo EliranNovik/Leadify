@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ClipboardDocumentCheckIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, ArrowLeftIcon, InformationCircleIcon, RectangleStackIcon, DocumentTextIcon, MegaphoneIcon } from '@heroicons/react/24/solid';
-import { XMarkIcon, ArrowDownTrayIcon, ScaleIcon, GlobeAltIcon, HomeIcon, ShieldCheckIcon, UsersIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, BuildingOfficeIcon, HeartIcon, CogIcon, CalendarIcon, CurrencyDollarIcon as CurrencyDollarIconOutline } from '@heroicons/react/24/outline';
+import { XMarkIcon, ArrowDownTrayIcon, ScaleIcon, GlobeAltIcon, HomeIcon, ShieldCheckIcon, UsersIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, BuildingOfficeIcon, HeartIcon, CogIcon, CalendarIcon, CurrencyDollarIcon as CurrencyDollarIconOutline, TagIcon } from '@heroicons/react/24/outline';
 import * as XLSX from 'xlsx';
 import { toast } from 'react-hot-toast';
 import FullSearchReport from './FullSearchReport';
@@ -8182,6 +8182,8 @@ type ReportItem = {
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
   component?: React.FC;
   route?: string;
+  /** When set, replaces the default title heading in the report shell (same row as search / back). */
+  shellTitle?: React.FC;
 };
 
 type ReportSection = {
@@ -8300,6 +8302,7 @@ const reports: ReportSection[] = [
       { label: 'Employee Unavailabilities', icon: CalendarIcon, route: '/reports/employee-unavailabilities' },
       { label: 'Employee Salaries', icon: CurrencyDollarIconOutline, route: '/reports/employee-salaries' },
       { label: 'Leads Report', icon: ClipboardDocumentListIcon, route: '/reports/leads-report' },
+      { label: 'Tags manager', icon: TagIcon, route: '/reports/tags-manager' },
     ],
   },
   {
@@ -8318,8 +8321,6 @@ export default function ReportsPage() {
   const [showSearchDropdown, setShowSearchDropdown] = useState<boolean>(false);
   const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
   const [hasCollectionAccess, setHasCollectionAccess] = useState<boolean>(false);
-
-  console.log('Selected report:', selectedReport);
 
   // Fetch superuser status and collection access
   useEffect(() => {
@@ -8397,10 +8398,16 @@ export default function ReportsPage() {
 
     const allItems = reports.flatMap((section) => section.items);
     const matched = allItems.find((item) => normalize(item.label) === target);
-    if (!matched || !matched.component) return;
+    if (!matched) return;
+
+    if (matched.route) {
+      navigate(matched.route, { replace: true });
+      return;
+    }
+    if (!matched.component) return;
 
     setSelectedReport((prev) => (prev?.label === matched.label ? prev : matched));
-  }, [location.search]);
+  }, [location.search, navigate]);
 
   // Filter reports based on search query, superuser status, and collection access
   const filteredReports = useMemo(() => {
@@ -8844,9 +8851,15 @@ export default function ReportsPage() {
         <div className="px-4 md:px-0">
           {/* Report Content */}
           <div className="bg-white rounded-xl shadow-lg p-8 border border-base-200">
-            <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
-              <h3 className="text-2xl font-bold">{selectedReport.label}</h3>
-              <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-start justify-between mb-6 flex-wrap gap-4">
+              <div className="min-w-0 flex-1">
+                {selectedReport.shellTitle ? (
+                  <selectedReport.shellTitle />
+                ) : (
+                  <h3 className="text-2xl font-bold text-gray-900 dark:text-white">{selectedReport.label}</h3>
+                )}
+              </div>
+              <div className="flex items-center gap-3 flex-wrap shrink-0">
                 {/* Search Bar in Report View */}
                 <div className="relative max-w-xs">
                   <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />

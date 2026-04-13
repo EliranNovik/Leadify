@@ -107,6 +107,42 @@ interface Meeting {
   };
 }
 
+/**
+ * Wrap bare http(s) and mailto URLs in anchor tags for outgoing HTML emails.
+ * Preserves existing <a>...</a> blocks and skips URLs inside HTML tags (e.g. href/src attributes).
+ */
+function linkifyPlainUrlsInEmailHtml(html: string): string {
+  if (!html) return html;
+  if (!/\bhttps?:\/\//i.test(html) && !/\bmailto:/i.test(html)) return html;
+
+  const preserved: string[] = [];
+  let s = html.replace(/<a\b[^>]*>[\s\S]*?<\/a>/gi, (block) => {
+    const i = preserved.length;
+    preserved.push(block);
+    return `@@MEETINGTAB_LINKIFY_A_${i}@@`;
+  });
+
+  const parts = s.split(/(<[^>]+>)/g);
+  s = parts
+    .map((part) => {
+      if (!part || part.startsWith('<')) return part;
+      return part.replace(
+        /\b(https?:\/\/[^\s<>"']+|mailto:[^\s<>"']+)/gi,
+        (url) => {
+          const safeHref = url.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+          return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer">${url}</a>`;
+        }
+      );
+    })
+    .join('');
+
+  preserved.forEach((block, i) => {
+    s = s.replace(`@@MEETINGTAB_LINKIFY_A_${i}@@`, block);
+  });
+
+  return s;
+}
+
 const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const { instance } = useMsal();
   const [showAuthRedirectOption, setShowAuthRedirectOption] = useState(false);
@@ -331,15 +367,30 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     );
   };
 
-  // Helper function to get meeting location name from ID
-  const getMeetingLocationName = (locationId: string | number | null | undefined) => {
-    console.log('MeetingTab: getMeetingLocationName called with:', locationId);
-    console.log('MeetingTab: allMeetingLocations:', allMeetingLocations);
+  // meetings.meeting_location is usually the location NAME (e.g. "TLV"), not the numeric id
+  const resolveMeetingLocationRecord = (
+    idOrName: string | number | null | undefined
+  ): (typeof allMeetingLocations)[number] | undefined => {
+    if (idOrName == null || idOrName === '' || idOrName === '---' || idOrName === 'Not specified') {
+      return undefined;
+    }
+    const s = String(idOrName).trim();
+    const byId = allMeetingLocations.find((loc: any) => String(loc.id) === s);
+    if (byId) return byId;
+    const byNameExact = allMeetingLocations.find(
+      (loc: any) => loc.name != null && String(loc.name).trim() === s
+    );
+    if (byNameExact) return byNameExact;
+    return allMeetingLocations.find(
+      (loc: any) =>
+        loc.name != null && String(loc.name).trim().toLowerCase() === s.toLowerCase()
+    );
+  };
 
+  const getMeetingLocationName = (locationId: string | number | null | undefined) => {
     if (!locationId || locationId === '---' || locationId === 'Not specified') return 'Not specified';
-    const location = allMeetingLocations.find((loc: any) => loc.id.toString() === locationId.toString());
-    console.log('MeetingTab: Found location:', location);
-    return location ? location.name : locationId; // Fallback to ID if not found
+    const location = resolveMeetingLocationRecord(locationId);
+    return location?.name ?? String(locationId);
   };
 
   const openCustomLocationModal = (
@@ -581,6 +632,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         .replace(/(<br\s*\/?>|\n)/gi, '<br>') // Normalize all line breaks
         .replace(/\n/g, '<br>'); // Convert any remaining newlines
     }
+
+    // Make any remaining plain URLs clickable (templates often inject raw links via placeholders)
+    htmlBody = linkifyPlainUrlsInEmailHtml(htmlBody);
 
     // Detect if content contains Hebrew/RTL text
     const isRTL = containsRTL(htmlBody);
@@ -1618,10 +1672,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
             const paramDefinitions = await getTemplateParamDefinitions(selectedTemplate.id, selectedTemplate.name);
 
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1447', message: 'Template param definitions check', data: { templateId: selectedTemplate.id, templateName: selectedTemplate.name, paramCount, paramDefinitionsLength: paramDefinitions.length, paramDefinitions }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
-            // #endregion
-
             // Create a client object with meeting data for parameter generation
             const currentMeeting = meeting;
             const formatDate = (dateStr: string): string => {
@@ -1631,43 +1681,19 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             const formattedDate = formatDate(currentMeeting.date);
             const formattedTime = currentMeeting.time ? currentMeeting.time.substring(0, 5) : '';
 
-            // Get meeting link: first check if location has default_link, otherwise use teams_meeting_url
-            let meetingLink = '';
-            const locationIdOrName = currentMeeting.location;
-
-            // Try to find location by ID first, then by name
-            let location = allMeetingLocations.find((loc: any) => loc.id.toString() === locationIdOrName.toString());
-            if (!location) {
-              // If not found by ID, try to find by name
-              location = allMeetingLocations.find((loc: any) => loc.name === locationIdOrName);
-            }
-
-            if (location?.default_link) {
-              meetingLink = location.default_link;
-            } else {
-              meetingLink = getValidTeamsLink(currentMeeting.link) || '';
-            }
-
             const clientForParams = {
               ...client,
               meeting_date: formattedDate,
               meeting_time: formattedTime,
               meeting_location: locationName,
-              meeting_link: meetingLink,
             };
 
             if (paramDefinitions.length > 0) {
               console.log('✅ Using template-specific param definitions');
               templateParameters = await generateParamsFromDefinitions(paramDefinitions, clientForParams, contact?.id || null);
-              // #region agent log
-              fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1469', message: 'Generated params from definitions', data: { templateParametersLength: templateParameters.length, templateParameters }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-              // #endregion
             } else {
               console.log('⚠️ No specific param definitions, using generic generation');
               templateParameters = await generateTemplateParameters(paramCount, clientForParams, contact?.id || null);
-              // #region agent log
-              fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1472', message: 'Generated params from generic function', data: { templateParametersLength: templateParameters.length, templateParameters, paramCount }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
-              // #endregion
             }
 
             // Override with meeting-specific data
@@ -1686,13 +1712,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       paramValue = formattedTime || '';
                       break;
                     case 'meeting_location':
-                      paramValue = locationName || '';
+                      // generateParamsFromDefinitions already set this via getMeetingLocation (address vs name)
+                      paramValue = templateParameters[index].text || '';
                       break;
                     case 'meeting_link':
-                      paramValue = meetingLink || '';
-                      // #region agent log
-                      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1494', message: 'Setting meeting_link param', data: { index, paramValue, meetingLink }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'D' }) }).catch(() => { });
-                      // #endregion
+                      // Same as meeting_location: use getMeetingLink from generateParamsFromDefinitions (DB + fetchTenantMeetingLocationRow)
+                      paramValue = templateParameters[index].text || '';
                       break;
                     // mobile_number, phone_number, and email are handled by helper functions
                     // which correctly fetch the logged-in user's data from tenants_employee table
@@ -1704,19 +1729,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   templateParameters[index].text = paramValue.trim();
                 }
               });
-            } else {
-              // #region agent log
-              fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1506', message: 'No param definitions - checking if param 4 needs meeting link', data: { paramCount, templateParametersLength: templateParameters.length, meetingLink }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'E' }) }).catch(() => { });
-              // #endregion
-              // If no param definitions, we still need to set param 4 (meeting link) if paramCount >= 4
-              // This handles the case where generateTemplateParameters fills params 3+ with empty strings
-              if (paramCount >= 4 && templateParameters.length >= 4) {
-                templateParameters[3].text = meetingLink || '';
-                // #region agent log
-                fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1510', message: 'Manually setting param 4 to meeting link', data: { meetingLink, param4Value: templateParameters[3].text }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'E' }) }).catch(() => { });
-                // #endregion
-              }
             }
+            // When paramDefinitions is empty, generateTemplateParameters already fills param 3–4 via
+            // getMeetingLocation / getMeetingLink (DB). Never replace param 4 with resolveMeetingLocationRecord's link.
 
             // Ensure we have exactly the right number of parameters
             while (templateParameters.length < paramCount) {
@@ -1729,10 +1744,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               type: 'text',
               text: (param.text || '').trim()
             }));
-
-            // #region agent log
-            fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1518', message: 'Final template parameters before sending', data: { paramCount, templateParametersLength: templateParameters.length, templateParameters }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'F' }) }).catch(() => { });
-            // #endregion
 
             if (templateParameters && templateParameters.length > 0) {
               console.log(`✅ Template with ${paramCount} param(s) - auto-filled parameters:`, templateParameters);
@@ -2013,7 +2024,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       // Use explicit email type if provided, otherwise use state
       const currentEmailType = explicitEmailType || emailType;
 
-      const joinLink = getValidTeamsLink(meeting.link);
+      const joinLink = getMeetingJoinLink(meeting);
       // Category and topic removed - not to be included in emails
       const locationName = getMeetingLocationName(meeting.location);
 
@@ -2445,16 +2456,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       // Check if meeting already has a Teams URL
       const existingLink = getValidTeamsLink(meeting.link);
       if (existingLink && existingLink.trim() !== '') {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1930', message: 'handleCreateTeamsMeeting - link already exists', data: { meetingId: meeting.id, meetingLink: meeting.link, existingLink }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
-        // #endregion
         toast.success('Teams meeting already exists for this meeting');
         return;
       }
-
-      // #region agent log
-      fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1937', message: 'handleCreateTeamsMeeting - creating new link', data: { meetingId: meeting.id, meetingLink: meeting.link, existingLink }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'C' }) }).catch(() => { });
-      // #endregion
 
       const startDateTime = new Date(`${meeting.date}T${meeting.time || '09:00'}`).toISOString();
       const endDateTime = new Date(new Date(startDateTime).getTime() + 60 * 60 * 1000).toISOString();
@@ -2499,38 +2503,46 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   const getValidTeamsLink = (link: string | undefined) => {
-    // #region agent log
-    fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1977', message: 'getValidTeamsLink called', data: { link, linkType: typeof link, linkLength: link?.length }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-    // #endregion
-
     if (!link || link.trim() === '') return '';
     try {
       // If it's a plain URL, return as is
       if (link.startsWith('http')) {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1981', message: 'getValidTeamsLink returning http link', data: { link }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-        // #endregion
         return link;
       }
       // If it's a stringified object, parse and extract joinUrl
       const obj = JSON.parse(link);
       if (obj && typeof obj === 'object' && obj.joinUrl && typeof obj.joinUrl === 'string') {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1985', message: 'getValidTeamsLink returning joinUrl', data: { joinUrl: obj.joinUrl }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-        // #endregion
         return obj.joinUrl;
       }
       // Some Graph API responses use joinWebUrl
       if (obj && typeof obj === 'object' && obj.joinWebUrl && typeof obj.joinWebUrl === 'string') {
-        // #region agent log
-        fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:1989', message: 'getValidTeamsLink returning joinWebUrl', data: { joinWebUrl: obj.joinWebUrl }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'B' }) }).catch(() => { });
-        // #endregion
         return obj.joinWebUrl;
       }
     } catch (e) {
       // Not JSON, just return as is
       if (typeof link === 'string' && link.startsWith('http')) return link;
     }
+    return '';
+  };
+
+  /**
+   * Resolve join URL for emails: Teams/Graph JSON in meeting.link, custom_link, or location default_link (Zoom etc.).
+   * English templates often failed when only default_link was set — getValidTeamsLink(meeting.link) returned ''.
+   */
+  const getMeetingJoinLink = (meeting: Meeting): string => {
+    const fromStored = getValidTeamsLink(meeting.link);
+    if (fromStored) return fromStored;
+
+    const custom = (meeting as any).custom_link?.trim?.();
+    if (custom && /^https?:\/\//i.test(custom)) return custom;
+
+    const locRaw = meeting.location;
+    if (locRaw === null || locRaw === undefined || locRaw === '') return '';
+
+    const location = resolveMeetingLocationRecord(locRaw);
+    const dl = location?.default_link?.trim?.();
+    if (dl && /^https?:\/\//i.test(dl)) return dl;
+    if (dl) return dl;
     return '';
   };
 
@@ -4592,24 +4604,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 </>
               )}
               {(() => {
-                // #region agent log
                 const meetingLinkValue = meeting.link;
                 const validLink = getValidTeamsLink(meeting.link);
                 const hasLink = meetingLinkValue && meetingLinkValue.trim() !== '';
-                const hasValidLink = validLink && validLink.trim() !== '';
                 const locationName = getMeetingLocationName(meeting.location);
                 const isTeams = locationName === 'Teams';
-
-                // Get location object to check for default_link
-                const locationIdOrName = meeting.location;
-                let location = allMeetingLocations.find((loc: any) => loc.id.toString() === locationIdOrName.toString());
-                if (!location) {
-                  location = allMeetingLocations.find((loc: any) => loc.name === locationIdOrName);
-                }
+                const location = resolveMeetingLocationRecord(meeting.location);
                 const defaultLink = location?.default_link;
-
-                fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'MeetingTab.tsx:3879', message: 'Teams button rendering check', data: { meetingId: meeting.id, isTeams, hasLink, hasValidLink, meetingLinkValue, validLink, locationName, defaultLink }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'A' }) }).catch(() => { });
-                // #endregion
 
                 if (!past) {
                   // Determine which link to use: default_link first (if available), then valid link

@@ -1,6 +1,7 @@
 import React, { Suspense, lazy, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useLocation, useNavigate, useParams, useNavigationType } from 'react-router-dom';
 import { supabase, type Lead, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
+import { buildLeadTagJunctionAuditFields } from '../lib/leadTagJunctionAudit';
 import { getStageName, fetchStageNames, areStagesEquivalent, normalizeStageName, getStageColour } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { fetchAllLeads, fetchLatestLead, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
@@ -131,6 +132,15 @@ const TAB_LOADERS: Record<string, () => Promise<any>> = {
 };
 // Set window.__CLIENTS_DEBUG__ = true to show verbose console logs (handler options, sub-leads, etc.)
 const CLIENTS_DEBUG = typeof window !== 'undefined' && (window as any).__CLIENTS_DEBUG__ === true;
+/** Tag manager / saveLeadTags: VITE_DEBUG_TAGS=true, or window.__CLIENTS_TAG_DEBUG__ = true, or CLIENTS_DEBUG */
+const CLIENTS_TAG_DEBUG =
+  import.meta.env.DEV ||
+  String(import.meta.env?.VITE_DEBUG_TAGS || '').toLowerCase() === 'true' ||
+  (typeof window !== 'undefined' &&
+    ((window as any).__CLIENTS_TAG_DEBUG__ === true || (window as any).__CLIENTS_DEBUG__ === true));
+function dbgTags(...args: unknown[]) {
+  if (CLIENTS_TAG_DEBUG) console.log('[Clients tags]', ...args);
+}
 function clientsPerfMark(name: string) {
   if (!CLIENT_LOAD_PERF) return;
   performance.mark(`clients-${name}`);
@@ -8122,8 +8132,8 @@ const Clients: React.FC<ClientsProps> = ({
           return '';
         }
       } else {
-        // For new leads, fetch from leads_lead_tags table using newlead_id
-        const { data, error } = await supabase
+        // For new leads, fetch from leads_lead_tags table using newlead_id (some DBs use new_lead_id)
+        let { data, error } = await supabase
           .from('leads_lead_tags')
           .select(`
             id,
@@ -8134,6 +8144,30 @@ const Clients: React.FC<ClientsProps> = ({
             )
           `)
           .eq('newlead_id', leadId);
+
+        if (error) {
+          dbgTags('fetchCurrentLeadTags: newlead_id query failed, trying new_lead_id', {
+            leadId,
+            message: error.message,
+            code: (error as any).code,
+            details: (error as any).details,
+            hint: (error as any).hint,
+          });
+          const alt = await supabase
+            .from('leads_lead_tags')
+            .select(`
+              id,
+              leadtag_id,
+              misc_leadtag (
+                id,
+                name
+              )
+            `)
+            .eq('new_lead_id', leadId);
+          data = alt.data;
+          error = alt.error;
+          if (!error) dbgTags('fetchCurrentLeadTags: new_lead_id ok', { leadId, rowCount: data?.length ?? 0 });
+        }
 
         if (!error && data) {
           const tags = data
@@ -8158,8 +8192,28 @@ const Clients: React.FC<ClientsProps> = ({
   };
   // Save lead tags
   const saveLeadTags = async (leadId: string, tagsString: string) => {
+    const normName = (s: unknown) => String(s ?? '').trim();
+    const resolveTagIdFromCatalog = (rawName: string): number | undefined => {
+      const t = normName(rawName);
+      if (!t) return undefined;
+      const row = allTags.find((tag) => normName(tag.name) === t);
+      if (row?.id == null || row.id === '') return undefined;
+      const n = Number(row.id);
+      return Number.isFinite(n) ? n : undefined;
+    };
+
     try {
       const isLegacyLead = leadId.toString().startsWith('legacy_');
+      const tag42InCatalog = allTags.find((t) => Number(t.id) === 42);
+      dbgTags('saveLeadTags start', {
+        leadId,
+        isLegacyLead,
+        tagsStringPreview: tagsString.slice(0, 200),
+        allTagsCount: allTags.length,
+        tagId42InActiveCatalog: tag42InCatalog
+          ? { id: tag42InCatalog.id, name: tag42InCatalog.name }
+          : 'absent (inactive in misc_leadtag or not loaded)',
+      });
 
       if (isLegacyLead) {
         const legacyId = parseInt(leadId.replace('legacy_', ''));
@@ -8172,23 +8226,44 @@ const Clients: React.FC<ClientsProps> = ({
 
         if (deleteError) {
           console.error('Error deleting existing tags (legacy):', deleteError);
+          dbgTags('delete failed (legacy)', {
+            legacyId,
+            message: deleteError.message,
+            code: (deleteError as any).code,
+            details: (deleteError as any).details,
+            hint: (deleteError as any).hint,
+          });
           return;
         }
+        dbgTags('delete ok (legacy)', { legacyId });
 
         // Parse the tags string and find matching tag IDs
         if (tagsString.trim()) {
-          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
+          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(Boolean);
+          const resolutions = tagNames.map((name) => {
+            const id = resolveTagIdFromCatalog(name);
+            return { name, leadtag_id: id, resolved: id != null };
+          });
+          const unresolved = resolutions.filter((r) => !r.resolved).map((r) => r.name);
+          const tagIds = resolutions.map((r) => r.leadtag_id).filter((id): id is number => id != null);
 
-          // Find tag IDs for the provided tag names
-          const tagIds = tagNames
-            .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
-            .filter(id => id !== undefined);
+          dbgTags('name → id (legacy)', {
+            resolutions,
+            unresolved,
+            leadtag_ids: tagIds,
+            includes42: tagIds.some((id) => Number(id) === 42),
+          });
+          if (unresolved.length) {
+            dbgTags('unresolved tag names (not in allTags / name mismatch / inactive tag)', unresolved);
+          }
 
           // Insert new tags for legacy lead
           if (tagIds.length > 0) {
+            const audit = await buildLeadTagJunctionAuditFields();
             const tagInserts = tagIds.map(tagId => ({
               lead_id: legacyId,
-              leadtag_id: tagId
+              leadtag_id: tagId,
+              ...audit,
             }));
 
             const { error: insertError } = await supabase
@@ -8197,54 +8272,113 @@ const Clients: React.FC<ClientsProps> = ({
 
             if (insertError) {
               console.error('Error inserting new tags (legacy):', insertError);
+              dbgTags('insert failed (legacy)', {
+                payload: tagInserts,
+                message: insertError.message,
+                code: (insertError as any).code,
+                details: (insertError as any).details,
+                hint: (insertError as any).hint,
+              });
               return;
             }
+            dbgTags('insert ok (legacy)', { rowCount: tagInserts.length });
           }
         }
 
       } else {
-        // For new leads, use the newlead_id column
-        // First, remove all existing tags for this new lead
-        const { error: deleteError } = await supabase
-          .from('leads_lead_tags')
-          .delete()
-          .eq('newlead_id', leadId);
+        // For new leads: try newlead_id first, then new_lead_id (matches LeadTagsModal)
+        let deleteError = (await supabase.from('leads_lead_tags').delete().eq('newlead_id', leadId)).error;
+        let deleteColumn: 'newlead_id' | 'new_lead_id' = 'newlead_id';
+        if (deleteError) {
+          dbgTags('delete newlead_id failed, trying new_lead_id', {
+            leadId,
+            message: deleteError.message,
+            code: (deleteError as any).code,
+          });
+          deleteError = (await supabase.from('leads_lead_tags').delete().eq('new_lead_id', leadId)).error;
+          deleteColumn = 'new_lead_id';
+        }
 
         if (deleteError) {
           console.error('Error deleting existing tags (new):', deleteError);
+          dbgTags('delete failed (new)', {
+            leadId,
+            columnTried: deleteColumn,
+            message: deleteError.message,
+            code: (deleteError as any).code,
+            details: (deleteError as any).details,
+            hint: (deleteError as any).hint,
+          });
           return;
         }
+        dbgTags('delete ok (new)', { leadId, column: deleteColumn });
 
         // Parse the tags string and find matching tag IDs
         if (tagsString.trim()) {
-          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
+          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(Boolean);
+          const resolutions = tagNames.map((name) => {
+            const id = resolveTagIdFromCatalog(name);
+            return { name, leadtag_id: id, resolved: id != null };
+          });
+          const unresolved = resolutions.filter((r) => !r.resolved).map((r) => r.name);
+          const tagIds = resolutions.map((r) => r.leadtag_id).filter((id): id is number => id != null);
 
-          // Find tag IDs for the provided tag names
-          const tagIds = tagNames
-            .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
-            .filter(id => id !== undefined);
+          dbgTags('name → id (new lead)', {
+            resolutions,
+            unresolved,
+            leadtag_ids: tagIds,
+            includes42: tagIds.some((id) => Number(id) === 42),
+          });
+          if (unresolved.length) {
+            dbgTags('unresolved tag names (not in allTags / name mismatch / inactive tag)', unresolved);
+          }
 
           // Insert new tags for new lead
           if (tagIds.length > 0) {
-            const tagInserts = tagIds.map(tagId => ({
-              newlead_id: leadId,
-              leadtag_id: tagId
-            }));
+            const audit = await buildLeadTagJunctionAuditFields();
+            const tryInsert = async (col: 'newlead_id' | 'new_lead_id') => {
+              const tagInserts = tagIds.map(tagId => ({
+                [col]: leadId,
+                leadtag_id: tagId,
+                ...audit,
+              })) as Record<string, unknown>[];
+              const { error: insertError } = await supabase.from('leads_lead_tags').insert(tagInserts as any);
+              return { insertError, col, tagInserts };
+            };
 
-            const { error: insertError } = await supabase
-              .from('leads_lead_tags')
-              .insert(tagInserts);
+            let { insertError, col: insertCol, tagInserts } = await tryInsert('newlead_id');
+            if (insertError) {
+              dbgTags('insert newlead_id failed, trying new_lead_id', {
+                message: insertError.message,
+                code: (insertError as any).code,
+                details: (insertError as any).details,
+              });
+              const second = await tryInsert('new_lead_id');
+              insertError = second.insertError;
+              insertCol = second.col;
+              tagInserts = second.tagInserts;
+            }
 
             if (insertError) {
               console.error('Error inserting new tags (new):', insertError);
+              dbgTags('insert failed (new)', {
+                column: insertCol,
+                payload: tagInserts,
+                message: insertError.message,
+                code: (insertError as any).code,
+                details: (insertError as any).details,
+                hint: (insertError as any).hint,
+              });
               return;
             }
+            dbgTags('insert ok (new)', { column: insertCol, rowCount: tagInserts.length });
           }
         }
 
       }
     } catch (error) {
       console.error('Error saving tags:', error);
+      dbgTags('saveLeadTags exception', error);
     }
   };
 

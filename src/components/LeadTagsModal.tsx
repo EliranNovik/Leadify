@@ -1,7 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { TagIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import toast from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
+import { buildLeadTagJunctionAuditFields } from '../lib/leadTagJunctionAudit';
+
+/** Dev console + set window.__LEAD_TAGS_MODAL_DEBUG__ = true for [LeadTagsModal] logs */
+const leadTagsModalDebug =
+  import.meta.env.DEV ||
+  (typeof window !== 'undefined' && (window as unknown as { __LEAD_TAGS_MODAL_DEBUG__?: boolean }).__LEAD_TAGS_MODAL_DEBUG__ === true);
+function dbgLeadTagsModal(...args: unknown[]) {
+  if (leadTagsModalDebug) console.log('[LeadTagsModal]', ...args);
+}
 
 type LeadTagsModalProps = {
   isOpen: boolean;
@@ -15,7 +25,7 @@ type LeadTagsModalProps = {
   onSaved?: (nextTags: string[]) => void | Promise<void>;
 };
 
-type LeadTagRow = { id: number; name: string; order?: number | null };
+type LeadTagRow = { id: number; name: string; order?: number | null; active?: boolean | null };
 type LeadTagJoinRow = { misc_leadtag?: { name?: string | null } | { name?: string | null }[] | null };
 
 const normalizeTagsValue = (value: unknown): string[] => {
@@ -38,7 +48,8 @@ export default function LeadTagsModal({
   readOnly = false,
   onSaved,
 }: LeadTagsModalProps) {
-  const [allTags, setAllTags] = useState<LeadTagRow[]>([]);
+  /** Full catalog (active + inactive) — needed so existing inactive tags still resolve to leadtag_id on save */
+  const [tagCatalog, setTagCatalog] = useState<LeadTagRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState('');
@@ -111,15 +122,21 @@ export default function LeadTagsModal({
       try {
         const { data, error } = await supabase
           .from('misc_leadtag')
-          .select('id, name, order')
-          .eq('active', true)
+          .select('id, name, order, active')
           .order('order', { ascending: true });
         if (!cancelled) {
           if (error) throw error;
-          setAllTags((data || []) as LeadTagRow[]);
+          setTagCatalog((data || []) as LeadTagRow[]);
+          dbgLeadTagsModal('catalog loaded', {
+            count: (data || []).length,
+            id42: (data || []).find((r: LeadTagRow) => Number(r.id) === 42),
+          });
         }
-      } catch {
-        if (!cancelled) setAllTags([]);
+      } catch (e) {
+        if (!cancelled) {
+          setTagCatalog([]);
+          dbgLeadTagsModal('catalog load failed', e);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -129,11 +146,13 @@ export default function LeadTagsModal({
     };
   }, [isOpen]);
 
+  /** Picker lists only tags admins marked active; saving still resolves names via full tagCatalog (inactive OK). */
   const visibleTags = useMemo(() => {
+    const activeOnly = tagCatalog.filter((t) => t.active === true);
     const term = search.trim().toLowerCase();
-    if (!term) return allTags;
-    return allTags.filter((t) => String(t.name || '').toLowerCase().includes(term));
-  }, [allTags, search]);
+    if (!term) return activeOnly;
+    return activeOnly.filter((t) => String(t.name || '').toLowerCase().includes(term));
+  }, [tagCatalog, search]);
 
   const selectedSet = useMemo(() => new Set(selected), [selected]);
 
@@ -141,14 +160,48 @@ export default function LeadTagsModal({
     setSelected((prev) => (prev.includes(tagName) ? prev.filter((t) => t !== tagName) : [...prev, tagName]));
   };
 
+  const normTagName = (s: unknown) => String(s ?? '').trim();
+
+  const findTagIdByName = (rawName: string): number | undefined => {
+    const want = normTagName(rawName);
+    if (!want) return undefined;
+    const row = tagCatalog.find((t) => normTagName(t.name) === want);
+    if (row?.id == null) return undefined;
+    const n = Number(row.id);
+    return Number.isFinite(n) ? n : undefined;
+  };
+
   const save = async () => {
     if (readOnly) return;
-    const normalized = Array.from(new Set(selected.map((t) => t.trim()).filter(Boolean)));
+    const normalized = Array.from(new Set(selected.map((t) => normTagName(t)).filter(Boolean)));
     setSaving(true);
     try {
-      const tagIds = normalized
-        .map((name) => allTags.find((t) => t.name === name)?.id)
-        .filter((id): id is number => typeof id === 'number');
+      const resolutions = normalized.map((name) => ({
+        name,
+        id: findTagIdByName(name),
+      }));
+      const unresolved = resolutions.filter((r) => r.id == null).map((r) => r.name);
+      const tagIds = resolutions.map((r) => r.id).filter((id): id is number => id != null);
+
+      dbgLeadTagsModal('save', {
+        leadId,
+        isLegacyLead,
+        normalized,
+        tagIds,
+        unresolved,
+        includes42: tagIds.some((id) => Number(id) === 42),
+      });
+
+      if (unresolved.length > 0) {
+        toast.error(
+          `Could not match tag(s) to catalog: ${unresolved.join(', ')}. Check spelling or sync misc_leadtag.`
+        );
+        dbgLeadTagsModal('save aborted: unresolved names', unresolved);
+        return;
+      }
+
+      const audit = await buildLeadTagJunctionAuditFields();
+      dbgLeadTagsModal('junction audit', audit);
 
       if (isLegacyLead) {
         const legacyId = typeof leadId === 'string' ? parseInt(String(leadId).replace(/^legacy_/, ''), 10) : Number(leadId);
@@ -158,7 +211,7 @@ export default function LeadTagsModal({
         if (tagIds.length > 0) {
           const { error: insErr } = await supabase
             .from('leads_lead_tags')
-            .insert(tagIds.map((id) => ({ lead_id: legacyId, leadtag_id: id })));
+            .insert(tagIds.map((id) => ({ lead_id: legacyId, leadtag_id: id, ...audit })));
           if (insErr) throw insErr;
         }
       } else {
@@ -175,25 +228,35 @@ export default function LeadTagsModal({
         if (!deleted) throw new Error('Failed to delete existing tag rows');
         if (tagIds.length > 0) {
           let inserted = false;
+          let lastInsErr: { message?: string; code?: string; details?: string; hint?: string } | null = null;
           for (const col of ['newlead_id', 'new_lead_id'] as const) {
-            const payload = tagIds.map((id) => ({ [col]: newId, leadtag_id: id })) as any[];
+            const payload = tagIds.map((id) => ({ [col]: newId, leadtag_id: id, ...audit })) as any[];
             const { error: insErr } = await supabase.from('leads_lead_tags').insert(payload);
             if (!insErr) {
               inserted = true;
               break;
             }
+            lastInsErr = insErr;
           }
-          if (!inserted) throw new Error('Failed to insert tag rows');
+          if (!inserted) {
+            dbgLeadTagsModal('insert failed (all columns)', lastInsErr);
+            throw new Error(lastInsErr?.message || 'Failed to insert tag rows');
+          }
         }
       }
 
-      setSelected(normalized);
-      // Re-fetch from DB to ensure UI matches junction table (and to confirm persistence).
       const next = await fetchCurrentLeadTags();
-      const finalNext = next.length > 0 || normalized.length === 0 ? next : normalized;
+      dbgLeadTagsModal('after save refetch', { next, normalizedCount: normalized.length });
+      // Prefer DB truth; if refetch is empty but we wrote tags, keep normalized labels so chips don't flicker wrong
+      const finalNext = next.length > 0 ? next : normalized;
       setSelected(finalNext);
       await onSaved?.(finalNext);
+      toast.success('Tags saved');
       onClose();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Failed to save tags';
+      toast.error(msg);
+      dbgLeadTagsModal('save error', e);
     } finally {
       setSaving(false);
     }

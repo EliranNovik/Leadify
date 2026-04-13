@@ -2,6 +2,271 @@ import { supabase } from './supabase';
 import { fetchLeadContacts } from './contactHelpers';
 import type { ContactInfo } from './contactHelpers';
 
+/** DevTools: filter by [getMeetingLocation]. Enable in prod with VITE_DEBUG_MEETING_LOCATION=true */
+const DEBUG_MEETING_LOCATION =
+  import.meta.env.DEV ||
+  String(import.meta.env?.VITE_DEBUG_MEETING_LOCATION || '').toLowerCase() === 'true';
+
+function dbgMeetingLocation(...args: unknown[]) {
+  if (DEBUG_MEETING_LOCATION) {
+    console.log('[getMeetingLocation]', ...args);
+  }
+}
+
+/** Escape % and _ for PostgreSQL ILIKE when matching a literal location name */
+function escapeIlikeLiteral(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+}
+
+type TenantMeetingLocationRow = {
+  id?: number | string | null;
+  address: string | null;
+  name: string | null;
+  default_link?: string | null;
+  is_physical_location?: boolean | null;
+  firm_id?: number | string | null;
+};
+
+/** When several firms share the same display name, prefer physical + address (+ firm match). */
+function pickBestTenantMeetingLocationRow(
+  rows: (TenantMeetingLocationRow & { firm_id?: unknown })[] | null | undefined,
+  firmId: number | null,
+  lookupKey: string
+): TenantMeetingLocationRow | null {
+  if (!rows?.length) return null;
+
+  const firmNum = firmId != null && Number.isFinite(firmId) ? firmId : null;
+  const key = lookupKey.trim();
+  const keyLower = key.toLowerCase();
+  const keyIsNumeric = /^\d+$/.test(key);
+  const keyAsNum = keyIsNumeric ? Number(key) : NaN;
+
+  const inFirm = (r: { firm_id?: unknown }) => {
+    if (firmNum == null) return true;
+    if (r.firm_id == null || r.firm_id === '') return true;
+    return Number(r.firm_id) === firmNum;
+  };
+
+  let pool = firmNum != null ? rows.filter(inFirm) : rows;
+  if (pool.length === 0) pool = [...rows];
+
+  const addrOf = (r: TenantMeetingLocationRow) =>
+    String(r.address ?? '')
+      .replace(/\u00a0/g, ' ')
+      .trim();
+
+  const score = (r: TenantMeetingLocationRow) => {
+    const addr = addrOf(r);
+    const phys = r.is_physical_location === true;
+    if (phys && addr) return 6;
+    if (addr) return 4;
+    if (phys) return 2;
+    return 0;
+  };
+
+  const nameMatchRank = (r: TenantMeetingLocationRow) => {
+    const n = String(r.name ?? '').trim();
+    if (n === key) return 2;
+    if (n.toLowerCase() === keyLower) return 1;
+    return 0;
+  };
+
+  pool.sort((a, b) => {
+    const sb = score(b);
+    const sa = score(a);
+    if (sb !== sa) return sb - sa;
+    if (keyIsNumeric && Number.isFinite(keyAsNum)) {
+      const idA = a.id != null ? Number(a.id) : NaN;
+      const idB = b.id != null ? Number(b.id) : NaN;
+      const ma = Number.isFinite(idA) && idA === keyAsNum ? 1 : 0;
+      const mb = Number.isFinite(idB) && idB === keyAsNum ? 1 : 0;
+      if (mb !== ma) return mb - ma;
+    }
+    const ra = nameMatchRank(a);
+    const rb = nameMatchRank(b);
+    if (rb !== ra) return rb - ra;
+    const idA = a.id != null ? Number(a.id) : NaN;
+    const idB = b.id != null ? Number(b.id) : NaN;
+    if (Number.isFinite(idA) && Number.isFinite(idB) && idA !== idB) return idB - idA;
+    return 0;
+  });
+  const winner = pool[0] ?? null;
+  if (DEBUG_MEETING_LOCATION && rows.length) {
+    dbgMeetingLocation('pickBest: input row count', rows.length, 'firmId filter', firmId);
+    dbgMeetingLocation(
+      'pickBest: pool size after firm filter',
+      pool.length,
+      'candidates (id, name, is_physical, firm_id, addrLen, score)',
+      pool.map((r) => ({
+        id: r.id,
+        name: r.name,
+        is_physical_location: r.is_physical_location,
+        firm_id: r.firm_id,
+        addressLen: addrOf(r).length,
+        score: score(r),
+      }))
+    );
+    dbgMeetingLocation('pickBest: chosen', winner
+      ? {
+          name: winner.name,
+          is_physical_location: winner.is_physical_location,
+          firm_id: winner.firm_id,
+          addressPreview: addrOf(winner).slice(0, 80),
+        }
+      : null);
+  }
+  return winner;
+}
+
+/** Scoped to current employee so tenants_meetinglocation rows match the lead's firm (table has firm_id bigint). */
+async function getCurrentUserFirmId(): Promise<number | null> {
+  try {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user?.id) return null;
+    const { data: row } = await supabase
+      .from('tenants_employee')
+      .select('firm_id')
+      .eq('auth_id', user.id)
+      .maybeSingle();
+    if (row?.firm_id == null || row.firm_id === '') return null;
+    const n = Number(row.firm_id);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Prefer lead's firm when the column exists (matches tenants_meetinglocation.firm_id). */
+async function getFirmIdForNewLead(clientId: string): Promise<number | null> {
+  try {
+    const { data, error } = await supabase
+      .from('leads')
+      .select('firm_id')
+      .eq('id', clientId)
+      .maybeSingle();
+    if (error || !data || data.firm_id == null || data.firm_id === '') return null;
+    const n = Number(data.firm_id);
+    return Number.isFinite(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function shouldUsePhysicalAddress(
+  isPhysicalFlag: unknown,
+  addressNonEmpty: boolean
+): boolean {
+  let result = false;
+  let reason = '';
+
+  if (isPhysicalFlag === true) {
+    result = true;
+    reason = 'is_physical_location === true';
+  } else if (typeof isPhysicalFlag === 'string') {
+    const s = isPhysicalFlag.trim().toLowerCase();
+    if (s === 'true' || s === 't' || s === '1' || s === 'yes') {
+      result = true;
+      reason = `string flag truthy (${JSON.stringify(isPhysicalFlag)})`;
+    } else if (s === 'false' || s === 'f' || s === '0' || s === 'no') {
+      result = false;
+      reason = `string flag falsy (${JSON.stringify(isPhysicalFlag)})`;
+    } else {
+      result = false;
+      reason = `string flag unrecognized (${JSON.stringify(isPhysicalFlag)})`;
+    }
+  } else if (isPhysicalFlag === 1) {
+    result = true;
+    reason = 'is_physical_location === 1';
+  } else if (isPhysicalFlag === false || isPhysicalFlag === 0) {
+    result = false;
+    reason = 'is_physical_location is false/0';
+  } else if (isPhysicalFlag == null && addressNonEmpty) {
+    result = true;
+    reason = 'flag null/undefined + non-empty address (legacy)';
+  } else {
+    result = false;
+    reason = `default virtual (flag=${JSON.stringify(isPhysicalFlag)}, addressNonEmpty=${addressNonEmpty})`;
+  }
+
+  if (DEBUG_MEETING_LOCATION) {
+    dbgMeetingLocation('shouldUsePhysicalAddress', {
+      isPhysicalFlag,
+      addressNonEmpty,
+      result,
+      reason,
+    });
+  }
+  return result;
+}
+
+async function fetchTenantMeetingLocationRow(
+  rawStr: string,
+  firmId: number | null
+): Promise<TenantMeetingLocationRow | null> {
+  const trimmed = rawStr.trim();
+  if (!trimmed) return null;
+
+  const selectCols = 'id, address, name, default_link, is_physical_location, firm_id';
+
+  dbgMeetingLocation('fetch row: lookup key', JSON.stringify(trimmed), 'firmId', firmId);
+
+  // PK id is bigint: compare as string (avoids JS precision + allows "012" style if ever stored)
+  if (/^\d+$/.test(trimmed)) {
+    const { data, error } = await supabase
+      .from('tenants_meetinglocation')
+      .select(selectCols)
+      .eq('id', trimmed);
+    dbgMeetingLocation('by id query', { trimmed, error: error?.message, rowCount: data?.length ?? 0 });
+    if (!error && data?.length) {
+      const picked = pickBestTenantMeetingLocationRow(data, firmId, trimmed);
+      if (picked) return picked;
+    }
+  }
+
+  const { data: byName, error: nameErr } = await supabase
+    .from('tenants_meetinglocation')
+    .select(selectCols)
+    .eq('name', trimmed);
+
+  dbgMeetingLocation('by exact name query', {
+    name: trimmed,
+    error: nameErr?.message,
+    rowCount: byName?.length ?? 0,
+  });
+
+  if (!nameErr && byName?.length) {
+    const picked = pickBestTenantMeetingLocationRow(byName, firmId, trimmed);
+    if (picked) return picked;
+  } else if (nameErr) {
+    console.warn('getMeetingLocation: tenants_meetinglocation name query', nameErr);
+  }
+
+  const pattern = escapeIlikeLiteral(trimmed);
+  const { data: byLike, error: likeErr } = await supabase
+    .from('tenants_meetinglocation')
+    .select(selectCols)
+    .ilike('name', pattern)
+    .limit(40);
+
+  dbgMeetingLocation('by ilike name query', {
+    pattern,
+    error: likeErr?.message,
+    rowCount: byLike?.length ?? 0,
+  });
+
+  if (!likeErr && byLike?.length) {
+    return pickBestTenantMeetingLocationRow(byLike, firmId, trimmed);
+  }
+  if (likeErr) {
+    console.warn('getMeetingLocation: tenants_meetinglocation ilike query', likeErr);
+  }
+
+  dbgMeetingLocation('fetch row: no tenants_meetinglocation row matched');
+  return null;
+}
+
 /**
  * Get client/contact name for template param 1
  */
@@ -224,7 +489,29 @@ export async function getEmailAddress(
 }
 
 /**
- * Get meeting location from the last meeting
+ * WhatsApp Cloud API rejects newlines and some control characters in template body variables.
+ * Collapses real line breaks and literal "\\r\\n" from storage into one comma-separated line.
+ */
+export function sanitizeWhatsAppTemplateVariableText(text: string): string {
+  if (!text) return '';
+  let s = String(text);
+  s = s.replace(/\\r\\n/g, ' ').replace(/\\n/g, ' ').replace(/\\r/g, ' ');
+  s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  s = s
+    .split(/\n+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(', ');
+  s = s.replace(/\s+/g, ' ').trim();
+  return s;
+}
+
+/**
+ * Get meeting location for WhatsApp templates.
+ * Uses meetings.custom_address for custom locations; otherwise resolves meetings.meeting_location
+ * via tenants_meetinglocation. If is_physical_location is true, uses address (fallback name if empty);
+ * if false (virtual / Teams / Zoom room), uses name, not address.
+ * No street address on catalog row → "-" (whether or not default_link is set; link uses meeting_link param).
  */
 export async function getMeetingLocation(
   clientId: string,
@@ -244,10 +531,9 @@ export async function getMeetingLocation(
       columnName = 'client_id';
     }
 
-    // Fetch the most recent meeting
     const { data: meetings, error } = await supabase
       .from('meetings')
-      .select('meeting_location')
+      .select('meeting_location, custom_address')
       .eq(columnName, queryId)
       .or('status.is.null,status.neq.canceled')
       .order('meeting_date', { ascending: false })
@@ -256,29 +542,102 @@ export async function getMeetingLocation(
 
     if (error) {
       console.error('Error fetching meeting location:', error);
+      dbgMeetingLocation('meetings query error', error);
       return '';
     }
 
-    if (!meetings || meetings.length === 0 || !meetings[0].meeting_location) {
+    if (!meetings || meetings.length === 0) {
+      dbgMeetingLocation('no meeting row', { columnName, queryId, isLegacyLead });
       return '';
     }
 
-    return meetings[0].meeting_location;
+    const meeting = meetings[0];
+    const rawLoc = meeting.meeting_location;
+    const rawLocStr =
+      rawLoc === null || rawLoc === undefined ? '' : String(rawLoc).trim();
+
+    const customAddress = meeting.custom_address != null ? String(meeting.custom_address).trim() : '';
+    dbgMeetingLocation('meeting row', {
+      columnName,
+      queryId,
+      rawLocStr,
+      customAddress: customAddress || '(empty)',
+      customSkippedAsDuplicateLabel: !!(customAddress && customAddress === rawLocStr),
+    });
+
+    // Same string as location label — not a real override; resolve via tenants_meetinglocation for address
+    if (customAddress && customAddress !== rawLocStr) {
+      dbgMeetingLocation('returning custom_address (differs from meeting_location label)');
+      return sanitizeWhatsAppTemplateVariableText(customAddress);
+    }
+
+    if (!rawLocStr) {
+      dbgMeetingLocation('empty meeting_location after trim');
+      return '';
+    }
+
+    const rawStr = rawLocStr;
+
+    const firmFromLead = !isLegacyLead ? await getFirmIdForNewLead(String(queryId)) : null;
+    const firmFromSession = await getCurrentUserFirmId();
+    const firmId = firmFromLead ?? firmFromSession;
+    dbgMeetingLocation('firm resolution', {
+      firmFromLead,
+      firmFromSession,
+      firmIdUsed: firmId,
+    });
+
+    const locRow = await fetchTenantMeetingLocationRow(rawStr, firmId);
+
+    if (locRow) {
+      const name = locRow.name != null ? String(locRow.name).trim() : '';
+      const addr = locRow.address != null ? String(locRow.address).trim() : '';
+      const defaultLink =
+        locRow.default_link != null ? String(locRow.default_link).trim() : '';
+      const physical = shouldUsePhysicalAddress(locRow.is_physical_location, addr.length > 0);
+
+      dbgMeetingLocation('resolved tenants_meetinglocation row', {
+        id: locRow.id,
+        name,
+        addressLen: addr.length,
+        addressPreview: addr.slice(0, 120),
+        hasDefaultLink: !!defaultLink,
+        is_physical_location: locRow.is_physical_location,
+        firm_id: locRow.firm_id,
+        physicalBranch: physical,
+      });
+
+      if (!addr) {
+        dbgMeetingLocation('no address on catalog row → hyphen Place param');
+        return '-';
+      }
+
+      if (physical) {
+        dbgMeetingLocation('returning address (physical branch)');
+        return sanitizeWhatsAppTemplateVariableText(addr);
+      }
+      dbgMeetingLocation('virtual branch with address field → name only', { name, rawStr });
+      return name || rawStr;
+    }
+
+    dbgMeetingLocation('no loc row → raw meeting_location string', rawStr);
+    return rawStr;
   } catch (error) {
     console.error('Error getting meeting location:', error);
+    dbgMeetingLocation('exception', error);
     return '';
   }
 }
 
 /**
- * Get meeting link (Teams/Zoom URL) from the last meeting
+ * Get meeting link (Teams/Zoom / maps) from the last meeting.
+ * Uses the same tenants_meetinglocation row resolution as getMeetingLocation (no loose parseInt / .single()).
  */
 export async function getMeetingLink(
   clientId: string,
   isLegacyLead: boolean
 ): Promise<string> {
   try {
-    // Determine the correct ID for querying
     let queryId: string | number;
     let columnName: string;
 
@@ -291,24 +650,14 @@ export async function getMeetingLink(
       columnName = 'client_id';
     }
 
-    // Fetch the most recent meeting with location
-    let meetings: any[] | null = null;
-    let error: any = null;
-
-    const { data: meetingsData, error: meetingsError } = await supabase
+    const { data: meetings, error } = await supabase
       .from('meetings')
-      .select('teams_meeting_url, meeting_location')
+      .select('teams_meeting_url, meeting_location, custom_link')
       .eq(columnName, queryId)
       .or('status.is.null,status.neq.canceled')
       .order('meeting_date', { ascending: false })
       .order('meeting_time', { ascending: false })
       .limit(1);
-
-    meetings = meetingsData;
-    error = meetingsError;
-
-    // Legacy leads in leads_lead table don't have teams_meeting_url, so no need to check there
-    // (teams_meeting_url is only in the meetings table)
 
     if (error) {
       console.error('Error fetching meeting link:', error);
@@ -321,32 +670,26 @@ export async function getMeetingLink(
 
     const meeting = meetings[0];
 
-    // First check if location has default_link
-    if (meeting.meeting_location) {
-      // Fetch location details to check for default_link
-      // meeting_location can be either a name (string) or an ID (number)
-      let locationQuery = supabase
-        .from('tenants_meetinglocation')
-        .select('default_link');
-
-      // Try to match by ID first (if it's a number)
-      const locationId = parseInt(meeting.meeting_location, 10);
-      if (!isNaN(locationId)) {
-        locationQuery = locationQuery.eq('id', locationId);
-      } else {
-        // Otherwise match by name
-        locationQuery = locationQuery.eq('name', meeting.meeting_location);
-      }
-
-      const { data: locationData, error: locationError } = await locationQuery.single();
-
-      if (!locationError && locationData?.default_link) {
-        return locationData.default_link;
-      }
+    const custom = meeting.custom_link != null ? String(meeting.custom_link).trim() : '';
+    if (custom && /^https?:\/\//i.test(custom)) {
+      return custom;
     }
 
-    // Fallback to teams_meeting_url
-    return meeting.teams_meeting_url || '';
+    const rawLoc = meeting.meeting_location;
+    const rawStr =
+      rawLoc === null || rawLoc === undefined ? '' : String(rawLoc).trim();
+
+    if (rawStr) {
+      const firmFromLead = !isLegacyLead ? await getFirmIdForNewLead(String(queryId)) : null;
+      const firmFromSession = await getCurrentUserFirmId();
+      const firmId = firmFromLead ?? firmFromSession;
+      const locRow = await fetchTenantMeetingLocationRow(rawStr, firmId);
+      const dl = locRow?.default_link != null ? String(locRow.default_link).trim() : '';
+      if (dl) return dl;
+    }
+
+    const teams = meeting.teams_meeting_url != null ? String(meeting.teams_meeting_url).trim() : '';
+    return teams || '';
   } catch (error) {
     console.error('Error getting meeting link:', error);
     return '';
@@ -679,22 +1022,20 @@ export async function generateTemplateParameters(
   for (let i = 3; i <= paramCount; i++) {
     let paramValue = '';
 
-    // Param 3: Meeting location (if available)
-    if (i === 3 && client?.meeting_location) {
-      paramValue = client.meeting_location;
+    // Param 3: Meeting location — resolve address via tenants_meetinglocation (same as param_mapping type meeting_location)
+    if (i === 3) {
+      const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+      const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
+      if (clientIdForMeeting) {
+        paramValue = await getMeetingLocation(clientIdForMeeting, isLegacyLead);
+      }
     }
-    // Param 4: Meeting link (if available)
+    // Param 4: Meeting link — always resolve from DB (client.meeting_link was often wrong default_link)
     else if (i === 4) {
-      // Try to get meeting link from client object first (set by MeetingTab)
-      if (client?.meeting_link) {
-        paramValue = client.meeting_link;
-      } else {
-        // Fallback: fetch from database
-        const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-        const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
-        if (clientIdForMeeting) {
-          paramValue = await getMeetingLink(clientIdForMeeting, isLegacyLead);
-        }
+      const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+      const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
+      if (clientIdForMeeting) {
+        paramValue = await getMeetingLink(clientIdForMeeting, isLegacyLead);
       }
     }
     // Param 5+: Empty strings (can be extended later)
@@ -707,10 +1048,6 @@ export async function generateTemplateParameters(
       text: paramValue
     });
   }
-
-  // #region agent log
-  fetch('http://127.0.0.1:7242/ingest/3bb9a82c-3ad4-47e1-84df-d5398935b352', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ location: 'whatsappTemplateParams.ts:652', message: 'generateTemplateParameters result', data: { paramCount, parametersLength: parameters.length, parameters }, timestamp: Date.now(), sessionId: 'debug-session', runId: 'run1', hypothesisId: 'G' }) }).catch(() => { });
-  // #endregion
 
   return parameters;
 }

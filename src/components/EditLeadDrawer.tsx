@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
+import { buildLeadTagJunctionAuditFields } from '../lib/leadTagJunctionAudit';
 import { XMarkIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import ProbabilityFactorsSliders, { type ProbabilityFactors } from './ProbabilityFactorsSliders';
@@ -442,9 +443,11 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
           
           // Insert new tags for legacy lead
           if (validTagIds.length > 0) {
+            const audit = await buildLeadTagJunctionAuditFields();
             const tagInserts = validTagIds.map(tagId => ({
               lead_id: legacyId,
-              leadtag_id: tagId
+              leadtag_id: tagId,
+              ...audit,
             }));
             
             const { error: insertError } = await supabase
@@ -485,9 +488,11 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
           
           // Insert new tags for new lead
           if (validTagIds.length > 0) {
+            const audit = await buildLeadTagJunctionAuditFields();
             const tagInserts = validTagIds.map(tagId => ({
               newlead_id: leadId,
-              leadtag_id: tagId
+              leadtag_id: tagId,
+              ...audit,
             }));
             
             const { error: insertError } = await supabase

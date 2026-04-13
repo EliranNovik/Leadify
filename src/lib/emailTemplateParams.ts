@@ -124,13 +124,25 @@ async function getMeetingLink(clientId: string | null, isLegacyLead: boolean): P
  * @param context - Context object with client/contact and meeting info
  * @returns Promise<string> - The content with all parameters replaced
  */
+/** Normalize rare brace variants from editors (fullwidth / Unicode) */
+function normalizeTemplateBraces(s: string): string {
+  return s.replace(/\uFF5B/g, '{').replace(/\uFF5D/g, '}');
+}
+
+function applyMeetingLinkReplacements(result: string, linkValue: string): string {
+  const v = linkValue || '';
+  return result
+    .replace(/\{\{\s*link\s*\}\}/gi, v)
+    .replace(/\{\s*link\s*\}/gi, v);
+}
+
 export async function replaceEmailTemplateParams(
   content: string,
   context: EmailTemplateContext
 ): Promise<string> {
   if (!content) return '';
   
-  let result = content;
+  let result = normalizeTemplateBraces(content);
   
   // Basic synchronous replacements
   const name = getName(context);
@@ -145,7 +157,7 @@ export async function replaceEmailTemplateParams(
   const hasDate = /\{date\}/i.test(result);
   const hasTime = /\{time\}/i.test(result);
   const hasLocation = /\{location\}/i.test(result);
-  const hasLink = /\{link\}/i.test(result);
+  const hasLink = /\{\s*link\s*\}/i.test(result) || /\{\{\s*link\s*\}\}/i.test(result);
   
   // If meeting info is provided directly, use it
   if (context.meetingDate !== undefined || context.meetingTime !== undefined || 
@@ -153,8 +165,8 @@ export async function replaceEmailTemplateParams(
     result = result
       .replace(/\{date\}/gi, context.meetingDate || '')
       .replace(/\{time\}/gi, context.meetingTime || '')
-      .replace(/\{location\}/gi, context.meetingLocation || '')
-      .replace(/\{link\}/gi, context.meetingLink || '');
+      .replace(/\{location\}/gi, context.meetingLocation || '');
+    result = applyMeetingLinkReplacements(result, context.meetingLink || '');
   } 
   // Otherwise, fetch from database if any meeting parameters are present
   else if ((hasDate || hasTime || hasLocation || hasLink) && (context.clientId || context.legacyId)) {
@@ -195,15 +207,15 @@ export async function replaceEmailTemplateParams(
         result = result
           .replace(/\{date\}/gi, meetingDate || '')
           .replace(/\{time\}/gi, meetingTime || '')
-          .replace(/\{location\}/gi, meetingLocation || '')
-          .replace(/\{link\}/gi, meetingLink || '');
+          .replace(/\{location\}/gi, meetingLocation || '');
+        result = applyMeetingLinkReplacements(result, meetingLink || '');
       } else {
         // No valid client ID, replace with empty strings
         result = result
           .replace(/\{date\}/gi, '')
           .replace(/\{time\}/gi, '')
-          .replace(/\{location\}/gi, '')
-          .replace(/\{link\}/gi, '');
+          .replace(/\{location\}/gi, '');
+        result = applyMeetingLinkReplacements(result, '');
       }
     } catch (error) {
       console.error('Error fetching meeting data for template:', error);
@@ -211,8 +223,8 @@ export async function replaceEmailTemplateParams(
       result = result
         .replace(/\{date\}/gi, '')
         .replace(/\{time\}/gi, '')
-        .replace(/\{location\}/gi, '')
-        .replace(/\{link\}/gi, '');
+        .replace(/\{location\}/gi, '');
+      result = applyMeetingLinkReplacements(result, '');
     }
   }
   
@@ -230,7 +242,7 @@ export function replaceEmailTemplateParamsSync(
   if (!content) return '';
   
   const name = getName(context);
-  return content
+  let result = normalizeTemplateBraces(content)
     .replace(/\{name\}/gi, name)
     .replace(/\{client_name\}/gi, name)
     .replace(/\{lead_number\}/gi, context.leadNumber || '')
@@ -238,7 +250,8 @@ export function replaceEmailTemplateParamsSync(
     .replace(/\{lead_type\}/gi, context.leadType || '')
     .replace(/\{date\}/gi, context.meetingDate || '')
     .replace(/\{time\}/gi, context.meetingTime || '')
-    .replace(/\{location\}/gi, context.meetingLocation || '')
-    .replace(/\{link\}/gi, context.meetingLink || '');
+    .replace(/\{location\}/gi, context.meetingLocation || '');
+  result = applyMeetingLinkReplacements(result, context.meetingLink || '');
+  return result;
 }
 

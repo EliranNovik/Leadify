@@ -47,6 +47,21 @@ const markNotificationSent = (messageId) => {
   return false; // Not sent yet
 };
 
+/** WhatsApp Cloud API rejects newlines (and similar) in template body variables — causes HTTP 400. */
+function sanitizeWhatsAppTemplateVariableText(text) {
+  if (text == null || typeof text !== 'string') return '';
+  let s = text;
+  s = s.replace(/\\r\\n/g, ' ').replace(/\\n/g, ' ').replace(/\\r/g, ' ');
+  s = s.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  s = s
+    .split(/\n+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(', ');
+  s = s.replace(/\s+/g, ' ').trim();
+  return s;
+}
+
 // Helper utilities
 const normalizePhone = (phone) => {
   if (!phone || phone === null || phone === '') return '';
@@ -1795,8 +1810,9 @@ const sendMessage = async (req, res) => {
           
           // Process parameters: replace empty strings with placeholders, then filter/validate
           const processedParameters = templateParameters.map((param, index) => {
-            if (!param || !param.text || param.text.trim().length === 0) {
-              // Replace empty parameters with placeholder
+            const trimmed = param && param.text != null ? String(param.text).trim() : '';
+            const sanitized = sanitizeWhatsAppTemplateVariableText(trimmed);
+            if (!sanitized.length) {
               console.warn(`⚠️ Parameter ${index + 1} is empty, using placeholder`);
               return {
                 type: 'text',
@@ -1805,7 +1821,7 @@ const sendMessage = async (req, res) => {
             }
             return {
               type: param.type || 'text',
-              text: param.text.trim()
+              text: sanitized
             };
           });
           

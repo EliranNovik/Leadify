@@ -21,7 +21,7 @@ type Filters = {
   due: 'ignore' | 'due_only';
 };
 
-type PaymentRow = {
+export type PaymentRow = {
   id: string;
   leadId: string;
   /** Legacy: client_id (contact). New: undefined. Used to pick one row per contact when multiple match. */
@@ -76,7 +76,7 @@ const orderOptions: { value: string; label: string }[] = [
   { value: '99', label: 'Expense (no VAT)' },
 ];
 
-const formatCurrency = (value: number, currency: string) => {
+export const formatCurrency = (value: number, currency: string) => {
   const normalized = currency === '₪' ? 'ILS' : currency === '€' ? 'EUR' : currency === '$' ? 'USD' : currency?.length === 3 ? currency : 'ILS';
   const locale = normalized === 'USD' ? 'en-US' : 'en-GB';
   try {
@@ -2389,7 +2389,7 @@ async function fetchContactNameMap(ids: string[], isLegacy: boolean): Promise<Ma
   return map;
 }
 
-function buildLeadLink(row: PaymentRow): string {
+export function buildLeadLink(row: PaymentRow): string {
   // For new leads, use caseNumber (which contains lead_number) instead of leadId (which is the id)
   if (row.leadType === 'new') {
     const cleanNumber = row.caseNumber?.replace(/^#/, '') || '';
@@ -2483,4 +2483,195 @@ function normalizeDate(value: any): string | null {
     return null;
   }
   return date.toISOString().split('T')[0];
+}
+
+/**
+ * Outstanding (not collected) payment plan rows for one lead — same row shape as Collection Finances.
+ * Used by Tags Manager expandable rows.
+ */
+export async function fetchOutstandingPaymentPlanRowsForTagsManager(
+  params: { kind: 'new'; leadUuid: string } | { kind: 'legacy'; legacyId: number }
+): Promise<PaymentRow[]> {
+  if (params.kind === 'new') {
+    const { data: plans, error } = await supabase
+      .from('payment_plans')
+      .select(
+        'id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay'
+      )
+      .eq('lead_id', params.leadUuid)
+      .is('cancel_date', null);
+    if (error) throw error;
+    const list = plans || [];
+    const leadMeta = await fetchLeadMetadata([params.leadUuid], false);
+    const rows: PaymentRow[] = list.map((plan: any) => {
+      const key = plan.lead_id?.toString?.() || '';
+      const meta = leadMeta.get(key) || null;
+      const value = Number(plan.value || 0);
+      let vat = Number(plan.value_vat || 0);
+      if (!vat && (plan.currency || '₪') === '₪') {
+        vat = Math.round(value * 0.18 * 100) / 100;
+      }
+      const amount = value + vat;
+      const hasProforma = hasProformaValue(plan.proforma);
+      const orderCode = normalizeOrderCode(plan.payment_order);
+      const paidAt = normalizeDate(plan.paid_at);
+      const dueDate = normalizeDate(plan.due_date);
+      let proformaDate: string | null = null;
+      if (plan.proforma) {
+        try {
+          const proformaData = typeof plan.proforma === 'string' ? JSON.parse(plan.proforma) : plan.proforma;
+          if (proformaData?.createdAt) {
+            proformaDate = normalizeDate(proformaData.createdAt);
+          }
+        } catch {
+          // keep null
+        }
+      }
+      return {
+        id: `new-${plan.id}`,
+        leadId: key,
+        leadName: meta?.leadName || plan.client_name || 'Unknown lead',
+        clientName: meta?.contactName || meta?.clientName || meta?.leadName || plan.client_name || '—',
+        amount,
+        value,
+        vat,
+        currency: plan.currency || '₪',
+        orderCode,
+        orderLabel: mapOrderLabel(orderCode, plan.payment_order),
+        collected: Boolean(paidAt || plan.paid),
+        hasProforma,
+        collectedDate: paidAt,
+        dueDate,
+        planDate: null,
+        proformaDate,
+        readyToPay: Boolean(plan.ready_to_pay),
+        handlerName: meta?.handlerName || '—',
+        handlerId: meta?.handlerId ?? null,
+        caseNumber: meta?.caseNumber || (plan.lead_id ? `#${plan.lead_id}` : '—'),
+        categoryName: meta?.categoryName || '—',
+        notes: plan.notes || '',
+        mainCategoryId: meta?.mainCategoryId,
+        currencyId:
+          (plan.currency_id != null ? Number(plan.currency_id) : null) ??
+          (plan.currency ? currencySymbolToId(plan.currency) : null),
+        leadType: 'new',
+      };
+    });
+    return rows.filter((r) => !r.collected);
+  }
+
+  const legacyId = params.legacyId;
+  const { data: plans, error } = await supabase
+    .from('finances_paymentplanrow')
+    .select(
+      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)'
+    )
+    .eq('lead_id', legacyId)
+    .is('cancel_date', null);
+  if (error) throw error;
+  const activePlans = plans || [];
+  const leadIdKey = String(legacyId);
+  const leadMeta = await fetchLeadMetadata([leadIdKey], true);
+
+  const allClientIds = new Set<number>();
+  activePlans.forEach((plan: any) => {
+    const clientId = plan.client_id ? Number(plan.client_id) : null;
+    if (clientId && !Number.isNaN(clientId)) allClientIds.add(clientId);
+  });
+  const contactMap = new Map<number, string>();
+  if (allClientIds.size > 0) {
+    const { data: contacts } = await supabase
+      .from('leads_contact')
+      .select('id, name')
+      .in('id', Array.from(allClientIds));
+    (contacts || []).forEach((contact: any) => {
+      if (contact.id && contact.name) contactMap.set(contact.id, contact.name);
+    });
+  }
+
+  const proformaDateMap = new Map<number, string | null>();
+  const leadLevelProformaMap = new Map<string, string | null>();
+  const { data: proformas } = await supabase
+    .from('proformainvoice')
+    .select('ppr_id, client_id, cdate, lead_id')
+    .eq('lead_id', legacyId)
+    .is('cxd_date', null);
+  (proformas || []).forEach((proforma: any) => {
+    const normalizedDate = normalizeDate(proforma.cdate);
+    if (proforma.ppr_id != null) {
+      const pprId = Number(proforma.ppr_id);
+      if (!Number.isNaN(pprId)) {
+        const existingDate = proformaDateMap.get(pprId);
+        if (!existingDate || (normalizedDate && existingDate && normalizedDate > existingDate)) {
+          proformaDateMap.set(pprId, normalizedDate);
+        }
+      }
+    } else {
+      const leadIdStr = proforma.lead_id?.toString() ?? '';
+      const clientIdStr = proforma.client_id != null ? String(proforma.client_id) : 'any';
+      const key = `${leadIdStr}_${clientIdStr}`;
+      const existingDate = leadLevelProformaMap.get(key);
+      if (!existingDate || (normalizedDate && existingDate && normalizedDate > existingDate)) {
+        leadLevelProformaMap.set(key, normalizedDate);
+      }
+    }
+  });
+
+  const rows: PaymentRow[] = activePlans.map((plan: any) => {
+    const lidKey = plan.lead_id?.toString?.() || '';
+    const clientId = plan.client_id ? Number(plan.client_id) : null;
+    const meta = leadMeta.get(lidKey) || null;
+    const contactName = clientId && !Number.isNaN(clientId) ? contactMap.get(clientId) : null;
+    const value = Number(plan.value || plan.value_base || 0);
+    let vat = Number(plan.vat_value || 0);
+    const currency = plan.accounting_currencies?.name || mapCurrencyId(plan.currency_id);
+    if ((!vat || vat === 0) && currency === '₪') {
+      vat = Math.round(value * 0.18 * 100) / 100;
+    }
+    const amount = value + vat;
+    const orderCode = normalizeOrderCode(plan.order);
+    const dueSource = plan.due_date || plan.date;
+    const dueDate = normalizeDate(dueSource);
+    const actualDate = normalizeDate(plan.actual_date);
+    const paymentRowId = plan.id ? (typeof plan.id === 'number' ? plan.id : Number(plan.id)) : null;
+    let proformaDate: string | null = null;
+    if (paymentRowId !== null && !Number.isNaN(paymentRowId)) {
+      proformaDate = proformaDateMap.get(paymentRowId) ?? null;
+    }
+    if (!proformaDate) {
+      const clientIdVal = clientId != null && !Number.isNaN(clientId) ? String(clientId) : 'any';
+      proformaDate =
+        leadLevelProformaMap.get(`${lidKey}_${clientIdVal}`) ?? leadLevelProformaMap.get(`${lidKey}_any`) ?? null;
+    }
+    const hasProforma = proformaDate !== null;
+    const planDate = normalizeDate(plan.date);
+    return {
+      id: `legacy-${plan.id}`,
+      leadId: `legacy_${lidKey}`,
+      clientId: clientId ?? null,
+      leadName: meta?.leadName || `Lead #${lidKey}`,
+      clientName: contactName || meta?.contactName || meta?.clientName || meta?.leadName || `Lead #${lidKey}`,
+      amount,
+      value,
+      vat,
+      currency,
+      orderCode,
+      orderLabel: mapOrderLabel(orderCode, plan.order),
+      collected: Boolean(actualDate),
+      hasProforma,
+      collectedDate: actualDate,
+      dueDate,
+      planDate,
+      proformaDate,
+      handlerName: meta?.handlerName || '—',
+      handlerId: meta?.handlerId ?? null,
+      caseNumber: meta?.caseNumber || `#${lidKey}`,
+      categoryName: meta?.categoryName || '—',
+      notes: plan.notes || '',
+      mainCategoryId: meta?.mainCategoryId,
+      currencyId: plan.currency_id != null ? Number(plan.currency_id) : null,
+      leadType: 'legacy',
+    };
+  });
+  return rows.filter((r) => !r.collected);
 }

@@ -211,3 +211,79 @@ export function pickUnpaidAmountForCurrency(
   if (!pair) return 0;
   return pair.base + pair.vat;
 }
+
+/**
+ * Batch-fetch unpaid base+VAT per currency for many leads (same row rules as fetchUnpaidTotalsByCurrency).
+ * Map keys: `new:<leads.id uuid>` | `legacy:<leads_lead.id number>`
+ */
+export async function fetchUnpaidTotalsBatchByLeadKey(
+  newLeadIds: string[],
+  legacyLeadIds: number[]
+): Promise<Map<string, UnpaidByCurrencyMap>> {
+  const out = new Map<string, UnpaidByCurrencyMap>();
+
+  const merge = (leadKey: string, currencyKey: string, base: number, vat: number) => {
+    if (!out.has(leadKey)) out.set(leadKey, {});
+    const acc = out.get(leadKey)!;
+    if (!acc[currencyKey]) acc[currencyKey] = { base: 0, vat: 0 };
+    acc[currencyKey].base += base;
+    acc[currencyKey].vat += vat;
+  };
+
+  const uniqLegacy = [...new Set(legacyLeadIds.filter((n) => n != null && !Number.isNaN(Number(n))))].map(Number);
+  if (uniqLegacy.length > 0) {
+    const { data, error } = await supabase
+      .from('finances_paymentplanrow')
+      .select(
+        `
+          lead_id,
+          value,
+          vat_value,
+          actual_date,
+          date,
+          due_date,
+          currency_id,
+          accounting_currencies!finances_paymentplanrow_currency_id_fkey (
+            id,
+            name,
+            iso_code
+          )
+        `
+      )
+      .in('lead_id', uniqLegacy)
+      .is('cancel_date', null);
+
+    if (!error && data?.length) {
+      for (const plan of data) {
+        const lid = Number((plan as { lead_id?: number }).lead_id);
+        if (!lid || Number.isNaN(lid)) continue;
+        if (isLegacyPlanRowPaid(plan as Record<string, unknown>)) continue;
+        const ckey = currencyKeyFromLegacyPlan(plan as Record<string, unknown>);
+        const { base, vat } = legacyPlanBaseAndVat(plan as Record<string, unknown>);
+        merge(`legacy:${lid}`, ckey, base, vat);
+      }
+    }
+  }
+
+  const uniqNew = [...new Set(newLeadIds.filter((id) => id && String(id).trim() !== ''))];
+  if (uniqNew.length > 0) {
+    const { data, error } = await supabase
+      .from('payment_plans')
+      .select('lead_id, value, value_vat, paid, currency, cancel_date')
+      .in('lead_id', uniqNew)
+      .is('cancel_date', null);
+
+    if (!error && data?.length) {
+      for (const plan of data) {
+        const pid = plan.lead_id != null ? String(plan.lead_id) : '';
+        if (!pid) continue;
+        if (isNewPlanRowPaid(plan as Record<string, unknown>)) continue;
+        const ckey = ((plan.currency as string) || '₪').trim() || '₪';
+        const { base, vat } = newPlanBaseAndVat(plan as Record<string, unknown>);
+        merge(`new:${pid}`, ckey, base, vat);
+      }
+    }
+  }
+
+  return out;
+}

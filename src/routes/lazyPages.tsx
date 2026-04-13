@@ -41,6 +41,7 @@ export const LazyEmployeeUnavailabilitiesReport = lazy(() => import('../pages/Em
 export const LazyEmployeeSalariesReport = lazy(() => import('../pages/EmployeeSalariesReport'));
 export const LazyEmployeeInfoReport = lazy(() => import('../pages/EmployeeInfoReport'));
 export const LazyLeadsReportPage = lazy(() => import('../pages/LeadsReportPage'));
+export const LazyTagsManagerPage = lazy(() => import('../pages/TagsManagerPage'));
 export const LazyExternalUserAccessLogsPage = lazy(() => import('../pages/ExternalUserAccessLogsPage'));
 export const LazyMasterLeadPage = lazy(() => import('../components/MasterLeadPage'));
 export const LazySettingsPage = lazy(() => import('../pages/SettingsPage'));

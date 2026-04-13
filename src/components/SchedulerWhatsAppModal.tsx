@@ -6,6 +6,7 @@ import EmojiPicker from 'emoji-picker-react';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { buildApiUrl } from '../lib/api';
+import { normalizeMessageUrlsForLinkify } from '../lib/normalizeMessageUrlsForLinkify';
 import { fetchWhatsAppTemplates, filterTemplates, type WhatsAppTemplate } from '../lib/whatsappTemplates';
 import TemplateOptionCard from './whatsapp/TemplateOptionCard';
 import { generateTemplateParameters } from '../lib/whatsappTemplateParams';
@@ -524,7 +525,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
     // Process links (URLs and emails)
     const processLinks = (input: string, startKey: number = 0): (string | React.ReactElement)[] => {
-      const linkRegex = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|mailto:[^\s<>"']+|([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})|[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\/[^\s<>"']*)?)/g;
+      input = normalizeMessageUrlsForLinkify(input);
+      const linkRegex = /(https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|mailto:[^\s<>"']+|([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})|[a-zA-Z0-9-]+\.[a-zA-Z]{2,}(?:\/[^\s<>"']*)?)/gi;
       const parts: (string | React.ReactElement)[] = [];
       let lastIndex = 0;
       let match;
@@ -542,24 +544,31 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         const matchedText = match[0];
         let href = matchedText;
         let displayText = matchedText;
+        const hasHttpScheme = /^https?:\/\//i.test(matchedText);
+        const hasMailtoScheme = /^mailto:/i.test(matchedText);
 
-        if (matchedText.includes('@') && !matchedText.startsWith('http') && !matchedText.startsWith('mailto:')) {
+        if (matchedText.includes('@') && !hasHttpScheme && !hasMailtoScheme) {
           // It's an email address
           href = `mailto:${matchedText}`;
           displayText = matchedText;
-        } else if (matchedText.startsWith('mailto:')) {
+        } else if (hasMailtoScheme) {
           // Already has mailto: prefix
           href = matchedText;
-          displayText = matchedText.replace(/^mailto:/, '');
-        } else if (!matchedText.startsWith('http://') && !matchedText.startsWith('https://') && !matchedText.startsWith('mailto:')) {
+          displayText = matchedText.replace(/^mailto:/i, '');
+        } else if (!hasHttpScheme && !hasMailtoScheme) {
           // It's a URL without protocol
           href = `https://${matchedText}`;
           displayText = matchedText;
         }
 
         // Replace long URLs with "Meeting Link" text
-        if (href.startsWith('http://') || href.startsWith('https://')) {
-          if (matchedText.length > 50 || href.includes('teams.microsoft.com') || href.includes('meetup-join') || href.includes('meeting')) {
+        if (/^https?:\/\//i.test(href)) {
+          if (
+            matchedText.length > 50 ||
+            /teams\.microsoft\.com/i.test(href) ||
+            href.includes('meetup-join') ||
+            href.includes('meeting')
+          ) {
             displayText = 'Meeting Link';
           }
         }
