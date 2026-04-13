@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, type FC } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
   ArrowPathIcon,
   ChevronDownIcon,
@@ -13,7 +13,6 @@ import { CheckCircleIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../../lib/supabase';
 import { convertToNIS } from '../../lib/currencyConversion';
 import {
-  buildLeadLink,
   fetchOutstandingPaymentPlanRowsForTagsManager,
   formatCurrency,
   type PaymentRow,
@@ -44,6 +43,9 @@ type JunctionRow = {
 type TagsManagerFilterState = {
   taggedFromDate: string;
   taggedToDate: string;
+  /** Filters the "Date" column (due / plan date) in expanded outstanding payment plans; client-side on loaded rows. */
+  paymentPlanFromDate: string;
+  paymentPlanToDate: string;
   filterTagIds: number[];
   filterEmployeeIds: number[];
 };
@@ -58,12 +60,47 @@ type TagsManagerPersistedReport = {
   currencyEntries: [number, string][];
 };
 
-function tagsManagerFilterSignature(f: TagsManagerFilterState): string {
+/** Signature for junction report fetch only (plan payment dates are client-side on expanded rows). */
+function tagsManagerReportFetchSignature(f: {
+  taggedFromDate: string;
+  taggedToDate: string;
+  filterTagIds: number[];
+  filterEmployeeIds: number[];
+}): string {
   return JSON.stringify({
     from: f.taggedFromDate,
     to: f.taggedToDate,
     tags: [...f.filterTagIds].sort((a, b) => a - b),
     emps: [...f.filterEmployeeIds].sort((a, b) => a - b),
+  });
+}
+
+/** Calendar YYYY-MM-DD in local TZ — same basis as the subtable "Date" column (dueDate ?? planDate). */
+function paymentPlanRowDateYmd(row: PaymentRow): string | null {
+  const raw = row.dueDate ?? row.planDate;
+  if (raw == null || !String(raw).trim()) return null;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function filterPaymentPlanRowsByPlanDate(
+  rows: PaymentRow[],
+  fromYmd: string,
+  toYmd: string
+): PaymentRow[] {
+  const from = fromYmd.trim();
+  const to = toYmd.trim();
+  if (!from && !to) return rows;
+  return rows.filter((row) => {
+    const ymd = paymentPlanRowDateYmd(row);
+    if (!ymd) return false;
+    if (from && ymd < from) return false;
+    if (to && ymd > to) return false;
+    return true;
   });
 }
 
@@ -557,6 +594,13 @@ function compareTagsManagerRows(
   }
 }
 
+/**
+ * Sticky header cells — vertical scroll is on `.app-main-scroll` (main), not an inner wrapper.
+ * Do not wrap this table in `overflow-x-auto`; that creates a nested scrollport and breaks sticky.
+ */
+const TAGS_MANAGER_TH_STICKY =
+  'sticky top-0 z-[31] bg-base-200 border-b border-base-300 align-middle shadow-sm';
+
 function TagsManagerSortTh({
   label,
   column,
@@ -564,6 +608,7 @@ function TagsManagerSortTh({
   activeKey,
   sortDir,
   onSort,
+  summaryFooter,
 }: {
   label: string;
   column: TagsManagerSortKey;
@@ -571,34 +616,50 @@ function TagsManagerSortTh({
   activeKey: TagsManagerSortKey | null;
   sortDir: 'asc' | 'desc';
   onSort: (k: TagsManagerSortKey) => void;
+  /** Second line under title (e.g. column sum). */
+  summaryFooter?: string;
 }) {
   const active = activeKey === column;
+  const end = align === 'right';
   return (
-    <th scope="col" className={`text-base ${align === 'right' ? 'text-right' : ''}`}>
-      <button
-        type="button"
-        className={`inline-flex w-full min-w-0 items-center gap-0.5 font-semibold hover:text-primary ${
-          align === 'right' ? 'justify-end text-right' : 'justify-start text-left'
-        }`}
-        onClick={() => onSort(column)}
-        aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
-      >
-        <span className="truncate">{label}</span>
-        <span className="inline-flex shrink-0 text-primary" aria-hidden>
-          {active ? (
-            sortDir === 'asc' ? (
-              <ChevronUpIcon className="w-4 h-4" />
+    <th
+      scope="col"
+      className={`text-base ${TAGS_MANAGER_TH_STICKY} ${end ? 'text-right' : ''}`}
+    >
+      <div className={`flex min-w-0 flex-col gap-1 py-0.5 ${end ? 'items-end' : 'items-start'}`}>
+        <button
+          type="button"
+          className={`inline-flex w-full min-w-0 items-center gap-0.5 font-semibold hover:text-primary ${
+            end ? 'justify-end text-right' : 'justify-start text-left'
+          }`}
+          onClick={() => onSort(column)}
+          aria-sort={active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
+        >
+          <span className="truncate">{label}</span>
+          <span className="inline-flex shrink-0 text-primary" aria-hidden>
+            {active ? (
+              sortDir === 'asc' ? (
+                <ChevronUpIcon className="w-4 h-4" />
+              ) : (
+                <ChevronDownIcon className="w-4 h-4" />
+              )
             ) : (
-              <ChevronDownIcon className="w-4 h-4" />
-            )
-          ) : (
-            <span className="inline-flex flex-col opacity-40">
-              <ChevronUpIcon className="-mb-1 w-3 h-3" />
-              <ChevronDownIcon className="w-3 h-3" />
-            </span>
-          )}
-        </span>
-      </button>
+              <span className="inline-flex flex-col opacity-40">
+                <ChevronUpIcon className="-mb-1 w-3 h-3" />
+                <ChevronDownIcon className="w-3 h-3" />
+              </span>
+            )}
+          </span>
+        </button>
+        {summaryFooter != null && summaryFooter !== '' && (
+          <span
+            className="block w-full max-w-[min(100%,14rem)] text-[11px] sm:text-xs font-semibold tabular-nums tracking-tight text-base-content/75 leading-tight"
+            title="Sum of displayed rows (NIS equivalent)"
+          >
+            {summaryFooter}
+          </span>
+        )}
+      </div>
     </th>
   );
 }
@@ -619,10 +680,16 @@ function TagsManagerPaymentPlanSubtable({
   rows,
   loading,
   loadError,
+  planDateFilterActive,
+  fetchedRowCount,
 }: {
   rows: PaymentRow[];
   loading: boolean;
   loadError: boolean;
+  /** True when plan-date from/to filters are set (may hide every row). */
+  planDateFilterActive: boolean;
+  /** Count before plan-date filter; used when filter excludes all rows. */
+  fetchedRowCount: number;
 }) {
   if (loading) {
     return (
@@ -635,49 +702,56 @@ function TagsManagerPaymentPlanSubtable({
     return <p className="text-error text-sm py-4 px-3">Could not load payment plans.</p>;
   }
   if (rows.length === 0) {
+    const noRowsMatchPlanDate =
+      planDateFilterActive && fetchedRowCount > 0;
     return (
       <p className="text-base-content/60 text-sm py-4 px-3">
-        No outstanding payment plan rows (unpaid) for this lead.
+        {noRowsMatchPlanDate
+          ? 'No rows match the plan date filter. Adjust or clear the plan date fields in the filters above.'
+          : 'No outstanding payment plan rows (unpaid) for this lead.'}
       </p>
     );
   }
   return (
     <div className="overflow-x-auto bg-base-200/30 border-t border-base-300">
-      <table className="table table-sm md:table-md w-full text-base [&_tbody_tr:hover]:!bg-transparent">
+      {/*
+        Avoid DaisyUI `table` class here: nested inside the main `.table` it matches global
+        tbody/tr hover rules so every nested row highlights together.
+      */}
+      <table className="w-full border-collapse text-sm md:text-base">
         <thead>
-          <tr className="bg-base-200">
-            <th>Lead Name</th>
-            <th>Client</th>
-            <th>Amount</th>
-            <th>Amount (in NIS)</th>
-            <th>Order</th>
-            <th>Collected</th>
-            <th>Date</th>
-            <th>Proforma Date</th>
-            <th>Handler</th>
-            <th>Case</th>
-            <th>Category</th>
-            <th>Notes</th>
+          <tr className="border-b border-base-300 bg-base-200">
+            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Lead Name</th>
+            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Client</th>
+            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Amount</th>
+            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Amount (in NIS)</th>
+            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Order</th>
+            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Collected</th>
+            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Date</th>
+            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Proforma Date</th>
+            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Handler</th>
+            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Case</th>
+            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Category</th>
+            <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Notes</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.id}>
-              <td>
-                <Link to={buildLeadLink(row)} className="link link-primary" onClick={(e) => e.stopPropagation()}>
-                  {row.leadName}
-                </Link>
-              </td>
-              <td>{row.clientName || row.leadName || '—'}</td>
-              <td className="font-semibold">
+            <tr
+              key={row.id}
+              className="border-b border-base-300/50 transition-colors hover:bg-base-300/45 dark:hover:bg-neutral-700/35"
+            >
+              <td className="px-3 py-2 align-middle text-black dark:text-white">{row.leadName}</td>
+              <td className="px-3 py-2 align-middle">{row.clientName || row.leadName || '—'}</td>
+              <td className="px-3 py-2 align-middle font-semibold">
                 {formatCurrency(row.value, row.currency)}
                 {row.vat > 0 && (
                   <span className="text-base-content/60 ml-1">+ {formatCurrency(row.vat, row.currency)}</span>
                 )}
               </td>
-              <td className="font-semibold">{tagsPaymentAmountInNis(row)}</td>
-              <td>{row.orderLabel || '—'}</td>
-              <td>
+              <td className="px-3 py-2 align-middle font-semibold">{tagsPaymentAmountInNis(row)}</td>
+              <td className="px-3 py-2 align-middle">{row.orderLabel || '—'}</td>
+              <td className="px-3 py-2 align-middle">
                 {row.collected ? (
                   <span className="inline-flex items-center gap-2 text-green-600 font-semibold">
                     <CheckCircleIcon className="w-5 h-5" />
@@ -695,17 +769,19 @@ function TagsManagerPaymentPlanSubtable({
                   </span>
                 )}
               </td>
-              <td>
+              <td className="px-3 py-2 align-middle">
                 {(() => {
                   const displayDate = row.dueDate ?? row.planDate;
                   return displayDate ? new Date(displayDate).toLocaleDateString() : '—';
                 })()}
               </td>
-              <td>{row.proformaDate ? new Date(row.proformaDate).toLocaleDateString() : '—'}</td>
-              <td>{row.handlerName || '—'}</td>
-              <td>{row.caseNumber || '—'}</td>
-              <td>{row.categoryName || '—'}</td>
-              <td className="max-w-xs truncate" title={row.notes || ''}>
+              <td className="px-3 py-2 align-middle">
+                {row.proformaDate ? new Date(row.proformaDate).toLocaleDateString() : '—'}
+              </td>
+              <td className="px-3 py-2 align-middle">{row.handlerName || '—'}</td>
+              <td className="px-3 py-2 align-middle">{row.caseNumber || '—'}</td>
+              <td className="px-3 py-2 align-middle">{row.categoryName || '—'}</td>
+              <td className="px-3 py-2 align-middle max-w-xs truncate" title={row.notes || ''}>
                 {row.notes || '—'}
               </td>
             </tr>
@@ -725,11 +801,20 @@ export default function TagsManagerReport() {
   const [filters, setFilters] = usePersistedFilters<TagsManagerFilterState>('tagsManager_filters', {
     taggedFromDate: today,
     taggedToDate: today,
+    paymentPlanFromDate: '',
+    paymentPlanToDate: '',
     filterTagIds: [],
     filterEmployeeIds: [],
   }, { storage: 'sessionStorage' });
 
-  const { taggedFromDate, taggedToDate, filterTagIds, filterEmployeeIds } = filters;
+  const {
+    taggedFromDate,
+    taggedToDate,
+    paymentPlanFromDate = '',
+    paymentPlanToDate = '',
+    filterTagIds,
+    filterEmployeeIds,
+  } = filters;
 
   const [reportData, setReportData] = usePersistedState<TagsManagerPersistedReport | null>(
     'tagsManager_report',
@@ -739,7 +824,7 @@ export default function TagsManagerReport() {
 
   const filterSig = useMemo(
     () =>
-      tagsManagerFilterSignature({
+      tagsManagerReportFetchSignature({
         taggedFromDate,
         taggedToDate,
         filterTagIds,
@@ -760,6 +845,17 @@ export default function TagsManagerReport() {
   const [paymentRowsByRowKey, setPaymentRowsByRowKey] = useState<Map<string, PaymentRow[]>>(new Map());
   const [paymentLoadingKey, setPaymentLoadingKey] = useState<string | null>(null);
   const [paymentErrorKey, setPaymentErrorKey] = useState<string | null>(null);
+
+  const hasPaymentPlanDateFilter = Boolean(paymentPlanFromDate.trim() || paymentPlanToDate.trim());
+
+  const filteredPaymentRowsByRowKey = useMemo(() => {
+    if (!hasPaymentPlanDateFilter) return paymentRowsByRowKey;
+    const out = new Map<string, PaymentRow[]>();
+    for (const [k, arr] of paymentRowsByRowKey.entries()) {
+      out.set(k, filterPaymentPlanRowsByPlanDate(arr, paymentPlanFromDate, paymentPlanToDate));
+    }
+    return out;
+  }, [paymentRowsByRowKey, hasPaymentPlanDateFilter, paymentPlanFromDate, paymentPlanToDate]);
 
   const [currencyBootstrap, setCurrencyBootstrap] = useState<Map<number, string>>(new Map());
 
@@ -809,7 +905,7 @@ export default function TagsManagerReport() {
     setPaymentRowsByRowKey(new Map());
     setPaymentLoadingKey(null);
     setPaymentErrorKey(null);
-    const sig = tagsManagerFilterSignature({
+    const sig = tagsManagerReportFetchSignature({
       taggedFromDate,
       taggedToDate,
       filterTagIds,
@@ -1179,6 +1275,21 @@ export default function TagsManagerReport() {
     });
   }, [rows, newLeadMap, legacyLeadMap, unpaidMap, currencyMap]);
 
+  /** NIS-equivalent sums over all rows currently shown (same basis as sort). */
+  const totalValueSumNisFooter = useMemo(() => {
+    if (tableRows.length === 0) return '—';
+    let s = 0;
+    for (const r of tableRows) s += r.sortTotal;
+    return `Σ ${formatMoney('₪', s)}`;
+  }, [tableRows]);
+
+  const remainingValueSumNisFooter = useMemo(() => {
+    if (tableRows.length === 0) return '—';
+    let s = 0;
+    for (const r of tableRows) s += r.sortRemaining;
+    return `Σ ${formatMoney('₪', s)}`;
+  }, [tableRows]);
+
   const sortedTableRows = useMemo(() => {
     if (!sortKey) return tableRows;
     const copy = [...tableRows];
@@ -1191,44 +1302,81 @@ export default function TagsManagerReport() {
 
   return (
     <div className="space-y-6">
-      <div className="flex w-full flex-col gap-2">
-        <div className="flex w-full flex-row flex-wrap gap-2 sm:gap-4 items-end">
-          <div className="form-control min-w-0 flex-1 sm:max-w-xs">
-            <label className="label py-1">
-              <span className="label-text font-medium">Tagged from</span>
-            </label>
+      <div className="flex w-full min-w-0 flex-row flex-wrap gap-2 sm:gap-3 lg:flex-nowrap lg:gap-4 lg:overflow-x-auto lg:pb-1 items-end [scrollbar-gutter:stable]">
+        <div className="form-control min-w-0 flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto sm:max-w-xs lg:min-w-[10rem] lg:shrink">
+          <label className="label py-1">
+            <span className="label-text font-medium">Tagged from</span>
+          </label>
+          <input
+            type="date"
+            className="input input-bordered input-sm md:input-md w-full min-w-0 bg-base-100"
+            value={taggedFromDate}
+            onChange={(e) => setFilters((f) => ({ ...f, taggedFromDate: e.target.value }))}
+            max={taggedToDate || undefined}
+          />
+        </div>
+        <div className="form-control min-w-0 flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto sm:max-w-xs lg:min-w-[10rem] lg:shrink">
+          <label className="label py-1">
+            <span className="label-text font-medium">Tagged to</span>
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
             <input
               type="date"
-              className="input input-bordered input-sm md:input-md w-full min-w-0 bg-base-100"
-              value={taggedFromDate}
-              onChange={(e) => setFilters((f) => ({ ...f, taggedFromDate: e.target.value }))}
-              max={taggedToDate || undefined}
+              className="input input-bordered input-sm md:input-md min-w-0 flex-1 bg-base-100"
+              value={taggedToDate}
+              onChange={(e) => setFilters((f) => ({ ...f, taggedToDate: e.target.value }))}
+              min={taggedFromDate || undefined}
             />
+            {(taggedFromDate || taggedToDate) && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm shrink-0"
+                onClick={() => {
+                  setFilters((f) => ({ ...f, taggedFromDate: '', taggedToDate: '' }));
+                }}
+              >
+                Clear dates
+              </button>
+            )}
           </div>
-          <div className="form-control min-w-0 flex-1 sm:max-w-xs">
-            <label className="label py-1">
-              <span className="label-text font-medium">Tagged to</span>
-            </label>
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                type="date"
-                className="input input-bordered input-sm md:input-md min-w-0 flex-1 bg-base-100"
-                value={taggedToDate}
-                onChange={(e) => setFilters((f) => ({ ...f, taggedToDate: e.target.value }))}
-                min={taggedFromDate || undefined}
-              />
-              {(taggedFromDate || taggedToDate) && (
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm shrink-0"
-                  onClick={() => {
-                    setFilters((f) => ({ ...f, taggedFromDate: '', taggedToDate: '' }));
-                  }}
-                >
-                  Clear dates
-                </button>
-              )}
-            </div>
+        </div>
+        <div className="form-control min-w-0 flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto sm:max-w-xs lg:min-w-[10rem] lg:shrink">
+          <label className="label py-1">
+            <span className="label-text font-medium">Plan payment date from</span>
+          </label>
+          <input
+            type="date"
+            className="input input-bordered input-sm md:input-md w-full min-w-0 bg-base-100"
+            value={paymentPlanFromDate}
+            onChange={(e) => setFilters((f) => ({ ...f, paymentPlanFromDate: e.target.value }))}
+            max={paymentPlanToDate || undefined}
+            title="Filters the Date column in expanded outstanding payment plans (due / plan date)"
+          />
+        </div>
+        <div className="form-control min-w-0 flex-1 basis-[calc(50%-0.25rem)] sm:basis-auto sm:max-w-xs lg:min-w-[10rem] lg:shrink">
+          <label className="label py-1">
+            <span className="label-text font-medium">Plan payment date to</span>
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="date"
+              className="input input-bordered input-sm md:input-md min-w-0 flex-1 bg-base-100"
+              value={paymentPlanToDate}
+              onChange={(e) => setFilters((f) => ({ ...f, paymentPlanToDate: e.target.value }))}
+              min={paymentPlanFromDate || undefined}
+              title="Filters the Date column in expanded outstanding payment plans (due / plan date)"
+            />
+            {hasPaymentPlanDateFilter && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm shrink-0"
+                onClick={() => {
+                  setFilters((f) => ({ ...f, paymentPlanFromDate: '', paymentPlanToDate: '' }));
+                }}
+              >
+                Clear plan dates
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -1302,13 +1450,13 @@ export default function TagsManagerReport() {
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-xl border border-base-300 bg-base-100">
-        <table className="table table-md text-base">
+      <div className="relative w-full min-w-0 rounded-xl border border-base-300 bg-base-100">
+        <table className="table table-md text-base w-full min-w-max">
           <thead>
-            <tr className="bg-base-200">
-              <th className="text-base w-10 px-2" aria-label="Expand" />
-              <th className="text-base">Tag</th>
-              <th className="text-base">Lead</th>
+            <tr>
+              <th className={`text-base w-10 px-2 ${TAGS_MANAGER_TH_STICKY}`} aria-label="Expand" />
+              <th className={`text-base ${TAGS_MANAGER_TH_STICKY}`}>Tag</th>
+              <th className={`text-base ${TAGS_MANAGER_TH_STICKY}`}>Lead</th>
               <TagsManagerSortTh
                 label="Total value (lead)"
                 column="total"
@@ -1316,6 +1464,7 @@ export default function TagsManagerReport() {
                 activeKey={sortKey}
                 sortDir={sortDir}
                 onSort={handleSort}
+                summaryFooter={totalValueSumNisFooter}
               />
               <TagsManagerSortTh
                 label="Remaining lead value"
@@ -1324,6 +1473,7 @@ export default function TagsManagerReport() {
                 activeKey={sortKey}
                 sortDir={sortDir}
                 onSort={handleSort}
+                summaryFooter={remainingValueSumNisFooter}
               />
               <TagsManagerSortTh
                 label="Applicants"
@@ -1341,7 +1491,7 @@ export default function TagsManagerReport() {
                 sortDir={sortDir}
                 onSort={handleSort}
               />
-              <th className="text-base">Tagged by</th>
+              <th className={`text-base ${TAGS_MANAGER_TH_STICKY}`}>Tagged by</th>
               <TagsManagerSortTh
                 label="Tagged at"
                 column="taggedAt"
@@ -1430,9 +1580,11 @@ export default function TagsManagerReport() {
                           Outstanding payment plans (unpaid)
                         </div>
                         <TagsManagerPaymentPlanSubtable
-                          rows={paymentRowsByRowKey.get(r.key) ?? []}
+                          rows={filteredPaymentRowsByRowKey.get(r.key) ?? []}
                           loading={paymentLoadingKey === r.key}
                           loadError={paymentErrorKey === r.key}
+                          planDateFilterActive={hasPaymentPlanDateFilter}
+                          fetchedRowCount={(paymentRowsByRowKey.get(r.key) ?? []).length}
                         />
                       </td>
                     </tr>
