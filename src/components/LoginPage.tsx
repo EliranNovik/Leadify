@@ -178,7 +178,7 @@ const LoginPage: React.FC = () => {
       >
         <source src="/login-hero.mp4" type="video/mp4" />
       </video>
-      <div className="absolute inset-0 w-full h-full bg-gradient-to-b from-[rgba(10,10,10,0.52)] to-[rgba(10,10,10,0.74)] z-0" />
+      <div className="absolute inset-0 w-full h-full bg-gradient-to-b from-[rgba(10,10,10,0.38)] to-[rgba(10,10,10,0.58)] z-0" />
       <div className="absolute inset-0 w-full h-full bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.05),transparent_60%)] z-0" />
 
       {/* Only render login UI if not showing welcome animation */}
@@ -203,11 +203,10 @@ const LoginPage: React.FC = () => {
 
                 {/* Centered Logo */}
                 <div className="flex items-center gap-3">
-                  <img src="/RMQ_LOGO.png" alt="RMQ 2.0" className="w-16 h-16 object-contain" />
+                  <img src="/RMQ_LOGO.png" alt="RMQ 2.0" className="w-20 h-20 object-contain" />
                 </div>
 
               </div>
-
               {/* Mobile Menu Overlay */}
               {isMenuOpen && (
                 <div className="absolute top-full left-0 right-0 shadow-lg z-40 bg-black/70 border border-white/15 backdrop-blur-md">
@@ -249,7 +248,7 @@ const LoginPage: React.FC = () => {
               <div className="flex items-center justify-between py-4 px-8">
                 {/* Brand */}
                 <div className="flex items-center gap-3">
-                  <img src="/RMQ_LOGO.png" alt="RMQ 2.0" className="w-20 h-20 object-contain" />
+                  <img src="/RMQ_LOGO.png" alt="RMQ 2.0" className="w-24 h-24 object-contain" />
                 </div>
 
                 {/* Navigation Links */}
@@ -277,7 +276,7 @@ const LoginPage: React.FC = () => {
             </div>
             {/* Logo above login form */}
             <div className="w-full h-72 md:h-[420px] relative -mt-16 md:-mt-20 mb-4 md:mb-6 flex justify-center items-center">
-              <div className="absolute right-4 md:right-10 top-1/2 -translate-y-1/2 z-10 text-right text-white max-w-[320px] md:max-w-[700px] bg-black/28 backdrop-blur-sm border border-white/15 rounded-xl px-4 py-3 md:px-6 md:py-5">
+              <div className="hidden md:block absolute right-4 md:right-10 top-1/2 -translate-y-1/2 z-10 text-right text-white max-w-[320px] md:max-w-[700px] px-4 py-3 md:px-6 md:py-5">
                 <div className="text-xl md:text-[2.2rem] font-semibold leading-[1.12] whitespace-nowrap drop-shadow-[0_2px_10px_rgba(0,0,0,0.55)]" style={{ fontFamily: "'Playfair Display', 'Libre Baskerville', serif" }}>
                   Smart CRM for Law Firms
                 </div>
@@ -285,7 +284,7 @@ const LoginPage: React.FC = () => {
                   Secure. Structured. Scalable.
                 </div>
               </div>
-              <div className="hidden md:flex absolute left-10 bottom-12 z-10 flex-col gap-2 text-white/95 text-[15px] bg-black/28 backdrop-blur-sm border border-white/15 rounded-xl px-4 py-3">
+              <div className="hidden md:flex absolute left-10 bottom-12 z-10 flex-col gap-2 text-white/95 text-[15px] px-4 py-3 drop-shadow-[0_2px_10px_rgba(0,0,0,0.55)]">
                 <div className="flex items-center gap-2"><span className="text-[#d4af37]">✔</span><span>Case tracking</span></div>
                 <div className="flex items-center gap-2"><span className="text-[#d4af37]">✔</span><span>Client management</span></div>
                 <div className="flex items-center gap-2"><span className="text-[#d4af37]">✔</span><span>Automated workflows</span></div>
@@ -295,7 +294,7 @@ const LoginPage: React.FC = () => {
             {/* Login box */}
             <div className="w-full max-w-md flex flex-col items-center justify-center min-h-[500px] -mt-10 md:-mt-16 pt-0 pb-12 px-6 md:pt-2 md:px-0 md:-ml-20 relative z-20">
               {/* Glassy blurred white box container */}
-              <div className="w-full p-6 md:p-9 bg-[rgba(20,20,20,0.60)] backdrop-blur-[16px] border border-[rgba(255,255,255,0.08)] shadow-[0_20px_60px_rgba(0,0,0,0.45)] rounded-2xl transition-transform duration-300 hover:scale-[1.02]">
+              <div className="w-full p-6 md:p-9 bg-[rgba(20,20,20,0.30)] backdrop-blur-[16px] border border-[rgba(255,255,255,0.08)] shadow-[0_20px_60px_rgba(0,0,0,0.45)] rounded-2xl transition-transform duration-300 hover:scale-[1.02]">
                 <div className="mb-5 text-center text-white">
                   <h2 className="text-xl font-semibold tracking-wide" style={{ fontFamily: "'Playfair Display', 'Libre Baskerville', serif" }}>
                     Sign In
@@ -319,7 +318,7 @@ const LoginPage: React.FC = () => {
                       />
                       <AtSymbolIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-white/75" />
                       <label
-                        className={`absolute left-9 px-1 rounded-sm bg-[rgba(20,20,20,0.9)] pointer-events-none transition-all duration-200 ${
+                        className={`absolute left-9 px-1 pointer-events-none transition-all duration-200 drop-shadow-[0_2px_8px_rgba(0,0,0,0.55)] ${
                           email
                             ? '-top-2 -translate-y-1/2 text-xs text-[#E5C07B]'
                             : 'top-1/2 -translate-y-1/2 text-sm text-white/70'
@@ -341,7 +340,7 @@ const LoginPage: React.FC = () => {
                       />
                       <LockClosedIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-white/75" />
                       <label
-                        className={`absolute left-9 px-1 rounded-sm bg-[rgba(20,20,20,0.9)] pointer-events-none transition-all duration-200 ${
+                        className={`absolute left-9 px-1 pointer-events-none transition-all duration-200 drop-shadow-[0_2px_8px_rgba(0,0,0,0.55)] ${
                           password
                             ? '-top-2 -translate-y-1/2 text-xs text-[#E5C07B]'
                             : 'top-1/2 -translate-y-1/2 text-sm text-white/70'

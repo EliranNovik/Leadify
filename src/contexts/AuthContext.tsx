@@ -344,6 +344,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         sessionStorage.setItem('user_signed_in_timestamp', Date.now().toString());
       }
       updateAuthState(session, true);
+      // SIGNED_IN must also unblock ProtectedRoute immediately.
+      // Some environments won't emit INITIAL_SESSION after an interactive sign-in redirect,
+      // and ProtectedRoute waits on `supabaseSessionReady`.
+      setAuthState((prev) => ({ ...prev, sessionCheckComplete: true }));
+      markSupabaseSessionReady(true);
       if (session?.user?.id) {
         preCheckExternalUser(session.user.id).catch(err => {
           console.error('Error pre-checking external user:', err);

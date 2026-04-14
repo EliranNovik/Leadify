@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
-import { Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
+import { ArrowDownTrayIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
 import { Search, Loader2 } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { toast } from 'react-hot-toast';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import { useTheme } from '../hooks/useTheme';
@@ -660,71 +662,166 @@ const getContrastingTextColor = (hexColor?: string | null) => {
   return luminance > 0.6 ? '#111827' : '#ffffff';
 };
 
+/** Shared with table + Excel export */
+function leadSearchCurrencySymbol(currencyId: unknown): string {
+  if (!currencyId) return '₪';
+  if (typeof currencyId === 'string') {
+    switch (currencyId.toLowerCase()) {
+      case 'nis':
+      case 'ils':
+        return '₪';
+      case 'usd':
+        return '$';
+      case 'eur':
+        return '€';
+      case 'gbp':
+        return '£';
+      case 'cad':
+        return 'C$';
+      case 'aud':
+        return 'A$';
+      default:
+        return '₪';
+    }
+  }
+  if (typeof currencyId === 'number') {
+    switch (currencyId) {
+      case 1:
+        return '₪';
+      case 2:
+        return '$';
+      case 3:
+        return '€';
+      case 4:
+        return '£';
+      default:
+        return '₪';
+    }
+  }
+  return '₪';
+}
+
+/** Plain-text cell value (matches table formatting except stage badge → stage name). */
+function getLeadColumnValueForExport(lead: Lead, columnKey: string): string {
+  const leadWithData = lead as unknown as Record<string, unknown>;
+
+  const roleFields = ['scheduler', 'manager', 'lawyer', 'expert', 'closer', 'case_handler', 'handler', 'helper'];
+  if (roleFields.includes(columnKey)) {
+    const roles = leadWithData.roles as Record<string, string> | undefined;
+    if (roles && roles[columnKey]) return String(roles[columnKey]);
+    return String(leadWithData[columnKey] ?? '');
+  }
+
+  if (columnKey === 'roles') {
+    const roles = leadWithData.roles as Record<string, string> | undefined;
+    if (!roles) return '';
+    return Object.entries(roles)
+      .filter(([, value]) => value)
+      .map(([role, name]) => `${role}: ${name}`)
+      .join(', ');
+  }
+
+  if (columnKey === 'category') {
+    return String(leadWithData.category ?? 'No Category');
+  }
+
+  if (columnKey === 'stage') {
+    const stage = leadWithData.stage;
+    if (stage === null || stage === undefined || stage === '') return 'No Stage';
+    return getStageName(String(stage));
+  }
+
+  const currencyColumns = ['meeting_currency', 'proposal_currency', 'balance_currency', 'meeting_total_currency'];
+  if (currencyColumns.includes(columnKey)) {
+    return leadSearchCurrencySymbol(leadWithData[columnKey]);
+  }
+
+  const value = leadWithData[columnKey];
+  if (value === null || value === undefined) return '';
+
+  if (columnKey.includes('_at') || columnKey.includes('date') || columnKey.includes('Date')) {
+    try {
+      return new Date(value as string | number | Date).toLocaleDateString();
+    } catch {
+      return String(value);
+    }
+  }
+
+  if (columnKey.includes('time') || columnKey.includes('Time')) {
+    return String(value);
+  }
+
+  const financialFields = [
+    'meeting_amount',
+    'proposal_total',
+    'balance',
+    'potential_value',
+    'total',
+    'first_payment',
+    'meeting_total',
+    'vat',
+    'vat_value',
+    'bonus_paid',
+    'subcontractor_fee',
+  ];
+  if (financialFields.includes(columnKey)) {
+    const numericValue = typeof value === 'number' ? value : parseFloat(String(value));
+    if (!isNaN(numericValue)) {
+      let currencyField = `${columnKey}_currency`;
+      let currency = leadWithData[currencyField];
+      if (!currency) {
+        if (columnKey === 'meeting_amount' || columnKey === 'meeting_total') {
+          currency = leadWithData.meeting_currency ?? leadWithData.meeting_total_currency;
+        } else if (columnKey === 'proposal_total') {
+          currency = leadWithData.proposal_currency;
+        } else if (columnKey === 'balance') {
+          currency = leadWithData.balance_currency;
+        } else {
+          currency = leadWithData.currency_id ?? leadWithData.currency;
+        }
+      }
+      const currencySymbol = leadSearchCurrencySymbol(currency);
+      return `${numericValue.toLocaleString()} ${currencySymbol}`;
+    }
+    return String(value);
+  }
+
+  const booleanFields = [
+    'meeting_paid',
+    'auto_email_meeting_summary',
+    'expert_eligibility_assessed',
+    'sales_roles_locked',
+    'dependent',
+    'auto',
+    'autocall',
+    'eligibile',
+  ];
+  if (booleanFields.includes(columnKey)) {
+    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+    return String(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.join(', ');
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    return JSON.stringify(value);
+  }
+
+  return String(value);
+}
+
 // Table View Component
 const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], selectedColumns: string[], onLeadClick: (lead: Lead | string, event?: React.MouseEvent) => void }) => {
-  // Helper function to get currency symbol
-  const getCurrencySymbol = (currencyId: any) => {
-    if (!currencyId) return '₪'; // Default to NIS
-
-    // Handle string currency codes
-    if (typeof currencyId === 'string') {
-      switch (currencyId.toLowerCase()) {
-        case 'nis': case 'ils': return '₪';
-        case 'usd': return '$';
-        case 'eur': return '€';
-        case 'gbp': return '£';
-        case 'cad': return 'C$';
-        case 'aud': return 'A$';
-        default: return '₪';
-      }
-    }
-
-    // Handle numeric currency IDs (common in database)
-    if (typeof currencyId === 'number') {
-      switch (currencyId) {
-        case 1: return '₪'; // NIS
-        case 2: return '$'; // USD
-        case 3: return '€'; // EUR
-        case 4: return '£'; // GBP
-        default: return '₪';
-      }
-    }
-
-    return '₪'; // Default fallback
-  };
-
   const getColumnValue = (lead: Lead, columnKey: string): string | React.ReactElement => {
     const leadWithData = lead as any;
 
-    // Handle roles - both individual role fields and the roles object
-    const roleFields = ['scheduler', 'manager', 'lawyer', 'expert', 'closer', 'case_handler', 'handler', 'helper'];
-    if (roleFields.includes(columnKey)) {
-      // First try to get from roles object
-      if (leadWithData.roles && leadWithData.roles[columnKey]) {
-        return leadWithData.roles[columnKey];
-      }
-      // Fallback to direct field access
-      return leadWithData[columnKey] || '';
-    }
-
-    if (columnKey === 'roles') {
-      return leadWithData.roles ? Object.entries(leadWithData.roles)
-        .filter(([_, value]) => value)
-        .map(([role, name]) => `${role}: ${name}`)
-        .join(', ') : '';
-    }
-
-    // Special handling for category to show main and sub category together
-    if (columnKey === 'category') {
-      return leadWithData.category || 'No Category';
-    }
-
-    // Special handling for stage to show colored badge
+    // Stage: colored badge in UI; export uses plain name via getLeadColumnValueForExport
     if (columnKey === 'stage') {
       const stage = leadWithData.stage;
       if (!stage && stage !== 0) return 'No Stage';
 
-      // Convert stage to string for getStageName/getStageColour (handles both numeric IDs and stage names)
       const stageStr = String(stage);
 
       const stageName = getStageName(stageStr);
@@ -743,7 +840,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
             whiteSpace: 'nowrap',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
-            display: 'inline-block'
+            display: 'inline-block',
           }}
           title={stageName}
         >
@@ -752,107 +849,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
       );
     }
 
-    // Special handling for currency columns to show symbols instead of IDs
-    const currencyColumns = ['meeting_currency', 'proposal_currency', 'balance_currency', 'meeting_total_currency'];
-    if (currencyColumns.includes(columnKey)) {
-      const currencyId = leadWithData[columnKey];
-      const currencySymbol = getCurrencySymbol(currencyId);
-
-      // Debug logging for currency columns
-      if (columnKey === 'balance_currency' && Math.random() < 0.1) { // Log 10% of balance_currency fields for debugging
-        console.log('🔍 Currency column debug:', {
-          columnKey,
-          currencyId,
-          currencySymbol,
-          leadData: leadWithData
-        });
-      }
-
-      return currencySymbol;
-    }
-
-    const value = leadWithData[columnKey];
-    if (value === null || value === undefined) return '';
-
-    // Format dates
-    if (columnKey.includes('_at') || columnKey.includes('date') || columnKey.includes('Date')) {
-      try {
-        return new Date(value).toLocaleDateString();
-      } catch {
-        return value.toString();
-      }
-    }
-
-    // Format time fields
-    if (columnKey.includes('time') || columnKey.includes('Time')) {
-      return value.toString();
-    }
-
-    // Format financial values with currency
-    const financialFields = ['meeting_amount', 'proposal_total', 'balance', 'potential_value', 'total', 'first_payment', 'meeting_total', 'vat', 'vat_value', 'bonus_paid', 'subcontractor_fee'];
-    if (financialFields.includes(columnKey)) {
-      // Handle both numbers and numeric strings
-      const numericValue = typeof value === 'number' ? value : parseFloat(value);
-      if (!isNaN(numericValue)) {
-        // Get corresponding currency field - try different naming conventions
-        let currencyField = columnKey + '_currency';
-        let currency = leadWithData[currencyField];
-
-        // If currency field not found, try alternative naming
-        if (!currency) {
-          if (columnKey === 'meeting_amount' || columnKey === 'meeting_total') {
-            currency = leadWithData['meeting_currency'] || leadWithData['meeting_total_currency'];
-          } else if (columnKey === 'proposal_total') {
-            currency = leadWithData['proposal_currency'];
-          } else if (columnKey === 'balance') {
-            currency = leadWithData['balance_currency'];
-          } else {
-            // Fallback to general currency fields
-            currency = leadWithData['currency_id'] || leadWithData['currency'];
-          }
-        }
-
-        const currencySymbol = getCurrencySymbol(currency);
-
-        // Debug logging for currency display
-        if (columnKey === 'total' && Math.random() < 0.1) { // Log 10% of total fields for debugging
-          console.log('🔍 Currency debug for total field:', {
-            columnKey,
-            originalValue: value,
-            numericValue,
-            valueType: typeof value,
-            currencyField,
-            currency,
-            currencySymbol,
-            leadData: leadWithData
-          });
-        }
-
-        return `${numericValue.toLocaleString()} ${currencySymbol}`;
-      }
-      return value.toString();
-    }
-
-    // Format boolean fields
-    const booleanFields = ['meeting_paid', 'auto_email_meeting_summary', 'expert_eligibility_assessed', 'sales_roles_locked', 'dependent', 'auto', 'autocall', 'eligibile'];
-    if (booleanFields.includes(columnKey)) {
-      if (typeof value === 'boolean') {
-        return value ? 'Yes' : 'No';
-      }
-      return value.toString();
-    }
-
-    // Handle arrays
-    if (Array.isArray(value)) {
-      return value.join(', ');
-    }
-
-    // Handle JSON objects
-    if (typeof value === 'object' && value !== null) {
-      return JSON.stringify(value);
-    }
-
-    return value.toString();
+    return getLeadColumnValueForExport(lead, columnKey);
   };
 
   if (leads.length === 0) {
@@ -1099,6 +1096,34 @@ const LeadSearchPage: React.FC = () => {
       navigate(path);
     }
   };
+
+  const handleExportTableToExcel = useCallback(() => {
+    if (selectedColumns.length === 0) {
+      toast.error('Select at least one table column to export.');
+      return;
+    }
+    if (results.length === 0) {
+      toast.error('No leads to export. Run a search first.');
+      return;
+    }
+    try {
+      const headers = selectedColumns.map(
+        (k) => AVAILABLE_COLUMNS.find((c) => c.key === k)?.label || k
+      );
+      const rows = results.map((lead) =>
+        selectedColumns.map((key) => getLeadColumnValueForExport(lead, key))
+      );
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Leads');
+      const dateStr = new Date().toISOString().slice(0, 10);
+      XLSX.writeFile(wb, `lead_search_export_${dateStr}.xlsx`);
+      toast.success(`Exported ${results.length} lead${results.length !== 1 ? 's' : ''}.`);
+    } catch (e) {
+      console.error('Excel export failed:', e);
+      toast.error('Export failed.');
+    }
+  }, [selectedColumns, results]);
 
   // Note: State persistence is now handled by usePersistedFilters and usePersistedState hooks
   // They automatically handle saving/restoring state across navigation (but not on page refresh)
@@ -4736,16 +4761,27 @@ const LeadSearchPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Column Selector for Table View */}
+          {/* Column Selector + Excel export (table view) */}
           {viewMode === 'table' && (
-            <div className="col-span-1 [&>div]:!col-span-1">
-              <ColumnSelector
-                selectedColumns={selectedColumns}
-                onColumnsChange={setSelectedColumns}
-                showDropdown={showColumnSelector}
-                onShowDropdown={() => handleShowDropdown('columns')}
-                onHideDropdown={() => handleHideDropdown('columns')}
-              />
+            <div className="col-span-1 grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto] gap-2 sm:gap-3 items-end">
+              <div className="min-w-0 [&>div]:!col-span-1">
+                <ColumnSelector
+                  selectedColumns={selectedColumns}
+                  onColumnsChange={setSelectedColumns}
+                  showDropdown={showColumnSelector}
+                  onShowDropdown={() => handleShowDropdown('columns')}
+                  onHideDropdown={() => handleHideDropdown('columns')}
+                />
+              </div>
+              <button
+                type="button"
+                className="btn btn-outline btn-primary gap-2 whitespace-nowrap w-full sm:w-auto shrink-0"
+                onClick={handleExportTableToExcel}
+                title="Download current results with the selected columns as Excel"
+              >
+                <ArrowDownTrayIcon className="w-4 h-4 shrink-0" aria-hidden />
+                Export Excel
+              </button>
             </div>
           )}
 

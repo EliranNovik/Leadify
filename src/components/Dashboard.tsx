@@ -5915,13 +5915,31 @@ const Dashboard: React.FC = () => {
       if (legacyLeads.length > 0) {
         const limitedLegacyLeads = (showAllOverdueLeads || processAll) ? legacyLeads : legacyLeads.slice(0, 10); // Use all leads when showing all or processing all
 
-        // Collect unique IDs from limited leads
-        const stageIds = [...new Set(limitedLegacyLeads.map(lead => lead.stage).filter(Boolean))];
-        const employeeIds = [...new Set([
-          ...limitedLegacyLeads.map(lead => lead.expert_id).filter(Boolean),
-          ...limitedLegacyLeads.map(lead => lead.meeting_manager_id).filter(Boolean)
-        ])];
-        const categoryIds = [...new Set(limitedLegacyLeads.map(lead => lead.category_id).filter(Boolean))];
+        // Collect unique IDs from limited leads (defensive: some legacy rows may contain non-numeric values).
+        const stageIds = [
+          ...new Set(
+            limitedLegacyLeads
+              .map((lead) => Number(lead.stage))
+              .filter((n) => Number.isFinite(n) && n > 0)
+          ),
+        ];
+        const employeeIds = [
+          ...new Set(
+            [
+              ...limitedLegacyLeads.map((lead) => lead.expert_id),
+              ...limitedLegacyLeads.map((lead) => lead.meeting_manager_id),
+            ]
+              .map((v) => Number(v))
+              .filter((n) => Number.isFinite(n) && n > 0)
+          ),
+        ];
+        const categoryIds = [
+          ...new Set(
+            limitedLegacyLeads
+              .map((lead) => Number(lead.category_id))
+              .filter((n) => Number.isFinite(n) && n > 0)
+          ),
+        ];
         // Fetch all related data in parallel for better performance
         const [stageResult, employeeResult, categoryResult] = await Promise.allSettled([
           stageIds.length > 0 ? supabase.from('lead_stages').select('id, name').in('id', stageIds) : Promise.resolve({ data: [] }),
