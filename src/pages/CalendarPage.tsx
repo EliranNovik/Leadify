@@ -43,6 +43,7 @@ const EmployeeAvailability: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [outlookSyncEnabled, setOutlookSyncEnabled] = useState(false);
   const [showAllUnavailableTimes, setShowAllUnavailableTimes] = useState(false);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   // Get current month and year
   const currentMonth = currentDate.getMonth();
@@ -102,6 +103,7 @@ const EmployeeAvailability: React.FC = () => {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user?.email) return;
+      if (!currentUserId) setCurrentUserId(user.id);
 
       const { data: employeeData, error } = await supabase
         .from('tenants_employee')
@@ -347,6 +349,48 @@ const EmployeeAvailability: React.FC = () => {
   useEffect(() => {
     fetchUnavailableTimes();
   }, []);
+
+  // Keep this page automatically up-to-date when `tenants_employee` changes in DB.
+  // This covers changes coming from other sessions/users/admin updates without a refresh.
+  useEffect(() => {
+    let isActive = true;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
+
+    const start = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      const userId = user?.id || currentUserId;
+      if (!userId) return;
+      if (isActive && !currentUserId) setCurrentUserId(userId);
+
+      channel = supabase
+        .channel(`calendar-availability:${userId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'tenants_employee',
+            filter: `user_id=eq.${userId}`
+          },
+          () => {
+            // Re-fetch to ensure we pick up any column changes consistently
+            void fetchUnavailableTimes();
+          }
+        )
+        .subscribe();
+    };
+
+    void start();
+
+    return () => {
+      isActive = false;
+      if (channel) {
+        void supabase.removeChannel(channel);
+      }
+    };
+    // fetchUnavailableTimes is stable enough here; we intentionally subscribe once per userId
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUserId]);
 
   const calendarDays = generateCalendarDays();
   const monthNames = [

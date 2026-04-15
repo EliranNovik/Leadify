@@ -8317,6 +8317,7 @@ export default function ReportsPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [selectedReport, setSelectedReport] = useState<ReportItem | null>(null);
+  const [marketingReportDocsOpen, setMarketingReportDocsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showSearchDropdown, setShowSearchDropdown] = useState<boolean>(false);
   const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
@@ -8387,6 +8388,12 @@ export default function ReportsPage() {
       setSearchQuery('');
     }
   }, [selectedReport]);
+
+  useEffect(() => {
+    if (selectedReport?.label !== 'Marketing dashboard') {
+      setMarketingReportDocsOpen(false);
+    }
+  }, [selectedReport?.label]);
 
   // Allow deep-linking to in-page reports via /reports?report=<label>
   useEffect(() => {
@@ -8850,11 +8857,40 @@ export default function ReportsPage() {
       ) : (
         <div className="px-4 md:px-0">
           {/* Report Content */}
-          <div className="bg-white rounded-xl shadow-lg p-8 border border-base-200">
+          {/*
+            Some reports (e.g. Marketing dashboard) render their own cards/tables.
+            For those, we avoid wrapping everything in one big white container.
+          */}
+          <div
+            className={
+              selectedReport?.label === 'Marketing dashboard'
+                ? 'p-0 border-0 shadow-none bg-transparent'
+                : 'bg-white rounded-xl shadow-lg p-8 border border-base-200'
+            }
+          >
             <div className="flex items-start justify-between mb-6 flex-wrap gap-4">
               <div className="min-w-0 flex-1">
                 {selectedReport.shellTitle ? (
                   <selectedReport.shellTitle />
+                ) : selectedReport?.label === 'Marketing dashboard' ? (
+                  <div className="flex min-w-0 flex-wrap items-center gap-3">
+                    <h3 className="m-0 text-2xl font-bold text-gray-900 dark:text-white">
+                      <span className="inline-flex items-center gap-2">
+                        <MegaphoneIcon className="h-7 w-7 text-primary" />
+                        <span>{selectedReport.label}</span>
+                      </span>
+                    </h3>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm gap-2 text-base normal-case"
+                      onClick={() => setMarketingReportDocsOpen(true)}
+                      aria-expanded={marketingReportDocsOpen}
+                      aria-controls="marketing-report-docs-modal"
+                    >
+                      <InformationCircleIcon className="h-5 w-5 shrink-0" />
+                      About this report
+                    </button>
+                  </div>
                 ) : (
                   <h3 className="text-2xl font-bold text-gray-900 dark:text-white">{selectedReport.label}</h3>
                 )}
@@ -8952,7 +8988,14 @@ export default function ReportsPage() {
 
             <div className="min-h-[400px]">
               {selectedReport.component ? (
-                React.createElement(selectedReport.component)
+                selectedReport.label === 'Marketing dashboard' ? (
+                  <MarketingDashboardReport
+                    docsOpen={marketingReportDocsOpen}
+                    onDocsOpenChange={setMarketingReportDocsOpen}
+                  />
+                ) : (
+                  React.createElement(selectedReport.component)
+                )
               ) : (
                 <div className="h-full flex items-center justify-center text-gray-500">
                   Report content unavailable. Please select another report.

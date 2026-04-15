@@ -157,26 +157,45 @@ const getEmployeeDisplayName = (employeeId: string | number | null | undefined, 
   return employee ? employee.display_name : employeeId.toString();
 };
 
+/** Text values that mean "no expert" in the DB/UI — must not show avatar/initials. */
+function isUnsetExpertLabel(name: string | null | undefined): boolean {
+  if (name == null) return true;
+  const t = String(name).trim();
+  if (!t) return true;
+  const lower = t.toLowerCase();
+  return (
+    lower === '--' ||
+    lower === '—' ||
+    lower === '-' ||
+    lower === '---' ||
+    lower === 'n/a' ||
+    lower === 'none' ||
+    lower === '(none)' ||
+    lower === 'not assigned' ||
+    lower === 'unassigned'
+  );
+}
+
 // Helper function to get expert display name (prefer JOIN data when available)
 const getExpertDisplayName = (lead: LeadForPipeline, allEmployees: any[]): string => {
-  if (lead.expert_name_from_join) return lead.expert_name_from_join;
-  // For legacy leads, use expert_id
-  if (lead.lead_type === 'legacy' && lead.expert_id) {
+  let candidate: string | null = null;
+  if (lead.expert_name_from_join && !isUnsetExpertLabel(lead.expert_name_from_join)) {
+    candidate = String(lead.expert_name_from_join).trim();
+  } else if (lead.lead_type === 'legacy' && lead.expert_id) {
     const expertName = getEmployeeDisplayName(lead.expert_id, allEmployees);
-    return expertName !== lead.expert_id.toString() ? expertName : '--';
-  }
-  // For new leads, prioritize expert_id (numeric field) over expert (text field)
-  if (lead.expert_id) {
+    candidate = expertName !== lead.expert_id.toString() ? expertName : null;
+  } else if (lead.expert_id) {
     const expertName = getEmployeeDisplayName(lead.expert_id, allEmployees);
-    return expertName !== lead.expert_id.toString() ? expertName : '--';
+    candidate = expertName !== lead.expert_id.toString() ? expertName : null;
+  } else if (lead.expert) {
+    if (isNaN(Number(lead.expert))) {
+      candidate = String(lead.expert).trim();
+    } else {
+      candidate = getEmployeeDisplayName(lead.expert, allEmployees);
+    }
   }
-  // Fallback to expert field (might be name or ID)
-  if (lead.expert) {
-    if (isNaN(Number(lead.expert))) return lead.expert;
-    const expertName = getEmployeeDisplayName(lead.expert, allEmployees);
-    return expertName;
-  }
-  return '--';
+  if (candidate == null || isUnsetExpertLabel(candidate)) return '--';
+  return candidate;
 };
 
 // Helper to get expert initials for avatar fallback
@@ -188,7 +207,7 @@ const getExpertInitials = (lead: LeadForPipeline, allEmployees: any[]): string =
   return name.slice(0, 2).toUpperCase();
 };
 
-// True when lead has an assigned expert (show avatar); false = show only "--", no image
+// True when lead has an assigned expert (show photo or initials); false = no avatar circle
 const hasExpertAssigned = (lead: LeadForPipeline, allEmployees: any[]): boolean => {
   return getExpertDisplayName(lead, allEmployees) !== '--';
 };
@@ -199,6 +218,46 @@ const getExpertPhotoUrl = (lead: LeadForPipeline, allEmployees: any[]): string |
   if (id == null) return null;
   const emp = allEmployees.find((e: any) => String(e.id) === String(id));
   return emp?.photo_url ?? null;
+};
+
+/** Non-empty URL only — avoids taking the <img> branch for "" / whitespace / broken stored values. */
+function normalizeExpertPhotoUrl(url: string | null | undefined): string | null {
+  if (url == null) return null;
+  const t = String(url).trim();
+  if (!t || t === 'null' || t === 'undefined') return null;
+  return t;
+}
+
+/**
+ * Photo when URL exists and loads; otherwise initials (no DaisyUI `avatar placeholder` — it draws an empty ring).
+ * If DB has a URL but the file 404s, `onError` falls back to initials.
+ */
+const ExpertPipelineAvatar: React.FC<{ lead: LeadForPipeline; allEmployees: any[] }> = ({ lead, allEmployees }) => {
+  const fromLead = normalizeExpertPhotoUrl(lead.expert_photo_url);
+  const fromEmployee = normalizeExpertPhotoUrl(getExpertPhotoUrl(lead, allEmployees));
+  const src = fromLead ?? fromEmployee;
+  const [imgFailed, setImgFailed] = useState(false);
+  const showImage = Boolean(src) && !imgFailed;
+
+  if (showImage && src) {
+    return (
+      <div className="h-10 w-10 shrink-0 overflow-hidden rounded-full bg-base-200 ring-1 ring-base-200">
+        <img
+          src={src}
+          alt=""
+          className="h-full w-full object-cover"
+          loading="lazy"
+          onError={() => setImgFailed(true)}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary/15 text-sm font-bold text-primary ring-1 ring-primary/25">
+      {getExpertInitials(lead, allEmployees)}
+    </div>
+  );
 };
 
 // Helper function to get expert status icon and color (copied from CalendarPage.tsx)
@@ -271,6 +330,16 @@ const getExpertStatusIcon = (lead: LeadForPipeline) => {
     </span>
   );
 };
+
+/** Avatar + expert opinion / examination badge pinned to the top-right of the image (only when an expert is assigned). */
+const ExpertAvatarWithOpinionBadge: React.FC<{ lead: LeadForPipeline; allEmployees: any[] }> = ({ lead, allEmployees }) => (
+  <div className="relative inline-flex h-10 w-10 shrink-0 align-middle">
+    <ExpertPipelineAvatar lead={lead} allEmployees={allEmployees} />
+    <div className="pointer-events-auto absolute -right-3 -top-3 z-10 origin-top-right scale-[0.92] drop-shadow-md [&>span]:ring-2 [&>span]:ring-base-100 dark:[&>span]:ring-base-200">
+      {getExpertStatusIcon(lead)}
+    </div>
+  </div>
+);
 
 // Removed LABEL_OPTIONS - now fetched from misc_leadtag table
 
@@ -458,7 +527,10 @@ const PipelinePage: React.FC = () => {
   
   // State for contact dropdown
   const [openContactDropdown, setOpenContactDropdown] = useState<string | number | null>(null);
-  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number } | null>({
+    top: 0,
+    left: 0,
+  });
   
   // Refs for contact dropdown and main cards
   const contactButtonRefs = useRef<{ [key: string | number]: HTMLButtonElement | null }>({});
@@ -802,6 +874,8 @@ const PipelinePage: React.FC = () => {
   const [currentUserId, setCurrentUserId] = useState<string | null>(null); // User ID from users table (for RLS)
   const [currentUserBonusRole, setCurrentUserBonusRole] = useState<string | null>(null);
   const [pipelineModeInitialized, setPipelineModeInitialized] = useState(false); // Track if default mode has been set
+  /** True after users/employee resolution finishes (success or fallback) — drives default tab + fetch ordering. */
+  const [pipelineIdentityReady, setPipelineIdentityReady] = useState(false);
   const [isSuperUser, setIsSuperUser] = useState(false);
   
   // State for editing fields in collapsible section
@@ -1104,6 +1178,13 @@ const PipelinePage: React.FC = () => {
 
   // Define fetchLeads function outside useEffect so it can be reused
   const fetchLeads = async () => {
+    // New `leads` rows filter by scheduler/closer display name — never query with an empty string.
+    if (!currentUserFullName?.trim()) {
+      console.warn('Pipeline: fetchLeads skipped until display name is loaded');
+      setIsLoading(false);
+      return;
+    }
+
     setIsLoading(true);
     
     // Add timeout to prevent hanging
@@ -1854,6 +1935,12 @@ const PipelinePage: React.FC = () => {
     setIsLoading(false);
   };
 
+  // Stable refs for realtime-triggered refreshes (avoid subscription churn).
+  const fetchLeadsRef = useRef(fetchLeads);
+  useEffect(() => {
+    fetchLeadsRef.current = fetchLeads;
+  }, [fetchLeads]);
+
   // Fetch countries and languages on mount
   useEffect(() => {
     fetchCountries();
@@ -1923,9 +2010,10 @@ const PipelinePage: React.FC = () => {
   const hasLoadedFromStorageRef = useRef<{ [mode: string]: boolean }>({});
   const previousModeRef = useRef<string>('');
 
-  // Load leads: use saved state per tab so switching Closer/Scheduler does not reload content
+  // Load leads: use saved state per tab so switching Closer/Scheduler does not reload content.
+  // Requires display name + employee id: fetchLeads filters `leads` by scheduler/closer string and legacy by id.
   useEffect(() => {
-    if (!currentUserEmployeeId) {
+    if (!currentUserEmployeeId || !currentUserFullName?.trim()) {
       return;
     }
 
@@ -1933,13 +2021,21 @@ const PipelinePage: React.FC = () => {
     const modeChanged = previousModeRef.current !== pipelineMode && previousModeRef.current !== '';
     previousModeRef.current = pipelineMode;
 
-    // Try to restore from sessionStorage (for this mode) so tab switch is instant
+    // Always refetch when switching tabs — session cache must not show the other role's rows.
+    if (modeChanged) {
+      hasLoadedFromStorageRef.current[pipelineMode] = false;
+      fetchLeads();
+      return;
+    }
+
+    // Same mode (e.g. first mount after navigation): restore only if we have a non-empty cache.
+    // Empty array `[]` was previously treated as "restored" and skipped the network — scheduler/closer stayed empty.
     let restored = false;
     try {
       const raw = sessionStorage.getItem(persistedLeadsKey);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed)) {
+        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
           setLeadsInternal(parsed);
           hasLoadedFromStorageRef.current[pipelineMode] = true;
           setIsLoading(false);
@@ -1950,13 +2046,53 @@ const PipelinePage: React.FC = () => {
       // Ignore
     }
 
-    // Only fetch when we have no saved state for this mode (first time or no cache)
     if (!restored) {
       hasLoadedFromStorageRef.current[pipelineMode] = false;
       fetchLeads();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pipelineMode, currentUserEmployeeId]);
+  }, [pipelineMode, currentUserEmployeeId, currentUserFullName]);
+
+  // Live refresh (no hard refresh needed): when pipeline-related tables change, refetch leads + stats for the active tab.
+  // Debounced to collapse bursts (bulk updates, multi-row writes).
+  const realtimeDebounceRef = useRef<{ t: number | null }>({ t: null });
+  useEffect(() => {
+    if (!pipelineIdentityReady || !currentUserEmployeeId || !currentUserFullName?.trim()) return;
+
+    const scheduleRefresh = () => {
+      if (typeof window === 'undefined') return;
+      if (realtimeDebounceRef.current.t != null) window.clearTimeout(realtimeDebounceRef.current.t);
+      realtimeDebounceRef.current.t = window.setTimeout(() => {
+        realtimeDebounceRef.current.t = null;
+        void fetchLeadsRef.current();
+        void fetchRealSummaryStatsRef.current();
+        if (showMyStatsModal) void fetchMyStats();
+      }, 650);
+    };
+
+    const channel = supabase
+      .channel('pipeline-page:realtime')
+      // Main lead sources (new + legacy)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_lead' }, scheduleRefresh)
+      // Follow ups displayed in columns
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'follow_ups' }, scheduleRefresh)
+      // Stats depend on stage change log
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_leadstage' }, scheduleRefresh)
+      // Lists/columns depend on related meetings for some rows
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, scheduleRefresh)
+      // Avatars/names/roles can change
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tenants_employee' }, scheduleRefresh)
+      .subscribe();
+
+    return () => {
+      if (realtimeDebounceRef.current.t != null && typeof window !== 'undefined') {
+        window.clearTimeout(realtimeDebounceRef.current.t);
+      }
+      void supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pipelineIdentityReady, currentUserEmployeeId, currentUserFullName, pipelineMode, showMyStatsModal]);
 
   // Get signed agreement leads
   const signedAgreementLeads = useMemo(() => {
@@ -3469,6 +3605,11 @@ const PipelinePage: React.FC = () => {
     }
   };
 
+  const fetchRealSummaryStatsRef = useRef(fetchRealSummaryStats);
+  useEffect(() => {
+    fetchRealSummaryStatsRef.current = fetchRealSummaryStats;
+  }, [fetchRealSummaryStats]);
+
   // Fetch real summary stats when user info is available
   useEffect(() => {
     if (currentUserEmployeeId && currentUserFullName) {
@@ -3877,22 +4018,20 @@ const PipelinePage: React.FC = () => {
       } catch (error) {
         console.warn('Pipeline: user/employee resolve error', error);
         setCurrentUserFullName('User');
+      } finally {
+        setPipelineIdentityReady(true);
       }
     })();
   }, []);
 
-  // Set default pipeline mode based on bonus role (only once on initial load)
+  // Set default pipeline mode based on bonus role (only once, after identity is resolved).
   useEffect(() => {
-    if (!pipelineModeInitialized && currentUserBonusRole) {
-      if (currentUserBonusRole === 's') {
-        setPipelineMode('scheduler');
-        setPipelineModeInitialized(true);
-      } else if (currentUserBonusRole === 'c') {
-        // Already defaulting to 'closer', just mark as initialized
-        setPipelineModeInitialized(true);
-      }
+    if (!pipelineIdentityReady || pipelineModeInitialized) return;
+    if (currentUserBonusRole === 's') {
+      setPipelineMode('scheduler');
     }
-  }, [currentUserBonusRole, pipelineModeInitialized, setPipelineMode]);
+    setPipelineModeInitialized(true);
+  }, [pipelineIdentityReady, currentUserBonusRole, pipelineModeInitialized, setPipelineMode]);
 
   // Helper function to add highlight to user_highlights table
   const handleHighlight = async (lead: LeadForPipeline) => {
@@ -4444,39 +4583,50 @@ const PipelinePage: React.FC = () => {
         <div className="flex items-center gap-4">
           <h1 className="text-3xl font-bold flex items-center gap-3">
             <ChartBarIcon className="w-8 h-8 text-primary" />
-            {showSignedAgreements ? 'Signed Agreements' : 'Pipeline'}
+            {showSignedAgreements
+              ? 'Signed Agreements'
+              : pipelineMode === 'scheduler'
+                ? 'Scheduler Pipeline'
+                : 'Closer Pipeline'}
           </h1>
           
-          {/* Pipeline Mode Switch - depth effect: recessed container, active tab elevated */}
-          <div className="relative inline-flex items-center rounded-xl border border-gray-200 bg-gray-100 shadow-inner p-1">
+          {/* Pipeline Mode Switch — sliding pill + smooth color cross-fade */}
+          <div
+            className="relative inline-flex min-w-[17.5rem] items-stretch gap-1 rounded-xl border border-gray-200 bg-gray-100 p-1 shadow-inner"
+            role="tablist"
+            aria-label="Pipeline role"
+          >
+            <span
+              aria-hidden
+              className="pointer-events-none absolute top-1 bottom-1 left-1 z-0 w-[calc(50%-0.125rem)] rounded-lg bg-gradient-to-r from-primary via-primary to-primary/95 shadow-md transition-transform duration-300 ease-[cubic-bezier(0.33,1,0.68,1)] will-change-transform"
+              style={{
+                transform:
+                  pipelineMode === 'scheduler' ? 'translateX(calc(100% + 0.25rem))' : 'translateX(0)',
+              }}
+            />
             <button
-              className={`relative px-6 py-2.5 font-semibold text-sm transition-all duration-300 ease-out rounded-lg ${
-                pipelineMode === 'closer'
-                  ? 'text-white shadow-md'
-                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200/60'
-              } ${isLoading ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+              type="button"
+              role="tab"
+              aria-selected={pipelineMode === 'closer'}
+              className={`relative z-10 flex-1 rounded-lg px-6 py-2.5 text-sm font-semibold tracking-wide transition-colors duration-300 ease-out ${
+                pipelineMode === 'closer' ? 'text-white' : 'text-gray-600 hover:text-gray-900'
+              } ${isLoading ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
               onClick={() => !isLoading && setPipelineMode('closer')}
               disabled={isLoading}
             >
-              <span className="relative z-10 tracking-wide">Closer</span>
-              {pipelineMode === 'closer' && (
-                <span className="absolute inset-0 bg-gradient-to-r from-primary via-primary to-primary/95 rounded-lg shadow-md transition-all duration-300" aria-hidden></span>
-              )}
+              Closer
             </button>
-            <div className="w-px h-5 bg-gray-300 mx-0.5" aria-hidden></div>
             <button
-              className={`relative px-6 py-2.5 font-semibold text-sm transition-all duration-300 ease-out rounded-lg ${
-                pipelineMode === 'scheduler'
-                  ? 'text-white shadow-md'
-                  : 'text-gray-600 hover:text-gray-900 hover:bg-gray-200/60'
-              } ${isLoading ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+              type="button"
+              role="tab"
+              aria-selected={pipelineMode === 'scheduler'}
+              className={`relative z-10 flex-1 rounded-lg px-6 py-2.5 text-sm font-semibold tracking-wide transition-colors duration-300 ease-out ${
+                pipelineMode === 'scheduler' ? 'text-white' : 'text-gray-600 hover:text-gray-900'
+              } ${isLoading ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
               onClick={() => !isLoading && setPipelineMode('scheduler')}
               disabled={isLoading}
             >
-              <span className="relative z-10 tracking-wide">Scheduler</span>
-              {pipelineMode === 'scheduler' && (
-                <span className="absolute inset-0 bg-gradient-to-r from-primary via-primary to-primary/95 rounded-lg shadow-md transition-all duration-300" aria-hidden></span>
-              )}
+              Scheduler
             </button>
           </div>
         </div>
@@ -4776,26 +4926,11 @@ const PipelinePage: React.FC = () => {
                       <div className="flex items-center gap-1">
                         <div className="flex items-center gap-0.5 min-w-0">
                           {hasExpertAssigned(lead, allEmployees) && (
-                            (lead.expert_photo_url || getExpertPhotoUrl(lead, allEmployees)) ? (
-                              <div className="avatar flex-shrink-0">
-                                <div className="w-10 h-10 rounded-full ring-1 ring-base-200">
-                                  <img src={lead.expert_photo_url || getExpertPhotoUrl(lead, allEmployees) || ''} alt="" />
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="avatar placeholder flex-shrink-0">
-                                <div className="w-10 h-10 rounded-full bg-neutral text-neutral-content text-sm font-semibold">
-                                  <span>{getExpertInitials(lead, allEmployees)}</span>
-                                </div>
-                              </div>
-                            )
+                            <ExpertAvatarWithOpinionBadge lead={lead} allEmployees={allEmployees} />
                           )}
                           <span className="text-sm font-bold text-gray-800 truncate">
                             {getExpertDisplayName(lead, allEmployees)}
                           </span>
-                        </div>
-                        <div className="w-9 flex-shrink-0 flex items-center justify-center">
-                          {getExpertStatusIcon(lead)}
                         </div>
                       </div>
                     </div>
@@ -5013,31 +5148,16 @@ const PipelinePage: React.FC = () => {
                     <td className="px-2 py-3 md:py-4 text-center truncate">{lead.number_of_applicants_meeting ?? '--'}</td>
                     {/* Potential Applicants */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">{lead.potential_applicants_meeting ?? '--'}</td>
-                    {/* Expert Status */}
+                    {/* Expert */}
                     <td className="px-2 py-3 md:py-4 text-center">
                       <div className="flex items-center justify-center gap-1">
                         <div className="flex items-center gap-0.5 min-w-0 flex-1 justify-center">
                           {hasExpertAssigned(lead, allEmployees) && (
-                            (lead.expert_photo_url || getExpertPhotoUrl(lead, allEmployees)) ? (
-                              <div className="avatar flex-shrink-0">
-                                <div className="w-10 h-10 rounded-full ring-1 ring-base-200">
-                                  <img src={lead.expert_photo_url || getExpertPhotoUrl(lead, allEmployees) || ''} alt="" />
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="avatar placeholder flex-shrink-0">
-                                <div className="w-10 h-10 rounded-full bg-neutral text-neutral-content text-sm font-semibold">
-                                  <span>{getExpertInitials(lead, allEmployees)}</span>
-                                </div>
-                              </div>
-                            )
+                            <ExpertAvatarWithOpinionBadge lead={lead} allEmployees={allEmployees} />
                           )}
                           <span className="text-xs sm:text-sm text-gray-700 font-medium min-w-[60px] inline-block text-center truncate">
                             {getExpertDisplayName(lead, allEmployees)}
                           </span>
-                        </div>
-                        <div className="w-9 flex-shrink-0 flex items-center justify-center">
-                          {getExpertStatusIcon(lead)}
                         </div>
                       </div>
                     </td>

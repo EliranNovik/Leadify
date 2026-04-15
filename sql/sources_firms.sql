@@ -10,7 +10,8 @@
 
 CREATE TABLE IF NOT EXISTS public.sources_firms (
     firm_id uuid NOT NULL REFERENCES public.firms (id) ON DELETE CASCADE,
-    source_id integer NOT NULL REFERENCES public.misc_leadsource (id) ON DELETE CASCADE,
+    -- Use bigint because misc_leadsource IDs may be large (e.g. webhook-generated codes / timestamps)
+    source_id bigint NOT NULL REFERENCES public.misc_leadsource (id) ON DELETE CASCADE,
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (firm_id, source_id)
 );
@@ -18,4 +19,4 @@ CREATE TABLE IF NOT EXISTS public.sources_firms (
 CREATE INDEX IF NOT EXISTS idx_sources_firms_source ON public.sources_firms (source_id);
 
 COMMENT ON TABLE public.sources_firms IS 'Which lead sources (campaigns) belong to which provider firm; used for marketing provider filter.';
-COMMENT ON COLUMN public.sources_firms.source_id IS 'Must match misc_leadsource.id (PostgreSQL integer, max 2147483647).';
+COMMENT ON COLUMN public.sources_firms.source_id IS 'Must match misc_leadsource.id (PostgreSQL bigint).';

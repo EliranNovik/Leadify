@@ -8,10 +8,10 @@ type Props = {
   readOnly?: boolean;
 };
 
-type Source = { id: number; name: string };
+type Source = { id: number; name: string; active?: boolean | null };
 
-/** PostgreSQL `integer` max; values above this are invalid for `sources_firms.source_id` (and look like JS timestamps). */
-const MAX_PG_INT = 2147483647;
+/** JS safe integer max; allow bigint-style numeric IDs coming from DB. */
+const MAX_SAFE_INT = Number.MAX_SAFE_INTEGER;
 
 /**
  * Searchable multi-select for misc_leadsource (firm ↔ sources_firms).
@@ -24,6 +24,7 @@ const FirmLeadSourcesField: React.FC<Props> = ({ value, onChange, readOnly }) =>
   const [filter, setFilter] = useState('');
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const refreshTimerRef = useRef<number | null>(null);
 
   function normalizeIds(v: typeof value): number[] {
     if (v == null) return [];
@@ -31,38 +32,60 @@ const FirmLeadSourcesField: React.FC<Props> = ({ value, onChange, readOnly }) =>
     return arr
       .map((id) => (typeof id === 'string' ? parseInt(id, 10) : Number(id)))
       .filter(
-        (n) => Number.isFinite(n) && n >= 1 && n <= MAX_PG_INT && n === Math.floor(n)
+        (n) => Number.isFinite(n) && n >= 1 && n <= MAX_SAFE_INT && n === Math.floor(n)
       );
   }
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
+
+    const loadSources = async () => {
       const { data, error } = await supabase
         .from('misc_leadsource')
-        .select('id, name')
-        .eq('active', true)
+        .select('id, name, active')
         .order('name');
       if (cancelled) return;
       if (!error && data) {
-        const rows = (data as { id: number | string; name: string }[])
+        const rows = (data as { id: number | string; name: string; active?: boolean | null }[])
           .map((r) => ({
             id: typeof r.id === 'string' ? parseInt(r.id, 10) : Number(r.id),
             name: r.name,
+            active: r.active ?? null,
           }))
           .filter(
             (r) =>
               Number.isFinite(r.id) &&
               r.id >= 1 &&
-              r.id <= MAX_PG_INT &&
+              r.id <= MAX_SAFE_INT &&
               r.id === Math.floor(r.id)
           );
         setSources(rows);
       }
       setLoading(false);
-    })();
+    };
+
+    void loadSources();
+
+    // Live subscription so newly added/edited/deactivated sources show immediately
+    const scheduleRefresh = () => {
+      if (typeof window === 'undefined') return;
+      if (refreshTimerRef.current) window.clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = window.setTimeout(() => {
+        void loadSources();
+      }, 250);
+    };
+
+    const channel = supabase
+      .channel('firm-lead-sources:realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_leadsource' }, scheduleRefresh)
+      .subscribe();
+
     return () => {
       cancelled = true;
+      if (refreshTimerRef.current && typeof window !== 'undefined') {
+        window.clearTimeout(refreshTimerRef.current);
+      }
+      void supabase.removeChannel(channel);
     };
   }, []);
 

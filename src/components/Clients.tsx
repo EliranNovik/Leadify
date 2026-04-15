@@ -104,6 +104,7 @@ import {
 } from '@azure/msal-browser';
 import toast from 'react-hot-toast';
 import { convertToNIS } from '../lib/currencyConversion';
+import { getVatRateForLegacyLead } from '../lib/financeUnpaidTotal';
 import LeadSummaryDrawer from './LeadSummaryDrawer';
 import { generateProformaName } from '../lib/proforma';
 import TimePicker from './TimePicker';
@@ -2838,6 +2839,22 @@ const Clients: React.FC<ClientsProps> = ({
           }
         };
 
+        const cid = mapCurrencyToLegacyId(successForm.currency);
+        const net = proposal ?? 0;
+        const vatRate = getVatRateForLegacyLead(
+          (selectedClient as any)?.date_signed ||
+            (selectedClient as any)?.cdate ||
+            (selectedClient as any)?.created_at ||
+            null
+        );
+        const rawVat = (selectedClient as any)?.vat;
+        const vatStr =
+          rawVat != null && rawVat !== undefined ? String(rawVat).toLowerCase().trim() : '';
+        const vatExcluded =
+          vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded';
+        const vatValComputed =
+          !vatExcluded && net > 0 ? Math.round(net * vatRate * 100) / 100 : 0;
+
         const updateData: any = {
           file_id: fileId,
           case_handler_id: handlerIdNumeric,
@@ -2845,10 +2862,16 @@ const Clients: React.FC<ClientsProps> = ({
           stage_changed_by: actor.fullName,
           stage_changed_at: stageTimestamp,
           no_of_applicants: numApplicants,
-          total: proposal,
           potential_total: potentialValue,
-          currency_id: mapCurrencyToLegacyId(successForm.currency),
+          currency_id: cid,
+          vat_value: vatValComputed,
         };
+        if (cid === 1) {
+          updateData.total_base = net;
+        } else {
+          updateData.total = net;
+          updateData.total_base = convertToNIS(net, cid);
+        }
 
         const { error } = await supabase
           .from('leads_lead')
@@ -2870,18 +2893,31 @@ const Clients: React.FC<ClientsProps> = ({
           // Don't update lead_number - keep original "L" prefix in database
           proposal_currency: successForm.currency,
           number_of_applicants_meeting: numApplicants ?? prev?.number_of_applicants_meeting,
-          proposal_total: proposal ?? prev?.proposal_total,
+          proposal_total: net,
           potential_value: potentialValue ?? prev?.potential_value,
           file_id: fileId ?? prev?.file_id,
           case_handler_id: handlerIdNumeric,
           handler: handlerName,
           closer: handlerName,
-          balance: proposal ?? prev?.balance,
+          balance: net,
+          vat_value: vatValComputed,
+          total_base: cid === 1 ? net : convertToNIS(net, cid),
+          total: cid === 1 ? (prev as any)?.total : net,
           balance_currency: successForm.currency || prev?.balance_currency,
         }));
 
         await refreshClientData(selectedClient.id);
       } else {
+        const net = proposal ?? 0;
+        const vatRate = getVatRateForLegacyLead(selectedClient?.created_at || null);
+        const rawVat = selectedClient?.vat;
+        const vatStr =
+          rawVat != null && rawVat !== undefined ? String(rawVat).toLowerCase().trim() : '';
+        const vatExcluded =
+          vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded';
+        const vatValComputed =
+          !vatExcluded && net > 0 ? Math.round(net * vatRate * 100) / 100 : 0;
+
         const updateData: any = {
           stage: successStageId,
           // Don't update lead_number - keep original "L" prefix in database, only show "C" in UI
@@ -2889,9 +2925,10 @@ const Clients: React.FC<ClientsProps> = ({
           proposal_currency: successForm.currency,
           balance_currency: successForm.currency,
           number_of_applicants_meeting: numApplicants,
-          proposal_total: proposal,
+          proposal_total: net,
           potential_value: potentialValue,
-          balance: proposal,
+          balance: net,
+          vat_value: vatValComputed,
           stage_changed_by: actor.fullName,
           stage_changed_at: stageTimestamp,
         };
@@ -2927,13 +2964,14 @@ const Clients: React.FC<ClientsProps> = ({
           // Don't update lead_number - keep original "L" prefix in database, only show "C" in UI
           proposal_currency: successForm.currency,
           number_of_applicants_meeting: numApplicants,
-          proposal_total: proposal,
+          proposal_total: net,
           potential_value: potentialValue,
           file_id: fileId ?? prev?.file_id,
           handler: handlerName,
           case_handler_id: handlerIdNumeric,
           closer: handlerName,
-          balance: proposal ?? prev?.balance,
+          balance: net,
+          vat_value: vatValComputed,
           balance_currency: successForm.currency || prev?.balance_currency,
         }));
 

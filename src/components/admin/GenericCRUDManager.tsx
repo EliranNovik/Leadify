@@ -490,9 +490,9 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     }
   };
 
-  /** PG `integer` / `misc_leadsource.id` safe range; rejects ms timestamps mistaken for ids. */
+  /** Accept numeric IDs up to JS safe integer range. */
   const normalizeFirmSourceIds = (raw: number[]): number[] => {
-    const MAX = 2147483647;
+    const MAX = Number.MAX_SAFE_INTEGER;
     return raw
       .map((n) => (typeof n === 'number' ? n : parseInt(String(n), 10)))
       .filter((n) => Number.isFinite(n) && n >= 1 && n <= MAX && n === Math.floor(n));
@@ -694,7 +694,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     let firmLeadSourceIds: number[] | undefined;
     if (tableName === 'firms' && 'lead_source_ids' in record) {
       const raw = (record as any).lead_source_ids;
-      const MAX = 2147483647;
+      const MAX = Number.MAX_SAFE_INTEGER;
       const rawArr = Array.isArray(raw) ? raw : [];
       const parsed = rawArr.map((x: unknown) =>
         typeof x === 'string' ? parseInt(x, 10) : Number(x)
@@ -705,7 +705,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       );
       if (finite.length !== (firmLeadSourceIds?.length ?? 0)) {
         toast(
-          'Some lead source ids were invalid (must be real source numbers, 1–2147483647) and were ignored.',
+          `Some lead source ids were invalid (must be real whole numbers, 1–${Number.MAX_SAFE_INTEGER}) and were ignored.`,
           { duration: 5000 }
         );
       }
@@ -1467,9 +1467,9 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         if (error) {
           console.error('Error fetching sources_firms:', error);
         } else {
-          const MAX = 2147483647;
+          const MAX = Number.MAX_SAFE_INTEGER;
           (record as any).lead_source_ids = (data || [])
-            .map((r: { source_id: number }) => Number(r.source_id))
+            .map((r: { source_id: number | string }) => Number(r.source_id))
             .filter((n: number) => Number.isFinite(n) && n >= 1 && n <= MAX && n === Math.floor(n));
         }
       } catch (error) {

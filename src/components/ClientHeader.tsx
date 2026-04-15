@@ -1750,7 +1750,25 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 if (paymentPlanBaseTotal !== null) baseAmount = Number(paymentPlanBaseTotal) || 0;
                             }
                             const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
-                            let mainAmount = baseAmount - subcontractorFee;
+                            // Primary figure = full lead total (ex VAT in DB); subcontractor is shown + net below
+                            const mainAmount = baseAmount;
+                            const netAfterSubcontractor =
+                                subcontractorFee > 0 ? baseAmount - subcontractorFee : null;
+                            const potentialAmount = isLegacyLead
+                                ? Number((selectedClient as any)?.potential_total ?? 0) || 0
+                                : Number(
+                                      (selectedClient as any)?.potential_value ??
+                                          (selectedClient as any)?.potential_total ??
+                                          0
+                                  ) || 0;
+                            /** Not the same as meeting applicants — uses potential_applicants_meeting / potential_applicants */
+                            const potentialApplicantsMeeting = isLegacyLead
+                                ? Number(
+                                      (selectedClient as any)?.potential_applicants_meeting ??
+                                          (selectedClient as any)?.potential_applicants ??
+                                          0
+                                  ) || 0
+                                : Number((selectedClient as any)?.potential_applicants_meeting ?? 0) || 0;
                             let vatAmount = 0;
                             let shouldShowVAT = false;
                             const vatValue = selectedClient?.vat;
@@ -1810,6 +1828,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 </p>
                                             )}
                                         </div>
+                                        {subcontractorFee > 0 && netAfterSubcontractor !== null && (
+                                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                                                Net after sub fee: {currency}
+                                                {Number(netAfterSubcontractor.toFixed(2)).toLocaleString()}
+                                            </p>
+                                        )}
+                                        {potentialAmount > 0 && (
+                                            <p className="text-xs font-medium text-gray-600 dark:text-gray-300">
+                                                Potential: {currency}
+                                                {Number(potentialAmount.toFixed(2)).toLocaleString()}
+                                            </p>
+                                        )}
+                                        {potentialApplicantsMeeting > 0 && (
+                                            <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                                                Potential applicants:{' '}
+                                                {Math.trunc(potentialApplicantsMeeting).toLocaleString()}
+                                            </p>
+                                        )}
                                         {unpaidOutstandingPair !== null && unpaidGross > 0 && (
                                             <div className="pt-2 border-t border-gray-200/80 dark:border-gray-600">
                                                 <p className="text-xs font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">
@@ -2076,7 +2112,23 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 }
 
                                 const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
-                                let mainAmount = baseAmount - subcontractorFee;
+                                const mainAmount = baseAmount;
+                                const netAfterSubcontractor =
+                                    subcontractorFee > 0 ? baseAmount - subcontractorFee : null;
+                                const potentialAmount = isLegacyLead
+                                    ? Number((selectedClient as any)?.potential_total ?? 0) || 0
+                                    : Number(
+                                          (selectedClient as any)?.potential_value ??
+                                              (selectedClient as any)?.potential_total ??
+                                              0
+                                      ) || 0;
+                                const potentialApplicantsMeeting = isLegacyLead
+                                    ? Number(
+                                          (selectedClient as any)?.potential_applicants_meeting ??
+                                              (selectedClient as any)?.potential_applicants ??
+                                              0
+                                      ) || 0
+                                    : Number((selectedClient as any)?.potential_applicants_meeting ?? 0) || 0;
 
                                 let vatAmount = 0;
                                 let shouldShowVAT = false;
@@ -2142,6 +2194,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     </p>
                                                 )}
                                             </div>
+                                            {subcontractorFee > 0 && netAfterSubcontractor !== null && (
+                                                <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                                                    Net after sub fee: {currency}
+                                                    {Number(netAfterSubcontractor.toFixed(2)).toLocaleString()}
+                                                </p>
+                                            )}
+                                            {potentialAmount > 0 && (
+                                                <p className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
+                                                    Potential: {currency}
+                                                    {Number(potentialAmount.toFixed(2)).toLocaleString()}
+                                                </p>
+                                            )}
+                                            {potentialApplicantsMeeting > 0 && (
+                                                <p className="text-[11px] text-gray-500 dark:text-gray-400">
+                                                    Potential applicants:{' '}
+                                                    {Math.trunc(potentialApplicantsMeeting).toLocaleString()}
+                                                </p>
+                                            )}
                                             {unpaidOutstandingPairDesktop !== null && unpaidGrossDesktop > 0 && (
                                                 <div className="border-t border-gray-200/80 pt-1 dark:border-gray-600">
                                                     <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">

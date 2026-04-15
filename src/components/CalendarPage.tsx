@@ -269,6 +269,14 @@ const getCurrencySymbol = (currency?: string) => {
   }
 };
 
+/** Local calendar YYYY-MM-DD (matches appliedFromDate / date inputs; avoids UTC day shift from toISOString). */
+const formatLocalDateYmd = (d: Date) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
 // Department mapping is now loaded dynamically from database
 
 
@@ -336,6 +344,7 @@ const CalendarPage: React.FC = () => {
     lead_type?: string;
   } | null>(null);
   const { instance, accounts } = useMsal();
+  const realtimeRefreshTimerRef = useRef<number | null>(null);
 
   // Currency conversion rates (same as DepartmentList)
   const currencyRates = {
@@ -377,6 +386,98 @@ const CalendarPage: React.FC = () => {
 
     // Cleanup
     return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Keep this page automatically up-to-date when relevant DB tables change,
+  // without doing a "full refresh" UX (no global loading/spinner resets).
+  // We patch the in-memory state in place and only re-fetch small derived maps when needed.
+  useEffect(() => {
+    const debounce = (fn: () => void, ms: number) => {
+      if (typeof window === 'undefined') return;
+      if (realtimeRefreshTimerRef.current) window.clearTimeout(realtimeRefreshTimerRef.current);
+      realtimeRefreshTimerRef.current = window.setTimeout(fn, ms);
+    };
+
+    const patchMeeting = (next: any) => {
+      if (!next || next.id == null) return;
+      setMeetings(prev => {
+        const idx = prev.findIndex((m: any) => m?.id === next.id);
+        if (idx === -1) return [next, ...prev];
+        const existing = prev[idx];
+        const merged = { ...existing, ...next };
+        const out = prev.slice();
+        out[idx] = merged;
+        return out;
+      });
+    };
+
+    const removeMeeting = (id: any) => {
+      if (id == null) return;
+      setMeetings(prev => prev.filter((m: any) => m?.id !== id));
+    };
+
+    const patchLeadIntoMeetings = (leadId: any, leadType: 'new' | 'legacy', patch: any) => {
+      if (leadId == null || !patch) return;
+      setMeetings(prev =>
+        prev.map((m: any) => {
+          const lead = m?.lead;
+          if (!lead) return m;
+          if (leadType === 'new') {
+            if (lead.lead_type !== 'new') return m;
+            if (lead.id?.toString?.() !== leadId?.toString?.()) return m;
+            return { ...m, lead: { ...lead, ...patch } };
+          }
+          // legacy
+          if (lead.lead_type !== 'legacy') return m;
+          const normalizedMeetingLeadId = String(lead.id || '');
+          const normalizedPayloadId = String(leadId || '');
+          if (normalizedMeetingLeadId.replace(/^legacy_/, '') !== normalizedPayloadId.replace(/^legacy_/, '')) return m;
+          return { ...m, lead: { ...lead, ...patch } };
+        })
+      );
+    };
+
+    const channel = supabase
+      .channel('calendar-page:realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, (payload: any) => {
+        // Patch meeting rows in place (no heavy re-fetch).
+        const eventType = payload?.eventType;
+        if (eventType === 'DELETE') {
+          removeMeeting(payload?.old?.id);
+          return;
+        }
+        if (payload?.new) patchMeeting(payload.new);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tenants_employee' }, () => {
+        // Availability changes can affect the UI; re-fetch derived availability maps in the background.
+        debounce(() => { void fetchEmployeeAvailability(); }, 250);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, (payload: any) => {
+        // Patch lead fields into any meeting that currently has this lead loaded.
+        if (payload?.new?.id != null) patchLeadIntoMeetings(payload.new.id, 'new', payload.new);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_lead' }, (payload: any) => {
+        if (payload?.new?.id != null) patchLeadIntoMeetings(payload.new.id, 'legacy', payload.new);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_leadstage' }, () => {
+        // Past-stage badge logic depends on this table; refresh that small derived set in background by reusing existing fetch path.
+        debounce(() => { setMeetingsRefreshTrigger((t) => t + 1); }, 500);
+      })
+      // Metadata tables: update lazily by triggering a background data refresh.
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_category' }, () => debounce(() => setMeetingsRefreshTrigger((t) => t + 1), 800))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_maincategory' }, () => debounce(() => setMeetingsRefreshTrigger((t) => t + 1), 800))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_language' }, () => debounce(() => setMeetingsRefreshTrigger((t) => t + 1), 800))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_leadsource' }, () => debounce(() => setMeetingsRefreshTrigger((t) => t + 1), 800))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'accounting_currencies' }, () => debounce(() => setMeetingsRefreshTrigger((t) => t + 1), 800))
+      .subscribe();
+
+    return () => {
+      if (realtimeRefreshTimerRef.current && typeof window !== 'undefined') {
+        window.clearTimeout(realtimeRefreshTimerRef.current);
+      }
+      void supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -677,6 +778,9 @@ const CalendarPage: React.FC = () => {
 
   /** When fetch was skipped because the tab was hidden, refetch once the user returns. */
   const skippedCalendarFetchWhileHiddenRef = useRef(false);
+
+  /** Ignore stale responses when date range changes quickly (staff meetings are a separate query). */
+  const staffMeetingsFetchSeqRef = useRef(0);
 
   // Helper component for employee avatar with image error fallback (like CallsLedgerPage)
   const EmployeeAvatar: React.FC<{
@@ -1582,6 +1686,7 @@ const CalendarPage: React.FC = () => {
   // Function to load legacy meetings for a specific date
   // Fetch staff meetings from shared-staffcalendar@lawoffice.org.il
   const fetchStaffMeetings = async (fromDate: string, toDate: string) => {
+    const seq = ++staffMeetingsFetchSeqRef.current;
     setIsStaffMeetingsLoading(true);
 
     try {
@@ -1597,12 +1702,12 @@ const CalendarPage: React.FC = () => {
 
       if (allMeetingsError) {
         console.error('Error fetching staff meetings from database:', allMeetingsError);
-        setStaffMeetings([]);
+        if (seq === staffMeetingsFetchSeqRef.current) setStaffMeetings([]);
         return;
       }
 
       if (!staffMeetingsData || staffMeetingsData.length === 0) {
-        setStaffMeetings([]);
+        if (seq === staffMeetingsFetchSeqRef.current) setStaffMeetings([]);
         return;
       }
 
@@ -1698,7 +1803,7 @@ const CalendarPage: React.FC = () => {
 
           return {
             id: `staff-${meeting.teams_meeting_id}`,
-            meeting_date: new Date(meeting.start_date_time).toISOString().split('T')[0],
+            meeting_date: formatLocalDateYmd(startDate),
             meeting_time: time,
             meeting_manager: attendeesDisplay,
             helper: '--',
@@ -1732,12 +1837,14 @@ const CalendarPage: React.FC = () => {
           };
         });
 
-        setStaffMeetings(formattedStaffMeetings);
+        if (seq === staffMeetingsFetchSeqRef.current) {
+          setStaffMeetings(formattedStaffMeetings);
+        }
     } catch (error) {
       console.error('Error fetching staff meetings:', error);
-      setStaffMeetings([]);
+      if (seq === staffMeetingsFetchSeqRef.current) setStaffMeetings([]);
     } finally {
-      setIsStaffMeetingsLoading(false);
+      if (seq === staffMeetingsFetchSeqRef.current) setIsStaffMeetingsLoading(false);
     }
   };
 
@@ -1962,14 +2069,19 @@ const CalendarPage: React.FC = () => {
       prev.meetingsRefreshTrigger === meetingsRefreshTrigger &&
       prev.pathname === pathname;
 
-    // If we have cached meetings and no fetch-relevant dep changed, skip refetch (preserve state when navigating back)
+    // If we have cached meetings and no fetch-relevant dep changed, skip refetch (preserve state when navigating back).
+    // Staff meetings are NOT persisted (only `meetings` is), so always reload them or they stay empty after navigation.
     if (meetings.length > 0 && depsUnchanged) {
       setIsLoading(false);
+      const todaySkip = new Date().toISOString().split('T')[0];
+      void fetchStaffMeetings(appliedFromDate || todaySkip, appliedToDate || todaySkip);
       return;
     }
     // If this is a back/forward navigation (POP) and we have cached meetings, skip the fetch
     if (navType === 'POP' && meetings.length > 0) {
       setIsLoading(false);
+      const todayPop = new Date().toISOString().split('T')[0];
+      void fetchStaffMeetings(appliedFromDate || todayPop, appliedToDate || todayPop);
       return;
     }
 
@@ -2510,6 +2622,21 @@ const CalendarPage: React.FC = () => {
       };
 
       filtered = filtered.filter(m => {
+        if (m.calendar_type === 'staff') {
+          const names = Array.isArray(m.attendees) ? m.attendees : [];
+          const parts = [
+            ...names.map((a: string) => String(a).toLowerCase()),
+            String(m.meeting_manager || '').toLowerCase(),
+            String((m.lead || {}).manager || '').toLowerCase(),
+          ].filter(Boolean);
+          return parts.some(
+            (s) =>
+              s === normalizedSelectedStaff ||
+              s.includes(normalizedSelectedStaff) ||
+              normalizedSelectedStaff.includes(s)
+          );
+        }
+
         const lead = m.lead || {};
 
         // Get display names (convert IDs if needed)
@@ -2752,7 +2879,7 @@ const CalendarPage: React.FC = () => {
     if (!hasStage) {
       return (
         <span
-          className="stage-badge inline-flex items-center px-1.5 py-0.5 sm:px-2 sm:py-0.5 rounded-md text-[10px] sm:text-xs font-semibold border"
+          className="stage-badge inline-flex items-center px-2 py-1 sm:px-2.5 sm:py-1 rounded-md text-xs sm:text-sm font-semibold border"
           style={{ backgroundColor: NEUTRAL_STAGE_BG, color: NEUTRAL_STAGE_TEXT, borderColor: '#e5e7eb' }}
         >
           No Stage
@@ -2765,7 +2892,7 @@ const CalendarPage: React.FC = () => {
 
     return (
       <span
-        className="stage-badge inline-flex items-center px-1.5 py-0.5 sm:px-2 sm:py-0.5 rounded-md text-[10px] sm:text-xs font-semibold shadow-sm"
+        className="stage-badge inline-flex items-center px-2 py-1 sm:px-2.5 sm:py-1 rounded-md text-xs sm:text-sm font-semibold shadow-sm"
         style={{ backgroundColor: stageColour, color: textColour, border: `1px solid ${stageColour}` }}
       >
         {label}
@@ -4484,7 +4611,7 @@ const CalendarPage: React.FC = () => {
     return (
       <div
         key={meeting.id}
-        className={`rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed bg-white overflow-hidden ${selectedRowId === meeting.id ? 'ring-2 ring-primary ring-offset-2' : ''}`}
+        className={`rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-base-300/45 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed bg-white overflow-hidden ${selectedRowId === meeting.id ? 'ring-2 ring-primary ring-offset-2' : ''}`}
       >
         {/* Bottom-right green corner with white check when meeting ended */}
         {hasPassedStage && (
@@ -5085,7 +5212,7 @@ const CalendarPage: React.FC = () => {
     return (
       <React.Fragment key={meeting.id}>
         <tr
-          className={`relative z-10 bg-white hover:bg-base-200/50 ${selectedRowId === meeting.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}
+          className={`calendar-page-meeting-row relative z-10 ${selectedRowId === meeting.id ? 'calendar-page-meeting-row--selected' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}
           onClick={() => {
             if (meeting.calendar_type !== 'staff' && meeting.lead) {
               handleRowSelect(meeting.id);
@@ -5436,9 +5563,9 @@ const CalendarPage: React.FC = () => {
         {/* Expanded Details Row */}
         {
           isExpanded && (
-            <tr>
-              <td colSpan={9} className="p-0">
-                <div className="bg-base-100/50 p-4 border-t border-base-200">
+            <tr className="calendar-page-meeting-row calendar-page-meeting-row--expanded-block">
+              <td colSpan={10} className="p-0">
+                <div className="bg-base-100/50 p-4 border-t border-base-200/80">
                   {expandedData.loading ? (
                     <div className="flex justify-center items-center py-4">
                       <span className="loading loading-spinner loading-md"></span>
@@ -6146,13 +6273,13 @@ const CalendarPage: React.FC = () => {
       )}
 
 
-      {/* Meetings List */}
-      <div className="mt-6 bg-base-100 rounded-lg shadow-lg overflow-x-auto">
+      {/* Meetings list: card rows + 3D shadow via .calendar-page-meetings-wrap in index.css */}
+      <div className="mt-6 bg-base-200/60 rounded-xl overflow-x-auto calendar-page-meetings-wrap px-2 py-3 sm:px-3">
         {/* Desktop Table - Show when viewMode is 'list' */}
         {viewMode === 'list' && (
-          <table className="table w-full text-sm sm:text-base md:text-lg">
+          <table className="calendar-page-meetings-table table w-full text-sm sm:text-base md:text-lg">
             <thead>
-              <tr className="bg-white text-sm sm:text-base">
+              <tr className="bg-transparent text-sm sm:text-base calendar-page-meetings-head-row">
                 <th className="text-gray-500">Type</th>
                 <th className="text-gray-500">Time</th>
                 <th className="text-gray-500">Lead</th>
@@ -6175,8 +6302,8 @@ const CalendarPage: React.FC = () => {
                   const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
                   const showNowLine = appliedFromDate && appliedToDate && appliedFromDate <= todayStr && todayStr <= appliedToDate;
                   const CurrentTimeRow = () => (
-                    <tr className="relative z-0 bg-transparent hover:bg-transparent border-0">
-                      <td colSpan={10} className="p-0 align-middle border-0 relative">
+                    <tr className="calendar-page-now-line relative z-0">
+                      <td colSpan={10} className="p-0 align-middle relative">
                         <div className="relative flex items-center gap-3 py-1.5">
                           <span className="relative z-10 bg-white px-1.5 py-0.5 text-xs font-semibold text-red-600 whitespace-nowrap tabular-nums rounded" style={{ minWidth: '3.5rem' }}>
                             {currentTime}
@@ -6852,9 +6979,9 @@ const CalendarPage: React.FC = () => {
                         </h3>
                         {/* Table View */}
                         <div className="overflow-x-auto overflow-y-visible">
-                          <table className="table w-full overflow-visible">
+                          <table className="table w-full overflow-visible border-collapse">
                             <thead>
-                              <tr>
+                              <tr className="border-b border-base-300/60">
                                 <th className="text-left text-sm font-semibold text-gray-500">Lead</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Time</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Location</th>
@@ -6916,7 +7043,7 @@ const CalendarPage: React.FC = () => {
                                 })();
 
                                 return (
-                                  <tr key={meeting.id} className={`hover:bg-gray-50 ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}>
+                                  <tr key={meeting.id} className={`border-b border-base-300/50 hover:bg-gray-50 ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}>
                                     {/* Lead */}
                                     <td className="text-base">
                                       <div className="flex items-center gap-1 sm:gap-2">

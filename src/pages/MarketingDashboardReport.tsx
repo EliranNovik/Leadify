@@ -1,6 +1,10 @@
 /** Marketing performance dashboard — see “About this report” in the UI for methodology. */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import {
+  ENGRAVED_FILTER_CONTROL_CLASSES,
+  ENGRAVED_FILTER_PRIMARY_BUTTON_CLASSES,
+} from '../components/EngravedFilterPanel';
 import { fetchStageNames, getStageName } from '../lib/stageUtils';
 import { convertToNIS } from '../lib/currencyConversion';
 import {
@@ -13,8 +17,15 @@ import {
   CartesianGrid,
   Legend,
 } from 'recharts';
-import { MegaphoneIcon } from '@heroicons/react/24/solid';
-import { ChevronDownIcon, InformationCircleIcon } from '@heroicons/react/24/outline';
+import {
+  ArrowsUpDownIcon,
+  BanknotesIcon,
+  CalendarDaysIcon,
+  CheckCircleIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  UserGroupIcon,
+} from '@heroicons/react/24/outline';
 
 type ChannelRow = { id: string; code: string; label: string };
 type SourceRow = { id: number; name: string; channel_id: string | null };
@@ -199,6 +210,18 @@ function daysBetween(fromMs: number | null, toMs: number | null): number | null 
   return (toMs - fromMs) / (1000 * 60 * 60 * 24);
 }
 
+// Align date filtering with LeadSearchPage: interpret YYYY-MM-DD as local day, then convert to UTC ISO.
+function buildUtcStartOfDay(dateStr: string) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const local = new Date(year, (month || 1) - 1, day || 1, 0, 0, 0, 0);
+  return local.toISOString();
+}
+function buildUtcEndOfDay(dateStr: string) {
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const local = new Date(year, (month || 1) - 1, day || 1, 23, 59, 59, 999);
+  return local.toISOString();
+}
+
 function average(nums: number[]): number {
   if (!nums.length) return 0;
   return nums.reduce((a, b) => a + b, 0) / nums.length;
@@ -210,6 +233,16 @@ function leadNumberAsCallLeadId(lead: LeadRow): number | null {
   if (!raw) return null;
   const n = parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function fmtDurationMinSec(totalSeconds: number | null | undefined): string {
+  const s = Number(totalSeconds);
+  if (!Number.isFinite(s) || s < 0) return '—';
+  const rounded = Math.round(s);
+  const m = Math.floor(rounded / 60);
+  const sec = rounded % 60;
+  if (m <= 0) return `${sec}s`;
+  return `${m}m ${String(sec).padStart(2, '0')}s`;
 }
 
 /** Normalize scheduler display string for lookup (trim, lower, collapse spaces). */
@@ -264,7 +297,109 @@ type AggRow = {
   notEligible: number;
 };
 
+/** Sortable macro table columns (excludes Channel, Source, Provider). */
+type MacroSortKey =
+  | 'leads'
+  | 'eligible'
+  | 'meetings'
+  | 'offers'
+  | 'deals'
+  | 'pctElig'
+  | 'pctMtg'
+  | 'pctOffer'
+  | 'pctDeal'
+  | 'revenue'
+  | 'inactive'
+  | 'cpl'
+  | 'costElig';
+
+function macroSortValue(r: AggRow, key: MacroSortKey): number {
+  switch (key) {
+    case 'leads':
+      return r.leads;
+    case 'eligible':
+      return r.eligible;
+    case 'meetings':
+      return r.meetings;
+    case 'offers':
+      return r.offers;
+    case 'deals':
+      return r.deals;
+    case 'revenue':
+      return r.revenueNis;
+    case 'inactive':
+      return r.inactive;
+    case 'pctElig':
+      return r.leads > 0 ? r.eligible / r.leads : -1;
+    case 'pctMtg':
+      return r.leads > 0 ? r.meetings / r.leads : -1;
+    case 'pctOffer':
+      return r.leads > 0 ? r.offers / r.leads : -1;
+    case 'pctDeal':
+      return r.leads > 0 ? r.deals / r.leads : -1;
+    case 'cpl':
+    case 'costElig':
+      return 0;
+    default:
+      return 0;
+  }
+}
+
+function MacroSortableTh({
+  sortKey,
+  activeKey,
+  dir,
+  onSort,
+  children,
+  sortLabel,
+  className = '',
+}: {
+  sortKey: MacroSortKey;
+  activeKey: MacroSortKey;
+  dir: 'asc' | 'desc';
+  onSort: (k: MacroSortKey) => void;
+  children: React.ReactNode;
+  /** Accessible name for the sort control (column title). */
+  sortLabel: string;
+  className?: string;
+}) {
+  const active = activeKey === sortKey;
+  const nextToggle = active && dir === 'asc' ? 'descending' : 'ascending';
+  return (
+    <th scope="col" className={className} aria-sort={active ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      <button
+        type="button"
+        className="inline-flex w-full items-center justify-end gap-1 rounded-lg px-0.5 py-0.5 text-inherit hover:bg-base-200/60 hover:text-base-content/80 dark:hover:bg-base-content/10"
+        aria-label={
+          active ? `Sorted ${dir === 'asc' ? 'ascending' : 'descending'}. Activate to sort ${nextToggle}.` : `Sort by ${sortLabel}`
+        }
+        onClick={() => onSort(sortKey)}
+      >
+        <span>{children}</span>
+        {active ? (
+          dir === 'asc' ? (
+            <ChevronUpIcon className="h-4 w-4 shrink-0 opacity-90" aria-hidden />
+          ) : (
+            <ChevronDownIcon className="h-4 w-4 shrink-0 opacity-90" aria-hidden />
+          )
+        ) : (
+          <ArrowsUpDownIcon className="h-3.5 w-3.5 shrink-0 opacity-35" aria-hidden />
+        )}
+      </button>
+    </th>
+  );
+}
+
 type MultiFilterOption = { id: string; label: string };
+
+/** Shared label style above engraved fields — spacing + hierarchy without crowding the control. */
+const FILTER_FIELD_LABEL_CLASS =
+  'mb-2 block text-[11px] font-semibold uppercase tracking-[0.14em] text-base-content/55';
+
+/** Grey titles: card/section headings (h3) and table column headers (with global `.table th` override). */
+const REPORT_SECTION_TITLE_CLASS = 'text-base-content/55';
+const REPORT_TABLE_CLASS =
+  'table text-sm md:text-base [&_thead_th]:!text-base-content/55';
 
 /**
  * Search input + multi-select list. Selected rows are checked; order is fixed while open (selected-first snapshot
@@ -276,12 +411,15 @@ function MarketingSearchMultiFilter({
   options,
   selected,
   onChange,
+  inputClassName = '',
 }: {
   label: string;
   placeholder: string;
   options: MultiFilterOption[];
   selected: string[];
   onChange: (ids: string[]) => void;
+  /** Merged onto the search input (e.g. {@link ENGRAVED_FILTER_CONTROL_CLASSES}). */
+  inputClassName?: string;
 }) {
   const [filter, setFilter] = useState('');
   const [open, setOpen] = useState(false);
@@ -356,13 +494,13 @@ function MarketingSearchMultiFilter({
 
   return (
     <div className="form-control min-w-0" ref={containerRef}>
-      <span className="label-text mb-1 text-xs font-semibold">{label}</span>
+      <span className={FILTER_FIELD_LABEL_CLASS}>{label}</span>
       <div className="relative">
         <input
           ref={inputRef}
           type="text"
-          className={`input input-bordered input-sm w-full pr-[4.5rem] ${
-            open ? 'border-primary ring-1 ring-primary/30' : ''
+          className={`input input-md min-h-12 w-full pr-[4.75rem] text-base ${inputClassName} ${
+            open ? 'shadow-[inset_0_4px_12px_rgba(0,0,0,0.14)] dark:shadow-[inset_0_4px_16px_rgba(0,0,0,0.5)]' : ''
           }`}
           placeholder={inputPlaceholder}
           value={filter}
@@ -381,7 +519,7 @@ function MarketingSearchMultiFilter({
           {selected.length > 0 && (
             <button
               type="button"
-              className="btn btn-ghost btn-xs h-6 min-h-0 px-1.5 text-[10px] font-normal"
+              className="btn btn-ghost btn-sm h-8 min-h-0 px-2 text-xs font-normal"
               onMouseDown={(e) => {
                 e.preventDefault();
                 onChange([]);
@@ -402,19 +540,19 @@ function MarketingSearchMultiFilter({
               inputRef.current?.focus();
             }}
           >
-            <ChevronDownIcon className={`h-4 w-4 transition-transform ${open ? 'rotate-180' : ''}`} />
+            <ChevronDownIcon className={`h-5 w-5 transition-transform ${open ? 'rotate-180' : ''}`} />
           </button>
         </div>
 
         {open && (
           <div
-            className="absolute left-0 right-0 top-full z-40 mt-1 max-h-48 overflow-y-auto overflow-x-hidden rounded-lg border border-base-300 bg-base-100 shadow-lg"
+            className="absolute left-0 right-0 top-full z-40 mt-1 max-h-56 overflow-y-auto overflow-x-hidden rounded-xl border border-black/[0.08] bg-base-100 text-base shadow-[0_10px_28px_rgba(0,0,0,0.12),inset_0_1px_0_rgba(255,255,255,0.85)] dark:border-white/[0.12] dark:bg-base-200 dark:shadow-[0_12px_32px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)]"
             style={{ overflowAnchor: 'none' } as React.CSSProperties}
             role="listbox"
             aria-multiselectable
           >
             {displayOptions.length === 0 ? (
-              <div className="px-3 py-3 text-xs text-base-content/60">No matches.</div>
+              <div className="px-3 py-3 text-sm text-base-content/60">No matches.</div>
             ) : (
               <ul className="py-1">
                 {displayOptions.map((opt) => {
@@ -425,7 +563,7 @@ function MarketingSearchMultiFilter({
                         type="button"
                         role="option"
                         aria-selected={isOn}
-                        className={`flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs hover:bg-base-200 ${
+                        className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-base-200 ${
                           isOn ? 'bg-primary/10 text-primary' : ''
                         }`}
                         onMouseDown={(e) => {
@@ -454,7 +592,16 @@ function MarketingSearchMultiFilter({
   );
 }
 
-const MarketingDashboardReport: React.FC = () => {
+export type MarketingDashboardReportProps = {
+  /** When set with `onDocsOpenChange`, modal open state is controlled by the parent (e.g. Reports shell title bar). */
+  docsOpen?: boolean;
+  onDocsOpenChange?: (open: boolean) => void;
+};
+
+const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
+  docsOpen: docsOpenProp,
+  onDocsOpenChange,
+}) => {
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [channelIds, setChannelIds] = useState<string[]>([]);
@@ -462,8 +609,18 @@ const MarketingDashboardReport: React.FC = () => {
   const [countryIds, setCountryIds] = useState<string[]>([]);
   const [firmIds, setFirmIds] = useState<string[]>([]);
   const [groupMode, setGroupMode] = useState<GroupMode>('source');
+  const [macroSort, setMacroSort] = useState<{ key: MacroSortKey; dir: 'asc' | 'desc' }>({
+    key: 'leads',
+    dir: 'desc',
+  });
   const [includeHrCost, setIncludeHrCost] = useState(false);
-  const [docsOpen, setDocsOpen] = useState(false);
+  const [docsOpenLocal, setDocsOpenLocal] = useState(false);
+  const docsControlled = onDocsOpenChange != null;
+  const docsOpen = docsControlled ? Boolean(docsOpenProp) : docsOpenLocal;
+  const setDocsOpen = (open: boolean) => {
+    if (docsControlled) onDocsOpenChange(open);
+    else setDocsOpenLocal(open);
+  };
 
   const [channels, setChannels] = useState<ChannelRow[]>([]);
   const [sources, setSources] = useState<SourceRow[]>([]);
@@ -486,6 +643,10 @@ const MarketingDashboardReport: React.FC = () => {
   /** tenants_employee: normalized display_name → id (for leads.scheduler CTI match). */
   const [employeeDisplayNameToId, setEmployeeDisplayNameToId] = useState<Map<string, number>>(() => new Map());
 
+  const runReportRef = useRef<() => Promise<void>>(async () => {});
+  const searchedRef = useRef(false);
+  const realtimeDebounceRef = useRef<{ ref: number | null; report: number | null }>({ ref: null, report: null });
+
   useEffect(() => {
     void fetchStageNames();
   }, []);
@@ -507,35 +668,40 @@ const MarketingDashboardReport: React.FC = () => {
     return m;
   }, [sourceFirmLinks]);
 
-  useEffect(() => {
-    const boot = async () => {
-      const [ch, src, fr, co, sf] = await Promise.all([
-        supabase.from('channels').select('id, code, label').eq('is_active', true).order('sort_order'),
-        supabase.from('misc_leadsource').select('id, name, channel_id').eq('active', true).order('name'),
-        supabase.from('firms').select('id, name').eq('is_active', true).order('name'),
-        supabase.from('misc_country').select('id, name').order('name'),
-        supabase.from('sources_firms').select('firm_id, source_id, firms ( name )'),
-      ]);
-      if (!ch.error && ch.data) setChannels(ch.data as ChannelRow[]);
-      if (!src.error && src.data) setSources(src.data as unknown as SourceRow[]);
-      if (!fr.error && fr.data) setFirms(fr.data as FirmRow[]);
-      if (!co.error && co.data) setCountries(co.data as CountryRow[]);
-      if (!sf.error && sf.data) {
-        const rows = (sf.data as { firm_id: string; source_id: number; firms: { name: string } | null }[]).map(
-          (r) => ({
-            firm_id: r.firm_id,
-            source_id: r.source_id,
-            firm_name: (r.firms?.name || '').trim() || '—',
-          })
-        );
-        setSourceFirmLinks(rows);
-      } else if (sf.error) {
-        console.warn('sources_firms load (provider filter):', sf.error.message);
-        setSourceFirmLinks([]);
-      }
-    };
-    void boot();
+  const loadReferenceData = useCallback(async () => {
+    const [ch, src, fr, co, sf] = await Promise.all([
+      supabase.from('channels').select('id, code, label').eq('is_active', true).order('sort_order'),
+      supabase.from('misc_leadsource').select('id, name, channel_id').eq('active', true).order('name'),
+      supabase.from('firms').select('id, name').eq('is_active', true).order('name'),
+      supabase.from('misc_country').select('id, name').order('name'),
+      supabase.from('sources_firms').select('firm_id, source_id, firms ( name )'),
+    ]);
+    if (!ch.error && ch.data) setChannels(ch.data as ChannelRow[]);
+    if (!src.error && src.data) setSources(src.data as unknown as SourceRow[]);
+    if (!fr.error && fr.data) setFirms(fr.data as FirmRow[]);
+    if (!co.error && co.data) setCountries(co.data as CountryRow[]);
+    if (!sf.error && sf.data) {
+      const rows = (
+        sf.data as {
+          firm_id: string;
+          source_id: number | string;
+          firms: { name: string } | null;
+        }[]
+      ).map((r) => ({
+        firm_id: r.firm_id,
+        source_id: Number(r.source_id),
+        firm_name: (r.firms?.name || '').trim() || '—',
+      }));
+      setSourceFirmLinks(rows);
+    } else if (sf.error) {
+      console.warn('sources_firms load (provider filter):', sf.error.message);
+      setSourceFirmLinks([]);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadReferenceData();
+  }, [loadReferenceData]);
 
   const runReport = useCallback(async () => {
     setLoading(true);
@@ -565,14 +731,27 @@ const MarketingDashboardReport: React.FC = () => {
         misc_leadsource!fk_leads_source_id ( id, name, channel_id )
       `);
 
-      if (fromDate) q = q.gte('created_at', `${fromDate}T00:00:00`);
-      if (toDate) q = q.lte('created_at', `${toDate}T23:59:59`);
+      if (fromDate) q = q.gte('created_at', buildUtcStartOfDay(fromDate));
+      if (toDate) q = q.lte('created_at', buildUtcEndOfDay(toDate));
 
-      const { data, error } = await q.order('created_at', { ascending: false }).limit(8000);
+      // IMPORTANT: avoid undercounting due to a hard cap. Fetch in pages.
+      const pageSize = 1000;
+      const maxRows = 30000; // safety cap to avoid runaway loads
+      const combined: LeadRow[] = [];
+      let offset = 0;
+      for (;;) {
+        const { data, error } = await q
+          .order('created_at', { ascending: false })
+          .range(offset, offset + pageSize - 1);
+        if (error) throw error;
+        const batch = (data || []) as unknown as LeadRow[];
+        combined.push(...batch);
+        if (batch.length < pageSize) break;
+        offset += pageSize;
+        if (combined.length >= maxRows) break;
+      }
 
-      if (error) throw error;
-
-      let rows = (data || []) as unknown as LeadRow[];
+      let rows = combined;
 
       if (channelIds.length > 0) {
         const ok = new Set(channelIds);
@@ -629,13 +808,13 @@ const MarketingDashboardReport: React.FC = () => {
       if (schedulerIds.length > 0) {
         let callFrom =
           fromDate != null && fromDate !== ''
-            ? `${fromDate}T00:00:00`
+            ? buildUtcStartOfDay(fromDate)
             : rows.length > 0
               ? new Date(Math.min(...rows.map((r) => new Date(r.created_at).getTime()))).toISOString()
               : undefined;
         let callTo =
           toDate != null && toDate !== ''
-            ? `${toDate}T23:59:59`
+            ? buildUtcEndOfDay(toDate)
             : rows.length > 0
               ? new Date(Math.max(...rows.map((r) => new Date(r.created_at).getTime()))).toISOString()
               : undefined;
@@ -728,6 +907,56 @@ const MarketingDashboardReport: React.FC = () => {
     }
   }, [fromDate, toDate, channelIds, sourceIds, countryIds, firmIds, firmIdToSourceIds]);
 
+  useEffect(() => {
+    runReportRef.current = runReport;
+  }, [runReport]);
+
+  searchedRef.current = searched;
+
+  // Live updates: filters/metadata (channels, sources, firms, links) + optional report refresh when already loaded.
+  useEffect(() => {
+    const scheduleRefetch = () => {
+      if (typeof window === 'undefined') return;
+      if (realtimeDebounceRef.current.ref != null) window.clearTimeout(realtimeDebounceRef.current.ref);
+      realtimeDebounceRef.current.ref = window.setTimeout(() => {
+        realtimeDebounceRef.current.ref = null;
+        void loadReferenceData();
+      }, 400);
+    };
+
+    const scheduleReportRefresh = () => {
+      if (typeof window === 'undefined') return;
+      if (!searchedRef.current) return;
+      if (realtimeDebounceRef.current.report != null) window.clearTimeout(realtimeDebounceRef.current.report);
+      realtimeDebounceRef.current.report = window.setTimeout(() => {
+        realtimeDebounceRef.current.report = null;
+        void runReportRef.current();
+      }, 1200);
+    };
+
+    const channel = supabase
+      .channel('marketing-dashboard-report:realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'channels' }, scheduleRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_leadsource' }, scheduleRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'firms' }, scheduleRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_country' }, scheduleRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sources_firms' }, scheduleRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, scheduleReportRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'history_leads' }, scheduleReportRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'call_logs' }, scheduleReportRefresh)
+      .subscribe();
+
+    return () => {
+      if (realtimeDebounceRef.current.ref != null && typeof window !== 'undefined') {
+        window.clearTimeout(realtimeDebounceRef.current.ref);
+      }
+      if (realtimeDebounceRef.current.report != null && typeof window !== 'undefined') {
+        window.clearTimeout(realtimeDebounceRef.current.report);
+      }
+      void supabase.removeChannel(channel);
+    };
+  }, [loadReferenceData]);
+
   const aggregates = useMemo(() => {
     const map = new Map<string, AggRow>();
     const channelLabel = (cid: string | null | undefined) => {
@@ -783,17 +1012,34 @@ const MarketingDashboardReport: React.FC = () => {
       }
     }
 
-    return Array.from(map.values())
-      .map((r) => {
-        const names = r._providerNames;
-        let provider = '—';
-        if (names && names.size === 1) provider = [...names][0];
-        else if (names && names.size > 1) provider = 'Multiple providers';
-        const { _providerNames, ...rest } = r;
-        return { ...rest, provider };
-      })
-      .sort((a, b) => b.leads - a.leads);
+    return Array.from(map.values()).map((r) => {
+      const names = r._providerNames;
+      let provider = '—';
+      if (names && names.size === 1) provider = [...names][0];
+      else if (names && names.size > 1) provider = 'Multiple providers';
+      const { _providerNames, ...rest } = r;
+      return { ...rest, provider };
+    });
   }, [leads, groupMode, channels, sourceIdToFirmName]);
+
+  const sortedAggregates = useMemo(() => {
+    const rows = [...aggregates];
+    const { key, dir } = macroSort;
+    const sign = dir === 'asc' ? 1 : -1;
+    rows.sort((a, b) => {
+      const va = macroSortValue(a, key);
+      const vb = macroSortValue(b, key);
+      if (va !== vb) return sign * (va < vb ? -1 : 1);
+      return a.key.localeCompare(b.key);
+    });
+    return rows;
+  }, [aggregates, macroSort]);
+
+  const toggleMacroSort = useCallback((key: MacroSortKey) => {
+    setMacroSort((prev) =>
+      prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' },
+    );
+  }, []);
 
   const totals = useMemo(() => {
     const t = {
@@ -828,7 +1074,7 @@ const MarketingDashboardReport: React.FC = () => {
   }, [totals]);
 
   const costPlaceholder = useMemo(() => {
-    return aggregates.map((r) => ({
+    return sortedAggregates.map((r) => ({
       source: r.source,
       channel: r.channel,
       media: 0,
@@ -837,7 +1083,7 @@ const MarketingDashboardReport: React.FC = () => {
       total: 0,
       pct: totals.leads ? ((r.leads / totals.leads) * 100).toFixed(1) : '0',
     }));
-  }, [aggregates, totals.leads]);
+  }, [sortedAggregates, totals.leads]);
 
   /** Avg days between milestones from history_leads (see HIST_STAGE thresholds). */
   const funnelTimingRows = useMemo(() => {
@@ -953,26 +1199,6 @@ const MarketingDashboardReport: React.FC = () => {
 
   return (
     <div className="space-y-6 pb-16">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-base-300 bg-base-200/40 px-4 py-3 backdrop-blur-sm">
-        <div className="flex min-w-0 flex-1 items-center gap-3">
-          <MegaphoneIcon className="h-8 w-8 shrink-0 text-primary" />
-          <div>
-            <h2 className="text-lg font-bold tracking-tight">Marketing dashboard</h2>
-            <p className="text-xs text-base-content/50">Performance overview · new leads in scope</p>
-          </div>
-        </div>
-        <button
-          type="button"
-          className="btn btn-ghost btn-sm gap-2 border border-base-300 bg-base-100/80 shadow-sm"
-          onClick={() => setDocsOpen(true)}
-          aria-expanded={docsOpen}
-          aria-controls="marketing-report-docs-modal"
-        >
-          <InformationCircleIcon className="h-5 w-5 shrink-0" />
-          About this report
-        </button>
-      </div>
-
       {docsOpen && (
         <div
           className="modal modal-open z-50"
@@ -983,7 +1209,10 @@ const MarketingDashboardReport: React.FC = () => {
         >
           <div className="modal-box max-h-[min(90vh,720px)] w-full max-w-2xl overflow-y-auto p-6">
             <div className="mb-4 flex items-start justify-between gap-2">
-              <h3 id="marketing-report-docs-title" className="pr-8 text-lg font-bold leading-tight">
+              <h3
+                id="marketing-report-docs-title"
+                className={`pr-8 text-lg font-bold leading-tight ${REPORT_SECTION_TITLE_CLASS}`}
+              >
                 About this report
               </h3>
               <button
@@ -998,7 +1227,7 @@ const MarketingDashboardReport: React.FC = () => {
 
             <div className="space-y-5 text-sm leading-relaxed text-base-content/90">
             <section>
-              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/50">Scope & data</h4>
+              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Scope & data</h4>
               <p>
                 This dashboard uses <strong>new leads only</strong>. Funnel timing comes from{' '}
                 <code className="rounded bg-base-200 px-1 text-[11px]">history_leads</code>. Call-based behaviour uses{' '}
@@ -1010,7 +1239,7 @@ const MarketingDashboardReport: React.FC = () => {
             </section>
 
             <section>
-              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/50">Not in this version</h4>
+              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Not in this version</h4>
               <ul className="list-inside list-disc space-y-1 text-base-content/80">
                 <li>Department filter (no department on the lead row)</li>
                 <li>
@@ -1029,14 +1258,14 @@ const MarketingDashboardReport: React.FC = () => {
             </section>
 
             <section>
-              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/50">Macro table · CPL columns</h4>
+              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Macro table · CPL columns</h4>
               <p>
                 <strong>CPL</strong> and <strong>cost / eligible</strong> need a media + management cost table; values show “—” until that exists. The optional HR column is only a layout placeholder when enabled — no HR data is loaded yet.
               </p>
             </section>
 
             <section>
-              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/50">Funnel timing (avg. days)</h4>
+              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Funnel timing (avg. days)</h4>
               <p>
                 Derived from <code className="rounded bg-base-200 px-1 text-[11px]">history_leads</code>: stage ≥15 = communication, ≥20 meeting, ≥45 offer, ≥60 signed, ≥70 payment. Communication time also uses{' '}
                 <code className="rounded bg-base-200 px-1 text-[11px]">communication_started_at</code> when set. A segment only counts when both endpoints exist.
@@ -1047,7 +1276,7 @@ const MarketingDashboardReport: React.FC = () => {
             </section>
 
             <section>
-              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/50">Sales behaviour / quality</h4>
+              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Sales behaviour / quality</h4>
               <p>
                 <strong>Cohort:</strong> active leads with stage before price offer (rank &lt; 45).{' '}
                 <code className="rounded bg-base-200 px-1 text-[11px]">call_logs.employee_id</code> is matched to the lead’s scheduler via{' '}
@@ -1064,7 +1293,7 @@ const MarketingDashboardReport: React.FC = () => {
             </section>
 
             <section>
-              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/50">Cost & profitability</h4>
+              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Cost & profitability</h4>
               <p>
                 The cost table is a <strong>placeholder</strong>. When media, management, and optional HR costs exist per source, you can compute <code className="rounded bg-base-200 px-1 text-[11px]">Revenue − Total cost</code> and ROI with and without HR (dual columns as in your spec).
               </p>
@@ -1081,89 +1310,128 @@ const MarketingDashboardReport: React.FC = () => {
         </div>
       )}
 
-      {/* Sticky filters */}
-      <div className="sticky top-0 z-20 -mx-1 overflow-visible rounded-xl border border-base-300 bg-base-100/95 px-4 py-3 shadow-sm backdrop-blur-md">
-        <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
-          <label className="form-control">
-            <span className="label-text text-xs font-semibold">From</span>
+      <div className="space-y-5">
+        <div className="grid grid-cols-1 gap-x-4 gap-y-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
+          <label className="form-control min-w-0 xl:col-span-1">
+            <span className={FILTER_FIELD_LABEL_CLASS}>From</span>
             <input
               type="date"
-              className="input input-bordered input-sm"
+              className={`input input-md min-h-12 w-full text-base ${ENGRAVED_FILTER_CONTROL_CLASSES}`}
               value={fromDate}
               onChange={(e) => setFromDate(e.target.value)}
             />
           </label>
-          <label className="form-control">
-            <span className="label-text text-xs font-semibold">To</span>
+          <label className="form-control min-w-0 xl:col-span-1">
+            <span className={FILTER_FIELD_LABEL_CLASS}>To</span>
             <input
               type="date"
-              className="input input-bordered input-sm"
+              className={`input input-md min-h-12 w-full text-base ${ENGRAVED_FILTER_CONTROL_CLASSES}`}
               value={toDate}
               onChange={(e) => setToDate(e.target.value)}
             />
           </label>
-          <MarketingSearchMultiFilter
-            label="Channel"
-            placeholder="Search channels…"
-            options={channels.map((c) => ({ id: c.id, label: c.label }))}
-            selected={channelIds}
-            onChange={setChannelIds}
-          />
-          <MarketingSearchMultiFilter
-            label="Source"
-            placeholder="Search sources…"
-            options={sources.map((s) => ({ id: String(s.id), label: s.name }))}
-            selected={sourceIds}
-            onChange={setSourceIds}
-          />
-          <MarketingSearchMultiFilter
-            label="Country"
-            placeholder="Search countries…"
-            options={countries.map((c) => ({ id: String(c.id), label: c.name }))}
-            selected={countryIds}
-            onChange={setCountryIds}
-          />
-          <MarketingSearchMultiFilter
-            label="Provider (firm)"
-            placeholder="Search firms…"
-            options={firms.map((f) => ({ id: f.id, label: f.name }))}
-            selected={firmIds}
-            onChange={setFirmIds}
-          />
-          <div className="form-control justify-end">
-            <span className="label-text text-xs font-semibold opacity-0">Run</span>
-            <button type="button" className="btn btn-primary btn-sm" onClick={() => void runReport()} disabled={loading}>
-              {loading ? <span className="loading loading-spinner loading-sm" /> : 'Run report'}
+          <div className="min-w-0 xl:col-span-1">
+            <MarketingSearchMultiFilter
+              label="Channel"
+              placeholder="Search channels…"
+              options={channels.map((c) => ({ id: c.id, label: c.label }))}
+              selected={channelIds}
+              onChange={setChannelIds}
+              inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
+            />
+          </div>
+          <div className="min-w-0 xl:col-span-1">
+            <MarketingSearchMultiFilter
+              label="Source"
+              placeholder="Search sources…"
+              options={sources.map((s) => ({ id: String(s.id), label: s.name }))}
+              selected={sourceIds}
+              onChange={setSourceIds}
+              inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
+            />
+          </div>
+          <div className="min-w-0 xl:col-span-1">
+            <MarketingSearchMultiFilter
+              label="Country"
+              placeholder="Search countries…"
+              options={countries.map((c) => ({ id: String(c.id), label: c.name }))}
+              selected={countryIds}
+              onChange={setCountryIds}
+              inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
+            />
+          </div>
+          <div className="min-w-0 xl:col-span-1">
+            <MarketingSearchMultiFilter
+              label="Provider (firm)"
+              placeholder="Search firms…"
+              options={firms.map((f) => ({ id: f.id, label: f.name }))}
+              selected={firmIds}
+              onChange={setFirmIds}
+              inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
+            />
+          </div>
+          <div className="flex min-w-0 flex-col items-end justify-end xl:col-span-1">
+            <span className={`${FILTER_FIELD_LABEL_CLASS} w-full`}>Action</span>
+            <button
+              type="button"
+              className={`btn btn-primary min-h-12 h-12 w-auto shrink-0 px-5 text-base font-semibold ${ENGRAVED_FILTER_PRIMARY_BUTTON_CLASSES}`}
+              onClick={() => void runReport()}
+              disabled={loading}
+            >
+              {loading ? <span className="loading loading-spinner loading-md" /> : 'Run report'}
             </button>
           </div>
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
-          <span className="font-semibold">Group:</span>
-          <label className="flex cursor-pointer items-center gap-1">
-            <input
-              type="radio"
-              name="grp"
-              checked={groupMode === 'source'}
-              onChange={() => setGroupMode('source')}
-            />
-            By source
-          </label>
-          <label className="flex cursor-pointer items-center gap-1">
-            <input
-              type="radio"
-              name="grp"
-              checked={groupMode === 'channel'}
-              onChange={() => setGroupMode('channel')}
-            />
-            By channel
-          </label>
-          <label className="ml-4 flex cursor-pointer items-center gap-2">
+
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-base-content/55">
+              Group by
+            </span>
+            <div
+              className={
+                'inline-flex rounded-2xl p-1 ' +
+                'border border-base-content/[0.08] bg-base-300/45 dark:border-white/[0.06] dark:bg-base-content/[0.1] ' +
+                'shadow-[inset_0_4px_14px_rgba(0,0,0,0.11),inset_0_2px_4px_rgba(0,0,0,0.05),0_1px_0_rgba(255,255,255,0.35)] ' +
+                'dark:shadow-[inset_0_5px_18px_rgba(0,0,0,0.52),inset_0_1px_0_rgba(255,255,255,0.05)]'
+              }
+              role="group"
+              aria-label="Group table by source or channel"
+            >
+              <button
+                type="button"
+                aria-pressed={groupMode === 'source'}
+                className={`min-w-[7rem] cursor-pointer rounded-[0.65rem] px-4 py-2 text-sm font-bold tracking-tight transition-colors duration-200 ease-out outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 ${
+                  groupMode === 'source'
+                    ? 'bg-primary text-primary-content shadow-[inset_0_3px_10px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.14)] dark:shadow-[inset_0_4px_14px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.08)]'
+                    : 'text-base-content/55 shadow-[inset_0_2px_6px_rgba(0,0,0,0.05)] hover:bg-black/[0.04] hover:text-base-content/90 dark:shadow-[inset_0_2px_8px_rgba(0,0,0,0.25)] dark:hover:bg-white/[0.05]'
+                }`}
+                onClick={() => setGroupMode('source')}
+              >
+                Source
+              </button>
+              <button
+                type="button"
+                aria-pressed={groupMode === 'channel'}
+                className={`min-w-[7rem] cursor-pointer rounded-[0.65rem] px-4 py-2 text-sm font-bold tracking-tight transition-colors duration-200 ease-out outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 ${
+                  groupMode === 'channel'
+                    ? 'bg-primary text-primary-content shadow-[inset_0_3px_10px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.14)] dark:shadow-[inset_0_4px_14px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.08)]'
+                    : 'text-base-content/55 shadow-[inset_0_2px_6px_rgba(0,0,0,0.05)] hover:bg-black/[0.04] hover:text-base-content/90 dark:shadow-[inset_0_2px_8px_rgba(0,0,0,0.25)] dark:hover:bg-white/[0.05]'
+                }`}
+                onClick={() => setGroupMode('channel')}
+              >
+                Channel
+              </button>
+            </div>
+          </div>
+          <label className="label cursor-pointer justify-start gap-2.5 py-0 sm:justify-end">
             <input
               type="checkbox"
+              className="checkbox checkbox-sm checkbox-primary"
               checked={includeHrCost}
               onChange={(e) => setIncludeHrCost(e.target.checked)}
             />
-            HR cost column (placeholder)
+            <span className="label-text text-sm text-base-content/55">HR cost column (placeholder)</span>
           </label>
         </div>
       </div>
@@ -1177,47 +1445,221 @@ const MarketingDashboardReport: React.FC = () => {
       {searched && !loading && (
         <>
           {/* KPI row */}
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
             {[
-              { label: 'Leads', value: totals.leads },
-              { label: 'Eligible (approx.)', value: totals.eligible },
-              { label: 'Meetings (excl. inactive)', value: totals.meetings },
-              { label: 'Deals (signed)', value: totals.deals },
-              { label: 'Revenue (NIS, approx.)', value: fmtMoney(totals.revenue) },
+              {
+                label: 'Leads',
+                value: totals.leads,
+                icon: UserGroupIcon,
+                targetId: 'marketing-kpi-macro',
+                className:
+                  'bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white',
+              },
+              {
+                label: 'Eligible (approx.)',
+                value: totals.eligible,
+                icon: CheckCircleIcon,
+                targetId: 'marketing-kpi-timing',
+                className:
+                  'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white',
+              },
+              {
+                label: 'Meetings (excl. inactive)',
+                value: totals.meetings,
+                icon: CalendarDaysIcon,
+                targetId: 'marketing-kpi-funnel',
+                className:
+                  'bg-gradient-to-tr from-fuchsia-500 via-rose-500 to-orange-400 text-white',
+              },
+              {
+                label: 'Deals (signed)',
+                value: totals.deals,
+                icon: CheckCircleIcon,
+                targetId: 'marketing-kpi-sales',
+                className:
+                  'bg-gradient-to-tr from-emerald-500 via-teal-500 to-cyan-400 text-white',
+              },
+              {
+                label: 'Revenue (NIS, approx.)',
+                value: fmtMoney(totals.revenue),
+                icon: BanknotesIcon,
+                targetId: 'marketing-kpi-cost',
+                className:
+                  'bg-gradient-to-tr from-indigo-600 via-violet-600 to-fuchsia-500 text-white',
+              },
             ].map((k) => (
-              <div key={k.label} className="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
-                <p className="text-[10px] font-bold uppercase tracking-wide text-base-content/50">{k.label}</p>
-                <p className="text-xl font-bold">{k.value}</p>
-              </div>
+              <button
+                key={k.label}
+                type="button"
+                onClick={() => {
+                  const el = document.getElementById(k.targetId);
+                  el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }}
+                className={`rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] hover:shadow-2xl shadow-xl relative overflow-hidden p-6 min-h-[7.5rem] text-left ${k.className}`}
+              >
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center justify-center w-14 h-14 rounded-full bg-white/20 shadow">
+                    <k.icon className="w-7 h-7 text-white opacity-95" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-white/85">{k.label}</div>
+                    <div className="text-3xl font-extrabold text-white leading-tight">{k.value}</div>
+                  </div>
+                </div>
+              </button>
             ))}
           </div>
 
           {/* Main macro table */}
-          <div className="overflow-x-auto rounded-xl border border-base-300 bg-base-100 shadow-sm">
-            <h3 className="border-b border-base-300 px-4 py-3 text-sm font-bold">Macro performance (by {groupMode})</h3>
-            <table className="table table-sm">
+          <div
+            id="marketing-kpi-macro"
+            className="scroll-mt-24 overflow-x-auto rounded-xl border border-base-300 bg-base-100 shadow-sm"
+          >
+            <h3
+              className={`border-b border-base-300 px-4 py-3 text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}
+            >
+              Macro performance (by {groupMode})
+            </h3>
+            <table className={REPORT_TABLE_CLASS}>
               <thead>
-                <tr className="bg-base-200 text-[10px] uppercase">
-                  <th>Channel</th>
-                  {groupMode === 'source' && <th>Source</th>}
-                  <th>Provider</th>
-                  <th className="text-right">Leads</th>
-                  <th className="text-right">Eligible</th>
-                  <th className="text-right">Meetings</th>
-                  <th className="text-right">Offers</th>
-                  <th className="text-right">Deals</th>
-                  <th className="text-right">Lead→Elig %</th>
-                  <th className="text-right">Lead→Mtg %</th>
-                  <th className="text-right">Lead→Offer %</th>
-                  <th className="text-right">Lead→Deal %</th>
-                  <th className="text-right">Revenue ₪</th>
-                  <th className="text-right">Inactive</th>
-                  <th className="text-right">CPL*</th>
-                  <th className="text-right">Cost/elig*</th>
+                <tr className="border-b border-base-300 bg-base-100 text-xs uppercase md:text-sm">
+                  <th scope="col">Channel</th>
+                  {groupMode === 'source' && <th scope="col">Source</th>}
+                  <th scope="col">Provider</th>
+                  <MacroSortableTh
+                    sortKey="leads"
+                    activeKey={macroSort.key}
+                    dir={macroSort.dir}
+                    onSort={toggleMacroSort}
+                    sortLabel="Leads"
+                    className="text-right"
+                  >
+                    Leads
+                  </MacroSortableTh>
+                  <MacroSortableTh
+                    sortKey="eligible"
+                    activeKey={macroSort.key}
+                    dir={macroSort.dir}
+                    onSort={toggleMacroSort}
+                    sortLabel="Eligible"
+                    className="text-right"
+                  >
+                    Eligible
+                  </MacroSortableTh>
+                  <MacroSortableTh
+                    sortKey="meetings"
+                    activeKey={macroSort.key}
+                    dir={macroSort.dir}
+                    onSort={toggleMacroSort}
+                    sortLabel="Meetings"
+                    className="text-right"
+                  >
+                    Meetings
+                  </MacroSortableTh>
+                  <MacroSortableTh
+                    sortKey="offers"
+                    activeKey={macroSort.key}
+                    dir={macroSort.dir}
+                    onSort={toggleMacroSort}
+                    sortLabel="Offers"
+                    className="text-right"
+                  >
+                    Offers
+                  </MacroSortableTh>
+                  <MacroSortableTh
+                    sortKey="deals"
+                    activeKey={macroSort.key}
+                    dir={macroSort.dir}
+                    onSort={toggleMacroSort}
+                    sortLabel="Deals"
+                    className="text-right"
+                  >
+                    Deals
+                  </MacroSortableTh>
+                  <MacroSortableTh
+                    sortKey="pctElig"
+                    activeKey={macroSort.key}
+                    dir={macroSort.dir}
+                    onSort={toggleMacroSort}
+                    sortLabel="Lead to eligible percent"
+                    className="text-right"
+                  >
+                    Lead→Elig %
+                  </MacroSortableTh>
+                  <MacroSortableTh
+                    sortKey="pctMtg"
+                    activeKey={macroSort.key}
+                    dir={macroSort.dir}
+                    onSort={toggleMacroSort}
+                    sortLabel="Lead to meeting percent"
+                    className="text-right"
+                  >
+                    Lead→Mtg %
+                  </MacroSortableTh>
+                  <MacroSortableTh
+                    sortKey="pctOffer"
+                    activeKey={macroSort.key}
+                    dir={macroSort.dir}
+                    onSort={toggleMacroSort}
+                    sortLabel="Lead to offer percent"
+                    className="text-right"
+                  >
+                    Lead→Offer %
+                  </MacroSortableTh>
+                  <MacroSortableTh
+                    sortKey="pctDeal"
+                    activeKey={macroSort.key}
+                    dir={macroSort.dir}
+                    onSort={toggleMacroSort}
+                    sortLabel="Lead to deal percent"
+                    className="text-right"
+                  >
+                    Lead→Deal %
+                  </MacroSortableTh>
+                  <MacroSortableTh
+                    sortKey="revenue"
+                    activeKey={macroSort.key}
+                    dir={macroSort.dir}
+                    onSort={toggleMacroSort}
+                    sortLabel="Revenue NIS"
+                    className="text-right"
+                  >
+                    Revenue ₪
+                  </MacroSortableTh>
+                  <MacroSortableTh
+                    sortKey="inactive"
+                    activeKey={macroSort.key}
+                    dir={macroSort.dir}
+                    onSort={toggleMacroSort}
+                    sortLabel="Inactive"
+                    className="text-right"
+                  >
+                    Inactive
+                  </MacroSortableTh>
+                  <MacroSortableTh
+                    sortKey="cpl"
+                    activeKey={macroSort.key}
+                    dir={macroSort.dir}
+                    onSort={toggleMacroSort}
+                    sortLabel="CPL"
+                    className="text-right"
+                  >
+                    CPL*
+                  </MacroSortableTh>
+                  <MacroSortableTh
+                    sortKey="costElig"
+                    activeKey={macroSort.key}
+                    dir={macroSort.dir}
+                    onSort={toggleMacroSort}
+                    sortLabel="Cost per eligible"
+                    className="text-right"
+                  >
+                    Cost/elig*
+                  </MacroSortableTh>
                 </tr>
               </thead>
               <tbody>
-                {aggregates.map((r) => {
+                {sortedAggregates.map((r) => {
                   const pct = (a: number, b: number) => (b > 0 ? ((a / b) * 100).toFixed(1) : '—');
                   return (
                     <tr key={r.key}>
@@ -1233,7 +1675,7 @@ const MarketingDashboardReport: React.FC = () => {
                       <td className="text-right">{pct(r.meetings, r.leads)}</td>
                       <td className="text-right">{pct(r.offers, r.leads)}</td>
                       <td className="text-right">{pct(r.deals, r.leads)}</td>
-                      <td className="text-right font-mono text-xs">{fmtMoney(r.revenueNis)}</td>
+                      <td className="text-right font-mono text-sm">{fmtMoney(r.revenueNis)}</td>
                       <td className="text-right">{r.inactive}</td>
                       <td className="text-right text-base-content/40">—</td>
                       <td className="text-right text-base-content/40">—</td>
@@ -1245,14 +1687,17 @@ const MarketingDashboardReport: React.FC = () => {
           </div>
 
           {/* Funnel chart */}
-          <div className="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
-            <h3 className="mb-2 text-sm font-bold">Funnel snapshot</h3>
+          <div
+            id="marketing-kpi-funnel"
+            className="scroll-mt-24 rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm"
+          >
+            <h3 className={`mb-2 text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}>Funnel snapshot</h3>
             <div className="h-64 w-full min-w-0">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={funnelData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" className="opacity-40" />
-                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-                  <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
+                  <XAxis dataKey="name" tick={{ fontSize: 13 }} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 13 }} />
                   <Tooltip />
                   <Legend />
                   <Bar dataKey="value" name="Count" fill="#6366f1" radius={[4, 4, 0, 0]} />
@@ -1263,18 +1708,21 @@ const MarketingDashboardReport: React.FC = () => {
 
           {/* Timing from history_leads */}
           <div className="grid gap-4 lg:grid-cols-2">
-            <div className="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
-              <h3 className="text-sm font-bold">Funnel timing (avg. days)</h3>
+            <div
+              id="marketing-kpi-timing"
+              className="scroll-mt-24 rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm"
+            >
+              <h3 className={`text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}>Funnel timing (avg. days)</h3>
               {historyError && (
-                <p className="mt-2 text-xs text-error">
+                <p className="mt-2 text-sm text-error">
                   History could not be loaded: {historyError} (check RLS / table access).
                 </p>
               )}
               {!historyError && leads.length > 0 && (
                 <div className="mt-3 overflow-x-auto">
-                  <table className="table table-sm">
+                  <table className={REPORT_TABLE_CLASS}>
                     <thead>
-                      <tr className="bg-base-200 text-[10px] uppercase">
+                      <tr className="border-b border-base-300 bg-base-100 text-xs uppercase md:text-sm">
                         <th>Segment</th>
                         <th className="text-right">Avg days</th>
                         <th className="text-right">Leads counted</th>
@@ -1283,11 +1731,11 @@ const MarketingDashboardReport: React.FC = () => {
                     <tbody>
                       {funnelTimingRows.map((r) => (
                         <tr key={r.label}>
-                          <td className="text-xs">{r.label}</td>
-                          <td className="text-right font-mono text-xs">
+                          <td>{r.label}</td>
+                          <td className="text-right font-mono text-sm">
                             {r.avgDays != null ? r.avgDays.toFixed(1) : '—'}
                           </td>
-                          <td className="text-right text-xs">{r.n}</td>
+                          <td className="text-right text-sm">{r.n}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1295,14 +1743,17 @@ const MarketingDashboardReport: React.FC = () => {
                 </div>
               )}
             </div>
-            <div className="rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm">
-              <h3 className="text-sm font-bold">Sales behaviour / quality</h3>
+            <div
+              id="marketing-kpi-sales"
+              className="scroll-mt-24 rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm"
+            >
+              <h3 className={`text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}>Sales behaviour / quality</h3>
               {callLogsError && (
-                <p className="mt-2 text-xs text-error">call_logs: {callLogsError}</p>
+                <p className="mt-2 text-sm text-error">call_logs: {callLogsError}</p>
               )}
               {!callLogsError && leads.length > 0 && (
                 <div className="mt-3 space-y-3">
-                  <div className="flex flex-wrap gap-3 text-xs">
+                  <div className="flex flex-wrap gap-3 text-sm">
                     <span className="rounded-lg bg-base-200 px-2 py-1">
                       Qualified leads: <strong>{salesBehaviourStats.qualifiedCount}</strong>
                     </span>
@@ -1313,7 +1764,7 @@ const MarketingDashboardReport: React.FC = () => {
                       Avg call (matched):{' '}
                       <strong>
                         {salesBehaviourStats.overallAvgSec != null
-                          ? `${salesBehaviourStats.overallAvgSec.toFixed(0)}s`
+                          ? fmtDurationMinSec(salesBehaviourStats.overallAvgSec)
                           : '—'}
                       </strong>
                     </span>
@@ -1328,9 +1779,9 @@ const MarketingDashboardReport: React.FC = () => {
                   </div>
                   {salesBehaviourStats.byScheduler.length > 0 ? (
                     <div className="overflow-x-auto">
-                      <table className="table table-sm">
+                      <table className={REPORT_TABLE_CLASS}>
                         <thead>
-                          <tr className="bg-base-200 text-[10px] uppercase">
+                          <tr className="border-b border-base-300 bg-base-100 text-xs uppercase md:text-sm">
                             <th>Scheduler</th>
                             <th className="text-right">Calls</th>
                             <th className="text-right">Avg duration</th>
@@ -1339,18 +1790,18 @@ const MarketingDashboardReport: React.FC = () => {
                         <tbody>
                           {salesBehaviourStats.byScheduler.map((r) => (
                             <tr key={r.id}>
-                              <td className="max-w-[10rem] truncate text-xs">{r.name}</td>
-                              <td className="text-right text-xs">{r.calls}</td>
-                              <td className="text-right font-mono text-xs">{r.avgSec.toFixed(0)}s</td>
+                              <td className="max-w-[10rem] truncate">{r.name}</td>
+                              <td className="text-right">{r.calls}</td>
+                              <td className="text-right font-mono text-sm">{fmtDurationMinSec(r.avgSec)}</td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
                   ) : (
-                    <p className="text-xs text-base-content/60">
+                    <p className="text-sm text-base-content/60">
                       No calls matched (check scheduler on leads; 1com sync should set{' '}
-                      <code className="text-[10px]">client_id</code> or legacy <code className="text-[10px]">lead_id</code>).
+                      <code className="text-xs">client_id</code> or legacy <code className="text-xs">lead_id</code>).
                     </p>
                   )}
                 </div>
@@ -1359,11 +1810,18 @@ const MarketingDashboardReport: React.FC = () => {
           </div>
 
           {/* Cost breakdown */}
-          <div className="overflow-x-auto rounded-xl border border-base-300 bg-base-100 shadow-sm">
-            <h3 className="border-b border-base-300 px-4 py-3 text-sm font-bold">Cost breakdown (placeholder)</h3>
-            <table className="table table-sm">
+          <div
+            id="marketing-kpi-cost"
+            className="scroll-mt-24 overflow-x-auto rounded-xl border border-base-300 bg-base-100 shadow-sm"
+          >
+            <h3
+              className={`border-b border-base-300 px-4 py-3 text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}
+            >
+              Cost breakdown (placeholder)
+            </h3>
+            <table className={REPORT_TABLE_CLASS}>
               <thead>
-                <tr className="bg-base-200 text-[10px] uppercase">
+                <tr className="border-b border-base-300 bg-base-100 text-xs uppercase md:text-sm">
                   <th>Channel</th>
                   <th>Source</th>
                   <th className="text-right">Media</th>
@@ -1392,7 +1850,12 @@ const MarketingDashboardReport: React.FC = () => {
       )}
 
       {!searched && (
-        <p className="text-center text-sm text-base-content/50">Set filters and click &quot;Run report&quot;.</p>
+        <div className="rounded-2xl border border-dashed border-base-300/70 bg-base-200/25 px-6 py-14 text-center dark:border-base-content/15 dark:bg-base-300/10">
+          <p className="text-base leading-relaxed text-base-content/55">
+            Set your filters above, then click <span className="font-semibold text-base-content/75">Run report</span> to
+            load results.
+          </p>
+        </div>
       )}
     </div>
   );
