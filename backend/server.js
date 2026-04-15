@@ -34,6 +34,7 @@ const io = new Server(server, {
       process.env.FRONTEND_URL || "http://localhost:5173",
       "https://leadify-crm.onrender.com",
       "https://rainmakerqueen.org",
+      "https://rainmakerqueen.onrender.com",
       "http://localhost:5173",
     ],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
