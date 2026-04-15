@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { XMarkIcon } from '@heroicons/react/24/outline';
+import { LockClosedIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
 import { convertToNIS } from '../lib/currencyConversion';
@@ -8,6 +8,9 @@ interface BalanceEditModalProps {
   isOpen: boolean;
   onClose: () => void;
   selectedClient: any;
+  isLocked?: boolean;
+  lockedBaseTotal?: number | null;
+  lockedVatTotal?: number | null;
   onUpdate: (clientId?: string | number) => Promise<void>;
 }
 
@@ -15,6 +18,9 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
   isOpen,
   onClose,
   selectedClient,
+  isLocked = false,
+  lockedBaseTotal = null,
+  lockedVatTotal = null,
   onUpdate
 }) => {
   const [formData, setFormData] = useState({
@@ -280,12 +286,12 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
       setFormData({
         currencyId: currencyId,
         currency: '', // Will be computed from currencyId when needed
-        proposal_total: proposalTotalValue,
+        proposal_total: (isLocked && lockedBaseTotal !== null) ? lockedBaseTotal : proposalTotalValue,
         proposal_vat: vatStatus,
         subcontractor_fee: subcontractorFeeValue,
         potential_value: selectedClient.potential_value || selectedClient.potential_total || 0,
         number_of_applicants_meeting: selectedClient.number_of_applicants_meeting || 1,
-        vat_value: selectedClient.vat_value || 0
+        vat_value: (isLocked && lockedVatTotal !== null) ? lockedVatTotal : (selectedClient.vat_value || 0)
       });
 
       // Mark as initialized for this client
@@ -375,16 +381,18 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         // Save logic for legacy leads:
         // If currency_id is 1 (NIS): Save only to total_base
         // If currency_id is other than 1: Save to total, and calculate NIS equivalent and save to total_base
-        if (currencyId === 1) {
-          // For NIS (currency_id = 1), save only to total_base
-          updateData.total_base = Number(formData.proposal_total) || 0;
-          // Note: We don't set total here - it will preserve the existing value if it exists from a previous currency
-        } else {
-          // For other currencies, save the amount to total
-          updateData.total = Number(formData.proposal_total) || 0;
-          // Calculate NIS equivalent and save to total_base
-          const nisAmount = convertToNIS(formData.proposal_total, currencyId);
-          updateData.total_base = nisAmount;
+        if (!isLocked) {
+          if (currencyId === 1) {
+            // For NIS (currency_id = 1), save only to total_base
+            updateData.total_base = Number(formData.proposal_total) || 0;
+            // Note: We don't set total here - it will preserve the existing value if it exists from a previous currency
+          } else {
+            // For other currencies, save the amount to total
+            updateData.total = Number(formData.proposal_total) || 0;
+            // Calculate NIS equivalent and save to total_base
+            const nisAmount = convertToNIS(formData.proposal_total, currencyId);
+            updateData.total_base = nisAmount;
+          }
         }
         
         console.log('💾 Saving legacy lead balance update:', {
@@ -448,15 +456,18 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         });
         
         const updateData: any = {
-          balance: formData.proposal_total,
           currency_id: currencyId, // Save currency ID (like legacy leads)
-          proposal_total: formData.proposal_total,
           subcontractor_fee: formData.subcontractor_fee,
           potential_total: formData.potential_value,
           number_of_applicants_meeting: formData.number_of_applicants_meeting,
           vat_value: calculateVAT(),
           vat: vatColumnValue
         };
+
+        if (!isLocked) {
+          updateData.balance = formData.proposal_total;
+          updateData.proposal_total = formData.proposal_total;
+        }
         
         console.log('📤 Update payload being sent to database:', updateData);
         
@@ -513,7 +524,7 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
 
   if (!isOpen) return null;
 
-  const vatAmount = calculateVAT();
+  const vatAmount = (isLocked && lockedVatTotal !== null) ? Number(lockedVatTotal) || 0 : calculateVAT();
   // Only show VAT if it's included (for new leads, this means vat column is 'true')
   const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
   const shouldShowVAT = isLegacyLead 
@@ -589,7 +600,10 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
             {/* Proposal Total */}
             <div className="form-control">
               <label className="label">
-                <span className="label-text font-medium">Proposal Total:</span>
+                <span className="label-text font-medium inline-flex items-center gap-2">
+                  Proposal Total:
+                  {isLocked && <LockClosedIcon className="w-4 h-4 text-base-content/70" title="Locked by payment plan" />}
+                </span>
               </label>
               <div className="flex items-center gap-2">
                 <input
@@ -600,6 +614,7 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
                   onChange={(e) => handleInputChange('proposal_total', parseFloat(e.target.value) || 0)}
                   onFocus={handleInputFocus}
                   required
+                  disabled={isLocked}
                 />
                 {shouldShowVAT && vatAmount > 0 && (
                   <span className="text-sm text-gray-600 whitespace-nowrap">
@@ -607,6 +622,11 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
                   </span>
                 )}
               </div>
+              {isLocked && (
+                <div className="mt-1 text-xs text-base-content/70">
+                  Locked because this lead has a payment plan.
+                </div>
+              )}
             </div>
 
             {/* Proposal VAT */}

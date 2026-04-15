@@ -3470,6 +3470,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       setEditingPaymentId(null);
       setEditPaymentData({});
       await refreshPaymentPlans();
+      if (typeof window !== 'undefined' && client?.id) {
+        console.log('[paymentPlan] changed (update)', { leadId: String(client.id), isLegacyLead: String(client.id).startsWith('legacy_') || client?.lead_type === 'legacy' });
+        window.dispatchEvent(new CustomEvent('paymentPlan:changed', { detail: { leadId: String(client.id) } }));
+      }
     } catch (error) {
       console.error('Error updating payment:', error);
       toast.error('Failed to update payment row.');
@@ -3541,6 +3545,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
       toast.success('Payment row deleted!');
       await refreshPaymentPlans();
+      if (typeof window !== 'undefined' && client?.id) {
+        console.log('[paymentPlan] changed (delete)', { leadId: String(client.id), isLegacyLead: String(client.id).startsWith('legacy_') || client?.lead_type === 'legacy' });
+        window.dispatchEvent(new CustomEvent('paymentPlan:changed', { detail: { leadId: String(client.id) } }));
+      }
     } catch (error) {
       console.error('Error deleting payment:', error);
       toast.error('Failed to delete payment row.');
@@ -4072,7 +4080,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       // Payment created successfully
 
       toast.success('Payment plan created successfully');
-      refreshPaymentPlans();
+      await refreshPaymentPlans();
+      if (typeof window !== 'undefined' && client?.id) {
+        console.log('[paymentPlan] changed (create)', { leadId: String(client.id), isLegacyLead: String(client.id).startsWith('legacy_') || client?.lead_type === 'legacy' });
+        window.dispatchEvent(new CustomEvent('paymentPlan:changed', { detail: { leadId: String(client.id) } }));
+      }
     } catch (error) {
       console.error('Error creating payment plan:', error);
       toast.error('Failed to create payment plan');
@@ -4464,7 +4476,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       });
       setIsCustomPaymentCount(false);
       setCustomPaymentCount(6);
-      refreshPaymentPlans();
+      await refreshPaymentPlans();
+      if (typeof window !== 'undefined' && client?.id) {
+        console.log('[paymentPlan] changed (autoPlan)', { leadId: String(client.id), isLegacyLead: String(client.id).startsWith('legacy_') || client?.lead_type === 'legacy' });
+        window.dispatchEvent(new CustomEvent('paymentPlan:changed', { detail: { leadId: String(client.id) } }));
+      }
     } catch (error) {
       console.error('Error creating auto plan:', error);
       toast.error('Failed to create auto finance plan');

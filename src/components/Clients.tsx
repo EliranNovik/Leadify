@@ -68,6 +68,7 @@ import {
   LinkIcon,
   ArrowRightIcon,
   ArchiveBoxIcon,
+  LockClosedIcon,
 } from '@heroicons/react/24/outline';
 const loadInfoTab = () => import('./client-tabs/InfoTab');
 const loadRolesTab = () => import('./client-tabs/RolesTab');
@@ -102,6 +103,7 @@ import {
   type AccountInfo,
 } from '@azure/msal-browser';
 import toast from 'react-hot-toast';
+import { convertToNIS } from '../lib/currencyConversion';
 import LeadSummaryDrawer from './LeadSummaryDrawer';
 import { generateProformaName } from '../lib/proforma';
 import TimePicker from './TimePicker';
@@ -2148,6 +2150,10 @@ const Clients: React.FC<ClientsProps> = ({
   const [showPaymentsPlanDrawer, setShowPaymentsPlanDrawer] = useState(false);
   const [editingBalance, setEditingBalance] = useState(false);
   const [editedBalance, setEditedBalance] = useState(selectedClient?.balance || 0);
+  const [paymentPlanBaseTotal, setPaymentPlanBaseTotal] = useState<number | null>(null);
+  const [paymentPlanVatTotal, setPaymentPlanVatTotal] = useState<number | null>(null);
+  const [paymentPlanGrossTotal, setPaymentPlanGrossTotal] = useState<number | null>(null);
+  const [hasPaymentPlan, setHasPaymentPlan] = useState(false);
   const [autoPlan, setAutoPlan] = useState('');
   const autoPlanOptions = [
     '', // Default empty option
@@ -7694,11 +7700,8 @@ const Clients: React.FC<ClientsProps> = ({
         }
       }
 
-      setShowUpdateDrawer(false);
-      setMeetingNotes('');
-      setNextFollowup('');
-      setFollowup('');
-      setPotentialApplicants('');
+      // Keep the drawer open after save so user can continue editing other fields.
+      // Do not reset the form state here.
       if (onClientUpdate) await onClientUpdate();
     } catch (err: any) {
       console.error('Error in handleSaveUpdateDrawer:', err);
@@ -10934,6 +10937,29 @@ const Clients: React.FC<ClientsProps> = ({
         }
         console.log('Legacy payment plans inserted:', insertedPayments);
 
+        // From now on: keep the lead total value in sync with the payment plan total (non-retroactive unless saved)
+        const totalFromPlan = payments.reduce((sum, p) => {
+          const base = typeof p.value === 'number' ? p.value : parseFloat(p.value);
+          const vat = typeof p.valueVat === 'number' ? p.valueVat : parseFloat(p.valueVat);
+          return sum + (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
+        }, 0);
+
+        const currencyIdRaw = (selectedClient as any).currency_id;
+        let numericCurrencyId = typeof currencyIdRaw === 'string' ? parseInt(currencyIdRaw, 10) : Number(currencyIdRaw);
+        if (!numericCurrencyId || Number.isNaN(numericCurrencyId)) numericCurrencyId = 1;
+
+        const legacyUpdate: Record<string, unknown> = (numericCurrencyId === 1)
+          ? { total_base: totalFromPlan }
+          : { total: totalFromPlan };
+
+        const { error: legacyTotalError } = await supabase
+          .from('leads_lead')
+          .update(legacyUpdate)
+          .eq('id', legacyId);
+        if (legacyTotalError) {
+          console.error('Failed to sync legacy lead total to payment plan total:', legacyTotalError);
+        }
+
       } else {
         // For new leads, use payment_plans table
         console.log('Saving payment plan for new lead:', selectedClient.id);
@@ -10994,6 +11020,24 @@ const Clients: React.FC<ClientsProps> = ({
 
           if (historyError) console.error('Error logging payment plan creation:', historyError);
         }
+
+        // From now on: keep the lead proposal_total/balance in sync with the payment plan total (non-retroactive unless saved)
+        const totalFromPlan = payments.reduce((sum, p) => {
+          const base = typeof p.value === 'number' ? p.value : parseFloat(p.value);
+          const vat = typeof p.valueVat === 'number' ? p.valueVat : parseFloat(p.valueVat);
+          return sum + (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
+        }, 0);
+
+        const { error: newLeadTotalError } = await supabase
+          .from('leads')
+          .update({
+            proposal_total: totalFromPlan,
+            balance: totalFromPlan,
+          })
+          .eq('id', selectedClient.id);
+        if (newLeadTotalError) {
+          console.error('Failed to sync lead proposal_total to payment plan total:', newLeadTotalError);
+        }
       }
 
       // Optionally, refresh just the payment plans here if needed
@@ -11005,6 +11049,173 @@ const Clients: React.FC<ClientsProps> = ({
       setIsSavingPaymentPlan(false);
     }
   };
+
+  const fetchPaymentPlanTotal = useCallback(async (clientId: string) => {
+    if (!clientId) return { hasPlan: false, base: null as number | null, vat: null as number | null, gross: null as number | null, grossNis: null as number | null };
+    try {
+      const isLegacyLead = clientId.toString().startsWith('legacy_');
+      if (isLegacyLead) {
+        const legacyIdStr = clientId.toString().replace('legacy_', '');
+        const legacyId = legacyIdStr ? parseInt(legacyIdStr, 10) : NaN;
+        if (!Number.isFinite(legacyId)) {
+          console.warn('[paymentPlanTotal][legacy] invalid legacyId', { clientId, legacyIdStr });
+          setHasPaymentPlan(false);
+          setPaymentPlanBaseTotal(null);
+          setPaymentPlanVatTotal(null);
+          setPaymentPlanGrossTotal(null);
+          return { hasPlan: false, base: null, vat: null, gross: null, grossNis: null };
+        }
+
+        const leadCurrencyIdRaw = (selectedClient as any)?.currency_id ?? 1;
+        let leadCurrencyId = typeof leadCurrencyIdRaw === 'string' ? parseInt(leadCurrencyIdRaw, 10) : Number(leadCurrencyIdRaw);
+        if (!Number.isFinite(leadCurrencyId) || leadCurrencyId <= 0) leadCurrencyId = 1;
+
+        console.log('[paymentPlanTotal][legacy] fetching rows', { legacyId, leadCurrencyId, clientId });
+        const { data, error } = await supabase
+          .from('finances_paymentplanrow')
+          .select('value, vat_value, currency_id')
+          .eq('lead_id', legacyId)
+          .is('cancel_date', null);
+        if (error) throw error;
+        const rows = data || [];
+        console.log('[paymentPlanTotal][legacy] rows fetched', {
+          legacyId,
+          count: rows.length,
+          sample: (rows as any[]).slice(0, 10).map(r => ({
+            currency_id: r?.currency_id,
+            value: r?.value,
+            vat_value: r?.vat_value,
+          })),
+        });
+
+        const baseByCurrencyId = new Map<number, number>();
+        const vatByCurrencyId = new Map<number, number>();
+        let grossNis = 0;
+        for (const r of rows as any[]) {
+          const base = Number(r?.value ?? 0);
+          const vat = Number(r?.vat_value ?? 0);
+          const rowBase = Number.isFinite(base) ? base : 0;
+          const rowVat = Number.isFinite(vat) ? vat : 0;
+          const rowGross = rowBase + rowVat;
+          const rowCurrencyIdRaw = r?.currency_id ?? leadCurrencyId;
+          let rowCurrencyId = typeof rowCurrencyIdRaw === 'string' ? parseInt(rowCurrencyIdRaw, 10) : Number(rowCurrencyIdRaw);
+          if (!Number.isFinite(rowCurrencyId) || rowCurrencyId <= 0) rowCurrencyId = leadCurrencyId;
+
+          baseByCurrencyId.set(rowCurrencyId, (baseByCurrencyId.get(rowCurrencyId) || 0) + rowBase);
+          vatByCurrencyId.set(rowCurrencyId, (vatByCurrencyId.get(rowCurrencyId) || 0) + rowVat);
+          grossNis += convertToNIS(rowGross, rowCurrencyId);
+        }
+
+        const hasPlan = rows.length > 0;
+        const baseTotal = baseByCurrencyId.get(leadCurrencyId) ?? Array.from(baseByCurrencyId.values()).reduce((a, b) => a + b, 0);
+        const vatTotal = vatByCurrencyId.get(leadCurrencyId) ?? Array.from(vatByCurrencyId.values()).reduce((a, b) => a + b, 0);
+        const grossTotal = baseTotal + vatTotal;
+        console.log('[paymentPlanTotal][legacy] totals computed', {
+          legacyId,
+          leadCurrencyId,
+          baseByCurrencyId: Array.from(baseByCurrencyId.entries()),
+          vatByCurrencyId: Array.from(vatByCurrencyId.entries()),
+          baseTotal,
+          vatTotal,
+          grossTotal,
+          grossNis,
+          hasPlan,
+        });
+        setHasPaymentPlan(hasPlan);
+        setPaymentPlanBaseTotal(hasPlan ? baseTotal : null);
+        setPaymentPlanVatTotal(hasPlan ? vatTotal : null);
+        setPaymentPlanGrossTotal(hasPlan ? grossTotal : null);
+        return { hasPlan, base: hasPlan ? baseTotal : null, vat: hasPlan ? vatTotal : null, gross: hasPlan ? grossTotal : null, grossNis: hasPlan ? grossNis : null };
+      } else {
+        const { data, error } = await supabase
+          .from('payment_plans')
+          .select('value, value_vat')
+          .eq('lead_id', clientId)
+          .is('cancel_date', null);
+        if (error) throw error;
+        const rows = data || [];
+        const baseTotal = rows.reduce((sum, r: any) => {
+          const base = Number(r?.value ?? 0);
+          return sum + (Number.isFinite(base) ? base : 0);
+        }, 0);
+        const vatTotal = rows.reduce((sum, r: any) => {
+          const vat = Number(r?.value_vat ?? 0);
+          return sum + (Number.isFinite(vat) ? vat : 0);
+        }, 0);
+        const grossTotal = baseTotal + vatTotal;
+        const hasPlan = rows.length > 0;
+        setHasPaymentPlan(hasPlan);
+        setPaymentPlanBaseTotal(hasPlan ? baseTotal : null);
+        setPaymentPlanVatTotal(hasPlan ? vatTotal : null);
+        setPaymentPlanGrossTotal(hasPlan ? grossTotal : null);
+        return { hasPlan, base: hasPlan ? baseTotal : null, vat: hasPlan ? vatTotal : null, gross: hasPlan ? grossTotal : null, grossNis: null };
+      }
+    } catch (e) {
+      console.error('Error fetching payment plan total:', e);
+      setHasPaymentPlan(false);
+      setPaymentPlanBaseTotal(null);
+      setPaymentPlanVatTotal(null);
+      setPaymentPlanGrossTotal(null);
+      return { hasPlan: false, base: null, vat: null, gross: null, grossNis: null };
+    }
+  }, [selectedClient]);
+
+  useEffect(() => {
+    if (!selectedClient?.id) return;
+    void fetchPaymentPlanTotal(String(selectedClient.id));
+  }, [selectedClient?.id, fetchPaymentPlanTotal]);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const evt = e as CustomEvent<{ leadId?: string }>;
+      const leadId = evt?.detail?.leadId;
+      if (!leadId || !selectedClient?.id) return;
+      if (String(selectedClient.id) !== String(leadId)) return;
+      void (async () => {
+        console.log('[paymentPlanTotal] paymentPlan:changed received', { leadId, selectedClientId: String(selectedClient.id) });
+        const res = await fetchPaymentPlanTotal(String(selectedClient.id));
+        if (!res.hasPlan) return;
+
+        const isLegacyLead = String(selectedClient.id).startsWith('legacy_') || selectedClient.lead_type === 'legacy';
+        if (isLegacyLead) {
+          const legacyIdStr = String(selectedClient.id).replace('legacy_', '');
+          const legacyId = legacyIdStr ? parseInt(legacyIdStr, 10) : NaN;
+          if (!Number.isFinite(legacyId)) return;
+
+          const leadCurrencyIdRaw = (selectedClient as any)?.currency_id ?? 1;
+          let leadCurrencyId = typeof leadCurrencyIdRaw === 'string' ? parseInt(leadCurrencyIdRaw, 10) : Number(leadCurrencyIdRaw);
+          if (!Number.isFinite(leadCurrencyId) || leadCurrencyId <= 0) leadCurrencyId = 1;
+
+          const update: Record<string, unknown> = {};
+          if (leadCurrencyId === 1) {
+            update.total_base = res.gross ?? 0;
+          } else {
+            update.total = res.gross ?? 0;
+            update.total_base = res.grossNis ?? convertToNIS(res.gross ?? 0, leadCurrencyId);
+          }
+          console.log('[paymentPlanTotal][legacy] syncing leads_lead totals', { legacyId, leadCurrencyId, update });
+          const { error } = await supabase.from('leads_lead').update(update).eq('id', legacyId);
+          if (error) console.error('[paymentPlanTotal][legacy] failed syncing leads_lead totals', { legacyId, error });
+          else console.log('[paymentPlanTotal][legacy] synced leads_lead totals OK', { legacyId });
+          if (!error && typeof refreshClientData === 'function') {
+            await refreshClientData(selectedClient.id);
+          }
+        } else {
+          const { error } = await supabase
+            .from('leads')
+            .update({ proposal_total: res.gross ?? 0, balance: res.gross ?? 0 })
+            .eq('id', selectedClient.id);
+          if (error) console.error('Failed to sync lead totals from payment plan:', error);
+          // Ensure UI refresh uses the newly persisted values
+          if (!error && typeof refreshClientData === 'function') {
+            await refreshClientData(selectedClient.id);
+          }
+        }
+      })();
+    };
+    window.addEventListener('paymentPlan:changed', handler as EventListener);
+    return () => window.removeEventListener('paymentPlan:changed', handler as EventListener);
+  }, [selectedClient?.id, fetchPaymentPlanTotal]);
 
   // Proforma drawer state
   const [showProformaDrawer, setShowProformaDrawer] = useState(false);
@@ -14734,6 +14945,11 @@ const Clients: React.FC<ClientsProps> = ({
                   balanceValue = selectedClient.balance || (selectedClient as any).proposal_total;
                 }
 
+                // If a payment plan exists, the badge must reflect the sum of the plan (legacy + new leads)
+                if (hasPaymentPlan && paymentPlanGrossTotal !== null) {
+                  balanceValue = paymentPlanGrossTotal;
+                }
+
                 // Get currency name from accounting_currencies table
                 // For new leads: Always use currency_id -> accounting_currencies.name (never balance_currency)
                 // For legacy leads: Use balance_currency as fallback
@@ -14797,7 +15013,12 @@ const Clients: React.FC<ClientsProps> = ({
                   return (
                     <div className="flex items-center justify-center pt-2">
                       <span className="badge badge-lg px-4 py-2 bg-green-100 text-green-800 border border-green-300 font-semibold">
-                        Value: {balanceCurrency}{formattedValue}
+                        <span className="inline-flex items-center gap-2">
+                          <span>Value: {balanceCurrency}{formattedValue}</span>
+                          {hasPaymentPlan && (
+                            <LockClosedIcon className="w-4 h-4 text-green-800/80" title="Locked by payment plan" />
+                          )}
+                        </span>
                       </span>
                     </div>
                   );
@@ -15073,6 +15294,9 @@ const Clients: React.FC<ClientsProps> = ({
             subLeadsCount={isMasterLead ? subLeads.length : (isSubLead ? masterSubLeadsCount : 0)}
             nextDuePayment={nextDuePayment}
             setIsBalanceModalOpen={setIsBalanceModalOpen}
+            hasPaymentPlan={hasPaymentPlan}
+            paymentPlanBaseTotal={paymentPlanBaseTotal}
+            paymentPlanVatTotal={paymentPlanVatTotal}
             currentStageName={currentStageName}
             handleStartCase={handleStartCase}
             updateLeadStage={updateLeadStage}
@@ -15103,7 +15327,7 @@ const Clients: React.FC<ClientsProps> = ({
             scheduleMenuLabel={scheduleMenuLabel}
             hasScheduledMeetings={hasScheduledMeetings}
             isStageNumeric={isStageNumeric}
-            stageNumeric={stageNumeric}
+            stageNumeric={stageNumeric ?? undefined}
             dropdownsContent={
               <>
                 {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
@@ -16265,7 +16489,13 @@ const Clients: React.FC<ClientsProps> = ({
                         }
                         handleMeetingEndedChange('proposalTotal', value);
                       }}
+                      disabled={hasPaymentPlan}
                     />
+                    {hasPaymentPlan && (
+                      <div className="mt-1 text-xs text-base-content/70">
+                        Locked because this lead has a payment plan.
+                      </div>
+                    )}
                   </div>
                   {/* Currency */}
                   <div>
@@ -16603,7 +16833,13 @@ const Clients: React.FC<ClientsProps> = ({
                       className="input input-bordered w-full"
                       value={successForm.proposal}
                       onChange={e => handleSuccessFieldChange('proposal', e.target.value)}
+                      disabled={hasPaymentPlan}
                     />
+                    {hasPaymentPlan && (
+                      <div className="mt-1 text-xs text-base-content/70">
+                        Locked because this lead has a payment plan.
+                      </div>
+                    )}
                   </div>
 
                   <div>
@@ -16921,41 +17157,8 @@ const Clients: React.FC<ClientsProps> = ({
                     <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.potential_applicants_meeting} onChange={e => handleEditLeadChange('potential_applicants_meeting', e.target.value)} />
                   </div>
                   <div>
-                    <label className="block font-semibold mb-1">Balance (Amount)</label>
-                    <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.balance} onChange={e => handleEditLeadChange('balance', e.target.value)} />
-                  </div>
-                  <div>
                     <label className="block font-semibold mb-1">Follow Up Date</label>
                     <input type="date" className="input input-bordered w-full" value={editLeadData.next_followup} onChange={e => handleEditLeadChange('next_followup', e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Balance Currency</label>
-                    <select className="select select-bordered w-full" value={editLeadData.balance_currency} onChange={e => handleEditLeadChange('balance_currency', e.target.value)}>
-                      {currencies.length > 0 ? (
-                        <>
-                          {/* Show current currency first */}
-                          {currencies
-                            .filter(currency => currency.name === editLeadData.balance_currency)
-                            .map((currency) => (
-                              <option key={`current-${currency.id}`} value={currency.name}>
-                                {currency.name} ({currency.iso_code})
-                              </option>
-                            ))
-                          }
-                          {/* Show other currencies */}
-                          {currencies
-                            .filter(currency => currency.name !== editLeadData.balance_currency)
-                            .map((currency) => (
-                              <option key={currency.id} value={currency.name}>
-                                {currency.name} ({currency.iso_code})
-                              </option>
-                            ))
-                          }
-                        </>
-                      ) : (
-                        <option value="">Loading currencies...</option>
-                      )}
-                    </select>
                   </div>
                 </div>
                 <div className="mt-6 flex justify-end">
@@ -18366,6 +18569,9 @@ const Clients: React.FC<ClientsProps> = ({
             isOpen={isBalanceModalOpen}
             onClose={() => setIsBalanceModalOpen(false)}
             selectedClient={selectedClient}
+            isLocked={hasPaymentPlan}
+            lockedBaseTotal={paymentPlanBaseTotal}
+            lockedVatTotal={paymentPlanVatTotal}
             onUpdate={async (clientId) => {
               isBalanceUpdatingRef.current = true;
               console.log('🔒 Setting balance update flag to prevent onClientUpdate');

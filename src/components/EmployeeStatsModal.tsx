@@ -1353,7 +1353,7 @@ const EmployeeStatsModal: React.FC<EmployeeStatsModalProps> = ({
       <div className="bg-white w-full h-full flex flex-col">
         {/* Header with Background Image - Only show when not comparing all */}
         {!compareAll && fullEmployeeData && (
-        <div className="mb-8 relative">
+        <div className="mb-2 relative">
           {/* Background Image with Overlay */}
           {fullEmployeeData.photo && (
             <div 
@@ -1363,14 +1363,14 @@ const EmployeeStatsModal: React.FC<EmployeeStatsModalProps> = ({
               <div className="absolute inset-0 bg-gradient-to-r from-black/60 via-black/40 to-black/60 rounded-lg"></div>
             </div>
           )}
-          <div className={`relative z-10 p-3 sm:p-6 rounded-lg ${fullEmployeeData.photo ? 'text-white' : ''}`}>
+          <div className={`relative z-10 p-1.5 sm:p-2 rounded-lg ${fullEmployeeData.photo ? 'text-white' : ''}`}>
             {/* Mobile Layout */}
             <div className="sm:hidden">
-              <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center justify-between mb-1">
                 <div className="flex items-center gap-3 flex-1 min-w-0">
                   <div className="avatar flex-shrink-0">
                     {fullEmployeeData.photo_url ? (
-                      <div className="rounded-full w-16">
+                      <div className="rounded-full w-10">
                         <img 
                           src={fullEmployeeData.photo_url} 
                           alt={fullEmployeeData.display_name}
@@ -1381,8 +1381,8 @@ const EmployeeStatsModal: React.FC<EmployeeStatsModalProps> = ({
                             const parent = target.parentElement;
                             if (parent) {
                               parent.innerHTML = `
-                                <div class="bg-primary text-primary-content rounded-full w-16 h-16 flex items-center justify-center">
-                                  <span class="text-lg font-bold">${initials}</span>
+                                <div class="bg-primary text-primary-content rounded-full w-10 h-10 flex items-center justify-center">
+                                  <span class="text-sm font-bold">${initials}</span>
                                 </div>
                               `;
                             }
@@ -1391,8 +1391,8 @@ const EmployeeStatsModal: React.FC<EmployeeStatsModalProps> = ({
                       </div>
                     ) : (
                       <div className="placeholder">
-                        <div className="bg-primary text-primary-content rounded-full w-16 h-16 flex items-center justify-center">
-                          <span className="text-lg font-bold">{initials}</span>
+                        <div className="bg-primary text-primary-content rounded-full w-10 h-10 flex items-center justify-center">
+                          <span className="text-sm font-bold">{initials}</span>
                         </div>
                       </div>
                     )}
@@ -1414,40 +1414,41 @@ const EmployeeStatsModal: React.FC<EmployeeStatsModalProps> = ({
                       </div>
                     )}
                     
-                    <h2 className={`text-xl font-bold mb-1 truncate ${fullEmployeeData.photo ? 'text-white drop-shadow-lg' : ''}`}>
+                    <h2 className={`text-lg font-bold mb-0.5 truncate ${fullEmployeeData.photo ? 'text-white drop-shadow-lg' : ''}`}>
                       {fullEmployeeData.display_name}
                     </h2>
-                    {fullEmployeeData.email && (
-                      <p className={`text-sm mb-2 truncate ${fullEmployeeData.photo ? 'text-white/90 drop-shadow-md' : 'text-gray-600'}`}>
-                        {fullEmployeeData.email}
-                      </p>
-                    )}
                     
                     {/* Mobile Contact Info */}
-                    {(fullEmployeeData.phone || fullEmployeeData.mobile || fullEmployeeData.phone_ext || fullEmployeeData.mobile_ext) && (
-                      <div className="flex flex-wrap items-center gap-3 text-base mt-2 mb-2">
+                    {(fullEmployeeData.phone || fullEmployeeData.mobile || fullEmployeeData.phone_ext || fullEmployeeData.mobile_ext || fullEmployeeData.email) && (
+                      <div className="flex flex-wrap items-center gap-3 text-sm mt-1 mb-0">
                         {fullEmployeeData.phone && (
                           <div className={`flex items-center gap-2 ${fullEmployeeData.photo ? 'text-white/90' : 'text-gray-700'}`}>
-                            <PhoneIcon className={`w-5 h-5 ${fullEmployeeData.photo ? 'text-white/80' : 'text-gray-500'}`} />
-                            <span className="text-base font-medium">{fullEmployeeData.phone}</span>
+                            <PhoneIcon className={`w-4 h-4 ${fullEmployeeData.photo ? 'text-white/80' : 'text-gray-500'}`} />
+                            <span className="text-sm font-medium">{fullEmployeeData.phone}</span>
                           </div>
                         )}
                         {fullEmployeeData.mobile && (
                           <div className={`flex items-center gap-2 ${fullEmployeeData.photo ? 'text-white/90' : 'text-gray-700'}`}>
-                            <DevicePhoneMobileIcon className={`w-5 h-5 ${fullEmployeeData.photo ? 'text-white/80' : 'text-gray-500'}`} />
-                            <span className="text-base font-medium">{fullEmployeeData.mobile}</span>
+                            <DevicePhoneMobileIcon className={`w-4 h-4 ${fullEmployeeData.photo ? 'text-white/80' : 'text-gray-500'}`} />
+                            <span className="text-sm font-medium">{fullEmployeeData.mobile}</span>
                           </div>
                         )}
                         {fullEmployeeData.phone_ext && (
                           <div className={`flex items-center gap-2 ${fullEmployeeData.photo ? 'text-white/90' : 'text-gray-700'}`}>
                             <span className={`text-sm ${fullEmployeeData.photo ? 'text-white/70' : 'text-gray-500'}`}>Ext:</span>
-                            <span className="text-base font-medium">{fullEmployeeData.phone_ext}</span>
+                            <span className="text-sm font-medium">{fullEmployeeData.phone_ext}</span>
                           </div>
                         )}
                         {fullEmployeeData.mobile_ext && (
                           <div className={`flex items-center gap-2 ${fullEmployeeData.photo ? 'text-white/90' : 'text-gray-700'}`}>
                             <span className={`text-sm ${fullEmployeeData.photo ? 'text-white/70' : 'text-gray-500'}`}>Mob Ext:</span>
-                            <span className="text-base font-medium">{fullEmployeeData.mobile_ext}</span>
+                            <span className="text-sm font-medium">{fullEmployeeData.mobile_ext}</span>
+                          </div>
+                        )}
+                        {fullEmployeeData.email && (
+                          <div className={`flex items-center gap-2 min-w-0 ${fullEmployeeData.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                            <EnvelopeIcon className={`w-4 h-4 flex-shrink-0 ${fullEmployeeData.photo ? 'text-white/80' : 'text-gray-500'}`} />
+                            <span className="text-sm font-medium truncate">{fullEmployeeData.email}</span>
                           </div>
                         )}
                       </div>
@@ -1455,21 +1456,21 @@ const EmployeeStatsModal: React.FC<EmployeeStatsModalProps> = ({
                   </div>
                 </div>
                 <button 
-                  className={`btn btn-md btn-circle flex-shrink-0 ${fullEmployeeData.photo ? 'btn-ghost text-white hover:bg-white/20' : 'btn-ghost'}`}
+                  className={`btn btn-sm btn-circle flex-shrink-0 ${fullEmployeeData.photo ? 'btn-ghost text-white hover:bg-white/20' : 'btn-ghost'}`}
                   onClick={onClose}
                 >
-                  <XMarkIcon className="w-6 h-6" />
+                  <XMarkIcon className="w-5 h-5" />
                 </button>
               </div>
             </div>
 
             {/* Desktop Layout */}
             <div className="hidden sm:block">
-              <div className="flex items-start justify-between mb-6">
+              <div className="flex items-start justify-between mb-3">
                 <div className="flex items-start gap-6 flex-1">
                   <div className="avatar">
                     {fullEmployeeData.photo_url ? (
-                      <div className="rounded-full w-32 sm:w-40">
+                      <div className="rounded-full w-20 sm:w-24">
                         <img 
                           src={fullEmployeeData.photo_url} 
                           alt={fullEmployeeData.display_name}
@@ -1480,8 +1481,8 @@ const EmployeeStatsModal: React.FC<EmployeeStatsModalProps> = ({
                             const parent = target.parentElement;
                             if (parent) {
                               parent.innerHTML = `
-                                <div class="bg-primary text-primary-content rounded-full w-32 sm:w-40 h-32 sm:h-40 flex items-center justify-center">
-                                  <span class="text-3xl sm:text-4xl font-bold">${initials}</span>
+                                <div class="bg-primary text-primary-content rounded-full w-20 sm:w-24 h-20 sm:h-24 flex items-center justify-center">
+                                  <span class="text-xl font-bold">${initials}</span>
                                 </div>
                               `;
                             }
@@ -1490,22 +1491,17 @@ const EmployeeStatsModal: React.FC<EmployeeStatsModalProps> = ({
                       </div>
                     ) : (
                       <div className="placeholder">
-                        <div className="bg-primary text-primary-content rounded-full w-32 sm:w-40 h-32 sm:h-40 flex items-center justify-center">
-                          <span className="text-3xl sm:text-4xl font-bold">{initials}</span>
+                        <div className="bg-primary text-primary-content rounded-full w-20 sm:w-24 h-20 sm:h-24 flex items-center justify-center">
+                          <span className="text-xl font-bold">{initials}</span>
                         </div>
                       </div>
                     )}
                   </div>
                   
                   <div className="flex-1">
-                    <h2 className={`text-3xl font-bold mb-2 ${fullEmployeeData.photo ? 'text-white drop-shadow-lg' : ''}`}>
+                    <h2 className={`text-2xl font-bold mb-1 ${fullEmployeeData.photo ? 'text-white drop-shadow-lg' : ''}`}>
                       {fullEmployeeData.display_name}
                     </h2>
-                    {fullEmployeeData.email && (
-                      <p className={`text-lg mb-3 ${fullEmployeeData.photo ? 'text-white/90 drop-shadow-md' : 'text-gray-600'}`}>
-                        {fullEmployeeData.email}
-                      </p>
-                    )}
                     
                     {/* Desktop Contact Information */}
                     <div className="flex flex-wrap items-center gap-6">
@@ -1533,6 +1529,12 @@ const EmployeeStatsModal: React.FC<EmployeeStatsModalProps> = ({
                           <DevicePhoneMobileIcon className={`w-6 h-6 ${fullEmployeeData.photo ? 'text-white/80' : 'text-gray-500'}`} />
                           <span className={`text-base ${fullEmployeeData.photo ? 'text-white/70' : 'text-gray-500'}`}>Mob Ext:</span>
                           <span className="text-lg font-medium">{fullEmployeeData.mobile_ext}</span>
+                        </div>
+                      )}
+                      {fullEmployeeData.email && (
+                        <div className={`flex items-center gap-2 min-w-0 ${fullEmployeeData.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                          <EnvelopeIcon className={`w-6 h-6 flex-shrink-0 ${fullEmployeeData.photo ? 'text-white/80' : 'text-gray-500'}`} />
+                          <span className={`text-lg font-medium truncate ${fullEmployeeData.photo ? 'drop-shadow-md' : ''}`}>{fullEmployeeData.email}</span>
                         </div>
                       )}
                       {fullEmployeeData.bonuses_role && (

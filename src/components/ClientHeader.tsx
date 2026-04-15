@@ -37,6 +37,7 @@ import {
     FlagIcon,
     XMarkIcon,
     RectangleStackIcon,
+    LockClosedIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
@@ -148,6 +149,12 @@ interface ClientHeaderProps {
     hideActionsDropdown?: boolean;
     /** When true, hides the Total Value badge (e.g. external user modal) */
     hideTotalValueBadge?: boolean;
+    /** When true, Total Value is driven by payment plan and locked. */
+    hasPaymentPlan?: boolean;
+    /** Sum of payment plan base (lead currency) when locked. */
+    paymentPlanBaseTotal?: number | null;
+    /** Sum of payment plan VAT (lead currency) when locked. */
+    paymentPlanVatTotal?: number | null;
     /** When true, category is display-only and does not open the category modal on click (e.g. external user modal) */
     disableCategoryModal?: boolean;
     /** Opens the Combine leads modal (this lead as master, link another lead to it) */
@@ -206,6 +213,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     hideHistoryAndTimeline = false,
     hideActionsDropdown = false,
     hideTotalValueBadge = false,
+    hasPaymentPlan = false,
+    paymentPlanBaseTotal = null,
+    paymentPlanVatTotal = null,
     disableCategoryModal = false,
     onCombineLeads,
     onOpenWhatsAppForContact,
@@ -1715,6 +1725,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             } else {
                                 baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
                             }
+
+                            if (hasPaymentPlan) {
+                                if (paymentPlanBaseTotal !== null) baseAmount = Number(paymentPlanBaseTotal) || 0;
+                            }
                             const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
                             const mainAmount = baseAmount - subcontractorFee;
                             let vatAmount = 0;
@@ -1726,7 +1740,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     const vatStr = String(vatValue).toLowerCase().trim();
                                     if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
                                 }
-                                if (shouldShowVAT) vatAmount = baseAmount * 0.18;
+                                if (hasPaymentPlan && paymentPlanVatTotal !== null) {
+                                    vatAmount = Number(paymentPlanVatTotal) || 0;
+                                    shouldShowVAT = vatAmount > 0;
+                                } else if (shouldShowVAT) {
+                                    // Legacy fallback: legacy totals may already be gross; avoid inventing VAT when missing.
+                                    vatAmount = Number((selectedClient as any)?.vat_value ?? 0) || 0;
+                                    if (!vatAmount) {
+                                        shouldShowVAT = false;
+                                    }
+                                }
                             } else {
                                 shouldShowVAT = true;
                                 if (vatValue !== null && vatValue !== undefined) {
@@ -1753,8 +1776,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     <div className="space-y-2">
                                         <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Total Value</p>
                                         <div className="flex items-end justify-end gap-2">
-                                            <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white">
-                                                {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
+                                            <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white inline-flex items-center gap-2">
+                                                <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
+                                                {hasPaymentPlan && <LockClosedIcon className="h-4 w-4 text-gray-500 dark:text-gray-300" title="Locked by payment plan" />}
                                             </p>
                                             {shouldShowVAT && vatAmount > 0 && (
                                                 <p className="pb-0.5 text-sm text-gray-600 dark:text-gray-400">
@@ -2022,6 +2046,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
                                 }
 
+                                // When payment plan exists, Total Value should match plan totals (no double VAT).
+                                if (hasPaymentPlan && paymentPlanBaseTotal !== null) {
+                                    baseAmount = Number(paymentPlanBaseTotal) || 0;
+                                }
+
                                 const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
                                 const mainAmount = baseAmount - subcontractorFee;
 
@@ -2035,8 +2064,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         const vatStr = String(vatValue).toLowerCase().trim();
                                         if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
                                     }
-                                    if (shouldShowVAT) {
-                                        vatAmount = baseAmount * 0.18;
+                                    if (hasPaymentPlan && paymentPlanVatTotal !== null) {
+                                        vatAmount = Number(paymentPlanVatTotal) || 0;
+                                        shouldShowVAT = vatAmount > 0;
+                                    } else if (shouldShowVAT) {
+                                        vatAmount = Number((selectedClient as any)?.vat_value ?? 0) || 0;
+                                        if (!vatAmount) shouldShowVAT = false;
                                     }
                                 } else {
                                     shouldShowVAT = true;
@@ -2071,8 +2104,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         <div className="space-y-1.5">
                                             <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Total Value</p>
                                             <div className="flex items-end justify-end gap-2">
-                                                <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white">
-                                                    {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
+                                                <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white inline-flex items-center gap-2">
+                                                    <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
+                                                    {hasPaymentPlan && <LockClosedIcon className="h-4 w-4 text-gray-500 dark:text-gray-300" title="Locked by payment plan" />}
                                                 </p>
                                                 {shouldShowVAT && vatAmount > 0 && (
                                                     <p className="pb-1 text-sm text-gray-600 dark:text-gray-400">

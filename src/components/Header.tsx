@@ -260,6 +260,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const profileButtonRefMobile = useRef<HTMLButtonElement>(null);
   const profileDropdownRefDesktop = useRef<HTMLDivElement>(null);
   const [profileDropdownPosition, setProfileDropdownPosition] = useState({ top: 0, left: 0 });
+  const notificationsButtonRef = useRef<HTMLButtonElement>(null);
+  const [notificationsDropdownPosition, setNotificationsDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
   const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
   const createdStageIdsRef = useRef<number[]>([0, 11]);
   const schedulerStageIdsRef = useRef<number[]>([10]);
@@ -838,12 +840,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     const handleDropdownClickOutside = (event: Event) => {
       const target = event.target as HTMLElement;
 
-      // Close notifications when clicking outside
-      if (
-        notificationsRef.current &&
-        !notificationsRef.current.contains(target as Node)
-      ) {
-        setShowNotifications(false);
+      // Close notifications when clicking outside (dropdown may be portaled)
+      if (notificationsRef.current && !notificationsRef.current.contains(target as Node)) {
+        const notificationDropdownEl = document.querySelector('[data-notification-dropdown]');
+        if (!notificationDropdownEl?.contains(target as Node)) {
+          setShowNotifications(false);
+        }
       }
 
       // Close profile dropdown when clicking outside (check both mobile and desktop profile refs)
@@ -6351,6 +6353,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     const newShowState = !showNotifications;
     setShowNotifications(newShowState);
 
+    if (newShowState) {
+      const rect = notificationsButtonRef.current?.getBoundingClientRect();
+      if (rect) {
+        // Keep the dropdown within the viewport, opening below the bell.
+        const width = isMobile ? 288 : 320; // w-72 / w-80
+        const gutter = 12;
+        const left = Math.max(
+          gutter,
+          Math.min(rect.right - width, window.innerWidth - width - gutter)
+        );
+        setNotificationsDropdownPosition({ top: rect.bottom + 8, left, width });
+      }
+    }
+
     // Fetch RMQ messages and WhatsApp leads messages when opening notifications
     if (newShowState && currentUser) {
       fetchRmqMessages();
@@ -6365,6 +6381,30 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       fetchAssignmentNotifications();
     }
   };
+
+  useEffect(() => {
+    if (!showNotifications) return;
+
+    const updatePosition = () => {
+      const rect = notificationsButtonRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      const width = isMobile ? 288 : 320;
+      const gutter = 12;
+      const left = Math.max(
+        gutter,
+        Math.min(rect.right - width, window.innerWidth - width - gutter)
+      );
+      setNotificationsDropdownPosition({ top: rect.bottom + 8, left, width });
+    };
+
+    updatePosition();
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [showNotifications, isMobile]);
 
   const markAllAsRead = async () => {
     if (!currentUser) {
@@ -7266,7 +7306,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     <>
       <div
         data-mobile-header={isMobile ? 'floating' : undefined}
-        className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b md:border-base-200 md:dark:border-base-300 pt-safe pb-1.5 md:pb-0 md:pt-0"
+        className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b-0 md:border-transparent pt-safe pb-1.5 md:pb-0 md:pt-0"
       >
         {/* Left section with menu and logo */}
         <div className={`flex-1 justify-start flex items-center gap-2 md:gap-4 overflow-hidden md:overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
@@ -8375,6 +8415,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           <div className="relative flex h-10 w-10 shrink-0 items-center justify-center md:h-auto md:w-auto" ref={notificationsRef}>
             <button
               type="button"
+              ref={notificationsButtonRef}
               className="btn btn-ghost h-10 w-10 min-h-10 min-w-10 p-0 border-0 mr-0 rounded-lg text-base-content/90 hover:bg-base-200/60 dark:hover:bg-base-300/40 md:mr-1 md:h-12 md:w-12 md:min-h-12 md:min-w-12 md:rounded-full"
               onClick={handleNotificationClick}
             >
@@ -8386,12 +8427,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               </div>
             </button>
 
-            {showNotifications && (
+            {showNotifications && typeof window !== 'undefined' && createPortal((
               <div
-                className={`notification-dropdown shadow-xl rounded-xl overflow-hidden z-50 border border-gray-200 dark:border-gray-600 ${isMobile
-                  ? 'notification-dropdown-mobile fixed right-3 left-auto w-72 max-w-[calc(100vw-24px)] text-[13px] top-[calc(2.75rem+env(safe-area-inset-top,0px)+0.5rem)]'
-                  : 'absolute right-0 mt-2 w-80 text-sm'
-                  }`}
+                data-notification-dropdown
+                className={`notification-dropdown shadow-xl rounded-xl overflow-hidden z-[9999] border border-gray-200 dark:border-gray-600 fixed ${isMobile ? 'notification-dropdown-mobile text-[13px]' : 'text-sm'}`}
+                style={{
+                  top: notificationsDropdownPosition.top,
+                  left: notificationsDropdownPosition.left,
+                  width: notificationsDropdownPosition.width || (isMobile ? 288 : 320),
+                  maxWidth: 'calc(100vw - 24px)',
+                }}
+                onClick={(e) => e.stopPropagation()}
               >
                 <div className={`border-b border-gray-200 ${isMobile ? 'p-3' : 'p-4'}`}>
                   <div className="flex justify-between items-center">
@@ -8680,7 +8726,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     )}
                 </div>
               </div>
-            )}
+            ), document.body)}
           </div>
 
           {/* Mobile back button - right corner inside header (hidden on login) */}
