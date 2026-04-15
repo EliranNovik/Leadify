@@ -2154,6 +2154,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [paymentPlanVatTotal, setPaymentPlanVatTotal] = useState<number | null>(null);
   const [paymentPlanGrossTotal, setPaymentPlanGrossTotal] = useState<number | null>(null);
   const [hasPaymentPlan, setHasPaymentPlan] = useState(false);
+  const [paymentPlanCurrencyId, setPaymentPlanCurrencyId] = useState<number | null>(null);
   const [autoPlan, setAutoPlan] = useState('');
   const autoPlanOptions = [
     '', // Default empty option
@@ -11091,6 +11092,7 @@ const Clients: React.FC<ClientsProps> = ({
         const baseByCurrencyId = new Map<number, number>();
         const vatByCurrencyId = new Map<number, number>();
         let grossNis = 0;
+        const currencyIdsSeen = new Set<number>();
         for (const r of rows as any[]) {
           const base = Number(r?.value ?? 0);
           const vat = Number(r?.vat_value ?? 0);
@@ -11100,6 +11102,7 @@ const Clients: React.FC<ClientsProps> = ({
           const rowCurrencyIdRaw = r?.currency_id ?? leadCurrencyId;
           let rowCurrencyId = typeof rowCurrencyIdRaw === 'string' ? parseInt(rowCurrencyIdRaw, 10) : Number(rowCurrencyIdRaw);
           if (!Number.isFinite(rowCurrencyId) || rowCurrencyId <= 0) rowCurrencyId = leadCurrencyId;
+          currencyIdsSeen.add(rowCurrencyId);
 
           baseByCurrencyId.set(rowCurrencyId, (baseByCurrencyId.get(rowCurrencyId) || 0) + rowBase);
           vatByCurrencyId.set(rowCurrencyId, (vatByCurrencyId.get(rowCurrencyId) || 0) + rowVat);
@@ -11107,6 +11110,8 @@ const Clients: React.FC<ClientsProps> = ({
         }
 
         const hasPlan = rows.length > 0;
+        const planCurrencyId =
+          hasPlan && currencyIdsSeen.size === 1 ? Array.from(currencyIdsSeen)[0] : leadCurrencyId;
         const baseTotal = baseByCurrencyId.get(leadCurrencyId) ?? Array.from(baseByCurrencyId.values()).reduce((a, b) => a + b, 0);
         const vatTotal = vatByCurrencyId.get(leadCurrencyId) ?? Array.from(vatByCurrencyId.values()).reduce((a, b) => a + b, 0);
         const grossTotal = baseTotal + vatTotal;
@@ -11125,11 +11130,12 @@ const Clients: React.FC<ClientsProps> = ({
         setPaymentPlanBaseTotal(hasPlan ? baseTotal : null);
         setPaymentPlanVatTotal(hasPlan ? vatTotal : null);
         setPaymentPlanGrossTotal(hasPlan ? grossTotal : null);
-        return { hasPlan, base: hasPlan ? baseTotal : null, vat: hasPlan ? vatTotal : null, gross: hasPlan ? grossTotal : null, grossNis: hasPlan ? grossNis : null };
+        setPaymentPlanCurrencyId(hasPlan ? planCurrencyId : null);
+        return { hasPlan, base: hasPlan ? baseTotal : null, vat: hasPlan ? vatTotal : null, gross: hasPlan ? grossTotal : null, grossNis: hasPlan ? grossNis : null, currencyId: hasPlan ? planCurrencyId : null };
       } else {
         const { data, error } = await supabase
           .from('payment_plans')
-          .select('value, value_vat')
+          .select('value, value_vat, currency')
           .eq('lead_id', clientId)
           .is('cancel_date', null);
         if (error) throw error;
@@ -11144,11 +11150,36 @@ const Clients: React.FC<ClientsProps> = ({
         }, 0);
         const grossTotal = baseTotal + vatTotal;
         const hasPlan = rows.length > 0;
+        const currencyIdsSeen = new Set<number>();
+        for (const r of rows as any[]) {
+          const c = (r?.currency ?? '').toString().trim();
+          let id = 1;
+          switch (c) {
+            case '₪':
+            case 'ILS':
+            case 'NIS':
+              id = 1; break;
+            case '€':
+            case 'EUR':
+              id = 2; break;
+            case '$':
+            case 'USD':
+              id = 3; break;
+            case '£':
+            case 'GBP':
+              id = 4; break;
+            default:
+              id = 1; break;
+          }
+          currencyIdsSeen.add(id);
+        }
+        const planCurrencyId = hasPlan && currencyIdsSeen.size === 1 ? Array.from(currencyIdsSeen)[0] : ((selectedClient as any)?.currency_id ?? 1);
         setHasPaymentPlan(hasPlan);
         setPaymentPlanBaseTotal(hasPlan ? baseTotal : null);
         setPaymentPlanVatTotal(hasPlan ? vatTotal : null);
         setPaymentPlanGrossTotal(hasPlan ? grossTotal : null);
-        return { hasPlan, base: hasPlan ? baseTotal : null, vat: hasPlan ? vatTotal : null, gross: hasPlan ? grossTotal : null, grossNis: null };
+        setPaymentPlanCurrencyId(hasPlan ? Number(planCurrencyId) : null);
+        return { hasPlan, base: hasPlan ? baseTotal : null, vat: hasPlan ? vatTotal : null, gross: hasPlan ? grossTotal : null, grossNis: null, currencyId: hasPlan ? Number(planCurrencyId) : null };
       }
     } catch (e) {
       console.error('Error fetching payment plan total:', e);
@@ -11156,7 +11187,8 @@ const Clients: React.FC<ClientsProps> = ({
       setPaymentPlanBaseTotal(null);
       setPaymentPlanVatTotal(null);
       setPaymentPlanGrossTotal(null);
-      return { hasPlan: false, base: null, vat: null, gross: null, grossNis: null };
+      setPaymentPlanCurrencyId(null);
+      return { hasPlan: false, base: null, vat: null, gross: null, grossNis: null, currencyId: null };
     }
   }, [selectedClient]);
 
@@ -11188,10 +11220,16 @@ const Clients: React.FC<ClientsProps> = ({
 
           const update: Record<string, unknown> = {};
           if (leadCurrencyId === 1) {
-            update.total_base = res.gross ?? 0;
+            update.total_base = res.base ?? 0;
           } else {
-            update.total = res.gross ?? 0;
-            update.total_base = res.grossNis ?? convertToNIS(res.gross ?? 0, leadCurrencyId);
+            update.total = res.base ?? 0;
+            update.total_base = res.currencyId ? convertToNIS(res.base ?? 0, Number(res.currencyId)) : convertToNIS(res.base ?? 0, leadCurrencyId);
+          }
+          if (res.currencyId && Number(res.currencyId) > 0) {
+            update.currency_id = Number(res.currencyId);
+          }
+          if (res.vat != null) {
+            update.vat = Number(res.vat) > 0 ? 'true' : 'false';
           }
           console.log('[paymentPlanTotal][legacy] syncing leads_lead totals', { legacyId, leadCurrencyId, update });
           const { error } = await supabase.from('leads_lead').update(update).eq('id', legacyId);
@@ -11203,7 +11241,13 @@ const Clients: React.FC<ClientsProps> = ({
         } else {
           const { error } = await supabase
             .from('leads')
-            .update({ proposal_total: res.gross ?? 0, balance: res.gross ?? 0 })
+            .update({
+              proposal_total: res.base ?? 0,
+              balance: res.base ?? 0,
+              vat_value: res.vat ?? 0,
+              vat: (res.vat != null && Number(res.vat) > 0) ? 'true' : 'false',
+              currency_id: res.currencyId ?? (selectedClient as any)?.currency_id ?? 1
+            })
             .eq('id', selectedClient.id);
           if (error) console.error('Failed to sync lead totals from payment plan:', error);
           // Ensure UI refresh uses the newly persisted values

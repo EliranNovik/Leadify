@@ -3,6 +3,7 @@ import { LockClosedIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
 import { convertToNIS } from '../lib/currencyConversion';
+import { getVatRateForLegacyLead } from '../lib/financeUnpaidTotal';
 
 interface BalanceEditModalProps {
   isOpen: boolean;
@@ -229,19 +230,29 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
       // For legacy leads: determine which value to use based on currency_id
       let proposalTotalValue = 0;
       let subcontractorFeeValue = 0;
+      let applicantsValue: number | null = null;
       
       // For legacy leads, explicitly fetch subcontractor_fee from database
       if (isLegacyLead) {
         const legacyId = parseInt(clientId.replace('legacy_', ''));
         try {
-          const { data: feeData, error: feeError } = await supabase
+          const { data: leadData, error: leadError } = await supabase
             .from('leads_lead')
-            .select('subcontractor_fee')
+            .select('subcontractor_fee, no_of_applicants')
             .eq('id', legacyId)
             .single();
           
-          if (!feeError && feeData && feeData.subcontractor_fee !== null && feeData.subcontractor_fee !== undefined) {
-            subcontractorFeeValue = Number(feeData.subcontractor_fee);
+          if (!leadError && leadData) {
+            if (leadData.subcontractor_fee !== null && leadData.subcontractor_fee !== undefined) {
+              subcontractorFeeValue = Number(leadData.subcontractor_fee);
+            } else {
+              subcontractorFeeValue = Number((selectedClient as any).subcontractor_fee ?? selectedClient.subcontractor_fee ?? 0);
+            }
+
+            if (leadData.no_of_applicants !== null && leadData.no_of_applicants !== undefined) {
+              const n = Number(leadData.no_of_applicants);
+              applicantsValue = Number.isFinite(n) ? n : null;
+            }
             console.log('✅ Fetched subcontractor_fee from database:', subcontractorFeeValue);
           } else {
             // Fallback to selectedClient value
@@ -264,6 +275,19 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
       } else {
         proposalTotalValue = Number(selectedClient.balance || selectedClient.proposal_total || 0);
         subcontractorFeeValue = Number(selectedClient.subcontractor_fee ?? 0);
+        try {
+          const { data: leadData, error: leadError } = await supabase
+            .from('leads')
+            .select('number_of_applicants_meeting')
+            .eq('id', selectedClient.id)
+            .single();
+          if (!leadError && leadData && leadData.number_of_applicants_meeting !== null && leadData.number_of_applicants_meeting !== undefined) {
+            const n = Number(leadData.number_of_applicants_meeting);
+            applicantsValue = Number.isFinite(n) ? n : null;
+          }
+        } catch (error) {
+          console.error('Error fetching number_of_applicants_meeting:', error);
+        }
       }
         
       console.log('🔍 Initializing form data:', {
@@ -290,7 +314,13 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         proposal_vat: vatStatus,
         subcontractor_fee: subcontractorFeeValue,
         potential_value: selectedClient.potential_value || selectedClient.potential_total || 0,
-        number_of_applicants_meeting: selectedClient.number_of_applicants_meeting || 1,
+        number_of_applicants_meeting: (() => {
+          if (applicantsValue !== null) return applicantsValue;
+          const fallback = isLegacyLead
+            ? Number((selectedClient as any).no_of_applicants ?? (selectedClient as any).number_of_applicants_meeting ?? 0)
+            : Number(selectedClient.number_of_applicants_meeting ?? 0);
+          return Number.isFinite(fallback) ? fallback : 0;
+        })(),
         vat_value: (isLocked && lockedVatTotal !== null) ? lockedVatTotal : (selectedClient.vat_value || 0)
       });
 
@@ -328,17 +358,17 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
       return 0;
     }
     
+    const vatRate = getVatRateForLegacyLead((selectedClient as any)?.date_signed || (selectedClient as any)?.created_at || null);
     if (formData.proposal_vat === 'included') {
-      // If VAT is included, calculate the VAT amount
+      // VAT is included in proposal_total; extract VAT portion.
       const totalWithVAT = formData.proposal_total;
-      const baseAmount = totalWithVAT / 1.18; // Assuming 18% VAT
+      const baseAmount = vatRate > 0 ? (totalWithVAT / (1 + vatRate)) : totalWithVAT;
       const vatAmount = totalWithVAT - baseAmount;
       return Math.round(vatAmount * 100) / 100;
-    } else {
-      // If VAT is excluded, calculate VAT on top
-      const vatAmount = formData.proposal_total * 0.18; // Assuming 18% VAT
-      return Math.round(vatAmount * 100) / 100;
     }
+    // VAT excluded: compute VAT on top.
+    const vatAmount = formData.proposal_total * vatRate;
+    return Math.round(vatAmount * 100) / 100;
   };
 
   const handleSave = async () => {
@@ -524,7 +554,18 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
 
   if (!isOpen) return null;
 
-  const vatAmount = (isLocked && lockedVatTotal !== null) ? Number(lockedVatTotal) || 0 : calculateVAT();
+  // Keep VAT display aligned with FinancesTab / ClientHeader logic.
+  // When the lead isn't locked by a payment plan, prefer persisted vat_value; otherwise derive from amount * rate.
+  const vatRateForDisplay = getVatRateForLegacyLead((selectedClient as any)?.date_signed || (selectedClient as any)?.created_at || null);
+  const vatAmount = (isLocked && lockedVatTotal !== null)
+    ? (Number(lockedVatTotal) || 0)
+    : (() => {
+        const persisted = Number(selectedClient?.vat_value ?? 0);
+        if (Number.isFinite(persisted) && persisted > 0) return persisted;
+        const base = Number(formData.proposal_total ?? 0);
+        if (!Number.isFinite(base) || base <= 0) return 0;
+        return Math.round(base * vatRateForDisplay * 100) / 100;
+      })();
   // Only show VAT if it's included (for new leads, this means vat column is 'true')
   const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
   const shouldShowVAT = isLegacyLead 
@@ -578,7 +619,7 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
                   handleInputChange('currency', symbol);
                 }}
                 required
-                disabled={loadingCurrencies}
+                disabled={loadingCurrencies || isLocked}
               >
                 <option value="">Select currency...</option>
                 {currencies.map(currency => {
@@ -618,7 +659,7 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
                 />
                 {shouldShowVAT && vatAmount > 0 && (
                   <span className="text-sm text-gray-600 whitespace-nowrap">
-                    {formData.proposal_vat === 'included' ? 'incl.' : '+'}{vatAmount.toFixed(2)} VAT
+                    +{vatAmount.toFixed(2)} VAT
                   </span>
                 )}
               </div>
@@ -639,6 +680,7 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
                 value={formData.proposal_vat}
                 onChange={(e) => handleInputChange('proposal_vat', e.target.value)}
                 required
+                disabled={isLocked}
               >
                 {vatOptions.map(option => (
                   <option key={option.value} value={option.value}>

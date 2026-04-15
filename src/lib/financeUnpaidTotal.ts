@@ -7,7 +7,7 @@
  */
 import { supabase } from './supabase';
 
-function getVatRateForLegacyLead(dateString: string | null | undefined): number {
+export function getVatRateForLegacyLead(dateString: string | null | undefined): number {
   if (!dateString) return 0.18;
   const paymentDate = new Date(dateString);
   if (isNaN(paymentDate.getTime())) return 0.18;

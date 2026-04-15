@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ClientTabProps } from '../../types/client';
-import { MegaphoneIcon, MapPinIcon, PencilSquareIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { MegaphoneIcon, PencilSquareIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 
 interface PotentialMetric {
@@ -24,9 +24,13 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     client.potential_metrics || defaultPotentialMetrics
   );
 
-  // Location
-  const [isEditingLocation, setIsEditingLocation] = useState(false);
-  const [location, setLocation] = useState(client.desired_location || '');
+  const isLegacyLead = useMemo(
+    () => client.lead_type === 'legacy' || String(client.id || '').startsWith('legacy_'),
+    [client.id, client.lead_type]
+  );
+
+  const [utmParams, setUtmParams] = useState<Record<string, unknown> | null>(null);
+  const [isLoadingUtm, setIsLoadingUtm] = useState(false);
 
   // Source
   const [isEditingSource, setIsEditingSource] = useState(false);
@@ -42,15 +46,6 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     if (onClientUpdate) await onClientUpdate();
   };
 
-  const handleSaveLocation = async () => {
-    await supabase
-      .from('leads')
-      .update({ desired_location: location })
-      .eq('id', client.id);
-    setIsEditingLocation(false);
-    if (onClientUpdate) await onClientUpdate();
-  };
-
   const handleSaveSource = async () => {
     await supabase
       .from('leads')
@@ -59,6 +54,48 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     setIsEditingSource(false);
     if (onClientUpdate) await onClientUpdate();
   };
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setIsLoadingUtm(true);
+      try {
+        // Note: legacy table `leads_lead` does not have `utm_params`.
+        // We only fetch from `leads` (new leads). Legacy leads will show "Not specified".
+        if (!client.id || isLegacyLead) {
+          if (!cancelled) setUtmParams(null);
+          return;
+        }
+
+        const { data, error } = await supabase
+          .from('leads')
+          .select('utm_params')
+          .eq('id', client.id)
+          .maybeSingle();
+        if (error) throw error;
+        if (!cancelled) setUtmParams((data?.utm_params as Record<string, unknown> | null) ?? null);
+      } catch (e) {
+        console.error('Error loading utm_params:', e);
+        if (!cancelled) setUtmParams(null);
+      } finally {
+        if (!cancelled) setIsLoadingUtm(false);
+      }
+    };
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [client.id, isLegacyLead]);
+
+  const utmText = useMemo(() => {
+    if (!utmParams) return '';
+    try {
+      return JSON.stringify(utmParams, null, 2);
+    } catch {
+      return String(utmParams);
+    }
+  }, [utmParams]);
 
   return (
     <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
@@ -154,48 +191,25 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
       </div>
 
-      {/* Desired Location Section */}
+      {/* Lead Info Section (utm_params) */}
       <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
         <div className="pl-6 pt-2 pb-2 w-2/5">
           <div className="flex items-center justify-between">
-            <h4 className="text-lg font-semibold text-black">Desired Location</h4>
-            {isEditingLocation ? (
-              <div className="flex gap-2">
-                <button className="btn btn-ghost btn-sm hover:bg-green-50 bg-transparent" onClick={handleSaveLocation}>
-                  <CheckIcon className="w-4 h-4 text-black" />
-                </button>
-                <button className="btn btn-ghost btn-sm hover:bg-red-50 bg-transparent" onClick={() => { setIsEditingLocation(false); setLocation(client.desired_location || ''); }}>
-                  <XMarkIcon className="w-4 h-4 text-black" />
-                </button>
-              </div>
-            ) : (
-              <button 
-                className="btn btn-ghost btn-md bg-transparent hover:bg-transparent shadow-none"
-                onClick={() => setIsEditingLocation(true)}
-              >
-                <PencilSquareIcon className="w-5 h-5 text-black" />
-              </button>
-            )}
+            <h4 className="text-lg font-semibold text-black">Lead info</h4>
           </div>
           <div className="border-b border-gray-200 mt-2"></div>
         </div>
         <div className="p-6">
           <div className="space-y-2">
-            {isEditingLocation ? (
-              <input
-                className="input input-bordered w-full"
-                value={location}
-                onChange={e => setLocation(e.target.value)}
-                placeholder="Enter desired location..."
-              />
-            ) : (
-              <div className="bg-gray-50 rounded-lg p-4">
-                <div className="flex items-center gap-2">
-                  <MapPinIcon className="w-5 h-5 text-gray-400" />
-                  <span className="text-gray-900 font-medium">{location || 'Not specified'}</span>
-                </div>
-              </div>
-            )}
+            <div className="bg-gray-50 rounded-lg p-4">
+              {isLoadingUtm ? (
+                <div className="text-sm text-gray-500">Loading…</div>
+              ) : utmText ? (
+                <pre className="text-xs sm:text-sm text-gray-900 whitespace-pre-wrap break-words leading-relaxed">{utmText}</pre>
+              ) : (
+                <div className="text-sm text-gray-500">Not specified</div>
+              )}
+            </div>
           </div>
         </div>
       </div>

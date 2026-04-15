@@ -117,6 +117,51 @@ const UTM_PARAM_KEYS = [
  */
 function buildUtmParams(data) {
   if (!data || typeof data !== 'object') return null;
+
+  // Prefer a raw utm_params field if the webhook/access log payload provides it.
+  // This allows upstream systems to decide what to store without hardcoding a specific lpurl template here.
+  // Supported forms:
+  // - object (already JSON): { ... }
+  // - JSON string: '{"lpurl":"..."}'
+  // - querystring / URL: 'lpurl=...&targetid=...' or 'https://...?...'
+  const raw = data.utm_params;
+  if (raw !== undefined && raw !== null && String(raw).trim() !== '') {
+    // Object form
+    if (typeof raw === 'object') {
+      try {
+        const obj = Array.isArray(raw) ? { value: raw } : raw;
+        return Object.keys(obj).length > 0 ? obj : null;
+      } catch (_) {
+        // fall through to string handling
+      }
+    }
+
+    const rawStr = String(raw).trim();
+    // JSON string form
+    if ((rawStr.startsWith('{') && rawStr.endsWith('}')) || (rawStr.startsWith('[') && rawStr.endsWith(']'))) {
+      try {
+        const parsed = JSON.parse(rawStr);
+        if (parsed && typeof parsed === 'object') return parsed;
+      } catch (_) {
+        // fall through to querystring parsing
+      }
+    }
+
+    // URL or querystring form
+    try {
+      const qs = rawStr.includes('?') ? rawStr.split('?').slice(1).join('?') : rawStr;
+      const params = new URLSearchParams(qs);
+      const obj = {};
+      for (const [k, v] of params.entries()) {
+        if (v != null && String(v).trim() !== '') obj[k] = String(v).trim();
+      }
+      if (Object.keys(obj).length > 0) return obj;
+    } catch (_) {
+      // ignore
+    }
+    return { value: rawStr };
+  }
+
   const out = {};
   for (const key of UTM_PARAM_KEYS) {
     const value = data[key];

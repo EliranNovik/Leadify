@@ -3669,6 +3669,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
 
       await refreshPaymentPlans();
+      if (typeof window !== 'undefined' && client?.id) {
+        console.log('[paymentPlan] changed (deletePlan)', { leadId: String(client.id), isLegacyLead });
+        window.dispatchEvent(new CustomEvent('paymentPlan:changed', { detail: { leadId: String(client.id) } }));
+      }
     } catch (error) {
       console.error('Error deleting payment plan:', error);
       toast.error('Failed to delete payment plan.');

@@ -50,7 +50,7 @@ import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
 import type { WhatsAppPageSelectedContact } from '../pages/WhatsAppPage';
 import { FaWhatsapp } from 'react-icons/fa';
-import { fetchUnpaidTotalsByCurrency, pickUnpaidBaseAndVatForCurrency, type UnpaidByCurrencyMap } from '../lib/financeUnpaidTotal';
+import { fetchUnpaidTotalsByCurrency, getVatRateForLegacyLead, pickUnpaidBaseAndVatForCurrency, type UnpaidByCurrencyMap } from '../lib/financeUnpaidTotal';
 import { useAuthContext } from '../contexts/AuthContext';
 import {
     fetchPublicUserId,
@@ -248,6 +248,26 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         return () => {
             cancelled = true;
         };
+    }, [selectedClient?.id, selectedClient?.lead_type]);
+
+    // Refresh "Remaining Lead Value" immediately when payment plans change.
+    useEffect(() => {
+        const handler = (e: Event) => {
+            const evt = e as CustomEvent<{ leadId?: string }>;
+            const leadId = evt?.detail?.leadId;
+            if (!leadId || !selectedClient?.id) return;
+            if (String(selectedClient.id) !== String(leadId)) return;
+            void (async () => {
+                try {
+                    const map = await fetchUnpaidTotalsByCurrency(selectedClient.id, selectedClient?.lead_type);
+                    setUnpaidByCurrency(map);
+                } catch {
+                    setUnpaidByCurrency(null);
+                }
+            })();
+        };
+        window.addEventListener('paymentPlan:changed', handler as EventListener);
+        return () => window.removeEventListener('paymentPlan:changed', handler as EventListener);
     }, [selectedClient?.id, selectedClient?.lead_type]);
 
     const { user, userFullName } = useAuthContext();
@@ -1730,7 +1750,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 if (paymentPlanBaseTotal !== null) baseAmount = Number(paymentPlanBaseTotal) || 0;
                             }
                             const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
-                            const mainAmount = baseAmount - subcontractorFee;
+                            let mainAmount = baseAmount - subcontractorFee;
                             let vatAmount = 0;
                             let shouldShowVAT = false;
                             const vatValue = selectedClient?.vat;
@@ -1743,6 +1763,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 if (hasPaymentPlan && paymentPlanVatTotal !== null) {
                                     vatAmount = Number(paymentPlanVatTotal) || 0;
                                     shouldShowVAT = vatAmount > 0;
+                                } else if (!hasPaymentPlan && shouldShowVAT) {
+                                    // When there's no payment plan, totals are treated as NET (same mental model as FinancesTab).
+                                    const vatRate = getVatRateForLegacyLead((selectedClient as any)?.date_signed || (selectedClient as any)?.created_at || null);
+                                    vatAmount = Math.round((baseAmount * vatRate) * 100) / 100;
                                 } else if (shouldShowVAT) {
                                     // Legacy fallback: legacy totals may already be gross; avoid inventing VAT when missing.
                                     vatAmount = Number((selectedClient as any)?.vat_value ?? 0) || 0;
@@ -1760,7 +1784,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     vatAmount =
                                         selectedClient?.vat_value && Number(selectedClient.vat_value) > 0
                                             ? Number(selectedClient.vat_value)
-                                            : baseAmount * 0.18;
+                                            : baseAmount * getVatRateForLegacyLead((selectedClient as any)?.date_signed || (selectedClient as any)?.created_at || null);
                                 }
                             }
                             const unpaidOutstandingPair =
@@ -2052,7 +2076,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 }
 
                                 const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
-                                const mainAmount = baseAmount - subcontractorFee;
+                                let mainAmount = baseAmount - subcontractorFee;
 
                                 let vatAmount = 0;
                                 let shouldShowVAT = false;
@@ -2067,6 +2091,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     if (hasPaymentPlan && paymentPlanVatTotal !== null) {
                                         vatAmount = Number(paymentPlanVatTotal) || 0;
                                         shouldShowVAT = vatAmount > 0;
+                                    } else if (!hasPaymentPlan && shouldShowVAT) {
+                                        const vatRate = getVatRateForLegacyLead((selectedClient as any)?.date_signed || (selectedClient as any)?.created_at || null);
+                                        vatAmount = Math.round((baseAmount * vatRate) * 100) / 100;
                                     } else if (shouldShowVAT) {
                                         vatAmount = Number((selectedClient as any)?.vat_value ?? 0) || 0;
                                         if (!vatAmount) shouldShowVAT = false;
@@ -2082,7 +2109,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
                                             vatAmount = Number(selectedClient.vat_value);
                                         } else {
-                                            vatAmount = baseAmount * 0.18;
+                                            const vatRate = getVatRateForLegacyLead((selectedClient as any)?.date_signed || (selectedClient as any)?.created_at || null);
+                                            vatAmount = baseAmount * vatRate;
                                         }
                                     }
                                 }
