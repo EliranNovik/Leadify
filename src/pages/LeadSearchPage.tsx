@@ -2110,9 +2110,13 @@ const LeadSearchPage: React.FC = () => {
             console.log('🔍 [New Leads Category Filter] Found category_id:', categoryId, 'for category:', formattedCategoryName);
           } else {
             // Fallback: extract category name (remove main category in parentheses)
-            const categoryName = formattedCategoryName.split(' (')[0].trim();
-            categoryNames.push(categoryName);
-            console.log('⚠️ [New Leads Category Filter] No category_id found, will use category name:', categoryName, 'for:', formattedCategoryName);
+            const raw = formattedCategoryName.trim();
+            const stripped = raw.split(' (')[0].trim();
+            // Some leads store category as plain text ("Poland"), others may store the formatted label ("Poland (Main)").
+            // Include both to avoid missing text-only leads.
+            if (stripped) categoryNames.push(stripped);
+            if (raw) categoryNames.push(raw);
+            console.log('⚠️ [New Leads Category Filter] No category_id found, will use category text fallback for:', formattedCategoryName);
           }
         }
 
@@ -2129,13 +2133,14 @@ const LeadSearchPage: React.FC = () => {
         if (categoryIds.length > 0 && categoryNames.length > 0) {
           // Mixed: some categories have IDs, some don't - use OR condition
           console.log('🏷️ [New Leads Category Filter] Applying mixed filter (OR): category_id IN', categoryIds, 'OR category IN', categoryNames);
+          const encCategoryNames = categoryNames.map((n) => encodeURIComponent(n));
           const orConditions = [
             categoryIds.length === 1
               ? `category_id.eq.${categoryIds[0]}`
               : `category_id.in.(${categoryIds.join(',')})`,
-            categoryNames.length === 1
-              ? `category.eq.${categoryNames[0]}`
-              : `category.in.(${categoryNames.join(',')})`
+            encCategoryNames.length === 1
+              ? `category.eq.${encCategoryNames[0]}`
+              : `category.in.(${encCategoryNames.join(',')})`
           ];
           newLeadsQuery = newLeadsQuery.or(orConditions.join(','));
         } else if (categoryIds.length > 0) {
@@ -2149,12 +2154,13 @@ const LeadSearchPage: React.FC = () => {
           }
         } else if (categoryNames.length > 0) {
           // Only category names available, use text field
-          if (categoryNames.length === 1) {
+          const uniqNames = Array.from(new Set(categoryNames.map((n) => n.trim()).filter(Boolean)));
+          if (uniqNames.length === 1) {
             console.log('🏷️ [New Leads Category Filter] Applying single category name filter (fallback):', categoryNames[0]);
-            newLeadsQuery = newLeadsQuery.eq('category', categoryNames[0]);
+            newLeadsQuery = newLeadsQuery.eq('category', uniqNames[0]);
           } else {
             console.log('🏷️ [New Leads Category Filter] Applying multiple category name filter (IN, fallback):', categoryNames);
-            newLeadsQuery = newLeadsQuery.in('category', categoryNames);
+            newLeadsQuery = newLeadsQuery.in('category', uniqNames);
           }
         } else {
           console.log('❌ [New Leads Category Filter] No category IDs or names found - filter will not be applied');
@@ -2268,12 +2274,46 @@ const LeadSearchPage: React.FC = () => {
       }
       if (filters.source && filters.source.length > 0) {
         console.log('📡 Adding source filter for new leads:', filters.source);
-        if (filters.source.length === 1) {
-          // Single source - use exact match
-          newLeadsQuery = newLeadsQuery.eq('source', filters.source[0]);
-        } else {
-          // Multiple sources - use IN operator for exact matches
-          newLeadsQuery = newLeadsQuery.in('source', filters.source);
+        // Important: PostgREST `.or(...)` does NOT support dotted embedded paths like `misc_leadsource.name`.
+        // So we resolve selected source names -> source_id(s), then OR on plain columns:
+        //   source_id IN (...)  OR  source == "name"
+        try {
+          const selectedSourceNames = filters.source.map((s) => (s || '').trim()).filter(Boolean);
+          const { data: srcRows, error: srcErr } = await supabase
+            .from('misc_leadsource')
+            .select('id, name')
+            .in('name', selectedSourceNames);
+
+          if (srcErr) throw srcErr;
+
+          const sourceIds = (srcRows || [])
+            .map((r) => Number(r.id))
+            .filter((n) => Number.isFinite(n));
+
+          const orParts: string[] = [];
+          if (sourceIds.length === 1) {
+            orParts.push(`source_id.eq.${sourceIds[0]}`);
+          } else if (sourceIds.length > 1) {
+            orParts.push(`source_id.in.(${sourceIds.join(',')})`);
+          }
+
+          for (const name of selectedSourceNames) {
+            // Encode values so spaces/punctuation don't break the URL.
+            const enc = encodeURIComponent(name);
+            orParts.push(`source.eq.${enc}`);
+          }
+
+          if (orParts.length > 0) {
+            newLeadsQuery = newLeadsQuery.or(orParts.join(','));
+          }
+        } catch (e) {
+          console.log('⚠️ New leads source filter lookup failed, falling back to text `source` only:', e);
+          const selectedSourceNames = filters.source.map((s) => (s || '').trim()).filter(Boolean);
+          if (selectedSourceNames.length === 1) {
+            newLeadsQuery = newLeadsQuery.eq('source', selectedSourceNames[0]);
+          } else if (selectedSourceNames.length > 1) {
+            newLeadsQuery = newLeadsQuery.in('source', selectedSourceNames);
+          }
         }
       }
       if (filters.topic && filters.topic.length > 0) {
@@ -3324,13 +3364,17 @@ const LeadSearchPage: React.FC = () => {
               if (categoryId !== undefined) {
                 categoryIds.push(categoryId);
               } else {
-                categoryNames.push(formattedCategoryName.split(' (')[0].trim());
+                const raw = formattedCategoryName.trim();
+                const stripped = raw.split(' (')[0].trim();
+                if (stripped) categoryNames.push(stripped);
+                if (raw) categoryNames.push(raw);
               }
             }
             if (categoryIds.length > 0 && categoryNames.length > 0) {
+              const encCategoryNames = categoryNames.map((n) => encodeURIComponent(n));
               const orConditions = [
                 categoryIds.length === 1 ? `category_id.eq.${categoryIds[0]}` : `category_id.in.(${categoryIds.join(',')})`,
-                categoryNames.length === 1 ? `category.eq.${categoryNames[0]}` : `category.in.(${categoryNames.join(',')})`
+                encCategoryNames.length === 1 ? `category.eq.${encCategoryNames[0]}` : `category.in.(${encCategoryNames.join(',')})`
               ];
               phoneCheckQuery = phoneCheckQuery.or(orConditions.join(','));
             } else if (categoryIds.length > 0) {
@@ -3340,10 +3384,11 @@ const LeadSearchPage: React.FC = () => {
                 phoneCheckQuery = phoneCheckQuery.in('category_id', categoryIds);
               }
             } else if (categoryNames.length > 0) {
-              if (categoryNames.length === 1) {
-                phoneCheckQuery = phoneCheckQuery.eq('category', categoryNames[0]);
+              const uniqNames = Array.from(new Set(categoryNames.map((n) => n.trim()).filter(Boolean)));
+              if (uniqNames.length === 1) {
+                phoneCheckQuery = phoneCheckQuery.eq('category', uniqNames[0]);
               } else {
-                phoneCheckQuery = phoneCheckQuery.in('category', categoryNames);
+                phoneCheckQuery = phoneCheckQuery.in('category', uniqNames);
               }
             }
           }
@@ -3415,10 +3460,40 @@ const LeadSearchPage: React.FC = () => {
           }
           // Source filter
           if (filters.source && filters.source.length > 0) {
-            if (filters.source.length === 1) {
-              phoneCheckQuery = phoneCheckQuery.eq('source', filters.source[0]);
-            } else {
-              phoneCheckQuery = phoneCheckQuery.in('source', filters.source);
+            try {
+              const selectedSourceNames = filters.source.map((s) => (s || '').trim()).filter(Boolean);
+              const { data: srcRows, error: srcErr } = await supabase
+                .from('misc_leadsource')
+                .select('id, name')
+                .in('name', selectedSourceNames);
+
+              if (srcErr) throw srcErr;
+
+              const sourceIds = (srcRows || [])
+                .map((r) => Number(r.id))
+                .filter((n) => Number.isFinite(n));
+
+              const orParts: string[] = [];
+              if (sourceIds.length === 1) {
+                orParts.push(`source_id.eq.${sourceIds[0]}`);
+              } else if (sourceIds.length > 1) {
+                orParts.push(`source_id.in.(${sourceIds.join(',')})`);
+              }
+              for (const name of selectedSourceNames) {
+                const enc = encodeURIComponent(name);
+                orParts.push(`source.eq.${enc}`);
+              }
+              if (orParts.length > 0) {
+                phoneCheckQuery = phoneCheckQuery.or(orParts.join(','));
+              }
+            } catch (e) {
+              console.log('⚠️ Phone-check source filter lookup failed, falling back to text `source` only:', e);
+              const selectedSourceNames = filters.source.map((s) => (s || '').trim()).filter(Boolean);
+              if (selectedSourceNames.length === 1) {
+                phoneCheckQuery = phoneCheckQuery.eq('source', selectedSourceNames[0]);
+              } else if (selectedSourceNames.length > 1) {
+                phoneCheckQuery = phoneCheckQuery.in('source', selectedSourceNames);
+              }
             }
           }
           // Topic filter

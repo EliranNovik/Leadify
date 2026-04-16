@@ -88,7 +88,7 @@ const STRING_STAGE_RANK: Record<string, number> = {
   offer_sent: 50,
   waiting_for_mtng_sum: 48,
   meeting_ended: 49,
-  meeting_rescheduled: 20,
+  meeting_rescheduled: 21,
   client_signed: 60,
   client_declined: 0,
   lead_summary: 55,
@@ -131,8 +131,10 @@ function isEligibleLead(lead: LeadRow): boolean {
   return false;
 }
 
-function hasMeetingOrBeyond(lead: LeadRow): boolean {
-  return stageRank(lead) >= 20;
+function hasMeetingScheduled(lead: LeadRow): boolean {
+  // Report requirement: count meetings ONLY when stage is "meeting scheduled" (20),
+  // and explicitly exclude "meeting rescheduled" (21).
+  return stageRank(lead) === 20;
 }
 
 function hasOfferOrBeyond(lead: LeadRow): boolean {
@@ -299,6 +301,8 @@ type AggRow = {
   revenueNis: number;
   inactive: number;
   notEligible: number;
+  /** Internal aggregation helper (stripped before display). */
+  _providerNames?: Set<string>;
 };
 
 /** Sortable macro table columns (excludes Channel, Source, Provider). */
@@ -601,6 +605,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   docsOpen: docsOpenProp,
   onDocsOpenChange,
 }) => {
+  const macroTableScrollRef = useRef<HTMLDivElement | null>(null);
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
   const [channelIds, setChannelIds] = useState<string[]>([]);
@@ -612,7 +617,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     key: 'leads',
     dir: 'desc',
   });
-  const [includeHrCost, setIncludeHrCost] = useState(false);
+  const [macroAtRightEdge, setMacroAtRightEdge] = useState(false);
   const [docsOpenLocal, setDocsOpenLocal] = useState(false);
   const docsControlled = onDocsOpenChange != null;
   const docsOpen = docsControlled ? Boolean(docsOpenProp) : docsOpenLocal;
@@ -701,12 +706,14 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         sf.data as {
           firm_id: string;
           source_id: number | string;
-          firms: { name: string } | null;
+          firms: { name: string }[] | { name: string } | null;
         }[]
       ).map((r) => ({
         firm_id: r.firm_id,
         source_id: String(r.source_id),
-        firm_name: (r.firms?.name || '').trim() || '—',
+        firm_name: (
+          (Array.isArray(r.firms) ? r.firms[0]?.name : r.firms?.name) || ''
+        ).trim() || '—',
       }));
       setSourceFirmLinks(rows);
     } else if (sf.error) {
@@ -794,9 +801,11 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       const normalizeSourceName = (s: string | null | undefined) =>
         String(s || '').trim().toLowerCase();
       const sourceNameToRow = new Map<string, SourceRow>();
+      const sourceIdToRow = new Map<string, SourceRow>();
       for (const s of sources) {
         const key = normalizeSourceName(s.name);
         if (key && !sourceNameToRow.has(key)) sourceNameToRow.set(key, s);
+        sourceIdToRow.set(String(s.id), s);
       }
       const resolveSourceRow = (l: LeadRow): SourceRow | null => {
         if (l.misc_leadsource) {
@@ -806,6 +815,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
             channel_id: l.misc_leadsource.channel_id,
           };
         }
+        const sid = l.source_id != null && String(l.source_id).trim() !== '' ? String(l.source_id) : null;
+        if (sid && sourceIdToRow.has(sid)) return sourceIdToRow.get(sid)!;
         const key = normalizeSourceName(l.source);
         return key ? sourceNameToRow.get(key) || null : null;
       };
@@ -1078,9 +1089,11 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     const normalizeSourceName = (s: string | null | undefined) =>
       String(s || '').trim().toLowerCase();
     const sourceNameToRow = new Map<string, SourceRow>();
+    const sourceIdToRow = new Map<string, SourceRow>();
     for (const s of sources) {
       const key = normalizeSourceName(s.name);
       if (key && !sourceNameToRow.has(key)) sourceNameToRow.set(key, s);
+      sourceIdToRow.set(String(s.id), s);
     }
 
     const resolveSourceRow = (l: LeadRow): SourceRow | null => {
@@ -1091,6 +1104,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           channel_id: l.misc_leadsource.channel_id,
         };
       }
+      const sid = l.source_id != null && String(l.source_id).trim() !== '' ? String(l.source_id) : null;
+      if (sid && sourceIdToRow.has(sid)) return sourceIdToRow.get(sid)!;
       const key = normalizeSourceName(l.source);
       return key ? sourceNameToRow.get(key) || null : null;
     };
@@ -1143,7 +1158,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       if (isInactiveLead(l)) row.inactive += 1;
       if (isEligibleLead(l)) row.eligible += 1;
       else row.notEligible += 1;
-      if (hasMeetingOrBeyond(l) && !isInactiveLead(l)) row.meetings += 1;
+      if (hasMeetingScheduled(l) && !isInactiveLead(l)) row.meetings += 1;
       if (hasOfferOrBeyond(l)) row.offers += 1;
       if (hasSignedDeal(l)) {
         row.deals += 1;
@@ -1602,15 +1617,6 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               </button>
             </div>
           </div>
-          <label className="label cursor-pointer justify-start gap-2.5 py-0 sm:justify-end">
-            <input
-              type="checkbox"
-              className="checkbox checkbox-sm checkbox-primary"
-              checked={includeHrCost}
-              onChange={(e) => setIncludeHrCost(e.target.checked)}
-            />
-            <span className="label-text text-sm text-base-content/55">HR cost column (placeholder)</span>
-          </label>
         </div>
       </div>
 
@@ -1691,7 +1697,14 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           {/* Main macro table */}
           <div
             id="marketing-kpi-macro"
+            ref={macroTableScrollRef}
             className="scroll-mt-24 overflow-x-auto rounded-xl border border-base-300 bg-base-100 shadow-sm"
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+              const nearRight = el.scrollLeft >= maxLeft - 2;
+              setMacroAtRightEdge(nearRight);
+            }}
           >
             <h3
               className={`border-b border-base-300 px-4 py-3 text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}
@@ -1723,7 +1736,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     Revenue
                   </th>
                   <th
-                    colSpan={includeHrCost ? 5 : 4}
+                    colSpan={4}
                     className="text-center text-base-content/60"
                     style={{ letterSpacing: '0.08em' }}
                   >
@@ -1846,7 +1859,6 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                   </MacroSortableTh>
                   <th className="text-right">Media</th>
                   <th className="text-right">Management</th>
-                  {includeHrCost && <th className="text-right">HR</th>}
                   <th className="text-right">Total</th>
                   <th className="text-right">% leads</th>
                 </tr>
@@ -1879,7 +1891,6 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                       <td className="text-right">{r.inactive}</td>
                       <td className="text-right">—</td>
                       <td className="text-right">—</td>
-                      {includeHrCost && <td className="text-right">—</td>}
                       <td className="text-right">—</td>
                       <td className="text-right">{pctLeads}%</td>
                     </tr>
@@ -1889,10 +1900,27 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
             </table>
           </div>
 
+          {/* Quick horizontal navigation for the macro table */}
+          <button
+            type="button"
+            onClick={() => {
+              const el = macroTableScrollRef.current;
+              if (!el) return;
+              const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
+              const nextLeft = macroAtRightEdge ? 0 : maxLeft;
+              el.scrollTo({ left: nextLeft, behavior: 'smooth' });
+            }}
+            className="fixed bottom-5 right-3 z-[80] h-10 w-10 rounded-full border border-white/10 bg-black/35 text-white shadow-xl backdrop-blur-xl transition hover:bg-black/55 focus:outline-none"
+            aria-label={macroAtRightEdge ? 'Scroll macro table to start' : 'Scroll macro table to end'}
+            title={macroAtRightEdge ? 'Scroll to start' : 'Scroll to end'}
+          >
+            <span className="text-xl leading-none">{macroAtRightEdge ? '←' : '→'}</span>
+          </button>
+
           {/* Funnel chart */}
           <div
             id="marketing-kpi-funnel"
-            className="scroll-mt-24 rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm"
+            className="scroll-mt-24"
           >
             <h3 className={`mb-2 text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}>Funnel snapshot</h3>
             <div className="h-64 w-full min-w-0">
@@ -1913,7 +1941,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           <div className="grid gap-4 lg:grid-cols-2">
             <div
               id="marketing-kpi-timing"
-              className="scroll-mt-24 rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm"
+              className="scroll-mt-24"
             >
               <h3 className={`text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}>Funnel timing (avg. days)</h3>
               {historyError && (
@@ -1958,7 +1986,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
             </div>
             <div
               id="marketing-kpi-sales"
-              className="scroll-mt-24 rounded-xl border border-base-300 bg-base-100 p-4 shadow-sm"
+              className="scroll-mt-24"
             >
               <h3 className={`text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}>Sales behaviour / quality</h3>
               {callLogsError && (

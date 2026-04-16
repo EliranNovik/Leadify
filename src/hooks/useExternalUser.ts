@@ -1,5 +1,9 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
+import {
+    hasAnySupabaseAuthKey,
+    readCachedSupabaseSessionFromStorage,
+} from '../lib/authBootstrap';
 
 // Module-level cache to prevent refetching on every component mount
 interface CachedExternalUser {
@@ -17,195 +21,206 @@ const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
 let checkInProgress = false;
 let checkPromise: Promise<CachedExternalUser | null> | null = null;
 
+/** Survives full page refresh so first paint can skip staff chrome + Dashboard. */
+const EXTERNAL_USER_GATE_SS_KEY = 'crm_ext_user_gate_v1';
+
+type ExternalUserGateBootstrap = {
+    userId: string;
+    isExternalUser: boolean;
+    userName: string | null;
+    userImage: string | null;
+    ts: number;
+};
+
+function readExternalUserGateBootstrap(): ExternalUserGateBootstrap | null {
+    if (typeof window === 'undefined') return null;
+    try {
+        const raw = sessionStorage.getItem(EXTERNAL_USER_GATE_SS_KEY);
+        if (!raw) return null;
+        const d = JSON.parse(raw) as Partial<ExternalUserGateBootstrap>;
+        if (!d?.userId || typeof d.userId !== 'string' || typeof d.isExternalUser !== 'boolean' || typeof d.ts !== 'number') {
+            return null;
+        }
+        return {
+            userId: d.userId,
+            isExternalUser: d.isExternalUser,
+            userName: typeof d.userName === 'string' || d.userName === null ? d.userName : null,
+            userImage: typeof d.userImage === 'string' || d.userImage === null ? d.userImage : null,
+            ts: d.ts,
+        };
+    } catch {
+        return null;
+    }
+}
+
+function persistExternalUserGate(entry: {
+    userId: string;
+    isExternalUser: boolean;
+    userName: string | null;
+    userImage: string | null;
+}): void {
+    if (typeof window === 'undefined') return;
+    try {
+        const payload: ExternalUserGateBootstrap = {
+            ...entry,
+            ts: Date.now(),
+        };
+        sessionStorage.setItem(EXTERNAL_USER_GATE_SS_KEY, JSON.stringify(payload));
+    } catch {
+        /* quota / private mode */
+    }
+}
+
 /**
- * Pre-check external user status in the background
- * This can be called early (e.g., during login) to start the check
- * Returns a promise that resolves when the check is complete
+ * On `/` and `/external-home`, hide internal Sidebar / Header / bottom nav while
+ * `useExternalUser` is still resolving (Sidebar previously only hid when `!isLoadingExternal`).
+ */
+export function shouldDeferInternalChrome(pathname: string, isLoadingExternal: boolean): boolean {
+    return isLoadingExternal && (pathname === '/' || pathname === '/external-home');
+}
+
+function parseExternFlag(extern: unknown): boolean {
+    return (
+        extern === true ||
+        extern === 'true' ||
+        extern === 1 ||
+        extern === '1' ||
+        (typeof extern === 'string' && extern.toLowerCase() === 'true')
+    );
+}
+
+function normalizeTenantsEmployee(raw: unknown): {
+    official_name?: string | null;
+    display_name?: string | null;
+    photo_url?: string | null;
+} | null {
+    if (!raw) return null;
+    const e = Array.isArray(raw) ? raw[0] : raw;
+    if (!e || typeof e !== 'object') return null;
+    return e as any;
+}
+
+async function fetchFirmContactProfileImageUrlByUserId(appUserId: string | null | undefined): Promise<string | null> {
+    if (!appUserId) return null;
+    try {
+        const { data } = await supabase.from('firm_contacts').select('profile_image_url').eq('user_id', appUserId).maybeSingle();
+        const v = (data as any)?.profile_image_url?.trim();
+        return v ? String(v) : null;
+    } catch {
+        return null;
+    }
+}
+
+type ResolvedExternalSession = {
+    isExternalUser: boolean;
+    userName: string | null;
+    userImage: string | null;
+    userId: string;
+};
+
+/**
+ * Single source of truth: `public.users.auth_id` = Supabase auth user id.
+ * No email-based user or firm_contact lookups (avoids refresh / casing mismatches).
+ */
+async function resolveExternalUserFromAuthSession(): Promise<ResolvedExternalSession | null> {
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) return null;
+
+    const { data: row, error } = await supabase
+        .from('users')
+        .select(
+            `
+      id,
+      extern,
+      email,
+      full_name,
+      first_name,
+      last_name,
+      employee_id,
+      tenants_employee!users_employee_id_fkey(
+        official_name,
+        display_name,
+        photo_url
+      )
+    `,
+        )
+        .eq('auth_id', user.id)
+        .maybeSingle();
+
+    if (error || !row) {
+        return {
+            isExternalUser: false,
+            userName: null,
+            userImage: null,
+            userId: user.id,
+        };
+    }
+
+    const isExternal = parseExternFlag((row as any).extern);
+    const emp = normalizeTenantsEmployee((row as any).tenants_employee);
+    const rowEmail = String((row as any).email || user.email || '').trim();
+
+    let userName: string | null = (row as any).full_name?.trim() || null;
+    if (!userName && emp?.official_name?.trim()) userName = emp.official_name.trim();
+    if (!userName && emp?.display_name?.trim()) userName = emp.display_name.trim();
+    if (!userName && (row as any).first_name && (row as any).last_name) {
+        userName = `${String((row as any).first_name).trim()} ${String((row as any).last_name).trim()}`;
+    }
+    if (!userName) userName = rowEmail || null;
+
+    let userImage: string | null = null;
+    if (isExternal) {
+        userImage = await fetchFirmContactProfileImageUrlByUserId(String((row as any).id));
+    }
+    if (!userImage && emp?.photo_url) {
+        const p = String(emp.photo_url).trim();
+        userImage = p || null;
+    }
+
+    return {
+        isExternalUser: isExternal,
+        userName,
+        userImage,
+        userId: user.id,
+    };
+}
+
+/**
+ * Pre-check external user status in the background (e.g. during login).
+ * Uses `users.auth_id` only; updates module cache when complete.
  */
 export const preCheckExternalUser = async (userId?: string): Promise<void> => {
-    // If already checking, wait for that check to complete
     if (checkInProgress && checkPromise) {
         await checkPromise;
         return;
     }
 
-    // If we have valid cached data, no need to check
     if (cachedExternalUser) {
         const now = Date.now();
-        if ((now - cachedExternalUser.timestamp) < CACHE_DURATION) {
-            // Check if userId matches if provided
-            if (!userId || cachedExternalUser.userId === userId) {
-                return; // Cache is valid
-            }
+        if (now - cachedExternalUser.timestamp < CACHE_DURATION && (!userId || cachedExternalUser.userId === userId)) {
+            return;
         }
     }
 
     checkInProgress = true;
-    checkPromise = (async () => {
+    checkPromise = (async (): Promise<CachedExternalUser | null> => {
         try {
-            // Get auth user
-            const { data: { user }, error: authError } = await supabase.auth.getUser();
+            const resolved = await resolveExternalUserFromAuthSession();
+            if (!resolved) return null;
+            if (userId && resolved.userId !== userId) return null;
 
-            if (authError || !user) {
-                return null;
-            }
-
-            // If userId provided, verify it matches
-            if (userId && user.id !== userId) {
-                return null;
-            }
-
-            // Check cache again (might have been updated by another call)
-            const now = Date.now();
-            if (cachedExternalUser &&
-                cachedExternalUser.userId === user.id &&
-                (now - cachedExternalUser.timestamp) < CACHE_DURATION) {
-                return cachedExternalUser;
-            }
-
-            // Quick check for extern field
-            const { data: userDataQuick, error: quickError } = await supabase
-                .from('users')
-                .select('extern')
-                .eq('auth_id', user.id)
-                .maybeSingle();
-
-            if (!quickError && userDataQuick) {
-                const externValue = userDataQuick.extern;
-                const isExternal = externValue === true ||
-                    externValue === 'true' ||
-                    externValue === 1 ||
-                    externValue === '1' ||
-                    (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
-
-                // Create initial cache entry
-                cachedExternalUser = {
-                    isExternalUser: isExternal,
-                    userName: user.email || null,
-                    userImage: null,
-                    timestamp: now,
-                    userId: user.id
-                };
-
-                // If external, fetch full data in background (non-blocking)
-                if (isExternal) {
-                    // Fetch full data asynchronously without blocking
-                    (async () => {
-                        try {
-                            const [userQuery, employeeQuery] = await Promise.all([
-                                (async () => {
-                                    try {
-                                        return await supabase
-                                            .from('users')
-                                            .select('extern, first_name, last_name, full_name, employee_id')
-                                            .eq('auth_id', user.id)
-                                            .maybeSingle();
-                                    } catch (err) {
-                                        return { data: null, error: err };
-                                    }
-                                })(),
-                                user.email ? (async () => {
-                                    try {
-                                        return await supabase
-                                            .from('users')
-                                            .select(`
-                                                employee_id,
-                                                tenants_employee!users_employee_id_fkey(
-                                                    official_name,
-                                                    display_name,
-                                                    photo_url
-                                                )
-                                            `)
-                                            .eq('email', user.email)
-                                            .maybeSingle();
-                                    } catch (err) {
-                                        return { data: null, error: null };
-                                    }
-                                })() : Promise.resolve({ data: null, error: null })
-                            ]);
-
-                            const fullUserData = userQuery.data;
-                            const employeeData = employeeQuery.data;
-
-                            let finalUserName: string | null = user.email || null;
-                            let finalUserImage: string | null = null;
-
-                            if (fullUserData) {
-                                // Priority 1: full_name from users table
-                                if (fullUserData.full_name?.trim()) {
-                                    finalUserName = fullUserData.full_name.trim();
-                                }
-
-                                // Priority 2: Employee official_name or display_name
-                                if (employeeData?.tenants_employee) {
-                                    const emp = Array.isArray(employeeData.tenants_employee)
-                                        ? employeeData.tenants_employee[0]
-                                        : employeeData.tenants_employee;
-                                    if (emp?.photo_url) finalUserImage = emp.photo_url;
-
-                                    if (!finalUserName || finalUserName === user.email) {
-                                        if (emp?.official_name?.trim()) {
-                                            finalUserName = emp.official_name.trim();
-                                        } else if (emp?.display_name?.trim()) {
-                                            finalUserName = emp.display_name.trim();
-                                        }
-                                    }
-                                }
-
-                                // Priority 3: first_name + last_name
-                                if (!finalUserName || finalUserName === user.email) {
-                                    if (fullUserData.first_name && fullUserData.last_name) {
-                                        finalUserName = `${fullUserData.first_name.trim()} ${fullUserData.last_name.trim()}`;
-                                    }
-                                }
-                            }
-
-                            // Update cache with full data
-                            cachedExternalUser = {
-                                isExternalUser: true,
-                                userName: finalUserName,
-                                userImage: finalUserImage,
-                                timestamp: Date.now(),
-                                userId: user.id
-                            };
-                        } catch (err) {
-                            console.error('Error fetching full external user data:', err);
-                        }
-                    })();
-                }
-
-                return cachedExternalUser;
-            }
-
-            // Fallback to email check
-            if (user.email) {
-                const { data: emailDataQuick, error: emailQuickError } = await supabase
-                    .from('users')
-                    .select('extern')
-                    .ilike('email', user.email)
-                    .maybeSingle();
-
-                if (!emailQuickError && emailDataQuick) {
-                    const externValue = emailDataQuick.extern;
-                    const isExternal = externValue === true ||
-                        externValue === 'true' ||
-                        externValue === 1 ||
-                        externValue === '1' ||
-                        (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
-
-                    cachedExternalUser = {
-                        isExternalUser: isExternal,
-                        userName: user.email || null,
-                        userImage: null,
-                        timestamp: now,
-                        userId: user.id
-                    };
-
-                    return cachedExternalUser;
-                }
-            }
-
-            return null;
+            const entry: CachedExternalUser = {
+                ...resolved,
+                timestamp: Date.now(),
+            };
+            cachedExternalUser = entry;
+            persistExternalUserGate({
+                userId: entry.userId,
+                isExternalUser: entry.isExternalUser,
+                userName: entry.userName,
+                userImage: entry.userImage,
+            });
+            return entry;
         } catch (error) {
             console.error('Error in preCheckExternalUser:', error);
             return null;
@@ -221,80 +236,51 @@ export const preCheckExternalUser = async (userId?: string): Promise<void> => {
 export const useExternalUser = () => {
     // Start with cached data if available (instant initialization)
     const getInitialState = () => {
-        // Try to get cached data synchronously from localStorage
         try {
-            // First, try to get current user ID from localStorage (Supabase session)
-            const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
-            const storageKey = `sb-${supabaseUrl.split('//')[1]?.split('.')[0]}-auth-token`;
-            const cached = localStorage.getItem(storageKey);
-            let currentUserId: string | null = null;
+            const session = readCachedSupabaseSessionFromStorage();
+            const currentUserId = session?.user?.id ? String(session.user.id) : null;
 
-            if (cached) {
-                try {
-                    const parsed = JSON.parse(cached);
-                    currentUserId = parsed?.currentSession?.user?.id || null;
-                } catch (e) {
-                    // Ignore parse errors
+            if (currentUserId) {
+                const boot = readExternalUserGateBootstrap();
+                const now = Date.now();
+                if (boot && boot.userId === currentUserId && now - boot.ts < CACHE_DURATION) {
+                    return {
+                        isExternalUser: boot.isExternalUser,
+                        userName: boot.userName,
+                        userImage: boot.userImage,
+                        isLoading: false,
+                    };
                 }
             }
 
-            // If we have cached external user data and it matches current user, use it immediately
             if (cachedExternalUser && currentUserId) {
                 const now = Date.now();
-                if (cachedExternalUser.userId === currentUserId && (now - cachedExternalUser.timestamp) < CACHE_DURATION) {
+                if (cachedExternalUser.userId === currentUserId && now - cachedExternalUser.timestamp < CACHE_DURATION) {
                     return {
                         isExternalUser: cachedExternalUser.isExternalUser,
                         userName: cachedExternalUser.userName,
                         userImage: cachedExternalUser.userImage,
-                        isLoading: false
+                        isLoading: false,
                     };
                 }
             }
 
-            // If we have cached data but no current user ID yet, still use it if it's recent (within 5 minutes)
-            // This handles the case where auth hasn't loaded yet but we have recent cache
-            // This is critical to prevent flash of regular dashboard for external users
-            if (cachedExternalUser && !currentUserId) {
-                const now = Date.now();
-                const age = now - cachedExternalUser.timestamp;
-                // Use cache if it's recent (5 minutes) - this prevents flash on initial load
-                if (age < 300000) { // 5 minutes for initial load
-                    // Using cached data (no user ID yet)
-                    return {
-                        isExternalUser: cachedExternalUser.isExternalUser,
-                        userName: cachedExternalUser.userName,
-                        userImage: cachedExternalUser.userImage,
-                        isLoading: false
-                    };
-                }
-            }
+            const hasSessionHint = !!currentUserId || hasAnySupabaseAuthKey();
 
-            // Also check if we have ANY recent cache (even without user ID match)
-            // This is a fallback for when user ID doesn't match but cache is very recent
-            if (cachedExternalUser) {
-                const now = Date.now();
-                const age = now - cachedExternalUser.timestamp;
-                // If cache is very recent (within 30 seconds), use it even without user ID match
-                // This handles edge cases where user ID might have changed slightly
-                if (age < 30000) { // 30 seconds
-                    // Using very recent cache (fallback)
-                    return {
-                        isExternalUser: cachedExternalUser.isExternalUser,
-                        userName: cachedExternalUser.userName,
-                        userImage: cachedExternalUser.userImage,
-                        isLoading: false
-                    };
-                }
-            }
-        } catch (e) {
-            // Ignore errors
+            return {
+                isExternalUser: false,
+                userName: null,
+                userImage: null,
+                isLoading: hasSessionHint,
+            };
+        } catch {
+            return {
+                isExternalUser: false,
+                userName: null,
+                userImage: null,
+                isLoading: hasAnySupabaseAuthKey(),
+            };
         }
-        return {
-            isExternalUser: false,
-            userName: null,
-            userImage: null,
-            isLoading: false // Start as false - check in background
-        };
     };
 
     const initialState = getInitialState();
@@ -304,475 +290,101 @@ export const useExternalUser = () => {
     const [userImage, setUserImage] = useState<string | null>(initialState.userImage);
 
     useEffect(() => {
+        let cancelled = false;
+
         const checkExternalUser = async () => {
+            let authUserId: string | null = null;
             try {
-                // Get auth user first (fast)
                 const { data: { user }, error: authError } = await supabase.auth.getUser();
 
                 if (authError || !user) {
-                    setIsExternalUser(false);
-                    setIsLoading(false);
+                    if (!cancelled) {
+                        setIsExternalUser(false);
+                        setUserName(null);
+                        setUserImage(null);
+                        setIsLoading(false);
+                    }
                     return;
                 }
 
-                // Check cache first - this is fast and prevents flash
+                authUserId = user.id;
+
                 const now = Date.now();
-                if (cachedExternalUser &&
+                if (
+                    cachedExternalUser &&
                     cachedExternalUser.userId === user.id &&
-                    (now - cachedExternalUser.timestamp) < CACHE_DURATION) {
-                    // Use cached data immediately - update state if it changed
-                    setIsExternalUser(cachedExternalUser.isExternalUser);
-                    setUserName(cachedExternalUser.userName);
-                    setUserImage(cachedExternalUser.userImage);
-                    setIsLoading(false);
-                    // If we have valid cache, we're done - don't fetch again
+                    now - cachedExternalUser.timestamp < CACHE_DURATION
+                ) {
+                    if (!cancelled) {
+                        setIsExternalUser(cachedExternalUser.isExternalUser);
+                        setUserName(cachedExternalUser.userName);
+                        setUserImage(cachedExternalUser.userImage);
+                        setIsLoading(false);
+                    }
                     return;
                 }
 
-                // If check is in progress for this user, wait for it
                 if (checkInProgress && checkPromise) {
-                    const result = await checkPromise;
-                    if (result && result.userId === user.id) {
-                        setIsExternalUser(result.isExternalUser);
-                        setUserName(result.userName);
-                        setUserImage(result.userImage);
+                    const waited = await checkPromise;
+                    if (cancelled) return;
+                    if (waited && waited.userId === user.id) {
+                        setIsExternalUser(waited.isExternalUser);
+                        setUserName(waited.userName);
+                        setUserImage(waited.userImage);
                         setIsLoading(false);
                         return;
                     }
                 }
 
-                // Only fetch if we don't have valid cache and no check is in progress
-                // This ensures only ONE check happens per user ID across all components
-                if (checkInProgress) {
-                    // Another component is already checking - wait for it
-                    if (checkPromise) {
-                        const result = await checkPromise;
-                        if (result && result.userId === user.id) {
-                            setIsExternalUser(result.isExternalUser);
-                            setUserName(result.userName);
-                            setUserImage(result.userImage);
-                            setIsLoading(false);
-                        }
-                    }
-                    return;
-                }
+                const resolved = await resolveExternalUserFromAuthSession();
+                if (cancelled) return;
 
-                // Set check in progress flag BEFORE making any queries
-                // This ensures only ONE check happens per user ID across all components
-                if (checkInProgress && checkPromise) {
-                    // Another component is already checking - wait for it
-                    const result = await checkPromise;
-                    if (result && result.userId === user.id) {
-                        setIsExternalUser(result.isExternalUser);
-                        setUserName(result.userName);
-                        setUserImage(result.userImage);
-                        setIsLoading(false);
-                        return;
-                    }
-                }
-
-                // Start the check - set flag and create promise
-                checkInProgress = true;
-                checkPromise = (async () => {
-                    try {
-                        // Optimize: Only fetch extern field first to determine if external (fastest check)
-                        const { data: userDataQuick, error: quickError } = await supabase
-                            .from('users')
-                            .select('extern')
-                            .eq('auth_id', user.id)
-                            .maybeSingle();
-
-                        if (!quickError && userDataQuick) {
-                            // Handle various formats of extern field: true, 'true', 1, '1', etc.
-                            const externValue = userDataQuick.extern;
-                            const isExternal = externValue === true ||
-                                externValue === 'true' ||
-                                externValue === 1 ||
-                                externValue === '1' ||
-                                (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
-
-                            // Update cache immediately
-                            const result = {
-                                isExternalUser: isExternal,
-                                userName: user.email || null,
-                                userImage: null,
-                                timestamp: Date.now(),
-                                userId: user.id
-                            };
-
-                            cachedExternalUser = result;
-                            return result;
-                        }
-                        return null;
-                    } finally {
-                        checkInProgress = false;
-                        checkPromise = null;
-                    }
-                })();
-
-                const quickResult = await checkPromise;
-
-                if (quickResult) {
-                    setIsExternalUser(quickResult.isExternalUser);
-                    setUserName(quickResult.userName);
-                    setUserImage(quickResult.userImage);
+                if (!resolved) {
+                    setIsExternalUser(false);
+                    setUserName(null);
+                    setUserImage(null);
                     setIsLoading(false);
-
-                    const isExternal = quickResult.isExternalUser;
-
-                    // Fetch full user data in background (non-blocking)
-                    if (isExternal) {
-                        // Only fetch full data if external user
-                        const [userQuery, employeeQuery] = await Promise.all([
-                            (async () => {
-                                try {
-                                    return await supabase
-                                        .from('users')
-                                        .select('extern, first_name, last_name, full_name, employee_id')
-                                        .eq('auth_id', user.id)
-                                        .maybeSingle();
-                                } catch (err) {
-                                    return { data: null, error: err };
-                                }
-                            })(),
-                            user.email ? (async () => {
-                                try {
-                                    return await supabase
-                                        .from('users')
-                                        .select(`
-                                            employee_id,
-                                            tenants_employee!users_employee_id_fkey(
-                                                official_name,
-                                                display_name,
-                                                photo_url
-                                            )
-                                        `)
-                                        .eq('email', user.email)
-                                        .maybeSingle();
-                                } catch (err) {
-                                    return { data: null, error: null };
-                                }
-                            })() : Promise.resolve({ data: null, error: null })
-                        ]);
-
-                        const fullUserData = userQuery.data;
-                        const employeeData = employeeQuery.data;
-
-                        let finalUserName: string | null = user.email || null;
-                        let finalUserImage: string | null = null;
-
-                        if (fullUserData) {
-                            // Priority 1: full_name from users table
-                            if (fullUserData.full_name?.trim()) {
-                                finalUserName = fullUserData.full_name.trim();
-                            }
-
-                            // Priority 2: Employee official_name or display_name
-                            if (employeeData?.tenants_employee) {
-                                const emp = Array.isArray(employeeData.tenants_employee)
-                                    ? employeeData.tenants_employee[0]
-                                    : employeeData.tenants_employee;
-                                if (emp?.photo_url) finalUserImage = emp.photo_url;
-
-                                // Only use employee name if full_name wasn't found
-                                if (!finalUserName || finalUserName === user.email) {
-                                    if (emp?.official_name?.trim()) {
-                                        finalUserName = emp.official_name.trim();
-                                    } else if (emp?.display_name?.trim()) {
-                                        finalUserName = emp.display_name.trim();
-                                    }
-                                }
-                            }
-
-                            // Priority 3: first_name + last_name (only if full_name not available)
-                            if (!finalUserName || finalUserName === user.email) {
-                                if (fullUserData.first_name && fullUserData.last_name) {
-                                    finalUserName = `${fullUserData.first_name.trim()} ${fullUserData.last_name.trim()}`;
-                                }
-                            }
-                        }
-
-                        setUserName(finalUserName);
-                        setUserImage(finalUserImage);
-
-                        // Update cache with full data
-                        cachedExternalUser = {
-                            isExternalUser: true,
-                            userName: finalUserName,
-                            userImage: finalUserImage,
-                            timestamp: now,
-                            userId: user.id
-                        };
-                    }
                     return;
                 }
 
-                // Fallback to email if auth_id fails
-                if (user.email) {
-                    const { data: emailDataQuick, error: emailQuickError } = await supabase
-                        .from('users')
-                        .select('extern')
-                        .ilike('email', user.email)
-                        .maybeSingle();
-
-                    if (emailQuickError) {
-                        console.warn('Email extern check error (will try full query):', emailQuickError);
-                    }
-
-                    if (!emailQuickError && emailDataQuick) {
-                        // Handle various formats of extern field: true, 'true', 1, '1', etc.
-                        const externValue = emailDataQuick.extern;
-                        const isExternal = externValue === true ||
-                            externValue === 'true' ||
-                            externValue === 1 ||
-                            externValue === '1' ||
-                            (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
-                        // External user check completed (email fallback) - result cached
-                        setIsExternalUser(isExternal);
-                        setIsLoading(false);
-                        cachedExternalUser = {
-                            isExternalUser: isExternal,
-                            userName: user.email || null,
-                            userImage: null,
-                            timestamp: now,
-                            userId: user.id
-                        };
-
-                        // Fetch full user data in background if external
-                        if (isExternal) {
-                            (async () => {
-                                try {
-                                    const [userQuery, employeeQuery] = await Promise.all([
-                                        supabase
-                                            .from('users')
-                                            .select('extern, first_name, last_name, full_name, employee_id')
-                                            .ilike('email', user.email)
-                                            .maybeSingle()
-                                            .catch(() => ({ data: null, error: null })),
-                                        supabase
-                                            .from('users')
-                                            .select(`
-                                                employee_id,
-                                                tenants_employee!users_employee_id_fkey(
-                                                    official_name,
-                                                    display_name,
-                                                    photo_url
-                                                )
-                                            `)
-                                            .eq('email', user.email)
-                                            .maybeSingle()
-                                            .catch(() => ({ data: null, error: null }))
-                                    ]);
-
-                                    const fullUserData = userQuery.data;
-                                    const employeeData = employeeQuery.data;
-
-                                    let finalUserName: string | null = user.email || null;
-                                    let finalUserImage: string | null = null;
-
-                                    if (fullUserData) {
-                                        // Priority 1: full_name from users table
-                                        if (fullUserData.full_name?.trim()) {
-                                            finalUserName = fullUserData.full_name.trim();
-                                        }
-
-                                        // Priority 2: Employee official_name or display_name
-                                        if (employeeData?.tenants_employee) {
-                                            const emp = Array.isArray(employeeData.tenants_employee)
-                                                ? employeeData.tenants_employee[0]
-                                                : employeeData.tenants_employee;
-                                            if (emp?.photo_url) finalUserImage = emp.photo_url;
-
-                                            // Only use employee name if full_name wasn't found
-                                            if (!finalUserName || finalUserName === user.email) {
-                                                if (emp?.official_name?.trim()) {
-                                                    finalUserName = emp.official_name.trim();
-                                                } else if (emp?.display_name?.trim()) {
-                                                    finalUserName = emp.display_name.trim();
-                                                }
-                                            }
-                                        }
-
-                                        // Priority 3: first_name + last_name (only if full_name not available)
-                                        if (!finalUserName || finalUserName === user.email) {
-                                            if (fullUserData.first_name && fullUserData.last_name) {
-                                                finalUserName = `${fullUserData.first_name.trim()} ${fullUserData.last_name.trim()}`;
-                                            }
-                                        }
-                                    }
-
-                                    setUserName(finalUserName);
-                                    setUserImage(finalUserImage);
-
-                                    cachedExternalUser = {
-                                        isExternalUser: true,
-                                        userName: finalUserName,
-                                        userImage: finalUserImage,
-                                        timestamp: now,
-                                        userId: user.id
-                                    };
-                                } catch (err) {
-                                    console.error('Error fetching full user data in background:', err);
-                                }
-                            })();
-                        }
-                        return;
-                    }
-                }
-
-                // Fetch user data and employee data in parallel for speed
-                const userQueryPromise = user.id ? (async () => {
-                    try {
-                        const { data, error } = await supabase
-                            .from('users')
-                            .select('extern, first_name, last_name, full_name, employee_id')
-                            .eq('auth_id', user.id)
-                            .maybeSingle();
-
-                        if (!error && data) return { data, error: null };
-
-                        // Fallback to email if auth_id fails
-                        if (user.email) {
-                            const { data: emailData, error: emailError } = await supabase
-                                .from('users')
-                                .select('extern, first_name, last_name, full_name, employee_id')
-                                .ilike('email', user.email)
-                                .maybeSingle();
-                            return { data: emailData, error: emailError };
-                        }
-                        return { data: null, error };
-                    } catch (err) {
-                        return { data: null, error: err };
-                    }
-                })() : Promise.resolve({ data: null, error: null });
-
-                const employeeQueryPromise = user.email ? (async () => {
-                    try {
-                        const { data, error } = await supabase
-                            .from('users')
-                            .select(`
-                                employee_id,
-                                tenants_employee!users_employee_id_fkey(
-                                    official_name,
-                                    display_name,
-                                    photo_url
-                                )
-                            `)
-                            .eq('email', user.email)
-                            .maybeSingle();
-                        return { data, error };
-                    } catch (err) {
-                        // Don't fail if employee query fails
-                        return { data: null, error: null };
-                    }
-                })() : Promise.resolve({ data: null, error: null });
-
-                const [userQuery, employeeQuery] = await Promise.all([
-                    userQueryPromise,
-                    employeeQueryPromise
-                ]);
-
-                const userData = userQuery.data;
-                const employeeData = employeeQuery.data;
-
-                let finalIsExternal = false;
-                let finalUserName: string | null = null;
-                let finalUserImage: string | null = null;
-
-                if (userQuery.error) {
-                    console.error('Full user query error:', userQuery.error);
-                }
-
-                if (userData) {
-                    // Handle various formats of extern field: true, 'true', 1, '1', etc.
-                    const externValue = userData.extern;
-                    finalIsExternal = externValue === true ||
-                        externValue === 'true' ||
-                        externValue === 1 ||
-                        externValue === '1' ||
-                        (typeof externValue === 'string' && externValue.toLowerCase() === 'true');
-                    // External user check completed (full query) - result cached
-
-                    // Priority 1: full_name from users table
-                    if (userData.full_name?.trim()) {
-                        finalUserName = userData.full_name.trim();
-                    }
-
-                    // Priority 2: Employee official_name or display_name
-                    if (employeeData?.tenants_employee) {
-                        const emp = Array.isArray(employeeData.tenants_employee)
-                            ? employeeData.tenants_employee[0]
-                            : employeeData.tenants_employee;
-
-                        if (emp?.photo_url) {
-                            finalUserImage = emp.photo_url;
-                        }
-
-                        // Only use employee name if full_name wasn't found
-                        if (!finalUserName || finalUserName === user.email) {
-                            if (emp?.official_name?.trim()) {
-                                finalUserName = emp.official_name.trim();
-                            } else if (emp?.display_name?.trim()) {
-                                finalUserName = emp.display_name.trim();
-                            }
-                        }
-                    }
-
-                    // Priority 3: first_name + last_name (only if full_name not available)
-                    if (!finalUserName || finalUserName === user.email) {
-                        if (userData.first_name && userData.last_name && userData.first_name.trim() && userData.last_name.trim()) {
-                            finalUserName = `${userData.first_name.trim()} ${userData.last_name.trim()}`;
-                        } else if (!finalUserName) {
-                            finalUserName = user.email;
-                        }
-                    }
-                } else {
-                    // User not found in users table - default to non-external
-                    // This could indicate a data issue - user exists in auth but not in users table
-                    console.warn('⚠️ User not found in users table, defaulting to non-external:', {
-                        userId: user.id,
-                        email: user.email,
-                        userQueryError: userQuery.error,
-                        employeeQueryError: employeeQuery.error
-                    });
-                    finalIsExternal = false;
-                    finalUserName = user.email || null;
-                }
-
-                // Update state
-                setIsExternalUser(finalIsExternal);
-                setUserName(finalUserName);
-                setUserImage(finalUserImage);
-
-                // Update cache
-                cachedExternalUser = {
-                    isExternalUser: finalIsExternal,
-                    userName: finalUserName,
-                    userImage: finalUserImage,
-                    timestamp: now,
-                    userId: user.id
+                const entry: CachedExternalUser = {
+                    ...resolved,
+                    timestamp: Date.now(),
                 };
+                cachedExternalUser = entry;
+                persistExternalUserGate({
+                    userId: entry.userId,
+                    isExternalUser: entry.isExternalUser,
+                    userName: entry.userName,
+                    userImage: entry.userImage,
+                });
+                setIsExternalUser(entry.isExternalUser);
+                setUserName(entry.userName);
+                setUserImage(entry.userImage);
+                setIsLoading(false);
             } catch (error) {
                 console.error('❌ Error checking external user status:', error);
-                // On error, check cache first - if we have cached data, use it
-                if (cachedExternalUser && cachedExternalUser.userId === user?.id) {
-                    console.log('Using cached external user data due to error');
+                if (cancelled) return;
+                if (cachedExternalUser && authUserId && cachedExternalUser.userId === authUserId) {
                     setIsExternalUser(cachedExternalUser.isExternalUser);
                     setUserName(cachedExternalUser.userName);
                     setUserImage(cachedExternalUser.userImage);
                     setIsLoading(false);
                 } else {
-                    // Only default to false if we have no cached data and an error occurred
-                    // This is a last resort - ideally errors should be handled by fallback queries
-                    console.warn('No cached data available, defaulting to non-external due to error');
                     setIsExternalUser(false);
+                    setUserName(null);
+                    setUserImage(null);
                     setIsLoading(false);
                 }
             }
         };
 
-        checkExternalUser();
+        void checkExternalUser();
+        return () => {
+            cancelled = true;
+        };
     }, []);
+
 
     return { isExternalUser, isLoading, userName, userImage };
 };

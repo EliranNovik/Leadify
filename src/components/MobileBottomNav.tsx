@@ -20,6 +20,7 @@ import {
 import { FaWhatsapp } from 'react-icons/fa';
 import { useAdminRole } from '../hooks/useAdminRole';
 import { useNewLeadsCount } from '../hooks/useNewLeadsCount';
+import { useExternalUser, shouldDeferInternalChrome } from '../hooks/useExternalUser';
 
 /**
  * Fixed mobile tab bar sits below app chrome. Modals/drawers/backdrops must use a **higher** z-index
@@ -79,6 +80,7 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
   const location = useLocation();
   const { isSuperUser } = useAdminRole();
   const newLeadsCount = useNewLeadsCount();
+  const { isExternalUser, isLoading: isLoadingExternal } = useExternalUser();
   const [showQuickActionsDropdown, setShowQuickActionsDropdown] = useState(false);
   const [dropdownBottom, setDropdownBottom] = useState('5rem');
   const quickActionsButtonRef = useRef<HTMLButtonElement>(null);
@@ -90,7 +92,9 @@ const MobileBottomNav: React.FC<MobileBottomNavProps> = ({
     pathname.startsWith('/case-manager') ||
     pathname.startsWith('/reports') ||
     pathname.startsWith('/public-') ||
-    pathname === '/login';
+    pathname === '/login' ||
+    shouldDeferInternalChrome(pathname, isLoadingExternal) ||
+    (isExternalUser && !isLoadingExternal);
 
   const visibleItems = navItems.filter((item) => {
     if (item.superUserOnly) return isSuperUser;

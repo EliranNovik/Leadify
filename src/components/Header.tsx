@@ -41,7 +41,7 @@ import RMQMessagesPage from '../pages/RMQMessagesPage';
 import HighlightsPanel from './HighlightsPanel';
 import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
 import { getRecentLeads, addRecentLead, type RecentLead } from '../lib/recentSearchStorage';
-import { useExternalUser } from '../hooks/useExternalUser';
+import { useExternalUser, shouldDeferInternalChrome } from '../hooks/useExternalUser';
 import { useAuthContext } from '../contexts/AuthContext';
 
 interface HeaderProps {
@@ -221,9 +221,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
   const [hasAppliedFilters, setHasAppliedFilters] = useState(false);
   const [currentUserEmployee, setCurrentUserEmployee] = useState<any>(null);
+  const [externalUserProfile, setExternalUserProfile] = useState<{ photo_url?: string | null } | null>(null);
   /** Prefer live employee row; fall back to auth display cache so avatar matches name on first paint after refresh */
   const resolvedHeaderPhotoUrl =
-    [currentUserEmployee?.photo_url, currentUserEmployee?.photo, authProfilePhotoUrl].find(
+    [externalUserProfile?.photo_url, currentUserEmployee?.photo_url, currentUserEmployee?.photo, authProfilePhotoUrl].find(
       (u) => typeof u === 'string' && u.trim() !== ''
     )?.trim() ?? null;
   const [isEmployeeModalOpen, setIsEmployeeModalOpen] = useState(false);
@@ -576,6 +577,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       { label: 'Calls Ledger', path: '/calls-ledger', keywords: ['calls', 'phone'] },
       { label: 'Reports', path: '/reports' },
       { label: 'Settings', path: '/settings' },
+      ...(currentUser?.extern ? [{ label: 'External settings', path: '/external-settings', keywords: ['external', 'profile', 'firm'] }] : []),
       { label: 'Admin Panel', path: '/admin', keywords: ['admin'] },
     ];
 
@@ -738,7 +740,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     });
 
     return items;
-  }, [isSuperUser, navTabs, newLeadsCount, navigate, onOpenAIChat, onOpenEmailThread, onOpenWhatsApp, whatsappClientsUnreadCount]);
+  }, [isSuperUser, navTabs, newLeadsCount, navigate, onOpenAIChat, onOpenEmailThread, onOpenWhatsApp, whatsappClientsUnreadCount, currentUser]);
 
   const filteredQuickMenuItems = useMemo(() => {
     const q = quickMenuSearchValue.trim().toLowerCase();
@@ -4688,6 +4690,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           const age = Date.now() - parseInt(cachedTimestamp, 10);
           if (age < CACHE_DURATION) {
             const data = JSON.parse(cachedData);
+            // Cache safety: older cached payloads may miss `extern` (used for External settings menu).
+            // If missing, fall through to a fresh fetch so extern users see the right header options.
+            if (data?.currentUser && typeof data.currentUser.extern === 'undefined') {
+              throw new Error('Header cache missing extern flag; refetching');
+            }
             setUserFullName(data.userFullName || '');
             setIsSuperUser(data.isSuperUser || false);
             if (data.currentUser) setCurrentUser(data.currentUser);
@@ -4762,6 +4769,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               email,
               employee_id,
               is_superuser,
+              extern,
               tenants_employee!employee_id(
                 id,
                 display_name,
@@ -4784,6 +4792,26 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             .single();
 
           if (!userError && userData) {
+            const maybeLoadExternalProfile = async () => {
+              try {
+                if (!(userData as any)?.extern) {
+                  setExternalUserProfile(null);
+                  return;
+                }
+                const { data: prof, error: profErr } = await supabase
+                  .from('firm_contacts')
+                  .select('profile_image_url')
+                  .eq('user_id', String(userData.id))
+                  .maybeSingle();
+                if (profErr) throw profErr;
+                setExternalUserProfile({ photo_url: (prof as any)?.profile_image_url ?? null });
+              } catch (e) {
+                // eslint-disable-next-line no-console
+                console.warn('Header external profile load failed:', e);
+                setExternalUserProfile(null);
+              }
+            };
+
             // Set superuser status from userData if not already set
             if (userData.is_superuser !== undefined) {
               setIsSuperUser(userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1);
@@ -4794,6 +4822,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
               // Set current user for RMQ messages
               setCurrentUser(userData);
+              void maybeLoadExternalProfile();
 
               setCurrentUserEmployee({
                 ...empData,
@@ -4905,6 +4934,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             } else {
               // Set current user even if no employee data
               setCurrentUser(userData);
+              void maybeLoadExternalProfile();
 
               // Cache basic user data
               setTimeout(() => {
@@ -5847,11 +5877,22 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       const employeeDisplayNames = employeesToCheck.map(emp => emp.display_name).filter(Boolean);
       const employeeIds = employeesToCheck.map(emp => emp.id.toString()).filter(Boolean);
 
+      // "Today" range in local time, expressed as UTC timestamps for Postgres.
+      const now = new Date();
+      const startOfTodayLocal = new Date(now);
+      startOfTodayLocal.setHours(0, 0, 0, 0);
+      const endOfTodayLocal = new Date(now);
+      endOfTodayLocal.setHours(23, 59, 59, 999);
+      const startIso = startOfTodayLocal.toISOString();
+      const endIso = endOfTodayLocal.toISOString();
+
       // Base query builder that excludes inactive leads
       const buildBaseQuery = (query: any) => {
         return query
           .neq('stage', 91) // Exclude inactive/dropped leads
-          .is('unactivated_at', null); // Exclude leads that have been unactivated
+          .is('unactivated_at', null) // Exclude leads that have been unactivated
+          .gte('created_at', startIso)
+          .lte('created_at', endIso);
       };
 
       // Fetch all leads for the stages, then filter client-side (matching NewCasesPage logic)
@@ -7210,91 +7251,143 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     );
   };
 
-  // External user header - simplified view
-  // Removed blocking check - auth is already verified, don't block rendering
-  // External user check will complete in background, but won't block rendering
-  if (isExternalUser && !isLoadingExternal) {
+  // Root / external-home: avoid painting full internal header until extern vs staff is known (refresh flash).
+  if (shouldDeferInternalChrome(location.pathname, isLoadingExternal)) {
     return (
       <>
         <div
           data-mobile-header={isMobile ? 'floating' : undefined}
           className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b md:border-base-200 md:dark:border-base-300 pt-safe pb-1.5 md:pb-0 md:pt-0"
         >
-          {/* Logo and Logout Button */}
-          <div className="flex-1 justify-start flex items-center gap-2 md:gap-4">
+          <div className="flex w-full flex-1 items-center justify-center py-1">
+            <span className="loading loading-spinner loading-md text-primary" aria-hidden />
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // External user header - simplified view
+  if (isExternalUser && !isLoadingExternal) {
+    const extHeaderNavItemClass =
+      'relative inline-flex h-9 min-h-0 shrink-0 items-center justify-center rounded-lg px-2.5 text-sm font-semibold tracking-tight text-base-content/80 md:px-3.5 ' +
+      'transition-[color,transform,box-shadow,background-color] duration-200 ease-out ' +
+      'hover:-translate-y-px hover:bg-base-200/70 hover:text-base-content hover:shadow-md dark:hover:bg-base-300/45 ' +
+      'active:translate-y-0 active:scale-[0.97] active:shadow-sm ' +
+      'focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35 focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 dark:focus-visible:ring-offset-base-100';
+    const extHeaderSignOutClass =
+      'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-base-content/70 transition-all duration-200 ease-out ' +
+      'hover:bg-base-200/70 hover:text-base-content hover:shadow-md dark:hover:bg-base-300/45 active:scale-[0.96] ' +
+      'focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35 focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 dark:focus-visible:ring-offset-base-100';
+
+    return (
+      <>
+        <div
+          data-mobile-header={isMobile ? 'floating' : undefined}
+          className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b md:border-base-200 md:dark:border-base-300 pt-safe pb-1.5 md:pb-0 md:pt-0"
+        >
+          {/* Left: Logo */}
+          <div className="flex-1 justify-start flex items-center">
             <div className="flex h-11 md:h-12 items-center gap-2 md:gap-3 px-1 md:px-0">
-              <Link to="/" className="flex items-center gap-2">
-                <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
+              <Link to="/external-home" className="flex items-center gap-2">
+                <span
+                  className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight"
+                  style={{ color: isAltTheme ? '#505d57' : '#3b28c7', letterSpacing: '-0.03em' }}
+                >
+                  RMQ 2.0
+                </span>
               </Link>
-              <button
-                onClick={handleSignOut}
-                className="btn btn-ghost btn-sm border-0 min-h-0 h-9 w-9 p-0 text-base-content/80 hover:text-base-content"
-                title="Sign Out"
-              >
-                <ArrowRightOnRectangleIcon className="w-5 h-5" />
-              </button>
             </div>
           </div>
 
-          {/* Quick Actions Dropdown - Desktop */}
-          <div className="hidden md:block relative ml-4" data-quick-actions-dropdown>
+          {/* Desktop: inline nav */}
+          <div className="absolute left-1/2 z-10 hidden max-w-[min(94vw,36rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-x-1 gap-y-1 md:flex md:max-w-none md:flex-nowrap md:gap-2">
+            <Link to="/external-home" className={extHeaderNavItemClass}>
+              Dashboard
+            </Link>
+            <Link to="/access-logs" className={extHeaderNavItemClass}>
+              Access logs
+            </Link>
+            <Link to="/external-settings" className={extHeaderNavItemClass}>
+              Settings
+            </Link>
             <button
-              ref={buttonRef}
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setShowQuickActionsDropdown(!showQuickActionsDropdown);
+              type="button"
+              onClick={() => {
+                if (onOpenMessaging) onOpenMessaging();
               }}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl font-medium transition-all duration-300 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white"
+              className={`${extHeaderNavItemClass} gap-1.5 group`}
+              title="RMQ Messages"
             >
-              <BoltIcon className="w-5 h-5 text-white" />
-              <span className="text-sm font-semibold">Quick Actions</span>
-              <ChevronDownIcon className={`w-4 h-4 text-white transition-transform duration-200 ${showQuickActionsDropdown ? 'rotate-180' : ''}`} />
+              RMQ Messages
+              {rmqUnreadCount > 0 && (
+                <span className="bg-red-500 text-white text-xs font-bold rounded-full min-w-[20px] h-5 px-1.5 inline-flex items-center justify-center shadow-sm ring-1 ring-white/25 transition-transform duration-200 group-hover:scale-[1.04]">
+                  {rmqUnreadCount > 9 ? '9+' : rmqUnreadCount}
+                </span>
+              )}
             </button>
+          </div>
 
-            {/* Dropdown Menu */}
-            {showQuickActionsDropdown && createPortal(
-              <div
-                className="fixed w-48 bg-white rounded-xl shadow-2xl border border-gray-200 z-[9999] overflow-hidden"
-                data-dropdown-menu
-                style={{
-                  top: buttonRef.current ? `${buttonRef.current.getBoundingClientRect().bottom + 8}px` : '0px',
-                  left: buttonRef.current ? `${buttonRef.current.getBoundingClientRect().left}px` : '0px'
-                }}
-                onClick={(e) => e.stopPropagation()}
+          {/* Right: mobile hamburger + desktop sign out */}
+          <div className="flex-1 justify-end flex items-center pr-1 md:pr-0">
+            {/* Mobile hamburger */}
+            <div className="dropdown dropdown-end md:hidden">
+              <button
+                type="button"
+                className={extHeaderSignOutClass}
+                title="Menu"
               >
-                {/* RMQ Messages Option */}
-                <button
-                  onClick={() => {
-                    setShowQuickActionsDropdown(false);
-                    if (onOpenMessaging) {
-                      onOpenMessaging();
-                    }
-                  }}
-                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50 relative"
-                >
-                  <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-500" />
-                  <span className="text-sm font-medium">RMQ Messages</span>
-                  {rmqUnreadCount > 0 && (
-                    <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                      {rmqUnreadCount > 9 ? '9+' : rmqUnreadCount}
-                    </span>
-                  )}
-                </button>
-                {/* RMQ AI Option */}
-                <button
-                  onClick={() => {
-                    setShowQuickActionsDropdown(false);
-                    handleAIClick();
-                  }}
-                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left hover:bg-gray-50 relative"
-                >
-                  <FaRobot className={`w-5 h-5 ${isAltTheme ? 'text-green-600' : 'text-purple-500'}`} />
-                  <span className="text-sm font-medium">RMQ AI</span>
-                </button>
-              </div>,
-              document.body
-            )}
+                <Bars3Icon className="w-6 h-6" />
+              </button>
+              <ul className="menu dropdown-content mt-2 w-64 rounded-box bg-base-100 p-2 shadow-lg border border-base-200">
+                <li><Link to="/external-home">Dashboard</Link></li>
+                <li><Link to="/access-logs">Access logs</Link></li>
+                <li><Link to="/external-settings">Settings</Link></li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => onOpenMessaging?.()}
+                    className="flex items-center justify-between"
+                  >
+                    <span>RMQ Messages</span>
+                    {rmqUnreadCount > 0 && (
+                      <span className="badge badge-error badge-sm text-white">{rmqUnreadCount > 9 ? '9+' : rmqUnreadCount}</span>
+                    )}
+                  </button>
+                </li>
+                <li><button type="button" onClick={handleSignOut}>Log out</button></li>
+                <li className="mt-1"><div className="divider my-1" /></li>
+                <li className="pointer-events-none">
+                  <div className="flex items-center gap-3">
+                    <div className="avatar">
+                      <div className="w-9 rounded-full ring-1 ring-base-200">
+                        {(externalUserProfile as any)?.photo_url || authProfilePhotoUrl ? (
+                          <img src={String((externalUserProfile as any)?.photo_url || authProfilePhotoUrl)} alt="" />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center bg-base-200 text-xs font-semibold text-base-content/70">
+                            {String(userFullName || authUserFullName || 'U').trim().slice(0, 2).toUpperCase()}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold truncate">
+                        {userFullName || authUserFullName || 'User'}
+                      </div>
+                    </div>
+                  </div>
+                </li>
+              </ul>
+            </div>
+
+            {/* Desktop sign out */}
+            <button
+              onClick={handleSignOut}
+              className={`hidden md:inline-flex ${extHeaderSignOutClass}`}
+              title="Sign Out"
+            >
+              <ArrowRightOnRectangleIcon className="w-5 h-5" />
+            </button>
           </div>
 
         </div>
@@ -7425,6 +7518,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   <Cog6ToothIcon className="w-5 h-5 text-base-content/70" />
                   Settings
                 </button>
+                {currentUser?.extern && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                    onClick={() => {
+                      setShowProfileDropdown(false);
+                      navigate('/external-settings');
+                    }}
+                  >
+                    <Cog6ToothIcon className="w-5 h-5 text-base-content/70" />
+                    External settings
+                  </button>
+                )}
                 {!userAccount && (
                   <button
                     type="button"
@@ -7583,6 +7690,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     <Cog6ToothIcon className="w-5 h-5 text-base-content/70" />
                     Settings
                   </button>
+                  {currentUser?.extern && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                      onClick={() => {
+                        setShowProfileDropdown(false);
+                        navigate('/external-settings');
+                      }}
+                    >
+                      <Cog6ToothIcon className="w-5 h-5 text-base-content/70" />
+                      External settings
+                    </button>
+                  )}
                   <button
                     type="button"
                     role="menuitem"

@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase, isExpectedNoSessionError } from '../lib/supabase';
 import { DocumentTextIcon, CalendarIcon, ClockIcon } from '@heroicons/react/24/outline';
-import { usePersistedState, usePersistedFilters } from '../hooks/usePersistedState';
+import { usePersistedFilters } from '../hooks/usePersistedState';
+import { parseExternSourceIds } from './ExternalUserLeadsGraph';
 
 interface AccessLog {
     id: number;
@@ -18,26 +19,59 @@ interface ExpandedRow {
 }
 
 interface ExternalUserAccessLogsProps {
+    /** Supabase auth user id — scopes caches/persisted filters so switching accounts cannot leak counts. */
+    storageScope: string;
     onBack?: () => void;
     showFullView?: boolean;
 }
 
-const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ onBack, showFullView = false }) => {
-    const [accessLogsCount, setAccessLogsCount] = usePersistedState('externalUserAccessLogs_count', 0, {
-        storage: 'sessionStorage',
-    });
+function logMatchesAllowedSources(
+    log: { request_body?: string | null; response_body?: string | null },
+    allowedIdsSet: Set<number>,
+    allowedCodesSet: Set<number>,
+): boolean {
+    if (log?.response_body) {
+        try {
+            const parsed = JSON.parse(String(log.response_body));
+            const sid = parsed?.data?.source_id;
+            if (sid != null && allowedIdsSet.has(Number(sid))) return true;
+        } catch {
+            /* ignore */
+        }
+    }
+    if (log?.request_body) {
+        try {
+            const parsedReq = JSON.parse(String(log.request_body));
+            const q = parsedReq?.query && typeof parsedReq.query === 'object' ? parsedReq.query : parsedReq;
+            const sourceCode = q?.source_code ?? q?.sourceCode ?? q?.source;
+            const sourceId = q?.source_id ?? q?.sourceId;
+            if (sourceId != null && allowedIdsSet.has(Number(sourceId))) return true;
+            if (sourceCode != null && allowedCodesSet.size > 0 && allowedCodesSet.has(Number(sourceCode))) return true;
+        } catch {
+            /* ignore */
+        }
+    }
+    return false;
+}
+
+const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ storageScope, onBack, showFullView = false }) => {
+    const [accessLogsCount, setAccessLogsCount] = useState(0);
     const [logs, setLogs] = useState<AccessLog[]>([]);
     const [logsByDay, setLogsByDay] = useState<{ [key: string]: AccessLog[] }>({});
     const [availableDays, setAvailableDays] = useState<string[]>([]);
-    const [currentDayIndex, setCurrentDayIndex] = usePersistedState('externalUserAccessLogs_currentDayIndex', 0, {
-        storage: 'sessionStorage',
-    });
+    const [currentDayIndex, setCurrentDayIndex] = useState(0);
     const [loading, setLoading] = useState(true);
     const [loadingLogs, setLoadingLogs] = useState(false);
     const [expandedRows, setExpandedRows] = useState<ExpandedRow>({});
     const [allowedSourceIds, setAllowedSourceIds] = useState<number[]>([]);
     const hasInitializedRef = useRef(false);
-    const [filters, setFilters] = usePersistedFilters('externalUserAccessLogs_filters', {
+
+    useEffect(() => {
+        hasInitializedRef.current = false;
+        setAccessLogsCount(0);
+        setCurrentDayIndex(0);
+    }, [storageScope]);
+    const [filters, setFilters] = usePersistedFilters(`externalUserAccessLogs_filters_${storageScope}`, {
         dateFrom: '',
         dateTo: ''
     }, {
@@ -54,6 +88,12 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ onBack,
                     if (authError && !isExpectedNoSessionError(authError)) {
                       console.error('Error getting auth user:', authError);
                     }
+                    return;
+                }
+
+                if (user.id !== storageScope) {
+                    console.warn('Access logs: session user does not match storageScope; skipping source load');
+                    setAllowedSourceIds([]);
                     return;
                 }
 
@@ -84,21 +124,7 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ onBack,
                     return;
                 }
 
-                // Extract source IDs from extern_source_id
-                let sourceIds: number[] = [];
-                
-                if (Array.isArray(finalUserData.extern_source_id)) {
-                    sourceIds = finalUserData.extern_source_id.filter(id => typeof id === 'number');
-                } else if (typeof finalUserData.extern_source_id === 'string') {
-                    try {
-                        const parsed = JSON.parse(finalUserData.extern_source_id);
-                        if (Array.isArray(parsed)) {
-                            sourceIds = parsed.filter(id => typeof id === 'number');
-                        }
-                    } catch (e) {
-                        console.error('Error parsing extern_source_id:', e);
-                    }
-                }
+                const sourceIds = parseExternSourceIds(finalUserData.extern_source_id);
 
                 if (sourceIds.length === 0) {
                     setAllowedSourceIds([]);
@@ -114,11 +140,16 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ onBack,
         };
 
         fetchAllowedSourceIds();
-    }, []);
+    }, [storageScope]);
 
     // Fetch access logs count (last 30 days)
     useEffect(() => {
         const fetchAccessLogsCount = async () => {
+            if (!storageScope) {
+                setAccessLogsCount(0);
+                setLoading(false);
+                return;
+            }
             if (allowedSourceIds.length === 0) {
                 setAccessLogsCount(0);
                 setLoading(false);
@@ -126,7 +157,7 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ onBack,
             }
 
             // Check cache first - if we have valid cached data, use it and skip fetch
-            const cacheKey = 'externalUserAccessLogs_count_cache';
+            const cacheKey = `externalUserAccessLogs_count_cache_v2_${storageScope}`;
             const cached = sessionStorage.getItem(cacheKey);
             if (cached) {
                 try {
@@ -145,25 +176,6 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ onBack,
                 }
             }
             
-            // If we already have persisted state and haven't initialized, check if it's still valid
-            if (accessLogsCount > 0 && !hasInitializedRef.current) {
-                hasInitializedRef.current = true;
-                setLoading(false);
-                // Check if persisted state is still valid (less than 5 minutes old)
-                if (cached) {
-                    try {
-                        const { timestamp } = JSON.parse(cached);
-                        const now = Date.now();
-                        
-                        if ((now - timestamp) < 5 * 60 * 1000) {
-                            return; // Persisted state is still valid
-                        }
-                    } catch (e) {
-                        // Continue to fetch
-                    }
-                }
-            }
-
             try {
                 setLoading(true);
                 
@@ -175,10 +187,26 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ onBack,
                 const startTimestamp = thirtyDaysAgo.toISOString();
                 const endTimestamp = now.toISOString();
 
+                const allowedIdsSet = new Set(allowedSourceIds.map((n) => Number(n)).filter((n) => Number.isFinite(n)));
+                // Map allowed misc_leadsource.id -> misc_leadsource.code, so logs can be matched by request source_code too.
+                const { data: srcRows, error: srcErr } = await supabase
+                    .from('misc_leadsource')
+                    .select('id, code')
+                    .in('id', allowedSourceIds);
+                if (srcErr) {
+                    console.warn('Access logs: failed to load misc_leadsource codes:', srcErr);
+                }
+                const allowedCodesSet = new Set<number>();
+                (srcRows || []).forEach((r: any) => {
+                    const c = r?.code;
+                    const n = typeof c === 'string' ? Number(c) : c;
+                    if (Number.isFinite(n)) allowedCodesSet.add(Number(n));
+                });
+
                 // Fetch all access logs for hook endpoints in the last 30 days
                 const { data, error } = await supabase
                     .from('access_logs')
-                    .select('id, response_body')
+                    .select('id, request_body, response_body')
                     .in('endpoint', ['/api/hook/catch', '/api/hook/facebook'])
                     .gte('created_at', startTimestamp)
                     .lte('created_at', endTimestamp);
@@ -187,18 +215,10 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ onBack,
                     console.error('Error fetching access logs count:', error);
                     setAccessLogsCount(0);
                 } else {
-                    // Filter by source_id in response_body.data.source_id
-                    const filteredLogs = (data || []).filter(log => {
-                        if (!log.response_body) return false;
-                        try {
-                            const parsed = JSON.parse(log.response_body);
-                            // Check response_body.data.source_id
-                            const sourceId = parsed?.data?.source_id;
-                            return sourceId && allowedSourceIds.includes(Number(sourceId));
-                        } catch {
-                            return false;
-                        }
-                    });
+                    // Count logs that match by response data.source_id OR by request source_code/source_id
+                    const filteredLogs = (data || []).filter((log: any) =>
+                        logMatchesAllowedSources(log, allowedIdsSet, allowedCodesSet),
+                    );
                     const count = filteredLogs.length;
                     setAccessLogsCount(count);
                     // Cache the result
@@ -206,7 +226,7 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ onBack,
                         count,
                         timestamp: Date.now()
                     };
-                    sessionStorage.setItem('externalUserAccessLogs_count_cache', JSON.stringify(cacheData));
+                    sessionStorage.setItem(cacheKey, JSON.stringify(cacheData));
                     hasInitializedRef.current = true;
                 }
             } catch (error) {
@@ -217,10 +237,10 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ onBack,
             }
         };
 
-        if (allowedSourceIds.length > 0 && !hasInitializedRef.current) {
-            fetchAccessLogsCount();
+        if (storageScope && allowedSourceIds.length > 0 && !hasInitializedRef.current) {
+            void fetchAccessLogsCount();
         }
-    }, [allowedSourceIds]);
+    }, [allowedSourceIds, storageScope]);
 
     // Fetch access logs with filters
     const fetchLogs = async () => {
@@ -238,15 +258,22 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ onBack,
                 .in('endpoint', ['/api/hook/catch', '/api/hook/facebook'])
                 .order('created_at', { ascending: false });
 
-            // Apply date filters
+            // Date filters: full-page defaults to last 30 days (summary count uses the same window).
             if (filters.dateFrom) {
                 query = query.gte('created_at', filters.dateFrom);
+            } else if (showFullView) {
+                const now = new Date();
+                const thirtyDaysAgo = new Date();
+                thirtyDaysAgo.setDate(now.getDate() - 30);
+                thirtyDaysAgo.setHours(0, 0, 0, 0);
+                query = query.gte('created_at', thirtyDaysAgo.toISOString());
             }
             if (filters.dateTo) {
-                // Add time to end of day
                 const endDate = new Date(filters.dateTo);
                 endDate.setHours(23, 59, 59, 999);
                 query = query.lte('created_at', endDate.toISOString());
+            } else {
+                query = query.lte('created_at', new Date().toISOString());
             }
 
             // Fetch all matching logs (we'll filter by source_id client-side)
@@ -258,18 +285,21 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ onBack,
                 return;
             }
 
-            // Filter by source_id in response_body.data.source_id
-            const filteredLogs = (data || []).filter(log => {
-                if (!log.response_body) return false;
-                try {
-                    const parsed = JSON.parse(log.response_body);
-                    // Check response_body.data.source_id
-                    const sourceId = parsed?.data?.source_id;
-                    return sourceId && allowedSourceIds.includes(Number(sourceId));
-                } catch {
-                    return false;
-                }
+            const allowedIdsSet = new Set(allowedSourceIds.map((n) => Number(n)).filter((n) => Number.isFinite(n)));
+            const { data: srcRows } = await supabase
+                .from('misc_leadsource')
+                .select('id, code')
+                .in('id', allowedSourceIds);
+            const allowedCodesSet = new Set<number>();
+            (srcRows || []).forEach((r: any) => {
+                const c = r?.code;
+                const n = typeof c === 'string' ? Number(c) : c;
+                if (Number.isFinite(n)) allowedCodesSet.add(Number(n));
             });
+
+            const filteredLogs = (data || []).filter((log) =>
+                logMatchesAllowedSources(log, allowedIdsSet, allowedCodesSet),
+            );
 
             setLogs(filteredLogs);
 

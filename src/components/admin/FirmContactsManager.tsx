@@ -54,6 +54,20 @@ const FirmContactsManager: React.FC = () => {
       placeholder: 'If different from contact email',
     },
     {
+      name: 'user_id',
+      label: 'Linked user',
+      type: 'select' as const,
+      required: false,
+      searchableSelect: true,
+      hideInTable: true,
+      placeholder: 'Select a CRM user to link',
+      foreignKey: {
+        table: 'users',
+        valueField: 'id',
+        displayField: 'email',
+      },
+    },
+    {
       name: 'password_hash',
       label: 'Password hash',
       type: 'password' as const,

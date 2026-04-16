@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase, isExpectedNoSessionError, type Lead } from '../lib/supabase';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
@@ -738,29 +738,41 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
           </tr>
         </thead>
         <tbody>
-          {leads.map((lead, index) => (
-            <tr 
-              key={lead.id || index} 
-              className="hover cursor-pointer transition-colors duration-200 hover:bg-blue-50 active:bg-blue-100"
-              onClick={(e) => {
-                // Pass the full lead object so we can access manual_id and other properties
-                onLeadClick(lead, e);
-              }}
-              title={`Click to view lead ${(lead as any).display_lead_number || (lead as any).lead_number || lead.id}`}
-            >
-              {selectedColumns.map((columnKey) => {
-                const columnValue = getColumnValue(lead, columnKey);
-                const titleText = typeof columnValue === 'string' ? columnValue : (columnValue?.props?.title || '');
-                return (
-                  <td key={columnKey} className="max-w-xs">
-                    <div className="truncate" title={titleText}>
-                      {columnValue}
-                    </div>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
+          {leads.map((lead, index) => {
+            const anyLead = lead as any;
+            const isLegacyInactive =
+              anyLead.lead_type === 'legacy' && anyLead.status != null && (Number(anyLead.status) === 10 || anyLead.status === '10');
+            const isNewInactive = anyLead.lead_type === 'new' && anyLead.unactivated_at != null;
+            const isInactive = isLegacyInactive || isNewInactive;
+
+            const rowClasses = isInactive
+              ? 'bg-gray-200 text-black hover:bg-gray-300 cursor-pointer transition-colors duration-200 [&_.badge]:!bg-gray-300 [&_.badge]:!border-gray-400 [&_.badge]:![color:black]'
+              : 'hover cursor-pointer transition-colors duration-200 hover:bg-blue-50 active:bg-blue-100';
+
+            return (
+              <tr
+                key={lead.id || index}
+                className={rowClasses}
+                onClick={(e) => {
+                  // Pass the full lead object so we can access manual_id and other properties
+                  onLeadClick(lead, e);
+                }}
+                title={`Click to view lead ${anyLead.display_lead_number || anyLead.lead_number || lead.id}`}
+              >
+                {selectedColumns.map((columnKey) => {
+                  const columnValue = getColumnValue(lead, columnKey);
+                  const titleText = typeof columnValue === 'string' ? columnValue : columnValue?.props?.title || '';
+                  return (
+                    <td key={columnKey} className="max-w-xs">
+                      <div className="truncate" title={titleText}>
+                        {columnValue}
+                      </div>
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -770,6 +782,8 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 const ExternalUserLeadSearchPage: React.FC = () => {
   // Initialize filters with current date
   const todayStr = new Date().toISOString().split('T')[0];
+  const resultsRef = useRef<HTMLDivElement | null>(null);
+  const scrollToResultsAfterSearchRef = useRef(false);
   
   const [filters, setFilters] = usePersistedFilters('externalUserLeadSearch_filters', {
     fromDate: todayStr, // Default to today
@@ -781,6 +795,13 @@ const ExternalUserLeadSearchPage: React.FC = () => {
     eligibilityDeterminedOnly: false,
     stage: [] as string[],
     topic: [] as string[],
+    // Role filters (used by client-side filtering later in the file)
+    scheduler: [] as string[],
+    manager: [] as string[],
+    lawyer: [] as string[],
+    expert: [] as string[],
+    closer: [] as string[],
+    case_handler: [] as string[],
   }, {
     storage: 'sessionStorage',
   });
@@ -1317,6 +1338,7 @@ const ExternalUserLeadSearchPage: React.FC = () => {
   const handleSearch = async () => {
     setIsSearching(true);
     setSearchPerformed(true);
+    scrollToResultsAfterSearchRef.current = true;
     
     console.log('🔍 Starting lead search with filters:', filters);
     console.log('📅 Current date info:', {
@@ -1612,9 +1634,13 @@ const ExternalUserLeadSearchPage: React.FC = () => {
             console.log('🔍 [New Leads Category Filter] Found category_id:', categoryId, 'for category:', formattedCategoryName);
           } else {
             // Fallback: extract category name (remove main category in parentheses)
-            const categoryName = formattedCategoryName.split(' (')[0].trim();
-            categoryNames.push(categoryName);
-            console.log('⚠️ [New Leads Category Filter] No category_id found, will use category name:', categoryName, 'for:', formattedCategoryName);
+            const raw = formattedCategoryName.trim();
+            const stripped = raw.split(' (')[0].trim();
+            // Some leads store category as plain text ("Poland"), others may store the formatted label ("Poland (Main)").
+            // Include both to avoid missing text-only leads.
+            if (stripped) categoryNames.push(stripped);
+            if (raw) categoryNames.push(raw);
+            console.log('⚠️ [New Leads Category Filter] No category_id found, will use category text fallback for:', formattedCategoryName);
           }
         }
         
@@ -1631,13 +1657,16 @@ const ExternalUserLeadSearchPage: React.FC = () => {
         if (categoryIds.length > 0 && categoryNames.length > 0) {
           // Mixed: some categories have IDs, some don't - use OR condition
           console.log('🏷️ [New Leads Category Filter] Applying mixed filter (OR): category_id IN', categoryIds, 'OR category IN', categoryNames);
+          const encCategoryNames = Array.from(new Set(categoryNames.map((n) => n.trim()).filter(Boolean))).map((n) =>
+            encodeURIComponent(n),
+          );
           const orConditions = [
             categoryIds.length === 1 
               ? `category_id.eq.${categoryIds[0]}`
               : `category_id.in.(${categoryIds.join(',')})`,
-            categoryNames.length === 1 
-              ? `category.eq.${categoryNames[0]}`
-              : `category.in.(${categoryNames.join(',')})`
+            encCategoryNames.length === 1 
+              ? `category.eq.${encCategoryNames[0]}`
+              : `category.in.(${encCategoryNames.join(',')})`
           ];
           newLeadsQuery = newLeadsQuery.or(orConditions.join(','));
         } else if (categoryIds.length > 0) {
@@ -1651,12 +1680,13 @@ const ExternalUserLeadSearchPage: React.FC = () => {
           }
         } else if (categoryNames.length > 0) {
           // Only category names available, use text field
-          if (categoryNames.length === 1) {
-            console.log('🏷️ [New Leads Category Filter] Applying single category name filter (fallback):', categoryNames[0]);
-            newLeadsQuery = newLeadsQuery.eq('category', categoryNames[0]);
+          const uniqNames = Array.from(new Set(categoryNames.map((n) => n.trim()).filter(Boolean)));
+          if (uniqNames.length === 1) {
+            console.log('🏷️ [New Leads Category Filter] Applying single category name filter (fallback):', uniqNames[0]);
+            newLeadsQuery = newLeadsQuery.eq('category', uniqNames[0]);
           } else {
-            console.log('🏷️ [New Leads Category Filter] Applying multiple category name filter (IN, fallback):', categoryNames);
-            newLeadsQuery = newLeadsQuery.in('category', categoryNames);
+            console.log('🏷️ [New Leads Category Filter] Applying multiple category name filter (IN, fallback):', uniqNames);
+            newLeadsQuery = newLeadsQuery.in('category', uniqNames);
           }
         } else {
           console.log('❌ [New Leads Category Filter] No category IDs or names found - filter will not be applied');
@@ -1909,11 +1939,33 @@ const ExternalUserLeadSearchPage: React.FC = () => {
             : allowedSourceNames;
           
           if (sourcesToFilter.length > 0) {
-            console.log('📡 Filtering new leads by sources:', sourcesToFilter);
-            if (sourcesToFilter.length === 1) {
-              newLeadsQuery = newLeadsQuery.eq('source', sourcesToFilter[0]);
+            console.log('📡 Filtering new leads by sources (source_id OR text):', sourcesToFilter);
+            // Resolve selected source names to ids and apply OR on plain columns (PostgREST doesn't support dotted join paths in `.or()`).
+            const { data: srcRows, error: srcErr } = await supabase
+              .from('misc_leadsource')
+              .select('id, name')
+              .in('name', sourcesToFilter);
+
+            if (srcErr) throw srcErr;
+
+            const sourceIdsToFilter = (srcRows || [])
+              .map((r) => Number((r as any).id))
+              .filter((n) => Number.isFinite(n));
+
+            const orParts: string[] = [];
+            if (sourceIdsToFilter.length === 1) {
+              orParts.push(`source_id.eq.${sourceIdsToFilter[0]}`);
+            } else if (sourceIdsToFilter.length > 1) {
+              orParts.push(`source_id.in.(${sourceIdsToFilter.join(',')})`);
+            }
+            for (const name of sourcesToFilter) {
+              const enc = encodeURIComponent(name);
+              orParts.push(`source.eq.${enc}`);
+            }
+            if (orParts.length > 0) {
+              newLeadsQuery = newLeadsQuery.or(orParts.join(','));
             } else {
-              newLeadsQuery = newLeadsQuery.in('source', sourcesToFilter);
+              newLeadsQuery = newLeadsQuery.eq('source', '__nonexistent__');
             }
           } else {
             console.log('⚠️ No valid sources to filter by, filtering out all new leads');
@@ -3077,6 +3129,21 @@ const ExternalUserLeadSearchPage: React.FC = () => {
     }
   };
 
+  useEffect(() => {
+    if (!scrollToResultsAfterSearchRef.current) return;
+    if (isSearching) return;
+    if (!searchPerformed) return;
+    if (results.length === 0) return;
+
+    scrollToResultsAfterSearchRef.current = false;
+    // Wait for the results section to render and settle layout.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+  }, [isSearching, results.length, searchPerformed]);
+
   const getStageBadge = (stage: string | number | null | undefined) => {
     if (!stage && stage !== 0) return <span className="badge badge-outline">No Stage</span>;
     
@@ -3114,7 +3181,15 @@ const ExternalUserLeadSearchPage: React.FC = () => {
 
     // Legacy lead highlighting: status 10 = Not active
     const isLegacyInactive =
-      anyLead.lead_type === 'legacy' && anyLead.status && Number(anyLead.status) === 10;
+      anyLead.lead_type === 'legacy' &&
+      anyLead.status != null &&
+      (Number(anyLead.status) === 10 || anyLead.status === '10');
+
+    // New lead highlighting: unactivated_at IS NOT NULL = Not active
+    const isNewInactive =
+      anyLead.lead_type === 'new' && anyLead.unactivated_at !== null && anyLead.unactivated_at !== undefined;
+
+    const isInactive = isLegacyInactive || isNewInactive;
 
     const cardClasses = [
       'card',
@@ -3128,8 +3203,10 @@ const ExternalUserLeadSearchPage: React.FC = () => {
       'cursor-pointer',
       'group',
       'border',
-      // Bring back soft red highlight for inactive legacy leads
-      isLegacyInactive ? 'bg-red-50 border-red-200' : 'bg-base-100 border-base-200',
+      // Inactive card: light grey background, all text black; stage badges grey with black text
+      isInactive
+        ? 'bg-gray-200 border-gray-300 [&_.card-title]:!text-black [&_p]:!text-black [&_span]:!text-black [&_svg]:!text-black [&_.divider]:!border-gray-400 [&_.stage-badge]:!bg-gray-300 [&_.stage-badge]:!border-gray-400 [&_.stage-badge]:![color:black]'
+        : 'bg-base-100 border-base-200',
     ].join(' ');
 
     // Ensure category is always shown as "Subcategory (Main Category)" when possible
@@ -3152,20 +3229,20 @@ const ExternalUserLeadSearchPage: React.FC = () => {
     }
 
     return (
-  <div 
-      key={lead.id} 
-      className={cardClasses}
-      onClick={(e) => {
-        // Pass the full lead object so we can access manual_id and other properties
-        handleLeadClick(lead, e);
-      }}
-    >
-      <div className="card-body p-5 relative">
-        {isLegacyInactive && (
-          <span className="badge badge-xs absolute top-1 left-3 bg-white border-red-400 text-red-500 shadow-sm">
-            Not active
-          </span>
-        )}
+      <div
+        key={lead.id}
+        className={cardClasses}
+        onClick={(e) => {
+          // Pass the full lead object so we can access manual_id and other properties
+          handleLeadClick(lead, e);
+        }}
+      >
+        <div className="card-body p-5 relative">
+          {isInactive && (
+            <span className="badge badge-xs absolute top-1 left-3 bg-white border-gray-500 text-gray-700 shadow-sm">
+              Not active
+            </span>
+          )}
         <div className="flex justify-between items-start mb-2">
             <div className="flex items-center gap-2">
             <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors">
@@ -3385,7 +3462,7 @@ const ExternalUserLeadSearchPage: React.FC = () => {
 
       {/* Results */}
       {searchPerformed && results.length > 0 && (
-        <div>
+        <div ref={resultsRef} className="scroll-mt-24">
           <h2 className="text-2xl font-bold mb-4">
             Found {results.length} lead{results.length !== 1 && 's'}
           </h2>

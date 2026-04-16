@@ -10,8 +10,6 @@ const ClosedDealsWithoutPaymentPlanWidget = lazy(() => import('./ClosedDealsWith
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
-import { useExternalUser } from '../hooks/useExternalUser';
-import ExternalUserDashboard from './ExternalUserDashboard';
 import { convertToNIS, calculateTotalRevenueInNIS, getCurrencySymbol } from '../lib/currencyConversion';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot, ReferenceArea, BarChart, Bar, Legend as RechartsLegend, CartesianGrid } from 'recharts';
@@ -67,7 +65,6 @@ const MyAvailabilitySection: React.FC<{ onAvailabilityChange?: () => void; onOpe
 const Dashboard: React.FC = () => {
   // Get auth state from context to skip redundant checks
   const { user: authUser, isInitialized } = useAuthContext();
-  const { isExternalUser, isLoading: isLoadingExternal, userName: externalUserName, userImage: externalUserImage } = useExternalUser();
 
   // Check if alternative (green) theme is active - make it reactive
   const [isAltTheme, setIsAltTheme] = useState(() => document.documentElement.classList.contains('theme-alt'));
@@ -6036,11 +6033,6 @@ const Dashboard: React.FC = () => {
       return [];
     }
   };
-
-  // Render external user dashboard only after all hooks have run (avoids "Rendered fewer hooks than expected")
-  if (isExternalUser) {
-    return <ExternalUserDashboard userName={externalUserName} />;
-  }
 
   return (
     <div className="min-h-screen bg-base-100 p-0 md:p-6 space-y-8 animate-fade-in">

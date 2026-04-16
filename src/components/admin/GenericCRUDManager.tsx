@@ -1440,6 +1440,10 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
   const openModal = async (record?: Record) => {
     console.log(`Opening modal for ${tableName} with record:`, record);
+
+    // Reset searchable-select UI state so it doesn't "stick" between records.
+    setSearchTerms({});
+    setSearchDropdownOpen({});
     
     if (record && tableName === 'tenants_employee') {
       try {

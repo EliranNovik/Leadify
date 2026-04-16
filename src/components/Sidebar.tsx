@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useLocation, Link } from 'react-router-dom';
 import { FaRobot } from 'react-icons/fa';
 import { useAdminRole } from '../hooks/useAdminRole';
-import { useExternalUser } from '../hooks/useExternalUser';
+import { useExternalUser, shouldDeferInternalChrome } from '../hooks/useExternalUser';
 import {
   HomeIcon,
   UserGroupIcon,
@@ -656,11 +656,13 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
       });
   }, [isSuperUser]);
 
-  // Hide sidebar completely for external users - check after all hooks are called
-  // Removed blocking check - auth is already verified, don't block rendering
-  // External user check will complete in background, but won't block rendering
+  // Hide internal sidebar for externals, and while external-vs-internal is resolving on `/`
+  // (otherwise staff nav flashes on refresh before `useExternalUser` finishes).
   if (isExternalUser && !isLoadingExternal) {
-    return null; // No sidebar for external users
+    return null;
+  }
+  if (shouldDeferInternalChrome(location.pathname, isLoadingExternal)) {
+    return null;
   }
 
   return (

@@ -68,6 +68,20 @@ const UsersManager: React.FC = () => {
       hideInEdit: true
     },
     {
+      name: 'extern_firm_id',
+      label: 'Extern firm',
+      type: 'select' as const,
+      required: false,
+      hideInTable: true,
+      options: [],
+      placeholder: 'Select a firm',
+      foreignKey: {
+        table: 'firms',
+        displayField: 'name',
+        valueField: 'id'
+      }
+    },
+    {
       name: 'extern_source_id',
       label: 'Extern sources',
       type: 'custom' as const,

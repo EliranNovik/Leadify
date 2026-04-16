@@ -8,6 +8,80 @@ interface LeadsGraphData {
     count: number;
 }
 
+/** Parse `users.extern_source_id` (array or JSON string); allow numeric strings. */
+export function parseExternSourceIds(raw: unknown): number[] {
+    const out: number[] = [];
+    const push = (v: unknown) => {
+        if (typeof v === 'number' && Number.isFinite(v)) out.push(v);
+        else if (typeof v === 'string' && v.trim() !== '') {
+            const n = Number(v.trim());
+            if (Number.isFinite(n)) out.push(n);
+        }
+    };
+    if (Array.isArray(raw)) raw.forEach(push);
+    else if (typeof raw === 'string') {
+        try {
+            const p = JSON.parse(raw);
+            if (Array.isArray(p)) p.forEach(push);
+        } catch {
+            /* ignore */
+        }
+    }
+    return out;
+}
+
+/** PostgREST `.or()`: match `source_id` OR legacy text `source` (same pattern as ExternalUserLeadSearchPage). */
+export function buildLeadSourcesOrFilter(sourceIds: number[], sourceNames: string[]): string {
+    const orParts: string[] = [];
+    const numericIds = sourceIds.filter((n) => Number.isFinite(n));
+    if (numericIds.length === 1) {
+        orParts.push(`source_id.eq.${numericIds[0]}`);
+    } else if (numericIds.length > 1) {
+        orParts.push(`source_id.in.(${numericIds.join(',')})`);
+    }
+
+    const cleanedNames = sourceNames.map((s) => String(s ?? '').trim()).filter((s) => s !== '');
+    if (cleanedNames.length === 1) {
+        // Plain `eq` is fine for a single value; supabase-js will URL-encode.
+        orParts.push(`source.eq.${cleanedNames[0]}`);
+    } else if (cleanedNames.length > 1) {
+        // IMPORTANT: `.or()` uses a comma-separated grammar, so values containing spaces/commas
+        // must be quoted. PostgREST supports `in.("a","b")`.
+        const quoted = cleanedNames
+            .map((s) => `"${s.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`)
+            .join(',');
+        orParts.push(`source.in.(${quoted})`);
+    }
+
+    return orParts.join(',');
+}
+
+function initSourceCounts(allowedSources: { id: number; name: string }[]): Record<string, number> {
+    const sourceCounts: Record<string, number> = {};
+    allowedSources.forEach((s) => {
+        sourceCounts[s.name] = 0;
+    });
+    return sourceCounts;
+}
+
+/** Map a lead row to the canonical misc_leadsource.name bucket, or null if out of scope. */
+function bucketLeadByAllowedSource(
+    lead: { source_id?: unknown; source?: string | null },
+    allowedSources: { id: number; name: string }[],
+): string | null {
+    const idToName = new Map<string, string>();
+    const nameNormToCanonical = new Map<string, string>();
+    for (const s of allowedSources) {
+        idToName.set(String(s.id), s.name);
+        nameNormToCanonical.set(s.name.trim().toLowerCase(), s.name);
+    }
+    const sid = lead.source_id != null && String(lead.source_id).trim() !== '' ? String(lead.source_id) : '';
+    if (sid && idToName.has(sid)) return idToName.get(sid)!;
+    const key = (lead.source || '').trim().toLowerCase();
+    if (key && nameNormToCanonical.has(key)) return nameNormToCanonical.get(key)!;
+    return null;
+}
+
 const ExternalUserLeadsGraph: React.FC = () => {
     const [graphData, setGraphData] = useState<LeadsGraphData[]>([]);
     const [successfulLeadsData, setSuccessfulLeadsData] = useState<LeadsGraphData[]>([]);
@@ -20,7 +94,7 @@ const ExternalUserLeadsGraph: React.FC = () => {
         const fetchLeadsData = async () => {
             try {
                 // Check cache first
-                const cacheKey = 'externalUserLeadsGraph_cache';
+                const cacheKey = 'externalUserLeadsGraph_cache_v2';
                 const cached = sessionStorage.getItem(cacheKey);
                 if (cached) {
                     try {
@@ -81,21 +155,7 @@ const ExternalUserLeadsGraph: React.FC = () => {
                     return;
                 }
 
-                // Extract source IDs from extern_source_id
-                let sourceIds: number[] = [];
-                
-                if (Array.isArray(finalUserData.extern_source_id)) {
-                    sourceIds = finalUserData.extern_source_id.filter(id => typeof id === 'number');
-                } else if (typeof finalUserData.extern_source_id === 'string') {
-                    try {
-                        const parsed = JSON.parse(finalUserData.extern_source_id);
-                        if (Array.isArray(parsed)) {
-                            sourceIds = parsed.filter(id => typeof id === 'number');
-                        }
-                    } catch (e) {
-                        console.error('Error parsing extern_source_id:', e);
-                    }
-                }
+                const sourceIds = parseExternSourceIds(finalUserData.extern_source_id);
 
                 if (sourceIds.length === 0) {
                     console.log('⚠️ No valid source IDs found');
@@ -127,20 +187,21 @@ const ExternalUserLeadsGraph: React.FC = () => {
                     return;
                 }
 
-                const sourceIdToName: { [key: number]: string } = {};
-                allowedSources.forEach(source => {
-                    sourceIdToName[source.id] = source.name;
-                });
+                const allowedTyped = allowedSources.map((s) => ({
+                    id: Number((s as any).id),
+                    name: String((s as any).name),
+                }));
+                const allowedSourceNames = allowedTyped.map((s) => s.name);
+                const sourceIdsFromMisc = allowedTyped.map((s) => s.id).filter((n) => Number.isFinite(n));
+                const sourcesOr = buildLeadSourcesOrFilter(sourceIdsFromMisc, allowedSourceNames);
 
-                const allowedSourceNames = allowedSources.map(s => s.name);
-
-                // Fetch leads from the last 30 days
+                // Fetch leads: include rows keyed by source_id OR text source (aligned with lead search).
                 const { data: leads, error: leadsError } = await supabase
                     .from('leads')
-                    .select('source, created_at')
+                    .select('id, source_id, source, created_at')
                     .gte('created_at', startTimestamp)
                     .lte('created_at', endTimestamp)
-                    .in('source', allowedSourceNames);
+                    .or(sourcesOr);
 
                 if (leadsError) {
                     console.error('Error fetching leads:', leadsError);
@@ -149,19 +210,13 @@ const ExternalUserLeadsGraph: React.FC = () => {
                     return;
                 }
 
-                // Group leads by source and count
-                const sourceCounts: { [key: string]: number } = {};
-                
-                // Initialize all allowed sources with 0
-                allowedSourceNames.forEach(sourceName => {
-                    sourceCounts[sourceName] = 0;
-                });
+                const sourceCounts = initSourceCounts(allowedTyped);
 
-                // Count leads by source
                 if (leads) {
-                    leads.forEach(lead => {
-                        if (lead.source && sourceCounts.hasOwnProperty(lead.source)) {
-                            sourceCounts[lead.source] = (sourceCounts[lead.source] || 0) + 1;
+                    leads.forEach((lead) => {
+                        const bucket = bucketLeadByAllowedSource(lead, allowedTyped);
+                        if (bucket && Object.prototype.hasOwnProperty.call(sourceCounts, bucket)) {
+                            sourceCounts[bucket] += 1;
                         }
                     });
                 }
@@ -198,7 +253,7 @@ const ExternalUserLeadsGraph: React.FC = () => {
         const fetchSuccessfulLeadsData = async () => {
             try {
                 // Check cache first
-                const cacheKey = 'externalUserSuccessfulLeadsGraph_cache';
+                const cacheKey = 'externalUserSuccessfulLeadsGraph_cache_v2';
                 const cached = sessionStorage.getItem(cacheKey);
                 if (cached) {
                     try {
@@ -259,21 +314,7 @@ const ExternalUserLeadsGraph: React.FC = () => {
                     return;
                 }
 
-                // Extract source IDs from extern_source_id
-                let sourceIds: number[] = [];
-                
-                if (Array.isArray(finalUserData.extern_source_id)) {
-                    sourceIds = finalUserData.extern_source_id.filter(id => typeof id === 'number');
-                } else if (typeof finalUserData.extern_source_id === 'string') {
-                    try {
-                        const parsed = JSON.parse(finalUserData.extern_source_id);
-                        if (Array.isArray(parsed)) {
-                            sourceIds = parsed.filter(id => typeof id === 'number');
-                        }
-                    } catch (e) {
-                        console.error('Error parsing extern_source_id:', e);
-                    }
-                }
+                const sourceIds = parseExternSourceIds(finalUserData.extern_source_id);
 
                 if (sourceIds.length === 0) {
                     console.log('⚠️ No valid source IDs found');
@@ -297,7 +338,13 @@ const ExternalUserLeadsGraph: React.FC = () => {
                     return;
                 }
 
-                const allowedSourceNames = allowedSources.map(s => s.name);
+                const allowedTyped = allowedSources.map((s) => ({
+                    id: Number((s as any).id),
+                    name: String((s as any).name),
+                }));
+                const allowedSourceNames = allowedTyped.map((s) => s.name);
+                const sourceIdsFromMisc = allowedTyped.map((s) => s.id).filter((n) => Number.isFinite(n));
+                const sourcesOr = buildLeadSourcesOrFilter(sourceIdsFromMisc, allowedSourceNames);
 
                 // Get date range for last 30 days
                 const now = new Date();
@@ -310,14 +357,13 @@ const ExternalUserLeadsGraph: React.FC = () => {
                 // Stage IDs for successful leads past Meeting Scheduled stage
                 const successfulStageIds = [20, 21, 30, 40, 50, 55, 60, 70, 100, 105, 150, 200];
 
-                // Fetch leads with successful stages from the last 30 days
                 const { data: leads, error: leadsError } = await supabase
                     .from('leads')
-                    .select('source, stage, created_at')
-                    .in('source', allowedSourceNames)
+                    .select('id, source_id, source, stage, created_at')
                     .in('stage', successfulStageIds)
                     .gte('created_at', startTimestamp)
-                    .lte('created_at', endTimestamp);
+                    .lte('created_at', endTimestamp)
+                    .or(sourcesOr);
 
                 if (leadsError) {
                     console.error('Error fetching successful leads:', leadsError);
@@ -326,19 +372,13 @@ const ExternalUserLeadsGraph: React.FC = () => {
                     return;
                 }
 
-                // Group leads by source and count
-                const sourceCounts: { [key: string]: number } = {};
-                
-                // Initialize all allowed sources with 0
-                allowedSourceNames.forEach(sourceName => {
-                    sourceCounts[sourceName] = 0;
-                });
+                const sourceCounts = initSourceCounts(allowedTyped);
 
-                // Count leads by source
                 if (leads) {
-                    leads.forEach(lead => {
-                        if (lead.source && sourceCounts.hasOwnProperty(lead.source)) {
-                            sourceCounts[lead.source] = (sourceCounts[lead.source] || 0) + 1;
+                    leads.forEach((lead) => {
+                        const bucket = bucketLeadByAllowedSource(lead, allowedTyped);
+                        if (bucket && Object.prototype.hasOwnProperty.call(sourceCounts, bucket)) {
+                            sourceCounts[bucket] += 1;
                         }
                     });
                 }

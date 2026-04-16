@@ -43,7 +43,6 @@ import {
   LazyContractPage,
   LazyCreateNewLead,
   LazyCTIPopupPage,
-  LazyDashboard,
   LazyDebugTestPage,
   LazyDocumentsPage,
   LazyDoubleLeadsPage,
@@ -55,6 +54,8 @@ import {
   LazyEmployeeUnavailabilitiesReport,
   LazyExpertPage,
   LazyExternalUserAccessLogsPage,
+  LazyExternalUserHomePage,
+  LazyExternalUserSettingsPage,
   LazyHandlerManagementPage,
   LazyHistoryPage,
   LazyHowItWorksPage,
@@ -93,6 +94,7 @@ import {
   LazyWhatsAppLeadsPage,
   LazyWhatsAppPage,
 } from './routes/lazyPages';
+import HomeEntryPage from './pages/HomeEntryPage';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
 import { captureRefreshPathnameOnce } from './hooks/usePersistedState';
 
@@ -881,7 +883,8 @@ const AppContentInner: React.FC = () => {
                 />
                 <main className={`app-main-scroll min-h-0 w-full min-w-0 flex-1 overflow-y-auto overflow-x-auto ${showBottomNav ? 'main-with-bottom-nav-padding' : ''}`}>
                   <Routes>
-                    <Route path="/" element={<RouteSuspense><LazyDashboard /></RouteSuspense>} />
+                    <Route path="/" element={<HomeEntryPage />} />
+                    <Route path="/external-home" element={<RouteSuspense><LazyExternalUserHomePage /></RouteSuspense>} />
                     <Route path="/clients" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/contract" element={<RouteSuspense><LazyContractPage key="contract-lead" /></RouteSuspense>} />
                     <Route path="/contract/:contractId" element={<RouteSuspense><LazyContractPage key="contract-id" /></RouteSuspense>} />
@@ -930,6 +933,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/reports/leads-report" element={<RouteSuspense><LazyLeadsReportPage /></RouteSuspense>} />
                     <Route path="/reports/tags-manager" element={<RouteSuspense><LazyTagsManagerPage /></RouteSuspense>} />
                     <Route path="/access-logs" element={<RouteSuspense><LazyExternalUserAccessLogsPage /></RouteSuspense>} />
+                    <Route path="/external-settings" element={<RouteSuspense><LazyExternalUserSettingsPage /></RouteSuspense>} />
                     <Route path="/sales/signed" element={<RouteSuspense><LazySignedSalesReportPage /></RouteSuspense>} />
                     <Route path="/settings" element={<RouteSuspense><LazySettingsPage /></RouteSuspense>} />
                     <Route path="/test-meeting-summary" element={<RouteSuspense><LazyMeetingSummaryTestPage /></RouteSuspense>} />

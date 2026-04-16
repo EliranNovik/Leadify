@@ -2,27 +2,39 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase, isExpectedNoSessionError } from '../lib/supabase';
 import ExternalUserLeadSearch from './ExternalUserLeadSearch';
-import ExternalUserLeadsGraph from './ExternalUserLeadsGraph';
+import ExternalUserLeadsGraph, { buildLeadSourcesOrFilter, parseExternSourceIds } from './ExternalUserLeadsGraph';
 import ExternalUserAccessLogs from './ExternalUserAccessLogs';
 import { ChartBarIcon } from '@heroicons/react/24/outline';
 import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ExternalUserDashboardProps {
     userName: string | null;
+    userImage?: string | null;
 }
 
-const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName }) => {
+const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName, userImage }) => {
     const [newLeadsCount, setNewLeadsCount] = usePersistedState('externalUserDashboard_newLeadsCount', 0, {
         storage: 'sessionStorage',
     });
     const hasInitializedRef = useRef(false);
+    const [accessLogsAuthId, setAccessLogsAuthId] = useState<string | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
+        void supabase.auth.getUser().then(({ data }) => {
+            if (!cancelled) setAccessLogsAuthId(data.user?.id ?? null);
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
 
     // Fetch new leads count for external users (today only, filtered by extern_source_id)
     useEffect(() => {
         const fetchNewLeadsCount = async () => {
             try {
                 // Check cache first - if we have valid cached data, use it and skip fetch
-                const cacheKey = 'externalUserDashboard_newLeadsCount_cache';
+                const cacheKey = 'externalUserDashboard_newLeadsCount_cache_v2';
                 const cached = sessionStorage.getItem(cacheKey);
                 if (cached) {
                     try {
@@ -97,21 +109,7 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName 
                     return;
                 }
 
-                // Extract source IDs from extern_source_id
-                let sourceIds: number[] = [];
-                
-                if (Array.isArray(finalUserData.extern_source_id)) {
-                    sourceIds = finalUserData.extern_source_id.filter(id => typeof id === 'number');
-                } else if (typeof finalUserData.extern_source_id === 'string') {
-                    try {
-                        const parsed = JSON.parse(finalUserData.extern_source_id);
-                        if (Array.isArray(parsed)) {
-                            sourceIds = parsed.filter(id => typeof id === 'number');
-                        }
-                    } catch (e) {
-                        console.error('Error parsing extern_source_id:', e);
-                    }
-                }
+                const sourceIds = parseExternSourceIds(finalUserData.extern_source_id);
 
                 if (sourceIds.length === 0) {
                     console.log('⚠️ No valid source IDs found, setting count to 0');
@@ -142,23 +140,19 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName 
                     return;
                 }
 
-                const allowedSourceNames = allowedSources.map(s => s.name);
+                const allowedSourceNames = allowedSources.map((s) => String((s as any).name));
+                const sourceIdsFromMisc = allowedSources
+                    .map((s) => Number((s as any).id))
+                    .filter((n) => Number.isFinite(n));
+                const sourcesOr = buildLeadSourcesOrFilter(sourceIdsFromMisc, allowedSourceNames);
 
-                // Count new leads filtered by allowed sources
-                let countQuery = supabase
+                // Count new leads: source_id OR text source (aligned with lead search / graphs).
+                const { count, error } = await supabase
                     .from('leads')
                     .select('*', { count: 'exact', head: true })
                     .gte('created_at', startTimestamp)
-                    .lte('created_at', endTimestamp);
-
-                // Filter by source names
-                if (allowedSourceNames.length === 1) {
-                    countQuery = countQuery.eq('source', allowedSourceNames[0]);
-                } else {
-                    countQuery = countQuery.in('source', allowedSourceNames);
-                }
-
-                const { count, error } = await countQuery;
+                    .lte('created_at', endTimestamp)
+                    .or(sourcesOr);
 
                 if (!error && count !== null) {
                     setNewLeadsCount(count);
@@ -168,7 +162,7 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName 
                         timestamp: Date.now(),
                         date: new Date().toDateString()
                     };
-                    sessionStorage.setItem('externalUserDashboard_newLeadsCount_cache', JSON.stringify(cacheData));
+                    sessionStorage.setItem('externalUserDashboard_newLeadsCount_cache_v2', JSON.stringify(cacheData));
                     hasInitializedRef.current = true;
                 } else if (error) {
                     console.error('Error fetching new leads count:', error);
@@ -188,9 +182,26 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName 
             <div className="container mx-auto px-4 py-6">
                 {/* Welcome Message */}
                 <div className="mb-6">
-                    <h1 className="text-3xl font-bold text-gray-900 mb-2">
-                        Welcome, {userName || 'User'}!
-                    </h1>
+                    <div className="flex items-center gap-3 mb-2">
+                        <div className="h-11 w-11 overflow-hidden rounded-full border border-gray-200 bg-gray-100">
+                            {userImage ? (
+                                <img src={userImage} alt="" className="h-full w-full object-cover" />
+                            ) : (
+                                <div className="flex h-full w-full items-center justify-center text-sm font-semibold text-gray-700">
+                                    {(userName || 'U')
+                                        .trim()
+                                        .split(/\s+/)
+                                        .filter(Boolean)
+                                        .slice(0, 2)
+                                        .map((p) => p[0]?.toUpperCase())
+                                        .join('')}
+                                </div>
+                            )}
+                        </div>
+                        <h1 className="text-3xl font-bold text-gray-900">
+                            Welcome, {userName || 'User'}!
+                        </h1>
+                    </div>
                     <p className="text-gray-600">Access your leads and manage your cases</p>
                 </div>
 
@@ -211,7 +222,15 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName 
 
                     {/* Access Logs Box */}
                     <Link to="/access-logs" className="cursor-pointer">
-                        <ExternalUserAccessLogs />
+                        {accessLogsAuthId ? (
+                            <ExternalUserAccessLogs key={accessLogsAuthId} storageScope={accessLogsAuthId} />
+                        ) : (
+                            <div className="bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 rounded-xl p-6 shadow-lg">
+                                <div className="flex min-h-[88px] items-center justify-center">
+                                    <span className="loading loading-spinner loading-md text-white" />
+                                </div>
+                            </div>
+                        )}
                     </Link>
                 </div>
 
