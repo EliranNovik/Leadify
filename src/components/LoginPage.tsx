@@ -128,10 +128,10 @@ const LoginPage: React.FC = () => {
       }
 
       // Navigate after showing welcome message for a bit longer
-      // The welcome animation will show for 2.5 seconds
+      // Keep this interstitial short; the dashboard can load with skeletons.
       setTimeout(() => {
         navigate('/', { replace: true });
-      }, 2500); // Show welcome message for 2.5 seconds
+      }, 1400);
     }
     setLoading(false);
   };
@@ -461,45 +461,67 @@ const LoginPage: React.FC = () => {
       )}
 
 
-      {/* Success animation overlay */}
+      {/* Success animation overlay — same video as login + frosted blur (no blue gradient) */}
       {showSuccessAnim && (
-        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center w-full h-full">
-          {/* Animated gradient background */}
-          <div className="absolute inset-0 w-full h-full bg-white md:bg-gradient-to-br md:from-[#0b1e3d] md:via-[#0f4c75] md:to-[#06b6d4] md:animate-gradient z-0" />
-          {/* Welcome message and icon */}
-          <div className="relative z-10 flex flex-col items-center justify-center w-full h-full gap-6 -mt-16">
-            {/* Welcome text above */}
-            <div className="flex flex-col items-center gap-2 slide-fade-in">
-              <div className="text-4xl font-bold text-gray-900 md:text-white">
-                Welcome to RMQ 2.0.
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center w-full h-full overflow-hidden">
+          <video
+            className="absolute inset-0 w-full h-full object-cover z-0"
+            autoPlay
+            muted
+            loop
+            playsInline
+            preload="metadata"
+          >
+            <source src="/login-hero.mp4" type="video/mp4" />
+          </video>
+          {/* Same background style as login: video + soft gradient + frosted overlay */}
+          <div className="absolute inset-0 z-[1] bg-gradient-to-b from-[rgba(10,10,10,0.38)] to-[rgba(10,10,10,0.58)]" />
+          <div className="absolute inset-0 z-[2] bg-black/22 backdrop-blur-lg" />
+          <div className="absolute inset-0 z-[3] bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.05),transparent_60%)] pointer-events-none" />
+
+          <div className="relative z-10 flex w-full h-full flex-col items-center justify-center px-4 text-center">
+            {/* Brand (small, premium) */}
+            <div className="mb-7 flex items-center gap-3 opacity-95">
+              <img src="/RMQ_LOGO.png" alt="RMQ 2.0" className="h-10 w-10 object-contain" />
+              <div className="text-sm font-semibold tracking-[0.18em] uppercase text-white/80">RMQ 2.0</div>
+            </div>
+
+            {/* Main handoff */}
+            <div className="slide-fade-in flex flex-col items-center gap-3">
+              <div className="text-3xl md:text-4xl font-semibold text-white tracking-tight">
+                Welcome back{welcomeName ? `, ${welcomeName.split(' ')[0]}` : ''}.
+              </div>
+              <div className="text-sm md:text-base text-white/70">
+                Preparing your workspace…
               </div>
             </div>
 
-            {/* Employee Image or Success Icon */}
-            {welcomeImage ? (
-              <div className="checkmark-pop">
-                <div className="relative">
+            {/* Progress */}
+            <div className="mt-7 w-full max-w-xs">
+              <progress className="progress progress-primary w-full h-2" />
+              <div className="mt-3 text-xs text-white/55">Signing you in securely</div>
+            </div>
+
+            {/* Optional: small signed-in chip (more product-like than a big avatar) */}
+            {welcomeName && (
+              <div className="mt-8 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/70">
+                {welcomeImage ? (
                   <img
                     src={welcomeImage}
-                    alt={welcomeName}
-                    className="w-32 h-32 rounded-full object-cover border-4 border-green-400 shadow-2xl"
+                    alt=""
+                    className="h-6 w-6 rounded-full object-cover ring-1 ring-white/15"
                     onError={(e) => {
-                      // If image fails to load, hide it and show the checkmark icon instead
-                      e.currentTarget.style.display = 'none';
-                      const checkIcon = document.createElement('div');
-                      checkIcon.innerHTML = '<svg class="w-24 h-24 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>';
-                      e.currentTarget.parentNode?.appendChild(checkIcon);
+                      (e.currentTarget as HTMLImageElement).style.display = 'none';
                     }}
                   />
-                  <CheckCircleIcon className="w-10 h-10 text-green-400 absolute bottom-0 right-0 bg-white rounded-full" />
-                </div>
+                ) : (
+                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/10 text-[10px] font-semibold text-white/70 ring-1 ring-white/15">
+                    {welcomeName.trim().slice(0, 2).toUpperCase()}
+                  </span>
+                )}
+                <span className="truncate max-w-[14rem]">Signed in as {welcomeName}</span>
               </div>
-            ) : (
-              <CheckCircleIcon className="w-24 h-24 text-green-400 checkmark-pop" />
             )}
-            <div className="text-3xl font-bold text-gray-900 md:text-white slide-fade-in">
-              Welcome, {welcomeName}!
-            </div>
           </div>
         </div>
       )}

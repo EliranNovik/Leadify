@@ -31,6 +31,7 @@ export const LazyProformaViewPage = lazy(() => import('../pages/ProformaViewPage
 export const LazyProformaLegacyViewPage = lazy(() => import('../pages/ProformaLegacyViewPage'));
 export const LazyProformaLegacyCreatePage = lazy(() => import('../pages/ProformaLegacyCreatePage'));
 export const LazyReportsPage = lazy(() => import('../pages/ReportsPage'));
+export const LazyExternalFirmsReportPage = lazy(() => import('../pages/ExternalFirmsReportPage'));
 export const LazyCollectionFinancesReport = lazy(() => import('../pages/CollectionFinancesReport'));
 export const LazyCollectionDueReportPage = lazy(() => import('../pages/CollectionDueReportPage'));
 export const LazyCloserSuperPipelinePage = lazy(() => import('../pages/CloserSuperPipelinePage'));

@@ -8209,6 +8209,7 @@ const reports: ReportSection[] = [
       { label: 'Category & source', icon: AdjustmentsHorizontalIcon, component: CategorySourceReport },
       { label: 'Convertion', icon: FunnelIcon, component: ConvertionReport },
       { label: 'Convertion Steps', icon: FunnelIcon, component: ConvertionStepsReport },
+      { label: 'External firms', icon: BuildingOfficeIcon, route: '/reports/external-firms' },
     ],
   },
   {
