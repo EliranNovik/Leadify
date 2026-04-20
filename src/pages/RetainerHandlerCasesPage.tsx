@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { getStageColour } from '../lib/stageUtils';
-import { PlayIcon, PaperAirplaneIcon, ExclamationTriangleIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon, FolderIcon, CurrencyDollarIcon, XMarkIcon, StarIcon, ArrowUturnLeftIcon, CheckCircleIcon, XCircleIcon } from '@heroicons/react/24/outline';
+import { PaperAirplaneIcon, ExclamationTriangleIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon, FolderIcon, CurrencyDollarIcon, XMarkIcon, StarIcon, ArrowUturnLeftIcon, CheckCircleIcon, XCircleIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { updateLeadStageWithHistory, fetchStageActorInfo } from '../lib/leadStageManager';
@@ -1345,65 +1345,6 @@ const RetainerHandlerCasesPage: React.FC = () => {
     }
   };
 
-  const handleStartCase = async (caseItem: Case, e: React.MouseEvent) => {
-    e.stopPropagation(); // Prevent row click navigation
-
-    try {
-      const actor = await fetchStageActorInfo();
-      const timestamp = new Date().toISOString();
-      const handlerStartedStageId = 110; // Handler Started stage ID
-
-      // Create a minimal lead object for the update function
-      const lead: any = {
-        id: caseItem.isNewLead ? caseItem.id : `legacy_${caseItem.id}`,
-        lead_type: caseItem.isNewLead ? 'new' : 'legacy',
-      };
-
-      if (caseItem.isNewLead) {
-        // Update new lead
-        const { error } = await supabase
-          .from('leads')
-          .update({
-            stage: handlerStartedStageId,
-            stage_changed_by: actor.fullName,
-            stage_changed_at: timestamp,
-          })
-          .eq('id', caseItem.id);
-
-        if (error) throw error;
-      } else {
-        // Update legacy lead
-        const legacyId = caseItem.id;
-        const { error } = await supabase
-          .from('leads_lead')
-          .update({
-            stage: handlerStartedStageId,
-            stage_changed_by: actor.fullName,
-            stage_changed_at: timestamp,
-          })
-          .eq('id', legacyId);
-
-        if (error) throw error;
-      }
-
-      // Record stage change history
-      await updateLeadStageWithHistory({
-        lead,
-        stage: handlerStartedStageId,
-        actor,
-        timestamp,
-      });
-
-      toast.success('Case started successfully!');
-
-      // Refresh the cases list
-      await fetchRetainerHandlerCases();
-    } catch (error: any) {
-      console.error('Error starting case:', error);
-      toast.error('Failed to start case. Please try again.');
-    }
-  };
-
   const handleMarkAsReadyToPay = async (caseItem: Case, e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent row click navigation
 
@@ -1480,88 +1421,6 @@ const RetainerHandlerCasesPage: React.FC = () => {
     } catch (error: any) {
       console.error('Error marking payment as ready to pay:', error);
       toast.error('Failed to mark payment as ready to pay');
-    }
-  };
-
-  // Bulk handler functions for all visible leads
-  const handleBulkStartCase = async () => {
-    // Get all eligible cases from filtered new cases
-    const eligibleCases = filteredNewCases.filter(
-      caseItem => caseItem.isFirstPaymentPaid && caseItem.stageId === 105
-    );
-
-    if (eligibleCases.length === 0) {
-      toast.error('No eligible cases to start. Cases must have first payment paid and be at "Handler Set" stage.');
-      return;
-    }
-
-    try {
-      const actor = await fetchStageActorInfo();
-      const timestamp = new Date().toISOString();
-      const handlerStartedStageId = 110;
-
-      let successCount = 0;
-      let errorCount = 0;
-
-      for (const caseItem of eligibleCases) {
-        try {
-          const lead: any = {
-            id: caseItem.isNewLead ? caseItem.id : `legacy_${caseItem.id}`,
-            lead_type: caseItem.isNewLead ? 'new' : 'legacy',
-          };
-
-          if (caseItem.isNewLead) {
-            const { error } = await supabase
-              .from('leads')
-              .update({
-                stage: handlerStartedStageId,
-                stage_changed_by: actor.fullName,
-                stage_changed_at: timestamp,
-              })
-              .eq('id', caseItem.id);
-
-            if (error) throw error;
-          } else {
-            const legacyId = caseItem.id;
-            const { error } = await supabase
-              .from('leads_lead')
-              .update({
-                stage: handlerStartedStageId,
-                stage_changed_by: actor.fullName,
-                stage_changed_at: timestamp,
-              })
-              .eq('id', legacyId);
-
-            if (error) throw error;
-          }
-
-          // Record stage change history
-          await updateLeadStageWithHistory({
-            lead,
-            stage: handlerStartedStageId,
-            actor,
-            timestamp,
-          });
-
-          successCount++;
-        } catch (error) {
-          console.error(`Error starting case ${caseItem.lead_number}:`, error);
-          errorCount++;
-        }
-      }
-
-      if (successCount > 0) {
-        toast.success(`Successfully started ${successCount} case${successCount > 1 ? 's' : ''}!`);
-      }
-      if (errorCount > 0) {
-        toast.error(`Failed to start ${errorCount} case${errorCount > 1 ? 's' : ''}.`);
-      }
-
-      // Refresh the cases list
-      await fetchRetainerHandlerCases();
-    } catch (error: any) {
-      console.error('Error in bulk start case:', error);
-      toast.error('Failed to start cases. Please try again.');
     }
   };
 
@@ -1707,13 +1566,6 @@ const RetainerHandlerCasesPage: React.FC = () => {
   const filteredActiveCases = filterCases(activeCases);
   const filteredNonActiveCases = filterCases(nonActiveCases);
   const filteredClosedCases = filterCases(closedCases);
-
-  // Calculate eligible cases for bulk actions
-  const eligibleStartCaseCount = useMemo(() => {
-    return filteredNewCases.filter(
-      caseItem => caseItem.isFirstPaymentPaid && caseItem.stageId === 105
-    ).length;
-  }, [filteredNewCases]);
 
   const eligibleReadyToPayCount = useMemo(() => {
     const eligibleNew = filteredNewCases.filter(
@@ -1959,16 +1811,6 @@ const RetainerHandlerCasesPage: React.FC = () => {
                           <ExclamationTriangleIcon className="w-4 h-4 sm:w-5 sm:h-5" />
                         </button>
                       )}
-                      {/* Start Case button - only show in new cases, when payment is paid (green checkmark), and stage is exactly Handler Set (105) */}
-                      {isNewCases && caseItem.isFirstPaymentPaid && caseItem.stageId === 105 && (
-                        <button
-                          onClick={(e) => handleStartCase(caseItem, e)}
-                          className="btn btn-sm btn-primary p-1.5 sm:p-2 rounded animate-pulse"
-                          title="Start Case"
-                        >
-                          <PlayIcon className="w-4 h-4 sm:w-5 sm:h-5" />
-                        </button>
-                      )}
                       {/* Start Retention Case button - show in new cases if retention_handler_started is false */}
                       {isNewCases && !caseItem.retention_handler_started && (
                         <button
@@ -1976,7 +1818,7 @@ const RetainerHandlerCasesPage: React.FC = () => {
                           className="btn btn-sm p-1.5 sm:p-2 rounded bg-emerald-500 hover:bg-emerald-600 text-white border-none"
                           title="Start Retention Case — marks this case as started by Retention Handler"
                         >
-                          <PlayIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                          <ArrowUturnLeftIcon className="w-4 h-4 sm:w-5 sm:h-5" />
                         </button>
                       )}
                       {/* Reverse Start Case button - show in active cases if retention_handler_started is true */}
@@ -2119,18 +1961,6 @@ const RetainerHandlerCasesPage: React.FC = () => {
               ))}
             </select>
           </div>
-
-          {/* Bulk Start Case Button */}
-          {eligibleStartCaseCount > 0 && (
-            <button
-              className="btn btn-primary btn-sm sm:btn-md whitespace-nowrap"
-              onClick={handleBulkStartCase}
-              title={`Start ${eligibleStartCaseCount} case${eligibleStartCaseCount > 1 ? 's' : ''}`}
-            >
-              <PlayIcon className="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
-              Start Case ({eligibleStartCaseCount})
-            </button>
-          )}
 
           {/* Bulk Sent to Finance Button */}
           {/* {eligibleReadyToPayCount > 0 && (

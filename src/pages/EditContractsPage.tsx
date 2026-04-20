@@ -132,6 +132,8 @@ const EditContractsPage = () => {
   const todayStr = today.toISOString().split('T')[0];
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState<boolean>(false);
+  const [pendingSignedDateEdits, setPendingSignedDateEdits] = useState<Record<string, string>>({});
+  const [isSavingEdits, setIsSavingEdits] = useState(false);
   const [stageMap, setStageMap] = useState<{ [key: string]: string }>({});
   const [employeeMap, setEmployeeMap] = useState<{ [key: string]: string }>({});
   const [dateFrom, setDateFrom] = useState<string>(todayStr);
@@ -529,46 +531,73 @@ const EditContractsPage = () => {
     performSearch();
   };
 
-  const handleSaveSignedDate = async (lead: any, newDate: string) => {
-    if (!lead || !newDate) return;
+  const handleDraftSignedDateChange = (lead: any, newDate: string) => {
+    if (!lead) return;
+    setPendingSignedDateEdits((prev) => ({ ...prev, [String(lead.id)]: newDate }));
+  };
 
+  const handleSaveAllChanges = async () => {
+    const entries = Object.entries(pendingSignedDateEdits).filter(([, v]) => String(v || '').trim().length > 0);
+    if (entries.length === 0) return;
+
+    setIsSavingEdits(true);
     try {
-      const isLegacy = lead.lead_type === 'legacy';
-      const leadId = isLegacy ? lead.legacy_id : lead.id;
+      const leadById = new Map<string, any>((searchResults || []).map((l) => [String(l.id), l]));
 
-      if (!leadId) {
-        toast.error('Invalid lead ID.');
-        return;
+      const ops = entries.map(async ([rowId, newDate]) => {
+        const lead = leadById.get(String(rowId));
+        if (!lead) return { ok: false as const, rowId, message: 'Lead not found' };
+
+        const isLegacy = lead.lead_type === 'legacy';
+        const leadId = isLegacy ? lead.legacy_id : lead.id;
+        if (!leadId) return { ok: false as const, rowId, message: 'Invalid lead ID' };
+
+        const { error } = await supabase
+          .from('leads_leadstage')
+          .update({ date: newDate })
+          .eq('stage', 60)
+          .eq(isLegacy ? 'lead_id' : 'newlead_id', leadId);
+
+        if (error) {
+          console.error('Error updating signed date:', { rowId, leadId, error });
+          return { ok: false as const, rowId, message: error.message || 'Update failed' };
+        }
+        return { ok: true as const, rowId, leadId, newDate };
+      });
+
+      const results = await Promise.all(ops);
+      const failed = results.filter((r) => !r.ok);
+      const succeeded = results.filter((r): r is Extract<typeof r, { ok: true }> => r.ok);
+
+      if (succeeded.length > 0) {
+        // Update local rows
+        setSearchResults((prevResults) =>
+          (prevResults || []).map((l) => {
+            const pending = pendingSignedDateEdits[String(l.id)];
+            if (!pending) return l;
+            return { ...l, signed_date: pending };
+          })
+        );
       }
 
-      // Update the stage 60 entry for this specific lead only
-      const { error: updateError } = await supabase
-        .from('leads_leadstage')
-        .update({ date: newDate })
-        .eq('stage', 60)
-        .eq(isLegacy ? 'lead_id' : 'newlead_id', leadId);
+      setPendingSignedDateEdits((prev) => {
+        const next = { ...prev };
+        succeeded.forEach((r) => {
+          delete next[String(r.rowId)];
+        });
+        return next;
+      });
 
-      if (updateError) {
-        console.error('Error updating signed date:', updateError);
-        toast.error('Failed to update signed date. Please try again.');
-        return;
+      if (failed.length === 0) {
+        toast.success(`Saved ${succeeded.length} change${succeeded.length === 1 ? '' : 's'}`);
+      } else {
+        toast.error(`Saved ${succeeded.length}, failed ${failed.length}`);
       }
-
-      // Update the local state for this specific lead
-      setSearchResults(prevResults =>
-        prevResults.map(l => {
-          const resultId = isLegacy ? l.legacy_id : l.id;
-          if (String(resultId) === String(leadId)) {
-            return { ...l, signed_date: newDate };
-          }
-          return l;
-        })
-      );
-
-      toast.success('Signed date updated successfully!');
     } catch (error) {
-      console.error('Error saving signed date:', error);
-      toast.error('An error occurred while saving. Please try again.');
+      console.error('Error saving signed date changes:', error);
+      toast.error('Failed to save changes. Please try again.');
+    } finally {
+      setIsSavingEdits(false);
     }
   };
 
@@ -659,7 +688,7 @@ const EditContractsPage = () => {
       <div className="card bg-base-100 shadow-lg p-6">
         <div className="mb-6">
           {/* Date Filters and Search Button */}
-          <div className="flex gap-3 items-end">
+          <div className="flex gap-3 items-end flex-wrap">
             <div className="flex flex-col">
               <span className="text-xs font-semibold mb-1">From Date</span>
               <input
@@ -710,6 +739,25 @@ const EditContractsPage = () => {
                 </>
               )}
             </button>
+
+            {Object.keys(pendingSignedDateEdits).length > 0 && (
+              <button
+                type="button"
+                onClick={handleSaveAllChanges}
+                className="btn btn-success"
+                disabled={isSavingEdits}
+                title={`Save ${Object.keys(pendingSignedDateEdits).length} change${Object.keys(pendingSignedDateEdits).length === 1 ? '' : 's'}`}
+              >
+                {isSavingEdits ? (
+                  <>
+                    <span className="loading loading-spinner loading-sm"></span>
+                    Saving...
+                  </>
+                ) : (
+                  'Save changes'
+                )}
+              </button>
+            )}
           </div>
 
           {isSearching && (
@@ -776,10 +824,16 @@ const EditContractsPage = () => {
                         })()}
                       </td>
                       <td>
+                        {pendingSignedDateEdits[String(lead.id)] ? (
+                          <span className="badge badge-warning badge-sm mr-2">Unsaved</span>
+                        ) : null}
                         <input
                           type="date"
-                          value={lead.signed_date ? new Date(lead.signed_date).toISOString().split('T')[0] : ''}
-                          onChange={(e) => handleSaveSignedDate(lead, e.target.value)}
+                          value={
+                            pendingSignedDateEdits[String(lead.id)] ??
+                            (lead.signed_date ? new Date(lead.signed_date).toISOString().split('T')[0] : '')
+                          }
+                          onChange={(e) => handleDraftSignedDateChange(lead, e.target.value)}
                           className="input input-bordered input-sm w-40"
                         />
                       </td>

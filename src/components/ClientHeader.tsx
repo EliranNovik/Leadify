@@ -2514,6 +2514,105 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             return null; // Don't show any stage buttons if unactivated
                         }
 
+                        const isHandlerSetStageNumeric =
+                            (isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105;
+
+                        // Stage 105 must not show any stage-action buttons even if stage name is mis-mapped.
+                        if (isHandlerSetStageNumeric) {
+                            if (!hasPaymentPlan) {
+                                return (
+                                    <div className="w-full flex justify-center">
+                                        <div className="w-full max-w-xl rounded-2xl border border-red-200/70 bg-red-50 px-4 py-3 text-red-900 shadow-sm">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <div className="flex items-center gap-2 text-sm font-semibold">
+                                                    <ExclamationTriangleIcon className="h-5 w-5" />
+                                                    Missing payment plan
+                                                </div>
+                                                <div className="text-xs text-red-800/80 whitespace-nowrap">
+                                                    Add a payment plan in Finances
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            }
+
+                            if (!nextDuePayment) return null;
+
+                            return (
+                                <div className="w-full flex justify-center">
+                                    <div className="w-full max-w-xl rounded-2xl border border-amber-200/70 bg-amber-50 px-4 py-3 text-amber-900 shadow-sm">
+                                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
+                                            <div className="text-sm font-semibold">Next payment due</div>
+                                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
+                                                <div className="text-sm tabular-nums text-right whitespace-nowrap">
+                                                    {(() => {
+                                                        const isLegacy = !!(nextDuePayment as any)?.isLegacy;
+                                                        const base = Number((nextDuePayment as any)?.value ?? 0);
+                                                        const vat = Number(
+                                                            isLegacy
+                                                                ? (nextDuePayment as any)?.vat_value ?? 0
+                                                                : (nextDuePayment as any)?.value_vat ?? 0
+                                                        );
+                                                        const gross =
+                                                            (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
+                                                        const currency =
+                                                            (nextDuePayment as any)?.currency ??
+                                                            (nextDuePayment as any)?.accounting_currencies?.iso_code ??
+                                                            (nextDuePayment as any)?.accounting_currencies?.name ??
+                                                            '';
+                                                        const dateRaw =
+                                                            (nextDuePayment as any)?.due_date ?? (nextDuePayment as any)?.date ?? null;
+                                                        const dateLabel = dateRaw ? new Date(dateRaw).toLocaleDateString() : '—';
+                                                        const amountLabel = Number.isFinite(gross)
+                                                            ? gross.toLocaleString(undefined, {
+                                                                  minimumFractionDigits: 0,
+                                                                  maximumFractionDigits: 2,
+                                                              })
+                                                            : '0';
+                                                        return (
+                                                            <span>
+                                                                <span className="font-semibold">
+                                                                    {currency ? `${currency} ` : ''}
+                                                                    {amountLabel}
+                                                                </span>
+                                                                {' · '}
+                                                                <span className="opacity-80">{dateLabel}</span>
+                                                            </span>
+                                                        );
+                                                    })()}
+                                                </div>
+                                                {(() => {
+                                                    const isLegacy = !!(nextDuePayment as any)?.isLegacy;
+                                                    const ready =
+                                                        (nextDuePayment as any)?.ready_to_pay === true ||
+                                                        ((isLegacy && !!(nextDuePayment as any)?.due_date) ? true : false);
+                                                    if (!ready) return null;
+                                                    const by =
+                                                        (nextDuePayment as any)?.ready_to_pay_by_display_name ??
+                                                        (nextDuePayment as any)?.tenants_employee?.display_name ??
+                                                        (nextDuePayment as any)?.updated_by ??
+                                                        (nextDuePayment as any)?.paid_by ??
+                                                        '—';
+                                                    return (
+                                                        <div className="flex items-center justify-end gap-2 whitespace-nowrap">
+                                                            <span className="btn btn-success btn-sm pointer-events-none gap-1.5 text-white rounded-full px-3">
+                                                                <CheckCircleIcon className="h-4 w-4" />
+                                                                Sent to finance
+                                                            </span>
+                                                            <span className="text-xs text-amber-800/80 whitespace-nowrap">
+                                                                by <span className="font-semibold">{String(by)}</span>
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                })()}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        }
+
                         // Closed state: keep showing Sub efforts log for stage 200, otherwise show "No action available"
                         if (selectedClient && (areStagesEquivalent(currentStageName, 'Case Closed') || (isStageNumeric && stageNumeric === 200))) {
                             if ((isStageNumeric && stageNumeric === 200) || Number((selectedClient as any)?.stage) === 200) {
@@ -2589,14 +2688,27 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             <>
                                 {/* Stage 105: no action buttons (advances via payments plan) */}
                                 {(areStagesEquivalent(currentStageName, 'Handler Set') ||
-                                    (isStageNumeric && stageNumeric === 105)) && nextDuePayment ? (
+                                    (isStageNumeric && stageNumeric === 105)) && (!hasPaymentPlan || nextDuePayment) ? (
                                     <div className="w-full flex justify-center">
-                                        <div className="w-full max-w-xl rounded-2xl border border-amber-200/70 bg-amber-50 px-4 py-3 text-amber-900 shadow-sm">
-                                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
-                                                <div className="text-sm font-semibold">Next payment due</div>
-                                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
-                                                    <div className="text-sm tabular-nums text-right whitespace-nowrap">
-                                                    {(() => {
+                                        {!hasPaymentPlan ? (
+                                            <div className="w-full max-w-xl rounded-2xl border border-red-200/70 bg-red-50 px-4 py-3 text-red-900 shadow-sm">
+                                                <div className="flex items-center justify-between gap-3">
+                                                    <div className="flex items-center gap-2 text-sm font-semibold">
+                                                        <ExclamationTriangleIcon className="h-5 w-5" />
+                                                        Missing payment plan
+                                                    </div>
+                                                    <div className="text-xs text-red-800/80 whitespace-nowrap">
+                                                        Add a payment plan in Finances
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="w-full max-w-xl rounded-2xl border border-amber-200/70 bg-amber-50 px-4 py-3 text-amber-900 shadow-sm">
+                                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
+                                                    <div className="text-sm font-semibold">Next payment due</div>
+                                                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
+                                                        <div className="text-sm tabular-nums text-right whitespace-nowrap">
+                                                        {(() => {
                                                         const isLegacy = !!(nextDuePayment as any)?.isLegacy;
                                                         const base = Number((nextDuePayment as any)?.value ?? 0);
                                                         const vat = Number(
@@ -2628,34 +2740,35 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                             </span>
                                                         );
                                                     })()}
+                                                        </div>
+                                                        {(() => {
+                                                            const isLegacy = !!(nextDuePayment as any)?.isLegacy;
+                                                            const ready =
+                                                                (nextDuePayment as any)?.ready_to_pay === true ||
+                                                                ((isLegacy && !!(nextDuePayment as any)?.due_date) ? true : false);
+                                                            if (!ready) return null;
+                                                            const by =
+                                                                (nextDuePayment as any)?.ready_to_pay_by_display_name ??
+                                                                (nextDuePayment as any)?.tenants_employee?.display_name ??
+                                                                (nextDuePayment as any)?.updated_by ??
+                                                                (nextDuePayment as any)?.paid_by ??
+                                                                '—';
+                                                            return (
+                                                                <div className="flex items-center justify-end gap-2 whitespace-nowrap">
+                                                                    <span className="btn btn-success btn-sm pointer-events-none gap-1.5 text-white rounded-full px-3">
+                                                                        <CheckCircleIcon className="h-4 w-4" />
+                                                                        Sent to finance
+                                                                    </span>
+                                                                    <span className="text-xs text-amber-800/80 whitespace-nowrap">
+                                                                        by <span className="font-semibold">{String(by)}</span>
+                                                                    </span>
+                                                                </div>
+                                                            );
+                                                        })()}
                                                     </div>
-                                                    {(() => {
-                                                        const isLegacy = !!(nextDuePayment as any)?.isLegacy;
-                                                        const ready =
-                                                            (nextDuePayment as any)?.ready_to_pay === true ||
-                                                            ((isLegacy && !!(nextDuePayment as any)?.due_date) ? true : false);
-                                                        if (!ready) return null;
-                                                        const by =
-                                                            (nextDuePayment as any)?.ready_to_pay_by_display_name ??
-                                                            (nextDuePayment as any)?.tenants_employee?.display_name ??
-                                                            (nextDuePayment as any)?.updated_by ??
-                                                            (nextDuePayment as any)?.paid_by ??
-                                                            '—';
-                                                        return (
-                                                            <div className="flex items-center justify-end gap-2 whitespace-nowrap">
-                                                                <span className="btn btn-success btn-sm pointer-events-none gap-1.5 text-white rounded-full px-3">
-                                                                    <CheckCircleIcon className="h-4 w-4" />
-                                                                    Sent to finance
-                                                                </span>
-                                                                <span className="text-xs text-amber-800/80 whitespace-nowrap">
-                                                                    by <span className="font-semibold">{String(by)}</span>
-                                                                </span>
-                                                            </div>
-                                                        );
-                                                    })()}
                                                 </div>
                                             </div>
-                                        </div>
+                                        )}
                                     </div>
                                 ) : null}
 
@@ -3029,6 +3142,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     !areStagesEquivalent(currentStageName, 'client_signed') &&
                                     !areStagesEquivalent(currentStageName, 'client signed agreement') &&
                                     !areStagesEquivalent(currentStageName, 'Client signed agreement') &&
+                                    !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
                                     !(isStageNumeric && (stageNumeric === 21 || stageNumeric === 55)) && (
                                         <>
                                             {handleScheduleMenuClick && scheduleMenuLabel && (
@@ -3335,75 +3449,89 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 )
                                             ) : (
                                                 <>
-                                                    {/* Stage 105: no action buttons (advances via payments plan) */}
-                                                    {(areStagesEquivalent(currentStageName, 'Handler Set') ||
-                                                        (isStageNumeric && stageNumeric === 105)) && nextDuePayment ? (
+                                                    {/* Stage 105 (Handler Nominated): show missing plan or next payment banner */}
+                                                    {(((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
+                                                        (!hasPaymentPlan || nextDuePayment)) ? (
                                                         <div className="w-full flex justify-center">
-                                                            <div className="w-full max-w-xl rounded-2xl border border-amber-200/70 bg-amber-50 px-4 py-3 text-amber-900 shadow-sm">
-                                                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
-                                                                    <div className="text-sm font-semibold">Next payment due</div>
-                                                                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
-                                                                        <div className="text-sm tabular-nums text-right whitespace-nowrap">
-                                                                        {(() => {
-                                                                            const isLegacy = !!(nextDuePayment as any)?.isLegacy;
-                                                                            const base = Number((nextDuePayment as any)?.value ?? 0);
-                                                                            const vat = Number(
-                                                                                isLegacy
-                                                                                    ? (nextDuePayment as any)?.vat_value ?? 0
-                                                                                    : (nextDuePayment as any)?.value_vat ?? 0
-                                                                            );
-                                                                            const gross =
-                                                                                (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
-                                                                            const currency =
-                                                                                (nextDuePayment as any)?.currency ??
-                                                                                (nextDuePayment as any)?.accounting_currencies?.iso_code ??
-                                                                                (nextDuePayment as any)?.accounting_currencies?.name ??
-                                                                                '';
-                                                                            const dateRaw =
-                                                                                (nextDuePayment as any)?.due_date ?? (nextDuePayment as any)?.date ?? null;
-                                                                            const dateLabel = dateRaw ? new Date(dateRaw).toLocaleDateString() : '—';
-                                                                            const amountLabel = Number.isFinite(gross)
-                                                                                ? gross.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
-                                                                                : '0';
-                                                                            return (
-                                                                                <span>
-                                                                                    <span className="font-semibold">
-                                                                                        {currency ? `${currency} ` : ''}
-                                                                                        {amountLabel}
-                                                                                    </span>
-                                                                                    {' · '}
-                                                                                    <span className="opacity-80">{dateLabel}</span>
-                                                                                </span>
-                                                                            );
-                                                                        })()}
+                                                            {!hasPaymentPlan ? (
+                                                                <div className="w-full max-w-xl rounded-2xl border border-red-200/70 bg-red-50 px-4 py-3 text-red-900 shadow-sm">
+                                                                    <div className="flex items-center justify-between gap-3">
+                                                                        <div className="flex items-center gap-2 text-sm font-semibold">
+                                                                            <ExclamationTriangleIcon className="h-5 w-5" />
+                                                                            Missing payment plan
                                                                         </div>
-                                                                        {(() => {
-                                                                            const isLegacy = !!(nextDuePayment as any)?.isLegacy;
-                                                                            const ready =
-                                                                                (nextDuePayment as any)?.ready_to_pay === true ||
-                                                                                ((isLegacy && !!(nextDuePayment as any)?.due_date) ? true : false);
-                                                                            if (!ready) return null;
-                                                                            const by =
-                                                                                (nextDuePayment as any)?.ready_to_pay_by_display_name ??
-                                                                                (nextDuePayment as any)?.tenants_employee?.display_name ??
-                                                                                (nextDuePayment as any)?.updated_by ??
-                                                                                (nextDuePayment as any)?.paid_by ??
-                                                                                '—';
-                                                                            return (
-                                                                                <div className="flex items-center justify-end gap-2 whitespace-nowrap">
-                                                                                    <span className="btn btn-success btn-sm pointer-events-none gap-1.5 text-white rounded-full px-3">
-                                                                                        <CheckCircleIcon className="h-4 w-4" />
-                                                                                        Sent to finance
-                                                                                    </span>
-                                                                                    <span className="text-xs text-amber-800/80 whitespace-nowrap">
-                                                                                        by <span className="font-semibold">{String(by)}</span>
-                                                                                    </span>
-                                                                                </div>
-                                                                            );
-                                                                        })()}
+                                                                        <div className="text-xs text-red-800/80 whitespace-nowrap">
+                                                                            Add a payment plan in Finances
+                                                                        </div>
                                                                     </div>
                                                                 </div>
-                                                            </div>
+                                                            ) : (
+                                                                <div className="w-full max-w-xl rounded-2xl border border-amber-200/70 bg-amber-50 px-4 py-3 text-amber-900 shadow-sm">
+                                                                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
+                                                                        <div className="text-sm font-semibold">Next payment due</div>
+                                                                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
+                                                                            <div className="text-sm tabular-nums text-right whitespace-nowrap">
+                                                                                {(() => {
+                                                                                    const isLegacy = !!(nextDuePayment as any)?.isLegacy;
+                                                                                    const base = Number((nextDuePayment as any)?.value ?? 0);
+                                                                                    const vat = Number(
+                                                                                        isLegacy
+                                                                                            ? (nextDuePayment as any)?.vat_value ?? 0
+                                                                                            : (nextDuePayment as any)?.value_vat ?? 0
+                                                                                    );
+                                                                                    const gross =
+                                                                                        (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
+                                                                                    const currency =
+                                                                                        (nextDuePayment as any)?.currency ??
+                                                                                        (nextDuePayment as any)?.accounting_currencies?.iso_code ??
+                                                                                        (nextDuePayment as any)?.accounting_currencies?.name ??
+                                                                                        '';
+                                                                                    const dateRaw =
+                                                                                        (nextDuePayment as any)?.due_date ?? (nextDuePayment as any)?.date ?? null;
+                                                                                    const dateLabel = dateRaw ? new Date(dateRaw).toLocaleDateString() : '—';
+                                                                                    const amountLabel = Number.isFinite(gross)
+                                                                                        ? gross.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                                                                                        : '0';
+                                                                                    return (
+                                                                                        <span>
+                                                                                            <span className="font-semibold">
+                                                                                                {currency ? `${currency} ` : ''}
+                                                                                                {amountLabel}
+                                                                                            </span>
+                                                                                            {' · '}
+                                                                                            <span className="opacity-80">{dateLabel}</span>
+                                                                                        </span>
+                                                                                    );
+                                                                                })()}
+                                                                            </div>
+                                                                            {(() => {
+                                                                                const isLegacy = !!(nextDuePayment as any)?.isLegacy;
+                                                                                const ready =
+                                                                                    (nextDuePayment as any)?.ready_to_pay === true ||
+                                                                                    ((isLegacy && !!(nextDuePayment as any)?.due_date) ? true : false);
+                                                                                if (!ready) return null;
+                                                                                const by =
+                                                                                    (nextDuePayment as any)?.ready_to_pay_by_display_name ??
+                                                                                    (nextDuePayment as any)?.tenants_employee?.display_name ??
+                                                                                    (nextDuePayment as any)?.updated_by ??
+                                                                                    (nextDuePayment as any)?.paid_by ??
+                                                                                    '—';
+                                                                                return (
+                                                                                    <div className="flex items-center justify-end gap-2 whitespace-nowrap">
+                                                                                        <span className="btn btn-success btn-sm pointer-events-none gap-1.5 text-white rounded-full px-3">
+                                                                                            <CheckCircleIcon className="h-4 w-4" />
+                                                                                            Sent to finance
+                                                                                        </span>
+                                                                                        <span className="text-xs text-amber-800/80 whitespace-nowrap">
+                                                                                            by <span className="font-semibold">{String(by)}</span>
+                                                                                        </span>
+                                                                                    </div>
+                                                                                );
+                                                                            })()}
+                                                                        </div>
+                                                                    </div>
+                                                                </div>
+                                                            )}
                                                         </div>
                                                     ) : null}
 
@@ -3616,7 +3744,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     )}
 
                                                     {/* Another meeting Stage */}
-                                                    {areStagesEquivalent(currentStageName, 'another_meeting') && (
+                                                    {areStagesEquivalent(currentStageName, 'another_meeting') &&
+                                                        !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) && (
                                                         <>
                                                             {setShowRescheduleDrawer && (
                                                                 <button
@@ -3692,7 +3821,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     )}
 
                                                     {/* Communication Started Stage */}
-                                                    {areStagesEquivalent(currentStageName, 'Communication started') && (
+                                                    {areStagesEquivalent(currentStageName, 'Communication started') &&
+                                                        !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) && (
                                                         <>
                                                             {handleScheduleMenuClick && scheduleMenuLabel && (
                                                                 <button
@@ -3776,6 +3906,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         !areStagesEquivalent(currentStageName, 'client_signed') &&
                                                         !areStagesEquivalent(currentStageName, 'client signed agreement') &&
                                                         !areStagesEquivalent(currentStageName, 'Client signed agreement') &&
+                                                        !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
                                                         !(isStageNumeric && (stageNumeric === 21 || stageNumeric === 55)) && (
                                                             <>
                                                                 {handleScheduleMenuClick && scheduleMenuLabel && (

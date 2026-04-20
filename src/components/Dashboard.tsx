@@ -5231,105 +5231,209 @@ const Dashboard: React.FC = () => {
     const totalIndexToday = departmentNames.length + 1;
     const totalIndexMonth = departmentNames.length;
 
-    // Table full width on mobile (no inner box); department headers in two rows on mobile to narrow columns
-    return (
-      <div className="overflow-x-auto -mx-4 md:mx-0 pl-5 pr-2 md:pl-0 md:pr-0 w-full">
-        <table className="min-w-full text-xs md:text-sm w-full">
-          <thead className="bg-slate-50 border-b border-slate-200">
-            <tr>
-              <th className="text-left px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700"></th>
-              {categories.map(category => {
-                const [line1, line2] = splitCategoryTwoLines(category);
-                return (
-                  <th key={category} className="text-center px-0.5 md:px-5 py-1 md:py-3 text-[10px] md:text-sm font-semibold text-slate-700 align-bottom">
-                    <span className="hidden md:inline whitespace-nowrap">{category}</span>
-                    <span className="md:hidden leading-tight">{line1}{line2 ? <><br />{line2}</> : ''}</span>
-                  </th>
-                );
-              })}
-              <th className="text-center px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700">Total</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {visibleColumns.map(columnType => {
-              const isToday = columnType === 'Today';
-              const isYesterday = columnType === 'Yesterday';
-              const isWeek = columnType === 'Week';
-              const isLast30 = columnType === 'Last 30d';
-              const isThisMonth = columnType === selectedMonth;
+    const getDeptData = (deptName: string, periodKey: 'Today' | 'Week' | 'Yesterday' | 'Last 30d' | string) => {
+      const deptIndexInNames = departmentNames.indexOf(deptName);
+      const dataIndex = deptIndexInNames >= 0 ? deptIndexInNames : categories.indexOf(deptName);
+      const isMonth = periodKey === selectedMonth;
+      const row = isMonth ? dataSource[selectedMonth]?.[dataIndex] : dataSource[periodKey]?.[dataIndex + 1];
+      return row || { count: 0, amount: 0, expected: 0 };
+    };
 
-              return (
-                <React.Fragment key={columnType}>
-                  <tr className="hover:bg-slate-50">
-                    <td className="px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">{columnType}</td>
-                    {categories.map((category, index) => {
-                      const deptIndexInNames = departmentNames.indexOf(category);
-                      const dataIndex = deptIndexInNames >= 0 ? deptIndexInNames : index;
-                      const data = isToday ? dataSource["Today"]?.[dataIndex + 1] :
-                        isYesterday ? dataSource["Yesterday"]?.[dataIndex + 1] :
-                          isWeek ? dataSource["Week"]?.[dataIndex + 1] :
-                            isLast30 ? dataSource["Last 30d"]?.[dataIndex + 1] :
-                              dataSource[selectedMonth]?.[dataIndex];
-                      const amount = data?.amount ?? 0;
+    const getTotalData = (periodKey: 'Today' | 'Week' | 'Last 30d' | string) => {
+      const isMonth = periodKey === selectedMonth;
+      const row = isMonth ? dataSource[selectedMonth]?.[totalIndexMonth] : dataSource[periodKey]?.[totalIndexToday];
+      return row || { count: 0, amount: 0, expected: 0 };
+    };
+
+    const mobilePeriods = [
+      { key: 'Today' as const, label: todayFilterMode === 'week' ? 'Week' : 'Today', dataKey: todayFilterMode === 'week' ? 'Week' : 'Today' },
+      { key: 'Last 30d' as const, label: 'Last 30d', dataKey: 'Last 30d' },
+      { key: selectedMonth, label: selectedMonth, dataKey: selectedMonth },
+      { key: `Target ${selectedMonth}`, label: `Target ${selectedMonth}`, dataKey: `Target ${selectedMonth}` },
+    ];
+
+    // Table full width on mobile (no inner box); desktop keeps existing layout
+    return (
+      <>
+        {/* Mobile: departments as rows, periods as columns */}
+        <div className="md:hidden overflow-x-auto -mx-4 px-4 pb-2">
+          <table className="w-full min-w-[600px] text-sm table-fixed">
+            <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
+              <tr>
+                <th className="text-left px-1.5 py-2 font-semibold text-slate-700 w-[96px]">Department</th>
+                {mobilePeriods.map((p) => (
+                  <th key={p.key} className="text-center px-1.5 py-2 font-semibold text-slate-700 w-[118px]">
+                    {p.label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {[...categories, 'Total'].map((deptName) => (
+                <tr key={deptName} className="hover:bg-slate-50">
+                  <td className="px-1.5 py-2 font-semibold text-slate-800 align-top">
+                    {(() => {
+                      if (deptName === 'Total') return <span className="whitespace-nowrap">Total</span>;
+                      const [l1, l2] = splitCategoryTwoLines(deptName);
                       return (
-                        <td key={`${category}-combined`} className="px-0.5 md:px-5 py-1 md:py-3 text-center">
-                          <div className="space-y-0.5 md:space-y-1">
-                            <div className="badge text-[10px] md:text-xs font-semibold px-0.5 md:px-2 py-0.5 bg-slate-100 text-slate-700 border border-slate-200">{data?.count ?? 0}</div>
-                            <div className="border-t border-slate-200 my-0.5 md:my-1"></div>
-                            <div className="text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">₪{Math.ceil(amount).toLocaleString()}</div>
-                          </div>
+                        <span className="leading-tight text-xs">
+                          {l1}
+                          {l2 ? (
+                            <>
+                              <br />
+                              {l2}
+                            </>
+                          ) : null}
+                        </span>
+                      );
+                    })()}
+                  </td>
+                  {mobilePeriods.map((p) => {
+                    if (p.key === `Target ${selectedMonth}`) {
+                      const row = deptName === 'Total'
+                        ? (() => {
+                          const numDepartments = departmentNames.length;
+                          const totalTarget = dataSource[selectedMonth]?.slice(0, numDepartments).reduce(
+                            (sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0),
+                            0
+                          ) || 0;
+                          return { expected: totalTarget, amount: getTotalData(selectedMonth).amount };
+                        })()
+                        : (() => {
+                          const data = getDeptData(deptName, selectedMonth);
+                          return { expected: data.expected || 0, amount: data.amount || 0 };
+                        })();
+                      const target = row.expected || 0;
+                      const amount = row.amount || 0;
+                      const targetClass = target > 0 ? (amount >= target ? 'text-green-700' : 'text-red-700') : 'text-slate-700';
+                      return (
+                        <td key={`${deptName}-${p.key}`} className={`px-1.5 py-2 text-center font-semibold whitespace-nowrap ${targetClass}`}>
+                          {target ? `₪${Math.ceil(target).toLocaleString()}` : '—'}
                         </td>
                       );
-                    })}
-                    <td className="px-0.5 md:px-5 py-1 md:py-3 text-center text-slate-700">
-                      <div className="space-y-0.5 md:space-y-1">
-                        <div className="flex items-center justify-center">
-                          <div className="badge text-[10px] md:text-xs bg-slate-100 text-slate-700 font-semibold px-0.5 md:px-2 py-0.5 border border-slate-200">
-                            {isToday ? (dataSource["Today"]?.[totalIndexToday]?.count ?? 0) :
-                              isWeek ? (dataSource["Week"]?.[totalIndexToday]?.count ?? 0) :
-                                isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.count ?? 0) :
-                                  (dataSource[selectedMonth]?.[totalIndexMonth]?.count ?? 0)}
+                    }
+
+                    const row = deptName === 'Total'
+                      ? getTotalData(p.dataKey)
+                      : getDeptData(deptName, p.dataKey);
+                    return (
+                      <td key={`${deptName}-${p.key}`} className="px-1.5 py-2 text-center">
+                        <div className="inline-flex flex-col items-center gap-0.5">
+                          <div className="badge badge-ghost text-[11px] font-semibold px-1.5 py-1 leading-none">
+                            {row.count || 0}
+                          </div>
+                          <div className="text-[13px] font-semibold text-slate-800 whitespace-nowrap leading-tight">
+                            ₪{Math.ceil(row.amount || 0).toLocaleString()}
                           </div>
                         </div>
-                        <div className="border-t border-slate-200 my-0.5 md:my-1"></div>
-                        <div className="text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
-                          ₪{Math.ceil(isToday ? (dataSource["Today"]?.[totalIndexToday]?.amount ?? 0) :
-                            isWeek ? (dataSource["Week"]?.[totalIndexToday]?.amount ?? 0) :
-                              isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.amount ?? 0) :
-                                (dataSource[selectedMonth]?.[totalIndexMonth]?.amount ?? 0)).toLocaleString()}
-                        </div>
-                      </div>
-                    </td>
-                  </tr>
-                  {isThisMonth && (
-                    <tr className="bg-white border border-slate-200">
-                      <td className="px-0.5 md:px-5 py-1 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">Target {columnType}</td>
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Desktop: existing layout */}
+        <div className="hidden md:block overflow-x-auto -mx-4 md:mx-0 pl-5 pr-2 md:pl-0 md:pr-0 w-full">
+          <table className="min-w-full text-xs md:text-sm w-full">
+            <thead className="bg-slate-50 border-b border-slate-200">
+              <tr>
+                <th className="text-left px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700"></th>
+                {categories.map(category => {
+                  const [line1, line2] = splitCategoryTwoLines(category);
+                  return (
+                    <th key={category} className="text-center px-0.5 md:px-5 py-1 md:py-3 text-[10px] md:text-sm font-semibold text-slate-700 align-bottom">
+                      <span className="hidden md:inline whitespace-nowrap">{category}</span>
+                      <span className="md:hidden leading-tight">{line1}{line2 ? <><br />{line2}</> : ''}</span>
+                    </th>
+                  );
+                })}
+                <th className="text-center px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700">Total</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {visibleColumns.map(columnType => {
+                const isToday = columnType === 'Today';
+                const isYesterday = columnType === 'Yesterday';
+                const isWeek = columnType === 'Week';
+                const isLast30 = columnType === 'Last 30d';
+                const isThisMonth = columnType === selectedMonth;
+
+                return (
+                  <React.Fragment key={columnType}>
+                    <tr className="hover:bg-slate-50">
+                      <td className="px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">{columnType}</td>
                       {categories.map((category, index) => {
-                        const data = dataSource[selectedMonth]?.[index];
+                        const deptIndexInNames = departmentNames.indexOf(category);
+                        const dataIndex = deptIndexInNames >= 0 ? deptIndexInNames : index;
+                        const data = isToday ? dataSource["Today"]?.[dataIndex + 1] :
+                          isYesterday ? dataSource["Yesterday"]?.[dataIndex + 1] :
+                            isWeek ? dataSource["Week"]?.[dataIndex + 1] :
+                              isLast30 ? dataSource["Last 30d"]?.[dataIndex + 1] :
+                                dataSource[selectedMonth]?.[dataIndex];
                         const amount = data?.amount ?? 0;
-                        const target = data?.expected ?? 0;
-                        const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
                         return (
-                          <td key={`${category}-target`} className={`px-0.5 md:px-5 py-1 md:py-3 text-center text-[10px] md:text-sm font-semibold ${targetClass} whitespace-nowrap`}>
-                            {target ? `₪${Math.ceil(target).toLocaleString()}` : '—'}
+                          <td key={`${category}-combined`} className="px-0.5 md:px-5 py-1 md:py-3 text-center">
+                            <div className="space-y-0.5 md:space-y-1">
+                              <div className="badge text-[10px] md:text-xs font-semibold px-0.5 md:px-2 py-0.5 bg-slate-100 text-slate-700 border border-slate-200">{data?.count ?? 0}</div>
+                              <div className="border-t border-slate-200 my-0.5 md:my-1"></div>
+                              <div className="text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">₪{Math.ceil(amount).toLocaleString()}</div>
+                            </div>
                           </td>
                         );
                       })}
-                      <td className="px-0.5 md:px-5 py-1 md:py-3 text-center text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
-                        {(() => {
-                          const numDepartments = departmentNames.length;
-                          const totalTarget = dataSource[selectedMonth]?.slice(0, numDepartments).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0), 0) || 0;
-                          return totalTarget ? `₪${Math.ceil(totalTarget).toLocaleString()}` : '—';
-                        })()}
+                      <td className="px-0.5 md:px-5 py-1 md:py-3 text-center text-slate-700">
+                        <div className="space-y-0.5 md:space-y-1">
+                          <div className="flex items-center justify-center">
+                            <div className="badge text-[10px] md:text-xs bg-slate-100 text-slate-700 font-semibold px-0.5 md:px-2 py-0.5 border border-slate-200">
+                              {isToday ? (dataSource["Today"]?.[totalIndexToday]?.count ?? 0) :
+                                isWeek ? (dataSource["Week"]?.[totalIndexToday]?.count ?? 0) :
+                                  isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.count ?? 0) :
+                                    (dataSource[selectedMonth]?.[totalIndexMonth]?.count ?? 0)}
+                            </div>
+                          </div>
+                          <div className="border-t border-slate-200 my-0.5 md:my-1"></div>
+                          <div className="text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
+                            ₪{Math.ceil(isToday ? (dataSource["Today"]?.[totalIndexToday]?.amount ?? 0) :
+                              isWeek ? (dataSource["Week"]?.[totalIndexToday]?.amount ?? 0) :
+                                isLast30 ? (dataSource["Last 30d"]?.[totalIndexToday]?.amount ?? 0) :
+                                  (dataSource[selectedMonth]?.[totalIndexMonth]?.amount ?? 0)).toLocaleString()}
+                          </div>
+                        </div>
                       </td>
                     </tr>
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                    {isThisMonth && (
+                      <tr className="bg-white border border-slate-200">
+                        <td className="px-0.5 md:px-5 py-1 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">Target {columnType}</td>
+                        {categories.map((category, index) => {
+                          const data = dataSource[selectedMonth]?.[index];
+                          const amount = data?.amount ?? 0;
+                          const target = data?.expected ?? 0;
+                          const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
+                          return (
+                            <td key={`${category}-target`} className={`px-0.5 md:px-5 py-1 md:py-3 text-center text-[10px] md:text-sm font-semibold ${targetClass} whitespace-nowrap`}>
+                              {target ? `₪${Math.ceil(target).toLocaleString()}` : '—'}
+                            </td>
+                          );
+                        })}
+                        <td className="px-0.5 md:px-5 py-1 md:py-3 text-center text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
+                          {(() => {
+                            const numDepartments = departmentNames.length;
+                            const totalTarget = dataSource[selectedMonth]?.slice(0, numDepartments).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0), 0) || 0;
+                            return totalTarget ? `₪${Math.ceil(totalTarget).toLocaleString()}` : '—';
+                          })()}
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </>
     );
   };
 

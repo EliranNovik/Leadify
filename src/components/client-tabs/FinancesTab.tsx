@@ -750,6 +750,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       });
 
       toast.success('Payment marked as ready to pay! Due date set to today. It will now appear in the collection page.');
+      // Notify Clients/ClientHeader banner listeners to refresh nextDuePayment
+      if (client?.id) {
+        window.dispatchEvent(new CustomEvent('paymentPlan:changed', { detail: { leadId: String(client.id) } }));
+      }
       // Refresh to ensure data is in sync, but UI is already updated
       await refreshPaymentPlans();
     } catch (error) {
@@ -842,6 +846,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
 
       toast.success('Payment reverted from ready to pay');
+      // Notify Clients/ClientHeader banner listeners to refresh nextDuePayment
+      if (client?.id) {
+        window.dispatchEvent(new CustomEvent('paymentPlan:changed', { detail: { leadId: String(client.id) } }));
+      }
       await refreshPaymentPlans();
     } catch (error) {
       console.error('Error reverting ready to pay:', error);
@@ -1057,6 +1065,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
       // Refresh payment plans
       await refreshPaymentPlans();
+
+      // Notify Clients/ClientHeader banner listeners to refresh nextDuePayment
+      if (client?.id) {
+        window.dispatchEvent(new CustomEvent('paymentPlan:changed', { detail: { leadId: String(client.id) } }));
+      }
 
       // Close dropdown
       setOpenDropdownPaymentId(null);
