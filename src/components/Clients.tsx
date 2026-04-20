@@ -2205,6 +2205,8 @@ const Clients: React.FC<ClientsProps> = ({
   const successStageHandlerContainerRef = useRef<HTMLDivElement | null>(null); // Mobile ref
   const successStageHandlerContainerRefDesktop = useRef<HTMLDivElement | null>(null); // Desktop ref
   const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useState(false);
+  const autoAdvanceHandlerSetRef = useRef<string>('');
+  const isAutoAdvancingHandlerStartedRef = useRef(false);
 
   // Mobile edge dropdowns state
   const [showMobileMenu, setShowMobileMenu] = useState(false);
@@ -12239,61 +12241,60 @@ const Clients: React.FC<ClientsProps> = ({
             accounting_currencies!finances_paymentplanrow_currency_id_fkey (
               name,
               iso_code
+            ),
+            tenants_employee:ready_to_pay_by (
+              id,
+              display_name
             )
           `)
           .eq('lead_id', legacyId)
           .is('cancel_date', null) // Only active payments
           .order('due_date', { ascending: true })
-          .limit(1);
+          .order('date', { ascending: true })
+          .limit(25);
 
         if (error) throw error;
 
-        if (data && data.length > 0) {
-          const payment = data[0];
-          const today = new Date();
-          const dueDate = new Date(payment.due_date);
-
-          // Only show if payment is due today or in the future
-          if (dueDate >= today) {
-            setNextDuePayment({
-              ...payment,
-              isLegacy: true
-            });
-          } else {
-            setNextDuePayment(null);
-          }
-        } else {
-          setNextDuePayment(null);
+        const rows = (data as any[]) || [];
+        const unpaid = rows.filter(r => !r?.actual_date);
+        if (unpaid.length > 0) {
+          const pick = unpaid.find(p => p?.due_date || p?.date) ?? unpaid[0];
+          setNextDuePayment({ ...(pick as any), isLegacy: true });
+          return;
         }
+        setNextDuePayment(null);
       } else {
         // For new leads, fetch from payment_plans table
         const { data, error } = await supabase
           .from('payment_plans')
-          .select('*')
-          .eq('lead_id', clientId)
-          .eq('paid', false) // Only unpaid payments
-          .order('due_date', { ascending: true })
-          .limit(1);
+          .select(`
+            *,
+            tenants_employee:ready_to_pay_by (
+              id,
+              display_name
+            )
+          `)
+          // Some rows may be linked via lead_id OR lead_ids (both exist in schema)
+          .or(`lead_id.eq.${clientId},lead_ids.eq.${clientId}`)
+          .is('cancel_date', null) // Only active payments
+          .order('due_date', { ascending: true, nullsFirst: false })
+          .order('date', { ascending: true })
+          .order('updated_at', { ascending: true })
+          .order('id', { ascending: true })
+          .limit(25);
 
         if (error) throw error;
 
-        if (data && data.length > 0) {
-          const payment = data[0];
-          const today = new Date();
-          const dueDate = new Date(payment.due_date);
-
-          // Only show if payment is due today or in the future
-          if (dueDate >= today) {
-            setNextDuePayment({
-              ...payment,
-              isLegacy: false
-            });
-          } else {
-            setNextDuePayment(null);
-          }
-        } else {
-          setNextDuePayment(null);
+        const rows = (data as any[]) || [];
+        // Unpaid = paid is not true (covers false/null)
+        const unpaid = rows.filter(r => r?.paid !== true);
+        if (unpaid.length > 0) {
+          // Mirror FinancesTab: "paymentDate = plan.date || plan.due_date"
+          const pick = unpaid.find(p => p?.due_date || p?.date) ?? unpaid[0];
+          setNextDuePayment({ ...(pick as any), isLegacy: false });
+          return;
         }
+        setNextDuePayment(null);
       }
     } catch (error) {
       console.error('Error fetching next due payment:', error);
@@ -12522,6 +12523,19 @@ const Clients: React.FC<ClientsProps> = ({
     } else {
       setNextDuePayment(null);
     }
+  }, [selectedClient?.id, fetchNextDuePayment, hasPaymentPlan, paymentPlanBaseTotal, paymentPlanVatTotal, paymentPlanGrossTotal]);
+
+  // Keep "next due payment" in sync with FinancesTab live updates.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ leadId?: string }>).detail;
+      const leadId = detail?.leadId;
+      if (!leadId || !selectedClient?.id) return;
+      if (String(selectedClient.id) !== String(leadId)) return;
+      fetchNextDuePayment(String(selectedClient.id));
+    };
+    window.addEventListener('paymentPlan:changed', handler as EventListener);
+    return () => window.removeEventListener('paymentPlan:changed', handler as EventListener);
   }, [selectedClient?.id, fetchNextDuePayment]);
 
   // Get the stage name for comparison (needed for useCallback)
@@ -12533,6 +12547,129 @@ const Clients: React.FC<ClientsProps> = ({
   const isStageNumeric = stageNumeric !== null && Number.isFinite(stageNumeric);
   const scheduleMenuLabel =
     isStageNumeric && stageNumeric >= 40 && stageNumeric !== 60 && stageNumeric !== 70 ? 'Another meeting' : 'Schedule Meeting';
+
+  // Stage 60 ("Client signed agreement") should never be visible once a handler is set:
+  // If handler exists, auto-advance to stage 105 ("Handler Set") and skip stage 60 UI.
+  useEffect(() => {
+    if (!selectedClient) return;
+
+    const isClientSignedStage =
+      areStagesEquivalent(currentStageName, 'Client signed agreement') ||
+      areStagesEquivalent(currentStageName, 'client signed agreement') ||
+      areStagesEquivalent(currentStageName, 'client_signed') ||
+      (isStageNumeric && stageNumeric === 60);
+
+    if (!isClientSignedStage) return;
+
+    const handlerLabel = normalizeHandlerToNull((selectedClient as any).handler);
+    const handlerId = (selectedClient as any).case_handler_id;
+    const isHandlerAssigned = !!handlerId || !!handlerLabel;
+
+    if (!isHandlerAssigned) return;
+
+    const key = `${selectedClient.id}:${selectedClient.stage}`;
+    if (autoAdvanceHandlerSetRef.current === key) return;
+    autoAdvanceHandlerSetRef.current = key;
+
+    void (async () => {
+      try {
+        const handlerSetStageId = getStageIdOrWarn('Handler Set') ?? 105;
+        const actor = await fetchStageActorInfo();
+        const timestamp = new Date().toISOString();
+
+        await updateLeadStageWithHistory({
+          lead: selectedClient,
+          stage: handlerSetStageId,
+          additionalFields: {},
+          actor,
+          timestamp,
+        });
+
+        setSelectedClient((prev: any) => {
+          if (!prev) return prev;
+          return { ...prev, stage: handlerSetStageId };
+        });
+
+        await onClientUpdate();
+      } catch (error) {
+        console.error('Error auto-advancing to Handler Set (stage 105):', error);
+      }
+    })();
+  }, [selectedClient, currentStageName, isStageNumeric, stageNumeric]);
+
+  // Stage 105 ("Handler Set") is gated by payments plan:
+  // If there's at least one PAID payment, auto-advance to stage 110 ("Handler Started") in UI.
+  // (Stage 105 must still be recorded in lead stages history — this effect runs only when already in 105.)
+  useEffect(() => {
+    if (!selectedClient) return;
+
+    const isHandlerSetStage =
+      areStagesEquivalent(currentStageName, 'Handler Set') || (isStageNumeric && stageNumeric === 105);
+
+    if (!isHandlerSetStage) return;
+    if (!hasPaymentPlan) return;
+
+    if (isAutoAdvancingHandlerStartedRef.current) return;
+    isAutoAdvancingHandlerStartedRef.current = true;
+
+    void (async () => {
+      try {
+        const clientIdString = String(selectedClient.id ?? '');
+        const isLegacyLead =
+          selectedClient.lead_type === 'legacy' || clientIdString.startsWith('legacy_');
+
+        let hasAnyPaidPayment = false;
+
+        if (isLegacyLead) {
+          const legacyId = clientIdString.replace('legacy_', '');
+          const { data, error } = await supabase
+            .from('finances_paymentplanrow')
+            .select('id')
+            .eq('lead_id', legacyId)
+            .is('cancel_date', null)
+            .not('actual_date', 'is', null)
+            .limit(1);
+          if (error) throw error;
+          hasAnyPaidPayment = !!(data && data.length > 0);
+        } else {
+          const { data, error } = await supabase
+            .from('payment_plans')
+            .select('id')
+            .eq('lead_id', clientIdString)
+            .is('cancel_date', null)
+            .eq('paid', true)
+            .limit(1);
+          if (error) throw error;
+          hasAnyPaidPayment = !!(data && data.length > 0);
+        }
+
+        if (!hasAnyPaidPayment) return;
+
+        const handlerStartedStageId = getStageIdOrWarn('Handler Started') ?? 110;
+        const actor = await fetchStageActorInfo();
+        const timestamp = new Date().toISOString();
+
+        await updateLeadStageWithHistory({
+          lead: selectedClient,
+          stage: handlerStartedStageId,
+          additionalFields: {},
+          actor,
+          timestamp,
+        });
+
+        setSelectedClient((prev: any) => {
+          if (!prev) return prev;
+          return { ...prev, stage: handlerStartedStageId };
+        });
+
+        await onClientUpdate();
+      } catch (error) {
+        console.error('Error auto-advancing to Handler Started (stage 110):', error);
+      } finally {
+        isAutoAdvancingHandlerStartedRef.current = false;
+      }
+    })();
+  }, [selectedClient, currentStageName, isStageNumeric, stageNumeric, hasPaymentPlan]);
 
   // Move useCallback BEFORE early returns to ensure hooks are always called in the same order
   const handleScheduleMenuClick = useCallback(
@@ -12948,21 +13085,9 @@ const Clients: React.FC<ClientsProps> = ({
   }
   else if (selectedClient && areStagesEquivalent(currentStageName, 'Client signed agreement'))
     dropdownItems = (
-      <>
-        {/* <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowPaymentsPlanDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
-            <BanknotesIcon className="w-5 h-5 text-base-content" />
-            Payments plan
-          </a>
-        </li> */}
-        <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage('payment_request_sent'); (document.activeElement as HTMLElement)?.blur(); }}>
-            <CurrencyDollarIcon className="w-5 h-5 text-base-content" />
-            Payment request sent
-          </a>
-        </li>
-
-      </>
+      <li className="px-2 py-2 text-sm text-base-content/70">
+        No action available
+      </li>
     );
   else if (selectedClient && areStagesEquivalent(currentStageName, 'Success')) {
     dropdownItems = (
@@ -12973,11 +13098,8 @@ const Clients: React.FC<ClientsProps> = ({
   }
   else if (selectedClient && areStagesEquivalent(currentStageName, 'Handler Set')) {
     dropdownItems = (
-      <li>
-        <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleStartCase}>
-          <PlayIcon className="w-5 h-5 text-black" />
-          Start Case
-        </a>
+      <li className="px-2 py-2 text-sm text-base-content/70">
+        No action available
       </li>
     );
   }
@@ -12991,9 +13113,9 @@ const Clients: React.FC<ClientsProps> = ({
           </a>
         </li>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage('Case Closed'); (document.activeElement as HTMLElement)?.blur(); }}>
+          <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage(200); (document.activeElement as HTMLElement)?.blur(); }}>
             <CheckCircleIcon className="w-5 h-5 text-black" />
-            Case closed
+            Case finalized
           </a>
         </li>
       </>
@@ -13002,14 +13124,14 @@ const Clients: React.FC<ClientsProps> = ({
   else if (selectedClient && areStagesEquivalent(currentStageName, 'Application submitted')) {
     dropdownItems = (
       <li>
-        <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage('Case Closed'); (document.activeElement as HTMLElement)?.blur(); }}>
+        <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage(200); (document.activeElement as HTMLElement)?.blur(); }}>
           <CheckCircleIcon className="w-5 h-5 text-black" />
-          Case closed
+          Case finalized
         </a>
       </li>
     );
   }
-  else if (selectedClient && areStagesEquivalent(currentStageName, 'Case Closed')) {
+  else if (selectedClient && (areStagesEquivalent(currentStageName, 'Case Closed') || (isStageNumeric && stageNumeric === 200))) {
     dropdownItems = (
       <li className="px-2 py-2 text-sm text-base-content/70">
         No action available
@@ -15412,7 +15534,18 @@ const Clients: React.FC<ClientsProps> = ({
             stageNumeric={stageNumeric ?? undefined}
             dropdownsContent={
               <>
-                {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
+                {selectedClient &&
+                  (() => {
+                    const isSuccess = areStagesEquivalent(currentStageName, 'Success');
+                    const isClientSigned =
+                      areStagesEquivalent(currentStageName, 'Client signed agreement') ||
+                      areStagesEquivalent(currentStageName, 'client signed agreement') ||
+                      areStagesEquivalent(currentStageName, 'client_signed');
+                    const handlerLabel = normalizeHandlerToNull((selectedClient as any).handler);
+                    const handlerId = (selectedClient as any).case_handler_id;
+                    const isHandlerAssigned = !!handlerId || !!handlerLabel;
+                    return isSuccess || (isClientSigned && !isHandlerAssigned);
+                  })() && (
                   <div className="flex flex-col items-start gap-1 w-full">
                     <label className="block text-xs font-semibold text-gray-500 mb-1">Assign case handler</label>
                     <div ref={successStageHandlerContainerRefDesktop} className="relative w-full flex items-center gap-1" style={{ overflow: 'visible', zIndex: 1 }}>
@@ -15775,7 +15908,18 @@ const Clients: React.FC<ClientsProps> = ({
                 </div>
 
                 {/* Input fields under Stages button */}
-                {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
+                {selectedClient &&
+                  (() => {
+                    const isSuccess = areStagesEquivalent(currentStageName, 'Success');
+                    const isClientSigned =
+                      areStagesEquivalent(currentStageName, 'Client signed agreement') ||
+                      areStagesEquivalent(currentStageName, 'client signed agreement') ||
+                      areStagesEquivalent(currentStageName, 'client_signed');
+                    const handlerLabel = normalizeHandlerToNull((selectedClient as any).handler);
+                    const handlerId = (selectedClient as any).case_handler_id;
+                    const isHandlerAssigned = !!handlerId || !!handlerLabel;
+                    return isSuccess || (isClientSigned && !isHandlerAssigned);
+                  })() && (
                   <div className="flex flex-col items-start gap-1">
                     <label className="block text-sm font-semibold text-primary mb-1">Assign case handler</label>
                     <div ref={successStageHandlerContainerRef} className="relative w-full" style={{ overflow: 'visible', zIndex: 1 }}>

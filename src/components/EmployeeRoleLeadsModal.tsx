@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { XMarkIcon, EyeIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { convertToNIS } from '../lib/currencyConversion';
@@ -164,17 +165,34 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
   };
 
   useEffect(() => {
-    if (isOpen && employeeId && role) {
-      if (role === 'Handler') {
-        fetchPaymentRows();
-      } else {
-        fetchLeads();
-      }
+    if (!isOpen || !employeeId || !role) return;
+
+    if (role === 'ALL') {
+      (async () => {
+        setLoading(true);
+        setLeads([]);
+        setPaymentRows([]);
+        try {
+          await fetchLeads(false);
+          await fetchPaymentRows(false);
+        } catch (e) {
+          console.error('Error loading full lead breakdown:', e);
+        } finally {
+          setLoading(false);
+        }
+      })();
+      return;
+    }
+
+    if (role === 'Handler') {
+      fetchPaymentRows();
+    } else {
+      fetchLeads();
     }
   }, [isOpen, employeeId, role, fromDate, toDate]);
 
-  const fetchPaymentRows = async () => {
-    setLoading(true);
+  const fetchPaymentRows = async (manageLoading = true) => {
+    if (manageLoading) setLoading(true);
     try {
       const fromDateTimeForPayments = fromDate ? `${fromDate}T00:00:00` : null;
       const toDateTimeForPayments = toDate ? `${toDate}T23:59:59` : null;
@@ -607,7 +625,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
     } catch (error) {
       console.error('Error fetching payment rows:', error);
     } finally {
-      setLoading(false);
+      if (manageLoading) setLoading(false);
     }
   };
 
@@ -662,8 +680,8 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
     return { displaySymbol: 'NIS', conversionValue: 'NIS' };
   };
 
-  const fetchLeads = async () => {
-    setLoading(true);
+  const fetchLeads = async (manageLoading = true) => {
+    if (manageLoading) setLoading(true);
     try {
       // For non-Handler roles, use the existing lead-based logic
       const fromDateTime = fromDate ? `${fromDate}T00:00:00.000Z` : null;
@@ -987,7 +1005,7 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
     } catch (error) {
       console.error('Error fetching leads:', error);
     } finally {
-      setLoading(false);
+      if (manageLoading) setLoading(false);
     }
   };
 
@@ -1049,25 +1067,38 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
     return dateStr;
   };
 
+  const isAllRolesMode = role === 'ALL';
   const isHandlerRole = role === 'Handler';
-  const displayData = isHandlerRole ? paymentRows : leads;
+  const displayCount = isHandlerRole
+    ? paymentRows.length
+    : isAllRolesMode
+      ? leads.length + paymentRows.length
+      : leads.length;
 
-  return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
-      <div className="flex min-h-screen items-center justify-center p-4">
-        <div
-          className="fixed inset-0 bg-black bg-opacity-50 transition-opacity"
-          onClick={onClose}
-        />
-
-        <div className="relative bg-white rounded-lg shadow-xl w-full max-w-6xl max-h-[90vh] overflow-hidden">
+  const modal = (
+    <div
+      className="fixed inset-0 z-[20000] isolate overflow-y-auto"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="employee-role-leads-modal-title"
+    >
+      <div
+        className="fixed inset-0 z-0 bg-black/50 transition-opacity"
+        onClick={onClose}
+        aria-hidden
+      />
+      <div className="relative z-10 flex min-h-full items-center justify-center p-4">
+        <div className="w-full max-w-6xl max-h-[90vh] overflow-hidden rounded-lg bg-white shadow-2xl">
           <div className="flex items-center justify-between p-6 border-b border-gray-200">
             <div>
-              <h2 className="text-2xl font-bold text-gray-900">
-                {role} {isHandlerRole ? 'Payment Rows' : 'Leads'} - {employeeName}
+              <h2 id="employee-role-leads-modal-title" className="text-2xl font-bold text-gray-900">
+                {isAllRolesMode
+                  ? `All leads & handler payments — ${employeeName}`
+                  : `${role} ${isHandlerRole ? 'Payment Rows' : 'Leads'} — ${employeeName}`}
               </h2>
               <p className="text-sm text-gray-600 mt-1">
-                {displayData.length} {isHandlerRole ? 'payment row' : 'lead'}{displayData.length !== 1 ? 's' : ''} • {formatDateDdMmYy(fromDate)} to {formatDateDdMmYy(toDate)}
+                {displayCount}{isAllRolesMode ? ' item' : isHandlerRole ? ' payment row' : ' lead'}
+                {displayCount !== 1 ? 's' : ''} • {formatDateDdMmYy(fromDate)} to {formatDateDdMmYy(toDate)}
               </p>
             </div>
             <button
@@ -1084,8 +1115,8 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                 <span className="loading loading-spinner loading-lg"></span>
                 <span className="ml-2">Loading...</span>
               </div>
-            ) : displayData.length > 0 ? (
-              <div className="overflow-x-auto">
+            ) : (isHandlerRole ? paymentRows.length > 0 : isAllRolesMode ? leads.length + paymentRows.length > 0 : leads.length > 0) ? (
+              <div className="overflow-x-auto space-y-8">
                 {isHandlerRole ? (
                   <table className="table w-full">
                     <thead>
@@ -1143,53 +1174,125 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
                     </tfoot>
                   </table>
                 ) : (
-                  <table className="table w-full">
-                    <thead>
-                      <tr>
-                        <th>Role</th>
-                        <th>Lead</th>
-                        <th>Client Name</th>
-                        <th>Category</th>
-                        <th className="text-right">Applicants</th>
-                        <th className="text-right">Total</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {leads.map((lead, index) => (
-                        <tr key={`${lead.leadId}-${index}`} className="hover:bg-gray-50">
-                          <td>{lead.role}</td>
-                          <td>
-                            <button
-                              onClick={() => handleLeadClick(lead)}
-                              className="text-primary hover:underline font-mono text-sm"
-                            >
-                              {lead.leadNumber}
-                            </button>
-                          </td>
-                          <td className="font-medium">{lead.clientName}</td>
-                          <td>{lead.category}</td>
-                          <td className="text-right">{lead.applicants}</td>
-                          <td className="text-right font-semibold">{formatCurrency(lead.total)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot>
-                      <tr className="font-bold bg-base-200">
-                        <td colSpan={4}>Total</td>
-                        <td className="text-right">
-                          {leads.reduce((sum, lead) => sum + lead.applicants, 0)}
-                        </td>
-                        <td className="text-right">
-                          {formatCurrency(leads.reduce((sum, lead) => sum + lead.total, 0))}
-                        </td>
-                      </tr>
-                    </tfoot>
-                  </table>
+                  <>
+                    {leads.length > 0 && (
+                      <div>
+                        {isAllRolesMode && (
+                          <h3 className="text-lg font-semibold text-gray-800 mb-2">Signed leads</h3>
+                        )}
+                        <table className="table w-full">
+                          <thead>
+                            <tr>
+                              <th>Role</th>
+                              <th>Lead</th>
+                              <th>Client Name</th>
+                              <th>Category</th>
+                              <th className="text-right">Applicants</th>
+                              <th className="text-right">Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {leads.map((lead, index) => (
+                              <tr key={`${lead.leadId}-${index}`} className="hover:bg-gray-50">
+                                <td>{lead.role}</td>
+                                <td>
+                                  <button
+                                    onClick={() => handleLeadClick(lead)}
+                                    className="text-primary hover:underline font-mono text-sm"
+                                  >
+                                    {lead.leadNumber}
+                                  </button>
+                                </td>
+                                <td className="font-medium">{lead.clientName}</td>
+                                <td>{lead.category}</td>
+                                <td className="text-right">{lead.applicants}</td>
+                                <td className="text-right font-semibold">{formatCurrency(lead.total)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot>
+                            <tr className="font-bold bg-base-200">
+                              <td colSpan={4}>Total</td>
+                              <td className="text-right">
+                                {leads.reduce((sum, lead) => sum + lead.applicants, 0)}
+                              </td>
+                              <td className="text-right">
+                                {formatCurrency(leads.reduce((sum, lead) => sum + lead.total, 0))}
+                              </td>
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    )}
+                    {paymentRows.length > 0 && isAllRolesMode && (
+                      <div>
+                        <h3 className="text-lg font-semibold text-gray-800 mb-2">Handler — due payments (in range)</h3>
+                        <table className="table w-full">
+                          <thead>
+                            <tr>
+                              <th>Name</th>
+                              <th>Client</th>
+                              <th className="text-right">Amount</th>
+                              <th className="text-center">Order</th>
+                              <th>Handler</th>
+                              <th>Case</th>
+                              <th>Category</th>
+                              <th>Notes</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {paymentRows.map((row, index) => (
+                              <tr
+                                key={row.id || index}
+                                className="hover:bg-gray-50 cursor-pointer transition-colors"
+                                onClick={() => handlePaymentRowClick(row)}
+                              >
+                                <td className="font-semibold">{row.name || '—'}</td>
+                                <td>{row.client || '—'}</td>
+                                <td className="text-right">
+                                  {row.amount > 0
+                                    ? `${row.currency || '₪'}${row.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                    : '—'}
+                                </td>
+                                <td className="text-center">{row.order || '—'}</td>
+                                <td>{row.handler || '—'}</td>
+                                <td className="font-mono text-sm">{row.case || '—'}</td>
+                                <td>{row.category || '—'}</td>
+                                <td className="text-sm text-gray-600">{row.notes || '—'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot>
+                            <tr className="font-bold bg-base-200">
+                              <td colSpan={2}>Total</td>
+                              <td className="text-right">
+                                {formatCurrency(
+                                  paymentRows.reduce((sum, row) => {
+                                    const currencyForConversion = row.currency || 'NIS';
+                                    const normalizedCurrency = currencyForConversion === '₪' ? 'NIS' :
+                                      currencyForConversion === '€' ? 'EUR' :
+                                        currencyForConversion === '$' ? 'USD' :
+                                          currencyForConversion === '£' ? 'GBP' : currencyForConversion;
+                                    return sum + convertToNIS(row.amount, normalizedCurrency);
+                                  }, 0)
+                                )}
+                              </td>
+                              <td colSpan={5}></td>
+                            </tr>
+                          </tfoot>
+                        </table>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             ) : (
               <div className="text-center py-12 text-gray-500">
-                {isHandlerRole ? 'No payment rows found for this role' : 'No leads found for this role'}
+                {isHandlerRole
+                  ? 'No payment rows found for this role'
+                  : isAllRolesMode
+                    ? 'No signed leads or handler payments in this range'
+                    : 'No leads found for this role'}
               </div>
             )}
           </div>
@@ -1197,6 +1300,8 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
       </div>
     </div>
   );
+
+  return createPortal(modal, document.body);
 };
 
 export default EmployeeRoleLeadsModal;

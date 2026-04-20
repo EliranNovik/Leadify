@@ -36,6 +36,7 @@ import FlagTypesManager from './FlagTypesManager';
 import LeadStageReasonsManager from './LeadStageReasonsManager';
 import MainCategoriesManager from './MainCategoriesManager';
 import SubCategoriesManager from './SubCategoriesManager';
+import SubEffortsManager from './SubEffortsManager';
 import WhatsAppNumbersManager from './WhatsAppNumbersManager';
 import WhatsAppTemplatesManager from './WhatsAppTemplatesManager';
 import EmailTemplatesManager from './EmailTemplatesManager';
@@ -108,6 +109,7 @@ const ADMIN_TABS: AdminTab[] = [
       'Lead Tags',
       'Main Categories',
       'Public messages',
+      'Sub efforts',
       'sub categories',
       'whatsapp template olds',
     ],
@@ -1624,6 +1626,9 @@ const AdminPage: React.FC = () => {
                 ) : selectedTab?.label === 'Misc' &&
                   selectedTab?.subcategories[selected.sub] === 'sub categories' ? (
                   <div className="w-full"><SubCategoriesManager /></div>
+                ) : selectedTab?.label === 'Misc' &&
+                  selectedTab?.subcategories[selected.sub] === 'Sub efforts' ? (
+                  <div className="w-full"><SubEffortsManager /></div>
                 ) : selectedTab?.label === 'Whatsapp' &&
                   selectedTab?.subcategories[selected.sub] === 'Whatsapp numbers' ? (
                   <div className="w-full"><WhatsAppNumbersManager /></div>

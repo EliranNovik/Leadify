@@ -52,6 +52,8 @@ import type { WhatsAppPageSelectedContact } from '../pages/WhatsAppPage';
 import { FaWhatsapp } from 'react-icons/fa';
 import { fetchUnpaidTotalsByCurrency, getVatRateForLegacyLead, pickUnpaidBaseAndVatForCurrency, type UnpaidByCurrencyMap } from '../lib/financeUnpaidTotal';
 import { useAuthContext } from '../contexts/AuthContext';
+import { fetchStageActorInfo } from '../lib/leadStageManager';
+import { SubEffortsLogModal } from './SubEffortsLogModal';
 import {
     fetchPublicUserId,
     fetchLeadFieldFlagsForLead,
@@ -114,7 +116,7 @@ interface ClientHeaderProps {
     setIsBalanceModalOpen: (isOpen: boolean) => void;
     currentStageName: string;
     handleStartCase: () => void;
-    updateLeadStage: (newStage: string) => Promise<void>;
+    updateLeadStage: (newStage: string | number) => Promise<void>;
     isInHighlightsState: boolean;
     isSuperuser: boolean;
     setShowDeleteModal: (show: boolean) => void;
@@ -226,6 +228,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     onDismissPendingProbability,
 }) => {
     const navigate = useNavigate();
+    const [subEfforts, setSubEfforts] = useState<Array<{ id: number; name: string }>>([]);
+    const [isLoadingSubEfforts, setIsLoadingSubEfforts] = useState(false);
+    const [isSavingSubEffort, setIsSavingSubEffort] = useState(false);
+    const [leadSubEfforts, setLeadSubEfforts] = useState<any[]>([]);
+    const [isLoadingLeadSubEfforts, setIsLoadingLeadSubEfforts] = useState(false);
+    const [isSubEffortsModalOpen, setIsSubEffortsModalOpen] = useState(false);
+    const [subEffortsModalRowId, setSubEffortsModalRowId] = useState<string | number | null>(null);
     const [isEditingCategory, setIsEditingCategory] = useState(false);
     /** Unpaid finance plan totals by currency (from payment_plans / finances_paymentplanrow, excludes paid rows). */
     const [unpaidByCurrency, setUnpaidByCurrency] = useState<UnpaidByCurrencyMap | null>(null);
@@ -412,6 +421,173 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         return () => {
             cancelled = true;
         };
+    }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+        const load = async () => {
+            // Only load when relevant to avoid extra DB calls
+            if (!areStagesEquivalent(currentStageName, 'Handler Started') && !(isStageNumeric && stageNumeric === 110)) {
+                return;
+            }
+            setIsLoadingSubEfforts(true);
+            try {
+                // Prefer filtering by `active` (admin-controlled). Fallback for environments where
+                // the column hasn't been deployed yet.
+                const withActive = await supabase
+                    .from('sub_efforts')
+                    .select('id, name, active')
+                    .eq('active', true)
+                    .order('name', { ascending: true });
+
+                if (!withActive.error) {
+                    if (!cancelled) {
+                        setSubEfforts(
+                            (withActive.data as any[])?.map(r => ({ id: Number(r.id), name: String(r.name) })) ?? []
+                        );
+                    }
+                } else {
+                    const err: any = withActive.error;
+                    const msg = String(err?.message || '');
+                    if (err?.code === '42703' && msg.toLowerCase().includes('active')) {
+                        const fallback = await supabase
+                            .from('sub_efforts')
+                            .select('id, name')
+                            .order('name', { ascending: true });
+                        if (fallback.error) throw fallback.error;
+                        if (!cancelled) {
+                            setSubEfforts((fallback.data as any[])?.map(r => ({ id: Number(r.id), name: String(r.name) })) ?? []);
+                        }
+                    } else {
+                        throw withActive.error;
+                    }
+                }
+            } catch (e) {
+                console.error('Error loading sub_efforts:', e);
+                if (!cancelled) setSubEfforts([
+                    { id: 1, name: 'Aplication submitted' },
+                    { id: 2, name: 'Communication with client' },
+                ]);
+            } finally {
+                if (!cancelled) setIsLoadingSubEfforts(false);
+            }
+        };
+        void load();
+        return () => { cancelled = true; };
+    }, [currentStageName, isStageNumeric, stageNumeric]);
+
+    const fetchLeadSubEfforts = useCallback(async () => {
+        if (!selectedClient?.id) return;
+        const inferredStageNumeric = Number((selectedClient as any)?.stage ?? stageNumeric ?? NaN);
+        const isRelevantStage =
+            areStagesEquivalent(currentStageName, 'Handler Started') ||
+            (isStageNumeric && stageNumeric === 110) ||
+            inferredStageNumeric === 110 ||
+            (isStageNumeric && stageNumeric === 200) ||
+            inferredStageNumeric === 200;
+        if (!isRelevantStage) return;
+
+        const idStr = String(selectedClient.id);
+        const isLegacy = idStr.startsWith('legacy_') || selectedClient.lead_type === 'legacy';
+        const legacyId = isLegacy ? Number.parseInt(idStr.replace('legacy_', ''), 10) : null;
+        const newLeadId = !isLegacy ? idStr : null;
+
+        setIsLoadingLeadSubEfforts(true);
+        try {
+            let q = supabase
+                .from('lead_sub_efforts')
+                .select(`
+                    id,
+                    legacy_lead_id,
+                    new_lead_id,
+                    employee_id,
+                    created_at,
+                    created_by,
+                    updated_by,
+                    updated_at,
+                    internal,
+                    active,
+                    document_url,
+                    internal_notes,
+                    client_notes,
+                    sub_efforts ( id, name ),
+                    tenants_employee ( id, display_name, photo_url, photo )
+                `)
+                .order('created_at', { ascending: false })
+                .limit(25);
+
+            if (isLegacy && legacyId) {
+                q = q.eq('legacy_lead_id', legacyId);
+            } else if (newLeadId) {
+                q = q.eq('new_lead_id', newLeadId);
+            }
+
+            const { data, error } = await q;
+            if (error) throw error;
+            setLeadSubEfforts((data as any[]) ?? []);
+        } catch (e) {
+            console.error('Error fetching lead_sub_efforts:', e);
+        } finally {
+            setIsLoadingLeadSubEfforts(false);
+        }
+    }, [selectedClient?.id, selectedClient?.lead_type, (selectedClient as any)?.stage, currentStageName, isStageNumeric, stageNumeric]);
+
+    useEffect(() => {
+        void fetchLeadSubEfforts();
+    }, [fetchLeadSubEfforts]);
+
+    const handleSelectSubEffort = useCallback(
+        async (opt: { id: number; name: string }) => {
+            if (!selectedClient?.id) return;
+            if (isSavingSubEffort) return;
+            setIsSavingSubEffort(true);
+            try {
+                // Prevent duplicates (same sub_effort only once per lead)
+                const alreadyUsed = leadSubEfforts?.some((r: any) => {
+                    const isActive = (r as any)?.active !== false;
+                    const id = Number((r as any)?.sub_effort_id ?? (r as any)?.sub_efforts?.id);
+                    return isActive && Number.isFinite(id) && id === Number(opt.id);
+                });
+                if (alreadyUsed) {
+                    toast.error('This sub effort was already added for this lead.');
+                    return;
+                }
+
+                const actor = await fetchStageActorInfo();
+                const idStr = String(selectedClient.id);
+                const isLegacy = idStr.startsWith('legacy_') || selectedClient.lead_type === 'legacy';
+                const legacyId = isLegacy ? Number.parseInt(idStr.replace('legacy_', ''), 10) : null;
+                const newLeadId = !isLegacy ? idStr : null;
+
+                const payload: any = {
+                    sub_effort_id: opt.id,
+                    employee_id: actor.employeeId ?? null,
+                    created_by: actor.fullName ?? null,
+                    updated_by: actor.fullName ?? null,
+                    internal: false,
+                    active: true,
+                };
+                if (legacyId) payload.legacy_lead_id = legacyId;
+                if (newLeadId) payload.new_lead_id = newLeadId;
+
+                const { error } = await supabase.from('lead_sub_efforts').insert(payload);
+                if (error) throw error;
+
+                toast.success(`Sub effort added: ${opt.name}`);
+                await fetchLeadSubEfforts();
+            } catch (e: any) {
+                console.error('Error creating lead_sub_efforts row:', e);
+                toast.error(`Failed to add sub effort: ${e?.message || 'Unknown error'}`);
+            } finally {
+                setIsSavingSubEffort(false);
+            }
+        },
+        [selectedClient?.id, selectedClient?.lead_type, isSavingSubEffort, fetchLeadSubEfforts, leadSubEfforts]
+    );
+
+    const openSubEffortsModal = useCallback((rowId?: string | number | null) => {
+        setSubEffortsModalRowId(rowId ?? null);
+        setIsSubEffortsModalOpen(true);
     }, []);
 
     // Local state for employees (matching RolesTab pattern)
@@ -1703,6 +1879,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </span>
                                 ) : null}
                             </div>
+
                         </div>
 
                         {!hideTotalValueBadge && (
@@ -2048,6 +2225,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </span>
                                 ) : null}
                             </div>
+
                         </div>
 
                         {/* RIGHT — total value + more actions */}
@@ -2336,8 +2514,70 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             return null; // Don't show any stage buttons if unactivated
                         }
 
-                        // Check if case is closed - show "No action available" message
-                        if (selectedClient && areStagesEquivalent(currentStageName, 'Case Closed')) {
+                        // Closed state: keep showing Sub efforts log for stage 200, otherwise show "No action available"
+                        if (selectedClient && (areStagesEquivalent(currentStageName, 'Case Closed') || (isStageNumeric && stageNumeric === 200))) {
+                            if ((isStageNumeric && stageNumeric === 200) || Number((selectedClient as any)?.stage) === 200) {
+                                return (
+                                    <>
+                                        <div className="w-full mt-3 flex justify-end">
+                                            <div className="w-full max-w-xl ml-auto">
+                                                {isLoadingLeadSubEfforts ? (
+                                                    <div className="text-sm text-gray-500">Loading sub efforts…</div>
+                                                ) : leadSubEfforts.length > 0 ? (
+                                                    <div className="rounded-2xl border border-base-200 bg-base-100 px-4 py-3 shadow-sm">
+                                                        <div className="flex items-center justify-between gap-3 mb-2">
+                                                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                                                Sub efforts log
+                                                            </div>
+                                                            <button
+                                                                type="button"
+                                                                className="btn btn-ghost btn-xs"
+                                                                onClick={() => openSubEffortsModal(null)}
+                                                            >
+                                                                View all
+                                                            </button>
+                                                        </div>
+                                                        <div className="space-y-1.5">
+                                                            {leadSubEfforts.map((row: any) => {
+                                                                const name = row?.sub_efforts?.name ?? '—';
+                                                                const who = row?.tenants_employee?.display_name ?? row?.created_by ?? '—';
+                                                                const when = row?.created_at ? new Date(row.created_at).toLocaleString() : '—';
+                                                                return (
+                                                                    <button
+                                                                        key={row.id}
+                                                                        type="button"
+                                                                        onClick={() => openSubEffortsModal(row.id)}
+                                                                        className="w-full text-left rounded-xl border border-base-200 bg-gray-50/60 px-3 py-2 hover:bg-gray-50 transition"
+                                                                    >
+                                                                        <div className="flex items-center justify-between gap-3">
+                                                                            <div className="min-w-0">
+                                                                                <div className="font-semibold text-sm truncate text-gray-800">{name}</div>
+                                                                                <div className="mt-0.5 text-xs text-gray-500 truncate">
+                                                                                    by <span className="font-medium text-gray-700">{String(who)}</span>
+                                                                                </div>
+                                                                            </div>
+                                                                            <div className="text-[11px] text-gray-400 whitespace-nowrap">{when}</div>
+                                                                        </div>
+                                                                    </button>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className="text-sm text-gray-500">No sub efforts yet.</div>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <SubEffortsLogModal
+                                            open={isSubEffortsModalOpen}
+                                            onClose={() => setIsSubEffortsModalOpen(false)}
+                                            rows={leadSubEfforts}
+                                            initialSelectedRowId={subEffortsModalRowId}
+                                            onRefresh={() => void fetchLeadSubEfforts()}
+                                        />
+                                    </>
+                                );
+                            }
                             return (
                                 <div className="px-4 py-2 text-sm text-gray-600">
                                     No action available
@@ -2347,45 +2587,270 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                         return (
                             <>
-                                {/* Handler Set Stage */}
-                                {areStagesEquivalent(currentStageName, 'Handler Set') && (
-                                    <button
-                                        onClick={handleStartCase}
-                                        className="btn btn-primary btn-md rounded-full px-5 shadow-lg shadow-indigo-100 hover:shadow-indigo-200 text-white gap-2 text-base transition-all hover:scale-105"
-                                    >
-                                        <PlayIcon className="w-5 h-5" />
-                                        Start Case
-                                    </button>
-                                )}
+                                {/* Stage 105: no action buttons (advances via payments plan) */}
+                                {(areStagesEquivalent(currentStageName, 'Handler Set') ||
+                                    (isStageNumeric && stageNumeric === 105)) && nextDuePayment ? (
+                                    <div className="w-full flex justify-center">
+                                        <div className="w-full max-w-xl rounded-2xl border border-amber-200/70 bg-amber-50 px-4 py-3 text-amber-900 shadow-sm">
+                                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
+                                                <div className="text-sm font-semibold">Next payment due</div>
+                                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
+                                                    <div className="text-sm tabular-nums text-right whitespace-nowrap">
+                                                    {(() => {
+                                                        const isLegacy = !!(nextDuePayment as any)?.isLegacy;
+                                                        const base = Number((nextDuePayment as any)?.value ?? 0);
+                                                        const vat = Number(
+                                                            isLegacy
+                                                                ? (nextDuePayment as any)?.vat_value ?? 0
+                                                                : (nextDuePayment as any)?.value_vat ?? 0
+                                                        );
+                                                        const gross =
+                                                            (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
+                                                        const currency =
+                                                            (nextDuePayment as any)?.currency ??
+                                                            (nextDuePayment as any)?.accounting_currencies?.iso_code ??
+                                                            (nextDuePayment as any)?.accounting_currencies?.name ??
+                                                            '';
+                                                        const dateRaw =
+                                                            (nextDuePayment as any)?.due_date ?? (nextDuePayment as any)?.date ?? null;
+                                                        const dateLabel = dateRaw ? new Date(dateRaw).toLocaleDateString() : '—';
+                                                        const amountLabel = Number.isFinite(gross)
+                                                            ? gross.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                                                            : '0';
+                                                        return (
+                                                            <span>
+                                                                <span className="font-semibold">
+                                                                    {currency ? `${currency} ` : ''}
+                                                                    {amountLabel}
+                                                                </span>
+                                                                {' · '}
+                                                                <span className="opacity-80">{dateLabel}</span>
+                                                            </span>
+                                                        );
+                                                    })()}
+                                                    </div>
+                                                    {(() => {
+                                                        const isLegacy = !!(nextDuePayment as any)?.isLegacy;
+                                                        const ready =
+                                                            (nextDuePayment as any)?.ready_to_pay === true ||
+                                                            ((isLegacy && !!(nextDuePayment as any)?.due_date) ? true : false);
+                                                        if (!ready) return null;
+                                                        const by =
+                                                            (nextDuePayment as any)?.ready_to_pay_by_display_name ??
+                                                            (nextDuePayment as any)?.tenants_employee?.display_name ??
+                                                            (nextDuePayment as any)?.updated_by ??
+                                                            (nextDuePayment as any)?.paid_by ??
+                                                            '—';
+                                                        return (
+                                                            <div className="flex items-center justify-end gap-2 whitespace-nowrap">
+                                                                <span className="btn btn-success btn-sm pointer-events-none gap-1.5 text-white rounded-full px-3">
+                                                                    <CheckCircleIcon className="h-4 w-4" />
+                                                                    Sent to finance
+                                                                </span>
+                                                                <span className="text-xs text-amber-800/80 whitespace-nowrap">
+                                                                    by <span className="font-semibold">{String(by)}</span>
+                                                                </span>
+                                                            </div>
+                                                        );
+                                                    })()}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : null}
 
                                 {/* Handler Started Stage */}
                                 {areStagesEquivalent(currentStageName, 'Handler Started') && (
                                     <>
-                                        <button
-                                            onClick={() => updateLeadStage('Application submitted')}
-                                            className="btn btn-success btn-md text-white rounded-full px-4 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 text-base transition-all hover:scale-105"
-                                        >
-                                            <DocumentCheckIcon className="w-4 h-4" />
-                                            Application Submitted
-                                        </button>
-                                        <button
-                                            onClick={() => updateLeadStage('Case Closed')}
-                                            className="btn btn-neutral btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
-                                        >
-                                            <CheckCircleIcon className="w-4 h-4" />
-                                            Close Case
-                                        </button>
+                                        <div className="flex items-center justify-end gap-3">
+                                            <button
+                                                onClick={() => updateLeadStage(200)}
+                                                className="btn btn-neutral btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
+                                            >
+                                                <CheckCircleIcon className="w-4 h-4" />
+                                                Finalize Case
+                                            </button>
+                                            <div className="dropdown dropdown-end">
+                                                <button
+                                                    type="button"
+                                                className="btn btn-success btn-md !text-white rounded-full px-4 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 text-base transition-all hover:scale-105"
+                                                    disabled={isLoadingSubEfforts || isSavingSubEffort}
+                                                >
+                                                <DocumentCheckIcon className="w-4 h-4 text-white" />
+                                                    Sub efforts
+                                                <ChevronDownIcon className="w-4 h-4 text-white" />
+                                                </button>
+                                                <ul tabIndex={0} className="dropdown-content z-[330] menu p-2 shadow bg-base-100 rounded-box w-72">
+                                                    {(() => {
+                                                        const usedActive = new Set(
+                                                            (leadSubEfforts || [])
+                                                                .filter((r: any) => (r as any)?.active !== false)
+                                                                .map((r: any) => Number((r as any)?.sub_effort_id ?? (r as any)?.sub_efforts?.id))
+                                                                .filter((n: any) => Number.isFinite(n))
+                                                        );
+                                                        const allOpts = (subEfforts.length > 0 ? subEfforts : [
+                                                            { id: 1, name: 'Aplication submitted' },
+                                                            { id: 2, name: 'Communication with client' },
+                                                        ]);
+                                                        const remaining = allOpts.filter(opt => !usedActive.has(Number(opt.id)));
+                                                        if (remaining.length === 0) {
+                                                            return (
+                                                                <li>
+                                                                    <span className="px-3 py-2 text-sm text-gray-500">
+                                                                        No more sub efforts
+                                                                    </span>
+                                                                </li>
+                                                            );
+                                                        }
+                                                        return remaining.map(opt => (
+                                                            <li key={opt.id}>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        void handleSelectSubEffort(opt);
+                                                                    }}
+                                                                    className="text-sm"
+                                                                >
+                                                                    {opt.name}
+                                                                </button>
+                                                            </li>
+                                                        ));
+                                                    })()}
+                                                </ul>
+                                            </div>
+                                        </div>
+                                        <div className="w-full mt-3 flex justify-end">
+                                            <div className="w-full max-w-xl ml-auto">
+                                            {isLoadingLeadSubEfforts ? (
+                                                <div className="text-sm text-gray-500">Loading sub efforts…</div>
+                                            ) : leadSubEfforts.length > 0 ? (
+                                                <div className="rounded-2xl border border-base-200 bg-base-100 px-4 py-3 shadow-sm">
+                                                    <div className="flex items-center justify-between gap-3 mb-2">
+                                                        <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                                            Sub efforts log
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            className="btn btn-ghost btn-xs"
+                                                            onClick={() => openSubEffortsModal(null)}
+                                                        >
+                                                            View all
+                                                        </button>
+                                                    </div>
+                                                    <div className="space-y-1.5">
+                                                        {leadSubEfforts.map((row: any) => {
+                                                            const name = row?.sub_efforts?.name ?? '—';
+                                                            const who = row?.tenants_employee?.display_name ?? row?.created_by ?? '—';
+                                                            const when = row?.created_at ? new Date(row.created_at).toLocaleString() : '—';
+                                                            return (
+                                                                <button
+                                                                    key={row.id}
+                                                                    type="button"
+                                                                    onClick={() => openSubEffortsModal(row.id)}
+                                                                    className="w-full text-left rounded-xl border border-base-200 bg-gray-50/60 px-3 py-2 hover:bg-gray-50 transition"
+                                                                >
+                                                                    <div className="flex items-center justify-between gap-3">
+                                                                        <div className="min-w-0">
+                                                                            <div className="font-semibold text-sm truncate text-gray-800">{name}</div>
+                                                                            <div className="mt-0.5 text-xs text-gray-500 truncate">
+                                                                                by <span className="font-medium text-gray-700">{String(who)}</span>
+                                                                            </div>
+                                                                        </div>
+                                                                        <div className="text-[11px] text-gray-400 whitespace-nowrap">{when}</div>
+                                                                    </div>
+                                                                </button>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <div className="text-sm text-gray-500">No sub efforts yet.</div>
+                                            )}
+                                            </div>
+                                        </div>
+                                        <SubEffortsLogModal
+                                            open={isSubEffortsModalOpen}
+                                            onClose={() => setIsSubEffortsModalOpen(false)}
+                                            rows={leadSubEfforts}
+                                            initialSelectedRowId={subEffortsModalRowId}
+                                            onRefresh={() => void fetchLeadSubEfforts()}
+                                        />
+                                    </>
+                                )}
+
+                                {/* Stage 200: keep showing Sub efforts log (read-only) */}
+                                {(() => {
+                                    const inferredStageNumeric = Number((selectedClient as any)?.stage ?? stageNumeric ?? NaN);
+                                    return (isStageNumeric && stageNumeric === 200) || inferredStageNumeric === 200;
+                                })() && (
+                                    <>
+                                        <div className="w-full mt-3 flex justify-end">
+                                            <div className="w-full max-w-xl ml-auto">
+                                                {isLoadingLeadSubEfforts ? (
+                                                    <div className="text-sm text-gray-500">Loading sub efforts…</div>
+                                                ) : leadSubEfforts.length > 0 ? (
+                                                    <div className="rounded-2xl border border-base-200 bg-base-100 px-4 py-3 shadow-sm">
+                                                        <div className="flex items-center justify-between gap-3 mb-2">
+                                                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                                                Sub efforts log
+                                                            </div>
+                                                            <button
+                                                                type="button"
+                                                                className="btn btn-ghost btn-xs"
+                                                                onClick={() => openSubEffortsModal(null)}
+                                                            >
+                                                                View all
+                                                            </button>
+                                                        </div>
+                                                        <div className="space-y-1.5">
+                                                            {leadSubEfforts.map((row: any) => {
+                                                                const name = row?.sub_efforts?.name ?? '—';
+                                                                const who = row?.tenants_employee?.display_name ?? row?.created_by ?? '—';
+                                                                const when = row?.created_at ? new Date(row.created_at).toLocaleString() : '—';
+                                                                return (
+                                                                    <button
+                                                                        key={row.id}
+                                                                        type="button"
+                                                                        onClick={() => openSubEffortsModal(row.id)}
+                                                                        className="w-full text-left rounded-xl border border-base-200 bg-gray-50/60 px-3 py-2 hover:bg-gray-50 transition"
+                                                                    >
+                                                                        <div className="flex items-center justify-between gap-3">
+                                                                            <div className="min-w-0">
+                                                                                <div className="font-semibold text-sm truncate text-gray-800">{name}</div>
+                                                                                <div className="mt-0.5 text-xs text-gray-500 truncate">
+                                                                                    by <span className="font-medium text-gray-700">{String(who)}</span>
+                                                                                </div>
+                                                                            </div>
+                                                                            <div className="text-[11px] text-gray-400 whitespace-nowrap">{when}</div>
+                                                                        </div>
+                                                                    </button>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <div className="text-sm text-gray-500">No sub efforts yet.</div>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <SubEffortsLogModal
+                                            open={isSubEffortsModalOpen}
+                                            onClose={() => setIsSubEffortsModalOpen(false)}
+                                            rows={leadSubEfforts}
+                                            initialSelectedRowId={subEffortsModalRowId}
+                                            onRefresh={() => void fetchLeadSubEfforts()}
+                                        />
                                     </>
                                 )}
 
                                 {/* Application submitted Stage */}
                                 {areStagesEquivalent(currentStageName, 'Application submitted') && (
                                     <button
-                                        onClick={() => updateLeadStage('Case Closed')}
+                                        onClick={() => updateLeadStage(200)}
                                         className="btn btn-neutral btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                     >
                                         <CheckCircleIcon className="w-4 h-4" />
-                                        Close Case
+                                                Finalize Case
                                     </button>
                                 )}
 
@@ -2544,18 +3009,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </>
                                 )}
 
-                                {/* Client signed agreement Stage */}
-                                {(areStagesEquivalent(currentStageName, 'Client signed agreement') ||
-                                    areStagesEquivalent(currentStageName, 'client signed agreement') ||
-                                    areStagesEquivalent(currentStageName, 'client_signed')) && (
-                                        <button
-                                            onClick={() => updateLeadStage('payment_request_sent')}
-                                            className="btn btn-primary btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
-                                        >
-                                            <CurrencyDollarIcon className="w-4 h-4" />
-                                            Payment request sent
-                                        </button>
-                                    )}
+                                {/* Stage 60: no action buttons (handler assignment is required and auto-advances to "Handler Set") */}
 
                                 {/* General stages - Schedule Meeting and Communication Started */}
                                 {/* Only show for stages that haven't been handled by specific sections above */}
@@ -2814,51 +3268,339 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     ) : (
                                         <>
                                             {/* Closed state check */}
-                                            {selectedClient && areStagesEquivalent(currentStageName, 'Case Closed') ? (
-                                                <div className="px-4 py-2 text-sm text-gray-600">
-                                                    No action available
-                                                </div>
+                                            {selectedClient && (areStagesEquivalent(currentStageName, 'Case Closed') || (isStageNumeric && stageNumeric === 200)) ? (
+                                                ((isStageNumeric && stageNumeric === 200) || Number((selectedClient as any)?.stage) === 200) ? (
+                                                    <>
+                                                        <div className="w-full mt-3 flex justify-end">
+                                                            <div className="w-full max-w-xl ml-auto">
+                                                                {isLoadingLeadSubEfforts ? (
+                                                                    <div className="text-sm text-gray-500">Loading sub efforts…</div>
+                                                                ) : leadSubEfforts.length > 0 ? (
+                                                                    <div className="rounded-2xl border border-base-200 bg-base-100 px-4 py-3 shadow-sm">
+                                                                        <div className="flex items-center justify-between gap-3 mb-2">
+                                                                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                                                                Sub efforts log
+                                                                            </div>
+                                                                            <button
+                                                                                type="button"
+                                                                                className="btn btn-ghost btn-xs"
+                                                                                onClick={() => openSubEffortsModal(null)}
+                                                                            >
+                                                                                View all
+                                                                            </button>
+                                                                        </div>
+                                                                        <div className="space-y-1.5">
+                                                                            {leadSubEfforts.map((row: any) => {
+                                                                                const name = row?.sub_efforts?.name ?? '—';
+                                                                                const who = row?.tenants_employee?.display_name ?? row?.created_by ?? '—';
+                                                                                const when = row?.created_at ? new Date(row.created_at).toLocaleString() : '—';
+                                                                                return (
+                                                                                    <button
+                                                                                        key={row.id}
+                                                                                        type="button"
+                                                                                        onClick={() => openSubEffortsModal(row.id)}
+                                                                                        className="w-full text-left rounded-xl border border-base-200 bg-gray-50/60 px-3 py-2 hover:bg-gray-50 transition"
+                                                                                    >
+                                                                                        <div className="flex items-center justify-between gap-3">
+                                                                                            <div className="min-w-0">
+                                                                                                <div className="font-semibold text-sm truncate text-gray-800">{name}</div>
+                                                                                                <div className="mt-0.5 text-xs text-gray-500 truncate">
+                                                                                                    by <span className="font-medium text-gray-700">{String(who)}</span>
+                                                                                                </div>
+                                                                                            </div>
+                                                                                            <div className="text-[11px] text-gray-400 whitespace-nowrap">{when}</div>
+                                                                                        </div>
+                                                                                    </button>
+                                                                                );
+                                                                            })}
+                                                                        </div>
+                                                                    </div>
+                                                                ) : (
+                                                                    <div className="text-sm text-gray-500">No sub efforts yet.</div>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                        <SubEffortsLogModal
+                                                            open={isSubEffortsModalOpen}
+                                                            onClose={() => setIsSubEffortsModalOpen(false)}
+                                                            rows={leadSubEfforts}
+                                                            initialSelectedRowId={subEffortsModalRowId}
+                                                            onRefresh={() => void fetchLeadSubEfforts()}
+                                                        />
+                                                    </>
+                                                ) : (
+                                                    <div className="px-4 py-2 text-sm text-gray-600">
+                                                        No action available
+                                                    </div>
+                                                )
                                             ) : (
                                                 <>
-                                                    {/* Handler Set Stage */}
-                                                    {areStagesEquivalent(currentStageName, 'Handler Set') && (
-                                                        <button
-                                                            onClick={handleStartCase}
-                                                            className="btn btn-primary rounded-full px-5 gap-2"
-                                                        >
-                                                            <PlayIcon className="w-5 h-5" />
-                                                            Start Case
-                                                        </button>
-                                                    )}
+                                                    {/* Stage 105: no action buttons (advances via payments plan) */}
+                                                    {(areStagesEquivalent(currentStageName, 'Handler Set') ||
+                                                        (isStageNumeric && stageNumeric === 105)) && nextDuePayment ? (
+                                                        <div className="w-full flex justify-center">
+                                                            <div className="w-full max-w-xl rounded-2xl border border-amber-200/70 bg-amber-50 px-4 py-3 text-amber-900 shadow-sm">
+                                                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
+                                                                    <div className="text-sm font-semibold">Next payment due</div>
+                                                                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
+                                                                        <div className="text-sm tabular-nums text-right whitespace-nowrap">
+                                                                        {(() => {
+                                                                            const isLegacy = !!(nextDuePayment as any)?.isLegacy;
+                                                                            const base = Number((nextDuePayment as any)?.value ?? 0);
+                                                                            const vat = Number(
+                                                                                isLegacy
+                                                                                    ? (nextDuePayment as any)?.vat_value ?? 0
+                                                                                    : (nextDuePayment as any)?.value_vat ?? 0
+                                                                            );
+                                                                            const gross =
+                                                                                (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
+                                                                            const currency =
+                                                                                (nextDuePayment as any)?.currency ??
+                                                                                (nextDuePayment as any)?.accounting_currencies?.iso_code ??
+                                                                                (nextDuePayment as any)?.accounting_currencies?.name ??
+                                                                                '';
+                                                                            const dateRaw =
+                                                                                (nextDuePayment as any)?.due_date ?? (nextDuePayment as any)?.date ?? null;
+                                                                            const dateLabel = dateRaw ? new Date(dateRaw).toLocaleDateString() : '—';
+                                                                            const amountLabel = Number.isFinite(gross)
+                                                                                ? gross.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                                                                                : '0';
+                                                                            return (
+                                                                                <span>
+                                                                                    <span className="font-semibold">
+                                                                                        {currency ? `${currency} ` : ''}
+                                                                                        {amountLabel}
+                                                                                    </span>
+                                                                                    {' · '}
+                                                                                    <span className="opacity-80">{dateLabel}</span>
+                                                                                </span>
+                                                                            );
+                                                                        })()}
+                                                                        </div>
+                                                                        {(() => {
+                                                                            const isLegacy = !!(nextDuePayment as any)?.isLegacy;
+                                                                            const ready =
+                                                                                (nextDuePayment as any)?.ready_to_pay === true ||
+                                                                                ((isLegacy && !!(nextDuePayment as any)?.due_date) ? true : false);
+                                                                            if (!ready) return null;
+                                                                            const by =
+                                                                                (nextDuePayment as any)?.ready_to_pay_by_display_name ??
+                                                                                (nextDuePayment as any)?.tenants_employee?.display_name ??
+                                                                                (nextDuePayment as any)?.updated_by ??
+                                                                                (nextDuePayment as any)?.paid_by ??
+                                                                                '—';
+                                                                            return (
+                                                                                <div className="flex items-center justify-end gap-2 whitespace-nowrap">
+                                                                                    <span className="btn btn-success btn-sm pointer-events-none gap-1.5 text-white rounded-full px-3">
+                                                                                        <CheckCircleIcon className="h-4 w-4" />
+                                                                                        Sent to finance
+                                                                                    </span>
+                                                                                    <span className="text-xs text-amber-800/80 whitespace-nowrap">
+                                                                                        by <span className="font-semibold">{String(by)}</span>
+                                                                                    </span>
+                                                                                </div>
+                                                                            );
+                                                                        })()}
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    ) : null}
 
                                                     {/* Handler Started Stage */}
                                                     {areStagesEquivalent(currentStageName, 'Handler Started') && (
                                                         <>
-                                                            <button
-                                                                onClick={() => updateLeadStage('Application submitted')}
-                                                                className="btn btn-success rounded-full px-5 gap-2"
-                                                            >
-                                                                <DocumentCheckIcon className="w-5 h-5" />
-                                                                Application Submitted
-                                                            </button>
-                                                            <button
-                                                                onClick={() => updateLeadStage('Case Closed')}
-                                                                className="btn btn-outline btn-ghost rounded-full px-5 gap-2"
-                                                            >
-                                                                <CheckCircleIcon className="w-5 h-5" />
-                                                                Close Case
-                                                            </button>
+                                                            <div className="flex items-center justify-end gap-3">
+                                                                <button
+                                                                    onClick={() => updateLeadStage(200)}
+                                                                    className="btn btn-outline btn-ghost rounded-full px-5 gap-2"
+                                                                >
+                                                                    <CheckCircleIcon className="w-5 h-5" />
+                                                                    Finalize Case
+                                                                </button>
+                                                                <div className="dropdown dropdown-end">
+                                                                    <button
+                                                                        type="button"
+                                                                        className="btn btn-success rounded-full px-5 gap-2 !text-white"
+                                                                        disabled={isLoadingSubEfforts || isSavingSubEffort}
+                                                                    >
+                                                                        <DocumentCheckIcon className="w-5 h-5 text-white" />
+                                                                        Sub efforts
+                                                                        <ChevronDownIcon className="w-4 h-4 text-white" />
+                                                                    </button>
+                                                                    <ul tabIndex={0} className="dropdown-content z-[330] menu p-2 shadow bg-base-100 rounded-box w-72">
+                                                                        {(() => {
+                                                                            const usedActive = new Set(
+                                                                                (leadSubEfforts || [])
+                                                                                    .filter((r: any) => (r as any)?.active !== false)
+                                                                                    .map((r: any) =>
+                                                                                        Number((r as any)?.sub_effort_id ?? (r as any)?.sub_efforts?.id)
+                                                                                    )
+                                                                                    .filter((n: any) => Number.isFinite(n))
+                                                                            );
+                                                                            const allOpts = (subEfforts.length > 0 ? subEfforts : [
+                                                                                { id: 1, name: 'Aplication submitted' },
+                                                                                { id: 2, name: 'Communication with client' },
+                                                                            ]);
+                                                                            const remaining = allOpts.filter(opt => !usedActive.has(Number(opt.id)));
+                                                                            if (remaining.length === 0) {
+                                                                                return (
+                                                                                    <li>
+                                                                                        <span className="px-3 py-2 text-sm text-gray-500">
+                                                                                            No more sub efforts
+                                                                                        </span>
+                                                                                    </li>
+                                                                                );
+                                                                            }
+                                                                            return remaining.map(opt => (
+                                                                                <li key={opt.id}>
+                                                                                    <button
+                                                                                        type="button"
+                                                                                        onClick={() => {
+                                                                                            void handleSelectSubEffort(opt);
+                                                                                        }}
+                                                                                        className="text-sm"
+                                                                                    >
+                                                                                        {opt.name}
+                                                                                    </button>
+                                                                                </li>
+                                                                            ));
+                                                                        })()}
+                                                                    </ul>
+                                                                </div>
+                                                            </div>
+                                                            <div className="w-full mt-3 flex justify-end">
+                                                                <div className="w-full max-w-xl ml-auto">
+                                                                {isLoadingLeadSubEfforts ? (
+                                                                    <div className="text-sm text-gray-500">Loading sub efforts…</div>
+                                                                ) : leadSubEfforts.length > 0 ? (
+                                                                    <div className="rounded-2xl border border-base-200 bg-base-100 px-4 py-3 shadow-sm">
+                                                                        <div className="flex items-center justify-between gap-3 mb-2">
+                                                                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                                                                Sub efforts log
+                                                                            </div>
+                                                                            <button
+                                                                                type="button"
+                                                                                className="btn btn-ghost btn-xs"
+                                                                                onClick={() => openSubEffortsModal(null)}
+                                                                            >
+                                                                                View all
+                                                                            </button>
+                                                                        </div>
+                                                                        <div className="space-y-1.5">
+                                                                            {leadSubEfforts.map((row: any) => {
+                                                                                const name = row?.sub_efforts?.name ?? '—';
+                                                                                const who = row?.tenants_employee?.display_name ?? row?.created_by ?? '—';
+                                                                                const when = row?.created_at ? new Date(row.created_at).toLocaleString() : '—';
+                                                                                return (
+                                                                                    <button
+                                                                                        key={row.id}
+                                                                                        type="button"
+                                                                                        onClick={() => openSubEffortsModal(row.id)}
+                                                                                        className="w-full text-left rounded-xl border border-base-200 bg-gray-50/60 px-3 py-2 hover:bg-gray-50 transition"
+                                                                                    >
+                                                                                        <div className="flex items-center justify-between gap-3">
+                                                                                            <div className="min-w-0">
+                                                                                                <div className="font-semibold text-sm truncate text-gray-800">{name}</div>
+                                                                                                <div className="mt-0.5 text-xs text-gray-500 truncate">
+                                                                                                    by <span className="font-medium text-gray-700">{String(who)}</span>
+                                                                                                </div>
+                                                                                            </div>
+                                                                                            <div className="text-[11px] text-gray-400 whitespace-nowrap">{when}</div>
+                                                                                        </div>
+                                                                                    </button>
+                                                                                );
+                                                                            })}
+                                                                        </div>
+                                                                    </div>
+                                                                ) : (
+                                                                    <div className="text-sm text-gray-500">No sub efforts yet.</div>
+                                                                )}
+                                                                </div>
+                                                            </div>
+                                                            <SubEffortsLogModal
+                                                                open={isSubEffortsModalOpen}
+                                                                onClose={() => setIsSubEffortsModalOpen(false)}
+                                                                rows={leadSubEfforts}
+                                                                initialSelectedRowId={subEffortsModalRowId}
+                                                                onRefresh={() => void fetchLeadSubEfforts()}
+                                                            />
+                                                        </>
+                                                    )}
+
+                                                    {/* Stage 200: keep showing Sub efforts log (read-only) */}
+                                                    {(() => {
+                                                        const inferredStageNumeric = Number((selectedClient as any)?.stage ?? stageNumeric ?? NaN);
+                                                        return (isStageNumeric && stageNumeric === 200) || inferredStageNumeric === 200;
+                                                    })() && (
+                                                        <>
+                                                            <div className="w-full mt-3 flex justify-end">
+                                                                <div className="w-full max-w-xl ml-auto">
+                                                                    {isLoadingLeadSubEfforts ? (
+                                                                        <div className="text-sm text-gray-500">Loading sub efforts…</div>
+                                                                    ) : leadSubEfforts.length > 0 ? (
+                                                                        <div className="rounded-2xl border border-base-200 bg-base-100 px-4 py-3 shadow-sm">
+                                                                            <div className="flex items-center justify-between gap-3 mb-2">
+                                                                                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+                                                                                    Sub efforts log
+                                                                                </div>
+                                                                                <button
+                                                                                    type="button"
+                                                                                    className="btn btn-ghost btn-xs"
+                                                                                    onClick={() => openSubEffortsModal(null)}
+                                                                                >
+                                                                                    View all
+                                                                                </button>
+                                                                            </div>
+                                                                            <div className="space-y-1.5">
+                                                                                {leadSubEfforts.map((row: any) => {
+                                                                                    const name = row?.sub_efforts?.name ?? '—';
+                                                                                    const who = row?.tenants_employee?.display_name ?? row?.created_by ?? '—';
+                                                                                    const when = row?.created_at ? new Date(row.created_at).toLocaleString() : '—';
+                                                                                    return (
+                                                                                        <button
+                                                                                            key={row.id}
+                                                                                            type="button"
+                                                                                            onClick={() => openSubEffortsModal(row.id)}
+                                                                                            className="w-full text-left rounded-xl border border-base-200 bg-gray-50/60 px-3 py-2 hover:bg-gray-50 transition"
+                                                                                        >
+                                                                                            <div className="flex items-center justify-between gap-3">
+                                                                                                <div className="min-w-0">
+                                                                                                    <div className="font-semibold text-sm truncate text-gray-800">{name}</div>
+                                                                                                    <div className="mt-0.5 text-xs text-gray-500 truncate">
+                                                                                                        by <span className="font-medium text-gray-700">{String(who)}</span>
+                                                                                                    </div>
+                                                                                                </div>
+                                                                                                <div className="text-[11px] text-gray-400 whitespace-nowrap">{when}</div>
+                                                                                            </div>
+                                                                                        </button>
+                                                                                    );
+                                                                                })}
+                                                                            </div>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <div className="text-sm text-gray-500">No sub efforts yet.</div>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                            <SubEffortsLogModal
+                                                                open={isSubEffortsModalOpen}
+                                                                onClose={() => setIsSubEffortsModalOpen(false)}
+                                                                rows={leadSubEfforts}
+                                                                initialSelectedRowId={subEffortsModalRowId}
+                                                                onRefresh={() => void fetchLeadSubEfforts()}
+                                                            />
                                                         </>
                                                     )}
 
                                                     {/* Application submitted Stage */}
                                                     {areStagesEquivalent(currentStageName, 'Application submitted') && (
                                                         <button
-                                                            onClick={() => updateLeadStage('Case Closed')}
+                                                            onClick={() => updateLeadStage(200)}
                                                             className="btn btn-outline btn-ghost rounded-full px-5 gap-2"
                                                         >
                                                             <CheckCircleIcon className="w-5 h-5" />
-                                                            Close Case
+                                                                    Finalize Case
                                                         </button>
                                                     )}
 
@@ -3015,18 +3757,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         </>
                                                     )}
 
-                                                    {/* Client signed agreement Stage */}
-                                                    {(areStagesEquivalent(currentStageName, 'Client signed agreement') ||
-                                                        areStagesEquivalent(currentStageName, 'client signed agreement') ||
-                                                        areStagesEquivalent(currentStageName, 'client_signed')) && (
-                                                            <button
-                                                                onClick={() => updateLeadStage('payment_request_sent')}
-                                                                className="btn btn-primary rounded-full px-5 gap-2"
-                                                            >
-                                                                <CurrencyDollarIcon className="w-5 h-5" />
-                                                                Payment request sent
-                                                            </button>
-                                                        )}
+                                                    {/* Stage 60: no action buttons (handler assignment is required and auto-advances to "Handler Set") */}
 
                                                     {/* General stages - Schedule Meeting and Communication Started */}
                                                     {selectedClient &&

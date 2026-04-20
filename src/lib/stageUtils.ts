@@ -5,6 +5,35 @@ let stageNamesCache: { [key: string]: string } = {};
 let stageColoursCache: { [key: string]: string } = {};
 let isCacheInitialized = false;
 
+// Bump version when stage names are renamed in DB (forces refetch).
+const STAGE_CACHE_STORAGE_KEY = 'leadStagesCache:v2';
+const STAGE_CACHE_MAX_AGE_MS = 1000 * 60 * 60 * 24; // 24h
+
+// Best-effort restore from localStorage so stage colours survive refresh.
+(() => {
+  try {
+    if (typeof window === 'undefined') return;
+    const raw = window.localStorage.getItem(STAGE_CACHE_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as {
+      savedAt?: number;
+      names?: { [key: string]: string };
+      colours?: { [key: string]: string };
+    };
+    const savedAt = Number(parsed?.savedAt ?? 0);
+    if (!Number.isFinite(savedAt) || savedAt <= 0) return;
+    if (Date.now() - savedAt > STAGE_CACHE_MAX_AGE_MS) return;
+    const names = parsed?.names && typeof parsed.names === 'object' ? parsed.names : null;
+    const colours = parsed?.colours && typeof parsed.colours === 'object' ? parsed.colours : null;
+    if (!names || !colours) return;
+    stageNamesCache = names;
+    stageColoursCache = colours;
+    isCacheInitialized = Object.keys(stageNamesCache).length > 0 || Object.keys(stageColoursCache).length > 0;
+  } catch {
+    // ignore
+  }
+})();
+
 /**
  * Fetches stage names from the lead_stages table and caches them
  */
@@ -37,6 +66,17 @@ export const fetchStageNames = async (): Promise<{ [key: string]: string }> => {
       // Update cache
       stageNamesCache = stageMapping;
       isCacheInitialized = true;
+
+      try {
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(
+            STAGE_CACHE_STORAGE_KEY,
+            JSON.stringify({ savedAt: Date.now(), names: stageNamesCache, colours: stageColoursCache })
+          );
+        }
+      } catch {
+        // ignore
+      }
       
       return stageMapping;
     }
@@ -57,6 +97,11 @@ export const getStageName = (stageId: string): string => {
   // Convert to string if it's a number
   const stageIdStr = String(stageId);
   
+  // Prefer DB/cache mapping first so renames take effect immediately.
+  if (stageNamesCache[stageIdStr]) {
+    return stageNamesCache[stageIdStr];
+  }
+
   // Special mapping for known stage IDs that might not be in the database
   const specialStageMappings: { [key: string]: string } = {
     '0': 'Created',
@@ -78,7 +123,6 @@ export const getStageName = (stageId: string): string => {
     '105': 'Handler Set',
     '110': 'Handler Started',
     '150': 'Application submitted',
-    '200': 'Case Closed',
     'meeting_scheduled': 'Meeting scheduled',
     'scheduler_assigned': 'Scheduler assigned',
     'Staff Meeting': 'Staff Meeting'
@@ -87,11 +131,6 @@ export const getStageName = (stageId: string): string => {
   // Check special mappings first
   if (specialStageMappings[stageIdStr]) {
     return specialStageMappings[stageIdStr];
-  }
-
-  // First try to get the name from the cache
-  if (stageNamesCache[stageIdStr]) {
-    return stageNamesCache[stageIdStr];
   }
 
   // Fallback to formatting the stage ID if no name is found

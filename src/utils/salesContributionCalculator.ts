@@ -518,6 +518,8 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
         const isHandlerOnly = employeeRoles.length === 1 && employeeRoles[0] === 'Handler';
         if (employeeRoles.length > 0 && !isHandlerOnly) {
             debugNewLeadsWithRoles++;
+            // Use the same full-amount basis as roleCombinationMap / totalSigned so norm signed and contribution stay aligned (after-fee-only here used to crush role-weighted totals vs full norm signed).
+            const amountForSignedPortion = calculateNewLeadFullAmount(lead);
             const amountAfterFee = calculateNewLeadAmount(lead);
             const leadRoles = {
                 closer: lead.closer,
@@ -529,7 +531,7 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
             };
 
             const signedPortion = calculateSignedPortionAmount(
-                amountAfterFee,
+                amountForSignedPortion,
                 leadRoles,
                 employeeId,
                 false,
@@ -540,14 +542,15 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
             debugNewLeadsPortion += signedPortion;
 
             // Debug: Log if signedPortion is 0 but should have value
-            if (signedPortion === 0 && amountAfterFee > 0) {
+            if (signedPortion === 0 && amountForSignedPortion > 0) {
                 const calculatedPercentage = calculateSignedPortionPercentage(leadRoles, employeeId, rolePercentages, employeeName);
                 console.warn(`⚠️ Zero signedPortion for new lead ${lead.id} (employee ${employeeId} ${employeeName}):`, {
+                    amountForSignedPortion,
                     amountAfterFee,
                     employeeRoles,
                     leadRoles,
                     calculatedPercentage,
-                    signedPortionShouldBe: amountAfterFee * calculatedPercentage,
+                    signedPortionShouldBe: amountForSignedPortion * calculatedPercentage,
                     rolePercentages: rolePercentages ? Array.from(rolePercentages.entries()) : []
                 });
             }
@@ -571,6 +574,7 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
         const isHandlerOnly = employeeRoles.length === 1 && employeeRoles[0] === 'Handler';
         if (employeeRoles.length > 0 && !isHandlerOnly) {
             debugLegacyLeadsWithRoles++;
+            const amountForSignedPortion = calculateLegacyLeadFullAmount(lead);
             const amountAfterFee = calculateLegacyLeadAmount(lead);
             const leadRoles = {
                 closer_id: lead.closer_id,
@@ -582,7 +586,7 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
             };
 
             const signedPortion = calculateSignedPortionAmount(
-                amountAfterFee,
+                amountForSignedPortion,
                 leadRoles,
                 employeeId,
                 true,
@@ -593,8 +597,9 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
             debugLegacyLeadsPortion += signedPortion;
 
             // Debug: Log if signedPortion is 0 but should have value
-            if (signedPortion === 0 && amountAfterFee > 0) {
+            if (signedPortion === 0 && amountForSignedPortion > 0) {
                 console.warn(`⚠️ Zero signedPortion for legacy lead ${lead.id} (employee ${employeeId}):`, {
+                    amountForSignedPortion,
                     amountAfterFee,
                     employeeRoles,
                     leadRoles,

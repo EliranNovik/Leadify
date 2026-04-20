@@ -5,7 +5,7 @@ import { useCachedFetch } from '../hooks/useCachedFetch';
 import { usePersistedState } from '../hooks/usePersistedState';
 import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, MapPinIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon, PlusIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import DocumentModal from './DocumentModal';
-import { FaWhatsapp } from 'react-icons/fa';
+import { FaFileExcel, FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
 import { createPortal } from 'react-dom';
 import { useMsal } from '@azure/msal-react';
@@ -21,6 +21,7 @@ import StaffMeetingEditModal from './StaffMeetingEditModal';
 import DepartmentList from './DepartmentList';
 import SchedulerWhatsAppModal from './SchedulerWhatsAppModal';
 import SchedulerEmailThreadModal from './SchedulerEmailThreadModal';
+import * as XLSX from 'xlsx';
 
 const DEBUG_CALENDAR = String(import.meta.env.VITE_DEBUG_CALENDAR || '').toLowerCase() === 'true';
 const calDebug = (...args: any[]) => {
@@ -576,6 +577,7 @@ const CalendarPage: React.FC = () => {
   const [meetingCounts, setMeetingCounts] = useState<{ [clientId: string]: number }>({});
   const [previousManagers, setPreviousManagers] = useState<{ [meetingId: number]: string }>({});
   const [meetingLocations, setMeetingLocations] = useState<{ [locationId: number]: string }>({});
+  const [meetingLocationIsPhysical, setMeetingLocationIsPhysical] = useState<{ [locationId: number]: boolean }>({});
   // Map of meeting location name -> default_link (from tenants_meetinglocation)
   const [meetingLocationLinks, setMeetingLocationLinks] = useState<{ [locationName: string]: string }>({});
   // Map of meeting location name -> location ID (for reverse lookup)
@@ -610,7 +612,7 @@ const CalendarPage: React.FC = () => {
 
   // Meeting type filter state
   const [selectedMeetingType, setSelectedMeetingType] = useState<
-    'all' | 'potential' | 'active' | 'staff' | 'paid'
+    'all' | 'potential' | 'active' | 'staff' | 'paid' | 'physical' | 'online'
   >('all');
 
   // Staff meetings state
@@ -2169,16 +2171,18 @@ const CalendarPage: React.FC = () => {
           )
         `;
 
-        let regularMeetingsQuery = supabase
-          .from('meetings')
-          .select(meetingsSelect)
-          .or('status.is.null,status.neq.canceled');
+        const runRegularMeetingsQuery = async (selectStr: string) => {
+          let q = supabase
+            .from('meetings')
+            .select(selectStr)
+            .or('status.is.null,status.neq.canceled');
 
-        if (datesManuallySet && dateRangeFrom && dateRangeTo) {
-          regularMeetingsQuery = regularMeetingsQuery
-            .gte('meeting_date', dateRangeFrom)
-            .lte('meeting_date', dateRangeTo);
-        }
+          if (datesManuallySet && dateRangeFrom && dateRangeTo) {
+            q = q.gte('meeting_date', dateRangeFrom).lte('meeting_date', dateRangeTo);
+          }
+
+          return await q.order('meeting_date', { ascending: false });
+        };
 
         // Do NOT block meetings load on stage-names refresh; kick it off in the background.
         void (async () => {
@@ -2191,8 +2195,13 @@ const CalendarPage: React.FC = () => {
         })();
 
         const [{ data: allMeetingsData, error: allMeetingsError }, pastStagesData] = await Promise.all([
-          regularMeetingsQuery.order('meeting_date', { ascending: false }),
-          fetchPastStagesData()
+          (async () => {
+            const withAddress = await runRegularMeetingsQuery(meetingsSelect);
+            if (!withAddress.error) return withAddress;
+
+            return withAddress;
+          })(),
+          fetchPastStagesData(),
         ]);
 
         setLeadsWithPastStages(pastStagesData);
@@ -2678,6 +2687,36 @@ const CalendarPage: React.FC = () => {
     if (selectedMeetingType !== 'all') {
       const beforeFilter = filtered.length;
       filtered = filtered.filter(m => {
+        // Physical / Online are treated as location-type filters (exclude staff meetings)
+        if (selectedMeetingType === 'physical' || selectedMeetingType === 'online') {
+          if (m.calendar_type === 'staff') return false;
+          const lead = m.lead || {};
+          const legacyLead = m.legacy_lead || {};
+          const locationIdRaw =
+            (m as any).meeting_location_id ??
+            (lead as any).meeting_location_id ??
+            (legacyLead as any).meeting_location_id ??
+            null;
+          const locationIdDirect = locationIdRaw != null ? Number(locationIdRaw) : NaN;
+
+          // Fallback: if we only have a location name, resolve it to an ID using tenants_meetinglocation mapping.
+          const locationName =
+            (m as any).meeting_location ??
+            (m as any).location ??
+            (lead as any).meeting_location ??
+            (legacyLead as any).meeting_location ??
+            null;
+          const locationIdFromName =
+            locationName && meetingLocationNameToId[String(locationName)]
+              ? Number(meetingLocationNameToId[String(locationName)])
+              : NaN;
+
+          const locationId = Number.isFinite(locationIdDirect) ? locationIdDirect : locationIdFromName;
+
+          // Requirement: physical if is_phisical_location === true, otherwise online.
+          const isPhysical = Number.isFinite(locationId) ? meetingLocationIsPhysical[locationId] === true : false;
+          return selectedMeetingType === 'physical' ? isPhysical : !isPhysical;
+        }
         if (selectedMeetingType === 'potential' && m.calendar_type !== 'potential_client') {
           return false;
         }
@@ -2823,13 +2862,76 @@ const CalendarPage: React.FC = () => {
     setTotalAmount(totalAmountInNIS);
 
 
-  }, [appliedFromDate, appliedToDate, selectedStaff, selectedMeetingType, meetings, staffMeetings]);
+  }, [appliedFromDate, appliedToDate, selectedStaff, selectedMeetingType, meetingLocationIsPhysical, meetings, staffMeetings]);
 
 
 
   const FALLBACK_STAGE_COLOR = '#3b28c7';
   const NEUTRAL_STAGE_BG = '#f3f4f6';
   const NEUTRAL_STAGE_TEXT = '#374151';
+
+  const exportMeetingsToExcel = () => {
+    try {
+      const resolveEmployeeNameForExport = (raw: any) => {
+        if (raw === null || raw === undefined) return '';
+        const rawStr = String(raw).trim();
+        if (!rawStr) return '';
+
+        // If it's a plain numeric ID, resolve it to display name (legacy data often stores IDs).
+        if (/^\d+$/.test(rawStr)) {
+          return getEmployeeDisplayName(rawStr);
+        }
+
+        return rawStr;
+      };
+
+      const rows = (filteredMeetings || []).map((m: any) => {
+        const lead = m.lead || {};
+        const legacyLead = m.legacy_lead || {};
+        const leadNumber = lead.lead_number || legacyLead.lead_number || '';
+        const clientName = lead.name || legacyLead.name || m.client_name || '';
+        const typeLabel =
+          m.calendar_type === 'staff'
+            ? 'Staff'
+            : m.calendar_type === 'potential_client'
+              ? 'Potential'
+              : m.calendar_type === 'active_client'
+                ? 'Active'
+                : String(m.calendar_type || '');
+        const locationIdRaw =
+          (m as any).meeting_location_id ??
+          (lead as any).meeting_location_id ??
+          (legacyLead as any).meeting_location_id ??
+          null;
+        const locationId = locationIdRaw != null ? Number(locationIdRaw) : NaN;
+        const locationName = Number.isFinite(locationId)
+          ? (meetingLocations[locationId] || '')
+          : (m.meeting_location || m.location || '');
+        return {
+          Date: m.meeting_date || '',
+          Time: (m.meeting_time || '').slice(0, 5),
+          Type: typeLabel,
+          Lead: leadNumber,
+          Client: clientName,
+          Manager: resolveEmployeeNameForExport(m.meeting_manager || lead.manager || ''),
+          Helper: resolveEmployeeNameForExport(m.helper || lead.helper || ''),
+          Location: locationName,
+        };
+      });
+
+      const ws = XLSX.utils.json_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Meetings');
+      const from = appliedFromDate || fromDate || '';
+      const to = appliedToDate || toDate || '';
+      const fileName = `meetings_${from || 'from'}_${to || 'to'}.xlsx`;
+      XLSX.writeFile(wb, fileName);
+      toast.success('Excel exported');
+    } catch (e) {
+      console.error('Excel export failed:', e);
+      toast.error('Failed to export to Excel');
+    }
+  };
 
   const getContrastingTextColor = (hexColor?: string | null) => {
     if (!hexColor) return '#1f2937';
@@ -3578,17 +3680,41 @@ const CalendarPage: React.FC = () => {
   // Fetch employee availability data
   const fetchMeetingLocations = async () => {
     try {
-      const { data: locationsData, error } = await supabase
-        .from('tenants_meetinglocation')
-        .select('id, name, default_link');
-
-      if (error) throw error;
+      // Column name differs across environments: is_physical_location vs is_phisical_location
+      let locationsData: any[] | null = null;
+      {
+        const res = await supabase
+          .from('tenants_meetinglocation')
+          .select('id, name, default_link, is_physical_location');
+        if (!res.error) {
+          locationsData = res.data as any[];
+        } else {
+          const err: any = res.error;
+          const msg = String(err?.message || '');
+          // fallback: older env column typo or missing address column
+          if (err?.code === '42703' && msg.includes('is_physical_location')) {
+            const fallback = await supabase
+              .from('tenants_meetinglocation')
+              .select('id, name, default_link, is_phisical_location');
+            if (!fallback.error) {
+              locationsData = fallback.data as any[];
+            } else {
+              throw fallback.error;
+            }
+          } else {
+            throw res.error;
+          }
+        }
+      }
 
       const locationsMap: { [locationId: number]: string } = {};
       const linksMap: { [locationName: string]: string } = {};
       const nameToIdMap: { [locationName: string]: number } = {};
+      const physicalMap: { [locationId: number]: boolean } = {};
       locationsData?.forEach(location => {
         locationsMap[location.id] = location.name;
+        physicalMap[location.id] =
+          (location as any).is_physical_location === true || (location as any).is_phisical_location === true;
         if (location.name) {
           nameToIdMap[location.name] = location.id;
           if (location.default_link) {
@@ -3600,6 +3726,7 @@ const CalendarPage: React.FC = () => {
       setMeetingLocations(locationsMap);
       setMeetingLocationLinks(linksMap);
       setMeetingLocationNameToId(nameToIdMap);
+      setMeetingLocationIsPhysical(physicalMap);
     } catch (error) {
       console.error('Error fetching meeting locations:', error);
     }
@@ -5418,7 +5545,6 @@ const CalendarPage: React.FC = () => {
             )}
           </td>
           <td className="text-sm sm:text-base">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
-          <td className="text-sm sm:text-base">{meeting.custom_address || '--'}</td>
           <td>
             <div className="flex items-center justify-center">
               {getStageBadge(lead.stage ?? meeting.stage)}
@@ -6134,14 +6260,31 @@ const CalendarPage: React.FC = () => {
             <select
               className="select select-bordered flex-1"
               value={selectedMeetingType}
-              onChange={(e) => setSelectedMeetingType(e.target.value as 'all' | 'potential' | 'active' | 'staff' | 'paid')}
+              onChange={(e) =>
+                setSelectedMeetingType(
+                  e.target.value as 'all' | 'potential' | 'active' | 'staff' | 'paid' | 'physical' | 'online'
+                )
+              }
             >
               <option value="all">All Meetings</option>
               <option value="potential">Potential Clients</option>
               <option value="active">Active Clients</option>
               <option value="staff">Staff Meetings</option>
               <option value="paid">Paid Meetings</option>
+              <option value="physical">Physical meetings</option>
+              <option value="online">Online meetings</option>
             </select>
+          </div>
+          <div className="flex items-center justify-end">
+            <button
+              type="button"
+              className="btn btn-ghost btn-circle"
+              onClick={exportMeetingsToExcel}
+              title="Export meetings to Excel"
+              aria-label="Export meetings to Excel"
+            >
+              <FaFileExcel className="w-6 h-6 text-green-600" />
+            </button>
           </div>
         </div>
       </div>
@@ -6259,15 +6402,30 @@ const CalendarPage: React.FC = () => {
               <select
                 className="select select-bordered w-full"
                 value={selectedMeetingType}
-                onChange={(e) => setSelectedMeetingType(e.target.value as 'all' | 'potential' | 'active' | 'staff' | 'paid')}
+              onChange={(e) =>
+                setSelectedMeetingType(
+                  e.target.value as 'all' | 'potential' | 'active' | 'staff' | 'paid' | 'physical' | 'online'
+                )
+              }
               >
                 <option value="all">All Meetings</option>
                 <option value="potential">Potential Clients</option>
                 <option value="active">Active Clients</option>
                 <option value="staff">Staff Meetings</option>
                 <option value="paid">Paid Meetings</option>
+              <option value="physical">Physical meetings</option>
+              <option value="online">Online meetings</option>
               </select>
             </div>
+            <button
+              type="button"
+              className="btn btn-ghost btn-circle self-end"
+              onClick={exportMeetingsToExcel}
+              title="Export meetings to Excel"
+              aria-label="Export meetings to Excel"
+            >
+              <FaFileExcel className="w-6 h-6 text-green-600" />
+            </button>
           </div>
         </div>
       )}
@@ -6287,7 +6445,6 @@ const CalendarPage: React.FC = () => {
                 <th className="text-gray-500">Value</th>
                 <th className="text-gray-500 w-20 min-w-[5rem]">Participants</th>
                 <th className="text-gray-500">Location</th>
-                <th className="text-gray-500">Address</th>
                 <th className="text-gray-500">Status</th>
                 <th className="text-gray-500">Actions</th>
               </tr>
@@ -6985,7 +7142,6 @@ const CalendarPage: React.FC = () => {
                                 <th className="text-left text-sm font-semibold text-gray-500">Lead</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Time</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Location</th>
-                                <th className="text-left text-sm font-semibold text-gray-500">Address</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Category</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Expert</th>
                                 <th className="text-left text-sm font-semibold text-gray-500">Language</th>
@@ -7097,9 +7253,6 @@ const CalendarPage: React.FC = () => {
 
                                     {/* Location */}
                                     <td className="text-base">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
-
-                                    {/* Address */}
-                                    <td className="text-base">{meeting.custom_address || '--'}</td>
 
                                     {/* Category */}
                                     <td className="text-base">

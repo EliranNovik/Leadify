@@ -988,6 +988,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           setSelectedPaymentForPaid(null);
           setPaidDate('');
           await refreshPaymentPlans();
+          if (typeof window !== 'undefined' && client?.id) {
+            window.dispatchEvent(new CustomEvent('paymentPlan:changed', { detail: { leadId: String(client.id) } }));
+          }
         } else {
           // Revert the UI state if database update fails
           setPaidMap(prev => ({ ...prev, [id]: false }));

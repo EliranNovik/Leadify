@@ -4,7 +4,7 @@ import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { convertToNIS } from '../lib/currencyConversion';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
-import { ChevronDownIcon, ChevronRightIcon, EyeIcon, ChartBarIcon, UserGroupIcon, BuildingOfficeIcon, SpeakerWaveIcon, CurrencyDollarIcon, PencilIcon, CheckIcon, XMarkIcon, GlobeAltIcon, FlagIcon, BriefcaseIcon, HomeIcon, AcademicCapIcon, RocketLaunchIcon, MapPinIcon, DocumentTextIcon, ScaleIcon, ShieldCheckIcon, BanknotesIcon, CogIcon, HeartIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, UsersIcon, Squares2X2Icon, MagnifyingGlassIcon, LinkIcon, InformationCircleIcon } from '@heroicons/react/24/outline';
+import { ChevronDownIcon, ChevronRightIcon, ChartBarIcon, UserGroupIcon, BuildingOfficeIcon, SpeakerWaveIcon, CurrencyDollarIcon, PencilIcon, CheckIcon, XMarkIcon, GlobeAltIcon, FlagIcon, BriefcaseIcon, HomeIcon, AcademicCapIcon, RocketLaunchIcon, MapPinIcon, DocumentTextIcon, ScaleIcon, ShieldCheckIcon, BanknotesIcon, CogIcon, HeartIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, UsersIcon, Squares2X2Icon, MagnifyingGlassIcon, LinkIcon, InformationCircleIcon } from '@heroicons/react/24/outline';
 import EmployeeRoleLeadsModal from '../components/EmployeeRoleLeadsModal';
 import EmployeeFieldAssignmentsModal from '../components/EmployeeFieldAssignmentsModal';
 import DynamicIsland from '../components/DynamicIsland';
@@ -83,6 +83,258 @@ interface DepartmentData {
   };
 }
 
+const roundContributionMoney = (x: number) => Math.round(x * 100) / 100;
+
+/**
+ * After raw metrics, scale every employee's variable + fixed amounts by the same factor so
+ * Σ(contribution + contributionFixed) across all departments equals invoiced income (cannot exceed it).
+ */
+function scaleAllEmployeesToInvoicedIncome(
+  prev: Map<string, DepartmentData>,
+  totalInvoicedIncome: number
+): Map<string, DepartmentData> {
+  if (!prev.size || totalInvoicedIncome <= 0) return prev;
+
+  let totalBasis = 0;
+  prev.forEach((dept) => {
+    dept.employees.forEach((emp) => {
+      totalBasis += (emp.contribution ?? 0) + (emp.contributionFixed ?? 0);
+    });
+  });
+  if (totalBasis <= 0) return prev;
+
+  const k = totalInvoicedIncome / totalBasis;
+  const byEmployeeId = new Map<number, { c: number; f: number }>();
+
+  prev.forEach((dept) => {
+    dept.employees.forEach((emp) => {
+      const c = emp.contribution ?? 0;
+      const f = emp.contributionFixed ?? 0;
+      byEmployeeId.set(emp.employeeId, {
+        c: roundContributionMoney(c * k),
+        f: roundContributionMoney(f * k),
+      });
+    });
+  });
+
+  let sumAfterRound = 0;
+  let maxEmployeeId = -1;
+  let maxBasis = -1;
+  byEmployeeId.forEach((v, id) => {
+    const b = v.c + v.f;
+    sumAfterRound += b;
+    if (b > maxBasis) {
+      maxBasis = b;
+      maxEmployeeId = id;
+    }
+  });
+
+  const drift = roundContributionMoney(totalInvoicedIncome - sumAfterRound);
+  if (Math.abs(drift) >= 0.005 && maxEmployeeId >= 0) {
+    const v = byEmployeeId.get(maxEmployeeId)!;
+    v.c = roundContributionMoney(v.c + drift);
+    if (v.c < 0) {
+      v.f = roundContributionMoney(v.f + v.c);
+      v.c = 0;
+    }
+  }
+
+  const salaryByEmployeeId = new Map<number, number>();
+  byEmployeeId.forEach((v, id) => {
+    const contributionTotal = v.c + v.f;
+    salaryByEmployeeId.set(id, roundContributionMoney(contributionTotal * 0.4));
+  });
+
+  const targetTotalSalaryBudget = roundContributionMoney(totalInvoicedIncome * 0.4);
+  let sumSalaryBudget = 0;
+  salaryByEmployeeId.forEach((sb) => {
+    sumSalaryBudget += sb;
+  });
+  const salaryBudgetDrift = roundContributionMoney(targetTotalSalaryBudget - sumSalaryBudget);
+  if (Math.abs(salaryBudgetDrift) >= 0.005 && salaryByEmployeeId.size > 0) {
+    let maxSalaryId = -1;
+    let maxSalaryVal = -1;
+    salaryByEmployeeId.forEach((sb, id) => {
+      if (sb > maxSalaryVal) {
+        maxSalaryVal = sb;
+        maxSalaryId = id;
+      }
+    });
+    if (maxSalaryId >= 0) {
+      salaryByEmployeeId.set(
+        maxSalaryId,
+        roundContributionMoney((salaryByEmployeeId.get(maxSalaryId) ?? 0) + salaryBudgetDrift)
+      );
+    }
+  }
+
+  const next = new Map<string, DepartmentData>();
+  prev.forEach((deptData, deptName) => {
+    const employees = deptData.employees.map((emp) => {
+      const scaled = byEmployeeId.get(emp.employeeId);
+      if (!scaled) return emp;
+      const contribution = scaled.c;
+      const contributionFixed = scaled.f;
+      const totalSalaryCost = emp.totalSalaryCost ?? 0;
+      const salaryBudget =
+        salaryByEmployeeId.get(emp.employeeId) ??
+        roundContributionMoney((contribution + contributionFixed) * 0.4);
+      return {
+        ...emp,
+        contribution,
+        contributionFixed,
+        salaryBudget,
+        maxIncentives: salaryBudget - totalSalaryCost,
+      };
+    });
+
+    const deptSigned = employees.reduce((sum, emp) => sum + (emp.signed || 0), 0);
+    const deptDue = employees.reduce((sum, emp) => sum + (emp.due || 0), 0);
+    const deptSignedNormalized = employees.reduce((sum, emp) => sum + (emp.signedNormalized || 0), 0);
+    const deptDueNormalized = employees.reduce((sum, emp) => sum + (emp.dueNormalized || 0), 0);
+    const deptSignedPortion = employees.reduce((sum, emp) => sum + (emp.signedPortion || 0), 0);
+    const deptContribution = employees.reduce((sum, emp) => sum + (emp.contribution || 0), 0);
+    const deptContributionFixed = employees.reduce((sum, emp) => sum + (emp.contributionFixed || 0), 0);
+    const deptTotalSalaryCost = employees.reduce((sum, emp) => sum + (emp.totalSalaryCost || 0), 0);
+    const deptSalaryBudget = employees.reduce((sum, emp) => sum + (emp.salaryBudget || 0), 0);
+    const deptSalaryBrutto = employees.reduce((sum, emp) => sum + (emp.salaryBrutto || 0), 0);
+    const deptMaxIncentives = employees.reduce((sum, emp) => sum + (emp.maxIncentives ?? 0), 0);
+
+    next.set(deptName, {
+      ...deptData,
+      employees,
+      totals: {
+        ...deptData.totals,
+        signed: deptSigned,
+        due: deptDue,
+        signedNormalized: deptSignedNormalized,
+        dueNormalized: deptDueNormalized,
+        signedPortion: deptSignedPortion,
+        contribution: deptContribution,
+        contributionFixed: deptContributionFixed,
+        salaryBudget: deptSalaryBudget,
+        salaryBrutto: deptSalaryBrutto,
+        totalSalaryCost: deptTotalSalaryCost,
+        maxIncentives: deptMaxIncentives,
+      },
+    });
+  });
+
+  return next;
+}
+
+/** Preset ranges lock From/To dates and use averaged salary over the same calendar months. */
+export type SalesContributionPeriodPreset = 'custom' | 'last3months' | 'last6months' | 'last12months';
+
+function getPresetMonthCount(preset: SalesContributionPeriodPreset): number {
+  switch (preset) {
+    case 'last3months':
+      return 3;
+    case 'last6months':
+      return 6;
+    case 'last12months':
+      return 12;
+    default:
+      return 0;
+  }
+}
+
+function formatYmdLocalFromDate(d: Date): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/** First day of (current − (N−1) months) through today, for N = 3 | 6 | 12. */
+export function computeSalesContributionPresetDateRange(
+  preset: Exclude<SalesContributionPeriodPreset, 'custom'>,
+  ref: Date = new Date()
+): { fromDate: string; toDate: string } {
+  const n = getPresetMonthCount(preset);
+  const toDate = formatYmdLocalFromDate(new Date(ref.getFullYear(), ref.getMonth(), ref.getDate()));
+  const from = new Date(ref.getFullYear(), ref.getMonth() - (n - 1), 1);
+  return { fromDate: formatYmdLocalFromDate(from), toDate };
+}
+
+/** Inclusive list of calendar months from fromDate through toDate (by month). */
+function enumerateMonthsFromRange(fromDateStr: string, toDateStr: string): { month: number; year: number }[] {
+  const pairs: { month: number; year: number }[] = [];
+  const [fy, fm] = fromDateStr.split('-').map(Number);
+  const [ty, tm] = toDateStr.split('-').map(Number);
+  let y = fy;
+  let m = fm;
+  for (;;) {
+    pairs.push({ month: m, year: y });
+    if (y === ty && m === tm) break;
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+    if (pairs.length > 400) break;
+  }
+  return pairs;
+}
+
+async function fetchSalaryDataMapForSalesReport(
+  employeeIds: number[],
+  periodPreset: SalesContributionPeriodPreset,
+  filters: { fromDate?: string; toDate?: string },
+  salaryFilter: { month?: number; year?: number }
+): Promise<Map<number, { salaryBrutto: number; totalSalaryCost: number }>> {
+  const result = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
+  if (employeeIds.length === 0) return result;
+
+  let months: { month: number; year: number }[];
+  if (periodPreset === 'custom') {
+    if (!salaryFilter?.month || !salaryFilter?.year) return result;
+    months = [{ month: salaryFilter.month, year: salaryFilter.year }];
+  } else {
+    if (!filters.fromDate || !filters.toDate) return result;
+    months = enumerateMonthsFromRange(filters.fromDate, filters.toDate);
+  }
+  if (months.length === 0) return result;
+
+  const allowed = new Set(months.map((p) => `${p.year}-${p.month}`));
+  const denom = months.length;
+  const minYear = Math.min(...months.map((p) => p.year));
+  const maxYear = Math.max(...months.map((p) => p.year));
+
+  const { data, error } = await supabase
+    .from('employee_salary')
+    .select('employee_id, net_salary, gross_salary, salary_month, salary_year')
+    .in('employee_id', employeeIds)
+    .gte('salary_year', minYear)
+    .lte('salary_year', maxYear);
+
+  if (error || !data) {
+    if (error) console.error('fetchSalaryDataMapForSalesReport:', error);
+    return result;
+  }
+
+  const sumByEmp = new Map<number, { sumNet: number; sumGross: number }>();
+  for (const row of data) {
+    const yr = Number(row.salary_year);
+    const mo = Number(row.salary_month);
+    if (!allowed.has(`${yr}-${mo}`)) continue;
+    const eid = Number(row.employee_id);
+    if (!sumByEmp.has(eid)) sumByEmp.set(eid, { sumNet: 0, sumGross: 0 });
+    const agg = sumByEmp.get(eid)!;
+    agg.sumNet += Number(row.net_salary || 0);
+    agg.sumGross += Number(row.gross_salary || 0);
+  }
+
+  for (const eid of employeeIds) {
+    const agg = sumByEmp.get(eid);
+    result.set(eid, {
+      salaryBrutto: denom > 0 && agg ? agg.sumNet / denom : 0,
+      totalSalaryCost: denom > 0 && agg ? agg.sumGross / denom : 0,
+    });
+  }
+  return result;
+}
+
 // Helper functions for date range filtering (same as SignedSalesReportPage.tsx)
 const toStartOfDayIso = (dateStr: string) => {
   // Use explicit UTC time to avoid timezone shifts
@@ -145,12 +397,14 @@ const SalesContributionPage = () => {
   const [allCategories, setAllCategories] = useState<any[]>([]);
   const [categoryNameToDataMap, setCategoryNameToDataMap] = useState<Map<string, any>>(new Map());
   const [categoriesLoaded, setCategoriesLoaded] = useState(false);
-  const [searchPerformed, setSearchPerformed] = usePersistedState('salesContribution_performed', true, {
+  const [searchPerformed, setSearchPerformed] = usePersistedState('salesContribution_reportShown_v2', false, {
     storage: 'sessionStorage',
   });
   /** 90% of invoiced total due for payment rows with due_date in the report From/To filter — see fetchInvoicedTotalDueNisForDateRange */
   const [totalIncome, setTotalIncome] = useState(0);
-  const [loadingInvoicedIncome, setLoadingInvoicedIncome] = useState(true);
+  const totalIncomeRef = useRef(0);
+  totalIncomeRef.current = totalIncome ?? 0;
+  const [loadingInvoicedIncome, setLoadingInvoicedIncome] = useState(false);
   const [dueNormalizedPercentage, setDueNormalizedPercentage] = usePersistedState('salesContribution_dueNormalizedPercentage', 0, {
     storage: 'sessionStorage',
   });
@@ -163,6 +417,14 @@ const SalesContributionPage = () => {
   }, {
     storage: 'sessionStorage',
   });
+
+  const [periodPreset, setPeriodPreset] = usePersistedState<SalesContributionPeriodPreset>(
+    'salesContribution_periodPreset',
+    'custom',
+    { storage: 'sessionStorage' }
+  );
+
+  const periodFiltersLocked = periodPreset !== 'custom';
 
   // Define department names to match (must be before functions that use it)
   const departmentNames = ['Sales', 'Handlers', 'Partners', 'Marketing', 'Finance'];
@@ -186,7 +448,6 @@ const SalesContributionPage = () => {
   const [salesPartnersFinanceForHandlersModal, setSalesPartnersFinanceForHandlersModal] = useState<Array<{ employeeId: number; employeeName: string; departmentName: 'Sales' | 'Partners' | 'Finance'; photoUrl?: string | null }>>([]);
   const [isMarketingLinkedModalOpen, setIsMarketingLinkedModalOpen] = useState(false);
   const [isCorrectionInfoModalOpen, setIsCorrectionInfoModalOpen] = useState(false);
-  const salaryBudgetAdjustmentIterationsRef = useRef(0);
 
   const [useFixedContributionFromDb, setUseFixedContributionFromDb] = useState(false);
   const [savingRolePercentages, setSavingRolePercentages] = useState(false);
@@ -258,19 +519,22 @@ const SalesContributionPage = () => {
     }
   }, [departmentNames, setDueNormalizedPercentage]);
 
-  const refreshIncomeFromInvoicedForFilter = useCallback(async () => {
+  const refreshIncomeFromInvoicedForFilter = useCallback(async (): Promise<number> => {
     if (!filters.fromDate || !filters.toDate) {
       setTotalIncome(0);
       setLoadingInvoicedIncome(false);
-      return;
+      return 0;
     }
     setLoadingInvoicedIncome(true);
     try {
       const totalDueNis = await fetchInvoicedTotalDueNisForDateRange(filters.fromDate, filters.toDate);
-      setTotalIncome(Math.round(totalDueNis * 0.9));
+      const income = Math.round(totalDueNis * 0.9);
+      setTotalIncome(income);
+      return income;
     } catch (e) {
       console.error('Failed to compute income from invoiced total due for date range:', e);
       setTotalIncome(0);
+      return 0;
     } finally {
       setLoadingInvoicedIncome(false);
     }
@@ -400,21 +664,14 @@ const SalesContributionPage = () => {
       // Clear cache to force recalculation with new role percentages
       setRoleDataCache(new Map());
 
-      // Trigger full batch recalculation instead of individual fetches
-      // This prevents the popcorn effect by calculating everything at once
-      if (departmentData.size > 0 && filters.fromDate && filters.toDate) {
-        console.log('🔄 Role percentages changed, triggering batch recalculation...');
-        handleSearch();
-      }
-
-      toast.success('Role percentages saved successfully');
+      toast.success('Role percentages saved successfully. Click Search to refresh the report.');
     } catch (error: any) {
       console.error('Error saving role percentages:', error);
       toast.error(error.message || 'Failed to save role percentages');
     } finally {
       setSavingRolePercentages(false);
     }
-  }, [tempRolePercentages, rolePercentages, departmentData, filters.fromDate, filters.toDate]);
+  }, [tempRolePercentages, rolePercentages]);
 
   // Save department percentages and income to database
   const saveSettings = useCallback(async () => {
@@ -624,10 +881,6 @@ const SalesContributionPage = () => {
     }
   }, [fetchRolePercentages]); // Only run once on mount
 
-  useEffect(() => {
-    refreshIncomeFromInvoicedForFilter();
-  }, [refreshIncomeFromInvoicedForFilter]);
-
   // Update tempRolePercentages when rolePercentages changes and modal is open
   useEffect(() => {
     if (isDynamicIslandOpen && rolePercentages.size > 0) {
@@ -655,6 +908,8 @@ const SalesContributionPage = () => {
   const [categoryBreakdownCache, setCategoryBreakdownCache] = useState<Map<string, any[]>>(new Map());
   const [loadingCategoryBreakdown, setLoadingCategoryBreakdown] = useState<Set<string>>(new Set());
   const [categoryEmployeesCache, setCategoryEmployeesCache] = useState<Map<string, any[]>>(new Map());
+  const categoryEmployeesCacheRef = useRef<Map<string, any[]>>(categoryEmployeesCache);
+  categoryEmployeesCacheRef.current = categoryEmployeesCache;
   const [loadingCategoryEmployees, setLoadingCategoryEmployees] = useState<Set<string>>(new Set());
   // Track which role sections are expanded/collapsed: Map<fieldName_roleName, boolean>
   const [expandedRoleSections, setExpandedRoleSections] = useState<Map<string, boolean>>(new Map());
@@ -837,7 +1092,13 @@ const SalesContributionPage = () => {
       if (signedPortion <= 0) continue;
       const pctDept = ['Partners', 'Marketing', 'Finance'].includes(emp.departmentName) ? 'Sales' : emp.departmentName;
       const homeDeptPct = (departmentPercentages.get(pctDept) ?? 35) / 100;
-      const contributionFromThreeRoles = signedPortion * homeDeptPct;
+      const fromSignedRoles = signedPortion * homeDeptPct;
+      const C = Math.max(0, fullEmp?.contribution ?? 0);
+      // When theoretical link ≤ variable pool, use full link amount; when it exceeds the pool, split the pool evenly between the link modal and the employee row (avoid assigning 100% to link).
+      const contributionFromThreeRoles =
+        fromSignedRoles <= C
+          ? fromSignedRoles
+          : Math.round((C / 2) * 100) / 100;
       const cacheKey = `${emp.employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
       const roleData = roleDataCache.get(cacheKey) || [];
       let signedFromAllNonHandler = 0;
@@ -894,7 +1155,12 @@ const SalesContributionPage = () => {
       if (duePortion <= 0 && fullDue <= 0) continue;
       const pctDept = ['Partners', 'Marketing', 'Finance'].includes(emp.departmentName) ? 'Sales' : emp.departmentName;
       const homeDeptPct = (departmentPercentages.get(pctDept) ?? 35) / 100;
-      const contributionFromHandler = duePortion * homeDeptPct;
+      const fromDueRoles = duePortion * homeDeptPct;
+      const C = Math.max(0, fullEmp?.contribution ?? 0);
+      const contributionFromHandler =
+        fromDueRoles <= C
+          ? fromDueRoles
+          : Math.round((C / 2) * 100) / 100;
       rows.push({
         employeeId: emp.employeeId,
         employeeName: emp.employeeName,
@@ -912,7 +1178,7 @@ const SalesContributionPage = () => {
     handlersLinkedModalRows.length > 0 ? handlersLinkedModalRows.reduce((sum, r) => sum + r.contributionFromHandler, 0) : null,
   [handlersLinkedModalRows]);
 
-  // Maps: contribution reallocated to Sales (from H/P/F) and to Handlers (from S/P/F) per employee — used to deduct from main table Contribution column display (salary budget still uses full amounts).
+  // Maps: contribution reallocated to Sales (from H/P/F) and to Handlers (from S/P/F) per employee — used to deduct from main table Contribution column display.
   const contributionToSalesByEmployee = useMemo(() => {
     const m = new Map<number, number>();
     for (const r of salesLinkedModalRows) m.set(r.employeeId, (m.get(r.employeeId) ?? 0) + r.contributionFromThreeRoles);
@@ -923,6 +1189,27 @@ const SalesContributionPage = () => {
     for (const r of handlersLinkedModalRows) m.set(r.employeeId, (m.get(r.employeeId) ?? 0) + r.contributionFromHandler);
     return m;
   }, [handlersLinkedModalRows]);
+
+  /** Proportional split of "Link to Handlers" across Handlers employees (same as table total row). */
+  const handlersLinkedShareByEmployee = useMemo(() => {
+    const map = new Map<number, number>();
+    const handlersDept = departmentData.get('Handlers');
+    const linkTotal = linkedContributionForHandlers ?? 0;
+    if (!handlersDept || linkTotal <= 0) return map;
+    const totalBase = handlersDept.employees.reduce((s, emp) => {
+      const orig = emp.contribution ?? 0;
+      const toSales = contributionToSalesByEmployee.get(emp.employeeId) ?? 0;
+      return s + Math.max(0, orig - toSales);
+    }, 0);
+    if (totalBase <= 0) return map;
+    handlersDept.employees.forEach((emp) => {
+      const orig = emp.contribution ?? 0;
+      const toSales = contributionToSalesByEmployee.get(emp.employeeId) ?? 0;
+      const base = Math.max(0, orig - toSales);
+      map.set(emp.employeeId, (linkTotal * base) / totalBase);
+    });
+    return map;
+  }, [departmentData, linkedContributionForHandlers, contributionToSalesByEmployee]);
 
   // Marketing link: relocate fixed contribution from employee 4 (50%) and employee 1 (30%) to Marketing table.
   const marketingFixedDeductedByEmployee = useMemo(() => {
@@ -975,6 +1262,17 @@ const SalesContributionPage = () => {
 
   const displayTotalCostForTopBadge = totalCostVisibleEmployees;
 
+  /** Preset reports span multiple months; top summary badges show monthly averages (same month count as avg. salary). */
+  const summaryMonthlyDivisor = useMemo(() => {
+    if (periodPreset === 'custom') return 1;
+    if (filters.fromDate && filters.toDate) {
+      const n = enumerateMonthsFromRange(filters.fromDate, filters.toDate).length;
+      return n > 0 ? n : 1;
+    }
+    const n = getPresetMonthCount(periodPreset);
+    return n > 0 ? n : 1;
+  }, [periodPreset, filters.fromDate, filters.toDate]);
+
   // Sum of salary budget across all employees in all departments
   const totalSalaryBudgetAllEmployees = useMemo(() => {
     let sum = 0;
@@ -986,28 +1284,18 @@ const SalesContributionPage = () => {
     return sum;
   }, [departmentData]);
 
-  // Per-department total row salary budget (same formula as table total row: 40% of (contribution + contribution fixed including link amounts))
+  const displaySummaryTotalSigned = totalSignedValue / summaryMonthlyDivisor;
+  const displaySummaryTotalIncome = (totalIncome || 0) / summaryMonthlyDivisor;
+  const displaySummarySalaryBudget = totalSalaryBudgetAllEmployees / summaryMonthlyDivisor;
+  /** Gross salary cost is already monthly avg per employee in preset mode (see fetchSalaryDataMapForSalesReport); summing is team monthly cost — do not divide by N again. */
+  const displaySummaryTotalCost =
+    periodPreset !== 'custom'
+      ? displayTotalCostForTopBadge
+      : displayTotalCostForTopBadge / summaryMonthlyDivisor;
+
+  // Per-department total row salary budget (same formula as table total row: 40% of (net contribution + net contribution fixed after link/marketing deductions))
   const totalRowSalaryBudgetByDepartment = useMemo(() => {
     const map = new Map<string, number>();
-    // Precompute Handlers share per employee (used only when deptName === 'Handlers')
-    const handlersDept = departmentData.get('Handlers');
-    const linkedToHandlersShare = new Map<number, number>();
-    if (handlersDept && (linkedContributionForHandlers ?? 0) > 0) {
-      const totalBase = handlersDept.employees.reduce((s, emp) => {
-        const orig = emp.contribution ?? 0;
-        const toSales = contributionToSalesByEmployee.get(emp.employeeId) ?? 0;
-        return s + Math.max(0, orig - toSales);
-      }, 0);
-      if (totalBase > 0) {
-        handlersDept.employees.forEach((emp) => {
-          const orig = emp.contribution ?? 0;
-          const toSales = contributionToSalesByEmployee.get(emp.employeeId) ?? 0;
-          const base = Math.max(0, orig - toSales);
-          const share = (linkedContributionForHandlers ?? 0) * base / totalBase;
-          linkedToHandlersShare.set(emp.employeeId, share);
-        });
-      }
-    }
     for (const deptName of departmentNames) {
       const deptData = departmentData.get(deptName);
       if (!deptData) {
@@ -1019,7 +1307,7 @@ const SalesContributionPage = () => {
         const toSales = contributionToSalesByEmployee.get(employeeId) ?? 0;
         const toHandlers = contributionToHandlersByEmployee.get(employeeId) ?? 0;
         if (deptName === 'Sales') return toHandlers;
-        if (deptName === 'Handlers') return toSales + (linkedToHandlersShare.get(employeeId) ?? 0);
+        if (deptName === 'Handlers') return toSales + (handlersLinkedShareByEmployee.get(employeeId) ?? 0);
         if (deptName === 'Partners' || deptName === 'Finance') return toSales + toHandlers;
         return 0;
       };
@@ -1047,121 +1335,7 @@ const SalesContributionPage = () => {
       map.set(deptName, totalRowSalaryBudget);
     }
     return map;
-  }, [departmentData, departmentNames, linkedContributionForSales, linkedContributionForHandlers, linkedContributionFixedForSales, linkedContributionForMarketing, marketingFixedDeductedByEmployee, contributionToSalesByEmployee, contributionToHandlersByEmployee]);
-
-  // Sum of total row salary budget across all departments — use this for the top badge so it matches the sum of the 5 summary boxes and table total rows
-  const totalSalaryBudgetFromTotalRows = useMemo(() => {
-    let sum = 0;
-    totalRowSalaryBudgetByDepartment.forEach((v) => { sum += v; });
-    return sum;
-  }, [totalRowSalaryBudgetByDepartment]);
-
-  // Scale contribution for adjustable employees (Sales except 32, Handlers except 175,176,174,61) so that sum of total row salary budgets = 40% of income
-  const applyContributionScaleToMatchTarget = useCallback((prev: Map<string, DepartmentData>, factor: number): Map<string, DepartmentData> => {
-    const handlersExcluded = new Set([175, 176, 174, 61]);
-    const salesExcludedId = 32;
-    const next = new Map(prev);
-    for (const deptName of ['Sales', 'Handlers']) {
-      const dept = next.get(deptName);
-      if (!dept) continue;
-      const scaled = dept.employees.map((emp) => {
-        let contrib = emp.contribution ?? 0;
-        if (deptName === 'Handlers' && !handlersExcluded.has(emp.employeeId)) {
-          contrib = Math.round(contrib * factor * 100) / 100;
-        } else if (deptName === 'Sales' && emp.employeeId !== salesExcludedId) {
-          contrib = Math.round(contrib * factor * 100) / 100;
-        }
-        const total = contrib + (emp.contributionFixed ?? 0);
-        const salaryBudget = Math.round(total * 0.4 * 100) / 100;
-        const totalSalaryCost = emp.totalSalaryCost ?? 0;
-        return {
-          ...emp,
-          contribution: contrib,
-          salaryBudget,
-          maxIncentives: salaryBudget - totalSalaryCost,
-        };
-      });
-      const deptContribution = scaled.reduce((s, e) => s + (e.contribution ?? 0), 0);
-      const deptSalaryBudget = scaled.reduce((s, e) => s + (e.salaryBudget ?? 0), 0);
-      const deptMaxIncentives = scaled.reduce((s, e) => s + (e.maxIncentives ?? 0), 0);
-      next.set(deptName, {
-        ...dept,
-        employees: scaled,
-        totals: {
-          ...dept.totals,
-          contribution: deptContribution,
-          salaryBudget: deptSalaryBudget,
-          maxIncentives: deptMaxIncentives,
-        },
-      });
-    }
-    return next;
-  }, []);
-
-  // Add a small gap to one adjustable employee's contribution so sum of total row salary budgets hits target exactly (for rounding residuals)
-  const applyGapFixToHitTarget = useCallback((prev: Map<string, DepartmentData>, gap: number): Map<string, DepartmentData> => {
-    if (Math.abs(gap) < 0.01) return prev;
-    const handlersExcluded = new Set([175, 176, 174, 61]);
-    const salesExcludedId = 32;
-    // Need to increase total row sum by gap; total row = 0.4 * (contribution + fixed), so add (gap/0.4) to one employee's contribution
-    const contributionDelta = Math.round((gap / 0.4) * 100) / 100;
-    const next = new Map(prev);
-    for (const deptName of ['Sales', 'Handlers']) {
-      const dept = next.get(deptName);
-      if (!dept) continue;
-      const idx = dept.employees.findIndex(
-        (emp) =>
-          (deptName === 'Sales' && emp.employeeId !== salesExcludedId) ||
-          (deptName === 'Handlers' && !handlersExcluded.has(emp.employeeId))
-      );
-      if (idx < 0) continue;
-      const emp = dept.employees[idx];
-      const newContrib = Math.round(((emp.contribution ?? 0) + contributionDelta) * 100) / 100;
-      const total = newContrib + (emp.contributionFixed ?? 0);
-      const salaryBudget = Math.round(total * 0.4 * 100) / 100;
-      const totalSalaryCost = emp.totalSalaryCost ?? 0;
-      const updated = [...dept.employees];
-      updated[idx] = { ...emp, contribution: newContrib, salaryBudget, maxIncentives: salaryBudget - totalSalaryCost };
-      const deptContribution = updated.reduce((s, e) => s + (e.contribution ?? 0), 0);
-      const deptSalaryBudget = updated.reduce((s, e) => s + (e.salaryBudget ?? 0), 0);
-      const deptMaxIncentives = updated.reduce((s, e) => s + (e.maxIncentives ?? 0), 0);
-      next.set(deptName, {
-        ...dept,
-        employees: updated,
-        totals: { ...dept.totals, contribution: deptContribution, salaryBudget: deptSalaryBudget, maxIncentives: deptMaxIncentives },
-      });
-      break; // apply to first adjustable employee only
-    }
-    return next;
-  }, []);
-
-  // When invoiced income changes, allow salary-budget reconciliation to run a full pass again (was capped at 15 on prior income).
-  useEffect(() => {
-    salaryBudgetAdjustmentIterationsRef.current = 0;
-  }, [totalIncome]);
-
-  // After departmentData updates, if sum of total row salary budgets is not 40% of income, scale adjustable contributions (max 40 iterations; require within 1 NIS). If still off by a small amount, apply gap fix.
-  useEffect(() => {
-    if (loading || loadingInvoicedIncome) return;
-    const target = (totalIncome || 0) * 0.4;
-    if (target <= 0 || !departmentData.size) return;
-    const current = totalSalaryBudgetFromTotalRows;
-    const epsilon = 1; // require within 1 NIS of target for "perfect" 40%
-    if (Math.abs(current - target) <= epsilon) return;
-    const maxIterations = 40;
-    if (salaryBudgetAdjustmentIterationsRef.current >= maxIterations) return;
-    // Avoid Infinity/NaN when scaling before contributions exist (e.g. income loaded but rows not yet)
-    if (!Number.isFinite(current) || current <= 0) return;
-    // When within 2000 NIS but not exact (e.g. rounding left 569 short), add the gap to one adjustable employee so total is exactly 40%
-    if (Math.abs(current - target) <= 2000 && salaryBudgetAdjustmentIterationsRef.current > 0) {
-      salaryBudgetAdjustmentIterationsRef.current += 1;
-      setDepartmentData((prev) => applyGapFixToHitTarget(prev, target - current));
-      return;
-    }
-    const factor = target / current;
-    salaryBudgetAdjustmentIterationsRef.current += 1;
-    setDepartmentData((prev) => applyContributionScaleToMatchTarget(prev, factor));
-  }, [departmentData, totalIncome, totalSalaryBudgetFromTotalRows, loading, loadingInvoicedIncome, applyContributionScaleToMatchTarget, applyGapFixToHitTarget]);
+  }, [departmentData, departmentNames, linkedContributionForSales, linkedContributionForHandlers, linkedContributionFixedForSales, linkedContributionForMarketing, marketingFixedDeductedByEmployee, contributionToSalesByEmployee, contributionToHandlersByEmployee, handlersLinkedShareByEmployee]);
 
   const marketingLinkedModalRows = useMemo((): MarketingLinkedContributionRow[] => {
     const amount1 = marketingFixedDeductedByEmployee.get(1) ?? 0;
@@ -1406,37 +1580,27 @@ const SalesContributionPage = () => {
     }
   }, [filters.fromDate, filters.toDate]);
 
-  // Auto-run search once when report is entered or refreshed so all calculations use the default date range (last 30 days) or restored filters. Correction amounts, fixed contribution, orange (marketing) amounts, and all link modals (Sales, Handlers, Marketing) are driven by this run; date changes after that require clicking Search.
-  // Must wait for invoiced income to finish so totalIncome is set before handleSearch — otherwise normalization and 40% salary-budget scaling use income 0 and the badge shows ~39% (or wrong %) until a manual Search.
-  const hasAutoRunInitialRef = useRef(false);
-  useEffect(() => {
-    if (
-      categoriesLoaded &&
-      filters.fromDate &&
-      filters.toDate &&
-      !loadingInvoicedIncome &&
-      !hasAutoRunInitialRef.current
-    ) {
-      hasAutoRunInitialRef.current = true;
-      (async () => {
-        await handleSearch();
-      })();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [categoriesLoaded, filters.fromDate, filters.toDate, loadingInvoicedIncome]);
-
-  // Fetch total signed value when date filters change
-  useEffect(() => {
-    if (filters.fromDate && filters.toDate) {
-      // Clear role data cache when date filters change
-      setRoleDataCache(new Map());
-      fetchTotalSignedValue();
-    }
-  }, [filters.fromDate, filters.toDate, fetchTotalSignedValue]);
-
   const handleFilterChange = (field: string, value: any) => {
     setFilters(prev => ({ ...prev, [field]: value }));
   };
+
+  const handlePeriodPresetChange = (value: SalesContributionPeriodPreset) => {
+    setPeriodPreset(value);
+    if (value !== 'custom') {
+      const r = computeSalesContributionPresetDateRange(value);
+      setFilters((prev) => ({ ...prev, fromDate: r.fromDate, toDate: r.toDate }));
+    }
+  };
+
+  // Keep From/To aligned with a persisted preset (e.g. after refresh)
+  useEffect(() => {
+    if (periodPreset === 'custom') return;
+    const r = computeSalesContributionPresetDateRange(periodPreset);
+    setFilters((prev) => {
+      if (prev.fromDate === r.fromDate && prev.toDate === r.toDate) return prev;
+      return { ...prev, fromDate: r.fromDate, toDate: r.toDate };
+    });
+  }, [periodPreset]);
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('he-IL', {
@@ -2063,8 +2227,8 @@ const SalesContributionPage = () => {
           // Check if this is "Handler only" - exclude from signed totals but still show if has due amounts
           const isHandlerOnly = employeeRoles.length === 1 && employeeRoles[0] === 'Handler';
 
-          // Calculate amount using utility function
-          const amountNIS = calculateNewLeadAmount(lead);
+          // Same full-amount basis as batch calculator (salesContributionCalculator) for signed totals
+          const amountNIS = calculateNewLeadFullAmount(lead);
 
           // Due amount: only count if employee is handler for this lead
           const dueAmount = isHandler ? (newPaymentsMap.get(leadId) || 0) : 0;
@@ -2114,8 +2278,7 @@ const SalesContributionPage = () => {
           // Check if this is "Handler only" - exclude from signed totals but still show if has due amounts
           const isHandlerOnly = employeeRoles.length === 1 && employeeRoles[0] === 'Handler';
 
-          // Calculate amount using utility function
-          const amountAfterFee = calculateLegacyLeadAmount(lead);
+          const amountNIS = calculateLegacyLeadFullAmount(lead);
 
           // Due amount: only count if employee is handler for this lead (isHandler already checked above)
           const dueAmount = isHandler ? (legacyPaymentsMap.get(leadId) || 0) : 0;
@@ -2124,14 +2287,14 @@ const SalesContributionPage = () => {
           if (existing) {
             // Only add to signedTotal if NOT handler only
             if (!isHandlerOnly) {
-              existing.signedTotal += amountAfterFee;
+              existing.signedTotal += amountNIS;
             }
             existing.dueTotal += dueAmount;
           } else {
             roleCombinationMap.set(combinationKey, {
               roles: sortedRoles,
               // Only set signedTotal if NOT handler only
-              signedTotal: isHandlerOnly ? 0 : amountAfterFee,
+              signedTotal: isHandlerOnly ? 0 : amountNIS,
               dueTotal: dueAmount,
             });
           }
@@ -2161,8 +2324,7 @@ const SalesContributionPage = () => {
         willNormalize: incomeAmount < totalSignedOverall
       });
 
-      // Now calculate signed portion WITHOUT the difference ratio adjustment
-      // Just use role percentages directly on amountAfterFee
+      // Role percentages on the same full-amount basis as batch calculator (matches norm signed / totalSigned)
       let totalSignedPortion = 0;
 
       // Process new leads to calculate signed portion
@@ -2179,11 +2341,7 @@ const SalesContributionPage = () => {
         const isHandlerOnly = employeeRoles.length === 1 && employeeRoles[0] === 'Handler';
 
         if (employeeRoles.length > 0 && !isHandlerOnly) {
-          // Calculate amount using utility function
-          const amountAfterFee = calculateNewLeadAmount(lead);
-
-          // Calculate signed portion based on employee's roles using amountAfterFee directly
-          // (No difference ratio adjustment - that's now only for signed normalized)
+          const amountForSignedPortion = calculateNewLeadFullAmount(lead);
           const leadRoles = {
             closer: lead.closer,
             scheduler: lead.scheduler,
@@ -2193,9 +2351,8 @@ const SalesContributionPage = () => {
             helperCloser: lead.helper ?? lead.meeting_lawyer_id, // Helper Closer: helper or meeting_lawyer_id in new leads
           };
 
-          // Calculate signed portion from amountAfterFee (no adjustment)
           const signedPortion = calculateSignedPortionAmount(
-            amountAfterFee,
+            amountForSignedPortion,
             leadRoles,
             employeeId,
             false, // isLegacy = false for new leads
@@ -2221,11 +2378,7 @@ const SalesContributionPage = () => {
         const isHandlerOnly = employeeRoles.length === 1 && employeeRoles[0] === 'Handler';
 
         if (employeeRoles.length > 0 && !isHandlerOnly) {
-          // Calculate amount using utility function
-          const amountAfterFee = calculateLegacyLeadAmount(lead);
-
-          // Calculate signed portion based on employee's roles using amountAfterFee directly
-          // (No difference ratio adjustment - that's now only for signed normalized)
+          const amountForSignedPortion = calculateLegacyLeadFullAmount(lead);
           const leadRoles = {
             closer_id: lead.closer_id,
             meeting_scheduler_id: lead.meeting_scheduler_id,
@@ -2235,9 +2388,8 @@ const SalesContributionPage = () => {
             meeting_lawyer_id: lead.meeting_lawyer_id, // Helper Closer
           };
 
-          // Calculate signed portion from amountAfterFee (no adjustment)
           const signedPortion = calculateSignedPortionAmount(
-            amountAfterFee,
+            amountForSignedPortion,
             leadRoles,
             employeeId,
             true, // isLegacy = true for legacy leads
@@ -2440,51 +2592,7 @@ const SalesContributionPage = () => {
     }
   }, [filters.fromDate, filters.toDate, totalSignedValue, totalIncome, dueNormalizedPercentage, rolePercentages, getRolePercentagesHash, categoriesLoaded, categoryNameToDataMap, allCategories]);
 
-  // Recalculate signed portions when income changes (after initial load)
-  // This ensures signed portions are recalculated with the new income value immediately
-  // Instead of calling fetchRoleData individually (which causes popcorn effect),
-  // we trigger a full batch recalculation via handleSearch
-  const prevIncomeRef = useRef<number | null>(null);
-  useEffect(() => {
-    if (!filters.fromDate || !filters.toDate) return;
-    // While the table is still empty, only track income so we do not fire handleSearch twice on entry
-    if (departmentData.size === 0) {
-      prevIncomeRef.current = totalIncome;
-      return;
-    }
-    if (prevIncomeRef.current === totalIncome) return;
-    const prev = prevIncomeRef.current;
-    prevIncomeRef.current = totalIncome;
-    // First time we have rows: auto handleSearch already ran after income loaded; no duplicate run
-    if (prev === null) {
-      return;
-    }
-    setRoleDataCache(new Map());
-    console.log('🔄 Total income changed, triggering batch recalculation...');
-    handleSearch();
-  }, [totalIncome, departmentData.size, filters.fromDate, filters.toDate]);
-
-  // Recalculate due normalized when due normalized percentage changes
-  // This ensures due normalized is recalculated with the new percentage value immediately
-  // Instead of calling fetchRoleData individually (which causes popcorn effect),
-  // we trigger a full batch recalculation via handleSearch
-  const prevDueNormalizedPercentageRef = useRef<number>(dueNormalizedPercentage);
-  useEffect(() => {
-    // Only trigger if due normalized percentage actually changed and we have employees loaded
-    if (prevDueNormalizedPercentageRef.current !== dueNormalizedPercentage && departmentData.size > 0 && filters.fromDate && filters.toDate) {
-      prevDueNormalizedPercentageRef.current = dueNormalizedPercentage;
-      // Clear cache to force recalculation (cache key includes due normalized percentage, so old cache won't match)
-      setRoleDataCache(new Map());
-
-      // Trigger full batch recalculation instead of individual fetches
-      // This prevents the popcorn effect by calculating everything at once
-      console.log('🔄 Due normalized percentage changed, triggering batch recalculation...');
-      handleSearch();
-    }
-  }, [dueNormalizedPercentage, departmentData.size, filters.fromDate, filters.toDate]);
-
-  // Note: Salary filter changes no longer trigger automatic recalculation
-  // Recalculation only happens when user clicks the "Search" button
+  // Report refresh: user clicks Search only (no auto-run on income / due-% / entry).
 
   // Update employee signed total in department data
   const updateEmployeeSignedTotal = useCallback((employeeId: number, signedTotal: number) => {
@@ -2665,12 +2773,19 @@ const SalesContributionPage = () => {
     });
   }, []);
 
+  /** Keys must match everywhere we read/write `categoryEmployeesCache` (was field-name only → cache miss loop). */
+  const getCategoryEmployeesCacheKey = useCallback(
+    (mainCategoryName: string) =>
+      `${mainCategoryName}_${periodPreset}_${filters.fromDate || ''}_${filters.toDate || ''}_${salaryFilter?.month ?? ''}_${salaryFilter?.year ?? ''}`,
+    [periodPreset, filters.fromDate, filters.toDate, salaryFilter?.month, salaryFilter?.year]
+  );
+
   // Fetch employees for a main category from employee_field_assignments table
   const fetchCategoryEmployees = useCallback(async (mainCategoryName: string) => {
-    const cacheKey = `${mainCategoryName}`;
+    const cacheKey = getCategoryEmployeesCacheKey(mainCategoryName);
 
-    // Check cache first
-    if (categoryEmployeesCache.has(cacheKey)) {
+    // Check cache first (ref: avoid listing categoryEmployeesCache in deps — prevents infinite effect loops)
+    if (categoryEmployeesCacheRef.current.has(cacheKey)) {
       // If already cached, make sure loading state is cleared
       setLoadingCategoryEmployees(prev => {
         const newSet = new Set(prev);
@@ -2909,38 +3024,23 @@ const SalesContributionPage = () => {
         return;
       }
 
-      // Fetch salary data for these employees (EXACT same logic as employee view)
-      const salaryDataMap = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
-      // Only fetch salary if filter is set and we have employees
-      // This is optional - calculation should work even without salary data
-      if (salaryFilter?.month && salaryFilter?.year && employeeIds.length > 0) {
+      // Fetch salary data for these employees (same averaging rules as employee view)
+      let salaryDataMap = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
+      const canFetchSalaryForCategory =
+        employeeIds.length > 0 &&
+        (periodPreset !== 'custom'
+          ? !!(filters.fromDate && filters.toDate)
+          : !!(salaryFilter?.month && salaryFilter?.year));
+      if (canFetchSalaryForCategory) {
         try {
-          const salaryMonth = salaryFilter.month; // 1-12
-          const salaryYear = salaryFilter.year;
-
-          // Fetch salary data for all employees
-          const { data: salaryData, error: salaryError } = await supabase
-            .from('employee_salary')
-            .select('employee_id, net_salary, gross_salary')
-            .eq('salary_month', salaryMonth)
-            .eq('salary_year', salaryYear)
-            .in('employee_id', employeeIds);
-
-          if (!salaryError && salaryData) {
-            salaryData.forEach((salary: any) => {
-              const employeeId = Number(salary.employee_id);
-              salaryDataMap.set(employeeId, {
-                salaryBrutto: Number(salary.net_salary || 0),
-                totalSalaryCost: Number(salary.gross_salary || 0),
-              });
-            });
-          } else if (salaryError) {
-            console.error('Error fetching salary data:', salaryError);
-            // Don't throw - salary data is optional
-          }
+          salaryDataMap = await fetchSalaryDataMapForSalesReport(
+            employeeIds,
+            periodPreset,
+            filters,
+            salaryFilter
+          );
         } catch (error) {
           console.error('Error in salary data fetch:', error);
-          // Don't throw - salary data is optional, calculation should continue
         }
       }
 
@@ -3006,7 +3106,7 @@ const SalesContributionPage = () => {
         return newSet;
       });
     }
-  }, [categoryEmployeesCache, salaryFilter]);
+  }, [getCategoryEmployeesCacheKey, salaryFilter, periodPreset, filters]);
 
   // Fetch category breakdown for a main category (field view)
   const fetchCategoryBreakdown = useCallback(async (mainCategoryName: string) => {
@@ -3319,9 +3419,14 @@ const SalesContributionPage = () => {
   // Toggle role section expansion/collapse
   const toggleRoleSection = useCallback((fieldName: string, roleName: string) => {
     const sectionKey = `${fieldName}_${roleName}`;
+    /** UI defaults: Sales + Handlers expanded when key missing; Partners, Marketing, Finance collapsed when missing */
+    const defaultExpanded =
+      roleName === 'Partners' || roleName === 'Marketing' || roleName === 'Finance' ? false : true;
     setExpandedRoleSections(prev => {
       const newMap = new Map(prev);
-      newMap.set(sectionKey, !prev.get(sectionKey));
+      const current = prev.get(sectionKey);
+      const effective = current === undefined ? defaultExpanded : current;
+      newMap.set(sectionKey, !effective);
       return newMap;
     });
   }, []);
@@ -3341,7 +3446,11 @@ const SalesContributionPage = () => {
         newSet.add(employeeKey);
 
         // If expanding and in field view, trigger data fetch asynchronously
-        if (viewMode === 'field' && !categoryEmployeesCache.has(employeeName) && !loadingCategoryEmployees.has(employeeName)) {
+        if (
+          viewMode === 'field' &&
+          !categoryEmployeesCacheRef.current.has(getCategoryEmployeesCacheKey(employeeName)) &&
+          !loadingCategoryEmployees.has(employeeName)
+        ) {
           // Set loading state immediately - this happens synchronously
           setLoadingCategoryEmployees(prevLoading => {
             const newLoadingSet = new Set(prevLoading);
@@ -3366,7 +3475,7 @@ const SalesContributionPage = () => {
 
       return newSet;
     });
-  }, [viewMode, categoryEmployeesCache, loadingCategoryEmployees, fetchCategoryEmployees]);
+  }, [viewMode, loadingCategoryEmployees, fetchCategoryEmployees, getCategoryEmployeesCacheKey]);
 
   // Auto-expand/collapse fields based on search in fields view
   useEffect(() => {
@@ -3376,7 +3485,8 @@ const SalesContributionPage = () => {
       // First, trigger loading for all fields that don't have employees loaded yet
       fieldViewData.forEach((fieldData) => {
         const categoryKey = fieldData.departmentName;
-        if (!categoryEmployeesCache.has(categoryKey) && !loadingCategoryEmployees.has(categoryKey)) {
+        const ck = getCategoryEmployeesCacheKey(categoryKey);
+        if (!categoryEmployeesCache.has(ck) && !loadingCategoryEmployees.has(categoryKey)) {
           fetchCategoryEmployees(categoryKey);
         }
       });
@@ -3385,7 +3495,7 @@ const SalesContributionPage = () => {
       const newExpandedRows = new Set<string>();
       fieldViewData.forEach((fieldData) => {
         const categoryKey = fieldData.departmentName;
-        const categoryEmployees = categoryEmployeesCache.get(categoryKey) || [];
+        const categoryEmployees = categoryEmployeesCache.get(getCategoryEmployeesCacheKey(categoryKey)) || [];
 
         // Check if any employee in this field matches the search
         const hasMatchingEmployee = categoryEmployees.some((emp: any) => {
@@ -3399,11 +3509,9 @@ const SalesContributionPage = () => {
       });
 
       setExpandedRows(newExpandedRows);
-    } else if (viewMode === 'field' && !employeeSearchTerm.trim()) {
-      // Clear expanded rows when search is cleared
-      setExpandedRows(new Set());
     }
-  }, [employeeSearchTerm, viewMode, fieldViewData, categoryEmployeesCache, loadingCategoryEmployees, fetchCategoryEmployees]);
+    // Do NOT clear expandedRows when search is empty — that ran on every re-render and removed manual expand/collapse in field view.
+  }, [employeeSearchTerm, viewMode, fieldViewData, categoryEmployeesCache, loadingCategoryEmployees, fetchCategoryEmployees, getCategoryEmployeesCacheKey]);
 
   // Re-check search when categoryEmployeesCache updates (after employees are loaded)
   useEffect(() => {
@@ -3413,7 +3521,7 @@ const SalesContributionPage = () => {
 
       fieldViewData.forEach((fieldData) => {
         const categoryKey = fieldData.departmentName;
-        const categoryEmployees = categoryEmployeesCache.get(categoryKey) || [];
+        const categoryEmployees = categoryEmployeesCache.get(getCategoryEmployeesCacheKey(categoryKey)) || [];
 
         const hasMatchingEmployee = categoryEmployees.some((emp: any) => {
           const nameMatch = emp.display_name?.toLowerCase().includes(searchLower);
@@ -3427,7 +3535,7 @@ const SalesContributionPage = () => {
 
       setExpandedRows(newExpandedRows);
     }
-  }, [categoryEmployeesCache, viewMode, employeeSearchTerm, fieldViewData]);
+  }, [categoryEmployeesCache, viewMode, employeeSearchTerm, fieldViewData, getCategoryEmployeesCacheKey]);
 
   // Pre-fetch all category employees when switching to field view or when fieldViewData is loaded
   useEffect(() => {
@@ -3437,7 +3545,7 @@ const SalesContributionPage = () => {
       fieldViewData.forEach((fieldData) => {
         const fieldName = fieldData.departmentName;
         // Only fetch if not already cached and not currently loading
-        if (!categoryEmployeesCache.has(fieldName) && !loadingCategoryEmployees.has(fieldName)) {
+        if (!categoryEmployeesCache.has(getCategoryEmployeesCacheKey(fieldName)) && !loadingCategoryEmployees.has(fieldName)) {
           fieldsToFetch.push(fieldName);
         }
       });
@@ -3477,7 +3585,7 @@ const SalesContributionPage = () => {
         });
       }
     }
-  }, [viewMode, fieldViewData, categoryEmployeesCache, loadingCategoryEmployees, fetchCategoryEmployees]);
+  }, [viewMode, fieldViewData, categoryEmployeesCache, loadingCategoryEmployees, fetchCategoryEmployees, getCategoryEmployeesCacheKey]);
 
   const handleSearch = async () => {
     // Wait for categories to be loaded before processing
@@ -3496,10 +3604,13 @@ const SalesContributionPage = () => {
 
     setLoading(true);
     setSearchPerformed(true);
-    salaryBudgetAdjustmentIterationsRef.current = 0;
+    setRoleDataCache(new Map());
+    const incomeForRun = await refreshIncomeFromInvoicedForFilter();
+    totalIncomeRef.current = incomeForRun;
     // Fetch total signed value when search is triggered - MUST complete before calculating portions
     await fetchTotalSignedValue();
     try {
+      const totalIncome = incomeForRun;
       console.log('🔍 Sales Contribution Report - Starting search with filters:', filters);
       console.log('🔍 Categories loaded:', {
         categoriesLoaded,
@@ -4056,58 +4167,32 @@ const SalesContributionPage = () => {
             })
           );
 
-          // Step 6.5: Fetch salary data for ALL employees (not just those being fetched)
-          // This ensures salary data is always available even when employees are cached
-          const salaryDataMap = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
-          // Only fetch salary if filter is set and we have employees
-          // This is optional - calculation should work even without salary data
-          if (salaryFilter?.month && salaryFilter?.year && allEmployeeIds.length > 0) {
+          // Step 6.5: Fetch salary data for ALL employees (averaged over preset months or single month in custom mode)
+          let salaryDataMap = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
+          const canFetchSalaryMain =
+            allEmployeeIds.length > 0 &&
+            (periodPreset !== 'custom'
+              ? !!(filters.fromDate && filters.toDate)
+              : !!(salaryFilter?.month && salaryFilter?.year));
+          if (canFetchSalaryMain) {
             try {
-              const salaryMonth = salaryFilter.month; // 1-12
-              const salaryYear = salaryFilter.year;
-              const employeeIdsForSalary = allEmployeeIds; // Fetch for ALL employees, not just those being recalculated
-
-              console.log('🔍 Fetching salary data:', {
-                salaryMonth,
-                salaryYear,
-                employeeCount: employeeIdsForSalary.length
-              });
-
-              // Fetch salary data for all employees
-              const { data: salaryData, error: salaryError } = await supabase
-                .from('employee_salary')
-                .select('employee_id, net_salary, gross_salary')
-                .eq('salary_month', salaryMonth)
-                .eq('salary_year', salaryYear)
-                .in('employee_id', employeeIdsForSalary);
-
-              console.log('✅ Salary data fetched:', {
-                count: salaryData?.length || 0,
-                error: salaryError?.message
-              });
-
-              if (!salaryError && salaryData) {
-                salaryData.forEach((salary: any) => {
-                  const employeeId = Number(salary.employee_id);
-                  salaryDataMap.set(employeeId, {
-                    salaryBrutto: Number(salary.net_salary || 0),
-                    totalSalaryCost: Number(salary.gross_salary || 0),
-                  });
-                });
-              } else if (salaryError) {
-                console.error('Error fetching salary data:', salaryError);
-                // Don't throw - salary data is optional
-              }
+              salaryDataMap = await fetchSalaryDataMapForSalesReport(
+                allEmployeeIds,
+                periodPreset,
+                filters,
+                salaryFilter
+              );
+              console.log('✅ Salary data map ready:', { employees: salaryDataMap.size, periodPreset });
             } catch (error) {
               console.error('Error in salary data fetch:', error);
-              // Don't throw - salary data is optional, calculation should continue
             }
           } else {
             console.log('ℹ️ Skipping salary fetch:', {
-              hasFilter: !!salaryFilter,
+              periodPreset,
+              hasDates: !!(filters.fromDate && filters.toDate),
               hasMonth: !!salaryFilter?.month,
               hasYear: !!salaryFilter?.year,
-              employeesCount: employeesToFetch.length
+              employeesCount: allEmployeeIds.length
             });
           }
 
@@ -4729,104 +4814,7 @@ const SalesContributionPage = () => {
               });
             });
 
-            // Cap total (contribution + contribution fixed) to invoiced income.
-            // Prefer scaling only variable contribution on Sales/Handlers (excluding a few employee IDs).
-            // If the required reduction is larger than that pool, the old formula clamped scale to 0 and zeroed
-            // many rows; fall back to proportional scaling of ALL employees' contribution (fixed unchanged).
-            const incomeAmount = totalIncome || 0;
-            let totalBasis = 0;
-            let totalContribAll = 0;
-            let totalFixedAll = 0;
-            let reducibleContribution = 0;
-            const handlersExcludedIds = new Set([175, 176, 174, 61]);
-            const salesExcludedId = 32;
-            updated.forEach((deptData, deptName) => {
-              deptData.employees.forEach((emp) => {
-                const contrib = emp.contribution ?? 0;
-                const fixed = emp.contributionFixed ?? 0;
-                totalContribAll += contrib;
-                totalFixedAll += fixed;
-                totalBasis += contrib + fixed;
-                if (deptName === 'Handlers' && !handlersExcludedIds.has(emp.employeeId)) {
-                  reducibleContribution += contrib;
-                } else if (deptName === 'Sales' && emp.employeeId !== salesExcludedId) {
-                  reducibleContribution += contrib;
-                }
-              });
-            });
-            const reductionNeeded = totalBasis - incomeAmount;
-            if (incomeAmount > 0 && reductionNeeded > 0 && totalContribAll > 0) {
-              const selectiveScale =
-                reducibleContribution > 0
-                  ? Math.max(0, Math.min(1, 1 - reductionNeeded / reducibleContribution))
-                  : 0;
-              const selectiveCannotAbsorbReduction =
-                reducibleContribution <= 0 || reductionNeeded > reducibleContribution;
-
-              const applySalaryFromContribution = (emp: EmployeeData, contrib: number): EmployeeData => {
-                const contributionTotal = contrib + (emp.contributionFixed ?? 0);
-                const salaryBudget = Math.round(contributionTotal * 0.4 * 100) / 100;
-                const totalSalaryCost = emp.totalSalaryCost ?? 0;
-                return {
-                  ...emp,
-                  contribution: contrib,
-                  salaryBudget,
-                  maxIncentives: salaryBudget - totalSalaryCost,
-                };
-              };
-
-              if (selectiveCannotAbsorbReduction) {
-                const targetVar = Math.max(0, incomeAmount - totalFixedAll);
-                const globalScale = Math.max(0, Math.min(1, targetVar / totalContribAll));
-                updated.forEach((deptData, deptName) => {
-                  const scaledEmployees = deptData.employees.map((emp) => {
-                    const contrib = Math.round((emp.contribution ?? 0) * globalScale * 100) / 100;
-                    return applySalaryFromContribution(emp, contrib);
-                  });
-                  const deptContribution = scaledEmployees.reduce((sum, emp) => sum + (emp.contribution ?? 0), 0);
-                  const deptSalaryBudget = scaledEmployees.reduce((sum, emp) => sum + (emp.salaryBudget ?? 0), 0);
-                  const deptMaxIncentives = scaledEmployees.reduce((sum, emp) => sum + (emp.maxIncentives ?? 0), 0);
-                  updated.set(deptName, {
-                    ...deptData,
-                    employees: scaledEmployees,
-                    totals: {
-                      ...deptData.totals,
-                      contribution: deptContribution,
-                      salaryBudget: deptSalaryBudget,
-                      maxIncentives: deptMaxIncentives,
-                    },
-                  });
-                });
-              } else if (selectiveScale < 1) {
-                updated.forEach((deptData, deptName) => {
-                  if (deptName !== 'Sales' && deptName !== 'Handlers') return;
-                  const scaledEmployees = deptData.employees.map((emp) => {
-                    let contrib = emp.contribution ?? 0;
-                    if (deptName === 'Handlers' && !handlersExcludedIds.has(emp.employeeId)) {
-                      contrib = Math.round(contrib * selectiveScale * 100) / 100;
-                    } else if (deptName === 'Sales' && emp.employeeId !== salesExcludedId) {
-                      contrib = Math.round(contrib * selectiveScale * 100) / 100;
-                    }
-                    return applySalaryFromContribution(emp, contrib);
-                  });
-                  const deptContribution = scaledEmployees.reduce((sum, emp) => sum + (emp.contribution ?? 0), 0);
-                  const deptSalaryBudget = scaledEmployees.reduce((sum, emp) => sum + (emp.salaryBudget ?? 0), 0);
-                  const deptMaxIncentives = scaledEmployees.reduce((sum, emp) => sum + (emp.maxIncentives ?? 0), 0);
-                  updated.set(deptName, {
-                    ...deptData,
-                    employees: scaledEmployees,
-                    totals: {
-                      ...deptData.totals,
-                      contribution: deptContribution,
-                      salaryBudget: deptSalaryBudget,
-                      maxIncentives: deptMaxIncentives,
-                    },
-                  });
-                });
-              }
-            }
-
-            return updated;
+            return scaleAllEmployeesToInvoicedIncome(updated, totalIncomeRef.current || 0);
           });
 
           // Set loading to false ONLY after all calculations are complete
@@ -4841,34 +4829,20 @@ const SalesContributionPage = () => {
       } else {
         // No employees to fetch (all cached), but we still need to fetch and apply salary data
         // Fetch salary data for all employees based on salary filter
-        const salaryDataMap = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
-        if (salaryFilter?.month && salaryFilter?.year && allEmployeeIds.length > 0) {
+        let salaryDataMap = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
+        const canFetchSalaryCached =
+          allEmployeeIds.length > 0 &&
+          (periodPreset !== 'custom'
+            ? !!(filters.fromDate && filters.toDate)
+            : !!(salaryFilter?.month && salaryFilter?.year));
+        if (canFetchSalaryCached) {
           try {
-            const salaryMonth = salaryFilter.month;
-            const salaryYear = salaryFilter.year;
-
-            console.log('🔍 Fetching salary data for cached employees:', {
-              salaryMonth,
-              salaryYear,
-              employeeCount: allEmployeeIds.length
-            });
-
-            const { data: salaryData, error: salaryError } = await supabase
-              .from('employee_salary')
-              .select('employee_id, net_salary, gross_salary')
-              .eq('salary_month', salaryMonth)
-              .eq('salary_year', salaryYear)
-              .in('employee_id', allEmployeeIds);
-
-            if (!salaryError && salaryData) {
-              salaryData.forEach((salary: any) => {
-                const employeeId = Number(salary.employee_id);
-                salaryDataMap.set(employeeId, {
-                  salaryBrutto: Number(salary.net_salary || 0),
-                  totalSalaryCost: Number(salary.gross_salary || 0),
-                });
-              });
-            }
+            salaryDataMap = await fetchSalaryDataMapForSalesReport(
+              allEmployeeIds,
+              periodPreset,
+              filters,
+              salaryFilter
+            );
           } catch (error) {
             console.error('Error fetching salary data for cached employees:', error);
           }
@@ -5064,7 +5038,7 @@ const SalesContributionPage = () => {
                 },
               });
             });
-            return updated;
+            return scaleAllEmployeesToInvoicedIncome(updated, totalIncomeRef.current || 0);
           });
         }
         // If no salary data, don't update - keep existing data with all calculations intact
@@ -6110,12 +6084,11 @@ const SalesContributionPage = () => {
         })
         .reduce((s, emp) => s + (emp.totalSalaryCost ?? 0), 0) ?? 0;
 
-    // Calculate summary box amount: 40% of income * department percentage
-    const baseAmount = (totalIncome || 0) * 0.4;
+    const monthlyIncome = (totalIncome || 0) / summaryMonthlyDivisor;
+    const baseAmount = monthlyIncome * 0.4;
     const summaryAmount = baseAmount * (percentage / 100);
 
-    // Amount from saved department % of total income (for glassy strip)
-    const directAmountFromIncome = totalIncome && totalIncome > 0 ? (percentage / 100) * totalIncome : 0;
+    const directAmountFromIncome = totalIncome && totalIncome > 0 ? (percentage / 100) * monthlyIncome : 0;
 
     return (
       <div className={`flex-shrink-0 rounded-2xl transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl ${gradientClasses} text-white relative overflow-hidden w-[calc(50vw-0.75rem)] md:w-auto min-h-[160px] md:min-h-[168px] ${departmentName === 'Sales' ? 'ml-4 md:ml-0' : ''}`}>
@@ -6200,7 +6173,7 @@ const SalesContributionPage = () => {
               <div className="flex items-center gap-2">
                 <span className="text-white/90 font-medium">Salary budget</span>
                 <span className="px-2 py-0.5 rounded-lg bg-white/25 backdrop-blur-sm border border-white/30 font-semibold tabular-nums text-white">
-                  {formatCurrency(totalSalaryBudget)}
+                  {formatCurrency(totalSalaryBudget / summaryMonthlyDivisor)}
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -6350,9 +6323,21 @@ const SalesContributionPage = () => {
     const isFieldView = hideTitle === true;
     const colSpanValue = isFieldView ? 9 : 12; // Updated for field view: 9 columns
 
-    // Contribution amount: saved department % of total income (e.g. 35% → 0.35 * income)
+    const salaryColumnCaption =
+      periodPreset !== 'custom' ? (
+        <div className="text-xs font-normal text-gray-500 mt-1">
+          Avg. last {getPresetMonthCount(periodPreset)} mo
+        </div>
+      ) : salaryFilter?.month && salaryFilter?.year ? (
+        <div className="text-xs font-normal text-gray-500 mt-1">
+          {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
+        </div>
+      ) : null;
+
     const departmentPercentage = departmentPercentages.get(deptData.departmentName) || 0;
-    const contributionAmount = totalIncome && totalIncome > 0 ? (departmentPercentage / 100) * totalIncome : 0;
+    /** Multi-month presets: period totals (signed, contribution, etc.) ÷ months; salary B / total cost stay monthly from DB. */
+    const periodScale = periodPreset === 'custom' ? 1 : summaryMonthlyDivisor;
+    const scalePeriodSum = (n: number) => (Number(n) || 0) / periodScale;
 
     // No fixed contribution relocated to Sales (removed: former 50% split from employee_handlers_sales_contributions).
     const linkedFixedDeductedForThisDept = 0;
@@ -6381,27 +6366,8 @@ const SalesContributionPage = () => {
       });
       return map;
     })();
-    // Handlers only: same share map but over all employees (for header correction so it does not change when filtering).
-    const linkedToHandlersShareByEmployeeFull = (() => {
-      const map = new Map<number, number>();
-      if (deptData.departmentName !== 'Handlers' || (linkedContributionForHandlers ?? 0) <= 0) return map;
-      const totalBase = deptData.employees.reduce((s, emp) => {
-        const orig = emp.contribution ?? 0;
-        const toSales = contributionToSalesByEmployee.get(emp.employeeId) ?? 0;
-        return s + Math.max(0, orig - toSales);
-      }, 0);
-      if (totalBase <= 0) return map;
-      deptData.employees.forEach((emp) => {
-        const orig = emp.contribution ?? 0;
-        const toSales = contributionToSalesByEmployee.get(emp.employeeId) ?? 0;
-        const base = Math.max(0, orig - toSales);
-        const share = (linkedContributionForHandlers ?? 0) * base / totalBase;
-        map.set(emp.employeeId, share);
-      });
-      return map;
-    })();
 
-    // Per-employee: variable contribution reallocated to Sales or Handlers (deducted from Contribution column display only; salary budget uses full amounts).
+    // Per-employee: variable contribution reallocated to Sales or Handlers (deducted from Contribution column display).
     // In Handlers table we also deduct each employee's share of the linked amount (from S/P/F).
     const getLinkedContributionDeducted = (employeeId: number): number => {
       const toSales = contributionToSalesByEmployee.get(employeeId) ?? 0;
@@ -6422,7 +6388,6 @@ const SalesContributionPage = () => {
     );
 
     const employeeCount = deptData.employees.length;
-    // No per-employee correction in the contribution column; header still shows contributionDiff so user sees gap/surplus.
     const perEmployeeCorrection = 0;
 
     const filteredEmployeesForCorrection = isFieldView ? [] : deptData.employees.filter((emp) => {
@@ -6472,54 +6437,21 @@ const SalesContributionPage = () => {
     // Basis for total row: contribution + contribution fixed including amounts added from link (used for salary budget and percentages).
     const contributionTotalForPercentages =
       totalRowContribution + totalRowContributionFixed;
-    // Full-table totals (all employees, ignore search filter) for header correction so the (+/−) amount next to Link contribution stays fixed when filtering by employee.
-    const getLinkedContributionDeductedFull = (employeeId: number): number => {
-      const toSales = contributionToSalesByEmployee.get(employeeId) ?? 0;
-      const toHandlers = contributionToHandlersByEmployee.get(employeeId) ?? 0;
-      if (deptData.departmentName === 'Sales') return toHandlers;
-      if (deptData.departmentName === 'Handlers') return toSales + (linkedToHandlersShareByEmployeeFull.get(employeeId) ?? 0);
-      if (deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance') return toSales + toHandlers;
-      return 0;
-    };
-    const fullTotalContributionCol = deptData.employees.reduce(
-      (s, emp) => {
-        const orig = emp.contribution ?? 0;
-        const deducted = getLinkedContributionDeductedFull(emp.employeeId);
-        const effectiveRelocated = Math.min(deducted, orig);
-        return s + (orig - effectiveRelocated);
-      },
-      0
-    );
-    const fullTotalContributionFixed = deptData.employees.reduce(
-      (s, emp) => {
-        const fullFixed = emp.contributionFixed ?? 0;
-        const toMarketing = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
-        return s + (fullFixed - toMarketing);
-      },
-      0
-    );
-    const fullTotalContributionFixedAdjusted =
-      fullTotalContributionFixed + (deptData.departmentName === 'Marketing' ? linkedContributionForMarketing : 0);
-    const fullTotalRowContribution =
-      fullTotalContributionCol +
-      (deptData.departmentName === 'Sales' ? (linkedContributionForSales ?? 0) : 0) +
-      (deptData.departmentName === 'Handlers' ? (linkedContributionForHandlers ?? 0) : 0);
-    const fullTotalRowContributionFixed =
-      fullTotalContributionFixedAdjusted + (deptData.departmentName === 'Sales' ? linkedContributionFixedForSales : 0);
-    const fullContributionTotal = fullTotalRowContribution + fullTotalRowContributionFixed;
-    // Header correction = target minus full-table total (all employees); not updated when filtering by employee.
-    const contributionDiff = contributionAmount - fullContributionTotal;
+    const contributionAmountBase =
+      totalIncome && totalIncome > 0 ? (departmentPercentage / 100) * totalIncome : 0;
+    const contributionAmount = scalePeriodSum(contributionAmountBase);
     // Total row salary budget = 40% of (total contribution + total contribution fixed with link).
     const totalRowSalaryBudget = Math.round(contributionTotalForPercentages * 0.4 * 100) / 100;
     const totalSalaryCostDisplayed = filteredEmployeesForCorrection.reduce(
       (s, emp) => s + (emp.totalSalaryCost ?? 0),
       0
     );
-    const totalMaxIncentivesDisplayed = totalRowSalaryBudget - totalSalaryCostDisplayed;
+    const totalMaxIncentivesDisplayed = scalePeriodSum(totalRowSalaryBudget) - totalSalaryCostDisplayed;
     const totalSalaryBruttoDisplayed = filteredEmployeesForCorrection.reduce(
       (s, emp) => s + (emp.salaryBrutto ?? 0),
       0
     );
+    const contributionTotalScaledForRow = scalePeriodSum(contributionTotalForPercentages);
 
     return (
       <div key={deptData.departmentName} className="mb-8">
@@ -6527,27 +6459,9 @@ const SalesContributionPage = () => {
         <h2 className="text-2xl font-bold mb-4 flex items-center gap-3 flex-wrap">
             <span>{deptData.departmentName}</span>
             {contributionAmount > 0 && (
-              <>
-                <span className="text-lg font-semibold text-green-800 dark:text-green-600 tabular-nums">
-                  {formatCurrency(contributionAmount)}
-                </span>
-                {!isFieldView && contributionAmount > 0 && (
-                  <span
-                    className="text-sm font-medium tabular-nums"
-                    title={contributionDiff > 0 ? 'Total from rows is below target; this is the shortfall.' : contributionDiff < 0 ? 'Total from rows is above target; this is the surplus.' : 'Rows match target.'}
-                  >
-                    {contributionDiff > 0 && (
-                      <span className="text-green-600 dark:text-green-400">(+{formatCurrency(contributionDiff)})</span>
-                    )}
-                    {contributionDiff < 0 && (
-                      <span className="text-red-600 dark:text-red-400">(−{formatCurrency(Math.abs(contributionDiff))})</span>
-                    )}
-                    {contributionDiff === 0 && (
-                      <span className="text-gray-500">(0)</span>
-                    )}
-                  </span>
-                )}
-              </>
+              <span className="text-lg font-semibold text-green-800 dark:text-green-600 tabular-nums">
+                {formatCurrency(contributionAmount)}
+              </span>
             )}
             {deptData.departmentName === 'Sales' && (
               <button
@@ -6598,11 +6512,7 @@ const SalesContributionPage = () => {
                     <th className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">Actual Salary Budget</th>
                     <th className="text-right w-[10.5%] text-xs md:text-sm whitespace-nowrap">
                       Salary (B)
-                      {salaryFilter?.month && salaryFilter?.year && (
-                        <div className="text-xs font-normal text-gray-500 mt-1">
-                          {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
-                        </div>
-                      )}
+                      {salaryColumnCaption}
                     </th>
                     <th className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">Field %</th>
                     <th className="text-right w-[9.5%] text-xs md:text-sm whitespace-nowrap">Other %</th>
@@ -6627,19 +6537,11 @@ const SalesContributionPage = () => {
                     <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Salary Budget</th>
                     <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
                       Salary (B)
-                      {salaryFilter?.month && salaryFilter?.year && (
-                        <div className="text-xs font-normal text-gray-500 mt-1">
-                          {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
-                        </div>
-                      )}
+                      {salaryColumnCaption}
                     </th>
                     <th className="text-right w-[10%] bg-gray-100 text-xs md:text-sm whitespace-nowrap">
                       Total Cost
-                      {salaryFilter?.month && salaryFilter?.year && (
-                        <div className="text-xs font-normal text-gray-500 mt-1">
-                          {new Date(2000, (salaryFilter.month || 1) - 1, 1).toLocaleString('default', { month: 'short' })} {salaryFilter.year}
-                        </div>
-                      )}
+                      {salaryColumnCaption}
                     </th>
                     <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Max Incentives</th>
                   </>
@@ -6659,20 +6561,22 @@ const SalesContributionPage = () => {
                 .map((emp) => {
                   // Use employeeName as key in field view, employeeId in employee view
                   const employeeKey = isFieldView ? emp.employeeName : `${emp.employeeId}`;
-                  const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
-                  const incomeKey = totalIncome || 0;
-                  const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
-                  const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
-                  const cacheKey = `${emp.employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
                   const isExpanded = expandedRows.has(employeeKey);
-                  const roleData = roleDataCache.get(cacheKey) || [];
-                  const isLoadingRoleData = loadingRoleData.has(employeeKey);
 
                   return (
                     <React.Fragment key={emp.employeeId}>
                       <tr
                         className="cursor-pointer hover:bg-base-200"
-                        onClick={() => toggleRowExpansion(emp.employeeId, emp.employeeName)}
+                        onClick={() => {
+                          if (isFieldView) {
+                            toggleRowExpansion(emp.employeeId, emp.employeeName);
+                          } else {
+                            setModalEmployeeId(emp.employeeId);
+                            setModalEmployeeName(emp.employeeName);
+                            setModalRole('ALL');
+                            setModalOpen(true);
+                          }
+                        }}
                       >
                         {isFieldView ? (
                           <>
@@ -6689,10 +6593,10 @@ const SalesContributionPage = () => {
                                 <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">{emp.employeeName}</span>
                               </div>
                             </td>
-                            <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(emp.signed)}</td>
-                            <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(emp.due || 0)}</td>
-                            <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(emp.dueNormalized || 0)}</td>
-                            <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">{formatCurrency((emp.dueNormalized || 0) * 0.4)}</td>
+                            <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum(emp.signed))}</td>
+                            <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum(emp.due || 0))}</td>
+                            <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum(emp.dueNormalized || 0))}</td>
+                            <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum((emp.dueNormalized || 0) * 0.4))}</td>
                             <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
                             <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
                             <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
@@ -6702,11 +6606,6 @@ const SalesContributionPage = () => {
                           <>
                             <td className="w-[20%] text-xs md:text-sm whitespace-nowrap">
                               <div className="flex items-center gap-1 md:gap-2">
-                                {isExpanded ? (
-                                  <ChevronDownIcon className="w-3 h-3 md:w-4 md:h-4 text-gray-500 flex-shrink-0" />
-                                ) : (
-                                  <ChevronRightIcon className="w-3 h-3 md:w-4 md:h-4 text-gray-500 flex-shrink-0" />
-                                )}
                                 <div className="flex-shrink-0">
                                   <EmployeeAvatar employeeId={emp.employeeId} size="lg" />
                                 </div>
@@ -6724,10 +6623,10 @@ const SalesContributionPage = () => {
                                 {emp.department}
                               </div>
                             </td>
-                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(emp.signed)}</td>
-                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(emp.due || 0)}</td>
-                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(emp.signedNormalized || 0)}</td>
-                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(emp.dueNormalized || 0)}</td>
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum(emp.signed))}</td>
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum(emp.due || 0))}</td>
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum(emp.signedNormalized || 0))}</td>
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum(emp.dueNormalized || 0))}</td>
                             <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
                               {(() => {
                                 const originalContribution = emp.contribution ?? 0;
@@ -6736,7 +6635,7 @@ const SalesContributionPage = () => {
                                 const wasCapped = linkedDeducted > originalContribution;
                                 return (
                                   <div className="flex flex-col items-end gap-0.5">
-                                    <span>{formatCurrency(originalContribution)}</span>
+                                    <span>{formatCurrency(scalePeriodSum(originalContribution))}</span>
                                     {effectiveRelocated > 0 && (
                                       <span
                                         className="tooltip tooltip-top text-xs font-medium tabular-nums text-blue-600 dark:text-blue-400 cursor-help"
@@ -6744,7 +6643,7 @@ const SalesContributionPage = () => {
                                           ? `Contribution relocated to link modal(s). Display capped to original contribution (calculated relocated was ${formatCurrency(linkedDeducted)}).`
                                           : 'Contribution relocated to Sales or Handlers link modal(s).'}
                                       >
-                                        −{formatCurrency(effectiveRelocated)} relocated
+                                        −{formatCurrency(scalePeriodSum(effectiveRelocated))} relocated
                                       </span>
                                     )}
                                   </div>
@@ -6757,13 +6656,13 @@ const SalesContributionPage = () => {
                                 const fullFixed = emp.contributionFixed ?? 0;
                                 return (
                                   <div className="flex flex-col items-end gap-0.5">
-                                    <span>{formatCurrency(fullFixed)}</span>
+                                    <span>{formatCurrency(scalePeriodSum(fullFixed))}</span>
                                     {marketingDeducted > 0 && (
                                       <span
                                         className="tooltip tooltip-top text-xs text-amber-600 dark:text-amber-400 font-medium cursor-help"
                                         data-tip="Part of this employee's fixed contribution is reallocated to Marketing (Link contribution to Marketing)."
                                       >
-                                        −{formatCurrency(marketingDeducted)}
+                                        −{formatCurrency(scalePeriodSum(marketingDeducted))}
                                       </span>
                                     )}
                                   </div>
@@ -6772,7 +6671,7 @@ const SalesContributionPage = () => {
                             </td>
                             <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
                               <div className="flex flex-col items-end">
-                                <span>{formatCurrency(emp.salaryBudget || 0)}</span>
+                                <span>{formatCurrency(scalePeriodSum(emp.salaryBudget || 0))}</span>
                                 <span className="text-xs text-gray-500">40%</span>
                               </div>
                             </td>
@@ -6780,10 +6679,21 @@ const SalesContributionPage = () => {
                               <div className="flex flex-col items-end">
                                 <span>{formatCurrency(emp.salaryBrutto || 0)}</span>
                                 {(() => {
-                                  const contributionTotal = (emp.contribution || 0) + (emp.contributionFixed || 0);
-                                  return contributionTotal > 0 ? (
-                                    <span className={`text-xs ${((emp.salaryBrutto || 0) / contributionTotal * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
-                                      {((emp.salaryBrutto || 0) / contributionTotal * 100).toFixed(1)}%
+                                  const origC = emp.contribution || 0;
+                                  const fullFixedC = emp.contributionFixed || 0;
+                                  const ld = getLinkedContributionDeducted(emp.employeeId);
+                                  const effRel = Math.min(ld, origC);
+                                  const netV = Math.max(0, origC - effRel);
+                                  const mkt = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
+                                  const netF = Math.max(0, fullFixedC - mkt);
+                                  const contributionTotalRaw =
+                                    deptData.departmentName === 'Sales' || deptData.departmentName === 'Handlers'
+                                      ? netV + netF
+                                      : origC + fullFixedC;
+                                  const contributionTotalDisplay = scalePeriodSum(contributionTotalRaw);
+                                  return contributionTotalDisplay > 0 ? (
+                                    <span className={`text-xs ${((emp.salaryBrutto || 0) / contributionTotalDisplay * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                                      {((emp.salaryBrutto || 0) / contributionTotalDisplay * 100).toFixed(1)}%
                                     </span>
                                   ) : (
                                     <span className="text-xs text-gray-500">-</span>
@@ -6795,10 +6705,21 @@ const SalesContributionPage = () => {
                               <div className="flex flex-col items-end">
                                 <span>{formatCurrency(emp.totalSalaryCost || 0)}</span>
                                 {(() => {
-                                  const contributionTotal = (emp.contribution || 0) + (emp.contributionFixed || 0);
-                                  return contributionTotal > 0 ? (
-                                    <span className={`text-xs ${((emp.totalSalaryCost || 0) / contributionTotal * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
-                                      {((emp.totalSalaryCost || 0) / contributionTotal * 100).toFixed(1)}%
+                                  const origC = emp.contribution || 0;
+                                  const fullFixedC = emp.contributionFixed || 0;
+                                  const ld = getLinkedContributionDeducted(emp.employeeId);
+                                  const effRel = Math.min(ld, origC);
+                                  const netV = Math.max(0, origC - effRel);
+                                  const mkt = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
+                                  const netF = Math.max(0, fullFixedC - mkt);
+                                  const contributionTotalRaw =
+                                    deptData.departmentName === 'Sales' || deptData.departmentName === 'Handlers'
+                                      ? netV + netF
+                                      : origC + fullFixedC;
+                                  const contributionTotalDisplay = scalePeriodSum(contributionTotalRaw);
+                                  return contributionTotalDisplay > 0 ? (
+                                    <span className={`text-xs ${((emp.totalSalaryCost || 0) / contributionTotalDisplay * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                                      {((emp.totalSalaryCost || 0) / contributionTotalDisplay * 100).toFixed(1)}%
                                     </span>
                                   ) : (
                                     <span className="text-xs text-gray-500">-</span>
@@ -6810,7 +6731,7 @@ const SalesContributionPage = () => {
                               {(() => {
                                 const salaryBudget = emp.salaryBudget ?? 0;
                                 const totalSalaryCost = emp.totalSalaryCost ?? 0;
-                                const maxIncentives = salaryBudget - totalSalaryCost;
+                                const maxIncentives = scalePeriodSum(salaryBudget) - totalSalaryCost;
                                 return (
                                   <span className={maxIncentives >= 0 ? 'text-green-500' : 'text-red-500'}>
                                     {formatCurrency(maxIncentives)}
@@ -6826,7 +6747,7 @@ const SalesContributionPage = () => {
                           {(() => {
                             const categoryKey = emp.employeeName;
                             // Retrieve and ensure Maps are properly converted (in case they were serialized)
-                            const rawCategoryEmployees = categoryEmployeesCache.get(categoryKey) || [];
+                            const rawCategoryEmployees = categoryEmployeesCache.get(getCategoryEmployeesCacheKey(categoryKey)) || [];
                             const categoryEmployees = rawCategoryEmployees.map((emp: any) => {
                               // Convert Maps if they were serialized to objects
                               const fieldPercentages = emp.fieldPercentages;
@@ -6860,7 +6781,7 @@ const SalesContributionPage = () => {
 
                             // Show loading state immediately if data is being fetched or not yet loaded
                             // The fetch is triggered by toggleRowExpansion, so we just need to show the state here
-                            if (isLoading || (!categoryEmployeesCache.has(categoryKey) && categoryEmployees.length === 0)) {
+                            if (isLoading || (!categoryEmployeesCache.has(getCategoryEmployeesCacheKey(categoryKey)) && categoryEmployees.length === 0)) {
                               return (
                                 <tr>
                                   <td colSpan={colSpanValue} className="p-4 bg-base-100">
@@ -7576,59 +7497,6 @@ const SalesContributionPage = () => {
                           })()}
                         </>
                       )}
-                      {isExpanded && !isFieldView && (
-                        <tr>
-                          <td colSpan={colSpanValue} className="p-0 bg-base-100">
-                            <div className="p-4 border-t-2 border-primary">
-                              <h3 className="text-lg font-semibold mb-3">Role Breakdown for {emp.employeeName}</h3>
-                              {isLoadingRoleData ? (
-                                <div className="flex items-center justify-center py-8">
-                                  <span className="loading loading-spinner loading-md"></span>
-                                  <span className="ml-2">Loading role data...</span>
-                                </div>
-                              ) : (
-                                <div className="overflow-x-auto">
-                                  <table className="table w-full table-fixed">
-                                    <thead>
-                                      <tr>
-                                        <th className="w-[40%]">Role</th>
-                                        <th className="text-right w-[25%]">Signed Total</th>
-                                        <th className="text-right w-[25%]">Due Total</th>
-                                        <th className="w-[10%]">Action</th>
-                                      </tr>
-                                    </thead>
-                                    <tbody>
-                                      {roleData.map((roleItem: any, index: number) => (
-                                        <tr key={index}>
-                                          <td className="w-[40%]">{roleItem.role}</td>
-                                          <td className="text-right w-[25%]">{formatCurrency(roleItem.signedTotal)}</td>
-                                          <td className="text-right w-[25%]">{formatCurrency(roleItem.dueTotal)}</td>
-                                          <td className="w-[10%]">
-                                            <button
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                setModalEmployeeId(emp.employeeId);
-                                                setModalEmployeeName(emp.employeeName);
-                                                // Pass the role combination (may contain multiple roles)
-                                                setModalRole(roleItem.role);
-                                                setModalOpen(true);
-                                              }}
-                                              className="btn btn-ghost btn-xs btn-circle"
-                                              title="View leads"
-                                            >
-                                              <EyeIcon className="w-4 h-4" />
-                                            </button>
-                                          </td>
-                                        </tr>
-                                      ))}
-                                    </tbody>
-                                  </table>
-                                </div>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
                     </React.Fragment>
                   );
                 })}
@@ -7655,15 +7523,14 @@ const SalesContributionPage = () => {
                     <td className="text-right w-[12%] text-xs md:text-sm"></td>
                     <td className="text-right w-[11%] text-xs md:text-sm">
                       {(() => {
-                        // Calculate total Field Salary Budget (40% of Due Norm)
-                        return formatCurrency((deptData.totals.dueNormalized || 0) * 0.4);
+                        return formatCurrency(scalePeriodSum((deptData.totals.dueNormalized || 0) * 0.4));
                       })()}
                     </td>
                     <td className="text-right w-[11%] text-xs md:text-sm">
                       {(() => {
                         // Calculate total Actual Salary Budget from all employees in this field
                         const fieldName = deptData.departmentName;
-                        const rawEmployees = categoryEmployeesCache.get(fieldName) || [];
+                        const rawEmployees = categoryEmployeesCache.get(getCategoryEmployeesCacheKey(fieldName)) || [];
                         // Normalize Maps in case they were serialized
                         const employees = rawEmployees.map((emp: any) => {
                           const fieldPercentages = emp.fieldPercentages;
@@ -7713,11 +7580,10 @@ const SalesContributionPage = () => {
                           }
                           return sum + ((maxPercentage / 100) * (emp.salaryBrutto || 0));
                         }, 0);
-                        const totalFieldSalaryBudget = (deptData.totals.dueNormalized || 0) * 0.4;
+                        const totalFieldSalaryBudget = scalePeriodSum((deptData.totals.dueNormalized || 0) * 0.4);
                         const percentageDiff = totalFieldSalaryBudget > 0
                           ? ((totalActualSalaryBudget - totalFieldSalaryBudget) / totalFieldSalaryBudget) * 100
                           : 0;
-                        // Green when actual <= field (under/at budget - good), Red when actual > field (over budget - bad)
                         const isGreen = totalActualSalaryBudget <= totalFieldSalaryBudget;
                         return (
                           <div className="flex flex-col items-end">
@@ -7735,7 +7601,7 @@ const SalesContributionPage = () => {
                       {(() => {
                         // Calculate total Salary (B) from all employees in this field
                         const fieldName = deptData.departmentName;
-                        const employees = categoryEmployeesCache.get(fieldName) || [];
+                        const employees = categoryEmployeesCache.get(getCategoryEmployeesCacheKey(fieldName)) || [];
                         const totalSalaryBrutto = employees.reduce((sum, emp) => {
                           return sum + (emp.salaryBrutto || 0);
                         }, 0);
@@ -7756,7 +7622,7 @@ const SalesContributionPage = () => {
                     <td className="text-right w-[10%] text-xs md:text-sm">
                       <div className="flex flex-col items-end">
                         <span>
-                          {formatCurrency(totalRowContribution)}
+                          {formatCurrency(scalePeriodSum(totalRowContribution))}
                         </span>
                         {(deptData.departmentName === 'Sales' && linkedContributionForSales != null && linkedContributionForSales > 0) || (deptData.departmentName === 'Handlers' && linkedContributionForHandlers != null && linkedContributionForHandlers > 0) ? (
                           <span
@@ -7765,7 +7631,7 @@ const SalesContributionPage = () => {
                               ? 'Contribution from employees in Handlers, Partners and Finance who have Closer / Helper Closer / Meeting Manager / Scheduler roles (Link contribution to Sales).'
                               : 'Contribution from employees in Sales, Partners and Finance who have the Handler role (Link contribution to Handlers).'}
                           >
-                            +{formatCurrency(deptData.departmentName === 'Sales' ? (linkedContributionForSales ?? 0) : (linkedContributionForHandlers ?? 0))} from link
+                            +{formatCurrency(scalePeriodSum(deptData.departmentName === 'Sales' ? (linkedContributionForSales ?? 0) : (linkedContributionForHandlers ?? 0)))} from link
                           </span>
                         ) : null}
                       </div>
@@ -7773,14 +7639,14 @@ const SalesContributionPage = () => {
                     <td className="text-right w-[10%] text-xs md:text-sm">
                       <div className="flex flex-col items-end">
                         <span>
-                          {formatCurrency(totalRowContributionFixed)}
+                          {formatCurrency(scalePeriodSum(totalRowContributionFixed))}
                         </span>
                         {deptData.departmentName === 'Sales' && linkedContributionFixedForSales > 0 ? (
                           <span
                             className="tooltip tooltip-top text-xs text-green-600 dark:text-green-400 font-medium cursor-help"
                             data-tip="50% of fixed contribution from linked Handlers/Partners/Finance employees (Link contribution to Sales)."
                           >
-                            +{formatCurrency(linkedContributionFixedForSales)} from link
+                            +{formatCurrency(scalePeriodSum(linkedContributionFixedForSales))} from link
                           </span>
                         ) : null}
                         {deptData.departmentName === 'Marketing' && linkedContributionForMarketing > 0 ? (
@@ -7788,7 +7654,7 @@ const SalesContributionPage = () => {
                             className="tooltip tooltip-top text-xs text-orange-600 dark:text-orange-400 font-medium cursor-help"
                             data-tip="Contribution fixed from employees Irina and Joshua (Link contribution to Marketing)."
                           >
-                            +{formatCurrency(linkedContributionForMarketing)} from link
+                            +{formatCurrency(scalePeriodSum(linkedContributionForMarketing))} from link
                           </span>
                         ) : null}
                         {(deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance') && linkedFixedDeductedForDisplayed > 0 ? (
@@ -7796,7 +7662,7 @@ const SalesContributionPage = () => {
                             className="tooltip tooltip-top text-xs text-amber-600 dark:text-amber-400 font-medium cursor-help"
                             data-tip="50% of fixed contribution from employees in this table reallocated to the Sales table (Link contribution to Sales)."
                           >
-                            −{formatCurrency(linkedFixedDeductedForDisplayed)}
+                            −{formatCurrency(scalePeriodSum(linkedFixedDeductedForDisplayed))}
                           </span>
                         ) : null}
                         {linkedMarketingFixedDeductedForDisplayed > 0 ? (
@@ -7804,23 +7670,23 @@ const SalesContributionPage = () => {
                             className="tooltip tooltip-top text-xs text-amber-600 dark:text-amber-400 font-medium cursor-help"
                             data-tip="Part of fixed contribution from employees reallocated to Marketing (Link contribution to Marketing)."
                           >
-                            −{formatCurrency(linkedMarketingFixedDeductedForDisplayed)}
+                            −{formatCurrency(scalePeriodSum(linkedMarketingFixedDeductedForDisplayed))}
                           </span>
                         ) : null}
                       </div>
                     </td>
                     <td className="text-right w-[10%] text-xs md:text-sm">
                       <div className="flex flex-col items-end">
-                        <span>{formatCurrency(totalRowSalaryBudget)}</span>
+                        <span>{formatCurrency(scalePeriodSum(totalRowSalaryBudget))}</span>
                         <span className="text-xs text-gray-500">40%</span>
                       </div>
                     </td>
                     <td className="text-right w-[10%] text-xs md:text-sm">
                       <div className="flex flex-col items-end">
                         <span>{formatCurrency(totalSalaryBruttoDisplayed)}</span>
-                        {contributionTotalForPercentages > 0 ? (
-                          <span className={`text-xs ${(totalSalaryBruttoDisplayed / contributionTotalForPercentages * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
-                            {(totalSalaryBruttoDisplayed / contributionTotalForPercentages * 100).toFixed(1)}%
+                        {contributionTotalScaledForRow > 0 ? (
+                          <span className={`text-xs ${(totalSalaryBruttoDisplayed / contributionTotalScaledForRow * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                            {(totalSalaryBruttoDisplayed / contributionTotalScaledForRow * 100).toFixed(1)}%
                           </span>
                         ) : (
                           <span className="text-xs text-gray-500">-</span>
@@ -7830,9 +7696,9 @@ const SalesContributionPage = () => {
                     <td className="text-right w-[10%] bg-gray-100 text-xs md:text-sm">
                       <div className="flex flex-col items-end">
                         <span>{formatCurrency(totalSalaryCostDisplayed)}</span>
-                        {contributionTotalForPercentages > 0 ? (
-                          <span className={`text-xs ${(totalSalaryCostDisplayed / contributionTotalForPercentages * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
-                            {(totalSalaryCostDisplayed / contributionTotalForPercentages * 100).toFixed(1)}%
+                        {contributionTotalScaledForRow > 0 ? (
+                          <span className={`text-xs ${(totalSalaryCostDisplayed / contributionTotalScaledForRow * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
+                            {(totalSalaryCostDisplayed / contributionTotalScaledForRow * 100).toFixed(1)}%
                           </span>
                         ) : (
                           <span className="text-xs text-gray-500">-</span>
@@ -7921,55 +7787,77 @@ const SalesContributionPage = () => {
           </div>
         </div>
 
-        {/* Row 2: Total signed + Total income + Total cost badges, centered below */}
+        {/* Row 2: KPI badges — only after user runs Search (same data as report) */}
+        {searchPerformed && (
         <div className="flex justify-center gap-5 md:gap-8 mb-4 flex-wrap">
           <div className="flex flex-col items-center gap-1.5">
-            <span className="text-sm font-medium text-base-content/70">Total signed</span>
+            <div className="flex flex-col items-center">
+              <span className="text-sm font-medium text-base-content/70">Total signed</span>
+              {periodPreset !== 'custom' && (
+                <span className="text-xs text-base-content/50">avg. per month</span>
+              )}
+            </div>
             <div className="px-5 py-2.5 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg min-w-[160px] text-center text-white shadow-md">
               {loadingSignedValue ? (
                 <span className="loading loading-spinner loading-sm text-white"></span>
               ) : (
-                <span className="font-semibold text-white text-lg">{formatCurrency(totalSignedValue)}</span>
+                <span className="font-semibold text-white text-lg">{formatCurrency(displaySummaryTotalSigned)}</span>
               )}
             </div>
           </div>
           <div className="flex flex-col items-center gap-1.5">
-            <span className="text-sm font-medium text-base-content/70">Total income</span>
+            <div className="flex flex-col items-center">
+              <span className="text-sm font-medium text-base-content/70">Total income</span>
+              {periodPreset !== 'custom' && (
+                <span className="text-xs text-base-content/50">avg. per month</span>
+              )}
+            </div>
             <div className="px-5 py-2.5 bg-gradient-to-tr from-teal-500 via-green-500 to-emerald-500 rounded-lg min-w-[160px] text-center text-white shadow-md">
               {loadingInvoicedIncome ? (
                 <span className="loading loading-spinner loading-sm text-white"></span>
               ) : (
-                <span className="font-semibold text-white text-lg">{formatCurrency(totalIncome || 0)}</span>
+                <span className="font-semibold text-white text-lg">{formatCurrency(displaySummaryTotalIncome)}</span>
               )}
             </div>
           </div>
           <div className="flex flex-col items-center gap-1.5">
             <div className="flex items-center gap-1.5">
-              <span className="text-sm font-medium text-base-content/70">Total salary budget</span>
-              {totalIncome != null && totalIncome > 0 && (
+              <div className="flex flex-col items-center">
+                <span className="text-sm font-medium text-base-content/70">Total salary budget</span>
+                {periodPreset !== 'custom' && (
+                  <span className="text-xs text-base-content/50">avg. per month</span>
+                )}
+              </div>
+              {displaySummaryTotalIncome > 0 && (
                 <span className="badge badge-sm bg-sky-500/90 text-white border-0">
-                  {((totalSalaryBudgetFromTotalRows / totalIncome) * 100).toFixed(1)}%
+                  {((displaySummarySalaryBudget / displaySummaryTotalIncome) * 100).toFixed(1)}%
                 </span>
               )}
             </div>
             <div className="px-5 py-2.5 bg-gradient-to-tr from-sky-500 via-blue-500 to-indigo-600 rounded-lg min-w-[160px] text-center text-white shadow-md">
-              <span className="font-semibold text-white text-lg">{formatCurrency(totalSalaryBudgetFromTotalRows)}</span>
+              <span className="font-semibold text-white text-lg">{formatCurrency(displaySummarySalaryBudget)}</span>
             </div>
           </div>
           <div className="flex flex-col items-center gap-1.5">
             <div className="flex items-center gap-1.5">
-              <span className="text-sm font-medium text-base-content/70">Total cost</span>
-              {totalIncome != null && totalIncome > 0 && (
+              <div className="flex flex-col items-center">
+                <span className="text-sm font-medium text-base-content/70">Total cost</span>
+                {periodPreset !== 'custom' && (
+                  <span className="text-xs text-base-content/50">avg. per month</span>
+                )}
+              </div>
+              {displaySummaryTotalIncome > 0 && (
                 <span className="badge badge-sm bg-amber-500/90 text-white border-0">
-                  {((displayTotalCostForTopBadge / totalIncome) * 100).toFixed(1)}%
+                  {((displaySummaryTotalCost / displaySummaryTotalIncome) * 100).toFixed(1)}%
                 </span>
               )}
             </div>
             <div className="px-5 py-2.5 bg-gradient-to-tr from-amber-500 via-orange-500 to-orange-600 rounded-lg min-w-[160px] text-center text-white shadow-md">
-              <span className="font-semibold text-white text-lg">{formatCurrency(displayTotalCostForTopBadge)}</span>
+              <span className="font-semibold text-white text-lg">{formatCurrency(displaySummaryTotalCost)}</span>
             </div>
           </div>
         </div>
+        )}
       </div>
 
       {/* Fixed contribution modal */}
@@ -7985,7 +7873,6 @@ const SalesContributionPage = () => {
             .eq('id', 1)
             .maybeSingle();
           setUseFixedContributionFromDb(!!row?.use_fixed_contribution_from_db);
-          handleSearch();
         }}
       />
 
@@ -8086,6 +7973,24 @@ const SalesContributionPage = () => {
 
       <div className="card bg-base-100 shadow-xl mb-6 md:-mt-4" data-filters-section>
         <div className="card-body md:py-4">
+          <div className="mb-3 md:mb-4 flex flex-col items-start gap-1 w-fit max-w-full">
+            <span className="text-xs md:text-base font-semibold text-base-content">Report period</span>
+            <select
+              className="select select-bordered select-sm md:select-md w-max max-w-full md:text-base"
+              value={periodPreset}
+              onChange={(e) => handlePeriodPresetChange(e.target.value as SalesContributionPeriodPreset)}
+            >
+              <option value="custom">Custom</option>
+              <option value="last3months">Last 3 months</option>
+              <option value="last6months">Last 6 months</option>
+              <option value="last12months">One year</option>
+            </select>
+            {periodFiltersLocked && (
+              <p className="text-xs text-base-content/60 mt-1">
+                From / To dates and salary month/year follow this preset. Switch to Custom to edit them.
+              </p>
+            )}
+          </div>
           <div className="grid grid-cols-2 md:grid-cols-7 gap-3 md:gap-4">
             {/* From Date - Mobile: 2 cols, Desktop: 1 col */}
             <div className="col-span-1">
@@ -8094,9 +7999,10 @@ const SalesContributionPage = () => {
               </label>
               <input
                 type="date"
-                className="input input-bordered input-sm md:input-md w-full md:text-base"
+                className={`input input-bordered input-sm md:input-md w-full md:text-base ${periodFiltersLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
                 value={filters.fromDate}
                 onChange={(e) => handleFilterChange('fromDate', e.target.value)}
+                disabled={periodFiltersLocked}
               />
             </div>
             {/* To Date - Mobile: 2 cols, Desktop: 1 col */}
@@ -8106,9 +8012,10 @@ const SalesContributionPage = () => {
               </label>
               <input
                 type="date"
-                className="input input-bordered input-sm md:input-md w-full md:text-base"
+                className={`input input-bordered input-sm md:input-md w-full md:text-base ${periodFiltersLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
                 value={filters.toDate}
                 onChange={(e) => handleFilterChange('toDate', e.target.value)}
+                disabled={periodFiltersLocked}
               />
             </div>
             {/* Salary Month - Mobile: 2 cols, Desktop: 1 col */}
@@ -8117,12 +8024,13 @@ const SalesContributionPage = () => {
                 <span className="label-text text-xs md:text-base md:font-semibold">Salary Month</span>
               </label>
               <select
-                className="select select-bordered select-sm md:select-md w-full md:text-base"
+                className={`select select-bordered select-sm md:select-md w-full md:text-base ${periodFiltersLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
                 value={salaryFilter?.month || previousMonth}
                 onChange={(e) => setSalaryFilter({
                   ...salaryFilter,
                   month: parseInt(e.target.value, 10)
                 })}
+                disabled={periodFiltersLocked}
               >
                 {Array.from({ length: 12 }, (_, i) => i + 1).map((month) => (
                   <option key={month} value={month}>
@@ -8137,12 +8045,13 @@ const SalesContributionPage = () => {
                 <span className="label-text text-xs md:text-base md:font-semibold">Salary Year</span>
               </label>
               <select
-                className="select select-bordered select-sm md:select-md w-full md:text-base"
+                className={`select select-bordered select-sm md:select-md w-full md:text-base ${periodFiltersLocked ? 'opacity-60 cursor-not-allowed' : ''}`}
                 value={salaryFilter?.year || previousYear}
                 onChange={(e) => setSalaryFilter({
                   ...salaryFilter,
                   year: parseInt(e.target.value, 10)
                 })}
+                disabled={periodFiltersLocked}
               >
                 {Array.from({ length: 10 }, (_, i) => today.getFullYear() - 5 + i).map((year) => (
                   <option key={year} value={year}>
@@ -8162,11 +8071,6 @@ const SalesContributionPage = () => {
                 placeholder="Search..."
                 value={employeeSearchTerm}
                 onChange={(e) => setEmployeeSearchTerm(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    handleSearch();
-                  }
-                }}
               />
             </div>
             {/* Search Button - Icon only, far right */}
@@ -8298,7 +8202,7 @@ const SalesContributionPage = () => {
                 if (employeeSearchTerm.trim()) {
                   const searchLower = employeeSearchTerm.toLowerCase().trim();
                   const categoryKey = fieldData.departmentName;
-                  const categoryEmployees = categoryEmployeesCache.get(categoryKey) || [];
+                  const categoryEmployees = categoryEmployeesCache.get(getCategoryEmployeesCacheKey(categoryKey)) || [];
 
                   // Check if any employee in this field matches the search
                   const hasMatchingEmployee = categoryEmployees.some((emp: any) => {
@@ -8321,9 +8225,9 @@ const SalesContributionPage = () => {
       )}
 
       {!searchPerformed && (
-        <div className="alert alert-info">
-          <span>Please select date range and click Search to view the report</span>
-        </div>
+        <p className="text-center text-base-content/70 py-4">
+          Please select date range and click Search to view the report
+        </p>
       )}
 
       {/* Employee Role Leads Modal */}
