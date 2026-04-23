@@ -1288,6 +1288,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
+  const closeBriefEditModal = () => {
+    setEditingBriefId(null);
+    setEditedBrief('');
+  };
+
   const handleSaveBrief = async (meetingId: number) => {
     try {
       // Check if this is a legacy meeting
@@ -4051,11 +4056,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       setEditedBrief(meeting.brief || '');
     };
 
-    const handleCancelEdit = () => {
-      setEditingBriefId(null);
-      setEditedBrief('');
-    };
-
     const handleEditField = (meetingId: number, field: 'expert_notes' | 'handler_notes', currentContent?: string) => {
       setEditingField({ meetingId, field });
       setEditedContent(currentContent || '');
@@ -5063,42 +5063,40 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               </div>
             )}
 
-            {/* Brief Section */}
+            {/* Brief Section — edit opens a modal for comfortable writing */}
             {editingMeetingId !== meeting.id && (
               <div className="border-t border-purple-100 pt-3 sm:pt-3">
                 <div className="flex justify-between items-center mb-2 sm:mb-2">
                   <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Brief</label>
-                  {editingBriefId === meeting.id ? (
-                    <div className="flex items-center gap-1">
-                      <button className="btn btn-ghost btn-xs hover:bg-green-50" onClick={() => handleSaveBrief(meeting.id)}>
-                        <CheckIcon className="w-4 h-4 sm:w-4 sm:h-4 text-green-600" />
-                      </button>
-                      <button className="btn btn-ghost btn-xs hover:bg-red-50" onClick={handleCancelEdit}>
-                        <XMarkIcon className="w-4 h-4 sm:w-4 sm:h-4 text-red-600" />
-                      </button>
-                    </div>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs gap-1 hover:bg-purple-50"
+                    onClick={handleEditBrief}
+                    title="Edit brief"
+                  >
+                    <PencilSquareIcon className="w-4 h-4 sm:w-4 sm:h-4 text-purple-500 hover:text-purple-600" />
+                    <span className="text-xs text-purple-600 font-medium">Edit</span>
+                  </button>
+                </div>
+                <div
+                  className="bg-gray-50 rounded-lg p-3 sm:p-3 min-h-[60px] sm:min-h-[60px] cursor-pointer hover:bg-gray-100/90 transition-colors"
+                  onClick={handleEditBrief}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleEditBrief();
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  title="Click to edit brief"
+                >
+                  {meeting.brief ? (
+                    <p className="text-sm sm:text-base text-gray-900 whitespace-pre-wrap">{meeting.brief}</p>
                   ) : (
-                    <button className="btn btn-ghost btn-xs hover:bg-purple-50" onClick={handleEditBrief}>
-                      <PencilSquareIcon className="w-4 h-4 sm:w-4 sm:h-4 text-purple-500 hover:text-purple-600" />
-                    </button>
+                    <span className="text-sm sm:text-base text-gray-400 italic">No brief provided</span>
                   )}
                 </div>
-                {editingBriefId === meeting.id ? (
-                  <textarea
-                    className="textarea textarea-bordered w-full h-20 sm:h-20 text-sm sm:text-base"
-                    value={editedBrief}
-                    onChange={(e) => setEditedBrief(e.target.value)}
-                    placeholder="Add a meeting brief..."
-                  />
-                ) : (
-                  <div className="bg-gray-50 rounded-lg p-3 sm:p-3 min-h-[60px] sm:min-h-[60px]">
-                    {meeting.brief ? (
-                      <p className="text-sm sm:text-base text-gray-900 whitespace-pre-wrap">{meeting.brief}</p>
-                    ) : (
-                      <span className="text-sm sm:text-base text-gray-400 italic">No brief provided</span>
-                    )}
-                  </div>
-                )}
               </div>
             )}
 
@@ -5454,7 +5452,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             onClick={() => setShowPastMeetingsPanel(false)}
             aria-hidden="true"
           />
-          <div className="fixed top-0 right-0 bottom-0 w-full max-w-md bg-white shadow-xl z-50 flex flex-col border-l border-gray-200">
+          <div className="fixed top-0 right-0 bottom-0 w-full max-w-2xl bg-white shadow-xl z-50 flex flex-col border-l border-gray-200">
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
               <h4 className="text-base font-semibold text-gray-900">Past Meetings</h4>
               <button
@@ -5481,6 +5479,126 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
           </div>
         </>
+      )}
+
+      {/* Edit meeting brief — full modal for comfortable writing */}
+      {editingBriefId !== null && (
+        <div
+          className="fixed inset-0 z-[60] flex items-stretch justify-center bg-black/50 p-0 sm:items-center sm:p-4"
+          onClick={closeBriefEditModal}
+          role="presentation"
+        >
+          <div
+            className="flex h-full min-h-0 w-full max-h-[100dvh] flex-col overflow-hidden bg-white shadow-xl rounded-none sm:h-auto sm:max-h-[90vh] sm:max-w-2xl sm:rounded-xl"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="meeting-brief-modal-title"
+          >
+            <div className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-100 px-5 pt-[max(1.25rem,env(safe-area-inset-top))] pb-3 sm:pt-5">
+              <div>
+                <h3 id="meeting-brief-modal-title" className="text-lg font-semibold text-gray-900">
+                  Edit meeting brief
+                </h3>
+                {(() => {
+                  const m = meetings.find((x) => x.id === editingBriefId);
+                  const leadLabel =
+                    client.lead_number != null && String(client.lead_number).trim() !== ''
+                      ? String(client.lead_number)
+                      : String(client.id);
+                  const loc = m ? getMeetingLocationName(m.location) : null;
+                  return (
+                    <div className="text-sm mt-1.5 space-y-1">
+                      <p className="text-gray-900">
+                        <span className="font-semibold">#{leadLabel}</span>
+                        <span className="text-gray-300 mx-1.5" aria-hidden>
+                          |
+                        </span>
+                        <span className="font-medium">{client.name || '—'}</span>
+                      </p>
+                      {m && (
+                        <p className="text-gray-500 flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
+                          <span>{new Date(m.date).toLocaleDateString('en-GB')}</span>
+                          {m.time && <span>· {m.time.substring(0, 5)}</span>}
+                          {loc && (
+                            <span className="inline-flex items-center gap-1 min-w-0 max-w-full">
+                              <span className="text-gray-300" aria-hidden>
+                                ·
+                              </span>
+                              <MapPinIcon className="w-3.5 h-3.5 opacity-70 shrink-0" aria-hidden />
+                              <span className="truncate">{loc}</span>
+                            </span>
+                          )}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+              <button
+                type="button"
+                onClick={closeBriefEditModal}
+                className="btn btn-ghost btn-sm btn-square shrink-0"
+                aria-label="Close"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-4 sm:max-h-[calc(90vh-200px)] sm:overflow-y-auto sm:flex-none">
+              <label htmlFor="meeting-brief-modal-text" className="sr-only">
+                Meeting brief
+              </label>
+              <textarea
+                id="meeting-brief-modal-text"
+                className="textarea textarea-bordered w-full min-h-[12rem] flex-1 basis-0 resize-y text-base leading-relaxed sm:min-h-[320px] sm:h-[min(50vh,400px)] sm:flex-none sm:basis-auto"
+                value={editedBrief}
+                onChange={(e) => setEditedBrief(e.target.value)}
+                placeholder="Add a meeting brief…"
+                autoFocus
+              />
+            </div>
+            <div className="shrink-0 space-y-2 border-t border-gray-100 bg-gray-50/80 px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:space-y-2.5 sm:py-3 sm:pb-3 rounded-b-none sm:rounded-b-xl">
+              <div className="flex justify-end gap-2">
+                <button type="button" className="btn btn-ghost" onClick={closeBriefEditModal}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => editingBriefId != null && handleSaveBrief(editingBriefId)}
+                >
+                  Save
+                </button>
+              </div>
+              {(() => {
+                const bm = meetings.find((x) => x.id === editingBriefId);
+                const le = bm?.lastEdited;
+                if (!le) return null;
+                const atText = le.timestamp
+                  ? new Date(le.timestamp).toLocaleString('en-GB', {
+                    day: '2-digit',
+                    month: 'short',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })
+                  : null;
+                return (
+                  <p className="text-center text-xs leading-snug text-gray-500 sm:text-left">
+                    Edited by{' '}
+                    <span className="font-medium text-gray-600">{le.user || '—'}</span>
+                    {atText ? (
+                      <>
+                        {' '}
+                        <span className="text-gray-400">at</span> {atText}
+                      </>
+                    ) : null}
+                  </p>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Notify Modal */}
@@ -5943,7 +6061,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       setMeetingCountsByTime({});
                     }}
                     required
-                    min={new Date().toISOString().split('T')[0]}
                   />
                 </div>
 
@@ -6429,7 +6546,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         value={rescheduleFormData.date}
                         onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, date: e.target.value }))}
                         required
-                        min={new Date().toISOString().split('T')[0]}
                       />
                     </div>
 

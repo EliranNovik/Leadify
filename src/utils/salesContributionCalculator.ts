@@ -1,5 +1,5 @@
 import { convertToNIS } from '../lib/currencyConversion';
-import { calculateSignedPortionAmount, calculateSignedPortionPercentage } from './rolePercentageCalculator';
+import { calculateSignedPortionAmount, calculateSignedPortionPercentage, newLeadFieldMatchesEmployee } from './rolePercentageCalculator';
 
 export interface EmployeeCalculationInput {
     employeeId: number;
@@ -220,15 +220,9 @@ const checkEmployeeInRole = (
     }
 
     if (roleField === 'closer' && lead.closer) {
-        const closerValue = lead.closer;
-        return typeof closerValue === 'string'
-            ? closerValue.toLowerCase() === employeeName.toLowerCase()
-            : Number(closerValue) === employeeId;
+        return newLeadFieldMatchesEmployee(lead.closer, employeeId, employeeName);
     } else if (roleField === 'scheduler' && lead.scheduler) {
-        const schedulerValue = lead.scheduler;
-        return typeof schedulerValue === 'string'
-            ? schedulerValue.toLowerCase() === employeeName.toLowerCase()
-            : Number(schedulerValue) === employeeId;
+        return newLeadFieldMatchesEmployee(lead.scheduler, employeeId, employeeName);
     } else if (roleField === 'handler') {
         if (lead.handler) {
             const handlerValue = lead.handler;
@@ -260,7 +254,7 @@ const checkEmployeeInRole = (
         }
         return false;
     } else if (roleField === 'expert' && lead.expert) {
-        return Number(lead.expert) === employeeId;
+        return newLeadFieldMatchesEmployee(lead.expert, employeeId, employeeName);
     } else if (roleField === 'manager' || roleField === 'meeting_manager_id') {
         // For new leads, check 'manager' field (not 'meeting_manager_id')
         if (lead.manager) {
@@ -339,7 +333,7 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
         { name: 'Scheduler', legacyField: 'meeting_scheduler_id', newField: 'scheduler' },
         { name: 'Helper Closer', legacyField: 'meeting_lawyer_id', newField: 'helper' },
         { name: 'Handler', legacyField: 'case_handler_id', newField: 'handler' },
-        { name: 'Meeting Manager', legacyField: 'meeting_manager_id', newField: 'manager' }, // For new leads, use 'manager' field
+        { name: 'Meeting Manager', legacyField: 'meeting_manager_id', newField: 'meeting_manager_id' },
         { name: 'Helper Handler', legacyField: null, newField: null },
         { name: 'Expert', legacyField: 'expert_id', newField: 'expert' },
     ];
@@ -524,7 +518,8 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
             const leadRoles = {
                 closer: lead.closer,
                 scheduler: lead.scheduler,
-                manager: lead.manager || lead.meeting_manager_id, // For new leads, use 'manager' field, fallback to 'meeting_manager_id'
+                manager: lead.manager || lead.meeting_manager_id, // for hasRole; either column may be set
+                meeting_manager_id: lead.meeting_manager_id,
                 expert: lead.expert,
                 handler: lead.handler,
                 helperCloser: lead.helper ?? lead.meeting_lawyer_id,

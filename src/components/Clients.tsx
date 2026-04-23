@@ -16275,7 +16275,6 @@ const Clients: React.FC<ClientsProps> = ({
                           setMeetingCountsByTime({});
                         }}
                         required
-                        min={new Date().toISOString().split('T')[0]}
                       />
                     </div>
 
@@ -18612,7 +18611,6 @@ const Clients: React.FC<ClientsProps> = ({
                               setRescheduleMeetingCountsByTime({});
                             }}
                             required
-                            min={new Date().toISOString().split('T')[0]}
                           />
                         </div>
 

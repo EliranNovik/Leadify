@@ -14,7 +14,7 @@ import EmployeeDepartmentRolesModal from '../components/EmployeeDepartmentRolesM
 import SalesLinkedContributionModal, { type SalesLinkedContributionRow } from '../components/SalesLinkedContributionModal';
 import HandlersLinkedContributionModal, { type HandlersLinkedContributionRow } from '../components/HandlersLinkedContributionModal';
 import MarketingLinkedContributionModal, { type MarketingLinkedContributionRow } from '../components/MarketingLinkedContributionModal';
-import { calculateSignedPortionAmount } from '../utils/rolePercentageCalculator';
+import { calculateSignedPortionAmount, newLeadFieldMatchesEmployee } from '../utils/rolePercentageCalculator';
 import {
   calculateEmployeeMetrics,
   batchCalculateEmployeeMetrics,
@@ -118,16 +118,22 @@ function scaleAllEmployeesToInvoicedIncome(
   });
 
   let sumAfterRound = 0;
+  const sortedEmpIds = Array.from(byEmployeeId.keys()).sort((a, b) => a - b);
+  for (const id of sortedEmpIds) {
+    const v = byEmployeeId.get(id)!;
+    sumAfterRound += v.c + v.f;
+  }
+  // Deterministic: among max (c+f), pick lowest employeeId (Map iteration order is not stable across runs)
   let maxEmployeeId = -1;
   let maxBasis = -1;
-  byEmployeeId.forEach((v, id) => {
+  for (const id of sortedEmpIds) {
+    const v = byEmployeeId.get(id)!;
     const b = v.c + v.f;
-    sumAfterRound += b;
-    if (b > maxBasis) {
+    if (b > maxBasis || (b === maxBasis && (maxEmployeeId < 0 || id < maxEmployeeId))) {
       maxBasis = b;
       maxEmployeeId = id;
     }
-  });
+  }
 
   const drift = roundContributionMoney(totalInvoicedIncome - sumAfterRound);
   if (Math.abs(drift) >= 0.005 && maxEmployeeId >= 0) {
@@ -154,12 +160,14 @@ function scaleAllEmployeesToInvoicedIncome(
   if (Math.abs(salaryBudgetDrift) >= 0.005 && salaryByEmployeeId.size > 0) {
     let maxSalaryId = -1;
     let maxSalaryVal = -1;
-    salaryByEmployeeId.forEach((sb, id) => {
-      if (sb > maxSalaryVal) {
+    const sortedSalaryIds = Array.from(salaryByEmployeeId.keys()).sort((a, b) => a - b);
+    for (const id of sortedSalaryIds) {
+      const sb = salaryByEmployeeId.get(id) ?? 0;
+      if (sb > maxSalaryVal || (sb === maxSalaryVal && (maxSalaryId < 0 || id < maxSalaryId))) {
         maxSalaryVal = sb;
         maxSalaryId = id;
       }
-    });
+    }
     if (maxSalaryId >= 0) {
       salaryByEmployeeId.set(
         maxSalaryId,
@@ -404,6 +412,8 @@ const SalesContributionPage = () => {
   const [totalIncome, setTotalIncome] = useState(0);
   const totalIncomeRef = useRef(0);
   totalIncomeRef.current = totalIncome ?? 0;
+  /** Monotonic counter so overlapping Search runs do not read stale total-signed ref or clobber UI state. */
+  const salesContributionSearchSeqRef = useRef(0);
   const [loadingInvoicedIncome, setLoadingInvoicedIncome] = useState(false);
   const [dueNormalizedPercentage, setDueNormalizedPercentage] = usePersistedState('salesContribution_dueNormalizedPercentage', 0, {
     storage: 'sessionStorage',
@@ -2088,15 +2098,9 @@ const SalesContributionPage = () => {
         }
 
         if (roleField === 'closer' && lead.closer) {
-          const closerValue = lead.closer;
-          return typeof closerValue === 'string'
-            ? closerValue.toLowerCase() === employeeName.toLowerCase()
-            : Number(closerValue) === employeeId;
+          return newLeadFieldMatchesEmployee(lead.closer, employeeId, employeeName);
         } else if (roleField === 'scheduler' && lead.scheduler) {
-          const schedulerValue = lead.scheduler;
-          return typeof schedulerValue === 'string'
-            ? schedulerValue.toLowerCase() === employeeName.toLowerCase()
-            : Number(schedulerValue) === employeeId;
+          return newLeadFieldMatchesEmployee(lead.scheduler, employeeId, employeeName);
         } else if (roleField === 'handler') {
           // Check both handler (text) and case_handler_id (numeric) for new leads
           if (lead.handler) {
@@ -2149,9 +2153,9 @@ const SalesContributionPage = () => {
           }
           return false;
         } else if (roleField === 'expert' && lead.expert) {
-          return Number(lead.expert) === employeeId;
-        } else if (roleField === 'meeting_manager_id') {
-          // For new leads, check 'manager' field (not 'meeting_manager_id')
+          return newLeadFieldMatchesEmployee(lead.expert, employeeId, employeeName);
+        } else if (roleField === 'manager' || roleField === 'meeting_manager_id') {
+          // newField may be 'manager' (labels) or 'meeting_manager_id' (id column); check both + fallback id
           if (lead.manager) {
             const managerValue = lead.manager;
             // Check if it's a numeric string (ID) or a number
@@ -2346,6 +2350,7 @@ const SalesContributionPage = () => {
             closer: lead.closer,
             scheduler: lead.scheduler,
             manager: lead.manager || lead.meeting_manager_id,
+            meeting_manager_id: lead.meeting_manager_id,
             expert: lead.expert,
             handler: lead.handler, // Handler role
             helperCloser: lead.helper ?? lead.meeting_lawyer_id, // Helper Closer: helper or meeting_lawyer_id in new leads
@@ -3602,6 +3607,7 @@ const SalesContributionPage = () => {
       }
     }
 
+    const searchSeq = ++salesContributionSearchSeqRef.current;
     setLoading(true);
     setSearchPerformed(true);
     setRoleDataCache(new Map());
@@ -3609,6 +3615,10 @@ const SalesContributionPage = () => {
     totalIncomeRef.current = incomeForRun;
     // Fetch total signed value when search is triggered - MUST complete before calculating portions
     await fetchTotalSignedValue();
+    if (salesContributionSearchSeqRef.current !== searchSeq) {
+      return;
+    }
+    const totalSignedForRun = totalSignedValueRef.current || 0;
     try {
       const totalIncome = incomeForRun;
       console.log('🔍 Sales Contribution Report - Starting search with filters:', filters);
@@ -3931,20 +3941,19 @@ const SalesContributionPage = () => {
         });
       });
 
-      // Collect all employees that need fetching
       const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
       const incomeKey = totalIncome || 0;
       const dueNormalizedPercentageKey = dueNormalizedPercentage || 0;
       const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
-      const employeesToFetch: Array<{ id: number; name: string }> = [];
-      allEmployeeIds.forEach(employeeId => {
-        const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${dueNormalizedPercentageKey}_${rolePercentagesHash}`;
-        // Only fetch if not already cached for current date range, income, due normalized percentage, and role percentages
-        if (!roleDataCache.has(cacheKey)) {
-          const employeeName = employeeNamesMap.get(employeeId) || '';
-          employeesToFetch.push({ id: employeeId, name: employeeName });
-        }
-      });
+      // Always refetch all employees for Search. `setRoleDataCache(new Map())` at the start of this handler
+      // is applied on the *next* render; `roleDataCache` in this closure is still the previous map, so
+      // `!roleDataCache.has(cacheKey)` can wrongly skip the full batch and alternate with the "cached" path.
+      const employeesToFetch: Array<{ id: number; name: string }> = [...allEmployeeIds]
+        .sort((a, b) => a - b)
+        .map((employeeId) => ({
+          id: employeeId,
+          name: employeeNamesMap.get(employeeId) || '',
+        }));
 
       // Batch calculate all employees at once to prevent "popcorn" rendering
       // This ensures all calculations are done before any state updates
@@ -4198,7 +4207,7 @@ const SalesContributionPage = () => {
 
           // Step 7: Filter leads for each employee and prepare calculation inputs
           const calculationInputs: EmployeeCalculationInput[] = [];
-          const totalSignedOverall = totalSignedValueRef.current || 0;
+          const totalSignedOverall = totalSignedForRun;
 
           // Map employeeId -> department name (for department % from sales_contribution_settings)
           const employeeIdToDepartment = new Map<number, string>();
@@ -4228,15 +4237,9 @@ const SalesContributionPage = () => {
             // Helper to check if employee is in a role for a new lead
             const checkEmployeeInRole = (lead: any, roleField: string): boolean => {
               if (roleField === 'closer' && lead.closer) {
-                const closerValue = lead.closer;
-                return typeof closerValue === 'string'
-                  ? closerValue.toLowerCase() === employeeName.toLowerCase()
-                  : Number(closerValue) === employeeId;
+                return newLeadFieldMatchesEmployee(lead.closer, employeeId, employeeName);
               } else if (roleField === 'scheduler' && lead.scheduler) {
-                const schedulerValue = lead.scheduler;
-                return typeof schedulerValue === 'string'
-                  ? schedulerValue.toLowerCase() === employeeName.toLowerCase()
-                  : Number(schedulerValue) === employeeId;
+                return newLeadFieldMatchesEmployee(lead.scheduler, employeeId, employeeName);
               } else if (roleField === 'handler') {
                 if (lead.handler) {
                   const handlerValue = lead.handler;
@@ -4268,9 +4271,8 @@ const SalesContributionPage = () => {
                 }
                 return false;
               } else if (roleField === 'expert' && lead.expert) {
-                return Number(lead.expert) === employeeId;
-              } else if (roleField === 'meeting_manager_id') {
-                // For new leads, check 'manager' field (not 'meeting_manager_id')
+                return newLeadFieldMatchesEmployee(lead.expert, employeeId, employeeName);
+              } else if (roleField === 'manager' || roleField === 'meeting_manager_id') {
                 if (lead.manager) {
                   const managerValue = lead.manager;
                   // Check if it's a numeric string (ID) or a number
@@ -4286,7 +4288,6 @@ const SalesContributionPage = () => {
                   // If it's already a number, compare directly
                   return Number(managerValue) === employeeId;
                 }
-                // Fallback to meeting_manager_id if manager is not set
                 if (lead.meeting_manager_id) {
                   return Number(lead.meeting_manager_id) === employeeId;
                 }
@@ -4584,6 +4585,10 @@ const SalesContributionPage = () => {
             });
           }
 
+          if (salesContributionSearchSeqRef.current !== searchSeq) {
+            return;
+          }
+
           // Step 9: Update state ONCE with all results
           const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
           const incomeKey = totalIncome || 0;
@@ -4814,21 +4819,28 @@ const SalesContributionPage = () => {
               });
             });
 
-            return scaleAllEmployeesToInvoicedIncome(updated, totalIncomeRef.current || 0);
+            return scaleAllEmployeesToInvoicedIncome(updated, totalIncome || 0);
           });
 
           // Set loading to false ONLY after all calculations are complete
-          setLoading(false);
-          setIsCalculating(false);
+          if (salesContributionSearchSeqRef.current === searchSeq) {
+            setLoading(false);
+            setIsCalculating(false);
+          }
         } catch (error) {
           console.error('Error in batch calculation:', error);
           toast.error('Failed to calculate employee metrics');
-          setLoading(false);
-          setIsCalculating(false);
+          if (salesContributionSearchSeqRef.current === searchSeq) {
+            setLoading(false);
+            setIsCalculating(false);
+          }
         }
       } else {
         // No employees to fetch (all cached), but we still need to fetch and apply salary data
         // Fetch salary data for all employees based on salary filter
+        if (salesContributionSearchSeqRef.current !== searchSeq) {
+          return;
+        }
         let salaryDataMap = new Map<number, { salaryBrutto: number; totalSalaryCost: number }>();
         const canFetchSalaryCached =
           allEmployeeIds.length > 0 &&
@@ -4895,6 +4907,10 @@ const SalesContributionPage = () => {
           }
         } catch (error) {
           console.error('Error fetching employee_field_assignments:', error);
+        }
+
+        if (salesContributionSearchSeqRef.current !== searchSeq) {
+          return;
         }
 
         // Apply salary data to cached employees
@@ -5038,16 +5054,20 @@ const SalesContributionPage = () => {
                 },
               });
             });
-            return scaleAllEmployeesToInvoicedIncome(updated, totalIncomeRef.current || 0);
+            return scaleAllEmployeesToInvoicedIncome(updated, totalIncome || 0);
           });
         }
         // If no salary data, don't update - keep existing data with all calculations intact
-        setLoading(false);
+        if (salesContributionSearchSeqRef.current === searchSeq) {
+          setLoading(false);
+        }
       }
     } catch (error) {
       console.error('❌ Sales Contribution Report - Error:', error);
       toast.error('Failed to fetch sales contribution data');
-      setLoading(false);
+      if (salesContributionSearchSeqRef.current === searchSeq) {
+        setLoading(false);
+      }
     }
   };
 
@@ -5656,6 +5676,7 @@ const SalesContributionPage = () => {
             closer: lead.closer,
             scheduler: lead.scheduler,
             manager: lead.manager || lead.meeting_manager_id,
+            meeting_manager_id: lead.meeting_manager_id,
             expert: lead.expert,
             handler: lead.handler, // Handler role
             helperCloser: lead.helper ?? lead.meeting_lawyer_id,
@@ -6451,7 +6472,24 @@ const SalesContributionPage = () => {
       (s, emp) => s + (emp.salaryBrutto ?? 0),
       0
     );
-    const contributionTotalScaledForRow = scalePeriodSum(contributionTotalForPercentages);
+    // Salary (B) / Total cost / Max incentives %: use full (gross) variable + full fixed. Do not subtract
+    // "relocated" from the basis — the headline contribution cell is emp.contribution (full amount).
+    const sumGrossVariableForPercent = filteredEmployeesForCorrection.reduce(
+      (s, emp) => s + (emp.contribution ?? 0),
+      0
+    );
+    const sumGrossFixedForPercent = filteredEmployeesForCorrection.reduce(
+      (s, emp) => s + (emp.contributionFixed ?? 0),
+      0
+    );
+    const contributionTotalForPercentagesDisplay =
+      sumGrossVariableForPercent +
+      sumGrossFixedForPercent +
+      (deptData.departmentName === 'Sales' ? (linkedContributionForSales ?? 0) : 0) +
+      (deptData.departmentName === 'Handlers' ? (linkedContributionForHandlers ?? 0) : 0) +
+      (deptData.departmentName === 'Sales' ? (linkedContributionFixedForSales ?? 0) : 0) +
+      (deptData.departmentName === 'Marketing' ? (linkedContributionForMarketing ?? 0) : 0);
+    const contributionTotalScaledForRow = scalePeriodSum(contributionTotalForPercentagesDisplay);
 
     return (
       <div key={deptData.departmentName} className="mb-8">
@@ -6679,17 +6717,9 @@ const SalesContributionPage = () => {
                               <div className="flex flex-col items-end">
                                 <span>{formatCurrency(emp.salaryBrutto || 0)}</span>
                                 {(() => {
-                                  const origC = emp.contribution || 0;
-                                  const fullFixedC = emp.contributionFixed || 0;
-                                  const ld = getLinkedContributionDeducted(emp.employeeId);
-                                  const effRel = Math.min(ld, origC);
-                                  const netV = Math.max(0, origC - effRel);
-                                  const mkt = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
-                                  const netF = Math.max(0, fullFixedC - mkt);
-                                  const contributionTotalRaw =
-                                    deptData.departmentName === 'Sales' || deptData.departmentName === 'Handlers'
-                                      ? netV + netF
-                                      : origC + fullFixedC;
+                                  // % = Salary (B) / (full variable + fixed). Full contribution is emp.contribution (headline
+                                  // in the table); relocated is informational — do not shrink the denominator by relocation.
+                                  const contributionTotalRaw = (emp.contribution || 0) + (emp.contributionFixed || 0);
                                   const contributionTotalDisplay = scalePeriodSum(contributionTotalRaw);
                                   return contributionTotalDisplay > 0 ? (
                                     <span className={`text-xs ${((emp.salaryBrutto || 0) / contributionTotalDisplay * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>
@@ -6705,17 +6735,7 @@ const SalesContributionPage = () => {
                               <div className="flex flex-col items-end">
                                 <span>{formatCurrency(emp.totalSalaryCost || 0)}</span>
                                 {(() => {
-                                  const origC = emp.contribution || 0;
-                                  const fullFixedC = emp.contributionFixed || 0;
-                                  const ld = getLinkedContributionDeducted(emp.employeeId);
-                                  const effRel = Math.min(ld, origC);
-                                  const netV = Math.max(0, origC - effRel);
-                                  const mkt = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
-                                  const netF = Math.max(0, fullFixedC - mkt);
-                                  const contributionTotalRaw =
-                                    deptData.departmentName === 'Sales' || deptData.departmentName === 'Handlers'
-                                      ? netV + netF
-                                      : origC + fullFixedC;
+                                  const contributionTotalRaw = (emp.contribution || 0) + (emp.contributionFixed || 0);
                                   const contributionTotalDisplay = scalePeriodSum(contributionTotalRaw);
                                   return contributionTotalDisplay > 0 ? (
                                     <span className={`text-xs ${((emp.totalSalaryCost || 0) / contributionTotalDisplay * 100) >= 100 ? 'text-red-500' : 'text-green-500'}`}>

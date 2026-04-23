@@ -12,7 +12,9 @@
 export interface LeadRoles {
   closer?: string | number | null;
   scheduler?: string | number | null;
+  /** Meeting manager (new leads). Often mirrored as meeting_manager_id. */
   manager?: string | number | null;
+  meeting_manager_id?: string | number | null;
   expert?: string | number | null;
   handler?: string | number | null; // Handler role
   helperCloser?: string | number | null; // Also known as meeting_lawyer_id / helper
@@ -65,9 +67,56 @@ const normalizeEmployeeId = (value: any, targetId: string | number): boolean => 
 };
 
 /**
+ * Match a new-lead role field to an employee the same way {@link hasRole} does
+ * (numeric ID, numeric string ID, or case-insensitive display name).
+ * Use this from role-combination / lead filtering so "who has which roles" always matches
+ * {@link calculateSignedPortionPercentage} and contribution totals.
+ */
+export function newLeadFieldMatchesEmployee(
+  value: any,
+  employeeId: string | number,
+  employeeName: string
+): boolean {
+  if (value === null || value === undefined || value === '') return false;
+  if (normalizeEmployeeId(value, employeeId)) return true;
+  if (typeof value === 'string' && employeeName) {
+    return value.toLowerCase() === employeeName.toLowerCase();
+  }
+  return false;
+}
+
+/** Resolve % from map with DB label aliases (e.g. Meeting Manager vs MANAGER) */
+const getPercentageFromMap = (map: RolePercentagesMap | undefined, canonicalKey: string): number | null => {
+  if (!map) return null;
+  if (map.has(canonicalKey)) return (map.get(canonicalKey)! / 100);
+  const aliasGroups: Record<string, string[]> = {
+    MANAGER: ['MEETING_MANAGER', 'Meeting Manager', 'Meeting manager', 'meeting_manager'],
+    SCHEDULER: ['SCHEDULER', 'Scheduler'],
+    CLOSER: ['CLOSER', 'Closer'],
+    EXPERT: ['EXPERT', 'Expert'],
+    HANDLER: ['HANDLER', 'Handler'],
+    CLOSER_WITH_HELPER: ['CLOSER_WITH_HELPER', 'CLOSER WITH HELPER'],
+    HELPER_CLOSER: ['HELPER_CLOSER', 'Helper Closer', 'Helper closer'],
+  };
+  for (const alt of aliasGroups[canonicalKey] || []) {
+    if (map.has(alt)) return map.get(alt)! / 100;
+  }
+  return null;
+};
+
+/**
  * Check if an employee has a specific role in a new lead
  */
 const hasRole = (lead: LeadRoles, employeeId: string | number, role: keyof LeadRoles, employeeName?: string): boolean => {
+  // Meeting manager: value may be on manager and/or meeting_manager_id (new leads)
+  if (role === 'manager') {
+    const roleValue = lead.manager != null && lead.manager !== '' ? lead.manager : (lead as LeadRoles).meeting_manager_id;
+    if (roleValue === null || roleValue === undefined || roleValue === '') return false;
+    if (normalizeEmployeeId(roleValue, employeeId)) return true;
+    if (employeeName && typeof roleValue === 'string' && roleValue.toLowerCase() === employeeName.toLowerCase()) return true;
+    return false;
+  }
+
   const roleValue = lead[role];
   if (roleValue === null || roleValue === undefined) return false;
 
@@ -112,10 +161,8 @@ export const calculateSignedPortionPercentage = (
 
   // Get role percentages from parameter or use defaults
   const getRolePercentage = (roleName: string): number => {
-    if (rolePercentages && rolePercentages.has(roleName)) {
-      // Convert from 0-100 to 0-1
-      return (rolePercentages.get(roleName)! / 100);
-    }
+    const fromMap = getPercentageFromMap(rolePercentages, roleName);
+    if (fromMap != null) return fromMap;
     // Fallback to defaults
     const defaultValue = DEFAULT_ROLE_PERCENTAGES[roleName as keyof typeof DEFAULT_ROLE_PERCENTAGES];
     return defaultValue !== undefined ? defaultValue : 0;
@@ -191,10 +238,8 @@ export const calculateLegacySignedPortionPercentage = (
 
   // Get role percentages from parameter or use defaults
   const getRolePercentage = (roleName: string): number => {
-    if (rolePercentages && rolePercentages.has(roleName)) {
-      // Convert from 0-100 to 0-1
-      return (rolePercentages.get(roleName)! / 100);
-    }
+    const fromMap = getPercentageFromMap(rolePercentages, roleName);
+    if (fromMap != null) return fromMap;
     // Fallback to defaults
     const defaultValue = DEFAULT_ROLE_PERCENTAGES[roleName as keyof typeof DEFAULT_ROLE_PERCENTAGES];
     return defaultValue !== undefined ? defaultValue : 0;

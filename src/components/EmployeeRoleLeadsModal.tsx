@@ -5,6 +5,7 @@ import { supabase } from '../lib/supabase';
 import { convertToNIS } from '../lib/currencyConversion';
 import { useNavigate } from 'react-router-dom';
 import { buildCurrencyMeta, parseNumericAmount, calculateNewLeadAmount, calculateLegacyLeadAmount } from '../utils/salesContributionCalculator';
+import { newLeadFieldMatchesEmployee } from '../utils/rolePercentageCalculator';
 
 interface LeadRow {
   role: string;
@@ -776,20 +777,12 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
           newLeads.forEach(lead => {
             const roles: string[] = [];
 
-            if (lead.closer) {
-              const closerValue = lead.closer;
-              const matches = typeof closerValue === 'string'
-                ? closerValue.toLowerCase() === employeeName.toLowerCase()
-                : Number(closerValue) === employeeId;
-              if (matches) roles.push('Closer');
+            if (lead.closer && newLeadFieldMatchesEmployee(lead.closer, employeeId, employeeName)) {
+              roles.push('Closer');
             }
 
-            if (lead.scheduler) {
-              const schedulerValue = lead.scheduler;
-              const matches = typeof schedulerValue === 'string'
-                ? schedulerValue.toLowerCase() === employeeName.toLowerCase()
-                : Number(schedulerValue) === employeeId;
-              if (matches) roles.push('Scheduler');
+            if (lead.scheduler && newLeadFieldMatchesEmployee(lead.scheduler, employeeId, employeeName)) {
+              roles.push('Scheduler');
             }
 
             // Helper Closer: check helper (name or ID e.g. "129"), meeting_lawyer_id, and lawyer (new leads)
@@ -825,10 +818,8 @@ const EmployeeRoleLeadsModal: React.FC<EmployeeRoleLeadsModalProps> = ({
               roles.push('Handler');
             }
 
-            if (lead.expert) {
-              if (Number(lead.expert) === employeeId) {
-                roles.push('Expert');
-              }
+            if (lead.expert && newLeadFieldMatchesEmployee(lead.expert, employeeId, employeeName)) {
+              roles.push('Expert');
             }
 
             // For new leads, check 'manager' field (not 'meeting_manager_id')
