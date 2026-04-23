@@ -15245,7 +15245,7 @@ const Clients: React.FC<ClientsProps> = ({
   }
 
   return (
-    <div className="min-h-screen bg-base-100">
+    <div className="min-h-screen bg-gradient-to-b from-base-200/50 via-base-100 to-base-100">
       {!selectedClient && !localLoading && (
         <div className="p-6">
           <h1 className="text-2xl font-bold mb-4">Clients</h1>
@@ -15483,6 +15483,9 @@ const Clients: React.FC<ClientsProps> = ({
 
 
 
+          {/* Client record shell — single SaaS-style surface */}
+          <div className="mx-auto w-full max-w-[1680px] px-3 sm:px-5 lg:px-8">
+            <div className="overflow-hidden rounded-2xl border border-base-300/40 bg-base-100 shadow-[0_1px_3px_rgba(15,23,42,0.06)] dark:border-base-300/25 dark:shadow-none">
           {/* Desktop Header - Using new ClientHeader component */}
           <ClientHeader
             selectedClient={selectedClient}
@@ -16087,11 +16090,14 @@ const Clients: React.FC<ClientsProps> = ({
             </div>
           </div>
 
-          {/* Tab Content - full width, white background */}
-          <div ref={tabContentRef} className="w-full bg-base-100 min-h-screen mt-8 md:mt-10">
+          {/* Tab Content */}
+          <div
+            ref={tabContentRef}
+            className="w-full border-t border-base-200/70 bg-base-100/80 min-h-[50vh] dark:border-base-300/40 dark:bg-base-100/90"
+          >
             <div
               key={`${activeTab}-${interactionCount}`}
-              className="p-4 sm:p-5 md:p-8 pb-8 md:pb-8 mb-6 md:mb-0 space-y-6 md:space-y-8"
+              className="p-4 sm:p-5 md:p-7 pb-8 md:pb-10 mb-4 md:mb-0 space-y-5 md:space-y-6"
             >
               {ActiveComponent && selectedClient && (
                 <div className="md:pb-0 pb-32">
@@ -16120,41 +16126,33 @@ const Clients: React.FC<ClientsProps> = ({
                 </div>
               )}
 
-              {/* Created and Updated Dates - Bottom of page */}
+              {/* Record meta — single compact line */}
               {selectedClient && (
-                <div className="border-t border-gray-200 pt-4 mt-6">
-                  <div className="flex flex-col sm:flex-row gap-4 text-sm text-gray-600">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">Created:</span>
-                      <span>
-                        {selectedClient.created_at
-                          ? new Date(selectedClient.created_at).toLocaleDateString('en-US', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })
-                          : 'N/A'}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">Last updated:</span>
-                      <span>
-                        {(selectedClient.updated_at || selectedClient.created_at)
-                          ? new Date(selectedClient.updated_at || selectedClient.created_at).toLocaleDateString('en-US', {
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })
-                          : 'N/A'}
-                      </span>
-                    </div>
-                  </div>
+                <div className="border-t border-base-200/80 pt-3 mt-4 dark:border-base-300/50">
+                  <p
+                    className="text-xs text-base-content/45 tabular-nums"
+                    title="Created date · Last updated"
+                  >
+                    {selectedClient.created_at
+                      ? new Date(selectedClient.created_at).toLocaleDateString('en-US', {
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric',
+                        })
+                      : '—'}
+                    <span className="mx-2 text-base-content/25">·</span>
+                    {selectedClient.updated_at || selectedClient.created_at
+                      ? new Date(selectedClient.updated_at || selectedClient.created_at).toLocaleDateString('en-US', {
+                          year: 'numeric',
+                          month: 'short',
+                          day: 'numeric',
+                        })
+                      : '—'}
+                  </p>
                 </div>
               )}
+            </div>
+          </div>
             </div>
           </div>
           {/* Schedule Meeting Right Panel */}

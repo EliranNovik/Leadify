@@ -427,7 +427,7 @@ const ExternalUserLeadsGraph: React.FC = () => {
 
     if (loading) {
         return (
-            <div className="bg-white rounded-xl p-6 shadow-lg border border-gray-100">
+            <div className="py-6">
                 <div className="flex items-center justify-center h-64">
                     <div className="flex flex-col items-center gap-3">
                         <span className="loading loading-spinner loading-lg text-primary"></span>
@@ -440,7 +440,7 @@ const ExternalUserLeadsGraph: React.FC = () => {
 
     if (error) {
         return (
-            <div className="bg-white rounded-xl p-6 shadow-lg border border-gray-100">
+            <div className="py-6">
                 <div className="flex items-center justify-center h-64">
                     <div className="text-center">
                         <p className="text-red-500 font-medium">{error}</p>
@@ -452,7 +452,7 @@ const ExternalUserLeadsGraph: React.FC = () => {
 
     if (graphData.length === 0) {
         return (
-            <div className="bg-white rounded-xl p-6 shadow-lg border border-gray-100">
+            <div className="py-6">
                 <div className="flex items-center justify-center h-64">
                     <div className="text-center">
                         <ChartBarIcon className="w-12 h-12 text-gray-400 mx-auto mb-2" />
@@ -505,13 +505,7 @@ const ExternalUserLeadsGraph: React.FC = () => {
                         margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
                         barCategoryGap="20%"
                     >
-                        <defs>
-                            <linearGradient id="leadsGradient" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.9} />
-                                <stop offset="50%" stopColor="#06b6d4" stopOpacity={0.8} />
-                                <stop offset="100%" stopColor="#10b981" stopOpacity={0.9} />
-                            </linearGradient>
-                        </defs>
+                        {/* Solid bar fill (no gradient) */}
                         <CartesianGrid 
                             strokeDasharray="3 3" 
                             stroke="#e5e7eb" 
@@ -538,9 +532,9 @@ const ExternalUserLeadsGraph: React.FC = () => {
                         <Tooltip content={<CustomTooltip />} />
                         <Bar
                             dataKey="count"
-                            fill="url(#leadsGradient)"
+                            fill="#4218CC"
                             radius={[8, 8, 0, 0]}
-                            stroke="#3b82f6"
+                            stroke="#3614A3"
                             strokeWidth={1}
                         />
                     </BarChart>
@@ -591,13 +585,7 @@ const ExternalUserLeadsGraph: React.FC = () => {
                         margin={{ top: 20, right: 30, left: 20, bottom: 60 }}
                         barCategoryGap="20%"
                     >
-                        <defs>
-                            <linearGradient id="successfulLeadsGradient" x1="0" y1="0" x2="0" y2="1">
-                                <stop offset="0%" stopColor="#10b981" stopOpacity={0.9} />
-                                <stop offset="50%" stopColor="#059669" stopOpacity={0.8} />
-                                <stop offset="100%" stopColor="#047857" stopOpacity={0.9} />
-                            </linearGradient>
-                        </defs>
+                        {/* Solid bar fill (no gradient) */}
                         <CartesianGrid 
                             strokeDasharray="3 3" 
                             stroke="#e5e7eb" 
@@ -624,9 +612,9 @@ const ExternalUserLeadsGraph: React.FC = () => {
                         <Tooltip content={<CustomTooltip />} />
                         <Bar
                             dataKey="count"
-                            fill="url(#successfulLeadsGradient)"
+                            fill="#4218CC"
                             radius={[8, 8, 0, 0]}
-                            stroke="#10b981"
+                            stroke="#3614A3"
                             strokeWidth={1}
                         />
                     </BarChart>
@@ -636,24 +624,24 @@ const ExternalUserLeadsGraph: React.FC = () => {
     };
 
     return (
-        <div className="space-y-6">
-            {/* First Graph - Last 30 Days */}
-            <div className="bg-white rounded-xl p-6 shadow-lg border border-gray-100">
+        <div className="space-y-10">
+            {/* First Graph - Last 30 Days (no card container) */}
+            <section className="px-1">
                 <div className="mb-4">
                     <h3 className="text-xl font-bold text-gray-900 mb-1">Leads by Source (Last 30 Days)</h3>
                     <p className="text-sm text-gray-500">Distribution of leads across your assigned sources</p>
                 </div>
                 {renderFirstGraph()}
-            </div>
+            </section>
 
-            {/* Second Graph - Successful Leads */}
-            <div className="bg-white rounded-xl p-6 shadow-lg border border-gray-100">
+            {/* Second Graph - Successful Leads (no card container) */}
+            <section className="px-1">
                 <div className="mb-4">
                     <h3 className="text-xl font-bold text-gray-900 mb-1">Successful Leads Past Meeting Scheduled Stage (Last 30 Days)</h3>
                     <p className="text-sm text-gray-500">Leads in advanced stages by source</p>
                 </div>
                 {renderSecondGraph()}
-            </div>
+            </section>
         </div>
     );
 };

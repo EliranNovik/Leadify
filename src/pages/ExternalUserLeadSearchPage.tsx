@@ -4,6 +4,7 @@ import { supabase, isExpectedNoSessionError, type Lead } from '../lib/supabase';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
 import ExternalUserLeadDetailsModal from '../components/ExternalUserLeadDetailsModal';
+import { buildLeadSourcesOrFilter, parseExternSourceIds } from '../components/ExternalUserLeadsGraph';
 import { usePersistedState, usePersistedFilters } from '../hooks/usePersistedState';
 
 // Static dropdown options - moved outside component to prevent re-creation on every render
@@ -1026,22 +1027,9 @@ const ExternalUserLeadSearchPage: React.FC = () => {
         }
 
         if (finalUserData?.extern_source_id) {
-          // extern_source_id is a JSONB array of source IDs
-          let sourceIds: number[] = [];
-          
-          if (Array.isArray(finalUserData.extern_source_id)) {
-            sourceIds = finalUserData.extern_source_id.filter(id => typeof id === 'number');
-          } else if (typeof finalUserData.extern_source_id === 'string') {
-            // Try to parse if it's a JSON string
-            try {
-              const parsed = JSON.parse(finalUserData.extern_source_id);
-              if (Array.isArray(parsed)) {
-                sourceIds = parsed.filter(id => typeof id === 'number');
-              }
-            } catch (e) {
-              console.error('Error parsing extern_source_id:', e);
-            }
-          }
+          // `extern_source_id` is a JSONB array (often numbers OR numeric strings).
+          // Use the shared parser so behavior matches the external dashboard/graphs.
+          const sourceIds = Array.from(new Set(parseExternSourceIds(finalUserData.extern_source_id)));
 
           setAllowedSourceIds(sourceIds);
           console.log('✅ Loaded allowed source IDs for user:', sourceIds);
@@ -1931,7 +1919,10 @@ const ExternalUserLeadSearchPage: React.FC = () => {
           .eq('active', true);
         
         if (!sourcesError && allowedSources && allowedSources.length > 0) {
-          const allowedSourceNames = allowedSources.map(s => s.name);
+          const allowedSourceNames = allowedSources.map((s: any) => String(s?.name ?? '')).filter(Boolean);
+          const allowedSourceIdsFromMisc = allowedSources
+            .map((s: any) => Number(s?.id))
+            .filter((n: number) => Number.isFinite(n));
           
           // If user has selected specific sources, filter by those; otherwise use all allowed sources
           const sourcesToFilter = filters.source && filters.source.length > 0 
@@ -1940,33 +1931,26 @@ const ExternalUserLeadSearchPage: React.FC = () => {
           
           if (sourcesToFilter.length > 0) {
             console.log('📡 Filtering new leads by sources (source_id OR text):', sourcesToFilter);
-            // Resolve selected source names to ids and apply OR on plain columns (PostgREST doesn't support dotted join paths in `.or()`).
-            const { data: srcRows, error: srcErr } = await supabase
-              .from('misc_leadsource')
-              .select('id, name')
-              .in('name', sourcesToFilter);
-
-            if (srcErr) throw srcErr;
-
-            const sourceIdsToFilter = (srcRows || [])
-              .map((r) => Number((r as any).id))
-              .filter((n) => Number.isFinite(n));
-
-            const orParts: string[] = [];
-            if (sourceIdsToFilter.length === 1) {
-              orParts.push(`source_id.eq.${sourceIdsToFilter[0]}`);
-            } else if (sourceIdsToFilter.length > 1) {
-              orParts.push(`source_id.in.(${sourceIdsToFilter.join(',')})`);
+            // Build a robust PostgREST OR filter (correct quoting; avoid double URL-encoding).
+            // Also intersect with allowed ids when user picked specific sources.
+            let idsToUse = allowedSourceIdsFromMisc;
+            if (filters.source && filters.source.length > 0) {
+              const { data: selectedRows, error: selectedErr } = await supabase
+                .from('misc_leadsource')
+                .select('id, name')
+                .in('name', sourcesToFilter)
+                .in('id', allowedSourceIdsFromMisc)
+                .eq('active', true);
+              if (selectedErr) throw selectedErr;
+              const selectedIds = (selectedRows || [])
+                .map((r: any) => Number(r?.id))
+                .filter((n: number) => Number.isFinite(n));
+              idsToUse = selectedIds;
             }
-            for (const name of sourcesToFilter) {
-              const enc = encodeURIComponent(name);
-              orParts.push(`source.eq.${enc}`);
-            }
-            if (orParts.length > 0) {
-              newLeadsQuery = newLeadsQuery.or(orParts.join(','));
-            } else {
-              newLeadsQuery = newLeadsQuery.eq('source', '__nonexistent__');
-            }
+
+            const sourcesOr = buildLeadSourcesOrFilter(idsToUse, sourcesToFilter);
+            if (sourcesOr) newLeadsQuery = newLeadsQuery.or(sourcesOr);
+            else newLeadsQuery = newLeadsQuery.eq('source', '__nonexistent__');
           } else {
             console.log('⚠️ No valid sources to filter by, filtering out all new leads');
             newLeadsQuery = newLeadsQuery.eq('source', '__nonexistent__');
@@ -2651,6 +2635,34 @@ const ExternalUserLeadSearchPage: React.FC = () => {
         return lead.category || 'No Category';
       };
 
+      // Normalize lead sources: some new-lead rows store only `source` (text) without `source_id`.
+      // For external users, we must treat both as equivalent and (when possible) map text -> id.
+      const allowedSourcesTyped: Array<{ id: number; name: string }> = [];
+      const allowedSourceIdToName = new Map<number, string>();
+      const allowedSourceNameNormToId = new Map<string, number>();
+      try {
+        if (allowedSourceIds.length > 0) {
+          const { data: allowedSrcRows, error: allowedSrcErr } = await supabase
+            .from('misc_leadsource')
+            .select('id, name')
+            .in('id', allowedSourceIds)
+            .eq('active', true);
+
+          if (allowedSrcErr) throw allowedSrcErr;
+
+          (allowedSrcRows || []).forEach((r: any) => {
+            const id = Number(r.id);
+            const name = String(r.name ?? '').trim();
+            if (!Number.isFinite(id) || name === '') return;
+            allowedSourcesTyped.push({ id, name });
+            allowedSourceIdToName.set(id, name);
+            allowedSourceNameNormToId.set(name.toLowerCase(), id);
+          });
+        }
+      } catch (e) {
+        console.warn('⚠️ Failed to load allowed source mapping (text↔id):', e);
+      }
+
       console.log('🔄 Processing new leads...');
       
       // If filtering for N/A only, filter out leads with non-empty language values
@@ -2712,6 +2724,18 @@ const ExternalUserLeadSearchPage: React.FC = () => {
       // Map new leads with proper category formatting and role information
       let mappedNewLeads = filteredNewLeads.map(lead => {
         const anyLead = lead as any;
+
+        // Resolve source_id from source text when missing, and normalize source name for consistent UI.
+        const rawSourceId = anyLead.source_id;
+        const rawSourceText = typeof anyLead.source === 'string' ? anyLead.source.trim() : '';
+        const normalizedSourceId =
+          rawSourceId != null && String(rawSourceId).trim() !== '' && Number.isFinite(Number(rawSourceId))
+            ? Number(rawSourceId)
+            : (rawSourceText ? (allowedSourceNameNormToId.get(rawSourceText.toLowerCase()) ?? null) : null);
+        const normalizedSourceName =
+          normalizedSourceId != null
+            ? (allowedSourceIdToName.get(normalizedSourceId) ?? rawSourceText)
+            : rawSourceText;
         
         // Format lead number with sublead handling (similar to Clients.tsx)
         let displayLeadNumber: string;
@@ -2755,6 +2779,9 @@ const ExternalUserLeadSearchPage: React.FC = () => {
           lead_type: 'new',
           display_lead_number: String(displayLeadNumber),
           category: formatCategoryDisplay(lead),
+          // Keep both columns aligned so downstream filters/displays can rely on either.
+          source_id: normalizedSourceId ?? anyLead.source_id ?? null,
+          source: normalizedSourceName || anyLead.source || null,
           roles: {
             scheduler: lead.scheduler || null,
             manager: lead.manager || null,

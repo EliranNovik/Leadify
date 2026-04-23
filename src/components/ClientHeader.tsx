@@ -103,7 +103,7 @@ const normalizeTagsValue = (value: unknown): string[] => {
 
 /** Neutral meta chips (language, source, applicants, category, topic) — primary stage colour stays on stage badge only */
 const META_CHIP =
-    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-1 rounded-full px-2.5 py-1.5 text-[13px] font-medium text-gray-700 bg-[#F3F4F6] dark:bg-gray-700/90 dark:text-gray-200';
+    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-1 rounded-full px-2 py-1 text-xs font-medium text-gray-700 bg-base-200/80 dark:bg-gray-700/90 dark:text-gray-200';
 
 interface ClientHeaderProps {
     selectedClient: any;
@@ -1693,19 +1693,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     return (
         <div className="bg-transparent">
-            <div className="w-full px-4 sm:px-6 lg:px-8 py-5 space-y-8 md:space-y-6 md:py-6">
+            <div className="w-full px-4 sm:px-6 lg:px-8 py-4 space-y-5 md:space-y-5 md:py-5">
 
                 {/* Top Row: Identity & Status */}
-                <div className="mb-0 flex flex-col gap-6 md:mb-6 md:gap-5">
+                <div className="mb-0 flex flex-col gap-5 md:mb-0 md:gap-4">
                     {/* Mobile: SaaS header — identity, contact card, stage + chips */}
-                    <div className="flex w-full flex-col gap-6 md:hidden">
+                    <div className="flex w-full flex-col gap-5 md:hidden">
                         <header className="relative z-0 flex w-full min-w-0 flex-col gap-0">
                             <div className="flex w-full min-w-0 items-start justify-between gap-3">
                                 <div className="min-w-0 flex-1 pr-1 text-left">
-                                    <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-500 dark:text-gray-400">
-                                        Lead ID
-                                    </p>
-                                    <p className="mt-1.5 text-sm font-semibold tabular-nums tracking-tight text-gray-700 dark:text-gray-200">
+                                    <p className="font-mono text-xs font-medium tabular-nums text-base-content/50">
                                         {renderLeadNumber()}
                                     </p>
                                 </div>
@@ -1848,9 +1845,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </span>
                                 </span>
                                 {applicantsCount != null && Number(applicantsCount) > 0 && (
-                                    <span className={META_CHIP}>
+                                    <span className={META_CHIP} title="Applicants">
                                         <UserIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-                                        {applicantsCount} Applicants
+                                        {applicantsCount}
                                     </span>
                                 )}
                                 <button
@@ -1993,7 +1990,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             return (
                                 <div className="group relative cursor-pointer text-right" onClick={() => setIsBalanceModalOpen(true)}>
                                     <div className="space-y-2">
-                                        <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Total Value</p>
+                                        <p className="text-[10px] font-semibold uppercase tracking-wide text-base-content/40">Total</p>
                                         <div className="flex items-end justify-end gap-2">
                                             <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white inline-flex items-center gap-2">
                                                 <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
@@ -2006,27 +2003,26 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             )}
                                         </div>
                                         {subcontractorFee > 0 && netAfterSubcontractor !== null && (
-                                            <p className="text-xs text-gray-500 dark:text-gray-400">
-                                                Net after sub fee: {currency}
+                                            <p className="text-[11px] text-base-content/50">
+                                                Net {currency}
                                                 {Number(netAfterSubcontractor.toFixed(2)).toLocaleString()}
                                             </p>
                                         )}
                                         {potentialAmount > 0 && (
-                                            <p className="text-xs font-medium text-gray-600 dark:text-gray-300">
-                                                Potential: {currency}
+                                            <p className="text-[11px] font-medium text-base-content/55">
+                                                Pot. {currency}
                                                 {Number(potentialAmount.toFixed(2)).toLocaleString()}
                                             </p>
                                         )}
                                         {potentialApplicantsMeeting > 0 && (
-                                            <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                                                Potential applicants:{' '}
-                                                {Math.trunc(potentialApplicantsMeeting).toLocaleString()}
+                                            <p className="text-[11px] text-base-content/45" title="Potential applicants">
+                                                Pot. appl. {Math.trunc(potentialApplicantsMeeting).toLocaleString()}
                                             </p>
                                         )}
                                         {unpaidOutstandingPair !== null && unpaidGross > 0 && (
                                             <div className="pt-2 border-t border-gray-200/80 dark:border-gray-600">
-                                                <p className="text-xs font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">
-                                                    Remaining Lead Value
+                                                <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">
+                                                    Outstanding
                                                 </p>
                                                 <div className="flex items-end justify-end gap-2">
                                                     <p className="text-xl font-bold leading-none text-amber-900 dark:text-amber-200">
@@ -2194,9 +2190,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </span>
                                 </span>
                                 {applicantsCount != null && Number(applicantsCount) > 0 && (
-                                    <span className={META_CHIP}>
+                                    <span className={META_CHIP} title="Applicants">
                                         <UserIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-                                        {applicantsCount} Applicants
+                                        {applicantsCount}
                                     </span>
                                 )}
                                 <button
@@ -2360,7 +2356,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         onClick={() => setIsBalanceModalOpen(true)}
                                     >
                                         <div className="space-y-1.5">
-                                            <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Total Value</p>
+                                            <p className="text-[10px] font-semibold uppercase tracking-wide text-base-content/40">Total</p>
                                             <div className="flex items-end justify-end gap-2">
                                                 <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white inline-flex items-center gap-2">
                                                     <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
@@ -2373,27 +2369,26 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 )}
                                             </div>
                                             {subcontractorFee > 0 && netAfterSubcontractor !== null && (
-                                                <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                                                    Net after sub fee: {currency}
+                                                <p className="text-[11px] text-base-content/50">
+                                                    Net {currency}
                                                     {Number(netAfterSubcontractor.toFixed(2)).toLocaleString()}
                                                 </p>
                                             )}
                                             {potentialAmount > 0 && (
-                                                <p className="text-[11px] font-medium text-gray-600 dark:text-gray-300">
-                                                    Potential: {currency}
+                                                <p className="text-[11px] font-medium text-base-content/55">
+                                                    Pot. {currency}
                                                     {Number(potentialAmount.toFixed(2)).toLocaleString()}
                                                 </p>
                                             )}
                                             {potentialApplicantsMeeting > 0 && (
-                                                <p className="text-[11px] text-gray-500 dark:text-gray-400">
-                                                    Potential applicants:{' '}
-                                                    {Math.trunc(potentialApplicantsMeeting).toLocaleString()}
+                                                <p className="text-[11px] text-base-content/45" title="Potential applicants">
+                                                    Pot. appl. {Math.trunc(potentialApplicantsMeeting).toLocaleString()}
                                                 </p>
                                             )}
                                             {unpaidOutstandingPairDesktop !== null && unpaidGrossDesktop > 0 && (
                                                 <div className="border-t border-gray-200/80 pt-1 dark:border-gray-600">
                                                     <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">
-                                                        Remaining Lead Value
+                                                        Outstanding
                                                     </p>
                                                     <div className="flex items-end justify-end gap-2">
                                                         <p className="text-2xl font-bold leading-none text-amber-900 dark:text-amber-200">
@@ -2529,7 +2524,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     Missing payment plan
                                                 </div>
                                                 <div className="text-xs text-red-800/80 whitespace-nowrap">
-                                                    Add a payment plan in Finances
+                                                    Finances → payment plan
                                                 </div>
                                             </div>
                                         </div>
@@ -2698,7 +2693,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         Missing payment plan
                                                     </div>
                                                     <div className="text-xs text-red-800/80 whitespace-nowrap">
-                                                        Add a payment plan in Finances
+                                                        Finances → payment plan
                                                     </div>
                                                 </div>
                                             </div>
@@ -3461,7 +3456,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                             Missing payment plan
                                                                         </div>
                                                                         <div className="text-xs text-red-800/80 whitespace-nowrap">
-                                                                            Add a payment plan in Finances
+                                                                            Finances → payment plan
                                                                         </div>
                                                                     </div>
                                                                 </div>
@@ -4051,10 +4046,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </p>
                                     <p className="mt-1 text-xs text-amber-900/85 dark:text-amber-200/90">
                                         {pendingProbabilitySaving
-                                            ? 'Saving your probability…'
+                                            ? 'Saving…'
                                             : flaggedConversationCount > 0
                                               ? 'Saving…'
-                                              : 'Flag a message on the Interactions timeline — your probability will save automatically.'}
+                                              : 'Flag a message on Interactions to save.'}
                                     </p>
                                     {pendingProbabilitySaving ? (
                                         <div className="mt-2 flex items-center gap-2">

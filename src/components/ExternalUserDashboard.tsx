@@ -4,7 +4,7 @@ import { supabase, isExpectedNoSessionError } from '../lib/supabase';
 import ExternalUserLeadSearch from './ExternalUserLeadSearch';
 import ExternalUserLeadsGraph, { buildLeadSourcesOrFilter, parseExternSourceIds } from './ExternalUserLeadsGraph';
 import ExternalUserAccessLogs from './ExternalUserAccessLogs';
-import { ChartBarIcon } from '@heroicons/react/24/outline';
+import { ChartBarIcon, TrophyIcon } from '@heroicons/react/24/outline';
 import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ExternalUserDashboardProps {
@@ -16,7 +16,13 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName,
     const [newLeadsCount, setNewLeadsCount] = usePersistedState('externalUserDashboard_newLeadsCount', 0, {
         storage: 'sessionStorage',
     });
+    const [topSourceThisWeek, setTopSourceThisWeek] = usePersistedState<{ name: string; count: number } | null>(
+        'externalUserDashboard_topSourceThisWeek',
+        null,
+        { storage: 'sessionStorage' },
+    );
     const hasInitializedRef = useRef(false);
+    const topSourceInitializedRef = useRef(false);
     const [accessLogsAuthId, setAccessLogsAuthId] = useState<string | null>(null);
 
     useEffect(() => {
@@ -177,6 +183,143 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName,
         }
     }, []);
 
+    // Fetch top source for the last 7 days (filtered by extern_source_id)
+    useEffect(() => {
+        const fetchTopSourceThisWeek = async () => {
+            try {
+                const cacheKey = 'externalUserDashboard_topSourceThisWeek_cache_v1';
+                const cached = sessionStorage.getItem(cacheKey);
+                if (cached) {
+                    try {
+                        const { value, timestamp } = JSON.parse(cached);
+                        if (value && (Date.now() - Number(timestamp || 0)) < 5 * 60 * 1000) {
+                            setTopSourceThisWeek(value);
+                            topSourceInitializedRef.current = true;
+                            return;
+                        }
+                    } catch {
+                        /* ignore */
+                    }
+                }
+
+                const { data: { user }, error: authError } = await supabase.auth.getUser();
+                if (authError || !user) {
+                    if (authError && !isExpectedNoSessionError(authError)) {
+                        console.error('Error getting auth user:', authError);
+                    }
+                    setTopSourceThisWeek(null);
+                    return;
+                }
+
+                const { data: userData, error: userError } = await supabase
+                    .from('users')
+                    .select('id, extern_source_id')
+                    .eq('auth_id', user.id)
+                    .maybeSingle();
+
+                let finalUserData = userData;
+                if ((userError || !userData) && user.email) {
+                    const { data: userByEmail } = await supabase
+                        .from('users')
+                        .select('id, extern_source_id')
+                        .eq('email', user.email)
+                        .maybeSingle();
+                    if (userByEmail) finalUserData = userByEmail;
+                }
+
+                if (!finalUserData?.extern_source_id) {
+                    setTopSourceThisWeek(null);
+                    topSourceInitializedRef.current = true;
+                    return;
+                }
+
+                const sourceIds = parseExternSourceIds(finalUserData.extern_source_id);
+                if (sourceIds.length === 0) {
+                    setTopSourceThisWeek(null);
+                    topSourceInitializedRef.current = true;
+                    return;
+                }
+
+                const { data: allowedSources, error: sourcesError } = await supabase
+                    .from('misc_leadsource')
+                    .select('id, name')
+                    .in('id', sourceIds)
+                    .eq('active', true);
+
+                if (sourcesError || !allowedSources || allowedSources.length === 0) {
+                    console.error('Error fetching allowed sources:', sourcesError);
+                    setTopSourceThisWeek(null);
+                    topSourceInitializedRef.current = true;
+                    return;
+                }
+
+                const allowedTyped = allowedSources
+                    .map((s: any) => ({ id: Number(s?.id), name: String(s?.name ?? '').trim() }))
+                    .filter((s: any) => Number.isFinite(s.id) && s.name !== '');
+
+                const allowedSourceNames = allowedTyped.map((s: any) => s.name);
+                const allowedSourceIdsFromMisc = allowedTyped.map((s: any) => s.id);
+                const sourcesOr = buildLeadSourcesOrFilter(allowedSourceIdsFromMisc, allowedSourceNames);
+
+                const now = new Date();
+                const sevenDaysAgo = new Date();
+                sevenDaysAgo.setDate(now.getDate() - 7);
+                sevenDaysAgo.setHours(0, 0, 0, 0);
+
+                const { data: leads, error: leadsError } = await supabase
+                    .from('leads')
+                    .select('id, source_id, source, created_at')
+                    .gte('created_at', sevenDaysAgo.toISOString())
+                    .lte('created_at', now.toISOString())
+                    .or(sourcesOr);
+
+                if (leadsError) {
+                    console.error('Error fetching leads for top source:', leadsError);
+                    setTopSourceThisWeek(null);
+                    topSourceInitializedRef.current = true;
+                    return;
+                }
+
+                const idToName = new Map<string, string>();
+                const nameNormToCanonical = new Map<string, string>();
+                allowedTyped.forEach((s: any) => {
+                    idToName.set(String(s.id), s.name);
+                    nameNormToCanonical.set(s.name.trim().toLowerCase(), s.name);
+                });
+
+                const counts = new Map<string, number>();
+                (leads || []).forEach((lead: any) => {
+                    const sid = lead?.source_id != null && String(lead.source_id).trim() !== '' ? String(lead.source_id) : '';
+                    let bucket: string | null = null;
+                    if (sid && idToName.has(sid)) bucket = idToName.get(sid)!;
+                    else {
+                        const key = String(lead?.source ?? '').trim().toLowerCase();
+                        if (key && nameNormToCanonical.has(key)) bucket = nameNormToCanonical.get(key)!;
+                    }
+                    if (!bucket) return;
+                    counts.set(bucket, (counts.get(bucket) || 0) + 1);
+                });
+
+                let best: { name: string; count: number } | null = null;
+                for (const [name, count] of counts.entries()) {
+                    if (!best || count > best.count) best = { name, count };
+                }
+
+                setTopSourceThisWeek(best);
+                sessionStorage.setItem(cacheKey, JSON.stringify({ value: best, timestamp: Date.now() }));
+                topSourceInitializedRef.current = true;
+            } catch (e) {
+                console.error('Error fetching top source this week:', e);
+                setTopSourceThisWeek(null);
+                topSourceInitializedRef.current = true;
+            }
+        };
+
+        if (!topSourceInitializedRef.current) {
+            void fetchTopSourceThisWeek();
+        }
+    }, []);
+
     return (
         <div className="min-h-screen bg-white pt-16">
             <div className="container mx-auto px-4 py-6">
@@ -205,8 +348,8 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName,
                     <p className="text-gray-600">Access your leads and manage your cases</p>
                 </div>
 
-                {/* Summary Boxes - New Leads and Access Logs */}
-                <div className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Summary Boxes - New Leads, Top Source, Access Logs */}
+                <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-6">
                     {/* New Leads Box */}
                     <div className="bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 rounded-xl p-6 shadow-lg">
                         <div className="flex items-center justify-between">
@@ -216,6 +359,28 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName,
                             </div>
                             <div className="text-white/80">
                                 <ChartBarIcon className="w-12 h-12" />
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Top Source (Last 7 days) Box */}
+                    <div className="bg-gradient-to-tr from-indigo-500 via-violet-500 to-fuchsia-500 rounded-xl p-6 shadow-lg">
+                        <div className="flex items-center justify-between gap-4">
+                            <div className="min-w-0">
+                                <h3 className="text-lg font-semibold text-white mb-1">Top Source (Last 7 Days)</h3>
+                                {topSourceThisWeek ? (
+                                    <div className="flex items-baseline gap-3 min-w-0">
+                                        <p className="text-2xl font-bold text-white truncate">{topSourceThisWeek.name}</p>
+                                        <p className="text-xl font-semibold text-white/90 whitespace-nowrap">
+                                            {topSourceThisWeek.count}
+                                        </p>
+                                    </div>
+                                ) : (
+                                    <p className="text-2xl font-bold text-white/90">—</p>
+                                )}
+                            </div>
+                            <div className="text-white/80 shrink-0">
+                                <TrophyIcon className="w-12 h-12" />
                             </div>
                         </div>
                     </div>

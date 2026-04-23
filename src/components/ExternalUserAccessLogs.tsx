@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { supabase, isExpectedNoSessionError } from '../lib/supabase';
-import { DocumentTextIcon, CalendarIcon, ClockIcon } from '@heroicons/react/24/outline';
+import { BoltIcon, CalendarIcon, ClockIcon } from '@heroicons/react/24/outline';
 import { usePersistedFilters } from '../hooks/usePersistedState';
 import { parseExternSourceIds } from './ExternalUserLeadsGraph';
 
@@ -29,12 +29,15 @@ function logMatchesAllowedSources(
     log: { request_body?: string | null; response_body?: string | null },
     allowedIdsSet: Set<number>,
     allowedCodesSet: Set<number>,
+    allowedNamesSet: Set<string>,
 ): boolean {
     if (log?.response_body) {
         try {
             const parsed = JSON.parse(String(log.response_body));
             const sid = parsed?.data?.source_id;
             if (sid != null && allowedIdsSet.has(Number(sid))) return true;
+            const sourceName = parsed?.data?.source ?? parsed?.data?.source_name ?? parsed?.data?.sourceName;
+            if (typeof sourceName === 'string' && allowedNamesSet.has(sourceName.trim().toLowerCase())) return true;
         } catch {
             /* ignore */
         }
@@ -47,6 +50,8 @@ function logMatchesAllowedSources(
             const sourceId = q?.source_id ?? q?.sourceId;
             if (sourceId != null && allowedIdsSet.has(Number(sourceId))) return true;
             if (sourceCode != null && allowedCodesSet.size > 0 && allowedCodesSet.has(Number(sourceCode))) return true;
+            const sourceName = q?.source_name ?? q?.sourceName ?? (typeof q?.source === 'string' ? q?.source : null);
+            if (typeof sourceName === 'string' && allowedNamesSet.has(sourceName.trim().toLowerCase())) return true;
         } catch {
             /* ignore */
         }
@@ -157,7 +162,8 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ storage
             }
 
             // Check cache first - if we have valid cached data, use it and skip fetch
-            const cacheKey = `externalUserAccessLogs_count_cache_v2_${storageScope}`;
+            // Bump cache version when matching logic changes (ids/codes/names).
+            const cacheKey = `externalUserAccessLogs_count_cache_v3_${storageScope}`;
             const cached = sessionStorage.getItem(cacheKey);
             if (cached) {
                 try {
@@ -191,16 +197,19 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ storage
                 // Map allowed misc_leadsource.id -> misc_leadsource.code, so logs can be matched by request source_code too.
                 const { data: srcRows, error: srcErr } = await supabase
                     .from('misc_leadsource')
-                    .select('id, code')
+                    .select('id, code, name')
                     .in('id', allowedSourceIds);
                 if (srcErr) {
                     console.warn('Access logs: failed to load misc_leadsource codes:', srcErr);
                 }
                 const allowedCodesSet = new Set<number>();
+                const allowedNamesSet = new Set<string>();
                 (srcRows || []).forEach((r: any) => {
                     const c = r?.code;
                     const n = typeof c === 'string' ? Number(c) : c;
                     if (Number.isFinite(n)) allowedCodesSet.add(Number(n));
+                    const name = typeof r?.name === 'string' ? r.name.trim().toLowerCase() : '';
+                    if (name) allowedNamesSet.add(name);
                 });
 
                 // Fetch all access logs for hook endpoints in the last 30 days
@@ -217,7 +226,7 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ storage
                 } else {
                     // Count logs that match by response data.source_id OR by request source_code/source_id
                     const filteredLogs = (data || []).filter((log: any) =>
-                        logMatchesAllowedSources(log, allowedIdsSet, allowedCodesSet),
+                        logMatchesAllowedSources(log, allowedIdsSet, allowedCodesSet, allowedNamesSet),
                     );
                     const count = filteredLogs.length;
                     setAccessLogsCount(count);
@@ -288,17 +297,20 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ storage
             const allowedIdsSet = new Set(allowedSourceIds.map((n) => Number(n)).filter((n) => Number.isFinite(n)));
             const { data: srcRows } = await supabase
                 .from('misc_leadsource')
-                .select('id, code')
+                .select('id, code, name')
                 .in('id', allowedSourceIds);
             const allowedCodesSet = new Set<number>();
+            const allowedNamesSet = new Set<string>();
             (srcRows || []).forEach((r: any) => {
                 const c = r?.code;
                 const n = typeof c === 'string' ? Number(c) : c;
                 if (Number.isFinite(n)) allowedCodesSet.add(Number(n));
+                const name = typeof r?.name === 'string' ? r.name.trim().toLowerCase() : '';
+                if (name) allowedNamesSet.add(name);
             });
 
             const filteredLogs = (data || []).filter((log) =>
-                logMatchesAllowedSources(log, allowedIdsSet, allowedCodesSet),
+                logMatchesAllowedSources(log, allowedIdsSet, allowedCodesSet, allowedNamesSet),
             );
 
             setLogs(filteredLogs);
@@ -567,7 +579,7 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ storage
 
     // Return the count box
     return (
-        <div className="bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 rounded-xl p-6 shadow-lg hover:shadow-xl transition-all duration-300">
+        <div className="bg-gradient-to-tr from-amber-500 via-orange-500 to-yellow-400 rounded-xl p-6 shadow-lg hover:shadow-xl transition-all duration-300">
             <div className="flex items-center justify-between">
                 <div>
                     <h3 className="text-lg font-semibold text-white mb-1">Access Logs</h3>
@@ -581,7 +593,7 @@ const ExternalUserAccessLogs: React.FC<ExternalUserAccessLogsProps> = ({ storage
                     <p className="text-sm text-white/80 mt-1">Last 30 days</p>
                 </div>
                 <div className="text-white/80">
-                    <DocumentTextIcon className="w-12 h-12" />
+                    <BoltIcon className="w-12 h-12" />
                 </div>
             </div>
         </div>
