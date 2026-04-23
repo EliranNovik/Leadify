@@ -3175,7 +3175,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 )}
 
                 {/* Workflow Actions Bar - Roles and Quick Actions */}
-                <div className="mt-7 border-t border-gray-100 pt-6 dark:border-gray-800 md:mt-0 md:pt-6 w-full">
+                <div className="mt-7 pt-6 md:mt-0 md:pt-6 w-full">
                     <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-4">Assigned Team</p>
                     {(() => {
                         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');

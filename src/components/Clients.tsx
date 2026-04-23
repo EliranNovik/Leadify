@@ -15485,7 +15485,7 @@ const Clients: React.FC<ClientsProps> = ({
 
           {/* Client record shell — single SaaS-style surface */}
           <div className="mx-auto w-full max-w-[1680px] px-3 sm:px-5 lg:px-8">
-            <div className="overflow-hidden rounded-2xl border border-base-300/40 bg-base-100 shadow-[0_1px_3px_rgba(15,23,42,0.06)] dark:border-base-300/25 dark:shadow-none">
+            <div className="bg-base-100 dark:bg-base-100">
           {/* Desktop Header - Using new ClientHeader component */}
           <ClientHeader
             selectedClient={selectedClient}
@@ -15842,7 +15842,7 @@ const Clients: React.FC<ClientsProps> = ({
                   <div className="flex items-center gap-2 transition-all duration-300 ease-in-out">
                     <div
                       ref={desktopTabsRef}
-                      className="bg-white/10 dark:bg-gray-800/10 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/15 dark:border-gray-700/15 px-3 py-2 overflow-x-auto scrollbar-hide transition-all duration-300 ease-in-out"
+                      className="bg-white/90 dark:bg-gray-900/85 rounded-full shadow-2xl border-2 border-gray-200/80 dark:border-gray-800/80 px-3 py-2 overflow-x-auto scrollbar-hide transition-all duration-300 ease-in-out"
                       style={{
                         borderRadius: '9999px',
                         maxWidth: '95vw',
@@ -16093,7 +16093,7 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Tab Content */}
           <div
             ref={tabContentRef}
-            className="w-full border-t border-base-200/70 bg-base-100/80 min-h-[50vh] dark:border-base-300/40 dark:bg-base-100/90"
+            className="w-full bg-base-100/80 min-h-[50vh] dark:bg-base-100/90"
           >
             <div
               key={`${activeTab}-${interactionCount}`}
