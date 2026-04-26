@@ -15,7 +15,10 @@ export interface LeadRoles {
   /** Meeting manager (new leads). Often mirrored as meeting_manager_id. */
   manager?: string | number | null;
   meeting_manager_id?: string | number | null;
+  /** Display name, numeric id string, or id; see also expert_id. */
   expert?: string | number | null;
+  /** Numeric expert FK on new `leads` when set alongside or instead of `expert`. */
+  expert_id?: string | number | null;
   handler?: string | number | null; // Handler role
   helperCloser?: string | number | null; // Also known as meeting_lawyer_id / helper
 }
@@ -25,6 +28,8 @@ export interface LegacyLeadRoles {
   meeting_scheduler_id?: number | null;
   meeting_manager_id?: number | null;
   expert_id?: number | null;
+  /** When present, matched by name/ID the same as new leads. */
+  expert?: string | number | null;
   case_handler_id?: number | null; // Handler role
   meeting_lawyer_id?: number | null; // Helper Closer
 }
@@ -80,8 +85,177 @@ export function newLeadFieldMatchesEmployee(
   if (value === null || value === undefined || value === '') return false;
   if (normalizeEmployeeId(value, employeeId)) return true;
   if (typeof value === 'string' && employeeName) {
-    return value.toLowerCase() === employeeName.toLowerCase();
+    const v = value.trim().toLowerCase();
+    const e = employeeName.trim().toLowerCase();
+    if (!v || !e) return false;
+    if (v === e) return true;
+    const vParts = v.split(/\s+/).filter(Boolean);
+    const eParts = e.split(/\s+/).filter(Boolean);
+    // Roles tab / UI often saves a short first name ("Eliran") while directory name is full ("Eliran Novik").
+    // Only treat single-token stored values as matching the employee's first token (avoids "Mary" vs "Mary Jane" on the lead).
+    if (vParts.length === 1 && eParts.length > 0 && vParts[0] === eParts[0]) return true;
+    return false;
   }
+  return false;
+}
+
+/**
+ * New `leads` row: expert may be stored as `expert_id` (numeric FK) and/or `expert` (id string, numeric string, or display name).
+ * Matches the same way as the rest of sales contribution (e.g. handler uses handler + case_handler_id).
+ */
+export function newLeadMatchesExpert(lead: any, employeeId: number, employeeName: string): boolean {
+  if (lead == null) return false;
+  if (lead.expert_id != null && lead.expert_id !== '' && Number(lead.expert_id) === Number(employeeId)) {
+    return true;
+  }
+  if (lead.expert) {
+    return newLeadFieldMatchesEmployee(lead.expert, employeeId, employeeName);
+  }
+  return false;
+}
+
+/**
+ * Legacy `leads_lead` row: `expert_id` (FK) and/or optional `expert` text when present in data.
+ */
+export function legacyLeadMatchesExpert(lead: any, employeeId: number, employeeName: string): boolean {
+  if (lead == null) return false;
+  if (lead.expert_id != null && lead.expert_id !== '' && Number(lead.expert_id) === Number(employeeId)) {
+    return true;
+  }
+  if (lead.expert != null && lead.expert !== '') {
+    return newLeadFieldMatchesEmployee(lead.expert, employeeId, employeeName);
+  }
+  return false;
+}
+
+/** When employee_id is unknown, numeric field matching must not false-positive; name-only paths still work. */
+const NO_EMPLOYEE_ID_SENTINEL = -999999999;
+
+function resolveIdForNewLeadRoleMatch(employeeId: number | null | undefined): number {
+  if (employeeId != null && Number.isFinite(Number(employeeId))) return Number(employeeId);
+  return NO_EMPLOYEE_ID_SENTINEL;
+}
+
+/**
+ * True if this employee is assigned to any sales role on a new `leads` row (same fields as RolesTab / contribution).
+ */
+export function employeeHasAnySalesRoleOnNewLead(
+  lead: any,
+  employeeId: number | null | undefined,
+  employeeName: string
+): boolean {
+  if (!lead) return false;
+  const name = (employeeName || '').trim();
+  const idM = resolveIdForNewLeadRoleMatch(employeeId);
+
+  if (lead.closer && newLeadFieldMatchesEmployee(lead.closer, idM, name)) return true;
+  if (lead.scheduler && newLeadFieldMatchesEmployee(lead.scheduler, idM, name)) return true;
+
+  if (lead.handler && newLeadFieldMatchesEmployee(lead.handler, idM, name)) return true;
+  if (
+    lead.case_handler_id != null &&
+    lead.case_handler_id !== '' &&
+    idM !== NO_EMPLOYEE_ID_SENTINEL &&
+    Number(lead.case_handler_id) === idM
+  ) {
+    return true;
+  }
+
+  if (lead.helper != null && lead.helper !== '' && newLeadFieldMatchesEmployee(lead.helper, idM, name)) return true;
+  if (
+    lead.meeting_lawyer_id != null &&
+    lead.meeting_lawyer_id !== '' &&
+    idM !== NO_EMPLOYEE_ID_SENTINEL &&
+    Number(lead.meeting_lawyer_id) === idM
+  ) {
+    return true;
+  }
+  if (lead.lawyer != null && lead.lawyer !== '') {
+    const lawyerValue = lead.lawyer;
+    if (name && typeof lawyerValue === 'string' && lawyerValue.toLowerCase() === name.toLowerCase()) return true;
+    if (idM !== NO_EMPLOYEE_ID_SENTINEL && Number(lawyerValue) === idM) return true;
+  }
+
+  if (newLeadMatchesExpert(lead, idM, name)) return true;
+
+  if (lead.manager != null && lead.manager !== '') {
+    const managerValue = lead.manager;
+    if (typeof managerValue === 'string') {
+      const numericValue = Number(managerValue);
+      if (!Number.isNaN(numericValue) && numericValue.toString() === String(managerValue).trim()) {
+        if (idM !== NO_EMPLOYEE_ID_SENTINEL && numericValue === idM) return true;
+      } else if (newLeadFieldMatchesEmployee(managerValue, idM, name)) {
+        return true;
+      }
+    } else if (idM !== NO_EMPLOYEE_ID_SENTINEL && Number(managerValue) === idM) {
+      return true;
+    }
+  }
+  if (
+    lead.meeting_manager_id != null &&
+    lead.meeting_manager_id !== '' &&
+    idM !== NO_EMPLOYEE_ID_SENTINEL &&
+    Number(lead.meeting_manager_id) === idM
+  ) {
+    return true;
+  }
+
+  if (idM !== NO_EMPLOYEE_ID_SENTINEL) {
+    if (lead.retainer_handler_id != null && lead.retainer_handler_id !== '' && Number(lead.retainer_handler_id) === idM) {
+      return true;
+    }
+    if (lead.meeting_collection_id != null && lead.meeting_collection_id !== '' && Number(lead.meeting_collection_id) === idM) {
+      return true;
+    }
+    if (lead.marketing_officer_id != null && lead.marketing_officer_id !== '' && Number(lead.marketing_officer_id) === idM) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * True if this employee is assigned to any sales role on a `leads_lead` row (legacy IDs).
+ */
+export function employeeHasAnySalesRoleOnLegacyLead(
+  lead: any,
+  employeeId: number | null | undefined,
+  employeeName: string
+): boolean {
+  if (!lead) return false;
+  const idM = resolveIdForNewLeadRoleMatch(employeeId);
+  if (idM === NO_EMPLOYEE_ID_SENTINEL) return false;
+
+  if (lead.closer_id && Number(lead.closer_id) === idM) return true;
+  if (lead.meeting_scheduler_id && Number(lead.meeting_scheduler_id) === idM) return true;
+  if (lead.meeting_manager_id && Number(lead.meeting_manager_id) === idM) return true;
+  if (lead.meeting_lawyer_id && Number(lead.meeting_lawyer_id) === idM) return true;
+  if (lead.case_handler_id && Number(lead.case_handler_id) === idM) return true;
+  if (legacyLeadMatchesExpert(lead, idM, employeeName || '')) return true;
+  if (lead.retainer_handler_id != null && lead.retainer_handler_id !== '' && Number(lead.retainer_handler_id) === idM) {
+    return true;
+  }
+  if (lead.meeting_collection_id != null && lead.meeting_collection_id !== '' && Number(lead.meeting_collection_id) === idM) {
+    return true;
+  }
+  if (lead.marketing_officer_id != null && lead.marketing_officer_id !== '' && Number(lead.marketing_officer_id) === idM) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * New `leads` row plus optional linked `leads_lead` (e.g. when `leads.legacy_lead_id` is set).
+ */
+export function employeeHasAnySalesRoleOnLeadBundle(
+  newLeadRow: any | null | undefined,
+  legacyLeadRow: any | null | undefined,
+  employeeId: number | null | undefined,
+  employeeName: string
+): boolean {
+  if (newLeadRow && employeeHasAnySalesRoleOnNewLead(newLeadRow, employeeId, employeeName)) return true;
+  if (legacyLeadRow && employeeHasAnySalesRoleOnLegacyLead(legacyLeadRow, employeeId, employeeName)) return true;
   return false;
 }
 
@@ -104,6 +278,12 @@ const getPercentageFromMap = (map: RolePercentagesMap | undefined, canonicalKey:
   return null;
 };
 
+/** Expert % as 0–1 (same resolution as signed portion, including default 10%). */
+export const getExpertPercentageDecimal = (rolePercentages: RolePercentagesMap | undefined): number => {
+  const p = getPercentageFromMap(rolePercentages, 'EXPERT');
+  return p != null ? p : DEFAULT_ROLE_PERCENTAGES.EXPERT;
+};
+
 /**
  * Check if an employee has a specific role in a new lead
  */
@@ -115,6 +295,10 @@ const hasRole = (lead: LeadRoles, employeeId: string | number, role: keyof LeadR
     if (normalizeEmployeeId(roleValue, employeeId)) return true;
     if (employeeName && typeof roleValue === 'string' && roleValue.toLowerCase() === employeeName.toLowerCase()) return true;
     return false;
+  }
+
+  if (role === 'expert') {
+    return newLeadMatchesExpert(lead, Number(employeeId), employeeName || '');
   }
 
   const roleValue = lead[role];
@@ -232,7 +416,8 @@ export const calculateSignedPortionPercentage = (
 export const calculateLegacySignedPortionPercentage = (
   lead: LegacyLeadRoles,
   employeeId: number,
-  rolePercentages?: RolePercentagesMap
+  rolePercentages?: RolePercentagesMap,
+  employeeName = ''
 ): number => {
   let percentage = 0;
 
@@ -279,7 +464,7 @@ export const calculateLegacySignedPortionPercentage = (
     percentage += getRolePercentage('MANAGER');
   }
 
-  if (hasLegacyRole(lead, employeeId, 'expert_id')) {
+  if (legacyLeadMatchesExpert(lead as any, employeeId, employeeName)) {
     percentage += getRolePercentage('EXPERT');
   }
 
@@ -312,7 +497,7 @@ export const calculateSignedPortionAmount = (
   employeeName?: string
 ): number => {
   const percentage = isLegacy
-    ? calculateLegacySignedPortionPercentage(lead as LegacyLeadRoles, Number(employeeId), rolePercentages)
+    ? calculateLegacySignedPortionPercentage(lead as LegacyLeadRoles, Number(employeeId), rolePercentages, employeeName)
     : calculateSignedPortionPercentage(lead as LeadRoles, employeeId, rolePercentages, employeeName);
 
   return leadAmount * percentage;

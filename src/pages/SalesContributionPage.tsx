@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
@@ -14,7 +14,12 @@ import EmployeeDepartmentRolesModal from '../components/EmployeeDepartmentRolesM
 import SalesLinkedContributionModal, { type SalesLinkedContributionRow } from '../components/SalesLinkedContributionModal';
 import HandlersLinkedContributionModal, { type HandlersLinkedContributionRow } from '../components/HandlersLinkedContributionModal';
 import MarketingLinkedContributionModal, { type MarketingLinkedContributionRow } from '../components/MarketingLinkedContributionModal';
-import { calculateSignedPortionAmount, newLeadFieldMatchesEmployee } from '../utils/rolePercentageCalculator';
+import {
+  calculateSignedPortionAmount,
+  legacyLeadMatchesExpert,
+  newLeadFieldMatchesEmployee,
+  newLeadMatchesExpert,
+} from '../utils/rolePercentageCalculator';
 import {
   calculateEmployeeMetrics,
   batchCalculateEmployeeMetrics,
@@ -36,6 +41,7 @@ import {
   normalizeCategoryText as normalizeCategoryTextUtil
 } from '../utils/categoryResolver';
 import { fetchInvoicedTotalDueNisForDateRange } from '../lib/fetchInvoicedLast30TotalDueNis';
+import { resolveNewLeadIdsForHandler } from '../utils/handlerNewLeadIds';
 
 interface EmployeeData {
   employeeId: number;
@@ -86,27 +92,40 @@ interface DepartmentData {
 const roundContributionMoney = (x: number) => Math.round(x * 100) / 100;
 
 /**
- * After raw metrics, scale every employee's variable + fixed amounts by the same factor so
- * Σ(contribution + contributionFixed) across all departments equals invoiced income (cannot exceed it).
+ * After raw metrics (logic 5): scale per department so each field's table matches the summary "Contribution"
+ * slice of invoiced income, then salary budgets follow 40% of that (same as the large number on each card).
+ *
+ * Per department d: Σ (contribution + contributionFixed) = totalInvoicedIncome × (saved % for d / 100).
+ * When department % values sum to 100%, Σ across all departments equals totalInvoicedIncome, and
+ * Σ salary budget per department = 0.4 × that department's slice (aligned with summary boxes).
  */
 function scaleAllEmployeesToInvoicedIncome(
   prev: Map<string, DepartmentData>,
-  totalInvoicedIncome: number
+  totalInvoicedIncome: number,
+  departmentPercentages: Map<string, number>
 ): Map<string, DepartmentData> {
   if (!prev.size || totalInvoicedIncome <= 0) return prev;
 
-  let totalBasis = 0;
-  prev.forEach((dept) => {
-    dept.employees.forEach((emp) => {
-      totalBasis += (emp.contribution ?? 0) + (emp.contributionFixed ?? 0);
-    });
-  });
-  if (totalBasis <= 0) return prev;
-
-  const k = totalInvoicedIncome / totalBasis;
   const byEmployeeId = new Map<number, { c: number; f: number }>();
+  const deptSkipDrift = new Set<string>();
 
-  prev.forEach((dept) => {
+  prev.forEach((dept, deptName) => {
+    const pct = departmentPercentages.get(deptName) ?? 0;
+    const targetBasis = roundContributionMoney((totalInvoicedIncome * pct) / 100);
+    let rawBasis = 0;
+    dept.employees.forEach((emp) => {
+      rawBasis += (emp.contribution ?? 0) + (emp.contributionFixed ?? 0);
+    });
+    if (rawBasis <= 0) {
+      dept.employees.forEach((emp) => {
+        byEmployeeId.set(emp.employeeId, { c: 0, f: 0 });
+      });
+      if (targetBasis > 0) {
+        deptSkipDrift.add(deptName);
+      }
+      return;
+    }
+    const k = targetBasis / rawBasis;
     dept.employees.forEach((emp) => {
       const c = emp.contribution ?? 0;
       const f = emp.contributionFixed ?? 0;
@@ -117,35 +136,48 @@ function scaleAllEmployeesToInvoicedIncome(
     });
   });
 
-  let sumAfterRound = 0;
-  const sortedEmpIds = Array.from(byEmployeeId.keys()).sort((a, b) => a - b);
-  for (const id of sortedEmpIds) {
-    const v = byEmployeeId.get(id)!;
-    sumAfterRound += v.c + v.f;
-  }
-  // Deterministic: among max (c+f), pick lowest employeeId (Map iteration order is not stable across runs)
-  let maxEmployeeId = -1;
-  let maxBasis = -1;
-  for (const id of sortedEmpIds) {
-    const v = byEmployeeId.get(id)!;
-    const b = v.c + v.f;
-    if (b > maxBasis || (b === maxBasis && (maxEmployeeId < 0 || id < maxEmployeeId))) {
-      maxBasis = b;
-      maxEmployeeId = id;
+  prev.forEach((dept, deptName) => {
+    const pct = departmentPercentages.get(deptName) ?? 0;
+    const targetBasis = roundContributionMoney((totalInvoicedIncome * pct) / 100);
+    if (dept.employees.length === 0) return;
+    let sumInDept = 0;
+    const idsInDept: number[] = [];
+    dept.employees.forEach((emp) => {
+      const v = byEmployeeId.get(emp.employeeId);
+      if (v) {
+        sumInDept += v.c + v.f;
+        idsInDept.push(emp.employeeId);
+      }
+    });
+    if (deptSkipDrift.has(deptName)) return;
+    const drift = roundContributionMoney(targetBasis - sumInDept);
+    if (Math.abs(drift) < 0.005 || idsInDept.length === 0) return;
+    idsInDept.sort((a, b) => a - b);
+    let maxId = -1;
+    let maxB = -1;
+    for (const id of idsInDept) {
+      const v = byEmployeeId.get(id)!;
+      const b = v.c + v.f;
+      if (b > maxB || (b === maxB && (maxId < 0 || id < maxId))) {
+        maxB = b;
+        maxId = id;
+      }
     }
-  }
-
-  const drift = roundContributionMoney(totalInvoicedIncome - sumAfterRound);
-  if (Math.abs(drift) >= 0.005 && maxEmployeeId >= 0) {
-    const v = byEmployeeId.get(maxEmployeeId)!;
-    v.c = roundContributionMoney(v.c + drift);
-    if (v.c < 0) {
-      v.f = roundContributionMoney(v.f + v.c);
-      v.c = 0;
+    if (maxId >= 0) {
+      const v = byEmployeeId.get(maxId)!;
+      v.c = roundContributionMoney(v.c + drift);
+      if (v.c < 0) {
+        v.f = roundContributionMoney(v.f + v.c);
+        v.c = 0;
+      }
     }
-  }
+  });
 
   const salaryByEmployeeId = new Map<number, number>();
+  let totalBasisAfter = 0;
+  byEmployeeId.forEach((v) => {
+    totalBasisAfter += v.c + v.f;
+  });
   byEmployeeId.forEach((v, id) => {
     const contributionTotal = v.c + v.f;
     salaryByEmployeeId.set(id, roundContributionMoney(contributionTotal * 0.4));
@@ -246,6 +278,34 @@ function getPresetMonthCount(preset: SalesContributionPeriodPreset): number {
       return 0;
   }
 }
+
+/** In-memory only: survives route changes in the same tab (module scope), not a full page refresh. */
+function buildSalesContributionPageCacheKey(
+  f: { fromDate: string; toDate: string },
+  periodPreset: SalesContributionPeriodPreset,
+  salaryFilter: { month: number; year: number },
+  dueNormalized: number
+): string {
+  return JSON.stringify({
+    fromDate: f.fromDate,
+    toDate: f.toDate,
+    periodPreset,
+    salaryMonth: salaryFilter.month,
+    salaryYear: salaryFilter.year,
+    dueNormalized,
+  });
+}
+
+type SalesContributionPageMemoryCache = {
+  key: string;
+  departmentData: Map<string, DepartmentData>;
+  fieldViewData: Map<string, DepartmentData>;
+  totalIncome: number;
+  totalSignedValue: number;
+  employeeMap: Map<number, { display_name: string; department: string; photo_url?: string | null }>;
+};
+
+let salesContributionPageMemoryCache: SalesContributionPageMemoryCache | null = null;
 
 function formatYmdLocalFromDate(d: Date): string {
   const year = d.getFullYear();
@@ -399,7 +459,9 @@ const SalesContributionPage = () => {
 
   const [departmentData, setDepartmentData] = useState<Map<string, DepartmentData>>(new Map());
   const [fieldViewData, setFieldViewData] = useState<Map<string, DepartmentData>>(new Map());
-  const [viewMode, setViewMode] = useState<'employee' | 'field'>('employee');
+  const [viewMode, setViewMode] = usePersistedState<'employee' | 'field'>('salesContribution_viewMode', 'employee', {
+    storage: 'sessionStorage',
+  });
   const [loading, setLoading] = useState(false);
   const [isCalculating, setIsCalculating] = useState(false);
   const [allCategories, setAllCategories] = useState<any[]>([]);
@@ -418,7 +480,9 @@ const SalesContributionPage = () => {
   const [dueNormalizedPercentage, setDueNormalizedPercentage] = usePersistedState('salesContribution_dueNormalizedPercentage', 0, {
     storage: 'sessionStorage',
   });
-  const [employeeSearchTerm, setEmployeeSearchTerm] = useState('');
+  const [employeeSearchTerm, setEmployeeSearchTerm] = usePersistedState('salesContribution_employeeSearchTerm', '', {
+    storage: 'sessionStorage',
+  });
 
   // Salary filter state (defaults to previous month/year)
   const [salaryFilter, setSalaryFilter] = usePersistedState('salesContribution_salaryFilter', {
@@ -928,6 +992,8 @@ const SalesContributionPage = () => {
   const [modalEmployeeName, setModalEmployeeName] = useState<string>('');
   const [modalRole, setModalRole] = useState<string>('');
   const [employeeMap, setEmployeeMap] = useState<Map<number, { display_name: string; department: string; photo_url?: string | null }>>(new Map());
+  const scMemoryRestoreAttemptedRef = useRef(false);
+  const scPrevLoadingForScCacheRef = useRef(false);
   const imageErrorCache = useRef<Map<number, boolean>>(new Map());
 
   // Fetch all Handlers + Partners employees from DB when modal opens (so modal shows everyone with those roles in leads, not just those in current report)
@@ -1303,49 +1369,21 @@ const SalesContributionPage = () => {
       ? displayTotalCostForTopBadge
       : displayTotalCostForTopBadge / summaryMonthlyDivisor;
 
-  // Per-department total row salary budget (same formula as table total row: 40% of (net contribution + net contribution fixed after link/marketing deductions))
-  const totalRowSalaryBudgetByDepartment = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const deptName of departmentNames) {
-      const deptData = departmentData.get(deptName);
-      if (!deptData) {
-        map.set(deptName, 0);
-        continue;
+  /**
+   * Sum of stored `contribution + contributionFixed` for all employees in the report. After
+   * `scaleAllEmployeesToInvoicedIncome`, when department % values sum to 100%, this matches `totalIncome`
+   * (apart from tiny rounding drift). Per-table "Total" rows can differ (links/marketing display).
+   */
+  const totalStoredContributionAndFixed = useMemo(() => {
+    if (viewMode !== 'employee') return 0;
+    let sum = 0;
+    for (const dept of departmentData.values()) {
+      for (const emp of dept.employees) {
+        sum += (emp.contribution ?? 0) + (emp.contributionFixed ?? 0);
       }
-      const employees = deptData.employees;
-      const getLinkedContributionDeducted = (employeeId: number): number => {
-        const toSales = contributionToSalesByEmployee.get(employeeId) ?? 0;
-        const toHandlers = contributionToHandlersByEmployee.get(employeeId) ?? 0;
-        if (deptName === 'Sales') return toHandlers;
-        if (deptName === 'Handlers') return toSales + (handlersLinkedShareByEmployee.get(employeeId) ?? 0);
-        if (deptName === 'Partners' || deptName === 'Finance') return toSales + toHandlers;
-        return 0;
-      };
-      const totalContributionColDisplayed = employees.reduce((s, emp) => {
-        const orig = emp.contribution ?? 0;
-        const deducted = getLinkedContributionDeducted(emp.employeeId);
-        const effectiveRelocated = Math.min(deducted, orig);
-        return s + (orig - effectiveRelocated);
-      }, 0);
-      const totalContributionFixedDisplayed = employees.reduce((s, emp) => {
-        const fullFixed = emp.contributionFixed ?? 0;
-        const toMarketing = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
-        return s + (fullFixed - toMarketing);
-      }, 0);
-      const totalContributionFixedDisplayedAdjusted =
-        totalContributionFixedDisplayed + (deptName === 'Marketing' ? linkedContributionForMarketing : 0);
-      const totalRowContribution =
-        totalContributionColDisplayed +
-        (deptName === 'Sales' ? (linkedContributionForSales ?? 0) : 0) +
-        (deptName === 'Handlers' ? (linkedContributionForHandlers ?? 0) : 0);
-      const totalRowContributionFixed =
-        totalContributionFixedDisplayedAdjusted + (deptName === 'Sales' ? linkedContributionFixedForSales : 0);
-      const contributionTotalForPercentages = totalRowContribution + totalRowContributionFixed;
-      const totalRowSalaryBudget = Math.round(contributionTotalForPercentages * 0.4 * 100) / 100;
-      map.set(deptName, totalRowSalaryBudget);
     }
-    return map;
-  }, [departmentData, departmentNames, linkedContributionForSales, linkedContributionForHandlers, linkedContributionFixedForSales, linkedContributionForMarketing, marketingFixedDeductedByEmployee, contributionToSalesByEmployee, contributionToHandlersByEmployee, handlersLinkedShareByEmployee]);
+    return sum;
+  }, [viewMode, departmentData]);
 
   const marketingLinkedModalRows = useMemo((): MarketingLinkedContributionRow[] => {
     const amount1 = marketingFixedDeductedByEmployee.get(1) ?? 0;
@@ -1823,6 +1861,7 @@ const SalesContributionPage = () => {
             meeting_lawyer_id,
             lawyer,
             expert,
+            expert_id,
             case_handler_id,
             manager,
             meeting_manager_id,
@@ -2152,8 +2191,8 @@ const SalesContributionPage = () => {
             console.log('[SalesContribution checkEmployeeInRole helper] L210620 no match. helper=', lead.helper, 'meeting_lawyer_id=', lead.meeting_lawyer_id, 'lawyer=', lead.lawyer);
           }
           return false;
-        } else if (roleField === 'expert' && lead.expert) {
-          return newLeadFieldMatchesEmployee(lead.expert, employeeId, employeeName);
+        } else if (roleField === 'expert') {
+          return newLeadMatchesExpert(lead, employeeId, employeeName);
         } else if (roleField === 'manager' || roleField === 'meeting_manager_id') {
           // newField may be 'manager' (labels) or 'meeting_manager_id' (id column); check both + fallback id
           if (lead.manager) {
@@ -2190,8 +2229,8 @@ const SalesContributionPage = () => {
           return Number(lead.meeting_lawyer_id) === employeeId;
         } else if (roleField === 'case_handler_id' && lead.case_handler_id) {
           return Number(lead.case_handler_id) === employeeId;
-        } else if (roleField === 'expert_id' && lead.expert_id) {
-          return Number(lead.expert_id) === employeeId;
+        } else if (roleField === 'expert_id') {
+          return legacyLeadMatchesExpert(lead, employeeId, employeeName);
         } else if (roleField === 'meeting_manager_id' && lead.meeting_manager_id) {
           return Number(lead.meeting_manager_id) === employeeId;
         }
@@ -2352,6 +2391,7 @@ const SalesContributionPage = () => {
             manager: lead.manager || lead.meeting_manager_id,
             meeting_manager_id: lead.meeting_manager_id,
             expert: lead.expert,
+            expert_id: lead.expert_id,
             handler: lead.handler, // Handler role
             helperCloser: lead.helper ?? lead.meeting_lawyer_id, // Helper Closer: helper or meeting_lawyer_id in new leads
           };
@@ -2389,6 +2429,7 @@ const SalesContributionPage = () => {
             meeting_scheduler_id: lead.meeting_scheduler_id,
             meeting_manager_id: lead.meeting_manager_id,
             expert_id: lead.expert_id,
+            expert: (lead as any).expert,
             case_handler_id: lead.case_handler_id, // Handler role
             meeting_lawyer_id: lead.meeting_lawyer_id, // Helper Closer
           };
@@ -2653,21 +2694,11 @@ const SalesContributionPage = () => {
 
       const employeeDisplayName = employeeData.display_name;
 
-      // Fetch new leads where this employee is handler
-      let newLeadsQuery = supabase
-        .from('leads')
-        .select('id, handler, case_handler_id')
-        .or(`handler.eq.${employeeDisplayName},case_handler_id.eq.${employeeId}`);
-
-      const { data: newLeadsWithHandler, error: newLeadsError } = await newLeadsQuery;
-      if (newLeadsError) {
-        console.error('Error fetching new leads with handler:', newLeadsError);
-      } else if (newLeadsWithHandler && newLeadsWithHandler.length > 0) {
-        const newLeadIds = newLeadsWithHandler.map(l => l.id).filter(Boolean);
-
-        if (newLeadIds.length > 0) {
-          // Fetch payment plans for these leads
-          let newPaymentsQuery = supabase
+      // Same new-lead handler discovery as EmployeeRoleLeadsModal (incl. handler = id string, not only display name)
+      const newLeadIds = await resolveNewLeadIdsForHandler(employeeId, employeeDisplayName);
+      if (newLeadIds.length > 0) {
+        // Fetch payment plans for these leads
+        let newPaymentsQuery = supabase
             .from('payment_plans')
             .select('id, lead_id, value, value_vat, currency, due_date, cancel_date, ready_to_pay')
             .eq('ready_to_pay', true)
@@ -2690,7 +2721,6 @@ const SalesContributionPage = () => {
               totalDue += amount;
             });
           }
-        }
       }
 
       // Fetch legacy leads where this employee is handler (case_handler_id)
@@ -4017,6 +4047,7 @@ const SalesContributionPage = () => {
                   meeting_lawyer_id,
                   lawyer,
                   expert,
+                  expert_id,
                   case_handler_id,
                   manager,
                   meeting_manager_id,
@@ -4270,8 +4301,8 @@ const SalesContributionPage = () => {
                   if (matchName || matchId) return true;
                 }
                 return false;
-              } else if (roleField === 'expert' && lead.expert) {
-                return newLeadFieldMatchesEmployee(lead.expert, employeeId, employeeName);
+              } else if (roleField === 'expert') {
+                return newLeadMatchesExpert(lead, employeeId, employeeName);
               } else if (roleField === 'manager' || roleField === 'meeting_manager_id') {
                 if (lead.manager) {
                   const managerValue = lead.manager;
@@ -4397,7 +4428,7 @@ const SalesContributionPage = () => {
               const matchesScheduler = lead.meeting_scheduler_id && Number(lead.meeting_scheduler_id) === employeeId;
               const matchesLawyer = lead.meeting_lawyer_id && Number(lead.meeting_lawyer_id) === employeeId;
               const matchesHandler = lead.case_handler_id && Number(lead.case_handler_id) === employeeId;
-              const matchesExpert = lead.expert_id && Number(lead.expert_id) === employeeId;
+              const matchesExpert = legacyLeadMatchesExpert(lead, employeeId, employeeName);
               const matchesManager = lead.meeting_manager_id && Number(lead.meeting_manager_id) === employeeId;
 
               const matches = matchesCloser || matchesScheduler || matchesLawyer ||
@@ -4819,7 +4850,7 @@ const SalesContributionPage = () => {
               });
             });
 
-            return scaleAllEmployeesToInvoicedIncome(updated, totalIncome || 0);
+            return scaleAllEmployeesToInvoicedIncome(updated, totalIncome || 0, departmentPercentages);
           });
 
           // Set loading to false ONLY after all calculations are complete
@@ -5054,7 +5085,7 @@ const SalesContributionPage = () => {
                 },
               });
             });
-            return scaleAllEmployeesToInvoicedIncome(updated, totalIncome || 0);
+            return scaleAllEmployeesToInvoicedIncome(updated, totalIncome || 0, departmentPercentages);
           });
         }
         // If no salary data, don't update - keep existing data with all calculations intact
@@ -5678,6 +5709,7 @@ const SalesContributionPage = () => {
             manager: lead.manager || lead.meeting_manager_id,
             meeting_manager_id: lead.meeting_manager_id,
             expert: lead.expert,
+            expert_id: lead.expert_id,
             handler: lead.handler, // Handler role
             helperCloser: lead.helper ?? lead.meeting_lawyer_id,
           };
@@ -5688,7 +5720,20 @@ const SalesContributionPage = () => {
           if (lead.scheduler) employeeIds.add(typeof lead.scheduler === 'string' ? 0 : Number(lead.scheduler));
           if (lead.manager) employeeIds.add(typeof lead.manager === 'string' ? 0 : Number(lead.manager));
           if (lead.meeting_manager_id != null) employeeIds.add(Number(lead.meeting_manager_id));
-          if (lead.expert) employeeIds.add(Number(lead.expert));
+          if (lead.expert_id != null && lead.expert_id !== '' && !Number.isNaN(Number(lead.expert_id))) {
+            employeeIds.add(Number(lead.expert_id));
+          }
+          if (lead.expert) {
+            const ex = lead.expert;
+            if (typeof ex === 'string') {
+              const t = ex.trim();
+              const n = Number(t);
+              if (!Number.isNaN(n) && String(n) === t) employeeIds.add(n);
+            } else {
+              const n = Number(ex);
+              if (!Number.isNaN(n)) employeeIds.add(n);
+            }
+          }
           if (lead.handler) employeeIds.add(typeof lead.handler === 'string' ? 0 : Number(lead.handler));
           if (lead.helper) employeeIds.add(typeof lead.helper === 'string' ? 0 : Number(lead.helper));
           if (lead.meeting_lawyer_id != null) employeeIds.add(Number(lead.meeting_lawyer_id));
@@ -5733,6 +5778,7 @@ const SalesContributionPage = () => {
             meeting_scheduler_id: lead.meeting_scheduler_id,
             meeting_manager_id: lead.meeting_manager_id,
             expert_id: lead.expert_id,
+            expert: (lead as any).expert,
             case_handler_id: lead.case_handler_id, // Handler role
             meeting_lawyer_id: lead.meeting_lawyer_id,
           };
@@ -6027,6 +6073,77 @@ const SalesContributionPage = () => {
     await processPromise;
   };
 
+  // Restore last report from module memory when returning to this route (no refetch) if session filters match the snapshot.
+  useLayoutEffect(() => {
+    if (!searchPerformed) return;
+    if (loading) return;
+    if (departmentData.size > 0) return;
+    if (scMemoryRestoreAttemptedRef.current) return;
+    scMemoryRestoreAttemptedRef.current = true;
+
+    const m = salesContributionPageMemoryCache;
+    const key = buildSalesContributionPageCacheKey(
+      filters,
+      periodPreset,
+      salaryFilter,
+      dueNormalizedPercentage
+    );
+    if (!m || m.key !== key) {
+      setSearchPerformed(false);
+      return;
+    }
+    setDepartmentData(new Map(m.departmentData));
+    setFieldViewData(new Map(m.fieldViewData));
+    setTotalIncome(m.totalIncome);
+    setTotalSignedValue(m.totalSignedValue);
+    totalIncomeRef.current = m.totalIncome;
+    totalSignedValueRef.current = m.totalSignedValue;
+    setEmployeeMap(new Map(m.employeeMap));
+  }, [
+    searchPerformed,
+    loading,
+    departmentData,
+    setSearchPerformed,
+    filters,
+    periodPreset,
+    salaryFilter,
+    dueNormalizedPercentage,
+  ]);
+
+  // When a report search finishes, snapshot it for route remounts in this tab.
+  useEffect(() => {
+    if (scPrevLoadingForScCacheRef.current && !loading) {
+      if (searchPerformed) {
+        salesContributionPageMemoryCache = {
+          key: buildSalesContributionPageCacheKey(
+            filters,
+            periodPreset,
+            salaryFilter,
+            dueNormalizedPercentage
+          ),
+          departmentData: new Map(departmentData),
+          fieldViewData: new Map(fieldViewData),
+          totalIncome,
+          totalSignedValue,
+          employeeMap: new Map(employeeMap),
+        };
+      }
+    }
+    scPrevLoadingForScCacheRef.current = loading;
+  }, [
+    loading,
+    searchPerformed,
+    departmentData,
+    fieldViewData,
+    totalIncome,
+    totalSignedValue,
+    employeeMap,
+    filters,
+    periodPreset,
+    salaryFilter,
+    dueNormalizedPercentage,
+  ]);
+
   // Handler for starting to edit percentage
   const handleStartEditPercentage = (departmentName: string) => {
     const currentPercentage = departmentPercentages.get(departmentName) || 0;
@@ -6091,7 +6208,6 @@ const SalesContributionPage = () => {
     const deptTotal = deptData?.totals?.total || 0;
     const percentage = departmentPercentages.get(departmentName) || 0;
     const isEditing = editingPercentage === departmentName;
-    const totalSalaryBudget = totalRowSalaryBudgetByDepartment.get(departmentName) ?? 0;
     // Sum row totalSalaryCost like the table Total row (not dept.totals — can be stale vs rows after scaling)
     const totalCost =
       deptData?.employees
@@ -6113,7 +6229,7 @@ const SalesContributionPage = () => {
 
     return (
       <div className={`flex-shrink-0 rounded-2xl transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl ${gradientClasses} text-white relative overflow-hidden w-[calc(50vw-0.75rem)] md:w-auto min-h-[160px] md:min-h-[168px] ${departmentName === 'Sales' ? 'ml-4 md:ml-0' : ''}`}>
-        {/* Glassy attachment on top: Contribution amount = saved % of income */}
+        {/* Glassy attachment on top: Contribution = saved % of total income (monthly avg in preset range) */}
         {totalIncome && totalIncome > 0 && percentage != null && (
           <div className="absolute top-0 left-0 right-0 py-1.5 px-2 md:py-2 md:px-3 rounded-t-2xl border-b border-white/20 bg-white/20 backdrop-blur-md flex items-center gap-2">
             <span className="hidden md:inline text-xs font-medium text-white/90">Contribution</span>
@@ -6194,7 +6310,7 @@ const SalesContributionPage = () => {
               <div className="flex items-center gap-2">
                 <span className="text-white/90 font-medium">Salary budget</span>
                 <span className="px-2 py-0.5 rounded-lg bg-white/25 backdrop-blur-sm border border-white/30 font-semibold tabular-nums text-white">
-                  {formatCurrency(totalSalaryBudget / summaryMonthlyDivisor)}
+                  {formatCurrency(summaryAmount)}
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -6461,8 +6577,10 @@ const SalesContributionPage = () => {
     const contributionAmountBase =
       totalIncome && totalIncome > 0 ? (departmentPercentage / 100) * totalIncome : 0;
     const contributionAmount = scalePeriodSum(contributionAmountBase);
-    // Total row salary budget = 40% of (total contribution + total contribution fixed with link).
-    const totalRowSalaryBudget = Math.round(contributionTotalForPercentages * 0.4 * 100) / 100;
+    // Total row salary budget = sum of row salary budgets (matches logic 5 and department summary hero).
+    const totalRowSalaryBudget = roundContributionMoney(
+      filteredEmployeesForCorrection.reduce((s, emp) => s + (emp.salaryBudget ?? 0), 0)
+    );
     const totalSalaryCostDisplayed = filteredEmployeesForCorrection.reduce(
       (s, emp) => s + (emp.totalSalaryCost ?? 0),
       0
@@ -8161,7 +8279,8 @@ const SalesContributionPage = () => {
               <p className="text-base-content/80 font-medium">Loading report...</p>
             </div>
           ) : viewMode === 'employee' ? (
-            departmentNames
+            <>
+            {departmentNames
               .filter(deptName => {
                 const deptData = departmentData.get(deptName);
                 if (!deptData) return false;
@@ -8184,7 +8303,23 @@ const SalesContributionPage = () => {
                   return renderTable(deptData);
                 }
                 return null;
-              })
+              })}
+            <div className="mt-2 rounded-2xl border border-base-300 bg-base-200/60 p-4 md:p-5 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-base-content">Total — all departments</p>
+                <p className="text-xs text-base-content/70 mt-0.5">Σ Contribution + Contribution fixed</p>
+                {periodPreset !== 'custom' && (
+                  <p className="text-xs text-base-content/50 mt-1.5">Period total ÷ {summaryMonthlyDivisor} (avg. per month)</p>
+                )}
+              </div>
+              <p className="text-2xl font-bold text-primary tabular-nums sm:text-right">
+                {formatCurrency(
+                  totalStoredContributionAndFixed /
+                    (periodPreset === 'custom' ? 1 : summaryMonthlyDivisor)
+                )}
+              </p>
+            </div>
+            </>
           ) : (
             // Field View - show tables by main category
             Array.from(fieldViewData.values()).sort((a, b) => {

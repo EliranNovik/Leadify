@@ -1,5 +1,12 @@
 import { convertToNIS } from '../lib/currencyConversion';
-import { calculateSignedPortionAmount, calculateSignedPortionPercentage, newLeadFieldMatchesEmployee } from './rolePercentageCalculator';
+import {
+  calculateSignedPortionAmount,
+  calculateSignedPortionPercentage,
+  getExpertPercentageDecimal,
+  legacyLeadMatchesExpert,
+  newLeadFieldMatchesEmployee,
+  newLeadMatchesExpert,
+} from './rolePercentageCalculator';
 
 export interface EmployeeCalculationInput {
     employeeId: number;
@@ -8,6 +15,7 @@ export interface EmployeeCalculationInput {
         newLeads: any[];
         legacyLeads: any[];
     };
+    /** In-period due: each map value is the full total for that lead (all relevant payment rows in range summed; not per plan row). */
     payments: {
         newPayments: Map<string, number>;
         legacyPayments: Map<number, number>;
@@ -253,8 +261,8 @@ const checkEmployeeInRole = (
             if (matchName || matchId) return true;
         }
         return false;
-    } else if (roleField === 'expert' && lead.expert) {
-        return newLeadFieldMatchesEmployee(lead.expert, employeeId, employeeName);
+    } else if (roleField === 'expert') {
+        return newLeadMatchesExpert(lead, employeeId, employeeName);
     } else if (roleField === 'manager' || roleField === 'meeting_manager_id') {
         // For new leads, check 'manager' field (not 'meeting_manager_id')
         if (lead.manager) {
@@ -284,7 +292,7 @@ const checkEmployeeInRole = (
 /**
  * Check if employee is in a role for a legacy lead
  */
-const checkEmployeeInRoleLegacy = (lead: any, roleField: string, employeeId: number): boolean => {
+const checkEmployeeInRoleLegacy = (lead: any, roleField: string, employeeId: number, employeeName: string): boolean => {
     if (roleField === 'closer_id' && lead.closer_id) {
         return Number(lead.closer_id) === employeeId;
     } else if (roleField === 'meeting_scheduler_id' && lead.meeting_scheduler_id) {
@@ -293,8 +301,8 @@ const checkEmployeeInRoleLegacy = (lead: any, roleField: string, employeeId: num
         return Number(lead.meeting_lawyer_id) === employeeId;
     } else if (roleField === 'case_handler_id' && lead.case_handler_id) {
         return Number(lead.case_handler_id) === employeeId;
-    } else if (roleField === 'expert_id' && lead.expert_id) {
-        return Number(lead.expert_id) === employeeId;
+    } else if (roleField === 'expert_id') {
+        return legacyLeadMatchesExpert(lead, employeeId, employeeName);
     } else if (roleField === 'meeting_manager_id' && lead.meeting_manager_id) {
         return Number(lead.meeting_manager_id) === employeeId;
     }
@@ -441,12 +449,12 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
         const employeeRoles: string[] = [];
 
         roles.forEach(role => {
-            if (role.legacyField && checkEmployeeInRoleLegacy(lead, role.legacyField, employeeId)) {
+            if (role.legacyField && checkEmployeeInRoleLegacy(lead, role.legacyField, employeeId, employeeName)) {
                 employeeRoles.push(role.name);
             }
         });
 
-        const isHandler = checkEmployeeInRoleLegacy(lead, 'case_handler_id', employeeId);
+        const isHandler = checkEmployeeInRoleLegacy(lead, 'case_handler_id', employeeId, employeeName);
         if (employeeRoles.length === 0 && isHandler) {
             employeeRoles.push('Handler');
         }
@@ -521,6 +529,7 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
                 manager: lead.manager || lead.meeting_manager_id, // for hasRole; either column may be set
                 meeting_manager_id: lead.meeting_manager_id,
                 expert: lead.expert,
+                expert_id: lead.expert_id,
                 handler: lead.handler,
                 helperCloser: lead.helper ?? lead.meeting_lawyer_id,
             };
@@ -561,7 +570,7 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
     leads.legacyLeads.forEach((lead: any) => {
         const employeeRoles: string[] = [];
         roles.forEach(role => {
-            if (role.legacyField && checkEmployeeInRoleLegacy(lead, role.legacyField, employeeId)) {
+            if (role.legacyField && checkEmployeeInRoleLegacy(lead, role.legacyField, employeeId, employeeName)) {
                 employeeRoles.push(role.name);
             }
         });
@@ -576,6 +585,7 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
                 meeting_scheduler_id: lead.meeting_scheduler_id,
                 meeting_manager_id: lead.meeting_manager_id,
                 expert_id: lead.expert_id,
+                expert: lead.expert,
                 case_handler_id: lead.case_handler_id,
                 meeting_lawyer_id: lead.meeting_lawyer_id,
             };
@@ -645,11 +655,11 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
         leads.legacyLeads.forEach((lead: any) => {
             const employeeRoles: string[] = [];
             roles.forEach(role => {
-                if (role.legacyField && checkEmployeeInRoleLegacy(lead, role.legacyField, employeeId)) {
+                if (role.legacyField && checkEmployeeInRoleLegacy(lead, role.legacyField, employeeId, employeeName)) {
                     employeeRoles.push(role.name);
                 }
             });
-            const isHandler = checkEmployeeInRoleLegacy(lead, 'case_handler_id', employeeId);
+            const isHandler = checkEmployeeInRoleLegacy(lead, 'case_handler_id', employeeId, employeeName);
             if (employeeRoles.length === 0 && isHandler) {
                 employeeRoles.push('Handler');
             }
@@ -730,31 +740,48 @@ export const calculateEmployeeMetrics = (input: EmployeeCalculationInput): Emplo
             : totalSignedPortion * normalizationRatio;
 
 
-    // Due portion: Calculate percentage from dueNormalized (handler/helper handler roles + Expert exception)
+    // Due portion: (1) Handler + Helper Handler share of the employee's total due pool (from fetchDueAmounts = handler leads).
+    // (2) Expert "second" stream: sum in-range due (NIS) on ALL leads where this person is Expert (one number for the
+    // period, not 10% per plan row: maps already hold per-lead totals). Then apply company due_normalized% once, then
+    // Expert% once. Additive with (1) when the same person is also Handler on a lead.
     const handlerPercentage = rolePercentages && rolePercentages.has('HANDLER')
         ? (rolePercentages.get('HANDLER')! / 100)
         : 0;
-    // Helper Handler percentage (if exists in rolePercentages)
     const helperHandlerPercentage = rolePercentages && rolePercentages.has('HELPER_HANDLER')
         ? (rolePercentages.get('HELPER_HANDLER')! / 100)
         : 0;
 
-    // Check if employee has Expert role in any leads (Expert is exception - gets percentage in both signed and due)
-    // Expert should get percentage of dueNormalized if they have Expert role on any lead
-    let hasExpertRole = false;
-    roleCombinationMap.forEach((data) => {
-        if (data.roles.includes('Expert')) {
-            hasExpertRole = true;
+    const dueFromHandlerPool = dueNormalized * (handlerPercentage + helperHandlerPercentage);
+
+    const getNewPaymentDue = (lead: any): number => {
+        const m = payments.newPayments;
+        if (!m || !m.size) return 0;
+        return Number(m.get(lead.id) ?? m.get(String(lead.id)) ?? 0) || 0;
+    };
+    const getLegacyPaymentDue = (lead: any): number => {
+        if (!payments.legacyPayments) return 0;
+        return Number(payments.legacyPayments.get(Number(lead.id)) ?? 0) || 0;
+    };
+
+    // Pool (gross NIS): one period total = Σ( per-lead in-range due on every expert lead ).
+    // get*PaymentDue reads pre-aggregated per-lead values from the maps (row-level amounts already summed per lead in process*Payments / batch build).
+    let aggregateInPeriodDueOnAllExpertLeadsGrossNis = 0;
+    leads.newLeads.forEach((lead: any) => {
+        if (newLeadMatchesExpert(lead, employeeId, employeeName)) {
+            aggregateInPeriodDueOnAllExpertLeadsGrossNis += getNewPaymentDue(lead);
+        }
+    });
+    leads.legacyLeads.forEach((lead: any) => {
+        if (legacyLeadMatchesExpert(lead, employeeId, employeeName)) {
+            aggregateInPeriodDueOnAllExpertLeadsGrossNis += getLegacyPaymentDue(lead);
         }
     });
 
-    // Expert percentage (if employee has Expert role)
-    const expertPercentage = hasExpertRole && rolePercentages && rolePercentages.has('EXPERT')
-        ? (rolePercentages.get('EXPERT')! / 100)
-        : 0;
-
-    // Apply handler, helper handler, and expert percentages to dueNormalized
-    const duePortionNormalized = dueNormalized * (handlerPercentage + helperHandlerPercentage + expertPercentage);
+    const aggregateExpertDueAfterCompanyDueNormNis =
+        aggregateInPeriodDueOnAllExpertLeadsGrossNis * dueNormalizedPercentageValue;
+    const expertRate = getExpertPercentageDecimal(rolePercentages);
+    const dueFromExpertOnExpertLeads = aggregateExpertDueAfterCompanyDueNormNis * expertRate;
+    const duePortionNormalized = dueFromHandlerPool + dueFromExpertOnExpertLeads;
 
     // Step 6: Calculate base contribution (signed + due portions)
     const baseContribution = signedPortionNormalized + duePortionNormalized;

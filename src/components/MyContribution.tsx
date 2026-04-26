@@ -7,6 +7,8 @@ import {
   type EmployeeCalculationInput,
   type EmployeeCalculationResult,
 } from '../utils/salesContributionCalculator';
+import { legacyLeadMatchesExpert, newLeadMatchesExpert } from '../utils/rolePercentageCalculator';
+import { resolveNewLeadIdsForHandler } from '../utils/handlerNewLeadIds';
 import { processNewPayments, processLegacyPayments } from '../utils/paymentPlanProcessor';
 import {
   calculateNewLeadFullAmount,
@@ -218,12 +220,8 @@ const MyContribution: React.FC<MyContributionProps> = ({ employeeId, employeeNam
       if (!emp) return 0;
       const displayName = emp.display_name;
 
-      const { data: newLeadsWithHandler } = await supabase
-        .from('leads')
-        .select('id, handler, case_handler_id')
-        .or(`handler.eq.${displayName},case_handler_id.eq.${empId}`);
-      if (newLeadsWithHandler && newLeadsWithHandler.length > 0) {
-        const leadIds = newLeadsWithHandler.map((l: any) => l.id).filter(Boolean);
+      const leadIds = await resolveNewLeadIdsForHandler(empId, displayName);
+      if (leadIds.length > 0) {
         let q = supabase.from('payment_plans').select('id, lead_id, value, value_vat, currency, due_date, cancel_date, ready_to_pay').eq('ready_to_pay', true).not('due_date', 'is', null).is('cancel_date', null).in('lead_id', leadIds);
         if (fromDateTime) q = q.gte('due_date', fromDateTime);
         if (toDateTime) q = q.lte('due_date', toDateTime);
@@ -288,7 +286,7 @@ const MyContribution: React.FC<MyContributionProps> = ({ employeeId, employeeNam
           .from('leads')
           .select(`
             id, lead_number, name, balance, balance_currency, proposal_total, proposal_currency, currency_id,
-            closer, scheduler, handler, helper, meeting_lawyer_id, lawyer, expert, case_handler_id, manager, meeting_manager_id, subcontractor_fee, category_id, category,
+            closer, scheduler, handler, helper, meeting_lawyer_id, lawyer, expert, expert_id, case_handler_id, manager, meeting_manager_id, subcontractor_fee, category_id, category,
             accounting_currencies!leads_currency_id_fkey(name, iso_code),
             misc_category!category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))
           `)
@@ -354,7 +352,7 @@ const MyContribution: React.FC<MyContributionProps> = ({ employeeId, employeeNam
           if (lead.lawyer != null && lead.lawyer !== '' && (typeof lead.lawyer === 'string' ? lead.lawyer.toLowerCase() === employeeName.toLowerCase() : Number(lead.lawyer) === employeeId)) return true;
           return false;
         }
-        if (roleField === 'expert' && lead.expert) return Number(lead.expert) === employeeId;
+        if (roleField === 'expert') return newLeadMatchesExpert(lead, employeeId, employeeName);
         if (roleField === 'meeting_manager_id') {
           if (lead.manager) {
             const v = lead.manager;
@@ -379,7 +377,7 @@ const MyContribution: React.FC<MyContributionProps> = ({ employeeId, employeeNam
         (lead.meeting_scheduler_id && Number(lead.meeting_scheduler_id) === employeeId) ||
         (lead.meeting_lawyer_id && Number(lead.meeting_lawyer_id) === employeeId) ||
         (lead.case_handler_id && Number(lead.case_handler_id) === employeeId) ||
-        (lead.expert_id && Number(lead.expert_id) === employeeId) ||
+        legacyLeadMatchesExpert(lead, employeeId, employeeName) ||
         (lead.meeting_manager_id && Number(lead.meeting_manager_id) === employeeId)
       );
 

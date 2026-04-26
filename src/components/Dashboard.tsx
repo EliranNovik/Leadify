@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, lazy, Suspense } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from 'react';
 import Meetings from './Meetings';
 import OverdueFollowups from './OverdueFollowups';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
@@ -26,6 +26,7 @@ import CompactAvailabilityCalendar, { CompactAvailabilityCalendarRef } from './C
 import SickDaysDocumentUploadModal from './SickDaysDocumentUploadModal';
 import MyContribution from './MyContribution';
 import { DocumentArrowUpIcon } from '@heroicons/react/24/outline';
+import { employeeHasAnySalesRoleOnLeadBundle } from '../utils/rolePercentageCalculator';
 
 
 // My Availability Section Component
@@ -114,8 +115,10 @@ const Dashboard: React.FC = () => {
   // State for summary numbers
   const [meetingsToday, setMeetingsToday] = useState(0);
   const [overdueFollowups, setOverdueFollowups] = useState(0);
-  const [newMessages, setNewMessages] = useState(0);
   const [latestMessages, setLatestMessages] = useState<any[]>([]);
+  /** Superuser only: latest messages across all leads (no role filter). */
+  const [latestMessagesAllLeads, setLatestMessagesAllLeads] = useState<any[]>([]);
+  const [dashboardIsSuperuser, setDashboardIsSuperuser] = useState(false);
 
   // State for expanded sections
   const [expanded, setExpanded] = useState<'meetings' | 'overdue' | 'messages' | null>(null);
@@ -1970,44 +1973,311 @@ const Dashboard: React.FC = () => {
     return () => clearInterval(interval);
   }, [todayMeetings]);
 
-  // Add mock client messages
-  const mockMessages = [
-    {
-      id: '10',
-      client_name: 'David Lee',
-      lead_number: 'L122324',
-      created_at: new Date(Date.now() - 1000 * 60 * 60 * 2).toISOString(),
-      content: 'Hi, I have uploaded the required documents. Please confirm receipt.'
-    },
-    {
-      id: '11',
-      client_name: 'Emma Wilson',
-      lead_number: 'L122325',
-      created_at: new Date(Date.now() - 1000 * 60 * 60 * 5).toISOString(),
-      content: 'Can you update me on the status of my application?'
-    },
-    {
-      id: '13',
-      client_name: 'John Smith',
-      lead_number: 'L122326',
-      created_at: new Date(Date.now() - 1000 * 60 * 60 * 8).toISOString(),
-      content: 'Thank you for the meeting today. Looking forward to next steps.'
-    },
-    {
-      id: '14',
-      client_name: 'Sarah Parker',
-      lead_number: 'L122327',
-      created_at: new Date(Date.now() - 1000 * 60 * 60 * 12).toISOString(),
-      content: 'I have a question about the contract terms.'
-    },
-    {
-      id: '15',
-      client_name: 'Tom Anderson',
-      lead_number: 'L122328',
-      created_at: new Date(Date.now() - 1000 * 60 * 60 * 24).toISOString(),
-      content: 'Please let me know if you need any more information from my side.'
+  const refreshDashboardMessages = useCallback(async () => {
+    const resetEmpty = () => {
+      setLatestMessages([]);
+      setLatestMessagesAllLeads([]);
+      setDashboardIsSuperuser(false);
+    };
+
+    try {
+      const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
+      let user = initialUser;
+      if (authError && isAuthError(authError)) {
+        const recovered = await tryRefreshThenExpire();
+        if (!recovered) {
+          resetEmpty();
+          return;
+        }
+        const { data: { user: retryUser } } = await supabase.auth.getUser();
+        user = retryUser;
+      }
+      if (!user) {
+        resetEmpty();
+        return;
+      }
+
+      let { data: userRow, error: userRowError } = await supabase
+        .from('users')
+        .select(`
+          id,
+          is_superuser,
+          employee_id,
+          full_name,
+          tenants_employee!employee_id(
+            id,
+            display_name
+          )
+        `)
+        .eq('auth_id', user.id)
+        .maybeSingle();
+
+      if ((!userRow || userRowError) && user.email) {
+        const retry = await supabase
+          .from('users')
+          .select(`
+            id,
+            is_superuser,
+            employee_id,
+            full_name,
+            tenants_employee!employee_id(
+              id,
+              display_name
+            )
+          `)
+          .eq('email', user.email)
+          .maybeSingle();
+        userRow = retry.data;
+        userRowError = retry.error;
+      }
+
+      if (userRowError || !userRow) {
+        resetEmpty();
+        return;
+      }
+
+      const superuserStatus =
+        userRow.is_superuser === true ||
+        userRow.is_superuser === 'true' ||
+        userRow.is_superuser === 1;
+      setDashboardIsSuperuser(superuserStatus);
+
+      const empData = Array.isArray(userRow.tenants_employee)
+        ? userRow.tenants_employee[0]
+        : userRow.tenants_employee;
+      const displayName = String(empData?.display_name || userRow.full_name || '').trim();
+      const employeeId =
+        userRow.employee_id != null && userRow.employee_id !== ''
+          ? Number(userRow.employee_id)
+          : null;
+
+      const sevenDaysAgo = new Date();
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+      const since = sevenDaysAgo.toISOString();
+      const emailFetchLimit = 50;
+      // Unread + role filter shrinks the list; fetch more so "My contacts" can still fill the widget.
+      const whatsappFetchLimit = 120;
+
+      const LEADS_DASHBOARD_ROLE_SELECT = `
+            id,
+            closer,
+            scheduler,
+            handler,
+            case_handler_id,
+            manager,
+            expert,
+            expert_id,
+            helper,
+            meeting_lawyer_id,
+            lawyer,
+            retainer_handler_id,
+            meeting_collection_id,
+            marketing_officer_id,
+            meeting_manager_id
+          `;
+
+      const LEGACY_DASHBOARD_ROLE_SELECT = `
+              id,
+              closer_id,
+              meeting_scheduler_id,
+              meeting_manager_id,
+              meeting_lawyer_id,
+              case_handler_id,
+              expert_id,
+              retainer_handler_id,
+              meeting_collection_id,
+              marketing_officer_id
+            `;
+
+      const fetchDashboardLeadsByIdsBatched = async (ids: string[]): Promise<any[]> => {
+        const uniq = [...new Set(ids.map((x) => String(x).trim()).filter(Boolean))];
+        const CHUNK = 80;
+        const merged: any[] = [];
+        const seen = new Set<string>();
+        for (let i = 0; i < uniq.length; i += CHUNK) {
+          const chunk = uniq.slice(i, i + CHUNK);
+          const { data, error } = await supabase
+            .from('leads')
+            .select(LEADS_DASHBOARD_ROLE_SELECT)
+            .in('id', chunk);
+          if (error) {
+            console.error('Dashboard inbox: batched leads fetch error', error);
+            continue;
+          }
+          for (const row of data || []) {
+            const k = String((row as any).id);
+            if (k && !seen.has(k)) {
+              seen.add(k);
+              merged.push(row);
+            }
+          }
+        }
+        return merged;
+      };
+
+      const fetchDashboardLegacyByIdsBatched = async (idNums: number[]): Promise<any[]> => {
+        const uniq = [...new Set(idNums.filter((n) => !Number.isNaN(n)))];
+        const CHUNK = 120;
+        const merged: any[] = [];
+        for (let i = 0; i < uniq.length; i += CHUNK) {
+          const chunk = uniq.slice(i, i + CHUNK);
+          const { data, error } = await supabase
+            .from('leads_lead')
+            .select(LEGACY_DASHBOARD_ROLE_SELECT)
+            .in('id', chunk);
+          if (error) {
+            console.error('Dashboard inbox: batched legacy leads fetch error', error);
+            continue;
+          }
+          if (data) merged.push(...data);
+        }
+        return merged;
+      };
+
+      const [{ data: recentEmails }, { data: recentWhatsApp }] = await Promise.all([
+        supabase
+          .from('emails')
+          .select(`
+            id,
+            message_id,
+            client_id,
+            sender_name,
+            sender_email,
+            subject,
+            body_preview,
+            sent_at,
+            direction,
+            leads:client_id (
+              id,
+              name,
+              lead_number,
+              email
+            )
+          `)
+          .eq('direction', 'incoming')
+          .gte('sent_at', since)
+          .order('sent_at', { ascending: false })
+          .limit(emailFetchLimit),
+        supabase
+          .from('whatsapp_messages')
+          .select(`
+            id,
+            lead_id,
+            sender_name,
+            message,
+            sent_at,
+            direction,
+            is_read,
+            leads:lead_id (
+              id,
+              name,
+              lead_number,
+              email
+            )
+          `)
+          .eq('direction', 'in')
+          .or('is_read.is.null,is_read.eq.false')
+          .gte('sent_at', since)
+          .order('sent_at', { ascending: false })
+          .limit(whatsappFetchLimit),
+      ]);
+
+      const allMessages: any[] = [];
+
+      if (recentEmails) {
+        recentEmails.forEach((email) => {
+          if (email.leads && typeof email.leads === 'object' && 'name' in email.leads) {
+            const leads = email.leads as any;
+            allMessages.push({
+              id: email.message_id,
+              type: 'email',
+              client_name: leads.name,
+              lead_number: leads.lead_number,
+              content: email.subject || email.body_preview || 'Email received',
+              sender: email.sender_name || email.sender_email,
+              created_at: email.sent_at,
+              client_id: email.client_id,
+              direction: email.direction,
+            });
+          }
+        });
+      }
+
+      if (recentWhatsApp) {
+        recentWhatsApp.forEach((msg) => {
+          if (msg.leads && typeof msg.leads === 'object' && 'name' in msg.leads) {
+            const leads = msg.leads as any;
+            allMessages.push({
+              id: msg.id,
+              type: 'whatsapp',
+              client_name: leads.name,
+              lead_number: leads.lead_number,
+              content: msg.message,
+              sender: msg.sender_name || 'Client',
+              created_at: msg.sent_at,
+              client_id: msg.lead_id,
+              direction: msg.direction,
+            });
+          }
+        });
+      }
+
+      const sortedAll = allMessages.sort(
+        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+
+      const leadIds = [...new Set(sortedAll.map((m) => m.client_id).filter(Boolean).map((id) => String(id)))];
+      const leadsMap = new Map<string, any>();
+      const legacyMap = new Map<number, any>();
+
+      if (leadIds.length > 0) {
+        const leadsRows = await fetchDashboardLeadsByIdsBatched(leadIds);
+
+        for (const row of leadsRows || []) {
+          if (row?.id != null) leadsMap.set(String(row.id), row);
+        }
+
+        // Optional FK on some DBs; omit from select when column missing (WhatsAppPage pattern).
+        const legacyIds = [
+          ...new Set(
+            (leadsRows || [])
+              .map((r: any) => r.legacy_lead_id)
+              .filter((x: any) => x != null && x !== '')
+              .map((x: any) => Number(x))
+              .filter((n: number) => !Number.isNaN(n))
+          ),
+        ];
+
+        if (legacyIds.length > 0) {
+          const legacyRows = await fetchDashboardLegacyByIdsBatched(legacyIds);
+          for (const lr of legacyRows || []) {
+            if (lr?.id != null) legacyMap.set(Number(lr.id), lr);
+          }
+        }
+      }
+
+      const messageHasMyRole = (msg: any) => {
+        const lid = msg.client_id;
+        if (lid == null || lid === '') return false;
+        const newLead = leadsMap.get(String(lid));
+        if (!newLead) return false;
+        const legRaw = (newLead as any).legacy_lead_id;
+        const legNum = legRaw != null && legRaw !== '' ? Number(legRaw) : NaN;
+        const legacyRow =
+          !Number.isNaN(legNum) && legacyMap.has(legNum) ? legacyMap.get(legNum) : null;
+        return employeeHasAnySalesRoleOnLeadBundle(newLead, legacyRow, employeeId, displayName);
+      };
+
+      const myContactsMessages = sortedAll.filter(messageHasMyRole).slice(0, 5);
+      const allLeadsTop = sortedAll.slice(0, 5);
+
+      setLatestMessages(myContactsMessages);
+      setLatestMessagesAllLeads(superuserStatus ? allLeadsTop : []);
+    } catch {
+      setLatestMessages([]);
+      setLatestMessagesAllLeads([]);
     }
-  ];
+  }, []);
 
   // Update meetingsToday count when todayMeetings changes
   useEffect(() => {
@@ -2107,135 +2377,8 @@ const Dashboard: React.FC = () => {
         setOverdueFollowups(0);
       }
     })();
-    // Fetch new messages (real data from emails and WhatsApp)
-    (async () => {
-      try {
-        // Get current user's leads
-        const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
-        let user = initialUser;
-        if (authError && isAuthError(authError)) {
-          const recovered = await tryRefreshThenExpire();
-          if (!recovered) return;
-          const { data: { user: retryUser } } = await supabase.auth.getUser();
-          user = retryUser;
-        }
-        if (!user) return;
-
-        // Get user's leads
-        const { data: userLeads, error: userLeadsError } = await supabase
-          .from('users')
-          .select('id')
-          .eq('auth_id', user.id)
-          .maybeSingle();
-
-        if (userLeadsError || !userLeads) {
-          return;
-        }
-
-        // Fetch recent incoming emails (last 7 days)
-        const sevenDaysAgo = new Date();
-        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-
-        const { data: recentEmails } = await supabase
-          .from('emails')
-          .select(`
-            id,
-            message_id,
-            client_id,
-            sender_name,
-            sender_email,
-            subject,
-            body_preview,
-            sent_at,
-            direction,
-            leads:client_id (
-              id,
-              name,
-              lead_number,
-              email
-            )
-          `)
-          .eq('direction', 'incoming')
-          .gte('sent_at', sevenDaysAgo.toISOString())
-          .order('sent_at', { ascending: false })
-          .limit(10);
-
-        // Fetch recent WhatsApp messages (last 7 days)
-        const { data: recentWhatsApp } = await supabase
-          .from('whatsapp_messages')
-          .select(`
-            id,
-            lead_id,
-            sender_name,
-            message,
-            sent_at,
-            direction,
-            leads:lead_id (
-              id,
-              name,
-              lead_number,
-              email
-            )
-          `)
-          .eq('direction', 'in')
-          .gte('sent_at', sevenDaysAgo.toISOString())
-          .order('sent_at', { ascending: false })
-          .limit(10);
-
-        // Combine and format messages
-        const allMessages: any[] = [];
-
-        if (recentEmails) {
-          recentEmails.forEach(email => {
-            if (email.leads && typeof email.leads === 'object' && 'name' in email.leads) {
-              const leads = email.leads as any;
-              allMessages.push({
-                id: email.message_id,
-                type: 'email',
-                client_name: leads.name,
-                lead_number: leads.lead_number,
-                content: email.subject || email.body_preview || 'Email received',
-                sender: email.sender_name || email.sender_email,
-                created_at: email.sent_at,
-                client_id: email.client_id,
-                direction: email.direction
-              });
-            }
-          });
-        }
-
-        if (recentWhatsApp) {
-          recentWhatsApp.forEach(msg => {
-            if (msg.leads && typeof msg.leads === 'object' && 'name' in msg.leads) {
-              const leads = msg.leads as any;
-              allMessages.push({
-                id: msg.id,
-                type: 'whatsapp',
-                client_name: leads.name,
-                lead_number: leads.lead_number,
-                content: msg.message,
-                sender: msg.sender_name || 'Client',
-                created_at: msg.sent_at,
-                client_id: msg.lead_id,
-                direction: msg.direction
-              });
-            }
-          });
-        }
-
-        // Sort by date and take the latest 5
-        const sortedMessages = allMessages
-          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-          .slice(0, 5);
-
-        setLatestMessages(sortedMessages);
-        setNewMessages(sortedMessages.length);
-      } catch (error) {
-        setLatestMessages(mockMessages);
-        setNewMessages(mockMessages.length);
-      }
-    })();
-  }, []);
+    void refreshDashboardMessages();
+  }, [refreshDashboardMessages]);
 
   // Graph data (mocked)
   const meetingsPerMonth = [
@@ -6138,6 +6281,69 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  const messageBadgeCount = dashboardIsSuperuser ? latestMessagesAllLeads.length : latestMessages.length;
+  const messageBadgeLabel = messageBadgeCount > 99 ? '99+' : String(messageBadgeCount);
+
+  const renderDashboardInboxCard = (message: any, keyPrefix: string) => (
+    <div
+      key={`${keyPrefix}-${message.type}-${String(message.id)}`}
+      className="bg-gradient-to-r from-white to-gray-50 rounded-xl p-5 shadow-lg border border-gray-100 hover:shadow-xl hover:scale-[1.02] transition-all duration-300 cursor-pointer group"
+      onClick={() => {
+        if (message.type === 'whatsapp' && message.client_id) {
+          const tab = keyPrefix === 'all' ? 'all' : 'my';
+          navigate(`/whatsapp?tab=${tab}&leadId=${encodeURIComponent(String(message.client_id))}`);
+          return;
+        }
+        if (message.client_id && message.lead_number != null && message.lead_number !== '') {
+          navigate(
+            `/clients/${encodeURIComponent(String(message.lead_number))}?tab=interactions`
+          );
+        }
+      }}
+    >
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-3">
+          <span
+            className={`text-xs px-3 py-1.5 rounded-full font-medium shadow-sm animate-pulse ${
+              message.type === 'email'
+                ? isAltTheme
+                  ? 'bg-gradient-to-r from-green-500 via-emerald-500 to-lime-600 text-white'
+                  : 'bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 text-white'
+                : isAltTheme
+                  ? 'bg-gradient-to-r from-green-500 via-emerald-500 to-lime-400 text-white'
+                  : 'bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-400 text-white'
+            }`}
+          >
+            {message.type === 'email' ? 'Email' : 'WhatsApp'}
+          </span>
+          <span className="font-bold text-gray-900 text-lg">{message.client_name}</span>
+          {message.lead_number && (
+            <span className="text-sm text-gray-600 font-medium">#{message.lead_number}</span>
+          )}
+        </div>
+        <span className="text-sm text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
+          {new Date(message.created_at).toLocaleDateString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          })}
+        </span>
+      </div>
+      <p className="text-gray-700 text-sm line-clamp-2 mb-4 leading-relaxed">{message.content}</p>
+      <div className="flex items-center justify-between pt-3 border-t border-gray-100">
+        <span className="text-xs text-gray-600 font-medium">From: {message.sender}</span>
+        <span
+          className={`text-xs font-medium transition-colors ${
+            isAltTheme ? 'text-green-600 group-hover:text-green-700' : 'text-primary group-hover:text-primary/80'
+          }`}
+        >
+          View conversation →
+        </span>
+      </div>
+    </div>
+  );
+
   return (
     <div className="min-h-screen bg-base-100 p-0 md:p-6 space-y-8 animate-fade-in">
       {/* 1. Summary Boxes: 4 columns */}
@@ -6360,7 +6566,7 @@ const Dashboard: React.FC = () => {
           >
             <circle cx="16" cy="16" r="12" />
             <text x="16" y="21" textAnchor="middle" fontSize="10" fill="currentColor" opacity="0.7">
-              99+
+              {messageBadgeLabel}
             </text>
           </svg>
         </div>
@@ -7144,60 +7350,52 @@ const Dashboard: React.FC = () => {
       {expanded === 'messages' && (
         <div className="glass-card mt-4 animate-fade-in">
           <div className="space-y-4">
-            <h3 className="text-xl font-bold text-gray-900 mb-4">Latest Messages</h3>
-            <div className="space-y-3">
-              {latestMessages.map((message, index) => (
-                <div key={index} className="bg-gradient-to-r from-white to-gray-50 rounded-xl p-5 shadow-lg border border-gray-100 hover:shadow-xl hover:scale-[1.02] transition-all duration-300 cursor-pointer group"
-                  onClick={() => {
-                    // Navigate to client's interactions tab
-                    if (message.client_id) {
-
-                      navigate(`/clients/${message.lead_number}?tab=interactions`);
-                    }
-                  }}>
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-3">
-                      <span className={`text-xs px-3 py-1.5 rounded-full font-medium shadow-sm animate-pulse ${message.type === 'email'
-                        ? (isAltTheme ? 'bg-gradient-to-r from-green-500 via-emerald-500 to-lime-600 text-white' : 'bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 text-white')
-                        : (isAltTheme ? 'bg-gradient-to-r from-green-500 via-emerald-500 to-lime-400 text-white' : 'bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-400 text-white')
-                        }`}>
-                        {message.type === 'email' ? 'Email' : 'WhatsApp'}
-                      </span>
-                      <span className="font-bold text-gray-900 text-lg">{message.client_name}</span>
-                      {message.lead_number && (
-                        <span className="text-sm text-gray-600 font-medium">#{message.lead_number}</span>
-                      )}
-                    </div>
-                    <span className="text-sm text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
-                      {new Date(message.created_at).toLocaleDateString('en-US', {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit'
-                      })}
-                    </span>
+            <h3 className="text-xl font-bold text-gray-900 mb-1">Latest Messages</h3>
+            {dashboardIsSuperuser ? (
+              <p className="text-sm text-gray-500 mb-4">
+               
+              </p>
+            ) : null}
+            <div
+              className={
+                dashboardIsSuperuser ? 'grid grid-cols-1 lg:grid-cols-2 gap-6 items-start' : 'space-y-3'
+              }
+            >
+              {dashboardIsSuperuser ? (
+                <div className="space-y-3 min-w-0">
+                  <h4 className="text-sm font-semibold text-gray-800">All leads</h4>
+                  <div className="space-y-3">
+                    {latestMessagesAllLeads.map((message) => renderDashboardInboxCard(message, 'all'))}
                   </div>
-                  <p className="text-gray-700 text-sm line-clamp-2 mb-4 leading-relaxed">{message.content}</p>
-                  <div className="flex items-center justify-between pt-3 border-t border-gray-100">
-                    <span className="text-xs text-gray-600 font-medium">From: {message.sender}</span>
-                    <span className={`text-xs font-medium transition-colors ${isAltTheme ? 'text-green-600 group-hover:text-green-700' : 'text-primary group-hover:text-primary/80'}`}>
-                      View conversation →
-                    </span>
-                  </div>
+                  {latestMessagesAllLeads.length === 0 && (
+                    <div className="text-center py-6 text-gray-500 text-sm">No recent messages in the last 7 days</div>
+                  )}
                 </div>
-              ))}
-            </div>
-            {latestMessages.length === 0 && (
-              <div className="text-center py-8 text-gray-500">
-                No new messages in the last 7 days
+              ) : null}
+              <div className="space-y-3 min-w-0">
+                {dashboardIsSuperuser ? (
+                  <h4 className="text-sm font-semibold text-gray-800">My contacts</h4>
+                ) : null}
+                <div className="space-y-3">
+                  {latestMessages.map((message) => renderDashboardInboxCard(message, 'mine'))}
+                </div>
+                {latestMessages.length === 0 && (
+                  <div className="text-center py-8 text-gray-500">
+                    {dashboardIsSuperuser
+                      ? 'No recent messages for leads where you have a saved role'
+                      : 'No new messages in the last 7 days for leads where you have a saved role'}
+                  </div>
+                )}
               </div>
-            )}
+            </div>
             <div className="flex justify-center mt-4">
-              <button className="btn btn-outline btn-primary" onClick={() => {
-                // Refresh the messages by re-fetching
-                setExpanded(null);
-                setTimeout(() => setExpanded('messages'), 100);
-              }}>
+              <button
+                type="button"
+                className="btn btn-outline btn-primary"
+                onClick={() => {
+                  void refreshDashboardMessages();
+                }}
+              >
                 Refresh Messages
               </button>
             </div>
