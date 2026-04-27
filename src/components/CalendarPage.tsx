@@ -306,6 +306,7 @@ const CalendarPage: React.FC = () => {
     storage: 'sessionStorage',
   });
   const [meetingsRefreshTrigger, setMeetingsRefreshTrigger] = useState(0);
+  const [employeesCategoriesRefreshToken, setEmployeesCategoriesRefreshToken] = useState(0);
   const [selectedStaff, setSelectedStaff] = useState('');
   const [staffSearchTerm, setStaffSearchTerm] = useState('');
   const [showStaffDropdown, setShowStaffDropdown] = useState(false);
@@ -346,6 +347,7 @@ const CalendarPage: React.FC = () => {
   } | null>(null);
   const { instance, accounts } = useMsal();
   const realtimeRefreshTimerRef = useRef<number | null>(null);
+  const lastMeetingsFetchedAtMsRef = useRef<number | null>(null);
 
   // Currency conversion rates (same as DepartmentList)
   const currencyRates = {
@@ -450,8 +452,15 @@ const CalendarPage: React.FC = () => {
         if (payload?.new) patchMeeting(payload.new);
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tenants_employee' }, () => {
-        // Availability changes can affect the UI; re-fetch derived availability maps in the background.
-        debounce(() => { void fetchEmployeeAvailability(); }, 250);
+        // Employee list/photos and availability can affect the UI.
+        debounce(() => {
+          setEmployeesCategoriesRefreshToken((t) => t + 1);
+          void fetchEmployeeAvailability();
+        }, 250);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'users' }, () => {
+        // Calendar staff lists depend on users.is_active/is_staff; refresh cached employee list.
+        debounce(() => { setEmployeesCategoriesRefreshToken((t) => t + 1); }, 400);
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, (payload: any) => {
         // Patch lead fields into any meeting that currently has this lead loaded.
@@ -465,8 +474,8 @@ const CalendarPage: React.FC = () => {
         debounce(() => { setMeetingsRefreshTrigger((t) => t + 1); }, 500);
       })
       // Metadata tables: update lazily by triggering a background data refresh.
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_category' }, () => debounce(() => setMeetingsRefreshTrigger((t) => t + 1), 800))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_maincategory' }, () => debounce(() => setMeetingsRefreshTrigger((t) => t + 1), 800))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_category' }, () => debounce(() => { setMeetingsRefreshTrigger((t) => t + 1); setEmployeesCategoriesRefreshToken((t) => t + 1); }, 800))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_maincategory' }, () => debounce(() => { setMeetingsRefreshTrigger((t) => t + 1); setEmployeesCategoriesRefreshToken((t) => t + 1); }, 800))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_language' }, () => debounce(() => setMeetingsRefreshTrigger((t) => t + 1), 800))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_leadsource' }, () => debounce(() => setMeetingsRefreshTrigger((t) => t + 1), 800))
       .on('postgres_changes', { event: '*', schema: 'public', table: 'accounting_currencies' }, () => debounce(() => setMeetingsRefreshTrigger((t) => t + 1), 800))
@@ -1881,7 +1890,7 @@ const CalendarPage: React.FC = () => {
   // Cache employees and categories data to prevent refetches when navigating back
   // Changed cache key to force refresh with new photo_url fetching
   const { data: employeesAndCategoriesData } = useCachedFetch(
-    'calendar-employees-categories-v3',
+    `calendar-employees-categories-v3:${employeesCategoriesRefreshToken}`,
     async () => {
       // Fetch employees directly from tenants_employee table (like CallsLedgerPage does)
       // This ensures we get photo_url and photo fields correctly
@@ -2073,14 +2082,17 @@ const CalendarPage: React.FC = () => {
 
     // If we have cached meetings and no fetch-relevant dep changed, skip refetch (preserve state when navigating back).
     // Staff meetings are NOT persisted (only `meetings` is), so always reload them or they stay empty after navigation.
-    if (meetings.length > 0 && depsUnchanged) {
+    const nowMs = Date.now();
+    const lastMs = lastMeetingsFetchedAtMsRef.current;
+    const isStale = typeof lastMs === 'number' ? nowMs - lastMs > 5000 : true;
+    if (meetings.length > 0 && depsUnchanged && !isStale) {
       setIsLoading(false);
       const todaySkip = new Date().toISOString().split('T')[0];
       void fetchStaffMeetings(appliedFromDate || todaySkip, appliedToDate || todaySkip);
       return;
     }
     // If this is a back/forward navigation (POP) and we have cached meetings, skip the fetch
-    if (navType === 'POP' && meetings.length > 0) {
+    if (navType === 'POP' && meetings.length > 0 && !isStale) {
       setIsLoading(false);
       const todayPop = new Date().toISOString().split('T')[0];
       void fetchStaffMeetings(appliedFromDate || todayPop, appliedToDate || todayPop);
@@ -2466,6 +2478,7 @@ const CalendarPage: React.FC = () => {
         setMeetings([]);
         setStaff([]);
       } finally {
+        lastMeetingsFetchedAtMsRef.current = Date.now();
         setIsLoading(false);
       }
     };
@@ -2489,6 +2502,19 @@ const CalendarPage: React.FC = () => {
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
+
+  // Refetch on window focus (common case: user changes something elsewhere, comes back expecting fresh data).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onFocus = () => {
+      // Throttle implicit refreshes: if we fetched very recently, skip.
+      const lastMs = lastMeetingsFetchedAtMsRef.current;
+      const isStale = typeof lastMs === 'number' ? Date.now() - lastMs > 1500 : true;
+      if (isStale) setMeetingsRefreshTrigger((t) => t + 1);
+    };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
   }, []);
 
   // Refetch when the user signs in to Supabase so meetings are not stuck empty after auth catches up.
@@ -3018,6 +3044,39 @@ const CalendarPage: React.FC = () => {
       if (typeof link === 'string' && link.startsWith('http')) return link;
     }
     return '';
+  };
+
+  const copyTextToClipboard = async (text: string) => {
+    if (!text) return false;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+      // fall through
+    }
+    try {
+      // Fallback for older browsers / restricted contexts
+      const el = document.createElement('textarea');
+      el.value = text;
+      el.setAttribute('readonly', '');
+      el.style.position = 'fixed';
+      el.style.left = '-9999px';
+      document.body.appendChild(el);
+      el.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(el);
+      return ok;
+    } catch {
+      return false;
+    }
+  };
+
+  const getMeetingJoinUrl = (meeting: any) => {
+    const locationName = getMeetingLocationName(meeting?.meeting_location || meeting?.location);
+    const defaultLink = meetingLocationLinks[locationName] || '';
+    return getValidTeamsLink(meeting?.custom_link || meeting?.teams_meeting_url || defaultLink);
   };
 
   // Helper function to build client route (similar to SchedulerToolPage and Clients.tsx)
@@ -5084,20 +5143,81 @@ const CalendarPage: React.FC = () => {
             return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting || hasCustomLink || hasCustomAddress;
           })() && (
             <>
-              <button
-                className="btn btn-outline btn-primary btn-sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
-                  const defaultLink = meetingLocationLinks[locationName] || '';
-                  const url = getValidTeamsLink(meeting.custom_link || meeting.teams_meeting_url || defaultLink);
-                  if (url) window.open(url, '_blank');
-                  else alert('No meeting URL available');
-                }}
-                title="Meeting Link"
-              >
-                <VideoCameraIcon className="w-4 h-4" />
-              </button>
+              <div className="dropdown dropdown-top">
+                <button
+                  type="button"
+                  className="btn btn-outline btn-primary btn-sm"
+                  title="Meeting Link"
+                  onClick={(e) => {
+                    // Button just opens dropdown via focus; stop row click.
+                    e.stopPropagation();
+                  }}
+                >
+                  <VideoCameraIcon className="w-4 h-4" />
+                </button>
+                <ul
+                  tabIndex={0}
+                  className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-[1000]"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <li>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const url = getMeetingJoinUrl(meeting);
+                        if (!url) {
+                          toast.error('No meeting URL available');
+                          return;
+                        }
+                        window.open(url, '_blank');
+                      }}
+                    >
+                      Enter meeting
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        const url = getMeetingJoinUrl(meeting);
+                        if (!url) {
+                          toast.error('No meeting URL available');
+                          return;
+                        }
+                        const ok = await copyTextToClipboard(url);
+                        if (ok) toast.success('Meeting link copied');
+                        else toast.error('Failed to copy link');
+                      }}
+                    >
+                      Copy link
+                    </button>
+                  </li>
+                  {typeof navigator !== 'undefined' && typeof (navigator as any).share === 'function' && (
+                    <li>
+                      <button
+                        type="button"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          const url = getMeetingJoinUrl(meeting);
+                          if (!url) {
+                            toast.error('No meeting URL available');
+                            return;
+                          }
+                          try {
+                            await (navigator as any).share({ title: 'Meeting link', url });
+                          } catch {
+                            // user cancelled share or unsupported
+                          }
+                        }}
+                      >
+                        Share
+                      </button>
+                    </li>
+                  )}
+                </ul>
+              </div>
               {meeting.custom_address && (
                 <button
                   className="btn btn-outline btn-secondary btn-sm"
@@ -5600,23 +5720,80 @@ const CalendarPage: React.FC = () => {
                 return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting || hasCustomLink || hasCustomAddress;
               })() && (
                   <>
-                    <button
-                      className="btn btn-primary btn-xs sm:btn-sm"
-                      onClick={() => {
-                        // Use custom_link first, then teams/default links
-                        const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
-                        const defaultLink = meetingLocationLinks[locationName] || '';
-                        const url = getValidTeamsLink(meeting.custom_link || meeting.teams_meeting_url || defaultLink);
-                        if (url) {
-                          window.open(url, '_blank');
-                        } else {
-                          alert('No meeting URL available');
-                        }
-                      }}
-                      title="Meeting Link"
-                    >
-                      <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-                    </button>
+                    <div className="dropdown dropdown-top">
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-xs sm:btn-sm"
+                        title="Meeting Link"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                        }}
+                      >
+                        <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                      </button>
+                      <ul
+                        tabIndex={0}
+                        className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-[1000]"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <li>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const url = getMeetingJoinUrl(meeting);
+                              if (!url) {
+                                toast.error('No meeting URL available');
+                                return;
+                              }
+                              window.open(url, '_blank');
+                            }}
+                          >
+                            Enter meeting
+                          </button>
+                        </li>
+                        <li>
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const url = getMeetingJoinUrl(meeting);
+                              if (!url) {
+                                toast.error('No meeting URL available');
+                                return;
+                              }
+                              const ok = await copyTextToClipboard(url);
+                              if (ok) toast.success('Meeting link copied');
+                              else toast.error('Failed to copy link');
+                            }}
+                          >
+                            Copy link
+                          </button>
+                        </li>
+                        {typeof navigator !== 'undefined' && typeof (navigator as any).share === 'function' && (
+                          <li>
+                            <button
+                              type="button"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const url = getMeetingJoinUrl(meeting);
+                                if (!url) {
+                                  toast.error('No meeting URL available');
+                                  return;
+                                }
+                                try {
+                                  await (navigator as any).share({ title: 'Meeting link', url });
+                                } catch {
+                                  // user cancelled share or unsupported
+                                }
+                              }}
+                            >
+                              Share
+                            </button>
+                          </li>
+                        )}
+                      </ul>
+                    </div>
                     {meeting.custom_address && (
                       <button
                         className="btn btn-outline btn-secondary btn-xs sm:btn-sm"

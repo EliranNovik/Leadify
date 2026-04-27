@@ -12621,7 +12621,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           onClick={() => setShowBusinessCardModal(false)}
         >
           <div
-            className="relative w-full max-w-md overflow-hidden bg-transparent rounded-2xl shadow-2xl min-h-[320px]"
+            className="relative w-full max-w-[min(42rem,96vw)] overflow-hidden bg-transparent rounded-2xl shadow-2xl min-h-[420px]"
             onClick={e => e.stopPropagation()}
           >
             <button
@@ -12644,14 +12644,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
 
             {/* Logo - top left */}
             <div className="absolute top-3 left-3 z-10">
-              <img src="/DPLOGO1.png" alt="DPL Logo" className="h-7 drop-shadow-2xl" />
+              <img src="/DPLOGO1.png" alt="DPL Logo" className="h-9 sm:h-10 drop-shadow-2xl" />
             </div>
 
             {/* Centered content */}
-            <div className="relative z-10 flex flex-col items-center justify-center px-4 py-8 min-h-[320px] text-center text-white">
+            <div className="relative z-10 flex flex-col items-center justify-center px-6 py-10 min-h-[420px] text-center text-white">
               {/* Avatar */}
               {selectedEmployee.photo_url ? (
-                <div className="w-20 h-20 rounded-full shadow-2xl overflow-hidden mb-3">
+                <div className="w-28 h-28 sm:w-32 sm:h-32 rounded-full shadow-2xl overflow-hidden mb-4">
                   <img
                     src={selectedEmployee.photo_url}
                     alt={selectedEmployee.official_name || selectedEmployee.display_name}
@@ -12659,32 +12659,32 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                   />
                 </div>
               ) : (
-                <div className="w-20 h-20 rounded-full shadow-2xl flex items-center justify-center text-xl font-bold bg-white/20 border border-white/30 mb-3">
+                <div className="w-28 h-28 sm:w-32 sm:h-32 rounded-full shadow-2xl flex items-center justify-center text-3xl sm:text-4xl font-bold bg-white/20 mb-4">
                   {getInitials(selectedEmployee.official_name || selectedEmployee.display_name)}
                 </div>
               )}
 
-              <h1 className="text-xl font-bold mb-1 drop-shadow-2xl tracking-tight">
+              <h1 className="text-2xl sm:text-3xl font-bold mb-1 drop-shadow-2xl tracking-tight">
                 {selectedEmployee.official_name || selectedEmployee.display_name}
               </h1>
               {selectedEmployee.department && (
-                <p className="text-sm text-white/95 mb-1 drop-shadow-lg font-medium">
+                <p className="text-base sm:text-lg text-white/95 mb-1 drop-shadow-lg font-medium">
                   {selectedEmployee.department} Department
                 </p>
               )}
-              <p className="text-xs text-white/90 mb-4 drop-shadow-md font-semibold">
+              <p className="text-sm text-white/90 mb-6 drop-shadow-md font-semibold">
                 Decker, Pex, Levi Law Offices
               </p>
 
               {/* Contact pills - same style as PublicContractView */}
-              <div className="flex flex-col sm:flex-row items-center justify-center gap-2 w-full max-w-xs">
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-2.5 w-full max-w-md">
                 {selectedEmployee.email && (
                   <a
                     href={`mailto:${selectedEmployee.email}`}
                     className="flex items-center gap-2 bg-white/10 backdrop-blur-md px-3 py-2 rounded-full border border-white/20 shadow-lg hover:bg-white/20 transition-all cursor-pointer w-full sm:w-auto justify-center"
                   >
                     <EnvelopeIcon className="w-4 h-4 text-white flex-shrink-0" />
-                    <span className="text-xs font-medium break-all truncate max-w-[180px]">{selectedEmployee.email}</span>
+                    <span className="text-sm font-medium break-all truncate max-w-[260px]">{selectedEmployee.email}</span>
                   </a>
                 )}
                 {selectedEmployee.mobile && (
@@ -12693,7 +12693,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                     className="flex items-center gap-2 bg-white/10 backdrop-blur-md px-3 py-2 rounded-full border border-white/20 shadow-lg hover:bg-white/20 transition-all cursor-pointer w-full sm:w-auto justify-center"
                   >
                     <DevicePhoneMobileIcon className="w-4 h-4 text-white flex-shrink-0" />
-                    <span className="text-xs font-medium">{selectedEmployee.mobile}</span>
+                    <span className="text-sm font-medium">{selectedEmployee.mobile}</span>
                   </a>
                 )}
                 {selectedEmployee.phone && (
@@ -12702,7 +12702,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                     className="flex items-center gap-2 bg-white/10 backdrop-blur-md px-3 py-2 rounded-full border border-white/20 shadow-lg hover:bg-white/20 transition-all cursor-pointer w-full sm:w-auto justify-center"
                   >
                     <PhoneIcon className="w-4 h-4 text-white flex-shrink-0" />
-                    <span className="text-xs font-medium">
+                    <span className="text-sm font-medium">
                       {selectedEmployee.phone}
                       {selectedEmployee.phone_ext && <span className="ml-1 text-white/80">Ext: {selectedEmployee.phone_ext}</span>}
                     </span>

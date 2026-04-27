@@ -92,6 +92,42 @@ interface DepartmentData {
 const roundContributionMoney = (x: number) => Math.round(x * 100) / 100;
 
 /**
+ * Equal “burden” for the hover: among employees with no fixed and positive variable, each bears the
+ * same total toward the team’s fixed column — split to each fixed colleague as (their fixed) / N, where
+ * N = number of such givers. So every giver shows the same per-row amounts to the same receivers.
+ */
+function buildVariableToFixedAttributionForDepartment(
+  dept: DepartmentData | undefined
+): Map<number, { employeeId: number; employeeName: string; amount: number }[]> {
+  const m = new Map<number, { employeeId: number; employeeName: string; amount: number }[]>();
+  if (!dept?.employees?.length) return m;
+  const emps = dept.employees;
+  const receivers = emps.filter((e) => (e.contributionFixed ?? 0) > 0);
+  if (receivers.length === 0) return m;
+  const givers = emps.filter(
+    (e) => (e.contributionFixed ?? 0) === 0 && (e.contribution ?? 0) > 0
+  );
+  const n = givers.length;
+  if (n <= 0) return m;
+  for (const g of givers) {
+    const rows: { employeeId: number; employeeName: string; amount: number }[] = [];
+    for (const r of receivers) {
+      const f_j = r.contributionFixed ?? 0;
+      if (f_j <= 0) continue;
+      const amount = roundContributionMoney(f_j / n);
+      if (amount > 0) {
+        rows.push({ employeeId: r.employeeId, employeeName: r.employeeName, amount });
+      }
+    }
+    if (rows.length > 0) {
+      rows.sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+      m.set(g.employeeId, rows);
+    }
+  }
+  return m;
+}
+
+/**
  * After raw metrics (logic 5): scale per department so each field's table matches the summary "Contribution"
  * slice of invoiced income, then salary budgets follow 40% of that (same as the large number on each card).
  *
@@ -1287,6 +1323,17 @@ const SalesContributionPage = () => {
     return map;
   }, [departmentData, linkedContributionForHandlers, contributionToSalesByEmployee]);
 
+  /** Sales: equal per variable-only giver: each line (their fixed) ÷ N to each colleague with fixed. */
+  const variableToFixedAttributionByGiverSales = useMemo(
+    () => buildVariableToFixedAttributionForDepartment(departmentData.get('Sales')),
+    [departmentData]
+  );
+  /** Handlers: same, for the Handlers department only. */
+  const variableToFixedAttributionByGiverHandlers = useMemo(
+    () => buildVariableToFixedAttributionForDepartment(departmentData.get('Handlers')),
+    [departmentData]
+  );
+
   // Marketing link: relocate fixed contribution from employee 4 (50%) and employee 1 (30%) to Marketing table.
   const marketingFixedDeductedByEmployee = useMemo(() => {
     const m = new Map<number, number>();
@@ -1599,20 +1646,17 @@ const SalesContributionPage = () => {
 
       // Helper functions are now imported from salesContributionCalculator
 
-      // Calculate total signed value in NIS - using full amounts (without subtracting fee)
-      // This matches the calculation for individual employees and the modal
+      // Calculate total signed value in NIS - AFTER subcontractor fee (matches SignedSalesReportPage)
       let totalNIS = 0;
 
-      // Process legacy leads - using full amount (same as modal and calculation)
+      // Process legacy leads - amount after fee
       legacyLeadsData.forEach(lead => {
-        const fullAmount = calculateLegacyLeadFullAmount(lead);
-        totalNIS += fullAmount;
+        totalNIS += calculateLegacyLeadAmount(lead);
       });
 
-      // Process new leads - using full amount (same as modal and calculation)
+      // Process new leads - amount after fee
       newLeadsData.forEach(lead => {
-        const fullAmount = calculateNewLeadFullAmount(lead);
-        totalNIS += fullAmount;
+        totalNIS += calculateNewLeadAmount(lead);
       });
 
       // Round up to match Dashboard behavior (Math.ceil)
@@ -6760,13 +6804,70 @@ const SalesContributionPage = () => {
                           </>
                         ) : (
                           <>
-                            <td className="w-[20%] text-xs md:text-sm whitespace-nowrap">
-                              <div className="flex items-center gap-1 md:gap-2">
-                                <div className="flex-shrink-0">
-                                  <EmployeeAvatar employeeId={emp.employeeId} size="lg" />
-                                </div>
-                                <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">{emp.employeeName}</span>
-                              </div>
+                            <td className="w-[20%] text-xs md:text-sm align-top text-left whitespace-normal">
+                              {(() => {
+                                const fixedAttributionRows =
+                                  deptData.departmentName === 'Sales'
+                                    ? variableToFixedAttributionByGiverSales.get(emp.employeeId)
+                                    : deptData.departmentName === 'Handlers'
+                                      ? variableToFixedAttributionByGiverHandlers.get(emp.employeeId)
+                                      : null;
+                                const hasFixedPopover = fixedAttributionRows && fixedAttributionRows.length > 0;
+                                if (!hasFixedPopover) {
+                                  return (
+                                    <div className="flex items-center gap-1 md:gap-2 whitespace-nowrap min-w-0">
+                                      <div className="flex-shrink-0">
+                                        <EmployeeAvatar employeeId={emp.employeeId} size="lg" />
+                                      </div>
+                                      <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">{emp.employeeName}</span>
+                                    </div>
+                                  );
+                                }
+                                return (
+                                  <div className="flex items-center gap-1 md:gap-2 w-full min-w-0 whitespace-nowrap">
+                                    <div
+                                      className="dropdown dropdown-hover dropdown-left flex-shrink-0"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <div
+                                        tabIndex={0}
+                                        role="button"
+                                        className="cursor-help rounded-full hover:opacity-90 focus:outline-none focus-visible:ring focus-visible:ring-primary/40"
+                                        title="Hover to see who receives fixed contribution on your behalf"
+                                        onClick={(e) => e.stopPropagation()}
+                                      >
+                                        <EmployeeAvatar employeeId={emp.employeeId} size="lg" />
+                                      </div>
+                                      <div
+                                        tabIndex={0}
+                                        className="dropdown-content z-[200] left-0 right-auto max-w-[min(20rem,calc(100%-1rem))] w-max min-w-0 sm:max-w-sm rounded-box border border-base-300 bg-base-100 p-3 shadow-lg text-left whitespace-normal break-words [overflow-wrap:anywhere]"
+                                      >
+                                        <p className="text-[0.7rem] text-base-content/60 leading-snug mb-2 min-w-0 break-words hyphens-auto">
+                                          You are sharing your contribution with:
+                                        </p>
+                                        <ul className="space-y-2">
+                                          {fixedAttributionRows.map((r) => (
+                                            <li key={r.employeeId} className="flex items-center gap-2 min-w-0">
+                                              <div className="flex-shrink-0">
+                                                <EmployeeAvatar employeeId={r.employeeId} size="sm" />
+                                              </div>
+                                              <div className="min-w-0 flex-1">
+                                                <div className="text-xs font-medium truncate">{r.employeeName}</div>
+                                                <div className="text-xs tabular-nums text-primary">
+                                                  {formatCurrency(scalePeriodSum(r.amount))}
+                                                </div>
+                                              </div>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </div>
+                                    </div>
+                                    <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">
+                                      {emp.employeeName}
+                                    </span>
+                                  </div>
+                                );
+                              })()}
                             </td>
                             <td className="w-[12%] min-w-[100px] text-xs md:text-sm px-2 align-top py-2">
                               <div className="break-words leading-tight" style={{

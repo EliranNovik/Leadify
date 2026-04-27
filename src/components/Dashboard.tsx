@@ -7,6 +7,7 @@ import ClockInBox from './ClockInBox';
 // Lazy load bottom components for faster initial render
 const WaitingForPriceOfferMyLeadsWidget = lazy(() => import('./WaitingForPriceOfferMyLeadsWidget'));
 const ClosedDealsWithoutPaymentPlanWidget = lazy(() => import('./ClosedDealsWithoutPaymentPlanWidget'));
+const NewHandlerCasesWidget = lazy(() => import('./NewHandlerCasesWidget'));
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
@@ -8212,6 +8213,13 @@ const Dashboard: React.FC = () => {
       {/* 3. Employee Scoreboard Component */}
       {/* COMMENTED OUT: Employee performance 4 boxes (Top Closers, Top Schedulers, Top Experts, Top Handlers) */}
       {/* <EmployeeScoreboard /> */}
+
+      {/* Closed deals without Payments plan Box - Lazy Loaded */}
+      <div className="w-full mt-12">
+        <Suspense fallback={<div className="text-center py-8 text-gray-500">Loading...</div>}>
+          <NewHandlerCasesWidget maxItems={10} />
+        </Suspense>
+      </div>
 
       {/* Closed deals without Payments plan Box - Lazy Loaded */}
       <div className="w-full mt-12">

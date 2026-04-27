@@ -2072,11 +2072,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       let languageToUse: 'en' | 'he';
       if (currentEmailType === 'rescheduled') {
         // Automatically determine language from client's language_id
-        const isHebrew = client.language_id === 2 ||
-          (client.language_id === undefined && client.language?.toLowerCase().includes('hebrew'));
+        const languageId = (client as any)?.language_id;
+        const isHebrew = languageId === 2 ||
+          (languageId === undefined && client.language?.toLowerCase().includes('hebrew'));
         languageToUse = isHebrew ? 'he' : 'en';
         console.log('🌐 Reschedule email - Auto language selection:', {
-          language_id: client.language_id,
+          language_id: (client as any)?.language_id,
           language: client.language,
           selectedLanguage: languageToUse
         });
@@ -2549,6 +2550,32 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     if (dl && /^https?:\/\//i.test(dl)) return dl;
     if (dl) return dl;
     return '';
+  };
+
+  const copyTextToClipboard = async (text: string) => {
+    if (!text) return false;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch {
+      // fall through
+    }
+    try {
+      const el = document.createElement('textarea');
+      el.value = text;
+      el.setAttribute('readonly', '');
+      el.style.position = 'fixed';
+      el.style.left = '-9999px';
+      document.body.appendChild(el);
+      el.select();
+      const ok = document.execCommand('copy');
+      document.body.removeChild(el);
+      return ok;
+    } catch {
+      return false;
+    }
   };
 
   // Helper function to detect link type (Teams, Zoom, or other)
@@ -3280,7 +3307,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           console.log('✅ Meeting invitation sent successfully');
         } catch (emailError) {
           console.error('❌ Error sending meeting invitation:', emailError);
-          toast.warning('Meeting scheduled, but failed to send invitation email.');
+          toast('Meeting scheduled, but failed to send invitation email.', { icon: '⚠️' });
         }
       } else {
         console.log('⚠️ Meeting created but email not sent:', {
@@ -4624,15 +4651,78 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     const title = isTeamsLink ? 'Join Teams Meeting' : 'Join Meeting';
 
                     return (
-                      <a
-                        href={linkToUse}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
-                        title={title}
-                      >
-                        {iconToShow}
-                      </a>
+                      <div className="dropdown dropdown-end">
+                        <button
+                          type="button"
+                          className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
+                          title={title}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {iconToShow}
+                        </button>
+                        <ul
+                          tabIndex={0}
+                          className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-[1000]"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <li>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const url = getMeetingJoinLink(meeting);
+                                if (!url) {
+                                  toast.error('No meeting URL available');
+                                  return;
+                                }
+                                window.open(url, '_blank');
+                              }}
+                            >
+                              Enter meeting
+                            </button>
+                          </li>
+                          <li>
+                            <button
+                              type="button"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const url = getMeetingJoinLink(meeting);
+                                if (!url) {
+                                  toast.error('No meeting URL available');
+                                  return;
+                                }
+                                const ok = await copyTextToClipboard(url);
+                                if (ok) toast.success('Meeting link copied');
+                                else toast.error('Failed to copy link');
+                              }}
+                            >
+                              Copy link
+                            </button>
+                          </li>
+                          {typeof navigator !== 'undefined' && typeof (navigator as any).share === 'function' && (
+                            <li>
+                              <button
+                                type="button"
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  const url = getMeetingJoinLink(meeting);
+                                  if (!url) {
+                                    toast.error('No meeting URL available');
+                                    return;
+                                  }
+                                  try {
+                                    await (navigator as any).share({ title: 'Meeting link', url });
+                                  } catch {
+                                    // user cancelled / unsupported
+                                  }
+                                }}
+                              >
+                                Share
+                              </button>
+                            </li>
+                          )}
+                        </ul>
+                      </div>
                     );
                   }
 
@@ -4656,18 +4746,73 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 }
                 return null;
               })()}
-              {/* Legacy meeting URL link */}
-              {meeting.link && !getValidTeamsLink(meeting.link) && (
-                <a
-                  href={meeting.link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
-                >
-                  <LinkIcon className="w-3 h-3 sm:w-4 sm:h-4 sm:hidden" />
-                  <span className="hidden sm:inline">Link</span>
-                </a>
-              )}
+              {/* Fallback for legacy stored URL strings that don't parse as Teams JSON but still look like a URL */}
+              {(() => {
+                const raw = (meeting.link || '').trim();
+                const looksLikeUrl = /^https?:\/\//i.test(raw);
+                if (!raw || !looksLikeUrl) return null;
+                if (getMeetingJoinLink(meeting)) return null; // already handled above
+                return (
+                  <div className="dropdown dropdown-end">
+                    <button
+                      type="button"
+                      className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
+                      onClick={(e) => e.stopPropagation()}
+                      title="Meeting link"
+                    >
+                      <LinkIcon className="w-3 h-3 sm:w-4 sm:h-4 sm:hidden" />
+                      <span className="hidden sm:inline">Link</span>
+                    </button>
+                    <ul
+                      tabIndex={0}
+                      className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-[1000]"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <li>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            window.open(raw, '_blank');
+                          }}
+                        >
+                          Enter meeting
+                        </button>
+                      </li>
+                      <li>
+                        <button
+                          type="button"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const ok = await copyTextToClipboard(raw);
+                            if (ok) toast.success('Meeting link copied');
+                            else toast.error('Failed to copy link');
+                          }}
+                        >
+                          Copy link
+                        </button>
+                      </li>
+                      {typeof navigator !== 'undefined' && typeof (navigator as any).share === 'function' && (
+                        <li>
+                          <button
+                            type="button"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              try {
+                                await (navigator as any).share({ title: 'Meeting link', url: raw });
+                              } catch {
+                                // user cancelled / unsupported
+                              }
+                            }}
+                          >
+                            Share
+                          </button>
+                        </li>
+                      )}
+                    </ul>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>

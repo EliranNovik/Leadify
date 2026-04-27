@@ -24,6 +24,24 @@ interface Case {
   stage: string;
   stage_colour?: string | null;
   assigned_date: string;
+  /** Linked-only sublead marker (see ClientHeader.renderLeadNumber). */
+  linked_master_lead?: string | number | null;
+  /** Legacy only: master_id (used to render masterId/suffix like Clients.tsx). */
+  legacy_master_id?: string | number | null;
+  /** Legacy only: computed suffix index for sub-leads (1-based). */
+  legacy_sublead_suffix?: number | null;
+  /** Date this lead was first assigned to the current handler (preferred from history; fallback to stage 105). */
+  handler_assigned_date?: string | null;
+  /** First-ever time ANY handler was assigned (from history). */
+  first_handler_assigned_date?: string | null;
+  /** Handler display name right before it was assigned to you (from history). */
+  previous_handler_name?: string | null;
+  /** Date when the previous handler was assigned (from history). */
+  previous_handler_assigned_date?: string | null;
+  /** Date the lead first moved to stage 105 (from leads_leadstage; date -> cdate). */
+  stage_105_date?: string | null;
+  /** Date the lead first moved to stage 110 (from leads_leadstage; date -> cdate). */
+  stage_110_date?: string | null;
   applicants_count: number | null;
   value: number | null;
   currency: string | null;
@@ -66,6 +84,7 @@ const getContrastingTextColor = (hexColor?: string | null) => {
 const MyCasesPage: React.FC = () => {
   const { user } = useAuthContext();
   const navigate = useNavigate();
+  const isDev = import.meta.env.DEV;
   const [newCases, setNewCases] = useState<Case[]>([]);
   const [activeCases, setActiveCases] = useState<Case[]>([]);
   const [nonActiveCases, setNonActiveCases] = useState<Case[]>([]);
@@ -131,6 +150,25 @@ const MyCasesPage: React.FC = () => {
       console.error('Error in safeParseDate:', error);
       return null;
     }
+  };
+
+  const formatDateDDMMYY = (date: Date): string => {
+    const dd = String(date.getDate()).padStart(2, '0');
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const yy = String(date.getFullYear()).slice(-2);
+    return `${dd}.${mm}.${yy}`;
+  };
+
+  const sortCasesByAssignedDateDesc = (cases: Case[]): Case[] => {
+    return [...cases].sort((a, b) => {
+      const da = safeParseDate(a.handler_assigned_date || a.assigned_date);
+      const db = safeParseDate(b.handler_assigned_date || b.assigned_date);
+      const ta = da ? da.getTime() : 0;
+      const tb = db ? db.getTime() : 0;
+      if (tb !== ta) return tb - ta; // newest first
+      // Tie-breaker for stable-ish ordering
+      return String(a.lead_number).localeCompare(String(b.lead_number));
+    });
   };
 
   // Helper function to get follow up date color based on date (same logic as SchedulerToolPage)
@@ -303,6 +341,7 @@ const MyCasesPage: React.FC = () => {
             case_handler_id,
             retainer_handler_id,
             active_handler_type,
+            linked_master_lead,
             language,
             country_id,
             phone,
@@ -337,6 +376,7 @@ const MyCasesPage: React.FC = () => {
           .select(`
             id,
             manual_id,
+            master_id,
             name,
             stage,
             category_id,
@@ -348,6 +388,7 @@ const MyCasesPage: React.FC = () => {
             phone,
             active_handler_type,
             retainer_handler_id,
+            linked_master_lead,
             status,
             accounting_currencies!leads_lead_currency_id_fkey (
               name,
@@ -388,9 +429,9 @@ const MyCasesPage: React.FC = () => {
           .from('misc_language')
           .select('id, name'),
 
-        // Fetch all employees to resolve names from IDs
+        // Fetch all employees to resolve names from IDs (same source as HistoryPage/RolesTab)
         supabase
-          .from('employees')
+          .from('tenants_employee')
           .select('id, display_name')
       ]);
 
@@ -436,6 +477,325 @@ const MyCasesPage: React.FC = () => {
       const newLeadIds = (newLeadsResult.data || []).map(lead => lead.id);
       const legacyLeadIds = legacyData.map((lead: any) => String(lead.id));
       const legacyLeadIdsForQueries = legacyData.map((lead: any) => lead.id);
+
+      // Fetch handler assigned date:
+      // 1) from history tables (first time handler was saved)
+      // 2) if not available: from leads_leadstage stage 105 record (date; fallback to cdate)
+      const handlerAssignedDateByNewLeadId = new Map<string, string>();
+      const handlerAssignedDateByLegacyLeadId = new Map<string, string>();
+      const firstHandlerAssignedDateByNewLeadId = new Map<string, string>();
+      const firstHandlerAssignedDateByLegacyLeadId = new Map<string, string>();
+      const previousHandlerNameByNewLeadId = new Map<string, string>();
+      const previousHandlerAssignedDateByNewLeadId = new Map<string, string>();
+      const previousHandlerNameByLegacyLeadId = new Map<string, string>();
+      const previousHandlerAssignedDateByLegacyLeadId = new Map<string, string>();
+      const stage105DateByNewLeadId = new Map<string, string>();
+      const stage105DateByLegacyLeadId = new Map<string, string>();
+      const stage110DateByNewLeadId = new Map<string, string>();
+      const stage110DateByLegacyLeadId = new Map<string, string>();
+      try {
+        const normalizedUserFullName = String(userFullName || '').trim().toLowerCase();
+        const employeeIdStr = String(employeeId);
+
+        const employeesById = new Map<string, string>();
+        (allEmployeesResult.data || []).forEach((e: any) => {
+          const label = (e?.display_name || '').trim();
+          if (!label) return;
+          if (e?.id != null) employeesById.set(String(e.id), label);
+        });
+        const resolveHandlerDisplayName = (maybeIdOrName: any): string | null => {
+          if (maybeIdOrName == null) return null;
+          const s = String(maybeIdOrName).trim();
+          if (!s || s === '---' || s === '--' || s.toLowerCase() === 'null' || s.toLowerCase() === 'undefined') return null;
+          // If numeric id, map to employee display name when possible.
+          const n = Number(s);
+          if (!Number.isNaN(n) && Number.isFinite(n) && n > 0) {
+            return employeesById.get(String(n)) || null;
+          }
+          // Otherwise assume it's already a name.
+          return s;
+        };
+
+        const isUnassignedLike = (nameOrId: any): boolean => {
+          if (nameOrId == null) return true;
+          const s = String(nameOrId).trim().toLowerCase();
+          if (!s) return true;
+          if (s === '---' || s === '--') return true;
+          if (s === '(empty)' || s === 'empty') return true;
+          if (s === 'unassigned' || s === 'not assigned') return true;
+          if (s === 'null' || s === 'undefined') return true;
+          if (s === '0') return true;
+          return false;
+        };
+
+        // New leads history (history_leads)
+        if (newLeadIds.length > 0) {
+          const chunkSize = 100;
+          for (let i = 0; i < newLeadIds.length; i += chunkSize) {
+            const chunk = newLeadIds.slice(i, i + chunkSize);
+            const { data: hist, error: hErr } = await supabase
+              .from('history_leads')
+              .select('original_id, changed_at, handler, case_handler_id')
+              .in('original_id', chunk)
+              .order('changed_at', { ascending: true });
+            if (hErr) throw hErr;
+            // Track last seen handler before assignment to me
+            const lastHandlerNameByLead = new Map<string, string>();
+            const lastHandlerChangedAtByLead = new Map<string, string>();
+            (hist || []).forEach((row: any) => {
+              const oid = String(row.original_id);
+              // Track first-ever handler assignment (any handler)
+              if (!firstHandlerAssignedDateByNewLeadId.has(oid)) {
+                const caseHandlerIdAny = row.case_handler_id != null ? String(row.case_handler_id) : '';
+                const handlerNameAny = row.handler != null ? String(row.handler).trim().toLowerCase() : '';
+                const hasAnyHandler =
+                  (caseHandlerIdAny !== '' && caseHandlerIdAny !== '0') ||
+                  (handlerNameAny !== '' && handlerNameAny !== '---' && handlerNameAny !== '--');
+                if (hasAnyHandler) {
+                  const dAny = safeParseDate(row.changed_at);
+                  if (dAny) firstHandlerAssignedDateByNewLeadId.set(oid, dAny.toISOString().split('T')[0]);
+                }
+              }
+
+              const caseHandlerId = row.case_handler_id != null ? String(row.case_handler_id) : '';
+              const handlerName = row.handler != null ? String(row.handler).trim().toLowerCase() : '';
+              const isAssignedToMe =
+                (caseHandlerId !== '' && caseHandlerId === employeeIdStr) ||
+                (!!normalizedUserFullName && handlerName === normalizedUserFullName) ||
+                (handlerName !== '' && handlerName === employeeIdStr);
+              if (isAssignedToMe) {
+                const d = safeParseDate(row.changed_at);
+                if (!d) return;
+
+                // Capture previous handler (the handler right BEFORE your assignment).
+                const prevNameRaw = lastHandlerNameByLead.get(oid) || null;
+                const prevName = !prevNameRaw || isUnassignedLike(prevNameRaw) ? null : prevNameRaw;
+                const prevDate = lastHandlerChangedAtByLead.get(oid) || null;
+                if (prevName) previousHandlerNameByNewLeadId.set(oid, prevName);
+                else previousHandlerNameByNewLeadId.delete(oid);
+                if (prevDate) previousHandlerAssignedDateByNewLeadId.set(oid, prevDate);
+                else previousHandlerAssignedDateByNewLeadId.delete(oid);
+
+                // IMPORTANT: keep the most recent assignment to you (history is ascending).
+                handlerAssignedDateByNewLeadId.set(oid, d.toISOString().split('T')[0]);
+              }
+
+              // Update "last handler" trackers AFTER evaluating assignment-to-me,
+              // so "previous handler" is truly the handler before the current row.
+              // Also: NEVER let "previous handler" become the logged-in user.
+              if (isAssignedToMe) return;
+              const anyHandlerDisplay =
+                resolveHandlerDisplayName(row.case_handler_id) ||
+                resolveHandlerDisplayName(row.handler);
+              if (anyHandlerDisplay && !isUnassignedLike(anyHandlerDisplay)) {
+                const dAny = safeParseDate(row.changed_at);
+                if (dAny) {
+                  lastHandlerNameByLead.set(oid, anyHandlerDisplay);
+                  lastHandlerChangedAtByLead.set(oid, dAny.toISOString().split('T')[0]);
+                }
+              }
+            });
+          }
+        }
+
+        // Legacy leads history (history_leads_lead)
+        if (legacyLeadIdsForQueries.length > 0) {
+          const chunkSize = 100;
+          for (let i = 0; i < legacyLeadIdsForQueries.length; i += chunkSize) {
+            const chunk = legacyLeadIdsForQueries.slice(i, i + chunkSize);
+            const { data: hist, error: hErr } = await supabase
+              .from('history_leads_lead')
+              // Note: history_leads_lead does NOT have handler_id in this DB (see runtime error 42703).
+              // We rely on case_handler_id for legacy handler assignment.
+              .select('original_id, changed_at, case_handler_id')
+              .in('original_id', chunk)
+              .order('changed_at', { ascending: true });
+            if (hErr) throw hErr;
+            const lastHandlerNameByLead = new Map<string, string>();
+            const lastHandlerChangedAtByLead = new Map<string, string>();
+            (hist || []).forEach((row: any) => {
+              const oid = String(row.original_id);
+              // Track first-ever handler assignment (any handler)
+              if (!firstHandlerAssignedDateByLegacyLeadId.has(oid)) {
+                const caseHandlerIdAny = row.case_handler_id != null ? Number(row.case_handler_id) : null;
+                if (caseHandlerIdAny != null) {
+                  const dAny = safeParseDate(row.changed_at);
+                  if (dAny) firstHandlerAssignedDateByLegacyLeadId.set(oid, dAny.toISOString().split('T')[0]);
+                }
+              }
+
+              const caseHandlerId = row.case_handler_id != null ? Number(row.case_handler_id) : null;
+              const isAssignedToMe =
+                (caseHandlerId != null && caseHandlerId === employeeId);
+              if (isAssignedToMe) {
+                const d = safeParseDate(row.changed_at);
+                if (!d) return;
+
+                const prevNameRaw = lastHandlerNameByLead.get(oid) || null;
+                const prevName = !prevNameRaw || isUnassignedLike(prevNameRaw) ? null : prevNameRaw;
+                const prevDate = lastHandlerChangedAtByLead.get(oid) || null;
+                if (prevName) previousHandlerNameByLegacyLeadId.set(oid, prevName);
+                else previousHandlerNameByLegacyLeadId.delete(oid);
+                if (prevDate) previousHandlerAssignedDateByLegacyLeadId.set(oid, prevDate);
+                else previousHandlerAssignedDateByLegacyLeadId.delete(oid);
+
+                // IMPORTANT: keep the most recent assignment to you (history is ascending).
+                handlerAssignedDateByLegacyLeadId.set(oid, d.toISOString().split('T')[0]);
+              }
+
+              if (isAssignedToMe) return;
+              const anyHandlerDisplay = resolveHandlerDisplayName(row.case_handler_id);
+              if (anyHandlerDisplay && !isUnassignedLike(anyHandlerDisplay)) {
+                const dAny = safeParseDate(row.changed_at);
+                if (dAny) {
+                  lastHandlerNameByLead.set(oid, anyHandlerDisplay);
+                  lastHandlerChangedAtByLead.set(oid, dAny.toISOString().split('T')[0]);
+                }
+              }
+            });
+          }
+        }
+
+        // Stage 105 date for new leads: leads_leadstage stage 105 via newlead_id (UUID)
+        if (newLeadIds.length > 0) {
+          const chunkSize = 200;
+          for (let i = 0; i < newLeadIds.length; i += chunkSize) {
+            const chunk = newLeadIds.slice(i, i + chunkSize);
+            const { data: stages, error: sErr } = await supabase
+              .from('leads_leadstage')
+              .select('newlead_id, date, cdate')
+              .eq('stage', 105)
+              .in('newlead_id', chunk)
+              .order('date', { ascending: true, nullsFirst: false })
+              .order('cdate', { ascending: true, nullsFirst: false });
+            if (sErr) throw sErr;
+            (stages || []).forEach((row: any) => {
+              if (!row?.newlead_id) return;
+              const lid = String(row.newlead_id);
+              const d = safeParseDate(row.date) || safeParseDate(row.cdate);
+              if (!d) return;
+              const nextVal = d.toISOString().split('T')[0];
+              const prevVal = stage105DateByNewLeadId.get(lid);
+              if (!prevVal) {
+                stage105DateByNewLeadId.set(lid, nextVal);
+                return;
+              }
+              const prevD = safeParseDate(prevVal);
+              if (!prevD || d.getTime() < prevD.getTime()) {
+                stage105DateByNewLeadId.set(lid, nextVal);
+              }
+            });
+          }
+        }
+
+        // Stage 110 date for new leads: leads_leadstage stage 110 via newlead_id (UUID)
+        // We want the MOST RECENT stage 110 (handler started), not the earliest.
+        if (newLeadIds.length > 0) {
+          const chunkSize = 200;
+          for (let i = 0; i < newLeadIds.length; i += chunkSize) {
+            const chunk = newLeadIds.slice(i, i + chunkSize);
+            const { data: stages, error: sErr } = await supabase
+              .from('leads_leadstage')
+              .select('newlead_id, date, cdate')
+              .eq('stage', 110)
+              .in('newlead_id', chunk)
+              .order('date', { ascending: true, nullsFirst: false })
+              .order('cdate', { ascending: true, nullsFirst: false });
+            if (sErr) throw sErr;
+            (stages || []).forEach((row: any) => {
+              if (!row?.newlead_id) return;
+              const lid = String(row.newlead_id);
+              const d = safeParseDate(row.date) || safeParseDate(row.cdate);
+              if (!d) return;
+              const nextVal = d.toISOString().split('T')[0];
+              const prevVal = stage110DateByNewLeadId.get(lid);
+              if (!prevVal) {
+                stage110DateByNewLeadId.set(lid, nextVal);
+                return;
+              }
+              const prevD = safeParseDate(prevVal);
+              if (!prevD || d.getTime() > prevD.getTime()) {
+                stage110DateByNewLeadId.set(lid, nextVal);
+              }
+            });
+          }
+        }
+
+        // Stage 105 date for legacy leads: leads_leadstage stage 105 via lead_id
+        if (legacyLeadIdsForQueries.length > 0) {
+          const chunkSize = 200;
+          for (let i = 0; i < legacyLeadIdsForQueries.length; i += chunkSize) {
+            const chunk = legacyLeadIdsForQueries.slice(i, i + chunkSize);
+            const { data: stages, error: sErr } = await supabase
+              .from('leads_leadstage')
+              .select('lead_id, date, cdate')
+              .eq('stage', 105)
+              .in('lead_id', chunk)
+              .order('date', { ascending: true, nullsFirst: false })
+              .order('cdate', { ascending: true, nullsFirst: false });
+            if (sErr) throw sErr;
+            (stages || []).forEach((row: any) => {
+              if (!row?.lead_id) return;
+              const lid = String(row.lead_id);
+              const d = safeParseDate(row.date) || safeParseDate(row.cdate);
+              if (!d) return;
+              const nextVal = d.toISOString().split('T')[0];
+              const prevVal = stage105DateByLegacyLeadId.get(lid);
+              if (!prevVal) {
+                stage105DateByLegacyLeadId.set(lid, nextVal);
+                return;
+              }
+              const prevD = safeParseDate(prevVal);
+              if (!prevD || d.getTime() < prevD.getTime()) {
+                stage105DateByLegacyLeadId.set(lid, nextVal);
+              }
+            });
+          }
+        }
+
+        // Stage 110 date for legacy leads: leads_leadstage stage 110 via lead_id
+        // We want the MOST RECENT stage 110 (handler started), not the earliest.
+        if (legacyLeadIdsForQueries.length > 0) {
+          const chunkSize = 200;
+          for (let i = 0; i < legacyLeadIdsForQueries.length; i += chunkSize) {
+            const chunk = legacyLeadIdsForQueries.slice(i, i + chunkSize);
+            const { data: stages, error: sErr } = await supabase
+              .from('leads_leadstage')
+              .select('lead_id, date, cdate')
+              .eq('stage', 110)
+              .in('lead_id', chunk)
+              .order('date', { ascending: true, nullsFirst: false })
+              .order('cdate', { ascending: true, nullsFirst: false });
+            if (sErr) throw sErr;
+            (stages || []).forEach((row: any) => {
+              if (!row?.lead_id) return;
+              const lid = String(row.lead_id);
+              const d = safeParseDate(row.date) || safeParseDate(row.cdate);
+              if (!d) return;
+              const nextVal = d.toISOString().split('T')[0];
+              const prevVal = stage110DateByLegacyLeadId.get(lid);
+              if (!prevVal) {
+                stage110DateByLegacyLeadId.set(lid, nextVal);
+                return;
+              }
+              const prevD = safeParseDate(prevVal);
+              if (!prevD || d.getTime() > prevD.getTime()) {
+                stage110DateByLegacyLeadId.set(lid, nextVal);
+              }
+            });
+          }
+        }
+
+        // If handler assignment date is missing from history, fall back to stage 105 date.
+        stage105DateByNewLeadId.forEach((d, id) => {
+          if (!handlerAssignedDateByNewLeadId.has(id)) handlerAssignedDateByNewLeadId.set(id, d);
+        });
+        stage105DateByLegacyLeadId.forEach((d, id) => {
+          if (!handlerAssignedDateByLegacyLeadId.has(id)) handlerAssignedDateByLegacyLeadId.set(id, d);
+        });
+      } catch (e) {
+        console.warn('Failed to fetch handler assigned date; falling back to created dates.', e);
+      }
 
       // Fetch all dependent data in parallel
       const [
@@ -792,12 +1152,20 @@ const MyCasesPage: React.FC = () => {
 
         return {
           id: lead.id,
+          // Keep the same behavior as ClientHeader: prefer lead_number, else fall back to id (even if UUID).
           lead_number: lead.lead_number || String(lead.id),
           client_name: lead.name || 'Unknown',
           category,
           stage,
           stage_colour: stageColour,
           assigned_date: lead.created_at,
+          linked_master_lead: (lead as any).linked_master_lead ?? null,
+          handler_assigned_date: handlerAssignedDateByNewLeadId.get(String(lead.id)) || null,
+          first_handler_assigned_date: firstHandlerAssignedDateByNewLeadId.get(String(lead.id)) || null,
+          previous_handler_name: previousHandlerNameByNewLeadId.get(String(lead.id)) || null,
+          previous_handler_assigned_date: previousHandlerAssignedDateByNewLeadId.get(String(lead.id)) || null,
+          stage_105_date: stage105DateByNewLeadId.get(String(lead.id)) || null,
+          stage_110_date: stage110DateByNewLeadId.get(String(lead.id)) || null,
           applicants_count: null,
           value,
           currency,
@@ -819,8 +1187,27 @@ const MyCasesPage: React.FC = () => {
       });
 
       // Process legacy leads
-      const processedLegacyLeads: Case[] = (legacyLeadsResult.data || []).map(lead => {
-        const leadNumber = lead.manual_id || lead.id;
+      const legacyRows: any[] = legacyLeadsResult.data || [];
+
+      // Build suffix mapping for legacy sub-leads (same idea as Clients.tsx formatLegacyLeadNumber)
+      const subLeadSuffixByLegacyId = new Map<string, number>();
+      const legacySubLeadsByMaster = new Map<string, any[]>();
+      legacyRows.forEach((row: any) => {
+        const masterId = row?.master_id != null ? String(row.master_id).trim() : '';
+        if (!masterId) return;
+        const arr = legacySubLeadsByMaster.get(masterId) || [];
+        arr.push(row);
+        legacySubLeadsByMaster.set(masterId, arr);
+      });
+      legacySubLeadsByMaster.forEach((rows, masterId) => {
+        // Stable ordering: by id asc
+        const sorted = [...rows].sort((a, b) => Number(a.id) - Number(b.id));
+        sorted.forEach((row, idx) => {
+          subLeadSuffixByLegacyId.set(String(row.id), idx + 1);
+        });
+      });
+
+      const processedLegacyLeads: Case[] = legacyRows.map(lead => {
         const category = getCategoryName(lead.category_id);
         const stage = stageMap.get(String(lead.stage)) || String(lead.stage) || 'Unknown';
         const stageColour = stageColourMap.get(String(lead.stage)) || getStageColour(String(lead.stage)) || null;
@@ -842,12 +1229,22 @@ const MyCasesPage: React.FC = () => {
 
         return {
           id: String(lead.id),
-          lead_number: String(leadNumber),
+          // Legacy display number is derived (see formatLeadNumberForList)
+          lead_number: String(lead.id),
+          legacy_master_id: (lead as any).master_id ?? null,
+          legacy_sublead_suffix: subLeadSuffixByLegacyId.get(String(lead.id)) ?? null,
           client_name: lead.name || 'Unknown',
           category,
           stage,
           stage_colour: stageColour,
           assigned_date: lead.cdate,
+          linked_master_lead: (lead as any).linked_master_lead ?? null,
+          handler_assigned_date: handlerAssignedDateByLegacyLeadId.get(String(lead.id)) || null,
+          first_handler_assigned_date: firstHandlerAssignedDateByLegacyLeadId.get(String(lead.id)) || null,
+          previous_handler_name: previousHandlerNameByLegacyLeadId.get(String(lead.id)) || null,
+          previous_handler_assigned_date: previousHandlerAssignedDateByLegacyLeadId.get(String(lead.id)) || null,
+          stage_105_date: stage105DateByLegacyLeadId.get(String(lead.id)) || null,
+          stage_110_date: stage110DateByLegacyLeadId.get(String(lead.id)) || null,
           applicants_count: lead.no_of_applicants,
           value,
           currency,
@@ -934,6 +1331,78 @@ const MyCasesPage: React.FC = () => {
     } else {
       navigate(`/clients/${encodeURIComponent(legacyId)}`);
     }
+  };
+
+  // Format lead number in table consistent with ClientHeader.renderLeadNumber (subset).
+  const formatLeadNumberForList = (caseItem: Case): string => {
+    // Copy of ClientHeader.renderLeadNumber logic (adapted to Case shape; excludes master "/1" logic).
+    const hasLinkedMasterLead =
+      (caseItem as any).linked_master_lead != null &&
+      (typeof (caseItem as any).linked_master_lead === 'number' ||
+        (typeof (caseItem as any).linked_master_lead === 'string' && String((caseItem as any).linked_master_lead).trim() !== ''));
+
+    if (hasLinkedMasterLead) {
+      let raw = (caseItem as any).lead_number || (caseItem as any).manual_id || caseItem.id || '---';
+      let rawStr = String(raw || '---');
+      if (rawStr.startsWith('legacy_')) rawStr = rawStr.replace(/^legacy_/, '');
+      if (rawStr.includes('/')) {
+        // IMPORTANT: for NEW leads, caseItem.id is a UUID — never show it as the lead number.
+        // For linked-only subleads we want the base lead number (no suffix).
+        const idStr = String(caseItem.id ?? '').replace(/^legacy_/, '');
+        const idLooksLikeUuid = idStr.includes('-') && idStr.length >= 24;
+        if (!caseItem.isNewLead && idStr && idStr !== '---' && !idLooksLikeUuid) rawStr = idStr;
+        else rawStr = rawStr.split('/')[0];
+      }
+      const isSuccessStage = String(caseItem.stage) === '100' || Number(caseItem.stage) === 100;
+      if (isSuccessStage && rawStr && !rawStr.startsWith('C')) {
+        return rawStr.replace(/^L/, 'C');
+      }
+      return rawStr;
+    }
+
+    // Legacy leads: match ClientHeader legacy display (manual_id when present, including /suffix).
+    if (!caseItem.isNewLead) {
+      const idStr = String(caseItem.id || '').replace(/^legacy_/, '');
+      const masterId = caseItem.legacy_master_id != null ? String(caseItem.legacy_master_id).trim() : '';
+      const hasLinkedMasterLead =
+        (caseItem as any).linked_master_lead != null &&
+        String((caseItem as any).linked_master_lead).trim() !== '' &&
+        (!masterId || masterId === '');
+
+      // Linked-only: show actual id only (Clients.tsx does this)
+      if (hasLinkedMasterLead) {
+        return idStr || '---';
+      }
+
+      // Master: show id
+      if (!masterId) {
+        return idStr || '---';
+      }
+
+      // Sub-lead: show masterId/suffix
+      const suffix = caseItem.legacy_sublead_suffix != null ? String(caseItem.legacy_sublead_suffix) : '?';
+      const display = `${masterId}/${suffix}`;
+
+      const isSuccessStage = String(caseItem.stage) === '100' || Number(caseItem.stage) === 100;
+      if (isSuccessStage && display && !display.startsWith('C')) {
+        return display.replace(/^L/, 'C');
+      }
+      return display;
+    }
+
+    let displayNumber: any = (caseItem as any).lead_number || (caseItem as any).manual_id || caseItem.id || '---';
+    const displayStr = String(displayNumber || '---');
+    const hasExistingSuffix = displayStr.includes('/');
+    let baseNumber = hasExistingSuffix ? displayStr.split('/')[0] : displayStr;
+    const existingSuffix = hasExistingSuffix ? displayStr.split('/').slice(1).join('/') : null;
+
+    const isSuccessStage = String(caseItem.stage) === '100' || Number(caseItem.stage) === 100;
+    if (isSuccessStage && baseNumber && !String(baseNumber).startsWith('C')) {
+      baseNumber = String(baseNumber).replace(/^L/, 'C');
+    }
+
+    if (hasExistingSuffix) return `${baseNumber}/${existingSuffix}`;
+    return String(baseNumber);
   };
 
   const handleRowSelect = (caseId: string, event?: React.MouseEvent) => {
@@ -1544,6 +2013,11 @@ const MyCasesPage: React.FC = () => {
   const filteredNonActiveCases = filterCases(nonActiveCases);
   const filteredClosedCases = filterCases(closedCases);
 
+  const sortedFilteredNewCases = useMemo(() => sortCasesByAssignedDateDesc(filteredNewCases), [filteredNewCases]);
+  const sortedFilteredActiveCases = useMemo(() => sortCasesByAssignedDateDesc(filteredActiveCases), [filteredActiveCases]);
+  const sortedFilteredNonActiveCases = useMemo(() => sortCasesByAssignedDateDesc(filteredNonActiveCases), [filteredNonActiveCases]);
+  const sortedFilteredClosedCases = useMemo(() => sortCasesByAssignedDateDesc(filteredClosedCases), [filteredClosedCases]);
+
   const eligibleReadyToPayCount = useMemo(() => {
     const eligibleNew = filteredNewCases.filter(
       caseItem => !caseItem.isFirstPaymentPaid && caseItem.hasUnpaidPayment && !caseItem.hasReadyToPay && caseItem.hasPaymentPlan
@@ -1610,7 +2084,14 @@ const MyCasesPage: React.FC = () => {
     setSelectedCategory('');
   };
 
-  const renderTable = (cases: Case[], title: string, emptyMessage: string, isNewCases: boolean = false, isActiveCases: boolean = false) => (
+  const renderTable = (
+    cases: Case[],
+    title: string,
+    emptyMessage: string,
+    isNewCases: boolean = false,
+    isActiveCases: boolean = false,
+    isNonActiveCases: boolean = false
+  ) => (
     <div className="bg-white rounded-lg shadow-sm border">
       <div className="px-3 sm:px-6 py-2 sm:py-4 border-b">
         <h2 className="text-base sm:text-lg font-semibold text-gray-900">{title}</h2>
@@ -1627,6 +2108,9 @@ const MyCasesPage: React.FC = () => {
               <tr className="bg-white">
                 <th className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[100px]">
                   Case
+                </th>
+                <th className="hidden md:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[130px]">
+                  Assigned date
                 </th>
                 <th className="hidden lg:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[120px]">
                   Follow-up
@@ -1695,11 +2179,124 @@ const MyCasesPage: React.FC = () => {
                           e.stopPropagation();
                           handleCaseClick(caseItem);
                         }}
-                        title="Open client"
+                        title={
+                          isDev
+                            ? `Open client · raw: lead_number=${String(caseItem.lead_number)} legacy_master_id=${String((caseItem as any).legacy_master_id ?? '')} legacy_sublead_suffix=${String((caseItem as any).legacy_sublead_suffix ?? '')} id=${String(caseItem.id)} isNewLead=${String(!!caseItem.isNewLead)} linked_master_lead=${String((caseItem as any).linked_master_lead ?? '')}`
+                            : 'Open client'
+                        }
                       >
-                        {caseItem.lead_number}
+                        {formatLeadNumberForList(caseItem)}
                       </button>
                     </div>
+                  </td>
+                  <td className="hidden md:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm min-w-[130px] whitespace-nowrap">
+                    {(() => {
+                      // Always show a date if we can:
+                      // handler assigned (history → fallback stage 105) → stage 105 → created date (assigned_date).
+                      const displayDateStr =
+                        caseItem.handler_assigned_date ||
+                        caseItem.stage_105_date ||
+                        caseItem.assigned_date ||
+                        null;
+                      if (!displayDateStr) return <span className="text-gray-400">—</span>;
+
+                      const d = safeParseDate(displayDateStr);
+                      if (!d) return <span>{displayDateStr}</span>;
+
+                        const today = new Date();
+                        today.setHours(0, 0, 0, 0);
+
+                        const assignedDate = d;
+                        const assignedMs = assignedDate.getTime();
+                        const daysSinceAssigned = Math.floor((today.getTime() - assignedMs) / (1000 * 60 * 60 * 24));
+
+                        // Badge rules:
+                        // - New Cases: NEW if assigned date within last 7 days.
+                        // - Active/Non-Active: NEW if stage 110 date within last 7 days; show assigned date in green.
+                        let isNewBadge = false;
+                        if (isNewCases) {
+                          // New Cases: based on handler assignment date (history → fallback stage 105)
+                          const newCasesBase = safeParseDate(caseItem.handler_assigned_date || caseItem.stage_105_date || caseItem.assigned_date);
+                          if (newCasesBase) {
+                            const base = new Date(newCasesBase);
+                            base.setHours(0, 0, 0, 0);
+                            const daysSinceBase = Math.floor((today.getTime() - base.getTime()) / (1000 * 60 * 60 * 24));
+                            isNewBadge = daysSinceBase >= 0 && daysSinceBase <= 7;
+                          }
+                        } else if (isActiveCases || isNonActiveCases) {
+                          // Active/Non-Active: based on stage 110 date ("Handler Started"), not the handler assignment date.
+                          const s110 = safeParseDate(caseItem.stage_110_date || undefined);
+                          if (s110) {
+                            const s110Date = new Date(s110);
+                            s110Date.setHours(0, 0, 0, 0);
+                            const daysSince110 = Math.floor((today.getTime() - s110Date.getTime()) / (1000 * 60 * 60 * 24));
+                            isNewBadge = daysSince110 >= 0 && daysSince110 <= 7;
+                          }
+                        }
+
+                        const dateText = formatDateDDMMYY(assignedDate);
+
+                        // Re-assigned logic: if there was a previous handler before it was assigned to you,
+                        // and your handler-saved date is within 7 days.
+                        const prevHandlerName = (caseItem.previous_handler_name || '').trim();
+                        const prevHandlerAssigned = safeParseDate(caseItem.previous_handler_assigned_date || undefined);
+                        const firstHandler = safeParseDate(caseItem.first_handler_assigned_date || undefined);
+                        const myHandler = safeParseDate(caseItem.handler_assigned_date || undefined);
+                        // Only show re-assigned when we know the previous handler name (avoid "another handler").
+                        const isReassigned = !!myHandler && !!prevHandlerName;
+                        const isReassignedRecent = (() => {
+                          if (!isReassigned || !myHandler) return false;
+                          const base = new Date(myHandler);
+                          base.setHours(0, 0, 0, 0);
+                          const daysSince = Math.floor((today.getTime() - base.getTime()) / (1000 * 60 * 60 * 24));
+                          return daysSince >= 0 && daysSince <= 7;
+                        })();
+
+                        const handlerStartedDateForTip = safeParseDate(caseItem.stage_110_date || undefined);
+                        const showHandlerStartedTooltip = (isActiveCases || isNonActiveCases) && !!handlerStartedDateForTip;
+                        const handlerStartedTipText = handlerStartedDateForTip
+                          ? `Handler Started: ${formatDateDDMMYY(handlerStartedDateForTip)}`
+                          : '';
+
+                        const reassignedTipText = isReassignedRecent
+                          ? `Re-assigned from ${prevHandlerName} to you`
+                          : '';
+
+                        const showOverlay = isNewBadge || isReassignedRecent;
+
+                        return (
+                          <div
+                            className={`relative inline-flex items-center justify-start ${
+                              (isReassignedRecent ? true : showHandlerStartedTooltip) ? 'tooltip tooltip-top' : ''
+                            }`}
+                            {...(isReassignedRecent
+                              ? { 'data-tip': reassignedTipText }
+                              : showHandlerStartedTooltip
+                                ? { 'data-tip': handlerStartedTipText }
+                                : {})}
+                          >
+                            <span
+                              className={`badge badge-outline font-semibold pr-3 ${
+                                showOverlay ? (isReassignedRecent ? 'badge-warning' : 'badge-success') : 'badge-ghost'
+                              }`}
+                            >
+                              {dateText}
+                            </span>
+                            {showOverlay ? (
+                              <span
+                                className={`absolute -top-2 -right-2 px-2 py-0.5 rounded-full text-[9px] font-bold tracking-wide uppercase text-white shadow-md border border-white/40 ${
+                                  isReassignedRecent
+                                    ? 'bg-gradient-to-r from-amber-500 to-orange-500'
+                                    : 'bg-gradient-to-r from-emerald-500 to-teal-500'
+                                }`}
+                                style={{ lineHeight: 1 }}
+                              >
+                                {isReassignedRecent ? 'Re-assigned' : 'New'}
+                              </span>
+                            ) : null}
+                          </div>
+                        );
+                    })()}
                   </td>
                   <td className="hidden lg:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm min-w-[120px]">
                     {caseItem.next_followup ? (
@@ -1974,7 +2571,7 @@ const MyCasesPage: React.FC = () => {
         <div className="space-y-3 sm:space-y-8">
           {/* New Cases Table */}
           {renderTable(
-            filteredNewCases,
+            sortedFilteredNewCases,
             `New Cases (${filteredNewCases.length}${hasActiveFilters ? ` of ${newCases.length}` : ''})`,
             hasActiveFilters ? "No matching new cases found." : "No new cases assigned in the last week.",
             true // isNewCases = true
@@ -1982,29 +2579,32 @@ const MyCasesPage: React.FC = () => {
 
           {/* Active Cases Table */}
           {renderTable(
-            filteredActiveCases,
+            sortedFilteredActiveCases,
             `Active Cases (${filteredActiveCases.length}${hasActiveFilters ? ` of ${activeCases.length}` : ''})`,
             hasActiveFilters ? "No matching active cases found." : "No active cases found.",
             false, // isNewCases = false
-            true // isActiveCases = true
+            true, // isActiveCases = true
+            false // isNonActiveCases = false
           )}
 
           {/* Non-Active Cases Table */}
           {renderTable(
-            filteredNonActiveCases,
+            sortedFilteredNonActiveCases,
             `Non-Active Cases (${filteredNonActiveCases.length}${hasActiveFilters ? ` of ${nonActiveCases.length}` : ''})`,
             hasActiveFilters ? "No matching non-active cases found." : "No non-active cases found.",
             false, // isNewCases = false
-            false // isActiveCases = false
+            false, // isActiveCases = false
+            true // isNonActiveCases = true
           )}
 
           {/* Closed Cases Table */}
           {renderTable(
-            filteredClosedCases,
+            sortedFilteredClosedCases,
             `Closed Cases (${filteredClosedCases.length}${hasActiveFilters ? ` of ${closedCases.length}` : ''})`,
             hasActiveFilters ? "No matching closed cases found." : "No closed cases found.",
             false, // isNewCases = false
-            false // isActiveCases = false
+            false, // isActiveCases = false
+            false // isNonActiveCases = false
           )}
         </div>
       </div>
