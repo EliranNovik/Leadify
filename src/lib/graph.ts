@@ -272,6 +272,98 @@ export async function createStaffTeamsMeeting(
   return result;
 }
 
+/**
+ * Create a regular (non-Teams) event in the shared staff calendar.
+ * We intentionally omit attendees to prevent automatic email invitations.
+ */
+export async function createStaffCalendarEvent(
+  accessToken: string,
+  eventDetails: {
+    subject: string;
+    startDateTime: string;
+    endDateTime: string;
+    locationName?: string | null;
+    description?: string | null;
+    attendeesEmails?: string[];
+    isRecurring?: boolean;
+    recurrencePattern?: 'daily' | 'weekly' | 'monthly';
+    recurrenceInterval?: number;
+    recurrenceEndDate?: string | null;
+  }
+) {
+  const staffCalendarEmail = 'shared-staffcalendar@lawoffice.org.il';
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(staffCalendarEmail)}/calendar/events`;
+
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const descLines: string[] = [];
+  if (eventDetails.description) descLines.push(String(eventDetails.description));
+  if (eventDetails.attendeesEmails && eventDetails.attendeesEmails.length > 0) {
+    descLines.push('');
+    descLines.push(`Participants (no invites): ${eventDetails.attendeesEmails.join(', ')}`);
+  }
+
+  const body: any = {
+    subject: eventDetails.subject,
+    start: { dateTime: eventDetails.startDateTime, timeZone: tz },
+    end: { dateTime: eventDetails.endDateTime, timeZone: tz },
+    body: {
+      contentType: 'text',
+      content: descLines.filter(Boolean).join('\n').trim() || ''
+    },
+    location: eventDetails.locationName ? { displayName: eventDetails.locationName } : undefined,
+    isOnlineMeeting: false
+  };
+
+  if (eventDetails.isRecurring) {
+    const startDate = new Date(eventDetails.startDateTime);
+    const dayOfWeek = startDate.getDay();
+    const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const dayOfWeekName = dayNames[dayOfWeek];
+
+    const recurrence: any = {
+      pattern: {
+        type: eventDetails.recurrencePattern || 'weekly',
+        interval: eventDetails.recurrenceInterval || 1
+      },
+      range: {
+        type: eventDetails.recurrenceEndDate ? 'endDate' : 'noEnd',
+        startDate: eventDetails.startDateTime.split('T')[0],
+        ...(eventDetails.recurrenceEndDate && {
+          endDate: eventDetails.recurrenceEndDate.split('T')[0]
+        })
+      }
+    };
+
+    if (eventDetails.recurrencePattern === 'weekly') {
+      recurrence.pattern.daysOfWeek = [dayOfWeekName];
+    }
+    if (eventDetails.recurrencePattern === 'monthly') {
+      recurrence.pattern.dayOfMonth = startDate.getDate();
+    }
+
+    body.recurrence = recurrence;
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(
+      error?.error?.message || `Failed to create staff calendar event: ${response.status} ${response.statusText}`
+    );
+  }
+
+  const data = await response.json();
+  return { id: data.id as string, webLink: data.webLink as string | undefined };
+}
+
 // Teams Calling Functions
 export async function initiateTeamsCall(accessToken: string, targetUserId: string, callType: 'audio' | 'video' = 'audio') {
   const url = 'https://graph.microsoft.com/v1.0/communications/calls';

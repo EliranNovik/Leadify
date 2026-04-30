@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate, useNavigationType, useLocation } from 'react-router-dom';
 import { useCachedFetch } from '../hooks/useCachedFetch';
 import { usePersistedState } from '../hooks/usePersistedState';
-import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, MapPinIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon, PlusIcon, MagnifyingGlassIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, MapPinIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, UserPlusIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon, PlusIcon, MagnifyingGlassIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
 import DocumentModal from './DocumentModal';
 import { FaFileExcel, FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
@@ -636,6 +636,278 @@ const CalendarPage: React.FC = () => {
   // Staff meeting edit modal state
   const [isStaffMeetingEditModalOpen, setIsStaffMeetingEditModalOpen] = useState(false);
   const [selectedStaffMeeting, setSelectedStaffMeeting] = useState<any>(null);
+  const [isStaffParticipantsModalOpen, setIsStaffParticipantsModalOpen] = useState(false);
+  const [selectedStaffMeetingForParticipants, setSelectedStaffMeetingForParticipants] = useState<any>(null);
+  const [staffParticipantsLoading, setStaffParticipantsLoading] = useState(false);
+  const [staffParticipants, setStaffParticipants] = useState<any[]>([]);
+  const [staffParticipantSegment, setStaffParticipantSegment] = useState<'all' | 'staff' | 'firm' | 'extern'>('all');
+  const [staffParticipantSearch, setStaffParticipantSearch] = useState('');
+  const [participantRowActionMenuId, setParticipantRowActionMenuId] = useState<string | null>(null);
+  const [removingParticipantId, setRemovingParticipantId] = useState<string | null>(null);
+
+  const openStaffParticipantsModal = async (m: any) => {
+    try {
+      setSelectedStaffMeetingForParticipants(m);
+      setIsStaffParticipantsModalOpen(true);
+      setStaffParticipantSegment('all');
+      setStaffParticipantSearch('');
+      setParticipantRowActionMenuId(null);
+      setRemovingParticipantId(null);
+      setStaffParticipants([]);
+      setStaffParticipantsLoading(true);
+
+      const outlookEventId = m?.teams_meeting_id || m?.teams_id || (typeof m?.id === 'string' && m.id.startsWith('staff-') ? m.id.replace('staff-', '') : null);
+
+      if (outlookEventId) {
+        const { data: otRow } = await supabase
+          .from('outlook_teams_meetings')
+          .select('start_date_time,end_date_time')
+          .eq('teams_meeting_id', String(outlookEventId))
+          .maybeSingle();
+        if (otRow?.start_date_time && otRow?.end_date_time) {
+          setSelectedStaffMeetingForParticipants((prev: any) =>
+            prev
+              ? {
+                  ...prev,
+                  staff_event_start_iso: otRow.start_date_time,
+                  staff_event_end_iso: otRow.end_date_time,
+                }
+              : prev
+          );
+        }
+      }
+
+      // Resolve DB meeting id (teams_id preferred)
+      let dbMeetingId: number | null = null;
+      if (outlookEventId) {
+        const byTeams = await supabase
+          .from('meetings')
+          .select('id')
+          .eq('teams_id', String(outlookEventId))
+          .order('id', { ascending: false })
+          .limit(1);
+        const id = byTeams.data?.[0]?.id;
+        if (typeof id === 'number') dbMeetingId = id;
+      }
+
+      if (!dbMeetingId) {
+        // Fallback: match by date/time/subject/location
+        const subject = String(m?.meeting_subject || m?.lead?.name || m?.subject || '').trim();
+        const date = String(m?.meeting_date || '').trim();
+        const time = String(m?.meeting_time || '').trim();
+        const location = String(m?.meeting_location || m?.location || '').trim();
+        if (subject && date && time) {
+          const base = supabase
+            .from('meetings')
+            .select('id')
+            .eq('calendar_type', 'staff')
+            .eq('meeting_date', date)
+            .eq('meeting_time', time)
+            .eq('meeting_subject', subject)
+            .order('id', { ascending: false })
+            .limit(1);
+          const res = location ? await base.eq('meeting_location', location) : await base;
+          const id = res.data?.[0]?.id;
+          if (typeof id === 'number') dbMeetingId = id;
+        }
+      }
+
+      if (typeof dbMeetingId === 'number') {
+        const { data: mtMeta } = await supabase
+          .from('meetings')
+          .select('internal_meeting_type_id, internal_meeting_types ( id, code, label )')
+          .eq('id', dbMeetingId)
+          .maybeSingle();
+        if (mtMeta) {
+          setSelectedStaffMeetingForParticipants((prev: any) =>
+            prev
+              ? {
+                  ...prev,
+                  internal_meeting_type_id: mtMeta.internal_meeting_type_id ?? prev.internal_meeting_type_id,
+                  internal_meeting_types: mtMeta.internal_meeting_types ?? prev.internal_meeting_types,
+                }
+              : prev
+          );
+        }
+      }
+
+      if (!dbMeetingId) {
+        // Best-effort: just show the already-rendered attendee names
+        const fallbackNames = Array.isArray(m?.attendees) ? m.attendees : [];
+        setStaffParticipants(
+          fallbackNames.map((name: string) => ({ type: 'extern', name: String(name), badge: 'Extern', imageUrl: null, participantRowId: null }))
+        );
+        return;
+      }
+
+      const { data: partData, error: partErr } = await supabase
+        .from('meeting_participants')
+        .select('id, employee_id, firm_contact_id, free_name, free_email, free_phone, notes')
+        .eq('meeting_id', dbMeetingId);
+      if (partErr) throw partErr;
+
+      const employeeIds = Array.from(
+        new Set((partData || []).map((r: any) => (r.employee_id != null ? Number(r.employee_id) : null)).filter((n: any) => Number.isFinite(n) && n > 0))
+      ) as number[];
+      const firmIds = Array.from(new Set((partData || []).map((r: any) => (r.firm_contact_id ? String(r.firm_contact_id) : null)).filter(Boolean))) as string[];
+
+      const fetchEmployeesWithPhones = async () => {
+        if (!employeeIds.length) return { data: [] as any[], error: null as any };
+        const res = await supabase
+          .from('tenants_employee')
+          .select('id, display_name, photo_url, photo, phone, mobile, phone_ext')
+          .in('id', employeeIds);
+        if (!res.error) return res;
+        const err: any = res.error;
+        // Fallback for environments missing phone columns
+        if (err?.code === '42703') {
+          return await supabase.from('tenants_employee').select('id, display_name, photo_url, photo').in('id', employeeIds);
+        }
+        return res;
+      };
+
+      const [empsRes, usersRes, firmsRes] = await Promise.all([
+        fetchEmployeesWithPhones(),
+        employeeIds.length
+          ? supabase.from('users').select('employee_id, email').in('employee_id', employeeIds).not('email', 'is', null)
+          : Promise.resolve({ data: [] as any[] }),
+        firmIds.length
+          ? supabase
+              .from('firm_contacts')
+              .select('id, name, profile_image_url, email, second_email, phone, notes, firm_id, firms!firm_contacts_firm_id_fkey(id, name)')
+              .in('id', firmIds)
+          : Promise.resolve({ data: [] as any[] }),
+      ]);
+
+      const empById = new Map<number, any>();
+      (empsRes as any).data?.forEach((e: any) => empById.set(Number(e.id), e));
+      const emailByEmployeeId = new Map<number, string>();
+      (usersRes as any).data?.forEach((u: any) => {
+        const eid = Number(u.employee_id);
+        if (Number.isFinite(eid) && eid > 0 && u.email) emailByEmployeeId.set(eid, String(u.email));
+      });
+      const firmById = new Map<string, any>();
+      (firmsRes as any).data?.forEach((f: any) => firmById.set(String(f.id), f));
+
+      const rows: any[] = (partData || []).map((r: any) => {
+        if (r.employee_id != null) {
+          const e = empById.get(Number(r.employee_id));
+          const phoneCandidate = e?.mobile || e?.phone || null;
+          const phoneExt = e?.phone_ext ? String(e.phone_ext) : '';
+          const phone = phoneCandidate ? `${String(phoneCandidate)}${phoneExt ? ` ext ${phoneExt}` : ''}` : null;
+          return {
+            participantRowId: r.id != null ? String(r.id) : null,
+            type: 'staff',
+            badge: 'Staff',
+            name: e?.display_name || `#${r.employee_id}`,
+            imageUrl: e?.photo_url || null,
+            details: {
+              email: emailByEmployeeId.get(Number(r.employee_id)) || null,
+              phone,
+              notes: null
+            }
+          };
+        }
+        if (r.firm_contact_id) {
+          const f = firmById.get(String(r.firm_contact_id));
+          const firmObj = Array.isArray(f?.firms) ? f.firms[0] : f?.firms;
+          const firmName = firmObj?.name ? String(firmObj.name) : null;
+          return {
+            participantRowId: r.id != null ? String(r.id) : null,
+            type: 'firm',
+            badge: 'Firm',
+            name: f?.name || 'Firm contact',
+            subtitle: firmName,
+            imageUrl: f?.profile_image_url || null,
+            details: {
+              email: f?.email || f?.second_email || null,
+              phone: f?.phone || null,
+              notes: null
+            }
+          };
+        }
+        return {
+          participantRowId: r.id != null ? String(r.id) : null,
+          type: 'extern',
+          badge: 'Extern',
+          name: String(r.free_name || '').trim() || 'Extern participant',
+          imageUrl: null,
+          details: {
+            email: r.free_email || null,
+            phone: r.free_phone || null,
+            notes: r.notes || null,
+          }
+        };
+      });
+
+      setStaffParticipants(rows);
+    } catch (e) {
+      console.error('Failed to load internal meeting participants', e);
+      toast.error('Failed to load participants');
+    } finally {
+      setStaffParticipantsLoading(false);
+    }
+  };
+
+  const filteredStaffParticipants = useMemo(() => {
+    const q = staffParticipantSearch.trim().toLowerCase();
+    return (staffParticipants || []).filter((p: any) => {
+      if (staffParticipantSegment !== 'all' && String(p?.type) !== staffParticipantSegment) return false;
+      if (!q) return true;
+      const hay = [
+        p?.name,
+        p?.subtitle,
+        p?.details?.email,
+        p?.details?.phone,
+        p?.details?.notes,
+        p?.badge,
+      ]
+        .filter(Boolean)
+        .map((x: any) => String(x).toLowerCase())
+        .join(' | ');
+      return hay.includes(q);
+    });
+  }, [staffParticipants, staffParticipantSegment, staffParticipantSearch]);
+
+  const staffParticipantAggregatedNotes = useMemo(() => {
+    const lines: string[] = [];
+    for (const p of staffParticipants || []) {
+      if (String(p?.type) === 'firm') continue;
+      const note = String(p?.details?.notes || '').trim();
+      if (!note) continue;
+      const who = String(p?.name || 'Participant').trim();
+      lines.push(`${who}: ${note}`);
+    }
+    return lines;
+  }, [staffParticipants]);
+
+  useEffect(() => {
+    if (!participantRowActionMenuId) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      const el = e.target as HTMLElement | null;
+      if (el?.closest?.('[data-staff-participant-actions]')) return;
+      setParticipantRowActionMenuId(null);
+    };
+    document.addEventListener('mousedown', onDocMouseDown);
+    return () => document.removeEventListener('mousedown', onDocMouseDown);
+  }, [participantRowActionMenuId]);
+
+  const removeStaffMeetingParticipant = async (participantRowId: string) => {
+    if (!participantRowId) return;
+    setRemovingParticipantId(participantRowId);
+    try {
+      const { error } = await supabase.from('meeting_participants').delete().eq('id', participantRowId);
+      if (error) throw error;
+      setStaffParticipants((prev) => (prev || []).filter((p: any) => String(p?.participantRowId) !== participantRowId));
+      setParticipantRowActionMenuId(null);
+      toast.success('Participant removed');
+    } catch (e: any) {
+      console.error('Remove participant failed', e);
+      toast.error(e?.message || 'Failed to remove participant');
+    } finally {
+      setRemovingParticipantId(null);
+    }
+  };
 
   // Action menu dropdown state
   const [showActionMenuDropdown, setShowActionMenuDropdown] = useState(false);
@@ -1706,7 +1978,7 @@ const CalendarPage: React.FC = () => {
       const toIso = `${toDate}T23:59:59`;
       const { data: staffMeetingsData, error: allMeetingsError } = await supabase
         .from('outlook_teams_meetings')
-        .select('teams_meeting_id, start_date_time, subject, location, teams_join_url, attendees, description')
+        .select('teams_meeting_id, start_date_time, end_date_time, subject, location, teams_join_url, attendees, description')
         .gte('start_date_time', fromIso)
         .lte('start_date_time', toIso)
         .order('start_date_time');
@@ -1811,11 +2083,23 @@ const CalendarPage: React.FC = () => {
           // Parse the start_date_time to get time
           const startDate = new Date(meeting.start_date_time);
           const time = `${String(startDate.getHours()).padStart(2, '0')}:${String(startDate.getMinutes()).padStart(2, '0')}`;
+          const endDate = meeting.end_date_time ? new Date(meeting.end_date_time) : null;
+          const endTime = endDate
+            ? `${String(endDate.getHours()).padStart(2, '0')}:${String(endDate.getMinutes()).padStart(2, '0')}`
+            : null;
+          const durationMinutes =
+            endDate && Number.isFinite(endDate.getTime())
+              ? Math.max(0, Math.round((endDate.getTime() - startDate.getTime()) / 60000))
+              : null;
 
           return {
             id: `staff-${meeting.teams_meeting_id}`,
+            staff_event_start_iso: meeting.start_date_time,
+            staff_event_end_iso: meeting.end_date_time,
             meeting_date: formatLocalDateYmd(startDate),
             meeting_time: time,
+            meeting_end_time: endTime,
+            meeting_duration_minutes: durationMinutes,
             meeting_manager: attendeesDisplay,
             helper: '--',
             meeting_location: meeting.location || 'Teams',
@@ -2158,9 +2442,14 @@ const CalendarPage: React.FC = () => {
 
         // Build meetings query WITH joins so one round-trip gets meetings + leads (no separate lead fetches)
         const meetingsSelect = `
-          id, created_at, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url, custom_link, custom_address,
+          id, created_at, meeting_date, meeting_time,
+          meeting_subject, meeting_brief,
+          meeting_manager, helper, meeting_location,
+          teams_id, teams_meeting_url, custom_link, custom_address,
           meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
           attendance_probability, complexity, car_number, calendar_type, extern1, extern2,
+          internal_meeting_type_id,
+          internal_meeting_types ( id, code, label, sort_order ),
           leads!meetings_client_id_fkey (
             id, name, lead_number, manual_id, master_id, onedrive_folder_link, stage, manager, helper, scheduler, category, category_id,
             balance, balance_currency, currency_id, expert, probability, phone, email, language, language_id,
@@ -2612,19 +2901,85 @@ const CalendarPage: React.FC = () => {
   }, [appliedFromDate, appliedToDate, datesManuallySet]);
 
   useEffect(() => {
-    // Combine regular meetings and staff meetings, with deduplication by ID
+    // Combine meetings table rows + staff Outlook meta rows.
+    // IMPORTANT: internal meetings can exist in BOTH sources (meetings.calendar_type='staff' and outlook_teams_meetings),
+    // so we dedupe by the underlying Outlook event id (meetings.teams_id == staffMeeting.teams_meeting_id) and
+    // fall back to a stable composite key when teams_id is missing.
     const meetingsMap = new Map<string | number, any>();
+
+    // Index staff meetings from DB so we can merge them into Outlook-meta rows.
+    const staffDbByOutlookId = new Map<string, any>();
+    const staffDbByCompositeKey = new Map<string, any>();
+    const makeStaffCompositeKey = (m: any) =>
+      `${String(m?.meeting_date || '')}__${String(m?.meeting_time || '')}__${String(m?.meeting_subject || m?.lead?.name || m?.subject || '').trim()}__${String(m?.meeting_location || m?.location || '').trim()}`;
 
     // Add regular meetings first
     meetings.forEach(meeting => {
+      if (meeting?.calendar_type === 'staff') {
+        const tid = meeting?.teams_id || meeting?.teams_meeting_id || meeting?.teamsMeetingId;
+        if (tid) staffDbByOutlookId.set(String(tid), meeting);
+        staffDbByCompositeKey.set(makeStaffCompositeKey(meeting), meeting);
+        // Do NOT add staff DB rows yet — we'll prefer the Outlook-meta row for display,
+        // and merge DB fields into it when present to avoid duplicates.
+        return;
+      }
+
       meetingsMap.set(meeting.id, meeting);
     });
 
     // Add staff meetings (they should have different IDs, but deduplicate anyway)
     staffMeetings.forEach(meeting => {
+      const metaTid = meeting?.teams_meeting_id || meeting?.teams_id;
+      const metaKey = makeStaffCompositeKey(meeting);
+      const dbMatch = (metaTid && staffDbByOutlookId.get(String(metaTid))) || staffDbByCompositeKey.get(metaKey) || null;
+      const merged = dbMatch
+        ? {
+            // Keep Outlook-meta as base for display (attendees, join url).
+            ...meeting,
+            // Merge DB fields (meeting id, subject/brief/location, etc) for editing/participants.
+            ...dbMatch,
+            internal_meeting_type_id: dbMatch.internal_meeting_type_id ?? meeting.internal_meeting_type_id,
+            internal_meeting_types: dbMatch.internal_meeting_types ?? meeting.internal_meeting_types,
+            // Ensure calendar_type stays staff.
+            calendar_type: 'staff',
+            // Ensure we keep Outlook-meta unique id so the row doesn't flip/flop in UI.
+            id: meeting.id,
+            // Preserve meta teams_meeting_id for edit modal resolution.
+            teams_meeting_id: meeting.teams_meeting_id || dbMatch.teams_id || dbMatch.teams_meeting_id,
+            teams_id: dbMatch.teams_id || meeting.teams_meeting_id || meeting.teams_id,
+            // Preserve meta attendees array (display names)
+            attendees: Array.isArray(meeting.attendees) ? meeting.attendees : (dbMatch.attendees || []),
+            meeting_manager: meeting.meeting_manager ?? dbMatch.meeting_manager,
+            teams_meeting_url: meeting.teams_meeting_url ?? dbMatch.teams_meeting_url,
+            lead: meeting.lead || dbMatch.lead,
+            // Outlook row is the source of truth for event length; DB row may lack duration.
+            staff_event_start_iso: meeting.staff_event_start_iso ?? (dbMatch as any).staff_event_start_iso,
+            staff_event_end_iso: meeting.staff_event_end_iso ?? (dbMatch as any).staff_event_end_iso,
+            meeting_end_time: meeting.meeting_end_time ?? dbMatch.meeting_end_time,
+            meeting_duration_minutes: (() => {
+              const a = meeting.meeting_duration_minutes;
+              const b = dbMatch?.meeting_duration_minutes;
+              if (typeof a === 'number' && a > 0) return a;
+              if (typeof b === 'number' && b > 0) return b;
+              if (typeof a === 'number') return a;
+              if (typeof b === 'number') return b;
+              return null;
+            })(),
+          }
+        : meeting;
+
       if (!meetingsMap.has(meeting.id)) {
-        meetingsMap.set(meeting.id, meeting);
+        meetingsMap.set(meeting.id, merged);
       }
+    });
+
+    // If there are staff DB rows WITHOUT any matching Outlook-meta row (rare), add them so they are still visible.
+    // We key them by their numeric id so they won't collide with staff-<outlookId>.
+    staffDbByOutlookId.forEach((dbRow) => {
+      const tid = dbRow?.teams_id || dbRow?.teams_meeting_id;
+      if (!tid) return;
+      const existsMeta = staffMeetings.some((m: any) => String(m?.teams_meeting_id || m?.teams_id || '') === String(tid));
+      if (!existsMeta) meetingsMap.set(dbRow.id, dbRow);
     });
 
     const allMeetings = Array.from(meetingsMap.values());
@@ -3026,6 +3381,69 @@ const CalendarPage: React.FC = () => {
         {label}
       </span>
     );
+  };
+
+  /** Lookup row from meetings → internal_meeting_types embed (Supabase may return object or single-element array). */
+  const getInternalMeetingTypeRow = (meeting: any) => {
+    const rel = meeting?.internal_meeting_types;
+    if (Array.isArray(rel)) return rel[0] ?? null;
+    return rel ?? null;
+  };
+
+  const INTERNAL_MEETING_TYPE_BADGE_PALETTE: Record<string, { bg: string; fg: string; border: string }> = {
+    staff: { bg: '#eef2ff', fg: '#3730a3', border: '#c7d2fe' },
+    providers: { bg: '#ecfdf5', fg: '#065f46', border: '#a7f3d0' },
+    sub_contractor: { bg: '#fffbeb', fg: '#92400e', border: '#fde68a' },
+    extern: { bg: '#fff7ed', fg: '#9a3412', border: '#fed7aa' },
+    firm: { bg: '#fdf4ff', fg: '#86198f', border: '#f5d0fe' },
+    lawyer_group: { bg: '#eff6ff', fg: '#1e40af', border: '#bfdbfe' },
+    sponsor: { bg: '#f0fdf4', fg: '#166534', border: '#bbf7d0' },
+    other: { bg: '#f9fafb', fg: '#4b5563', border: '#e5e7eb' },
+  };
+
+  const NEUTRAL_TYPE_BADGE = { bg: '#f3f4f6', fg: '#374151', border: '#e5e7eb' };
+
+  /** Badge for internal meeting classification (calendar status column + participants modal). Defaults to Staff when unset. */
+  const renderInternalMeetingTypeBadge = (meeting: any) => {
+    const typeRow = getInternalMeetingTypeRow(meeting);
+    const hasFk =
+      meeting?.internal_meeting_type_id != null &&
+      meeting.internal_meeting_type_id !== '' &&
+      !(typeof meeting.internal_meeting_type_id === 'number' && !Number.isFinite(meeting.internal_meeting_type_id));
+    let label: string;
+    let code: string;
+    if (typeRow?.label) {
+      label = String(typeRow.label);
+      code = String(typeRow.code || 'staff').toLowerCase() || 'staff';
+    } else if (hasFk) {
+      label = 'Type';
+      code = '';
+    } else {
+      label = 'Staff';
+      code = 'staff';
+    }
+    const pal =
+      code && INTERNAL_MEETING_TYPE_BADGE_PALETTE[code] ? INTERNAL_MEETING_TYPE_BADGE_PALETTE[code] : hasFk ? NEUTRAL_TYPE_BADGE : INTERNAL_MEETING_TYPE_BADGE_PALETTE.staff;
+    const titleParts: string[] = [];
+    if (typeRow?.code) titleParts.push(`Internal meeting type (${typeRow.code})`);
+    if (!typeRow?.code && !hasFk) titleParts.push('Default: Staff (no type selected)');
+    return (
+      <span
+        className="stage-badge inline-flex items-center px-2 py-1 sm:px-2.5 sm:py-1 rounded-md text-xs sm:text-sm font-semibold border"
+        style={{ backgroundColor: pal.bg, color: pal.fg, borderColor: pal.border }}
+        title={titleParts.length ? titleParts.join(' · ') : undefined}
+      >
+        {label}
+      </span>
+    );
+  };
+
+  /** Status column: pipeline stage for client meetings; internal type badge for staff meetings */
+  const getCalendarMeetingStatusBadge = (meeting: any, lead: any) => {
+    if (meeting?.calendar_type !== 'staff') {
+      return getStageBadge(lead?.stage ?? meeting?.stage);
+    }
+    return renderInternalMeetingTypeBadge(meeting);
   };
 
   // Helper to extract a valid Teams join link from various formats
@@ -4211,10 +4629,10 @@ const CalendarPage: React.FC = () => {
     if (!calendarType) return null;
     if (calendarType === 'staff') {
       return {
-        label: 'Staff',
-        backgroundColor: '#fdf5d9',
-        textColor: '#a16207',
-        borderColor: '#facc15'
+        label: 'IM',
+        backgroundColor: '#FEF3C7', // amber-100
+        textColor: '#92400E', // amber-800
+        borderColor: '#F59E0B' // amber-500
       };
     }
     if (calendarType === 'active_client') {
@@ -4810,7 +5228,12 @@ const CalendarPage: React.FC = () => {
         )}
         <div
           onClick={(e) => {
-            if (meeting.calendar_type !== 'staff' && meeting.lead) {
+            if (meeting.calendar_type === 'staff') {
+              e.stopPropagation();
+              openStaffParticipantsModal(meeting);
+              return;
+            }
+            if (meeting.lead) {
               e.stopPropagation();
               handleRowSelect(meeting.id);
             } else {
@@ -4833,9 +5256,9 @@ const CalendarPage: React.FC = () => {
                 if (!badge) return null;
                 return (
                   <span
-                    className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold border flex-shrink-0"
+                    className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-extrabold border flex-shrink-0 shadow-sm"
                     style={{
-                      backgroundColor: badge.backgroundColor,
+                      background: badge.backgroundColor,
                       color: badge.textColor,
                       borderColor: badge.borderColor
                     }}
@@ -4865,7 +5288,7 @@ const CalendarPage: React.FC = () => {
                   </span>
                 </div>
                 <div className="ml-auto">
-                  {getStageBadge(lead.stage ?? meeting.stage)}
+                  {getCalendarMeetingStatusBadge(meeting, lead)}
                 </div>
               </div>
             );
@@ -5256,17 +5679,19 @@ const CalendarPage: React.FC = () => {
               <PlusIcon className="w-4 h-4" />
             </button>
           )}
-          <button
-            className="btn btn-ghost btn-circle btn-sm text-primary"
-            title={isExpanded ? 'Hide Details' : 'Show More'}
-            aria-label={isExpanded ? 'Hide Details' : 'Show More'}
-            onClick={(e) => {
-              e.stopPropagation();
-              setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
-            }}
-          >
-            <ChevronDownIcon className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-          </button>
+          {meeting.calendar_type !== 'staff' && (
+            <button
+              className="btn btn-ghost btn-circle btn-sm text-primary"
+              title={isExpanded ? 'Hide Details' : 'Show More'}
+              aria-label={isExpanded ? 'Hide Details' : 'Show More'}
+              onClick={(e) => {
+                e.stopPropagation();
+                setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
+              }}
+            >
+              <ChevronDownIcon className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+            </button>
+          )}
         </div>
 
         {/* Show edit button for staff meetings (at bottom) */}
@@ -5274,7 +5699,7 @@ const CalendarPage: React.FC = () => {
           <div className="mt-4 flex flex-row gap-2 justify-end items-center">
             <button
               className="btn btn-outline btn-warning btn-sm"
-              title="Edit Staff Meeting"
+              title="Edit Internal Meeting"
               onClick={(e) => {
                 e.stopPropagation();
                 setSelectedStaffMeeting(meeting);
@@ -5286,8 +5711,8 @@ const CalendarPage: React.FC = () => {
           </div>
         )}
 
-        {/* Expanded Details */}
-        {isExpanded && (
+        {/* Expanded Details (internal/staff meetings use participants modal instead) */}
+        {isExpanded && meeting.calendar_type !== 'staff' && (
           <div className="mt-4 p-4 border-t border-gray-100 bg-gray-50 rounded-lg">
             {expandedData.loading ? (
               <div className="flex justify-center items-center py-4">
@@ -5461,11 +5886,13 @@ const CalendarPage: React.FC = () => {
         <tr
           className={`calendar-page-meeting-row relative z-10 ${selectedRowId === meeting.id ? 'calendar-page-meeting-row--selected' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}
           onClick={() => {
-            if (meeting.calendar_type !== 'staff' && meeting.lead) {
-              handleRowSelect(meeting.id);
+            if (meeting.calendar_type === 'staff') {
+              openStaffParticipantsModal(meeting);
+              return;
             }
+            if (meeting.lead) handleRowSelect(meeting.id);
           }}
-          style={{ cursor: meeting.calendar_type !== 'staff' && meeting.lead ? 'pointer' : 'default' }}
+          style={{ cursor: meeting.calendar_type === 'staff' || meeting.lead ? 'pointer' : 'default' }}
         >
           {/* TYPE Column - fixed-width icon slot so badge is always aligned */}
           <td className="w-10">
@@ -5667,7 +6094,7 @@ const CalendarPage: React.FC = () => {
           <td className="text-sm sm:text-base">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
           <td>
             <div className="flex items-center justify-center">
-              {getStageBadge(lead.stage ?? meeting.stage)}
+              {getCalendarMeetingStatusBadge(meeting, lead)}
             </div>
           </td>
           <td>
@@ -5809,7 +6236,7 @@ const CalendarPage: React.FC = () => {
                     )}
                   </>
                 )}
-              {/* Show edit button for staff meetings */}
+              {/* Show edit button for internal (staff) meetings */}
               {meeting.calendar_type === 'staff' && (
                 <button
                   className="btn btn-warning btn-xs sm:btn-sm"
@@ -5848,24 +6275,26 @@ const CalendarPage: React.FC = () => {
                   <PlusIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                 </button>
               )}
-              <button
-                className="btn btn-ghost btn-circle btn-xs sm:btn-sm text-primary"
-                title={isExpanded ? 'Hide Details' : 'Show More'}
-                aria-label={isExpanded ? 'Hide Details' : 'Show More'}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
-                }}
-              >
-                <ChevronDownIcon className={`w-4 h-4 sm:w-5 sm:h-5 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
-              </button>
+              {meeting.calendar_type !== 'staff' && (
+                <button
+                  className="btn btn-ghost btn-circle btn-xs sm:btn-sm text-primary"
+                  title={isExpanded ? 'Hide Details' : 'Show More'}
+                  aria-label={isExpanded ? 'Hide Details' : 'Show More'}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
+                  }}
+                >
+                  <ChevronDownIcon className={`w-4 h-4 sm:w-5 sm:h-5 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                </button>
+              )}
             </div>
           </td>
         </tr>
 
-        {/* Expanded Details Row */}
+        {/* Expanded Details Row (staff uses participants modal, not inline expand) */}
         {
-          isExpanded && (
+          isExpanded && meeting.calendar_type !== 'staff' && (
             <tr className="calendar-page-meeting-row calendar-page-meeting-row--expanded-block">
               <td colSpan={10} className="p-0">
                 <div className="bg-base-100/50 p-4 border-t border-base-200/80">
@@ -6281,7 +6710,7 @@ const CalendarPage: React.FC = () => {
               }}
             >
               <VideoCameraIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
-              <span className="text-sm font-semibold text-gray-700">Create Teams Meeting</span>
+              <span className="text-sm font-semibold text-gray-700">Create Internal Meeting</span>
             </button>
             <button
               className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
@@ -8064,14 +8493,400 @@ const CalendarPage: React.FC = () => {
           if (appliedFromDate && appliedToDate) {
             fetchStaffMeetings(appliedFromDate, appliedToDate);
           }
+          setMeetingsRefreshTrigger((t) => t + 1);
         }}
         onDelete={() => {
           // Refresh staff meetings when deleted
           if (appliedFromDate && appliedToDate) {
             fetchStaffMeetings(appliedFromDate, appliedToDate);
           }
+          setMeetingsRefreshTrigger((t) => t + 1);
         }}
       />
+
+      {/* Internal meeting participants modal */}
+      {isStaffParticipantsModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/50 p-0 md:items-center md:p-4"
+          onClick={() => setIsStaffParticipantsModalOpen(false)}
+        >
+          <div
+            className="relative flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col overflow-hidden rounded-none bg-white shadow-none md:h-[85vh] md:max-h-[85vh] md:max-w-3xl md:rounded-2xl md:shadow-[0_10px_30px_rgba(0,0,0,0.08)]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {(() => {
+              const m = selectedStaffMeetingForParticipants || {};
+              const subtitle = String(m.meeting_subject || m.lead?.name || '').trim();
+              const dateRaw = String(m.meeting_date || '').trim();
+              const formattedDate =
+                /^(\d{4})-(\d{2})-(\d{2})$/.test(dateRaw)
+                  ? new Date(`${dateRaw}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+                  : dateRaw || '—';
+              const isoStartRaw = m.staff_event_start_iso || m.start_date_time;
+              const isoEndRaw = m.staff_event_end_iso || m.end_date_time;
+              const pad2 = (n: number) => String(n).padStart(2, '0');
+              let durMin: number | null = null;
+              let startHm = String(m.meeting_time || '').slice(0, 5);
+              let endHm = m.meeting_end_time ? String(m.meeting_end_time).slice(0, 5) : '';
+              if (isoStartRaw && isoEndRaw) {
+                const t0 = new Date(isoStartRaw).getTime();
+                const t1 = new Date(isoEndRaw).getTime();
+                const diff = Math.round((t1 - t0) / 60000);
+                if (Number.isFinite(diff) && diff > 0) {
+                  durMin = diff;
+                  const sd = new Date(isoStartRaw);
+                  startHm = `${pad2(sd.getHours())}:${pad2(sd.getMinutes())}`;
+                  const ed = new Date(isoEndRaw);
+                  endHm = `${pad2(ed.getHours())}:${pad2(ed.getMinutes())}`;
+                }
+              }
+              if (durMin == null && /^(\d{4})-(\d{2})-(\d{2})$/.test(dateRaw) && startHm && endHm && endHm !== startHm) {
+                const d0 = new Date(`${dateRaw}T${startHm}:00`);
+                const d1 = new Date(`${dateRaw}T${endHm}:00`);
+                const diff = Math.round((d1.getTime() - d0.getTime()) / 60000);
+                if (Number.isFinite(diff) && diff > 0) durMin = diff;
+              }
+              if (durMin == null || durMin <= 0) {
+                const d = typeof m.meeting_duration_minutes === 'number' ? Math.round(Number(m.meeting_duration_minutes)) : NaN;
+                if (Number.isFinite(d) && d > 0) durMin = d;
+              }
+              let timeLabel = '—';
+              if (startHm && endHm) {
+                timeLabel =
+                  startHm === endHm && durMin != null && durMin > 0 && isoStartRaw
+                    ? (() => {
+                        const sd = new Date(isoStartRaw).getTime();
+                        const ed = new Date(sd + durMin * 60000);
+                        return `${startHm}–${pad2(new Date(ed).getHours())}:${pad2(new Date(ed).getMinutes())}`;
+                      })()
+                    : `${startHm}–${endHm}`;
+              } else if (startHm) {
+                timeLabel = startHm;
+              }
+              const location = String(m.meeting_location || m.location || '').trim() || '—';
+              const link = String(m.teams_meeting_url || '').trim();
+              const address = String(m.custom_address || '').trim();
+
+              const total = staffParticipants.length;
+              const staffCount = staffParticipants.filter((p: any) => p?.type === 'staff').length;
+              const firmCount = staffParticipants.filter((p: any) => p?.type === 'firm').length;
+              const externCount = staffParticipants.filter((p: any) => p?.type === 'extern').length;
+
+              const segmentTabs: Array<{ key: typeof staffParticipantSegment; label: string }> = [
+                { key: 'all', label: 'All' },
+                { key: 'staff', label: 'Staff' },
+                { key: 'firm', label: 'Firm' },
+                { key: 'extern', label: 'External' },
+              ];
+
+              return (
+                <>
+                  {/* Sticky header */}
+                  <div className="sticky top-0 z-30 border-b border-gray-200 bg-white px-6 py-5">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-2 gap-y-2">
+                          <div className="text-lg font-semibold tracking-tight text-gray-900">Internal meeting</div>
+                          {renderInternalMeetingTypeBadge(m)}
+                        </div>
+                        <div className="mt-1 truncate text-sm text-gray-500">{subtitle || '—'}</div>
+                      </div>
+
+                      <div className="flex flex-shrink-0 items-center gap-1">
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm font-medium text-gray-700"
+                          onClick={() => {
+                            setSelectedStaffMeeting(selectedStaffMeetingForParticipants);
+                            setIsStaffMeetingEditModalOpen(true);
+                            setIsStaffParticipantsModalOpen(false);
+                          }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-circle"
+                          aria-label="Close"
+                          onClick={() => setIsStaffParticipantsModalOpen(false)}
+                        >
+                          <XMarkIcon className="h-6 w-6 text-gray-500" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex min-h-0 flex-1 flex-col">
+                    {/* Meeting meta */}
+                    <div className="px-6 pt-6">
+                      <div className="rounded-xl bg-gray-50 px-4 py-3 text-sm text-gray-600">
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-4">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <CalendarIcon className="h-4 w-4 flex-shrink-0 text-gray-400" />
+                            <span className="truncate font-medium text-gray-700">{formattedDate}</span>
+                          </div>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <ClockIcon className="h-4 w-4 flex-shrink-0 text-gray-400" />
+                            <span className="truncate font-medium text-gray-700">{timeLabel}</span>
+                          </div>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <MapPinIcon className="h-4 w-4 flex-shrink-0 text-gray-400" />
+                            <span className="truncate font-medium text-gray-700">{location}</span>
+                          </div>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-base leading-none text-gray-300">⏱</span>
+                            <span className="truncate font-medium text-gray-700">{durMin == null ? '—' : `${durMin}m`}</span>
+                          </div>
+                        </div>
+
+                        {address ? (
+                          <div className="mt-2 border-t border-gray-200 pt-2 text-xs text-gray-500">{address}</div>
+                        ) : null}
+
+                        {link ? (
+                          <div className="mt-3 flex items-center justify-between gap-3 border-t border-gray-200 pt-3">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <VideoCameraIcon className="h-4 w-4 flex-shrink-0 text-gray-400" />
+                              <a
+                                href={link}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="truncate text-sm font-medium text-primary hover:opacity-85"
+                                title={link}
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                Open meeting link
+                              </a>
+                            </div>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm text-gray-700"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void navigator.clipboard?.writeText(link);
+                                toast.success('Link copied');
+                              }}
+                            >
+                              Copy
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {/* Toolbar: tabs + search */}
+                    {!staffParticipantsLoading && staffParticipants.length > 0 ? (
+                      <div className="border-b border-gray-200 px-6 py-4">
+                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                          <div className="flex flex-wrap items-center gap-1 overflow-x-auto">
+                            {segmentTabs.map((tab) => {
+                              const counts: Record<string, number> = { all: total, staff: staffCount, firm: firmCount, extern: externCount };
+                              const active = staffParticipantSegment === tab.key;
+                              return (
+                                <button
+                                  key={tab.key}
+                                  type="button"
+                                  onClick={() => setStaffParticipantSegment(tab.key)}
+                                  className={`whitespace-nowrap rounded-md px-2.5 py-1 text-sm font-medium transition-colors cursor-pointer ${
+                                    active ? 'bg-gray-100 text-gray-900 shadow-[inset_0_-2px_0_0_rgb(229,231,235)]' : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
+                                  }`}
+                                >
+                                  {tab.label} ({counts[String(tab.key)] ?? 0})
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          <div className="relative w-full lg:max-w-xs">
+                            <MagnifyingGlassIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+                            <input
+                              className="input input-sm input-bordered h-10 w-full pl-10 pr-10 text-sm"
+                              placeholder="Search participants…"
+                              value={staffParticipantSearch}
+                              onChange={(e) => setStaffParticipantSearch(e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                            {staffParticipantSearch.trim() ? (
+                              <button
+                                type="button"
+                                aria-label="Clear search"
+                                className="absolute right-2 top-1/2 btn btn-ghost btn-xs -translate-y-1/2 text-gray-500"
+                                onClick={() => setStaffParticipantSearch('')}
+                              >
+                                <XMarkIcon className="h-4 w-4" />
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {/* Scroll region */}
+                    <div className="relative min-h-0 flex-1">
+                      <div className="h-full overflow-y-auto px-6 pb-8">
+                        {staffParticipantsLoading ? (
+                          <div className="flex items-center justify-center py-14">
+                            <span className="loading loading-spinner loading-md"></span>
+                          </div>
+                        ) : staffParticipants.length === 0 ? (
+                          <div className="text-sm text-gray-500">No participants found.</div>
+                        ) : (
+                          <div className="space-y-6 pt-6">
+                            {staffParticipantAggregatedNotes.length > 0 ? (
+                              <section className="space-y-3">
+                                <div className="flex items-center gap-2">
+                                  <DocumentTextIcon className="h-5 w-5 text-gray-400" />
+                                  <div className="text-sm font-semibold text-gray-900">Notes</div>
+                                </div>
+                                <div className="divider my-0 before:bg-gray-200 after:bg-gray-200" />
+                                <div className="rounded-xl bg-gray-50 px-4 py-3 text-sm whitespace-pre-wrap text-gray-700">
+                                  {staffParticipantAggregatedNotes.join('\n\n')}
+                                </div>
+                              </section>
+                            ) : null}
+
+                            <section className={`space-y-3 ${staffParticipantAggregatedNotes.length ? 'pt-2' : ''}`}>
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="text-sm font-semibold text-gray-900">
+                                  Participants ({filteredStaffParticipants.length}
+                                  {staffParticipantSegment === 'all' && staffParticipantSearch.trim() ? (
+                                    <span className="ml-2 text-xs font-normal text-gray-400">filtered</span>
+                                  ) : null}
+                                  )
+                                </div>
+                              </div>
+
+                              {filteredStaffParticipants.length === 0 ? (
+                                <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50 px-4 py-10 text-center text-sm text-gray-500">
+                                  No participants match your filters.
+                                </div>
+                              ) : (
+                                <div className="divide-y divide-gray-100 overflow-hidden rounded-xl border border-gray-100 bg-white">
+                                  {filteredStaffParticipants.map((p: any, idx: number) => {
+                                    const roleChip =
+                                      p.type === 'staff'
+                                        ? 'border-sky-200/70 bg-sky-50 text-sky-950/65'
+                                        : p.type === 'firm'
+                                          ? 'border-fuchsia-200/65 bg-fuchsia-50 text-fuchsia-950/65'
+                                          : 'border-amber-200/70 bg-amber-50 text-amber-950/65';
+                                    const badgeIcon =
+                                      p.type === 'staff' ? (
+                                        <UserIcon className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                                      ) : p.type === 'firm' ? (
+                                        <UserGroupIcon className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                                      ) : (
+                                        <UserPlusIcon className="h-3.5 w-3.5 shrink-0 opacity-70" />
+                                      );
+                                    const initials = String(p.name || '?')
+                                      .split(' ')
+                                      .filter(Boolean)
+                                      .slice(0, 2)
+                                      .map((s: string) => s[0]?.toUpperCase())
+                                      .join('');
+                                    const rowKey = p.participantRowId ? String(p.participantRowId) : `${p.type}-${idx}-${p.name}`;
+
+                                    return (
+                                      <div
+                                        key={rowKey}
+                                        className="cursor-pointer px-3 py-3 transition-colors hover:bg-gray-50 sm:px-4"
+                                        role="button"
+                                        tabIndex={0}
+                                      >
+                                        <div className="flex items-start gap-2 sm:gap-3">
+                                          <div className="relative h-[38px] w-[38px] flex-shrink-0 overflow-hidden rounded-full bg-gray-50 ring-1 ring-gray-200">
+                                            {p.imageUrl ? (
+                                              <img src={p.imageUrl} alt="" className="h-full w-full object-cover" />
+                                            ) : (
+                                              <span className="flex h-full w-full items-center justify-center text-[11px] font-semibold text-gray-600">{initials || '?'}</span>
+                                            )}
+                                          </div>
+
+                                          <div className="min-w-0 flex-1">
+                                            <div className="truncate text-sm font-semibold text-gray-900">{p.name}</div>
+
+                                            {(p.details?.email || p.details?.phone) ? (
+                                              <div className="mt-1 truncate text-xs text-gray-500">
+                                                {p.details?.email ? (
+                                                  <a href={`mailto:${p.details.email}`} className="hover:underline" onClick={(e) => e.stopPropagation()}>
+                                                    {p.details.email}
+                                                  </a>
+                                                ) : null}
+                                                {p.details?.email && p.details?.phone ? <span className="text-gray-400"> · </span> : null}
+                                                {p.details?.phone ? (
+                                                  <a href={`tel:${String(p.details.phone).replace(/[^\d+]/g, '')}`} className="hover:underline" onClick={(e) => e.stopPropagation()}>
+                                                    {p.details.phone}
+                                                  </a>
+                                                ) : null}
+                                              </div>
+                                            ) : null}
+
+                                            {p.subtitle ? (
+                                              <div className="mt-1 truncate text-xs text-gray-500">{p.subtitle}</div>
+                                            ) : null}
+                                          </div>
+
+                                          <div
+                                            data-staff-participant-actions
+                                            className="relative flex flex-shrink-0 items-start gap-1"
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
+                                            <span
+                                              className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-medium ${roleChip}`}
+                                            >
+                                              {badgeIcon}
+                                              {p.type === 'extern' ? 'External' : p.badge}
+                                            </span>
+
+                                            {p.participantRowId ? (
+                                              <>
+                                                <button
+                                                  type="button"
+                                                  className="btn btn-ghost btn-xs btn-square text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                                                  aria-label="Participant actions"
+                                                  aria-expanded={participantRowActionMenuId === String(p.participantRowId)}
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    const id = String(p.participantRowId);
+                                                    setParticipantRowActionMenuId((v) => (v === id ? null : id));
+                                                  }}
+                                                >
+                                                  <EllipsisVerticalIcon className="h-5 w-5" />
+                                                </button>
+                                                {participantRowActionMenuId === String(p.participantRowId) ? (
+                                                  <div className="absolute right-0 top-[calc(100%+4px)] z-50 min-w-[9.5rem] rounded-lg border border-gray-100 bg-white py-1 shadow-lg">
+                                                    <button
+                                                      type="button"
+                                                      className="block w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-gray-50 disabled:opacity-50"
+                                                      disabled={removingParticipantId === String(p.participantRowId)}
+                                                      onClick={() => void removeStaffMeetingParticipant(String(p.participantRowId))}
+                                                    >
+                                                      {removingParticipantId === String(p.participantRowId) ? 'Removing…' : 'Remove'}
+                                                    </button>
+                                                  </div>
+                                                ) : null}
+                                              </>
+                                            ) : null}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </section>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-white to-transparent" />
+                    </div>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
