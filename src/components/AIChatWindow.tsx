@@ -556,6 +556,11 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
       userMessage = { role: 'user', content: messageToSend.trim() };
     }
     const newMessages = [...messages, userMessage];
+    const imagesData = images.map((file, index) => ({
+      name: file.name,
+      data: imagePreviews[index],
+    }));
+
     setMessages(newMessages);
     if (!customInput) {
       setInput('');
@@ -568,12 +573,6 @@ const AIChatWindow: React.FC<AIChatWindowProps> = ({ isOpen, onClose, onClientUp
     setMessages(prev => [...prev, { role: 'assistant', content: 'AI is thinking...' }]);
     
     const messagesForApi = sanitizeMessages(newMessages);
-
-    // Prepare images data for upload
-    const imagesData = images.map((file, index) => ({
-      name: file.name,
-      data: imagePreviews[index]
-    }));
 
     try {
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/chat`, {
