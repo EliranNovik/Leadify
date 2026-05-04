@@ -163,6 +163,21 @@ const ensureLeadFolder = async (leadNumber: string) => {
   return createdLeadFolder;
 };
 
+const ensureChildFolder = async (parentItemId: string, folderName: string) => {
+  const children = await graphClient
+    .api(`/users/${targetUserId}/drive/items/${parentItemId}/children`)
+    .get();
+  const existing = (children.value || []).find(
+    (c: { folder?: unknown; name?: string }) => c.folder && c.name === folderName,
+  );
+  if (existing?.id) return existing;
+  return await graphClient.api(`/users/${targetUserId}/drive/items/${parentItemId}/children`).post({
+    name: folderName,
+    folder: {},
+    '@microsoft.graph.conflictBehavior': 'rename',
+  });
+};
+
 serve(async (req) => {
   // CORS preflight
   if (req.method === 'OPTIONS') {
@@ -174,6 +189,7 @@ serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}));
     leadNumber = (body.leadNumber || body.lead_number || '').toString().trim();
+    const subFolderRaw = (body.subFolder || body.sub_folder || '').toString().trim();
 
     if (!leadNumber) {
       return new Response(
@@ -186,7 +202,18 @@ serve(async (req) => {
 
     // Ensure folder exists and get drive item
     const leadFolder = await ensureLeadFolder(leadNumber);
-    const folderId = leadFolder.id as string;
+    let folderId = leadFolder.id as string;
+
+    if (subFolderRaw) {
+      const sanitizedSub = subFolderRaw.replace(/[<>:"/\\|?*]/g, '_').trim();
+      if (sanitizedSub) {
+        const childFolder = await ensureChildFolder(folderId, sanitizedSub);
+        if (!childFolder?.id) {
+          throw new Error('Could not resolve subfolder for listing documents.');
+        }
+        folderId = childFolder.id as string;
+      }
+    }
 
     // Create or reuse a shareable link for the folder (organization scope)
     let shareableLink = '';
@@ -228,6 +255,7 @@ serve(async (req) => {
       JSON.stringify({
         success: true,
         leadNumber,
+        subFolder: subFolderRaw || null,
         folderId,
         folderUrl: shareableLink || leadFolder.webUrl || null,
         count: files.length,

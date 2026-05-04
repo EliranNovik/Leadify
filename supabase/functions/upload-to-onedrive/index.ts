@@ -146,6 +146,22 @@ const ensureLeadFolder = async (leadNumber: string) => {
   return createdLeadFolder;
 };
 
+/** Ensure a child folder exists under a parent drive item (by display name). */
+const ensureChildFolder = async (parentItemId: string, folderName: string) => {
+  const children = await graphClient
+    .api(`/users/${targetUserId}/drive/items/${parentItemId}/children`)
+    .get();
+  const existing = (children.value || []).find(
+    (c: { folder?: unknown; name?: string }) => c.folder && c.name === folderName,
+  );
+  if (existing?.id) return existing;
+  return await graphClient.api(`/users/${targetUserId}/drive/items/${parentItemId}/children`).post({
+    name: folderName,
+    folder: {},
+    '@microsoft.graph.conflictBehavior': 'rename',
+  });
+};
+
 serve(async (req) => {
   // CORS preflight
   if (req.method === 'OPTIONS') {
@@ -156,6 +172,7 @@ serve(async (req) => {
     const formData = await req.formData();
     const file = formData.get('file') as File;
     const leadNumber = formData.get('leadNumber') as string;
+    const subFolderRaw = (formData.get('subFolder') as string | null)?.toString().trim() ?? '';
     const folderName = formData.get('folderName') as string;
     const folderId = formData.get('folderId') as string;
     const isEmailAttachment = formData.get('isEmailAttachment') as string === 'true';
@@ -401,8 +418,19 @@ serve(async (req) => {
       if (!leadFolder?.id) {
         throw new Error('Could not create or find the lead-specific folder.');
       }
-      uploadFolderId = leadFolder.id;
-      
+      uploadFolderId = leadFolder.id as string;
+
+      if (subFolderRaw) {
+        const sanitizedSub = subFolderRaw.replace(/[<>:"/\\|?*]/g, '_').trim();
+        if (sanitizedSub) {
+          const childFolder = await ensureChildFolder(uploadFolderId, sanitizedSub);
+          if (!childFolder?.id) {
+            throw new Error('Could not create or find the subfolder for this upload.');
+          }
+          uploadFolderId = childFolder.id as string;
+        }
+      }
+
       // 2. Create a shareable link for the folder with organization scope
       const permission = await graphClient
         .api(`/users/${targetUserId}/drive/items/${uploadFolderId}/createLink`)
@@ -420,14 +448,16 @@ serve(async (req) => {
       // 3. Upload the file to that folder
       const fileBuffer = await file.arrayBuffer();
       const uploadUrl = `/users/${targetUserId}/drive/items/${uploadFolderId}:/${file.name}:/content`;
-      
-      await graphClient.api(uploadUrl).put(fileBuffer);
+
+      const uploadedItem = await graphClient.api(uploadUrl).put(fileBuffer);
 
       responseData = {
         success: true,
         message: 'File uploaded successfully!',
         folderUrl: shareableLink, // Return the shareable link
         folderId: uploadFolderId,
+        fileId: uploadedItem?.id ?? null,
+        fileName: file.name,
       };
     }
 

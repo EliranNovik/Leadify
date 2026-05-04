@@ -38,6 +38,7 @@ import {
     XMarkIcon,
     RectangleStackIcon,
     LockClosedIcon,
+    DocumentArrowUpIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
@@ -67,6 +68,8 @@ import {
 } from '../lib/userContentFlags';
 import { fetchRmqFlagCountForLead } from '../lib/rmqMessageLeadFlags';
 import { caseProbabilityFromFactors, type ProbabilitySlidersValues } from './client-tabs/ProbabilitySlidersModal';
+import DocumentModal from './DocumentModal';
+import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
 
 // Lightweight in-memory caches to avoid refetching static dropdown data on mobile.
 let cachedLeadSources: Array<{ id: number | string; name: string }> | null = null;
@@ -486,6 +489,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [leadFieldFlagMeta, setLeadFieldFlagMeta] = useState<Map<string, ContentFlagMeta>>(() => new Map());
     const [flagTypes, setFlagTypes] = useState<FlagTypeRow[]>([]);
     const [tagsModalOpen, setTagsModalOpen] = useState(false);
+    const [headerDocumentsModalOpen, setHeaderDocumentsModalOpen] = useState(false);
     const [leadTags, setLeadTags] = useState<string[]>([]);
     /** RMQ chat messages flagged to this lead (all users). */
     const [rmqMessageFlagCount, setRmqMessageFlagCount] = useState(0);
@@ -1910,6 +1914,18 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     if (!selectedClient) return null;
 
+    const headerDocsLeadNumber =
+        String(selectedClient.lead_number ?? '').trim() ||
+        String((selectedClient as any)?.manual_id ?? '').trim();
+
+    const openHeaderDocumentsModal = () => {
+        if (!headerDocsLeadNumber) {
+            toast.error('Add a lead number to use OneDrive documents.');
+            return;
+        }
+        setHeaderDocumentsModalOpen(true);
+    };
+
     const flaggedByLabel = userFullName ?? user?.email ?? 'You';
 
     // `flaggedConversationCount` is kept in sync by InteractionsTab and represents the total flagged items
@@ -2095,6 +2111,17 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         if (hideHistoryAndTimeline && !dup) return null;
         return (
             <div className="flex flex-wrap items-center justify-end gap-1">
+                {headerDocsLeadNumber ? (
+                    <button
+                        type="button"
+                        onClick={openHeaderDocumentsModal}
+                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
+                        title="Case documents on OneDrive"
+                        aria-label="Case documents"
+                    >
+                        <DocumentArrowUpIcon className="h-5 w-5" />
+                    </button>
+                ) : null}
                 {!hideHistoryAndTimeline && (
                     <>
                         <button
@@ -2329,10 +2356,27 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         ) : null}
                                     </div>
                                     <div className="flex shrink-0 items-center gap-2">
-                                        {!hideActionsDropdown &&
-                                            renderMoreActionsDropdown(
-                                                'btn btn-square rounded-full border-2 border-base-300 btn-ghost min-h-[3rem] min-w-[3rem]'
-                                            )}
+                                        {!hideActionsDropdown && (
+                                            <>
+                                                <button
+                                                    type="button"
+                                                    onClick={openHeaderDocumentsModal}
+                                                    disabled={!headerDocsLeadNumber}
+                                                    className="btn btn-square rounded-full border-2 border-base-300 btn-ghost min-h-[3rem] min-w-[3rem] disabled:pointer-events-none disabled:opacity-40"
+                                                    title={
+                                                        headerDocsLeadNumber
+                                                            ? 'Case documents on OneDrive'
+                                                            : 'Lead number required'
+                                                    }
+                                                    aria-label="Case documents"
+                                                >
+                                                    <DocumentArrowUpIcon className="h-6 w-6" aria-hidden />
+                                                </button>
+                                                {renderMoreActionsDropdown(
+                                                    'btn btn-square rounded-full border-2 border-base-300 btn-ghost min-h-[3rem] min-w-[3rem]'
+                                                )}
+                                            </>
+                                        )}
                                         {hideActionsDropdown ? renderCompactHistoryIconRow() : null}
                                     </div>
                                 </div>
@@ -2932,10 +2976,27 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 );
                             })()}
                             <div className="flex w-full max-w-xs flex-wrap items-center justify-end gap-2 border-t border-gray-200/80 pt-3 dark:border-gray-600">
-                                {!hideActionsDropdown &&
-                                    renderMoreActionsDropdown(
-                                        'btn btn-sm btn-square rounded-full border border-base-300 btn-ghost min-h-9 min-w-9'
-                                    )}
+                                {!hideActionsDropdown && (
+                                    <>
+                                        <button
+                                            type="button"
+                                            onClick={openHeaderDocumentsModal}
+                                            disabled={!headerDocsLeadNumber}
+                                            className="btn btn-sm btn-square rounded-full border border-base-300 btn-ghost min-h-9 min-w-9 disabled:pointer-events-none disabled:opacity-40"
+                                            title={
+                                                headerDocsLeadNumber
+                                                    ? 'Case documents on OneDrive'
+                                                    : 'Lead number required'
+                                            }
+                                            aria-label="Case documents"
+                                        >
+                                            <DocumentArrowUpIcon className="h-5 w-5" aria-hidden />
+                                        </button>
+                                        {renderMoreActionsDropdown(
+                                            'btn btn-sm btn-square rounded-full border border-base-300 btn-ghost min-h-9 min-w-9'
+                                        )}
+                                    </>
+                                )}
                                 {hideActionsDropdown ? renderCompactHistoryIconRow() : null}
                             </div>
                         </div>
@@ -4654,6 +4715,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     onClose={() => setIsCallModalOpen(false)}
                     phoneNumber={callPhoneNumber}
                     leadName={callContactName}
+                />
+
+                <DocumentModal
+                    isOpen={headerDocumentsModalOpen}
+                    onClose={() => setHeaderDocumentsModalOpen(false)}
+                    leadNumber={headerDocsLeadNumber}
+                    clientName={selectedClient.name || ''}
+                    onedriveSubFolder={CLIENT_HEADER_ONEDRIVE_SUBFOLDER}
+                    modalTitle="Case documents"
+                    requireCaseDocumentClassification
                 />
 
                 <LeadTagsModal
