@@ -601,6 +601,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
 
       // Prepare update object with all role changes
       const updateData: any = {};
+      let handlerAssigneeUnresolved: string | null = null;
       rolesToUse.forEach(role => {
         if (DISABLED_ROLE_IDS.has(role.id)) {
           return;
@@ -630,15 +631,29 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
 
             updateData[role.fieldName] = shouldSaveNull ? null : assigneeValue;
 
-            // For handler role, also clear case_handler_id when unassigning
-            if (role.id === 'handler' && shouldSaveNull) {
-              updateData['case_handler_id'] = null;
+            // Handler: UI reads case_handler_id first; must stay in sync with display name (same pattern as retainer_handler_id).
+            if (role.id === 'handler') {
+              if (shouldSaveNull) {
+                updateData.case_handler_id = null;
+              } else {
+                const hid = getEmployeeIdFromDisplayName(assigneeValue);
+                if (hid == null) {
+                  handlerAssigneeUnresolved = assigneeValue;
+                } else {
+                  updateData.case_handler_id = hid;
+                }
+              }
             }
 
             console.log(`New lead role (string): ${role.fieldName} = ${updateData[role.fieldName]}`);
           }
         }
       });
+
+      if (handlerAssigneeUnresolved) {
+        toast.error(`Could not resolve employee for handler: "${handlerAssigneeUnresolved}".`);
+        return;
+      }
 
       console.log('Update data for save:', updateData);
       console.log('Is legacy lead:', isLegacyLead);

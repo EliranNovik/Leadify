@@ -37,10 +37,53 @@ interface FloatingFilterBarProps {
     // Role selection props
     selectedRoleForReassign: string;
     setSelectedRoleForReassign: (role: string) => void;
-    activeRoleFilter: string | null;
     showRoleDropdown: boolean;
     setShowRoleDropdown: (show: boolean) => void;
+    /** Opens modal to set case handler vs retention as active (only for handler / retention assign role). */
+    onOpenActiveHandlerModal?: () => void;
+    /** When true (e.g. zero search results), bar is visible but not interactive */
+    interactionsDisabled?: boolean;
 }
+
+type AssignEmployee = {
+    id: number;
+    display_name: string;
+    photo_url?: string | null;
+};
+
+const AssignEmployeeDropdownRow: React.FC<{
+    emp: AssignEmployee;
+    getInitials: (name: string) => string;
+    onPick: () => void;
+}> = ({ emp, getInitials, onPick }) => {
+    const [photoFailed, setPhotoFailed] = React.useState(false);
+    const showPhoto = Boolean(emp.photo_url) && !photoFailed;
+
+    return (
+        <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-base-200 rounded-md transition-colors"
+            onClick={(e) => {
+                e.stopPropagation();
+                onPick();
+            }}
+        >
+            {showPhoto ? (
+                <img
+                    src={emp.photo_url!}
+                    alt=""
+                    className="h-8 w-8 shrink-0 rounded-full object-cover ring-1 ring-base-300/80"
+                    onError={() => setPhotoFailed(true)}
+                />
+            ) : (
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary ring-1 ring-base-300/80">
+                    {getInitials(emp.display_name)}
+                </div>
+            )}
+            <span className="min-w-0 truncate">{emp.display_name}</span>
+        </button>
+    );
+};
 
 const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
     fromDate,
@@ -65,10 +108,15 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
     selectedLeadsCount,
     selectedRoleForReassign,
     setSelectedRoleForReassign,
-    activeRoleFilter,
     showRoleDropdown,
-    setShowRoleDropdown
+    setShowRoleDropdown,
+    onOpenActiveHandlerModal,
+    interactionsDisabled = false
 }) => {
+    const barLockClass = interactionsDisabled ? 'pointer-events-none opacity-40 select-none' : '';
+    const showActiveHandlerBulk =
+        Boolean(onOpenActiveHandlerModal) &&
+        (selectedRoleForReassign === 'handler' || selectedRoleForReassign === 'retainer_handler');
     const roleDropdownRef = React.useRef<HTMLDivElement>(null);
     const assignEmployeeDropdownRef = React.useRef<HTMLDivElement>(null);
 
@@ -95,7 +143,9 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
         { value: 'closer', label: 'Closer' },
         { value: 'meetingManager', label: 'Meeting Manager' },
         { value: 'handler', label: 'Handler' },
-        { value: 'helper', label: 'Helper' }
+        { value: 'helper', label: 'Helper' },
+        { value: 'expert', label: 'Expert' },
+        { value: 'retainer_handler', label: 'Retention Handler' },
     ];
 
     const roleLabels: { [key: string]: string } = {
@@ -103,12 +153,14 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
         closer: 'Closer',
         meetingManager: 'Meeting Manager',
         handler: 'Handler',
-        helper: 'Helper'
+        helper: 'Helper',
+        expert: 'Expert',
+        retainer_handler: 'Retention Handler',
     };
     return (
         <>
             {/* Mobile View - Bottom Fixed Bar */}
-            <div className="md:hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 z-[9999] pointer-events-auto w-[95vw] max-w-[95vw]">
+            <div className={`md:hidden fixed bottom-6 left-1/2 transform -translate-x-1/2 z-[9999] w-[95vw] max-w-[95vw] ${barLockClass}`} aria-disabled={interactionsDisabled}>
                 <div className="bg-white/60 backdrop-blur-2xl rounded-full px-4 py-3 shadow-2xl border border-white/40 flex items-center gap-2 flex-wrap justify-center hover:shadow-3xl transition-all duration-300">
                     {/* Show Filters Button */}
                     <button
@@ -122,43 +174,41 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                         <span className="hidden xs:inline">Filters</span>
                     </button>
 
-                    {/* Role Selection Dropdown - Only show when no role filter is active */}
-                    {!activeRoleFilter && (
-                        <div className="relative role-dropdown-container" ref={roleDropdownRef}>
-                            <button
-                                type="button"
-                                className="btn btn-sm btn-outline rounded-full px-3 text-sm"
-                                onClick={() => setShowRoleDropdown(!showRoleDropdown)}
-                            >
-                                <span className="hidden sm:inline">Assign as: </span>
-                                <span className="sm:hidden">Role: </span>
-                                {roleLabels[selectedRoleForReassign] || 'Select'}
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-                                </svg>
-                            </button>
-                            {showRoleDropdown && (
-                                <div className="absolute bottom-full left-0 mb-2 z-50 bg-white/80 backdrop-blur-xl border border-white/40 rounded-lg shadow-lg w-56">
-                                    <div className="p-2">
-                                        {roleOptions.map((role) => (
-                                            <button
-                                                key={role.value}
-                                                type="button"
-                                                className={`w-full text-left px-3 py-2 text-sm hover:bg-base-200 rounded-md transition-colors ${selectedRoleForReassign === role.value ? 'bg-primary/10 text-primary font-medium' : ''}`}
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setSelectedRoleForReassign(role.value);
-                                                    setShowRoleDropdown(false);
-                                                }}
-                                            >
-                                                {role.label}
-                                            </button>
-                                        ))}
-                                    </div>
+                    {/* Role to assign (independent of sidebar role filter) */}
+                    <div className="relative role-dropdown-container" ref={roleDropdownRef}>
+                        <button
+                            type="button"
+                            className="btn btn-sm btn-outline rounded-full px-3 text-sm"
+                            onClick={() => setShowRoleDropdown(!showRoleDropdown)}
+                        >
+                            <span className="hidden sm:inline">Role to assign: </span>
+                            <span className="sm:hidden">Role: </span>
+                            {roleLabels[selectedRoleForReassign] || 'Select'}
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </button>
+                        {showRoleDropdown && (
+                            <div className="absolute bottom-full left-0 mb-2 z-50 bg-white/80 backdrop-blur-xl border border-white/40 rounded-lg shadow-lg w-56">
+                                <div className="p-2">
+                                    {roleOptions.map((role) => (
+                                        <button
+                                            key={role.value}
+                                            type="button"
+                                            className={`w-full text-left px-3 py-2 text-sm hover:bg-base-200 rounded-md transition-colors ${selectedRoleForReassign === role.value ? 'bg-primary/10 text-primary font-medium' : ''}`}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setSelectedRoleForReassign(role.value);
+                                                setShowRoleDropdown(false);
+                                            }}
+                                        >
+                                            {role.label}
+                                        </button>
+                                    ))}
                                 </div>
-                            )}
-                        </div>
-                    )}
+                            </div>
+                        )}
+                    </div>
 
                     {/* Assign to Employee Dropdown */}
                     <div className="relative assign-employee-dropdown-container flex-1 min-w-[120px]" ref={assignEmployeeDropdownRef}>
@@ -182,19 +232,16 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                                             emp.display_name.toLowerCase().includes(assignEmployeeSearchTerm.toLowerCase())
                                         )
                                         .map((emp) => (
-                                            <button
+                                            <AssignEmployeeDropdownRow
                                                 key={emp.id}
-                                                type="button"
-                                                className="w-full text-left px-3 py-2 text-sm hover:bg-base-200 rounded-md transition-colors"
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
+                                                emp={emp}
+                                                getInitials={getInitials}
+                                                onPick={() => {
                                                     setSelectedEmployeeForReassign(emp.display_name);
                                                     setAssignEmployeeSearchTerm(emp.display_name);
                                                     setShowAssignEmployeeDropdown(false);
                                                 }}
-                                            >
-                                                {emp.display_name}
-                                            </button>
+                                            />
                                         ))}
                                     {employees.filter(emp =>
                                         emp.display_name.toLowerCase().includes(assignEmployeeSearchTerm.toLowerCase())
@@ -208,7 +255,22 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                         )}
                     </div>
 
-                    {/* Re-assign Button */}
+                    {showActiveHandlerBulk && (
+                        <button
+                            type="button"
+                            className="btn btn-outline btn-sm rounded-full px-3 text-sm flex-shrink-0 border-primary/30"
+                            title="Set whether the case handler or retention handler is active on the case"
+                            onClick={() => onOpenActiveHandlerModal?.()}
+                            disabled={selectedLeadsCount === 0}
+                        >
+                            <span className="hidden xs:inline">Set active</span>
+                            <span className="xs:hidden" aria-hidden>
+                                Active
+                            </span>
+                        </button>
+                    )}
+
+                    {/* Assign role */}
                     <button
                         className="btn btn-primary btn-sm rounded-full px-3 text-sm flex-shrink-0"
                         onClick={handleReassignLeads}
@@ -217,17 +279,17 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                         {reassigning ? (
                             <>
                                 <span className="loading loading-spinner loading-xs"></span>
-                                <span className="hidden xs:inline">Re-assigning...</span>
+                                <span className="hidden xs:inline">Assigning…</span>
                             </>
                         ) : (
-                            'Re-assign'
+                            'Assign role'
                         )}
                     </button>
                 </div>
             </div>
 
             {/* Desktop View - Bottom Fixed Bar */}
-            <div className="hidden md:flex fixed bottom-6 left-1/2 transform -translate-x-1/2 z-[9999] pointer-events-auto">
+            <div className={`hidden md:flex fixed bottom-6 left-1/2 transform -translate-x-1/2 z-[9999] ${barLockClass}`} aria-disabled={interactionsDisabled}>
                 <div className="bg-white/60 backdrop-blur-2xl rounded-full px-8 py-4 shadow-2xl border border-white/40 flex items-center gap-4 flex-nowrap justify-center max-w-[97vw] hover:shadow-3xl transition-all duration-300">
                     {/* Show Filters Button */}
                     <button
@@ -241,41 +303,38 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                         Filters
                     </button>
 
-                    {/* Role Selection Dropdown - Only show when no role filter is active */}
-                    {!activeRoleFilter && (
-                        <div className="relative role-dropdown-container" ref={roleDropdownRef}>
-                            <button
-                                type="button"
-                                className="btn btn-sm btn-outline rounded-full px-4 text-sm"
-                                onClick={() => setShowRoleDropdown(!showRoleDropdown)}
-                            >
-                                Assign as: {roleLabels[selectedRoleForReassign] || 'Select Role'}
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
-                                </svg>
-                            </button>
-                            {showRoleDropdown && (
-                                <div className="absolute bottom-full left-0 mb-2 z-50 bg-white/80 backdrop-blur-xl border border-white/40 rounded-lg shadow-lg w-56">
-                                    <div className="p-2">
-                                        {roleOptions.map((role) => (
-                                            <button
-                                                key={role.value}
-                                                type="button"
-                                                className={`w-full text-left px-3 py-2 text-sm hover:bg-base-200 rounded-md transition-colors ${selectedRoleForReassign === role.value ? 'bg-primary/10 text-primary font-medium' : ''}`}
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    setSelectedRoleForReassign(role.value);
-                                                    setShowRoleDropdown(false);
-                                                }}
-                                            >
-                                                {role.label}
-                                            </button>
-                                        ))}
-                                    </div>
+                    {/* Role to assign (independent of sidebar role filter) */}
+                    <div className="relative role-dropdown-container" ref={roleDropdownRef}>
+                        <button
+                            type="button"
+                            className="btn btn-sm btn-outline rounded-full px-4 text-sm"
+                            onClick={() => setShowRoleDropdown(!showRoleDropdown)}
+                        >
+                            Role: {roleLabels[selectedRoleForReassign] || 'Select role'}                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 ml-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </button>
+                        {showRoleDropdown && (
+                            <div className="absolute bottom-full left-0 mb-2 z-50 bg-white/80 backdrop-blur-xl border border-white/40 rounded-lg shadow-lg w-56">
+                                <div className="p-2">
+                                    {roleOptions.map((role) => (
+                                        <button
+                                            key={role.value}
+                                            type="button"
+                                            className={`w-full text-left px-3 py-2 text-sm hover:bg-base-200 rounded-md transition-colors ${selectedRoleForReassign === role.value ? 'bg-primary/10 text-primary font-medium' : ''}`}
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                setSelectedRoleForReassign(role.value);
+                                                setShowRoleDropdown(false);
+                                            }}
+                                        >
+                                            {role.label}
+                                        </button>
+                                    ))}
                                 </div>
-                            )}
-                        </div>
-                    )}
+                            </div>
+                        )}
+                    </div>
 
                     {/* Assign to Employee Dropdown */}
                     <div className="relative assign-employee-dropdown-container" ref={assignEmployeeDropdownRef}>
@@ -299,19 +358,16 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                                             emp.display_name.toLowerCase().includes(assignEmployeeSearchTerm.toLowerCase())
                                         )
                                         .map((emp) => (
-                                            <button
+                                            <AssignEmployeeDropdownRow
                                                 key={emp.id}
-                                                type="button"
-                                                className="w-full text-left px-3 py-2 text-sm hover:bg-base-200 rounded-md transition-colors"
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
+                                                emp={emp}
+                                                getInitials={getInitials}
+                                                onPick={() => {
                                                     setSelectedEmployeeForReassign(emp.display_name);
                                                     setAssignEmployeeSearchTerm(emp.display_name);
                                                     setShowAssignEmployeeDropdown(false);
                                                 }}
-                                            >
-                                                {emp.display_name}
-                                            </button>
+                                            />
                                         ))}
                                     {employees.filter(emp =>
                                         emp.display_name.toLowerCase().includes(assignEmployeeSearchTerm.toLowerCase())
@@ -325,7 +381,19 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                         )}
                     </div>
 
-                    {/* Re-assign Button */}
+                    {showActiveHandlerBulk && (
+                        <button
+                            type="button"
+                            className="btn btn-outline btn-sm rounded-full px-4 text-sm border-primary/30"
+                            title="Set whether the case handler or retention handler is active on the case"
+                            onClick={() => onOpenActiveHandlerModal?.()}
+                            disabled={selectedLeadsCount === 0}
+                        >
+                            Set active on case
+                        </button>
+                    )}
+
+                    {/* Assign role */}
                     <button
                         className="btn btn-primary btn-sm rounded-full px-4 text-sm"
                         onClick={handleReassignLeads}
@@ -334,10 +402,10 @@ const FloatingFilterBar: React.FC<FloatingFilterBarProps> = ({
                         {reassigning ? (
                             <>
                                 <span className="loading loading-spinner loading-xs"></span>
-                                Re-assigning...
+                                Assigning…
                             </>
                         ) : (
-                            'Re-assign'
+                            'Assign role'
                         )}
                     </button>
                 </div>

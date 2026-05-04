@@ -1114,8 +1114,13 @@ const InfoTab: React.FC<ClientTabProps> = ({
       };
 
       if (isLegacy) {
-        const legacyId = client.id.toString().replace('legacy_', '');
-        insertData.lead_id = legacyId;
+        const legacyIdRaw = client.id.toString().replace('legacy_', '');
+        const legacyIdNum = /^\d+$/.test(legacyIdRaw) ? parseInt(legacyIdRaw, 10) : NaN;
+        if (Number.isNaN(legacyIdNum)) {
+          alert('Invalid legacy lead id');
+          return;
+        }
+        insertData.lead_id = legacyIdNum;
         insertData.new_lead_id = null;
       } else {
         insertData.new_lead_id = client.id;

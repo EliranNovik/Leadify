@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useMsal } from '@azure/msal-react';
 import { toast } from 'react-hot-toast';
 import { supabase, isAuthError, tryRefreshThenExpire } from '../../lib/supabase';
@@ -11,6 +12,86 @@ const isUnassignedHandlerValue = (value: string | null | undefined): boolean => 
     if (!value) return true;
     const normalized = value.trim().toLowerCase().replace(/[\s_]+/g, ' ');
     return normalized === '' || normalized === '---' || normalized === '--' || normalized === 'not assigned';
+};
+
+/** Persisted filter value: this role must have no assignee (null / placeholders / legacy text). */
+const REASSIGN_ROLE_FILTER_NONE = '__REASSIGN_ROLE_NONE__';
+const REASSIGN_ROLE_NONE_LABEL = 'NONE (unassigned)';
+
+const isReassignRoleNoneFilter = (value: string | null | undefined): boolean =>
+    value === REASSIGN_ROLE_FILTER_NONE;
+
+const leadHasCaseHandler = (lead: any): boolean => {
+    if (lead.lead_type === 'legacy') {
+        const id = lead.case_handler_id;
+        return id != null && id !== '' && Number(id) !== 0;
+    }
+    return !isUnassignedHandlerValue(lead.handler);
+};
+
+const leadHasRetentionHandler = (lead: any): boolean => {
+    const id = lead.retainer_handler_id;
+    if (id == null || id === '') return false;
+    const n = Number(id);
+    if (!Number.isNaN(n)) return n !== 0;
+    return String(id).trim() !== '';
+};
+
+const getRetentionEmployeeForLead = (lead: any, employeesList: { id: number; display_name: string; photo_url?: string | null }[]) => {
+    const id = lead.retainer_handler_id;
+    if (id == null || id === '') return null;
+    const n = typeof id === 'number' ? id : parseInt(String(id), 10);
+    if (Number.isNaN(n) || n === 0) return null;
+    return employeesList.find(e => e.id === n) ?? null;
+};
+
+/** PostgREST `.or()` fragment for new-leads text columns that store a person name or placeholders. */
+const newLeadsUnassignedTextRoleOr = (column: string): string =>
+    `${column}.is.null,${column}.eq.---,${column}.eq.--,${column}.eq.,${column}.eq.Not assigned,${column}.eq.not_assigned,${column}.eq.Not_assigned`;
+
+type ReassignRoleFilterTab =
+    | 'scheduler'
+    | 'closer'
+    | 'meetingManager'
+    | 'handler'
+    | 'helper'
+    | 'expert'
+    | 'retainer_handler';
+
+type ReassignEmployeeOption = { id: number; display_name: string; photo_url?: string | null };
+
+const ReassignRoleEmployeeRow: React.FC<{
+    emp: ReassignEmployeeOption;
+    getInitials: (name: string) => string;
+    onPick: () => void;
+}> = ({ emp, getInitials, onPick }) => {
+    const [photoFailed, setPhotoFailed] = React.useState(false);
+    const showPhoto = Boolean(emp.photo_url) && !photoFailed;
+
+    return (
+        <button
+            type="button"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-base-200 rounded-md transition-colors"
+            onClick={(e) => {
+                e.stopPropagation();
+                onPick();
+            }}
+        >
+            {showPhoto ? (
+                <img
+                    src={emp.photo_url!}
+                    alt={emp.display_name}
+                    className="h-8 w-8 shrink-0 rounded-full object-cover ring-1 ring-base-300/80"
+                    onError={() => setPhotoFailed(true)}
+                />
+            ) : (
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary ring-1 ring-base-300/80">
+                    {getInitials(emp.display_name)}
+                </div>
+            )}
+            <span className="min-w-0 flex-1 truncate text-sm">{emp.display_name}</span>
+        </button>
+    );
 };
 
 // Multi-select input component for multiple selections
@@ -160,6 +241,36 @@ const MultiSelectInput = ({
 
 const ReassignLeadsReport: React.FC = () => {
     const { instance } = useMsal();
+    const navigate = useNavigate();
+
+    /** Same routing as MyCasesPage.handleCaseClick — new leads by lead number (encode /), legacy by id + optional ?lead= */
+    const navigateToClientFromReassignLead = useCallback(
+        (lead: any, e: React.MouseEvent) => {
+            e.stopPropagation();
+            const openNewTab = e.metaKey || e.ctrlKey;
+            const go = (path: string) => {
+                if (openNewTab) window.open(path, '_blank');
+                else navigate(path);
+            };
+
+            if (lead.lead_type === 'new') {
+                const leadNumber = String(lead.display_lead_number || lead.lead_number || '').trim();
+                if (!leadNumber) return;
+                go(`/clients/${encodeURIComponent(leadNumber)}`);
+                return;
+            }
+
+            const legacyId = String(lead.id || '').replace(/^legacy_/, '').trim();
+            if (!legacyId) return;
+            const legacyLeadNumber = String(lead.lead_number || lead.display_lead_number || '').trim();
+            if (legacyLeadNumber.includes('/')) {
+                go(`/clients/${encodeURIComponent(legacyId)}?lead=${encodeURIComponent(legacyLeadNumber)}`);
+            } else {
+                go(`/clients/${encodeURIComponent(legacyId)}`);
+            }
+        },
+        [navigate]
+    );
     const [hasCollectionAccess, setHasCollectionAccess] = useState<boolean | null>(null);
     const [checkingAccess, setCheckingAccess] = useState(true);
     const [reassignFilters, setReassignFilters] = usePersistedFilters('reportsPage_reassignFilters', {
@@ -175,6 +286,8 @@ const ReassignLeadsReport: React.FC = () => {
         meetingManager: '',
         handler: '',
         helper: '',
+        expert: '',
+        retainer_handler: '',
         eligibilityDeterminedOnly: false,
         selectedLeadIds: [] as string[]
     }, {
@@ -191,6 +304,35 @@ const ReassignLeadsReport: React.FC = () => {
         storage: 'sessionStorage',
     });
     const [reassigning, setReassigning] = useState(false);
+    const [showActiveHandlerModal, setShowActiveHandlerModal] = useState(false);
+    const [activeHandlerTypeChoice, setActiveHandlerTypeChoice] = useState<1 | 2>(2);
+    const [savingActiveHandlerType, setSavingActiveHandlerType] = useState(false);
+    type ActiveHandlerMissingFlowState =
+        | null
+        | {
+              step: 'ask' | 'assign';
+              activeChoice: 1 | 2;
+              missingRole: 'handler' | 'retainer_handler';
+              missingLeads: any[];
+              allSelected: any[];
+          };
+    const [activeHandlerMissingFlow, setActiveHandlerMissingFlow] = useState<ActiveHandlerMissingFlowState>(null);
+    const [missingFlowAssignName, setMissingFlowAssignName] = useState('');
+    const [missingFlowAssignSearch, setMissingFlowAssignSearch] = useState('');
+    const [showMissingFlowAssignDropdown, setShowMissingFlowAssignDropdown] = useState(false);
+    const [savingMissingFlowAssign, setSavingMissingFlowAssign] = useState(false);
+    type SingleLeadActiveFlowState =
+        | null
+        | {
+              step: 'ask' | 'assign';
+              lead: any;
+              targetChoice: 1 | 2;
+          };
+    const [singleLeadActiveFlow, setSingleLeadActiveFlow] = useState<SingleLeadActiveFlowState>(null);
+    const [singleActiveAssignSearch, setSingleActiveAssignSearch] = useState('');
+    const [singleActiveAssignName, setSingleActiveAssignName] = useState('');
+    const [singleActiveModalSaving, setSingleActiveModalSaving] = useState(false);
+    const [savingSingleLeadId, setSavingSingleLeadId] = useState<string | null>(null);
     // Store selected leads as array in sessionStorage, convert to Set for use
     const [selectedLeadsArray, setSelectedLeadsArray] = usePersistedState<string[]>('reassignLeadsReport_selectedLeads', [], {
         storage: 'sessionStorage',
@@ -242,6 +384,21 @@ const ReassignLeadsReport: React.FC = () => {
     const [selectedHelper, setSelectedHelper] = usePersistedState<string>('reassignLeadsReport_selectedHelper', '', {
         storage: 'sessionStorage',
     });
+    const [showExpertDropdown, setShowExpertDropdown] = useState(false);
+    const [expertSearchTerm, setExpertSearchTerm] = usePersistedState<string>('reassignLeadsReport_expertSearchTerm', '', {
+        storage: 'sessionStorage',
+    });
+    const [selectedExpert, setSelectedExpert] = usePersistedState<string>('reassignLeadsReport_selectedExpert', '', {
+        storage: 'sessionStorage',
+    });
+    const [showRetainerHandlerDropdown, setShowRetainerHandlerDropdown] = useState(false);
+    const [roleFilterTab, setRoleFilterTab] = useState<ReassignRoleFilterTab>('scheduler');
+    const [retainerHandlerSearchTerm, setRetainerHandlerSearchTerm] = usePersistedState<string>('reassignLeadsReport_retainerHandlerSearchTerm', '', {
+        storage: 'sessionStorage',
+    });
+    const [selectedRetainerHandler, setSelectedRetainerHandler] = usePersistedState<string>('reassignLeadsReport_selectedRetainerHandler', '', {
+        storage: 'sessionStorage',
+    });
     const [showAssignEmployeeDropdown, setShowAssignEmployeeDropdown] = useState(false);
     const [showRoleDropdown, setShowRoleDropdown] = useState(false);
     const [assignEmployeeSearchTerm, setAssignEmployeeSearchTerm] = usePersistedState<string>('reassignLeadsReport_assignEmployeeSearchTerm', '', {
@@ -288,6 +445,20 @@ const ReassignLeadsReport: React.FC = () => {
 
     // Ref for scroll detection
     const scrollContainerRef = useRef<HTMLDivElement>(null);
+    const reassignFiltersRef = useRef(reassignFilters);
+    useEffect(() => {
+        reassignFiltersRef.current = reassignFilters;
+    }, [reassignFilters]);
+
+    useEffect(() => {
+        setShowMeetingSchedulerDropdown(false);
+        setShowCloserDropdown(false);
+        setShowMeetingManagerDropdown(false);
+        setShowHandlerDropdown(false);
+        setShowHelperDropdown(false);
+        setShowExpertDropdown(false);
+        setShowRetainerHandlerDropdown(false);
+    }, [roleFilterTab]);
 
     const SCHEDULER_STAGE_ID = 10;
 
@@ -514,29 +685,65 @@ const ReassignLeadsReport: React.FC = () => {
             .slice(0, 2);
     };
 
-    // Get filtered employees with their roles
+    // Get filtered employees with their roles (and NONE / unassigned chips)
     const getFilteredEmployees = () => {
-        const filtered: Array<{ employee: any; role: string; roleLabel: string }> = [];
+        const filtered: Array<{ employee: any; role: string; roleLabel: string; noneFilter?: boolean }> = [];
 
         if (reassignFilters.meetingScheduler) {
-            const emp = employees.find(e => e.display_name === reassignFilters.meetingScheduler);
-            if (emp) filtered.push({ employee: emp, role: 'meetingScheduler', roleLabel: 'Scheduler' });
+            if (isReassignRoleNoneFilter(reassignFilters.meetingScheduler)) {
+                filtered.push({ employee: null, role: 'meetingScheduler', roleLabel: 'Meeting scheduler', noneFilter: true });
+            } else {
+                const emp = employees.find(e => e.display_name === reassignFilters.meetingScheduler);
+                if (emp) filtered.push({ employee: emp, role: 'meetingScheduler', roleLabel: 'Scheduler' });
+            }
         }
         if (reassignFilters.closer) {
-            const emp = employees.find(e => e.display_name === reassignFilters.closer);
-            if (emp) filtered.push({ employee: emp, role: 'closer', roleLabel: 'Closer' });
+            if (isReassignRoleNoneFilter(reassignFilters.closer)) {
+                filtered.push({ employee: null, role: 'closer', roleLabel: 'Closer', noneFilter: true });
+            } else {
+                const emp = employees.find(e => e.display_name === reassignFilters.closer);
+                if (emp) filtered.push({ employee: emp, role: 'closer', roleLabel: 'Closer' });
+            }
         }
         if (reassignFilters.meetingManager) {
-            const emp = employees.find(e => e.display_name === reassignFilters.meetingManager);
-            if (emp) filtered.push({ employee: emp, role: 'meetingManager', roleLabel: 'Meeting Manager' });
+            if (isReassignRoleNoneFilter(reassignFilters.meetingManager)) {
+                filtered.push({ employee: null, role: 'meetingManager', roleLabel: 'Meeting manager', noneFilter: true });
+            } else {
+                const emp = employees.find(e => e.display_name === reassignFilters.meetingManager);
+                if (emp) filtered.push({ employee: emp, role: 'meetingManager', roleLabel: 'Meeting Manager' });
+            }
         }
         if (reassignFilters.handler) {
-            const emp = employees.find(e => e.display_name === reassignFilters.handler);
-            if (emp) filtered.push({ employee: emp, role: 'handler', roleLabel: 'Handler' });
+            if (isReassignRoleNoneFilter(reassignFilters.handler)) {
+                filtered.push({ employee: null, role: 'handler', roleLabel: 'Handler', noneFilter: true });
+            } else {
+                const emp = employees.find(e => e.display_name === reassignFilters.handler);
+                if (emp) filtered.push({ employee: emp, role: 'handler', roleLabel: 'Handler' });
+            }
         }
         if (reassignFilters.helper) {
-            const emp = employees.find(e => e.display_name === reassignFilters.helper);
-            if (emp) filtered.push({ employee: emp, role: 'helper', roleLabel: 'Helper' });
+            if (isReassignRoleNoneFilter(reassignFilters.helper)) {
+                filtered.push({ employee: null, role: 'helper', roleLabel: 'Helper', noneFilter: true });
+            } else {
+                const emp = employees.find(e => e.display_name === reassignFilters.helper);
+                if (emp) filtered.push({ employee: emp, role: 'helper', roleLabel: 'Helper' });
+            }
+        }
+        if (reassignFilters.expert) {
+            if (isReassignRoleNoneFilter(reassignFilters.expert)) {
+                filtered.push({ employee: null, role: 'expert', roleLabel: 'Expert', noneFilter: true });
+            } else {
+                const emp = employees.find(e => e.display_name === reassignFilters.expert);
+                if (emp) filtered.push({ employee: emp, role: 'expert', roleLabel: 'Expert' });
+            }
+        }
+        if (reassignFilters.retainer_handler) {
+            if (isReassignRoleNoneFilter(reassignFilters.retainer_handler)) {
+                filtered.push({ employee: null, role: 'retainer_handler', roleLabel: 'Retention handler', noneFilter: true });
+            } else {
+                const emp = employees.find(e => e.display_name === reassignFilters.retainer_handler);
+                if (emp) filtered.push({ employee: emp, role: 'retainer_handler', roleLabel: 'Retention Handler' });
+            }
         }
 
         return filtered;
@@ -882,6 +1089,18 @@ const ReassignLeadsReport: React.FC = () => {
                     setHelperSearchTerm('');
                 }
             }
+            if (showExpertDropdown && !target.closest('.expert-dropdown-container')) {
+                setShowExpertDropdown(false);
+                if (!selectedExpert) {
+                    setExpertSearchTerm('');
+                }
+            }
+            if (showRetainerHandlerDropdown && !target.closest('.retainer-handler-dropdown-container')) {
+                setShowRetainerHandlerDropdown(false);
+                if (!selectedRetainerHandler) {
+                    setRetainerHandlerSearchTerm('');
+                }
+            }
             if (showAssignEmployeeDropdown && !target.closest('.assign-employee-dropdown-container')) {
                 setShowAssignEmployeeDropdown(false);
                 if (!selectedEmployeeForReassign) {
@@ -909,13 +1128,16 @@ const ReassignLeadsReport: React.FC = () => {
             if (showStatusDropdown && !target.closest('.status-filter-dropdown-container')) {
                 setShowStatusDropdown(false);
             }
+            if (showMissingFlowAssignDropdown && !target.closest('.missing-flow-assign-dropdown')) {
+                setShowMissingFlowAssignDropdown(false);
+            }
         };
 
-        if (showMeetingSchedulerDropdown || showCloserDropdown || showMeetingManagerDropdown || showHandlerDropdown || showHelperDropdown || showAssignEmployeeDropdown || showLeadSearchDropdown || showReassignCategoryDropdown || showReassignSourceDropdown || showReassignStageDropdown || showLanguageDropdown || showStatusDropdown || showRoleDropdown) {
+        if (showMeetingSchedulerDropdown || showCloserDropdown || showMeetingManagerDropdown || showHandlerDropdown || showHelperDropdown || showExpertDropdown || showRetainerHandlerDropdown || showAssignEmployeeDropdown || showLeadSearchDropdown || showReassignCategoryDropdown || showReassignSourceDropdown || showReassignStageDropdown || showLanguageDropdown || showStatusDropdown || showRoleDropdown || showMissingFlowAssignDropdown) {
             document.addEventListener('mousedown', handleClickOutside);
             return () => document.removeEventListener('mousedown', handleClickOutside);
         }
-    }, [showMeetingSchedulerDropdown, selectedMeetingScheduler, showCloserDropdown, selectedCloser, showMeetingManagerDropdown, selectedMeetingManager, showHandlerDropdown, selectedHandler, showHelperDropdown, selectedHelper, showAssignEmployeeDropdown, selectedEmployeeForReassign, showLeadSearchDropdown, showReassignCategoryDropdown, showReassignSourceDropdown, showReassignStageDropdown, showLanguageDropdown, showStatusDropdown, showRoleDropdown]);
+    }, [showMeetingSchedulerDropdown, selectedMeetingScheduler, showCloserDropdown, selectedCloser, showMeetingManagerDropdown, selectedMeetingManager, showHandlerDropdown, selectedHandler, showHelperDropdown, selectedHelper, showExpertDropdown, selectedExpert, showRetainerHandlerDropdown, selectedRetainerHandler, showAssignEmployeeDropdown, selectedEmployeeForReassign, showLeadSearchDropdown, showReassignCategoryDropdown, showReassignSourceDropdown, showReassignStageDropdown, showLanguageDropdown, showStatusDropdown, showRoleDropdown, showMissingFlowAssignDropdown]);
 
     // Toggle lead selection
     const toggleLeadSelection = (leadId: string) => {
@@ -970,6 +1192,9 @@ const ReassignLeadsReport: React.FC = () => {
           manager,
           helper,
           handler,
+          expert,
+          retainer_handler_id,
+          active_handler_type,
           category,
           category_id,
           source,
@@ -1104,27 +1329,59 @@ const ReassignLeadsReport: React.FC = () => {
                 }
             }
             if (reassignFilters.meetingScheduler) {
-                leadsQuery = leadsQuery.ilike('scheduler', `%${reassignFilters.meetingScheduler}%`);
+                if (isReassignRoleNoneFilter(reassignFilters.meetingScheduler)) {
+                    leadsQuery = leadsQuery.or(newLeadsUnassignedTextRoleOr('scheduler'));
+                } else {
+                    leadsQuery = leadsQuery.ilike('scheduler', `%${reassignFilters.meetingScheduler}%`);
+                }
             }
             if (reassignFilters.closer) {
-                leadsQuery = leadsQuery.ilike('closer', `%${reassignFilters.closer}%`);
+                if (isReassignRoleNoneFilter(reassignFilters.closer)) {
+                    leadsQuery = leadsQuery.or(newLeadsUnassignedTextRoleOr('closer'));
+                } else {
+                    leadsQuery = leadsQuery.ilike('closer', `%${reassignFilters.closer}%`);
+                }
             }
             if (reassignFilters.meetingManager) {
-                // For new leads, manager field stores employee name as text
-                leadsQuery = leadsQuery.ilike('manager', `%${reassignFilters.meetingManager}%`);
+                if (isReassignRoleNoneFilter(reassignFilters.meetingManager)) {
+                    leadsQuery = leadsQuery.or(newLeadsUnassignedTextRoleOr('manager'));
+                } else {
+                    leadsQuery = leadsQuery.ilike('manager', `%${reassignFilters.meetingManager}%`);
+                }
             }
             if (reassignFilters.handler) {
-                // Treat all "not assigned" variants as null/unassigned in filters.
-                if (isUnassignedHandlerValue(reassignFilters.handler)) {
-                    leadsQuery = leadsQuery.or('handler.is.null,handler.eq.---,handler.eq.--,handler.eq.,handler.eq.Not assigned,handler.eq.not_assigned');
+                if (isReassignRoleNoneFilter(reassignFilters.handler) || isUnassignedHandlerValue(reassignFilters.handler)) {
+                    leadsQuery = leadsQuery.or(newLeadsUnassignedTextRoleOr('handler'));
                 } else {
-                    // For new leads, handler field stores employee name as text
                     leadsQuery = leadsQuery.ilike('handler', `%${reassignFilters.handler}%`);
                 }
             }
             if (reassignFilters.helper) {
-                // For new leads, helper field stores employee name as text
-                leadsQuery = leadsQuery.ilike('helper', `%${reassignFilters.helper}%`);
+                if (isReassignRoleNoneFilter(reassignFilters.helper)) {
+                    leadsQuery = leadsQuery.or(newLeadsUnassignedTextRoleOr('helper'));
+                } else {
+                    leadsQuery = leadsQuery.ilike('helper', `%${reassignFilters.helper}%`);
+                }
+            }
+            if (reassignFilters.expert) {
+                if (isReassignRoleNoneFilter(reassignFilters.expert)) {
+                    leadsQuery = leadsQuery.is('expert', null);
+                } else {
+                    const expertEmp = employees.find(emp => emp.display_name === reassignFilters.expert);
+                    if (expertEmp) {
+                        leadsQuery = leadsQuery.eq('expert', expertEmp.id);
+                    }
+                }
+            }
+            if (reassignFilters.retainer_handler) {
+                if (isReassignRoleNoneFilter(reassignFilters.retainer_handler)) {
+                    leadsQuery = leadsQuery.is('retainer_handler_id', null);
+                } else {
+                    const rhEmp = employees.find(emp => emp.display_name === reassignFilters.retainer_handler);
+                    if (rhEmp) {
+                        leadsQuery = leadsQuery.eq('retainer_handler_id', rhEmp.id);
+                    }
+                }
             }
             if (reassignFilters.selectedLeadIds && reassignFilters.selectedLeadIds.length > 0) {
                 console.log('🔍 Adding selected lead IDs filter for new leads:', reassignFilters.selectedLeadIds);
@@ -1161,6 +1418,9 @@ const ReassignLeadsReport: React.FC = () => {
           meeting_manager_id,
           case_handler_id,
           meeting_lawyer_id,
+          expert_id,
+          retainer_handler_id,
+          active_handler_type,
           category,
           category_id,
           source_id,
@@ -1333,33 +1593,73 @@ const ReassignLeadsReport: React.FC = () => {
                 }
             }
             if (reassignFilters.meetingScheduler) {
-                const employee = employees.find(emp => emp.display_name === reassignFilters.meetingScheduler);
-                if (employee) {
-                    legacyLeadsQuery = legacyLeadsQuery.eq('meeting_scheduler_id', employee.id);
+                if (isReassignRoleNoneFilter(reassignFilters.meetingScheduler)) {
+                    legacyLeadsQuery = legacyLeadsQuery.is('meeting_scheduler_id', null);
+                } else {
+                    const employee = employees.find(emp => emp.display_name === reassignFilters.meetingScheduler);
+                    if (employee) {
+                        legacyLeadsQuery = legacyLeadsQuery.eq('meeting_scheduler_id', employee.id);
+                    }
                 }
             }
             if (reassignFilters.closer) {
-                const employee = employees.find(emp => emp.display_name === reassignFilters.closer);
-                if (employee) {
-                    legacyLeadsQuery = legacyLeadsQuery.eq('closer_id', employee.id);
+                if (isReassignRoleNoneFilter(reassignFilters.closer)) {
+                    legacyLeadsQuery = legacyLeadsQuery.is('closer_id', null);
+                } else {
+                    const employee = employees.find(emp => emp.display_name === reassignFilters.closer);
+                    if (employee) {
+                        legacyLeadsQuery = legacyLeadsQuery.eq('closer_id', employee.id);
+                    }
                 }
             }
             if (reassignFilters.meetingManager) {
-                const employee = employees.find(emp => emp.display_name === reassignFilters.meetingManager);
-                if (employee) {
-                    legacyLeadsQuery = legacyLeadsQuery.eq('meeting_manager_id', employee.id);
+                if (isReassignRoleNoneFilter(reassignFilters.meetingManager)) {
+                    legacyLeadsQuery = legacyLeadsQuery.is('meeting_manager_id', null);
+                } else {
+                    const employee = employees.find(emp => emp.display_name === reassignFilters.meetingManager);
+                    if (employee) {
+                        legacyLeadsQuery = legacyLeadsQuery.eq('meeting_manager_id', employee.id);
+                    }
                 }
             }
             if (reassignFilters.handler) {
-                const employee = employees.find(emp => emp.display_name === reassignFilters.handler);
-                if (employee) {
-                    legacyLeadsQuery = legacyLeadsQuery.eq('case_handler_id', employee.id);
+                if (isReassignRoleNoneFilter(reassignFilters.handler)) {
+                    legacyLeadsQuery = legacyLeadsQuery.is('case_handler_id', null);
+                } else {
+                    const employee = employees.find(emp => emp.display_name === reassignFilters.handler);
+                    if (employee) {
+                        legacyLeadsQuery = legacyLeadsQuery.eq('case_handler_id', employee.id);
+                    }
                 }
             }
             if (reassignFilters.helper) {
-                const employee = employees.find(emp => emp.display_name === reassignFilters.helper);
-                if (employee) {
-                    legacyLeadsQuery = legacyLeadsQuery.eq('meeting_lawyer_id', employee.id);
+                if (isReassignRoleNoneFilter(reassignFilters.helper)) {
+                    legacyLeadsQuery = legacyLeadsQuery.is('meeting_lawyer_id', null);
+                } else {
+                    const employee = employees.find(emp => emp.display_name === reassignFilters.helper);
+                    if (employee) {
+                        legacyLeadsQuery = legacyLeadsQuery.eq('meeting_lawyer_id', employee.id);
+                    }
+                }
+            }
+            if (reassignFilters.expert) {
+                if (isReassignRoleNoneFilter(reassignFilters.expert)) {
+                    legacyLeadsQuery = legacyLeadsQuery.is('expert_id', null);
+                } else {
+                    const employee = employees.find(emp => emp.display_name === reassignFilters.expert);
+                    if (employee) {
+                        legacyLeadsQuery = legacyLeadsQuery.eq('expert_id', employee.id);
+                    }
+                }
+            }
+            if (reassignFilters.retainer_handler) {
+                if (isReassignRoleNoneFilter(reassignFilters.retainer_handler)) {
+                    legacyLeadsQuery = legacyLeadsQuery.is('retainer_handler_id', null);
+                } else {
+                    const employee = employees.find(emp => emp.display_name === reassignFilters.retainer_handler);
+                    if (employee) {
+                        legacyLeadsQuery = legacyLeadsQuery.eq('retainer_handler_id', employee.id);
+                    }
                 }
             }
             if (reassignFilters.selectedLeadIds && reassignFilters.selectedLeadIds.length > 0) {
@@ -1652,12 +1952,12 @@ const ReassignLeadsReport: React.FC = () => {
     // Re-assign leads function
     const handleReassignLeads = async () => {
         if (selectedLeads.size === 0) {
-            toast.error('Please select at least one lead to reassign.');
+            toast.error('Please select at least one lead.');
             return;
         }
 
         if (!selectedEmployeeForReassign || !selectedRoleForReassign) {
-            toast.error('Please select an employee to assign leads to.');
+            toast.error('Choose a role to assign and an employee.');
             return;
         }
 
@@ -1666,10 +1966,16 @@ const ReassignLeadsReport: React.FC = () => {
             closer: 'Closer',
             meetingManager: 'Meeting Manager',
             handler: 'Handler',
-            helper: 'Helper'
+            helper: 'Helper',
+            expert: 'Expert',
+            retainer_handler: 'Retention Handler',
         };
 
-        const confirmReassign = confirm(`Are you sure you want to re-assign ${selectedLeads.size} selected lead(s) to ${selectedEmployeeForReassign} as ${roleLabels[selectedRoleForReassign]}?`);
+        const roleName = roleLabels[selectedRoleForReassign] || selectedRoleForReassign;
+        const confirmReassign = confirm(
+            `Assign ${selectedEmployeeForReassign} as ${roleName} on ${selectedLeads.size} selected lead(s)?\n\n` +
+                `Only the ${roleName} field will be updated; other roles on each lead stay unchanged.`
+        );
         if (!confirmReassign) return;
 
         setReassigning(true);
@@ -1727,6 +2033,11 @@ const ReassignLeadsReport: React.FC = () => {
             } else if (selectedRoleForReassign === 'helper') {
                 updateFields.helper = selectedEmployeeForReassign;
                 updateFields.meeting_lawyer_id = selectedEmployee.id;
+            } else if (selectedRoleForReassign === 'expert') {
+                // New leads: expert column is employee id (RolesTab)
+                updateFields.expert = selectedEmployee.id;
+            } else if (selectedRoleForReassign === 'retainer_handler') {
+                updateFields.retainer_handler_id = selectedEmployee.id;
             }
 
             if (newLeads.length > 0) {
@@ -1756,6 +2067,10 @@ const ReassignLeadsReport: React.FC = () => {
                 legacyUpdateFields.case_handler_id = selectedEmployee.id;
             } else if (selectedRoleForReassign === 'helper') {
                 legacyUpdateFields.meeting_lawyer_id = selectedEmployee.id;
+            } else if (selectedRoleForReassign === 'expert') {
+                legacyUpdateFields.expert_id = selectedEmployee.id;
+            } else if (selectedRoleForReassign === 'retainer_handler') {
+                legacyUpdateFields.retainer_handler_id = selectedEmployee.id;
             }
 
             if (legacyLeads.length > 0) {
@@ -1788,42 +2103,336 @@ const ReassignLeadsReport: React.FC = () => {
                 }
             }
 
-            toast.success(`Successfully re-assigned ${selectedLeads.size} lead(s) to ${selectedEmployeeForReassign} as ${roleLabels[selectedRoleForReassign]}!`);
+            toast.success(
+                `Assigned ${selectedEmployeeForReassign} as ${roleLabels[selectedRoleForReassign]} on ${selectedLeads.size} lead(s). Other roles were not changed.`
+            );
 
-            // Remove reassigned leads from results and clear selection
-            setReassignResults(prev => prev.filter(lead => !selectedLeads.has(lead.id?.toString() || '')));
+            // Keep leads in the list (search filter may still apply); clear selection and assign bar
             setSelectedLeads(new Set());
             setSelectedEmployeeForReassign('');
             setAssignEmployeeSearchTerm('');
 
         } catch (error) {
-            console.error('Error re-assigning leads:', error);
-            toast.error('Failed to re-assign leads. Please try again.');
+            console.error('Error assigning role on leads:', error);
+            toast.error('Failed to assign role. Please try again.');
         } finally {
             setReassigning(false);
         }
     };
 
+    const openActiveHandlerModal = () => {
+        if (selectedLeads.size === 0) {
+            toast.error('Select at least one lead.');
+            return;
+        }
+        setSingleLeadActiveFlow(null);
+        const first = reassignResults.find(lead => selectedLeads.has(lead.id?.toString() || ''));
+        const t = Number((first as any)?.active_handler_type);
+        setActiveHandlerTypeChoice(t === 1 ? 1 : 2);
+        setShowActiveHandlerModal(true);
+    };
+
+    const performBulkActiveHandlerUpdate = async (selectedList: any[], choice: 1 | 2) => {
+        const newLeads = selectedList.filter(lead => lead.lead_type === 'new');
+        const legacyLeads = selectedList.filter(lead => lead.lead_type === 'legacy');
+        const newIds = newLeads.map(l => l.id).filter(Boolean);
+        const legacyIds = legacyLeads.map(l => l.id).filter(Boolean);
+
+        if (newIds.length === 0 && legacyIds.length === 0) {
+            throw new Error('NO_MATCHING_IDS');
+        }
+
+        if (newIds.length > 0) {
+            const { error } = await supabase
+                .from('leads')
+                .update({ active_handler_type: choice })
+                .in('id', newIds as string[]);
+            if (error) throw error;
+        }
+        if (legacyIds.length > 0) {
+            const { error } = await supabase
+                .from('leads_lead')
+                .update({ active_handler_type: choice })
+                .in('id', legacyIds as (string | number)[]);
+            if (error) throw error;
+        }
+    };
+
+    const resolveStageAttribution = async () => {
+        const account = instance?.getAllAccounts()[0];
+        let currentUserFullName = account?.name || 'Unknown User';
+        if (account?.username) {
+            try {
+                const { data: userData } = await supabase
+                    .from('users')
+                    .select('full_name')
+                    .eq('email', account.username)
+                    .single();
+                if (userData?.full_name) {
+                    currentUserFullName = userData.full_name;
+                }
+            } catch {
+                // keep fallback name
+            }
+        }
+        return {
+            stage_changed_by: currentUserFullName,
+            stage_changed_at: new Date().toISOString(),
+        };
+    };
+
+    const assignMissingRoleToLeads = async (
+        leads: any[],
+        role: 'handler' | 'retainer_handler',
+        employeeDisplayName: string
+    ) => {
+        const selectedEmployee = employees.find(emp => emp.display_name === employeeDisplayName);
+        if (!selectedEmployee) {
+            throw new Error('EMPLOYEE_NOT_FOUND');
+        }
+        const { stage_changed_by, stage_changed_at } = await resolveStageAttribution();
+        const newLeads = leads.filter(l => l.lead_type === 'new');
+        const legacyLeads = leads.filter(l => l.lead_type === 'legacy');
+
+        if (role === 'handler') {
+            const newIds = newLeads.map(l => l.id).filter(Boolean);
+            const legacyIds = legacyLeads.map(l => l.id).filter(Boolean);
+            if (newIds.length > 0) {
+                const { error } = await supabase
+                    .from('leads')
+                    .update({
+                        handler: employeeDisplayName,
+                        case_handler_id: selectedEmployee.id,
+                        stage_changed_by,
+                        stage_changed_at,
+                    })
+                    .in('id', newIds as string[]);
+                if (error) throw error;
+            }
+            if (legacyIds.length > 0) {
+                const { error } = await supabase
+                    .from('leads_lead')
+                    .update({
+                        case_handler_id: selectedEmployee.id,
+                        stage_changed_by,
+                        stage_changed_at,
+                    })
+                    .in('id', legacyIds as (string | number)[]);
+                if (error) throw error;
+            }
+        } else {
+            const newIds = newLeads.map(l => l.id).filter(Boolean);
+            const legacyIds = legacyLeads.map(l => l.id).filter(Boolean);
+            if (newIds.length > 0) {
+                const { error } = await supabase
+                    .from('leads')
+                    .update({
+                        retainer_handler_id: selectedEmployee.id,
+                        stage_changed_by,
+                        stage_changed_at,
+                    })
+                    .in('id', newIds as string[]);
+                if (error) throw error;
+            }
+            if (legacyIds.length > 0) {
+                const { error } = await supabase
+                    .from('leads_lead')
+                    .update({
+                        retainer_handler_id: selectedEmployee.id,
+                        stage_changed_by,
+                        stage_changed_at,
+                    })
+                    .in('id', legacyIds as (string | number)[]);
+                if (error) throw error;
+            }
+        }
+    };
+
+    const handleMissingFlowAssignAndApply = async () => {
+        const flow = activeHandlerMissingFlow;
+        if (!flow || flow.step !== 'assign') return;
+        if (!missingFlowAssignName.trim()) {
+            toast.error('Choose an employee to assign.');
+            return;
+        }
+        setSavingMissingFlowAssign(true);
+        try {
+            await assignMissingRoleToLeads(flow.missingLeads, flow.missingRole, missingFlowAssignName.trim());
+            await performBulkActiveHandlerUpdate(flow.allSelected, flow.activeChoice);
+
+            const n = flow.allSelected.length;
+            const roleWord = flow.missingRole === 'handler' ? 'case handler' : 'retention handler';
+            const activeSummary =
+                flow.activeChoice === 2
+                    ? 'Case handler is now active on the selected cases.'
+                    : 'Retention handler is now active on the selected cases.';
+            toast.success(`Assigned ${missingFlowAssignName.trim()} as ${roleWord} on ${flow.missingLeads.length} lead(s), then updated active role. ${activeSummary} (${n} lead${n === 1 ? '' : 's'}).`);
+
+            setActiveHandlerMissingFlow(null);
+            setMissingFlowAssignName('');
+            setMissingFlowAssignSearch('');
+            setShowMissingFlowAssignDropdown(false);
+            await handleReassignSearch();
+        } catch (e: any) {
+            if (e?.message === 'EMPLOYEE_NOT_FOUND') {
+                toast.error('That employee could not be found. Pick someone from the list.');
+            } else {
+                console.error('Assign missing role then active:', e);
+                toast.error('Assignment or active-role update failed. Please try again.');
+            }
+        } finally {
+            setSavingMissingFlowAssign(false);
+        }
+    };
+
+    const applySingleLeadActiveType = async (lead: any, choice: 1 | 2) => {
+        const id = lead.id?.toString() || '';
+        setSavingSingleLeadId(id);
+        try {
+            await performBulkActiveHandlerUpdate([lead], choice);
+            toast.success(
+                choice === 2 ? 'Case handler is now active on this lead.' : 'Retention handler is now active on this lead.'
+            );
+            await handleReassignSearch();
+        } catch (e: any) {
+            if (e?.message === 'NO_MATCHING_IDS') {
+                toast.error('Could not update this lead. Try search again.');
+            } else {
+                console.error('Single lead active_handler_type:', e);
+                toast.error('Could not update active role.');
+            }
+        } finally {
+            setSavingSingleLeadId(null);
+        }
+    };
+
+    const handleSingleLeadActivePick = (lead: any, targetChoice: 1 | 2, e: React.MouseEvent) => {
+        e.stopPropagation();
+        setActiveHandlerMissingFlow(null);
+        const current = Number((lead as any).active_handler_type) === 1 ? 1 : 2;
+        if (current === targetChoice) return;
+
+        if (targetChoice === 2 && !leadHasCaseHandler(lead)) {
+            setSingleActiveAssignName('');
+            setSingleActiveAssignSearch('');
+            setSingleLeadActiveFlow({ lead, targetChoice: 2, step: 'ask' });
+            return;
+        }
+        if (targetChoice === 1 && !leadHasRetentionHandler(lead)) {
+            setSingleActiveAssignName('');
+            setSingleActiveAssignSearch('');
+            setSingleLeadActiveFlow({ lead, targetChoice: 1, step: 'ask' });
+            return;
+        }
+        void applySingleLeadActiveType(lead, targetChoice);
+    };
+
+    const handleSingleFlowAssignAndApply = async () => {
+        const flow = singleLeadActiveFlow;
+        if (!flow || flow.step !== 'assign') return;
+        if (!singleActiveAssignName.trim()) {
+            toast.error('Pick an employee.');
+            return;
+        }
+        setSingleActiveModalSaving(true);
+        try {
+            const missingRole = flow.targetChoice === 2 ? 'handler' : 'retainer_handler';
+            await assignMissingRoleToLeads([flow.lead], missingRole, singleActiveAssignName.trim());
+            await performBulkActiveHandlerUpdate([flow.lead], flow.targetChoice);
+            toast.success('Assigned and set active role on this lead.');
+            setSingleLeadActiveFlow(null);
+            setSingleActiveAssignName('');
+            setSingleActiveAssignSearch('');
+            await handleReassignSearch();
+        } catch (e: any) {
+            if (e?.message === 'EMPLOYEE_NOT_FOUND') {
+                toast.error('Employee not found.');
+            } else {
+                console.error('Single flow assign then active:', e);
+                toast.error('Assignment or update failed.');
+            }
+        } finally {
+            setSingleActiveModalSaving(false);
+        }
+    };
+
+    const handleSaveBulkActiveHandlerType = async () => {
+        if (selectedLeads.size === 0) {
+            toast.error('Select at least one lead.');
+            return;
+        }
+        const selectedList = reassignResults.filter(lead => selectedLeads.has(lead.id?.toString() || ''));
+        const choice = activeHandlerTypeChoice;
+
+        const missingRole: 'handler' | 'retainer_handler' | null =
+            choice === 2
+                ? selectedList.some(l => !leadHasCaseHandler(l))
+                    ? 'handler'
+                    : null
+                : selectedList.some(l => !leadHasRetentionHandler(l))
+                  ? 'retainer_handler'
+                  : null;
+
+        if (missingRole) {
+            const missingLeads = selectedList.filter(l =>
+                missingRole === 'handler' ? !leadHasCaseHandler(l) : !leadHasRetentionHandler(l)
+            );
+            setSingleLeadActiveFlow(null);
+            setShowActiveHandlerModal(false);
+            setMissingFlowAssignName('');
+            setMissingFlowAssignSearch('');
+            setShowMissingFlowAssignDropdown(false);
+            setActiveHandlerMissingFlow({
+                step: 'ask',
+                activeChoice: choice,
+                missingRole,
+                missingLeads,
+                allSelected: selectedList,
+            });
+            return;
+        }
+
+        setSavingActiveHandlerType(true);
+        try {
+            await performBulkActiveHandlerUpdate(selectedList, choice);
+
+            const n = selectedLeads.size;
+            const summary =
+                choice === 2
+                    ? 'Case handler is now active on the selected cases.'
+                    : 'Retention handler is now active on the selected cases.';
+            toast.success(`${summary} (${n} lead${n === 1 ? '' : 's'}).`);
+
+            setShowActiveHandlerModal(false);
+            await handleReassignSearch();
+        } catch (e: any) {
+            if (e?.message === 'NO_MATCHING_IDS') {
+                toast.error('Could not match selected rows to update. Try running search again.');
+            } else {
+                console.error('Bulk active_handler_type update:', e);
+                toast.error('Could not update who is active on all leads. Please try again.');
+            }
+        } finally {
+            setSavingActiveHandlerType(false);
+        }
+    };
+
     const filteredEmployees = getFilteredEmployees();
 
-    // Helper function to determine which role is currently filtered
+    // First non-empty role filter that is not "NONE (unassigned)" — drives which field is the primary employee filter.
     const getActiveRoleFilter = (): string | null => {
-        if (reassignFilters.meetingScheduler) return 'scheduler';
-        if (reassignFilters.closer) return 'closer';
-        if (reassignFilters.meetingManager) return 'meetingManager';
-        if (reassignFilters.handler) return 'handler';
-        if (reassignFilters.helper) return 'helper';
+        if (reassignFilters.meetingScheduler && !isReassignRoleNoneFilter(reassignFilters.meetingScheduler)) return 'scheduler';
+        if (reassignFilters.closer && !isReassignRoleNoneFilter(reassignFilters.closer)) return 'closer';
+        if (reassignFilters.meetingManager && !isReassignRoleNoneFilter(reassignFilters.meetingManager)) return 'meetingManager';
+        if (reassignFilters.handler && !isReassignRoleNoneFilter(reassignFilters.handler)) return 'handler';
+        if (reassignFilters.helper && !isReassignRoleNoneFilter(reassignFilters.helper)) return 'helper';
+        if (reassignFilters.expert && !isReassignRoleNoneFilter(reassignFilters.expert)) return 'expert';
+        if (reassignFilters.retainer_handler && !isReassignRoleNoneFilter(reassignFilters.retainer_handler)) return 'retainer_handler';
         return null;
     };
 
     const activeRoleFilter = getActiveRoleFilter();
-
-    // Auto-set selectedRoleForReassign when a role filter is active
-    useEffect(() => {
-        if (activeRoleFilter) {
-            setSelectedRoleForReassign(activeRoleFilter);
-        }
-    }, [activeRoleFilter]);
+    const isRoleSecondary = (roleKey: string) => Boolean(activeRoleFilter && activeRoleFilter !== roleKey);
 
     // Show loading state while checking access
     if (checkingAccess) {
@@ -1853,10 +2462,59 @@ const ReassignLeadsReport: React.FC = () => {
         );
     }
 
+    const bottomBarNoResults = showFloatingBar && !reassignLoading && reassignResults.length === 0;
+
     return (
-        <div ref={scrollContainerRef} className="p-4 md:p-6">
-            <div className="mb-6">
+        <>
+            <div className="fixed top-14 left-0 right-0 z-40 flex justify-center px-2 pointer-events-none md:top-16">
+                <div className="pointer-events-auto flex max-w-[min(100vw-0.75rem,34rem)] flex-nowrap items-center gap-1.5 rounded-full border border-base-300/70 bg-base-100/92 px-2.5 py-1 shadow-md backdrop-blur-md supports-[backdrop-filter]:bg-base-100/85 sm:gap-2 sm:px-4 sm:py-1.5 sm:shadow-lg">
+                    <div className="flex shrink-0 items-center gap-1">
+                        <input
+                            type="date"
+                            title="From"
+                            className="input input-bordered input-xs h-8 w-[8.75rem] min-w-0 shrink rounded-full border-base-300 px-2 text-[11px] leading-tight sm:w-36 sm:text-xs"
+                            value={reassignFilters.fromDate}
+                            onChange={(e) => setReassignFilters(prev => ({ ...prev, fromDate: e.target.value }))}
+                        />
+                        <input
+                            type="date"
+                            title="To"
+                            className="input input-bordered input-xs h-8 w-[8.75rem] min-w-0 shrink rounded-full border-base-300 px-2 text-[11px] leading-tight sm:w-36 sm:text-xs"
+                            value={reassignFilters.toDate}
+                            onChange={(e) => setReassignFilters(prev => ({ ...prev, toDate: e.target.value }))}
+                        />
+                    </div>
+                    <button
+                        type="button"
+                        className="btn btn-primary btn-xs h-8 w-8 min-h-8 shrink-0 rounded-full p-0 sm:btn-sm sm:h-9 sm:w-9"
+                        onClick={handleReassignSearch}
+                        disabled={reassignLoading}
+                        title="Search"
+                        aria-label="Search leads with current filters"
+                    >
+                        {reassignLoading ? (
+                            <span className="loading loading-spinner loading-xs" />
+                        ) : (
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 shrink-0 sm:h-[1.125rem] sm:w-[1.125rem]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+                            </svg>
+                        )}
+                    </button>
+                    {!showFilters && (
+                        <button
+                            type="button"
+                            className="btn btn-ghost btn-xs h-8 shrink-0 rounded-full border border-base-300/60 px-2.5 text-xs sm:btn-sm sm:h-9"
+                            onClick={() => {
+                                setShowFilters(true);
+                                setShowFloatingBar(false);
+                            }}
+                        >
+                            Filters
+                        </button>
+                    )}
+                </div>
             </div>
+        <div ref={scrollContainerRef} className="p-4 md:p-6 pb-8 pt-[4.25rem] sm:pt-20 md:pt-[4.75rem]">
 
             {/* Filters Section - Two Column Layout */}
             {showFilters && (
@@ -1870,28 +2528,6 @@ const ReassignLeadsReport: React.FC = () => {
                             General Filters
                         </h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            {/* Date Range */}
-                            <div className="grid grid-cols-2 gap-4 md:col-span-2">
-                                <div>
-                                    <label className="block text-sm font-medium mb-2">From date:</label>
-                                    <input
-                                        type="date"
-                                        className="input input-bordered w-full"
-                                        value={reassignFilters.fromDate}
-                                        onChange={(e) => setReassignFilters(prev => ({ ...prev, fromDate: e.target.value }))}
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium mb-2">To date:</label>
-                                    <input
-                                        type="date"
-                                        className="input input-bordered w-full"
-                                        value={reassignFilters.toDate}
-                                        onChange={(e) => setReassignFilters(prev => ({ ...prev, toDate: e.target.value }))}
-                                    />
-                                </div>
-                            </div>
-
                             {/* Lead Numbers Filter */}
                             <div className="form-control md:col-span-2 lead-search-dropdown-container relative">
                                 <label className="label mb-2">
@@ -2201,26 +2837,27 @@ const ReassignLeadsReport: React.FC = () => {
                                 </svg>
                                 Role Filters
                             </h3>
-                            {activeRoleFilter && (
-                                <p className="text-xs text-base-content/60 mb-4 p-2 bg-info/10 rounded-md border border-info/20">
-                                    Only one role filter can be active at a time. Clear the current filter to select a different role.
-                                </p>
-                            )}
-
                             {/* Employee Filter Indicators - At Top */}
                             {filteredEmployees.length > 0 && (
                                 <div className="mb-6 pb-6 border-b border-base-300">
                                     <h4 className="text-sm font-semibold mb-3 text-base-content/70">Filtered by:</h4>
                                     <div className="space-y-3">
-                                        {filteredEmployees.map(({ employee, role, roleLabel }, index) => (
+                                        {filteredEmployees.map(({ employee, role, roleLabel, noneFilter }, index) => (
                                             <div
-                                                key={`${employee.id}-${role}-${index}`}
+                                                key={noneFilter ? `none-${role}-${index}` : `${employee!.id}-${role}-${index}`}
                                                 className="flex items-center gap-3 p-3 bg-gradient-to-r from-primary/10 to-primary/5 rounded-lg border border-primary/20 hover:shadow-md transition-all"
                                             >
-                                                {employee.photo_url ? (
+                                                {noneFilter ? (
+                                                    <div
+                                                        className="w-12 h-12 rounded-full flex items-center justify-center bg-base-300/80 text-base-content/70 text-xs font-semibold ring-2 ring-primary/20 shrink-0"
+                                                        title="Unassigned"
+                                                    >
+                                                        ∅
+                                                    </div>
+                                                ) : employee!.photo_url ? (
                                                     <img
-                                                        src={employee.photo_url}
-                                                        alt={employee.display_name}
+                                                        src={employee!.photo_url}
+                                                        alt={employee!.display_name}
                                                         className="w-12 h-12 rounded-full object-cover ring-2 ring-primary/30"
                                                         onError={(e) => {
                                                             const target = e.target as HTMLImageElement;
@@ -2229,19 +2866,19 @@ const ReassignLeadsReport: React.FC = () => {
                                                             if (parent) {
                                                                 const fallback = document.createElement('div');
                                                                 fallback.className = 'w-12 h-12 rounded-full flex items-center justify-center bg-primary text-primary-content font-bold text-sm ring-2 ring-primary/30';
-                                                                fallback.textContent = getInitials(employee.display_name);
+                                                                fallback.textContent = getInitials(employee!.display_name);
                                                                 parent.appendChild(fallback);
                                                             }
                                                         }}
                                                     />
                                                 ) : (
                                                     <div className="w-12 h-12 rounded-full flex items-center justify-center bg-primary text-primary-content font-bold text-sm ring-2 ring-primary/30">
-                                                        {getInitials(employee.display_name)}
+                                                        {getInitials(employee!.display_name)}
                                                     </div>
                                                 )}
                                                 <div className="flex-1 min-w-0">
                                                     <div className="font-medium text-sm text-base-content truncate">
-                                                        {employee.display_name}
+                                                        {noneFilter ? REASSIGN_ROLE_NONE_LABEL : employee!.display_name}
                                                     </div>
                                                     <div className="text-xs text-base-content/60">
                                                         {roleLabel}
@@ -2253,23 +2890,31 @@ const ReassignLeadsReport: React.FC = () => {
                                                         if (role === 'meetingScheduler') {
                                                             setReassignFilters(prev => ({ ...prev, meetingScheduler: '' }));
                                                             setSelectedMeetingScheduler('');
-                                                            setMeetingSchedulerSearchTerm('- ALL -');
+                                                            setMeetingSchedulerSearchTerm('');
                                                         } else if (role === 'closer') {
                                                             setReassignFilters(prev => ({ ...prev, closer: '' }));
                                                             setSelectedCloser('');
-                                                            setCloserSearchTerm('- ALL -');
+                                                            setCloserSearchTerm('');
                                                         } else if (role === 'meetingManager') {
                                                             setReassignFilters(prev => ({ ...prev, meetingManager: '' }));
                                                             setSelectedMeetingManager('');
-                                                            setMeetingManagerSearchTerm('- ALL -');
+                                                            setMeetingManagerSearchTerm('');
                                                         } else if (role === 'handler') {
                                                             setReassignFilters(prev => ({ ...prev, handler: '' }));
                                                             setSelectedHandler('');
-                                                            setHandlerSearchTerm('- ALL -');
+                                                            setHandlerSearchTerm('');
                                                         } else if (role === 'helper') {
                                                             setReassignFilters(prev => ({ ...prev, helper: '' }));
                                                             setSelectedHelper('');
-                                                            setHelperSearchTerm('- ALL -');
+                                                            setHelperSearchTerm('');
+                                                        } else if (role === 'expert') {
+                                                            setReassignFilters(prev => ({ ...prev, expert: '' }));
+                                                            setSelectedExpert('');
+                                                            setExpertSearchTerm('');
+                                                        } else if (role === 'retainer_handler') {
+                                                            setReassignFilters(prev => ({ ...prev, retainer_handler: '' }));
+                                                            setSelectedRetainerHandler('');
+                                                            setRetainerHandlerSearchTerm('');
                                                         }
                                                     }}
                                                     className="btn btn-ghost btn-xs text-error hover:bg-error/10"
@@ -2285,64 +2930,103 @@ const ReassignLeadsReport: React.FC = () => {
                                 </div>
                             )}
 
-                            <div className="space-y-4">
-                                {/* Meeting Scheduler */}
+                            <div
+                                className="mb-3 flex flex-wrap gap-1 border-b border-base-200 pb-2"
+                                role="tablist"
+                                aria-label="Role filters"
+                            >
+                                {(
+                                    [
+                                        ['scheduler', 'Scheduler'],
+                                        ['closer', 'Closer'],
+                                        ['meetingManager', 'Meeting mgr'],
+                                        ['handler', 'Handler'],
+                                        ['helper', 'Helper'],
+                                        ['expert', 'Expert'],
+                                        ['retainer_handler', 'Retention'],
+                                    ] as const
+                                ).map(([id, label]) => (
+                                    <button
+                                        key={id}
+                                        type="button"
+                                        role="tab"
+                                        aria-selected={roleFilterTab === id}
+                                        className={`btn btn-xs rounded-full normal-case sm:btn-sm ${roleFilterTab === id ? 'btn-primary' : 'btn-ghost btn-outline border-base-300'}`}
+                                        onClick={() => setRoleFilterTab(id)}
+                                    >
+                                        {label}
+                                    </button>
+                                ))}
+                            </div>
+
+                            <div>
+                                {roleFilterTab === 'scheduler' && (
                                 <div>
-                                    <label className="block text-sm font-medium mb-2">Meeting scheduler:</label>
                                     <div className="relative meeting-scheduler-dropdown-container">
                                         <input
                                             type="text"
                                             placeholder="Search employee..."
                                             className="input input-bordered w-full"
+                                            readOnly={isRoleSecondary('scheduler')}
                                             value={meetingSchedulerSearchTerm}
                                             onChange={(e) => {
+                                                if (isRoleSecondary('scheduler')) return;
                                                 setMeetingSchedulerSearchTerm(e.target.value);
                                                 setReassignFilters(prev => ({ ...prev, meetingScheduler: e.target.value }));
                                             }}
-                                            onFocus={() => {
-                                                if (!activeRoleFilter || activeRoleFilter === 'scheduler') {
-                                                    setShowMeetingSchedulerDropdown(true);
-                                                }
-                                            }}
-                                            disabled={activeRoleFilter !== null && activeRoleFilter !== 'scheduler'}
+                                            onFocus={() => setShowMeetingSchedulerDropdown(true)}
                                         />
                                         {showMeetingSchedulerDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
-                                                    <button
-                                                        className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors"
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            setSelectedMeetingScheduler('');
-                                                            setMeetingSchedulerSearchTerm('- ALL -');
-                                                            setReassignFilters(prev => ({ ...prev, meetingScheduler: '' }));
-                                                            setShowMeetingSchedulerDropdown(false);
-                                                        }}
-                                                    >
-                                                        - ALL -
-                                                    </button>
-                                                    {employees
+                                                    {isRoleSecondary('scheduler') && (
+                                                        <button
+                                                            type="button"
+                                                            className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setSelectedMeetingScheduler('');
+                                                                setMeetingSchedulerSearchTerm(REASSIGN_ROLE_NONE_LABEL);
+                                                                setReassignFilters(prev => ({ ...prev, meetingScheduler: REASSIGN_ROLE_FILTER_NONE }));
+                                                                setShowMeetingSchedulerDropdown(false);
+                                                            }}
+                                                        >
+                                                            {REASSIGN_ROLE_NONE_LABEL}
+                                                        </button>
+                                                    )}
+                                                    {!isRoleSecondary('scheduler') && employees
                                                         .filter(emp =>
                                                             emp.display_name.toLowerCase().includes(meetingSchedulerSearchTerm.toLowerCase())
                                                         )
                                                         .map((emp) => (
-                                                            <button
+                                                            <ReassignRoleEmployeeRow
                                                                 key={emp.id}
-                                                                className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
+                                                                emp={emp}
+                                                                getInitials={getInitials}
+                                                                onPick={() => {
+                                                                    const snap = reassignFiltersRef.current;
+                                                                    setReassignFilters(prev => {
+                                                                        const next = { ...prev, meetingScheduler: emp.display_name };
+                                                                        (['closer', 'meetingManager', 'handler', 'helper', 'expert', 'retainer_handler'] as const).forEach((fk) => {
+                                                                            if (!isReassignRoleNoneFilter(prev[fk] as string)) (next as any)[fk] = '';
+                                                                        });
+                                                                        return next;
+                                                                    });
+                                                                    if (!isReassignRoleNoneFilter(snap.closer)) { setCloserSearchTerm(''); setSelectedCloser(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.meetingManager)) { setMeetingManagerSearchTerm(''); setSelectedMeetingManager(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.handler)) { setHandlerSearchTerm(''); setSelectedHandler(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.helper)) { setHelperSearchTerm(''); setSelectedHelper(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.expert)) { setExpertSearchTerm(''); setSelectedExpert(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.retainer_handler)) { setRetainerHandlerSearchTerm(''); setSelectedRetainerHandler(''); }
                                                                     setSelectedMeetingScheduler(emp.display_name);
                                                                     setMeetingSchedulerSearchTerm(emp.display_name);
-                                                                    setReassignFilters(prev => ({ ...prev, meetingScheduler: emp.display_name }));
                                                                     setShowMeetingSchedulerDropdown(false);
                                                                 }}
-                                                            >
-                                                                {emp.display_name}
-                                                            </button>
+                                                            />
                                                         ))}
-                                                    {employees.filter(emp =>
+                                                    {!isRoleSecondary('scheduler') && employees.filter(emp =>
                                                         emp.display_name.toLowerCase().includes(meetingSchedulerSearchTerm.toLowerCase())
-                                                    ).length === 0 && meetingSchedulerSearchTerm !== '- ALL -' && (
+                                                    ).length === 0 && meetingSchedulerSearchTerm.trim() !== '' && (
                                                             <div className="px-3 py-2 text-sm text-base-content/60">
                                                                 No employees found
                                                             </div>
@@ -2351,63 +3035,76 @@ const ReassignLeadsReport: React.FC = () => {
                                             </div>
                                         )}
                                     </div>
+                                    <label className="block text-sm font-medium mt-2">Meeting scheduler:</label>
                                 </div>
+                                )}
+                                {roleFilterTab === 'closer' && (
                                 <div>
-                                    <label className="block text-sm font-medium mb-2">Closer:</label>
                                     <div className="relative closer-dropdown-container">
                                         <input
                                             type="text"
                                             placeholder="Search employee..."
                                             className="input input-bordered w-full"
+                                            readOnly={isRoleSecondary('closer')}
                                             value={closerSearchTerm}
                                             onChange={(e) => {
+                                                if (isRoleSecondary('closer')) return;
                                                 setCloserSearchTerm(e.target.value);
                                                 setReassignFilters(prev => ({ ...prev, closer: e.target.value }));
                                             }}
-                                            onFocus={() => {
-                                                if (!activeRoleFilter || activeRoleFilter === 'closer') {
-                                                    setShowCloserDropdown(true);
-                                                }
-                                            }}
-                                            disabled={activeRoleFilter !== null && activeRoleFilter !== 'closer'}
+                                            onFocus={() => setShowCloserDropdown(true)}
                                         />
                                         {showCloserDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
-                                                    <button
-                                                        className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors"
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            setSelectedCloser('');
-                                                            setCloserSearchTerm('- ALL -');
-                                                            setReassignFilters(prev => ({ ...prev, closer: '' }));
-                                                            setShowCloserDropdown(false);
-                                                        }}
-                                                    >
-                                                        - ALL -
-                                                    </button>
-                                                    {employees
+                                                    {isRoleSecondary('closer') && (
+                                                        <button
+                                                            type="button"
+                                                            className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setSelectedCloser('');
+                                                                setCloserSearchTerm(REASSIGN_ROLE_NONE_LABEL);
+                                                                setReassignFilters(prev => ({ ...prev, closer: REASSIGN_ROLE_FILTER_NONE }));
+                                                                setShowCloserDropdown(false);
+                                                            }}
+                                                        >
+                                                            {REASSIGN_ROLE_NONE_LABEL}
+                                                        </button>
+                                                    )}
+                                                    {!isRoleSecondary('closer') && employees
                                                         .filter(emp =>
                                                             emp.display_name.toLowerCase().includes(closerSearchTerm.toLowerCase())
                                                         )
                                                         .map((emp) => (
-                                                            <button
+                                                            <ReassignRoleEmployeeRow
                                                                 key={emp.id}
-                                                                className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
+                                                                emp={emp}
+                                                                getInitials={getInitials}
+                                                                onPick={() => {
+                                                                    const snap = reassignFiltersRef.current;
+                                                                    setReassignFilters(prev => {
+                                                                        const next = { ...prev, closer: emp.display_name };
+                                                                        (['meetingScheduler', 'meetingManager', 'handler', 'helper', 'expert', 'retainer_handler'] as const).forEach((fk) => {
+                                                                            if (!isReassignRoleNoneFilter(prev[fk] as string)) (next as any)[fk] = '';
+                                                                        });
+                                                                        return next;
+                                                                    });
+                                                                    if (!isReassignRoleNoneFilter(snap.meetingScheduler)) { setMeetingSchedulerSearchTerm(''); setSelectedMeetingScheduler(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.meetingManager)) { setMeetingManagerSearchTerm(''); setSelectedMeetingManager(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.handler)) { setHandlerSearchTerm(''); setSelectedHandler(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.helper)) { setHelperSearchTerm(''); setSelectedHelper(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.expert)) { setExpertSearchTerm(''); setSelectedExpert(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.retainer_handler)) { setRetainerHandlerSearchTerm(''); setSelectedRetainerHandler(''); }
                                                                     setSelectedCloser(emp.display_name);
                                                                     setCloserSearchTerm(emp.display_name);
-                                                                    setReassignFilters(prev => ({ ...prev, closer: emp.display_name }));
                                                                     setShowCloserDropdown(false);
                                                                 }}
-                                                            >
-                                                                {emp.display_name}
-                                                            </button>
+                                                            />
                                                         ))}
-                                                    {employees.filter(emp =>
+                                                    {!isRoleSecondary('closer') && employees.filter(emp =>
                                                         emp.display_name.toLowerCase().includes(closerSearchTerm.toLowerCase())
-                                                    ).length === 0 && closerSearchTerm !== '- ALL -' && (
+                                                    ).length === 0 && closerSearchTerm.trim() !== '' && (
                                                             <div className="px-3 py-2 text-sm text-base-content/60">
                                                                 No employees found
                                                             </div>
@@ -2416,63 +3113,76 @@ const ReassignLeadsReport: React.FC = () => {
                                             </div>
                                         )}
                                     </div>
+                                    <label className="block text-sm font-medium mt-2">Closer:</label>
                                 </div>
+                                )}
+                                {roleFilterTab === 'meetingManager' && (
                                 <div>
-                                    <label className="block text-sm font-medium mb-2">Meeting Manager:</label>
                                     <div className="relative meeting-manager-dropdown-container">
                                         <input
                                             type="text"
                                             placeholder="Search employee..."
                                             className="input input-bordered w-full"
+                                            readOnly={isRoleSecondary('meetingManager')}
                                             value={meetingManagerSearchTerm}
                                             onChange={(e) => {
+                                                if (isRoleSecondary('meetingManager')) return;
                                                 setMeetingManagerSearchTerm(e.target.value);
                                                 setReassignFilters(prev => ({ ...prev, meetingManager: e.target.value }));
                                             }}
-                                            onFocus={() => {
-                                                if (!activeRoleFilter || activeRoleFilter === 'meetingManager') {
-                                                    setShowMeetingManagerDropdown(true);
-                                                }
-                                            }}
-                                            disabled={activeRoleFilter !== null && activeRoleFilter !== 'meetingManager'}
+                                            onFocus={() => setShowMeetingManagerDropdown(true)}
                                         />
                                         {showMeetingManagerDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
-                                                    <button
-                                                        className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors"
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            setSelectedMeetingManager('');
-                                                            setMeetingManagerSearchTerm('- ALL -');
-                                                            setReassignFilters(prev => ({ ...prev, meetingManager: '' }));
-                                                            setShowMeetingManagerDropdown(false);
-                                                        }}
-                                                    >
-                                                        - ALL -
-                                                    </button>
-                                                    {employees
+                                                    {isRoleSecondary('meetingManager') && (
+                                                        <button
+                                                            type="button"
+                                                            className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setSelectedMeetingManager('');
+                                                                setMeetingManagerSearchTerm(REASSIGN_ROLE_NONE_LABEL);
+                                                                setReassignFilters(prev => ({ ...prev, meetingManager: REASSIGN_ROLE_FILTER_NONE }));
+                                                                setShowMeetingManagerDropdown(false);
+                                                            }}
+                                                        >
+                                                            {REASSIGN_ROLE_NONE_LABEL}
+                                                        </button>
+                                                    )}
+                                                    {!isRoleSecondary('meetingManager') && employees
                                                         .filter(emp =>
                                                             emp.display_name.toLowerCase().includes(meetingManagerSearchTerm.toLowerCase())
                                                         )
                                                         .map((emp) => (
-                                                            <button
+                                                            <ReassignRoleEmployeeRow
                                                                 key={emp.id}
-                                                                className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
+                                                                emp={emp}
+                                                                getInitials={getInitials}
+                                                                onPick={() => {
+                                                                    const snap = reassignFiltersRef.current;
+                                                                    setReassignFilters(prev => {
+                                                                        const next = { ...prev, meetingManager: emp.display_name };
+                                                                        (['meetingScheduler', 'closer', 'handler', 'helper', 'expert', 'retainer_handler'] as const).forEach((fk) => {
+                                                                            if (!isReassignRoleNoneFilter(prev[fk] as string)) (next as any)[fk] = '';
+                                                                        });
+                                                                        return next;
+                                                                    });
+                                                                    if (!isReassignRoleNoneFilter(snap.meetingScheduler)) { setMeetingSchedulerSearchTerm(''); setSelectedMeetingScheduler(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.closer)) { setCloserSearchTerm(''); setSelectedCloser(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.handler)) { setHandlerSearchTerm(''); setSelectedHandler(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.helper)) { setHelperSearchTerm(''); setSelectedHelper(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.expert)) { setExpertSearchTerm(''); setSelectedExpert(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.retainer_handler)) { setRetainerHandlerSearchTerm(''); setSelectedRetainerHandler(''); }
                                                                     setSelectedMeetingManager(emp.display_name);
                                                                     setMeetingManagerSearchTerm(emp.display_name);
-                                                                    setReassignFilters(prev => ({ ...prev, meetingManager: emp.display_name }));
                                                                     setShowMeetingManagerDropdown(false);
                                                                 }}
-                                                            >
-                                                                {emp.display_name}
-                                                            </button>
+                                                            />
                                                         ))}
-                                                    {employees.filter(emp =>
+                                                    {!isRoleSecondary('meetingManager') && employees.filter(emp =>
                                                         emp.display_name.toLowerCase().includes(meetingManagerSearchTerm.toLowerCase())
-                                                    ).length === 0 && meetingManagerSearchTerm !== '- ALL -' && (
+                                                    ).length === 0 && meetingManagerSearchTerm.trim() !== '' && (
                                                             <div className="px-3 py-2 text-sm text-base-content/60">
                                                                 No employees found
                                                             </div>
@@ -2481,65 +3191,76 @@ const ReassignLeadsReport: React.FC = () => {
                                             </div>
                                         )}
                                     </div>
+                                    <label className="block text-sm font-medium mt-2">Meeting Manager:</label>
                                 </div>
-
-                                {/* Handler */}
+                                )}
+                                {roleFilterTab === 'handler' && (
                                 <div>
-                                    <label className="block text-sm font-medium mb-2">Handler:</label>
                                     <div className="relative handler-dropdown-container">
                                         <input
                                             type="text"
                                             placeholder="Search employee..."
                                             className="input input-bordered w-full"
+                                            readOnly={isRoleSecondary('handler')}
                                             value={handlerSearchTerm}
                                             onChange={(e) => {
+                                                if (isRoleSecondary('handler')) return;
                                                 setHandlerSearchTerm(e.target.value);
                                                 setReassignFilters(prev => ({ ...prev, handler: e.target.value }));
                                             }}
-                                            onFocus={() => {
-                                                if (!activeRoleFilter || activeRoleFilter === 'handler') {
-                                                    setShowHandlerDropdown(true);
-                                                }
-                                            }}
-                                            disabled={activeRoleFilter !== null && activeRoleFilter !== 'handler'}
+                                            onFocus={() => setShowHandlerDropdown(true)}
                                         />
                                         {showHandlerDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
-                                                    <button
-                                                        className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors"
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            setSelectedHandler('');
-                                                            setHandlerSearchTerm('- ALL -');
-                                                            setReassignFilters(prev => ({ ...prev, handler: '' }));
-                                                            setShowHandlerDropdown(false);
-                                                        }}
-                                                    >
-                                                        - ALL -
-                                                    </button>
-                                                    {employees
+                                                    {isRoleSecondary('handler') && (
+                                                        <button
+                                                            type="button"
+                                                            className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setSelectedHandler('');
+                                                                setHandlerSearchTerm(REASSIGN_ROLE_NONE_LABEL);
+                                                                setReassignFilters(prev => ({ ...prev, handler: REASSIGN_ROLE_FILTER_NONE }));
+                                                                setShowHandlerDropdown(false);
+                                                            }}
+                                                        >
+                                                            {REASSIGN_ROLE_NONE_LABEL}
+                                                        </button>
+                                                    )}
+                                                    {!isRoleSecondary('handler') && employees
                                                         .filter(emp =>
                                                             emp.display_name.toLowerCase().includes(handlerSearchTerm.toLowerCase())
                                                         )
                                                         .map((emp) => (
-                                                            <button
+                                                            <ReassignRoleEmployeeRow
                                                                 key={emp.id}
-                                                                className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
+                                                                emp={emp}
+                                                                getInitials={getInitials}
+                                                                onPick={() => {
+                                                                    const snap = reassignFiltersRef.current;
+                                                                    setReassignFilters(prev => {
+                                                                        const next = { ...prev, handler: emp.display_name };
+                                                                        (['meetingScheduler', 'closer', 'meetingManager', 'helper', 'expert', 'retainer_handler'] as const).forEach((fk) => {
+                                                                            if (!isReassignRoleNoneFilter(prev[fk] as string)) (next as any)[fk] = '';
+                                                                        });
+                                                                        return next;
+                                                                    });
+                                                                    if (!isReassignRoleNoneFilter(snap.meetingScheduler)) { setMeetingSchedulerSearchTerm(''); setSelectedMeetingScheduler(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.closer)) { setCloserSearchTerm(''); setSelectedCloser(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.meetingManager)) { setMeetingManagerSearchTerm(''); setSelectedMeetingManager(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.helper)) { setHelperSearchTerm(''); setSelectedHelper(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.expert)) { setExpertSearchTerm(''); setSelectedExpert(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.retainer_handler)) { setRetainerHandlerSearchTerm(''); setSelectedRetainerHandler(''); }
                                                                     setSelectedHandler(emp.display_name);
                                                                     setHandlerSearchTerm(emp.display_name);
-                                                                    setReassignFilters(prev => ({ ...prev, handler: emp.display_name }));
                                                                     setShowHandlerDropdown(false);
                                                                 }}
-                                                            >
-                                                                {emp.display_name}
-                                                            </button>
+                                                            />
                                                         ))}
-                                                    {employees.filter(emp =>
+                                                    {!isRoleSecondary('handler') && employees.filter(emp =>
                                                         emp.display_name.toLowerCase().includes(handlerSearchTerm.toLowerCase())
-                                                    ).length === 0 && handlerSearchTerm !== '- ALL -' && (
+                                                    ).length === 0 && handlerSearchTerm.trim() !== '' && (
                                                             <div className="px-3 py-2 text-sm text-base-content/60">
                                                                 No employees found
                                                             </div>
@@ -2548,65 +3269,76 @@ const ReassignLeadsReport: React.FC = () => {
                                             </div>
                                         )}
                                     </div>
+                                    <label className="block text-sm font-medium mt-2">Handler:</label>
                                 </div>
-
-                                {/* Helper (lawyer) */}
+                                )}
+                                {roleFilterTab === 'helper' && (
                                 <div>
-                                    <label className="block text-sm font-medium mb-2">Helper (lawyer):</label>
                                     <div className="relative helper-dropdown-container">
                                         <input
                                             type="text"
                                             placeholder="Search employee..."
                                             className="input input-bordered w-full"
+                                            readOnly={isRoleSecondary('helper')}
                                             value={helperSearchTerm}
                                             onChange={(e) => {
+                                                if (isRoleSecondary('helper')) return;
                                                 setHelperSearchTerm(e.target.value);
                                                 setReassignFilters(prev => ({ ...prev, helper: e.target.value }));
                                             }}
-                                            onFocus={() => {
-                                                if (!activeRoleFilter || activeRoleFilter === 'helper') {
-                                                    setShowHelperDropdown(true);
-                                                }
-                                            }}
-                                            disabled={activeRoleFilter !== null && activeRoleFilter !== 'helper'}
+                                            onFocus={() => setShowHelperDropdown(true)}
                                         />
                                         {showHelperDropdown && (
                                             <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
                                                 <div className="p-2">
-                                                    <button
-                                                        className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors"
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            setSelectedHelper('');
-                                                            setHelperSearchTerm('- ALL -');
-                                                            setReassignFilters(prev => ({ ...prev, helper: '' }));
-                                                            setShowHelperDropdown(false);
-                                                        }}
-                                                    >
-                                                        - ALL -
-                                                    </button>
-                                                    {employees
+                                                    {isRoleSecondary('helper') && (
+                                                        <button
+                                                            type="button"
+                                                            className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setSelectedHelper('');
+                                                                setHelperSearchTerm(REASSIGN_ROLE_NONE_LABEL);
+                                                                setReassignFilters(prev => ({ ...prev, helper: REASSIGN_ROLE_FILTER_NONE }));
+                                                                setShowHelperDropdown(false);
+                                                            }}
+                                                        >
+                                                            {REASSIGN_ROLE_NONE_LABEL}
+                                                        </button>
+                                                    )}
+                                                    {!isRoleSecondary('helper') && employees
                                                         .filter(emp =>
                                                             emp.display_name.toLowerCase().includes(helperSearchTerm.toLowerCase())
                                                         )
                                                         .map((emp) => (
-                                                            <button
+                                                            <ReassignRoleEmployeeRow
                                                                 key={emp.id}
-                                                                className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors"
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
+                                                                emp={emp}
+                                                                getInitials={getInitials}
+                                                                onPick={() => {
+                                                                    const snap = reassignFiltersRef.current;
+                                                                    setReassignFilters(prev => {
+                                                                        const next = { ...prev, helper: emp.display_name };
+                                                                        (['meetingScheduler', 'closer', 'meetingManager', 'handler', 'expert', 'retainer_handler'] as const).forEach((fk) => {
+                                                                            if (!isReassignRoleNoneFilter(prev[fk] as string)) (next as any)[fk] = '';
+                                                                        });
+                                                                        return next;
+                                                                    });
+                                                                    if (!isReassignRoleNoneFilter(snap.meetingScheduler)) { setMeetingSchedulerSearchTerm(''); setSelectedMeetingScheduler(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.closer)) { setCloserSearchTerm(''); setSelectedCloser(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.meetingManager)) { setMeetingManagerSearchTerm(''); setSelectedMeetingManager(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.handler)) { setHandlerSearchTerm(''); setSelectedHandler(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.expert)) { setExpertSearchTerm(''); setSelectedExpert(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.retainer_handler)) { setRetainerHandlerSearchTerm(''); setSelectedRetainerHandler(''); }
                                                                     setSelectedHelper(emp.display_name);
                                                                     setHelperSearchTerm(emp.display_name);
-                                                                    setReassignFilters(prev => ({ ...prev, helper: emp.display_name }));
                                                                     setShowHelperDropdown(false);
                                                                 }}
-                                                            >
-                                                                {emp.display_name}
-                                                            </button>
+                                                            />
                                                         ))}
-                                                    {employees.filter(emp =>
+                                                    {!isRoleSecondary('helper') && employees.filter(emp =>
                                                         emp.display_name.toLowerCase().includes(helperSearchTerm.toLowerCase())
-                                                    ).length === 0 && helperSearchTerm !== '- ALL -' && (
+                                                    ).length === 0 && helperSearchTerm.trim() !== '' && (
                                                             <div className="px-3 py-2 text-sm text-base-content/60">
                                                                 No employees found
                                                             </div>
@@ -2615,30 +3347,168 @@ const ReassignLeadsReport: React.FC = () => {
                                             </div>
                                         )}
                                     </div>
+                                    <label className="block text-sm font-medium mt-2">Helper (lawyer):</label>
                                 </div>
+                                )}
+                                {roleFilterTab === 'expert' && (
+                                <div>
+                                    <div className="relative expert-dropdown-container">
+                                        <input
+                                            type="text"
+                                            placeholder="Search employee..."
+                                            className="input input-bordered w-full"
+                                            readOnly={isRoleSecondary('expert')}
+                                            value={expertSearchTerm}
+                                            onChange={(e) => {
+                                                if (isRoleSecondary('expert')) return;
+                                                setExpertSearchTerm(e.target.value);
+                                                setReassignFilters(prev => ({ ...prev, expert: e.target.value }));
+                                            }}
+                                            onFocus={() => setShowExpertDropdown(true)}
+                                        />
+                                        {showExpertDropdown && (
+                                            <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
+                                                <div className="p-2">
+                                                    {isRoleSecondary('expert') && (
+                                                        <button
+                                                            type="button"
+                                                            className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setSelectedExpert('');
+                                                                setExpertSearchTerm(REASSIGN_ROLE_NONE_LABEL);
+                                                                setReassignFilters(prev => ({ ...prev, expert: REASSIGN_ROLE_FILTER_NONE }));
+                                                                setShowExpertDropdown(false);
+                                                            }}
+                                                        >
+                                                            {REASSIGN_ROLE_NONE_LABEL}
+                                                        </button>
+                                                    )}
+                                                    {!isRoleSecondary('expert') && employees
+                                                        .filter(emp =>
+                                                            emp.display_name.toLowerCase().includes(expertSearchTerm.toLowerCase())
+                                                        )
+                                                        .map((emp) => (
+                                                            <ReassignRoleEmployeeRow
+                                                                key={emp.id}
+                                                                emp={emp}
+                                                                getInitials={getInitials}
+                                                                onPick={() => {
+                                                                    const snap = reassignFiltersRef.current;
+                                                                    setReassignFilters(prev => {
+                                                                        const next = { ...prev, expert: emp.display_name };
+                                                                        (['meetingScheduler', 'closer', 'meetingManager', 'handler', 'helper', 'retainer_handler'] as const).forEach((fk) => {
+                                                                            if (!isReassignRoleNoneFilter(prev[fk] as string)) (next as any)[fk] = '';
+                                                                        });
+                                                                        return next;
+                                                                    });
+                                                                    if (!isReassignRoleNoneFilter(snap.meetingScheduler)) { setMeetingSchedulerSearchTerm(''); setSelectedMeetingScheduler(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.closer)) { setCloserSearchTerm(''); setSelectedCloser(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.meetingManager)) { setMeetingManagerSearchTerm(''); setSelectedMeetingManager(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.handler)) { setHandlerSearchTerm(''); setSelectedHandler(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.helper)) { setHelperSearchTerm(''); setSelectedHelper(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.retainer_handler)) { setRetainerHandlerSearchTerm(''); setSelectedRetainerHandler(''); }
+                                                                    setSelectedExpert(emp.display_name);
+                                                                    setExpertSearchTerm(emp.display_name);
+                                                                    setShowExpertDropdown(false);
+                                                                }}
+                                                            />
+                                                        ))}
+                                                    {!isRoleSecondary('expert') && employees.filter(emp =>
+                                                        emp.display_name.toLowerCase().includes(expertSearchTerm.toLowerCase())
+                                                    ).length === 0 && expertSearchTerm.trim() !== '' && (
+                                                            <div className="px-3 py-2 text-sm text-base-content/60">
+                                                                No employees found
+                                                            </div>
+                                                        )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <label className="block text-sm font-medium mt-2">Expert:</label>
+                                </div>
+                                )}
+                                {roleFilterTab === 'retainer_handler' && (
+                                <div>
+                                    <div className="relative retainer-handler-dropdown-container">
+                                        <input
+                                            type="text"
+                                            placeholder="Search employee..."
+                                            className="input input-bordered w-full"
+                                            readOnly={isRoleSecondary('retainer_handler')}
+                                            value={retainerHandlerSearchTerm}
+                                            onChange={(e) => {
+                                                if (isRoleSecondary('retainer_handler')) return;
+                                                setRetainerHandlerSearchTerm(e.target.value);
+                                                setReassignFilters(prev => ({ ...prev, retainer_handler: e.target.value }));
+                                            }}
+                                            onFocus={() => setShowRetainerHandlerDropdown(true)}
+                                        />
+                                        {showRetainerHandlerDropdown && (
+                                            <div className="absolute top-full left-0 mt-1 z-50 bg-base-100 border border-base-200 rounded-lg shadow-lg w-full max-h-80 overflow-y-auto">
+                                                <div className="p-2">
+                                                    {isRoleSecondary('retainer_handler') && (
+                                                        <button
+                                                            type="button"
+                                                            className="w-full text-left px-3 py-2 hover:bg-base-200 rounded-md transition-colors text-base-content/80"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setSelectedRetainerHandler('');
+                                                                setRetainerHandlerSearchTerm(REASSIGN_ROLE_NONE_LABEL);
+                                                                setReassignFilters(prev => ({ ...prev, retainer_handler: REASSIGN_ROLE_FILTER_NONE }));
+                                                                setShowRetainerHandlerDropdown(false);
+                                                            }}
+                                                        >
+                                                            {REASSIGN_ROLE_NONE_LABEL}
+                                                        </button>
+                                                    )}
+                                                    {!isRoleSecondary('retainer_handler') && employees
+                                                        .filter(emp =>
+                                                            emp.display_name.toLowerCase().includes(retainerHandlerSearchTerm.toLowerCase())
+                                                        )
+                                                        .map((emp) => (
+                                                            <ReassignRoleEmployeeRow
+                                                                key={emp.id}
+                                                                emp={emp}
+                                                                getInitials={getInitials}
+                                                                onPick={() => {
+                                                                    const snap = reassignFiltersRef.current;
+                                                                    setReassignFilters(prev => {
+                                                                        const next = { ...prev, retainer_handler: emp.display_name };
+                                                                        (['meetingScheduler', 'closer', 'meetingManager', 'handler', 'helper', 'expert'] as const).forEach((fk) => {
+                                                                            if (!isReassignRoleNoneFilter(prev[fk] as string)) (next as any)[fk] = '';
+                                                                        });
+                                                                        return next;
+                                                                    });
+                                                                    if (!isReassignRoleNoneFilter(snap.meetingScheduler)) { setMeetingSchedulerSearchTerm(''); setSelectedMeetingScheduler(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.closer)) { setCloserSearchTerm(''); setSelectedCloser(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.meetingManager)) { setMeetingManagerSearchTerm(''); setSelectedMeetingManager(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.handler)) { setHandlerSearchTerm(''); setSelectedHandler(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.helper)) { setHelperSearchTerm(''); setSelectedHelper(''); }
+                                                                    if (!isReassignRoleNoneFilter(snap.expert)) { setExpertSearchTerm(''); setSelectedExpert(''); }
+                                                                    setSelectedRetainerHandler(emp.display_name);
+                                                                    setRetainerHandlerSearchTerm(emp.display_name);
+                                                                    setShowRetainerHandlerDropdown(false);
+                                                                }}
+                                                            />
+                                                        ))}
+                                                    {!isRoleSecondary('retainer_handler') && employees.filter(emp =>
+                                                        emp.display_name.toLowerCase().includes(retainerHandlerSearchTerm.toLowerCase())
+                                                    ).length === 0 && retainerHandlerSearchTerm.trim() !== '' && (
+                                                            <div className="px-3 py-2 text-sm text-base-content/60">
+                                                                No employees found
+                                                            </div>
+                                                        )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                    <label className="block text-sm font-medium mt-2">Retention handler:</label>
+                                </div>
+                                )}
                             </div>
                         </div>
                     </div>
-                </div>
-            )}
-
-            {/* Search Button */}
-            {showFilters && (
-                <div className="flex justify-end mb-6">
-                    <button
-                        className="btn btn-primary"
-                        onClick={handleReassignSearch}
-                        disabled={reassignLoading}
-                    >
-                        {reassignLoading ? (
-                            <>
-                                <span className="loading loading-spinner loading-sm"></span>
-                                Searching...
-                            </>
-                        ) : (
-                            'Search'
-                        )}
-                    </button>
                 </div>
             )}
 
@@ -2654,23 +3524,31 @@ const ReassignLeadsReport: React.FC = () => {
                         if (role === 'meetingScheduler') {
                             setReassignFilters(prev => ({ ...prev, meetingScheduler: '' }));
                             setSelectedMeetingScheduler('');
-                            setMeetingSchedulerSearchTerm('- ALL -');
+                            setMeetingSchedulerSearchTerm('');
                         } else if (role === 'closer') {
                             setReassignFilters(prev => ({ ...prev, closer: '' }));
                             setSelectedCloser('');
-                            setCloserSearchTerm('- ALL -');
+                            setCloserSearchTerm('');
                         } else if (role === 'meetingManager') {
                             setReassignFilters(prev => ({ ...prev, meetingManager: '' }));
                             setSelectedMeetingManager('');
-                            setMeetingManagerSearchTerm('- ALL -');
+                            setMeetingManagerSearchTerm('');
                         } else if (role === 'handler') {
                             setReassignFilters(prev => ({ ...prev, handler: '' }));
                             setSelectedHandler('');
-                            setHandlerSearchTerm('- ALL -');
+                            setHandlerSearchTerm('');
                         } else if (role === 'helper') {
                             setReassignFilters(prev => ({ ...prev, helper: '' }));
                             setSelectedHelper('');
-                            setHelperSearchTerm('- ALL -');
+                            setHelperSearchTerm('');
+                        } else if (role === 'expert') {
+                            setReassignFilters(prev => ({ ...prev, expert: '' }));
+                            setSelectedExpert('');
+                            setExpertSearchTerm('');
+                        } else if (role === 'retainer_handler') {
+                            setReassignFilters(prev => ({ ...prev, retainer_handler: '' }));
+                            setSelectedRetainerHandler('');
+                            setRetainerHandlerSearchTerm('');
                         }
                     }}
                     onSearch={handleReassignSearch}
@@ -2692,10 +3570,418 @@ const ReassignLeadsReport: React.FC = () => {
                     selectedLeadsCount={selectedLeads.size}
                     selectedRoleForReassign={selectedRoleForReassign}
                     setSelectedRoleForReassign={setSelectedRoleForReassign}
-                    activeRoleFilter={activeRoleFilter}
                     showRoleDropdown={showRoleDropdown}
                     setShowRoleDropdown={setShowRoleDropdown}
+                    onOpenActiveHandlerModal={openActiveHandlerModal}
+                    interactionsDisabled={bottomBarNoResults}
                 />
+            )}
+
+            {showActiveHandlerModal && (
+                <dialog open className="modal modal-open z-[10050]">
+                    <div className="modal-box max-w-md w-full">
+                        <h3 className="text-lg font-bold">Who is active on the case?</h3>
+                        <div className="mt-4 space-y-2">
+                            <label className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${activeHandlerTypeChoice === 2 ? 'border-primary bg-primary/5' : 'border-base-300 hover:border-base-content/20'}`}>
+                                <input
+                                    type="radio"
+                                    name="bulkActiveHandlerType"
+                                    className="radio radio-primary mt-0.5"
+                                    checked={activeHandlerTypeChoice === 2}
+                                    onChange={() => setActiveHandlerTypeChoice(2)}
+                                    disabled={savingActiveHandlerType}
+                                />
+                                <span>
+                                    <span className="font-medium">Case handler active</span>
+                                    <span className="mt-0.5 block text-xs text-base-content/60">The case handler is the active role on the case.</span>
+                                </span>
+                            </label>
+                            <label className={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${activeHandlerTypeChoice === 1 ? 'border-primary bg-primary/5' : 'border-base-300 hover:border-base-content/20'}`}>
+                                <input
+                                    type="radio"
+                                    name="bulkActiveHandlerType"
+                                    className="radio radio-primary mt-0.5"
+                                    checked={activeHandlerTypeChoice === 1}
+                                    onChange={() => setActiveHandlerTypeChoice(1)}
+                                    disabled={savingActiveHandlerType}
+                                />
+                                <span>
+                                    <span className="font-medium">Retention handler active</span>
+                                    <span className="mt-0.5 block text-xs text-base-content/60">The retention handler is the active role on the case.</span>
+                                </span>
+                            </label>
+                        </div>
+                        <div className="modal-action mt-2 flex-wrap gap-2">
+                            <button
+                                type="button"
+                                className="btn"
+                                disabled={savingActiveHandlerType}
+                                onClick={() => setShowActiveHandlerModal(false)}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                className="btn btn-primary"
+                                disabled={savingActiveHandlerType}
+                                onClick={handleSaveBulkActiveHandlerType}
+                            >
+                                {savingActiveHandlerType ? (
+                                    <>
+                                        <span className="loading loading-spinner loading-sm" />
+                                        Saving…
+                                    </>
+                                ) : (
+                                    'Save'
+                                )}
+                            </button>
+                        </div>
+                    </div>
+                    <form
+                        method="dialog"
+                        className="modal-backdrop"
+                        onClick={() => {
+                            if (!savingActiveHandlerType) setShowActiveHandlerModal(false);
+                        }}
+                    >
+                        <button type="button">close</button>
+                    </form>
+                </dialog>
+            )}
+
+            {activeHandlerMissingFlow && (
+                <dialog open className="modal modal-open z-[10060]">
+                    <div
+                        className={`modal-box flex w-[min(100vw-1.5rem,42rem)] max-w-none flex-col p-5 sm:p-6 ${
+                            activeHandlerMissingFlow.step === 'assign'
+                                ? 'max-h-[min(92vh,44rem)] min-h-[min(70vh,28rem)]'
+                                : 'max-h-[min(92vh,36rem)]'
+                        }`}
+                    >
+                        {activeHandlerMissingFlow.step === 'ask' ? (
+                            <>
+                                <h3 className="shrink-0 text-lg font-bold">
+                                    {activeHandlerMissingFlow.missingRole === 'handler'
+                                        ? 'No case handler'
+                                        : 'No retention handler'}
+                                    <span className="ml-1 font-semibold text-base-content/80">
+                                        ({activeHandlerMissingFlow.missingLeads.length})
+                                    </span>
+                                </h3>
+                                <p className="mt-1 shrink-0 text-sm text-base-content/60">
+                                    Assign first, then set active?
+                                </p>
+                                <ul className="mt-3 max-h-40 shrink-0 overflow-y-auto rounded-lg border border-base-300 bg-base-200/40 px-3 py-2 font-mono text-xs">
+                                    {activeHandlerMissingFlow.missingLeads.slice(0, 20).map((lead: any) => (
+                                        <li key={String(lead.id)}>
+                                            {lead.display_lead_number || lead.lead_number || lead.id}
+                                            {lead.name ? ` — ${lead.name}` : ''}
+                                        </li>
+                                    ))}
+                                    {activeHandlerMissingFlow.missingLeads.length > 20 && (
+                                        <li className="text-base-content/60">
+                                            …+{activeHandlerMissingFlow.missingLeads.length - 20}
+                                        </li>
+                                    )}
+                                </ul>
+                                <div className="modal-action mt-4 shrink-0 flex-wrap gap-2">
+                                    <button
+                                        type="button"
+                                        className="btn"
+                                        disabled={savingMissingFlowAssign}
+                                        onClick={() => {
+                                            setActiveHandlerMissingFlow(null);
+                                            setShowActiveHandlerModal(true);
+                                        }}
+                                    >
+                                        Back
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn btn-primary"
+                                        disabled={savingMissingFlowAssign}
+                                        onClick={() => {
+                                            setMissingFlowAssignName('');
+                                            setMissingFlowAssignSearch('');
+                                            setShowMissingFlowAssignDropdown(false);
+                                            setActiveHandlerMissingFlow(prev =>
+                                                prev ? { ...prev, step: 'assign' } : null
+                                            );
+                                        }}
+                                    >
+                                        Yes
+                                    </button>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <h3 className="shrink-0 text-lg font-bold">
+                                    Assign{' '}
+                                    {activeHandlerMissingFlow.missingRole === 'handler'
+                                        ? 'case handler'
+                                        : 'retention handler'}
+                                </h3>
+                                <p className="mt-1 shrink-0 text-xs text-base-content/55">
+                                    Then active role applies to all {activeHandlerMissingFlow.allSelected.length}{' '}
+                                    selected.
+                                </p>
+                                <div className="mt-3 flex min-h-0 flex-1 flex-col gap-2 missing-flow-assign-dropdown">
+                                    <input
+                                        type="text"
+                                        placeholder="Filter…"
+                                        className="input input-bordered input-sm w-full shrink-0"
+                                        value={missingFlowAssignSearch}
+                                        onChange={e => {
+                                            setMissingFlowAssignSearch(e.target.value);
+                                            setShowMissingFlowAssignDropdown(true);
+                                        }}
+                                        onFocus={() => setShowMissingFlowAssignDropdown(true)}
+                                    />
+                                    <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-base-200 bg-base-100">
+                                        <div className="p-2">
+                                            {employees
+                                                .filter(emp =>
+                                                    emp.display_name
+                                                        .toLowerCase()
+                                                        .includes(missingFlowAssignSearch.toLowerCase())
+                                                )
+                                                .map(emp => (
+                                                    <ReassignRoleEmployeeRow
+                                                        key={emp.id}
+                                                        emp={emp}
+                                                        getInitials={getInitials}
+                                                        onPick={() => {
+                                                            setMissingFlowAssignName(emp.display_name);
+                                                            setMissingFlowAssignSearch(emp.display_name);
+                                                            setShowMissingFlowAssignDropdown(false);
+                                                        }}
+                                                    />
+                                                ))}
+                                            {employees.filter(emp =>
+                                                emp.display_name
+                                                    .toLowerCase()
+                                                    .includes(missingFlowAssignSearch.toLowerCase())
+                                            ).length === 0 && (
+                                                <div className="px-3 py-6 text-center text-sm text-base-content/60">
+                                                    No matches
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="modal-action mt-4 shrink-0 flex-wrap gap-2 border-t border-base-200 pt-4">
+                                    <button
+                                        type="button"
+                                        className="btn btn-ghost"
+                                        disabled={savingMissingFlowAssign}
+                                        onClick={() => {
+                                            setMissingFlowAssignName('');
+                                            setMissingFlowAssignSearch('');
+                                            setShowMissingFlowAssignDropdown(false);
+                                            setActiveHandlerMissingFlow(prev =>
+                                                prev ? { ...prev, step: 'ask' } : null
+                                            );
+                                        }}
+                                    >
+                                        Back
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn btn-primary"
+                                        disabled={
+                                            savingMissingFlowAssign || !missingFlowAssignName.trim()
+                                        }
+                                        onClick={handleMissingFlowAssignAndApply}
+                                    >
+                                        {savingMissingFlowAssign ? (
+                                            <>
+                                                <span className="loading loading-spinner loading-sm" />
+                                                Saving…
+                                            </>
+                                        ) : (
+                                            'Assign & apply'
+                                        )}
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                    <form
+                        method="dialog"
+                        className="modal-backdrop"
+                        onClick={() => {
+                            if (savingMissingFlowAssign) return;
+                            if (activeHandlerMissingFlow?.step === 'assign') {
+                                setMissingFlowAssignName('');
+                                setMissingFlowAssignSearch('');
+                                setShowMissingFlowAssignDropdown(false);
+                                setActiveHandlerMissingFlow(prev =>
+                                    prev ? { ...prev, step: 'ask' } : null
+                                );
+                                return;
+                            }
+                            setActiveHandlerMissingFlow(null);
+                        }}
+                    >
+                        <button type="button">close</button>
+                    </form>
+                </dialog>
+            )}
+
+            {singleLeadActiveFlow && (
+                <dialog open className="modal modal-open z-[10065]">
+                    <div
+                        className={`modal-box flex w-[min(100vw-1.5rem,38rem)] max-w-none flex-col p-5 sm:p-6 ${
+                            singleLeadActiveFlow.step === 'assign'
+                                ? 'max-h-[min(92vh,42rem)] min-h-[22rem]'
+                                : 'max-h-[90vh]'
+                        }`}
+                    >
+                        {singleLeadActiveFlow.step === 'ask' ? (
+                            <>
+                                <h3 className="shrink-0 text-lg font-bold">
+                                    {singleLeadActiveFlow.targetChoice === 2
+                                        ? 'No case handler'
+                                        : 'No retention handler'}
+                                </h3>
+                                <p className="mt-1 shrink-0 font-mono text-sm text-base-content/60">
+                                    #
+                                    {(singleLeadActiveFlow.lead as any).display_lead_number ||
+                                        singleLeadActiveFlow.lead.lead_number ||
+                                        singleLeadActiveFlow.lead.id}
+                                </p>
+                                <p className="mt-2 shrink-0 text-sm text-base-content/60">Assign first?</p>
+                                <div className="modal-action mt-4 shrink-0 flex-wrap gap-2">
+                                    <button
+                                        type="button"
+                                        className="btn"
+                                        disabled={singleActiveModalSaving}
+                                        onClick={() => setSingleLeadActiveFlow(null)}
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn btn-primary"
+                                        disabled={singleActiveModalSaving}
+                                        onClick={() =>
+                                            setSingleLeadActiveFlow(prev =>
+                                                prev ? { ...prev, step: 'assign' } : null
+                                            )
+                                        }
+                                    >
+                                        Yes
+                                    </button>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <h3 className="shrink-0 text-lg font-bold">
+                                    Assign{' '}
+                                    {singleLeadActiveFlow.targetChoice === 2
+                                        ? 'case handler'
+                                        : 'retention handler'}
+                                </h3>
+                                <p className="mt-1 shrink-0 font-mono text-xs text-base-content/55">
+                                    #
+                                    {(singleLeadActiveFlow.lead as any).display_lead_number ||
+                                        singleLeadActiveFlow.lead.lead_number ||
+                                        singleLeadActiveFlow.lead.id}
+                                </p>
+                                <div className="mt-3 flex min-h-0 flex-1 flex-col gap-2">
+                                    <input
+                                        type="text"
+                                        placeholder="Filter…"
+                                        className="input input-bordered input-sm w-full shrink-0"
+                                        value={singleActiveAssignSearch}
+                                        onChange={e => setSingleActiveAssignSearch(e.target.value)}
+                                    />
+                                    <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-base-200 bg-base-100">
+                                        <div className="p-2">
+                                            {employees
+                                                .filter(emp =>
+                                                    emp.display_name
+                                                        .toLowerCase()
+                                                        .includes(singleActiveAssignSearch.toLowerCase())
+                                                )
+                                                .map(emp => (
+                                                    <ReassignRoleEmployeeRow
+                                                        key={emp.id}
+                                                        emp={emp}
+                                                        getInitials={getInitials}
+                                                        onPick={() => {
+                                                            setSingleActiveAssignName(emp.display_name);
+                                                            setSingleActiveAssignSearch(emp.display_name);
+                                                        }}
+                                                    />
+                                                ))}
+                                            {employees.filter(emp =>
+                                                emp.display_name
+                                                    .toLowerCase()
+                                                    .includes(singleActiveAssignSearch.toLowerCase())
+                                            ).length === 0 && (
+                                                <div className="px-3 py-6 text-center text-sm text-base-content/60">
+                                                    No matches
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="modal-action mt-4 shrink-0 flex-wrap gap-2 border-t border-base-200 pt-4">
+                                    <button
+                                        type="button"
+                                        className="btn btn-ghost"
+                                        disabled={singleActiveModalSaving}
+                                        onClick={() => {
+                                            setSingleActiveAssignName('');
+                                            setSingleActiveAssignSearch('');
+                                            setSingleLeadActiveFlow(prev =>
+                                                prev ? { ...prev, step: 'ask' } : null
+                                            );
+                                        }}
+                                    >
+                                        Back
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="btn btn-primary"
+                                        disabled={
+                                            singleActiveModalSaving || !singleActiveAssignName.trim()
+                                        }
+                                        onClick={handleSingleFlowAssignAndApply}
+                                    >
+                                        {singleActiveModalSaving ? (
+                                            <>
+                                                <span className="loading loading-spinner loading-sm" />
+                                                Saving…
+                                            </>
+                                        ) : (
+                                            'Assign & apply'
+                                        )}
+                                    </button>
+                                </div>
+                            </>
+                        )}
+                    </div>
+                    <form
+                        method="dialog"
+                        className="modal-backdrop"
+                        onClick={() => {
+                            if (singleActiveModalSaving) return;
+                            if (singleLeadActiveFlow?.step === 'assign') {
+                                setSingleActiveAssignName('');
+                                setSingleActiveAssignSearch('');
+                                setSingleLeadActiveFlow(prev =>
+                                    prev ? { ...prev, step: 'ask' } : null
+                                );
+                                return;
+                            }
+                            setSingleLeadActiveFlow(null);
+                        }}
+                    >
+                        <button type="button">close</button>
+                    </form>
+                </dialog>
             )}
 
             {/* Results Section */}
@@ -2835,6 +4121,13 @@ const ReassignLeadsReport: React.FC = () => {
 
                                 // Get handler employee info
                                 const handlerEmployee = anyLead.handlerEmployee;
+                                const hasHandlerAssigned = leadHasCaseHandler(lead);
+                                const retentionEmployee = getRetentionEmployeeForLead(anyLead, employees);
+                                const activeTypeCard = Number(anyLead.active_handler_type) === 1 ? 1 : 2;
+                                const busyThisLead = savingSingleLeadId === leadId;
+                                const handlerDisplayName =
+                                    handlerEmployee?.display_name ||
+                                    (!isUnassignedHandlerValue(anyLead.handler) ? String(anyLead.handler).trim() : null);
 
                                 return (
                                     <div
@@ -2852,51 +4145,138 @@ const ReassignLeadsReport: React.FC = () => {
                                                     onChange={() => toggleLeadSelection(leadId)}
                                                     onClick={(e) => e.stopPropagation()}
                                                 />
-                                                <div className="flex-1 flex justify-between items-start">
-                                                    <div className="flex items-center gap-2">
+                                                <div className="flex min-w-0 flex-1 items-start justify-between gap-2">
+                                                    <div className="flex min-w-0 items-center gap-2">
                                                         <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors">
                                                             {lead.name || 'No Name'}
                                                         </h2>
                                                     </div>
-                                                    <div className="flex items-center gap-3">
+                                                    <div className="flex shrink-0 items-center gap-2">
                                                         {getStageBadge(lead.stage)}
-                                                        {/* Handler Display - Right Side */}
-                                                        {handlerEmployee && (
-                                                            <div className="flex items-center gap-2">
-                                                                {handlerEmployee.photo_url ? (
-                                                                    <img
-                                                                        src={handlerEmployee.photo_url}
-                                                                        alt={handlerEmployee.display_name}
-                                                                        className="w-8 h-8 rounded-full object-cover ring-2 ring-primary/30"
-                                                                        onError={(e) => {
-                                                                            const target = e.target as HTMLImageElement;
-                                                                            target.style.display = 'none';
-                                                                            const parent = target.parentElement;
-                                                                            if (parent) {
-                                                                                const fallback = document.createElement('div');
-                                                                                fallback.className = 'w-8 h-8 rounded-full flex items-center justify-center bg-primary text-primary-content font-bold text-sm ring-2 ring-primary/30';
-                                                                                fallback.textContent = getInitials(handlerEmployee.display_name);
-                                                                                parent.appendChild(fallback);
-                                                                            }
-                                                                        }}
-                                                                    />
-                                                                ) : (
-                                                                    <div className="w-8 h-8 rounded-full flex items-center justify-center bg-primary text-primary-content font-bold text-sm ring-2 ring-primary/30">
-                                                                        {getInitials(handlerEmployee.display_name)}
-                                                                    </div>
-                                                                )}
-                                                                <span className="text-base font-semibold text-base-content">
-                                                                    {handlerEmployee.display_name}
-                                                                </span>
-                                                            </div>
-                                                        )}
                                                     </div>
                                                 </div>
                                             </div>
 
-                                            <p className="text-sm text-base-content/60 font-mono mb-4">
+                                            <button
+                                                type="button"
+                                                title="Open client (⌘ or Ctrl+click for new tab)"
+                                                className="mb-2 block w-full text-left font-mono text-sm text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 rounded"
+                                                onClick={e => navigateToClientFromReassignLead(lead, e)}
+                                            >
                                                 #{(lead as any).display_lead_number || lead.lead_number || lead.id || 'Unknown Lead'}
-                                            </p>
+                                            </button>
+
+                                            <div
+                                                className="mb-3 rounded-2xl border border-base-300/50 bg-base-200/20 px-2 py-3 sm:px-3"
+                                                onClick={(e) => e.stopPropagation()}
+                                            >
+                                                <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-x-1.5 sm:gap-x-2">
+                                                    <div
+                                                        className={`min-w-0 text-center transition-opacity duration-300 ${
+                                                            activeTypeCard === 2 ? 'opacity-100' : 'opacity-[0.52]'
+                                                        }`}
+                                                    >
+                                                        <span className="text-[10px] font-semibold uppercase tracking-wide text-base-content/55">
+                                                            Handler
+                                                        </span>
+                                                        <div className="mt-1.5 flex min-h-[2.5rem] flex-col items-center justify-center gap-1 sm:min-h-[2.75rem]">
+                                                            {hasHandlerAssigned && handlerDisplayName ? (
+                                                                <>
+                                                                    {handlerEmployee?.photo_url ? (
+                                                                        <img
+                                                                            src={handlerEmployee.photo_url}
+                                                                            alt=""
+                                                                            className="h-9 w-9 shrink-0 rounded-full object-cover ring-2 ring-base-content/[0.06] sm:h-10 sm:w-10"
+                                                                        />
+                                                                    ) : (
+                                                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/18 text-[11px] font-bold text-primary ring-2 ring-base-content/[0.06] sm:h-10 sm:w-10 sm:text-xs">
+                                                                            {getInitials(handlerDisplayName)}
+                                                                        </div>
+                                                                    )}
+                                                                    <span className="line-clamp-2 max-w-full px-0.5 text-[11px] font-medium leading-tight text-base-content sm:text-xs">
+                                                                        {handlerDisplayName}
+                                                                    </span>
+                                                                </>
+                                                            ) : (
+                                                                <span className="text-[11px] text-base-content/40">Not assigned</span>
+                                                            )}
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="flex shrink-0 flex-col items-center justify-center px-0.5">
+                                                        <div
+                                                            className="relative grid h-[1.875rem] w-[5rem] shrink-0 grid-cols-2 rounded-full border border-base-content/[0.06] bg-base-300/25 p-[3px] shadow-inner"
+                                                            role="group"
+                                                            aria-label="Who is active on the case"
+                                                        >
+                                                            <div
+                                                                aria-hidden
+                                                                className={`pointer-events-none absolute left-[3px] top-[3px] h-[calc(100%-6px)] w-[calc(50%-4.5px)] rounded-full bg-base-100 shadow-sm ring-1 ring-base-content/[0.05] transition-transform duration-300 ease-[cubic-bezier(0.25,0.85,0.35,1)] will-change-transform ${
+                                                                    activeTypeCard === 1
+                                                                        ? 'translate-x-[calc(100%+3px)]'
+                                                                        : 'translate-x-0'
+                                                                }`}
+                                                            />
+                                                            <button
+                                                                type="button"
+                                                                disabled={busyThisLead || singleActiveModalSaving}
+                                                                className={`relative z-10 rounded-full px-0 py-1 text-[9px] font-semibold uppercase leading-none tracking-wide transition-colors duration-200 sm:text-[10px] ${
+                                                                    activeTypeCard === 2
+                                                                        ? 'text-primary'
+                                                                        : 'text-base-content/40 hover:text-base-content/65'
+                                                                }`}
+                                                                onClick={e => handleSingleLeadActivePick(lead, 2, e)}
+                                                            >
+                                                                H
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                disabled={busyThisLead || singleActiveModalSaving}
+                                                                className={`relative z-10 rounded-full px-0 py-1 text-[9px] font-semibold uppercase leading-none tracking-wide transition-colors duration-200 sm:text-[10px] ${
+                                                                    activeTypeCard === 1
+                                                                        ? 'text-primary'
+                                                                        : 'text-base-content/40 hover:text-base-content/65'
+                                                                }`}
+                                                                onClick={e => handleSingleLeadActivePick(lead, 1, e)}
+                                                            >
+                                                                R
+                                                            </button>
+                                                        </div>
+                                                    </div>
+
+                                                    <div
+                                                        className={`min-w-0 text-center transition-opacity duration-300 ${
+                                                            activeTypeCard === 1 ? 'opacity-100' : 'opacity-[0.52]'
+                                                        }`}
+                                                    >
+                                                        <span className="text-[10px] font-semibold uppercase tracking-wide text-base-content/55">
+                                                            Retention
+                                                        </span>
+                                                        <div className="mt-1.5 flex min-h-[2.5rem] flex-col items-center justify-center gap-1 sm:min-h-[2.75rem]">
+                                                            {retentionEmployee ? (
+                                                                <>
+                                                                    {retentionEmployee.photo_url ? (
+                                                                        <img
+                                                                            src={retentionEmployee.photo_url}
+                                                                            alt=""
+                                                                            className="h-9 w-9 shrink-0 rounded-full object-cover ring-2 ring-base-content/[0.06] sm:h-10 sm:w-10"
+                                                                        />
+                                                                    ) : (
+                                                                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-secondary/18 text-[11px] font-bold text-secondary ring-2 ring-base-content/[0.06] sm:h-10 sm:w-10 sm:text-xs">
+                                                                            {getInitials(retentionEmployee.display_name)}
+                                                                        </div>
+                                                                    )}
+                                                                    <span className="line-clamp-2 max-w-full px-0.5 text-[11px] font-medium leading-tight text-base-content sm:text-xs">
+                                                                        {retentionEmployee.display_name}
+                                                                    </span>
+                                                                </>
+                                                            ) : (
+                                                                <span className="text-[11px] text-base-content/40">Not assigned</span>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
 
                                             <div className="divider my-0"></div>
 
@@ -2961,10 +4341,21 @@ const ReassignLeadsReport: React.FC = () => {
 
             {reassignResults.length === 0 && !reassignLoading && (
                 <div className="text-center py-8 text-base-content/60">
-                    No results found. Try adjusting your filters and search again.
+                    <p className="mb-4">No results found. Try adjusting your filters and search again.</p>
+                    <button
+                        type="button"
+                        className="btn btn-outline btn-sm"
+                        onClick={() => {
+                            setShowFilters(true);
+                            setShowFloatingBar(false);
+                        }}
+                    >
+                        Filters
+                    </button>
                 </div>
             )}
         </div>
+        </>
     );
 };
 

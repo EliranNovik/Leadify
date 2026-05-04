@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -80,6 +80,9 @@ let cachedCurrenciesPromise: Promise<
 let cachedCategories: any[] | null = null;
 let cachedCategoriesPromise: Promise<any[]> | null = null;
 
+let cachedLanguages: Array<{ id: number | string; name: string }> | null = null;
+let cachedLanguagesPromise: Promise<Array<{ id: number | string; name: string }>> | null = null;
+
 const leadFieldFlagLabel = (key: string): string => {
     const map: Record<string, string> = {
         expert_notes: 'Expert opinion',
@@ -104,6 +107,10 @@ const normalizeTagsValue = (value: unknown): string[] => {
 /** Neutral meta chips (language, source, applicants, category, topic) — primary stage colour stays on stage badge only */
 const META_CHIP =
     'inline-flex max-w-full min-w-0 shrink-0 items-center gap-1 rounded-full px-2 py-1 text-xs font-medium text-gray-700 bg-base-200/80 dark:bg-gray-700/90 dark:text-gray-200';
+
+/** Larger chips for the four primary meta items: language, source, category, topic */
+const META_CHIP_TOP =
+    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1.5 text-sm font-medium text-gray-700 bg-base-200/80 dark:bg-gray-700/90 dark:text-gray-200';
 
 interface ClientHeaderProps {
     selectedClient: any;
@@ -238,6 +245,200 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [isEditingCategory, setIsEditingCategory] = useState(false);
     /** Unpaid finance plan totals by currency (from payment_plans / finances_paymentplanrow, excludes paid rows). */
     const [unpaidByCurrency, setUnpaidByCurrency] = useState<UnpaidByCurrencyMap | null>(null);
+    const togglingActiveHandlerRef = useRef(false);
+    type ActiveRoleRevealState = {
+        activeType: 1 | 2;
+        employeeId: string | number | null;
+        displayName: string;
+        roleTitle: string;
+    };
+    const [activeRoleReveal, setActiveRoleReveal] = useState<ActiveRoleRevealState | null>(null);
+    const [activeRoleRevealEntered, setActiveRoleRevealEntered] = useState(false);
+    const activeRoleRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const activeRoleRevealRafRef = useRef<number | null>(null);
+    /** Always latest lead row — `updateActiveHandlerType` must not close over stale `active_handler_type` (stable useCallback deps). */
+    const selectedClientRef = useRef(selectedClient);
+    /** Bumped after a successful active-handler toggle so avatar ring flash replays. */
+    const [handlerActiveRingNonce, setHandlerActiveRingNonce] = useState(0);
+    const activeHandlerLeadRealtimeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    /** Latest row identity + active_handler_type for poll + realtime client-side match (avoids stale closures). */
+    const leadHandlerSyncRef = useRef<{
+        clientId: string | number;
+        idStr: string;
+        isLegacy: boolean;
+        legacyNum: number | null;
+        canonicalNewId: string | null;
+        activeType: number;
+    } | null>(null);
+
+    /** Keep header (incl. active handler toggle) in sync when this row changes in the DB (other tabs, My Cases, etc.). */
+    useEffect(() => {
+        if (!selectedClient?.id) return;
+        const clientId = selectedClient.id;
+        const idStr = String(clientId);
+        const isLegacy = idStr.startsWith('legacy_') || selectedClient.lead_type === 'legacy';
+
+        let legacyNum: number | null = null;
+        if (isLegacy) {
+            const n = parseInt(idStr.replace(/^legacy_/, ''), 10);
+            if (Number.isNaN(n)) return;
+            legacyNum = n;
+        }
+        const canonicalNewId = !isLegacy ? idStr.toLowerCase() : null;
+
+        const activeType = Number((selectedClient as any).active_handler_type) === 1 ? 1 : 2;
+        leadHandlerSyncRef.current = {
+            clientId,
+            idStr,
+            isLegacy,
+            legacyNum,
+            canonicalNewId,
+            activeType,
+        };
+
+        const table: 'leads' | 'leads_lead' = isLegacy ? 'leads_lead' : 'leads';
+
+        const rowMatchesPayload = (payload: { new?: Record<string, unknown> } | null) => {
+            const nid = payload?.new?.id;
+            if (nid == null) return false;
+            if (isLegacy && legacyNum != null) return Number(nid) === legacyNum;
+            if (!canonicalNewId) return false;
+            return String(nid).toLowerCase() === canonicalNewId;
+        };
+
+        const debounceMs = 400;
+        const scheduleRefresh = () => {
+            if (activeHandlerLeadRealtimeTimerRef.current) {
+                clearTimeout(activeHandlerLeadRealtimeTimerRef.current);
+            }
+            activeHandlerLeadRealtimeTimerRef.current = setTimeout(() => {
+                activeHandlerLeadRealtimeTimerRef.current = null;
+                void refreshClientData(clientId);
+            }, debounceMs);
+        };
+
+        const pollMs = 10000;
+        const pollActiveHandlerFromDb = async () => {
+            if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+            const snap = leadHandlerSyncRef.current;
+            if (!snap) return;
+            try {
+                if (snap.isLegacy && snap.legacyNum != null) {
+                    const { data, error } = await supabase
+                        .from('leads_lead')
+                        .select('active_handler_type')
+                        .eq('id', snap.legacyNum)
+                        .maybeSingle();
+                    if (error || !data) return;
+                    const remote = Number(data.active_handler_type) === 1 ? 1 : 2;
+                    if (remote !== snap.activeType) void refreshClientData(snap.clientId);
+                } else {
+                    const { data, error } = await supabase
+                        .from('leads')
+                        .select('active_handler_type')
+                        .eq('id', snap.idStr)
+                        .maybeSingle();
+                    if (error || !data) return;
+                    const remote = Number(data.active_handler_type) === 1 ? 1 : 2;
+                    if (remote !== snap.activeType) void refreshClientData(snap.clientId);
+                }
+            } catch {
+                /* ignore */
+            }
+        };
+
+        let cancelled = false;
+        let channel: ReturnType<typeof supabase.channel> | null = null;
+        let pollIntervalId: number | null = null;
+
+        void supabase.auth
+            .getSession()
+            .then(async ({ data: { session } }) => {
+                if (cancelled) return;
+                const token = session?.access_token;
+                if (token) {
+                    try {
+                        await supabase.realtime.setAuth(token);
+                    } catch {
+                        /* Realtime may still work with anon JWT */
+                    }
+                }
+                if (cancelled) return;
+
+                // No server-side filter: filtered postgres_changes often fails (UUID/RLS/replication).
+                // Match CalendarPage pattern — filter client-side to this lead only.
+                channel = supabase
+                    .channel(`client-header-lead-${encodeURIComponent(idStr)}`)
+                    .on(
+                        'postgres_changes',
+                        { event: 'UPDATE', schema: 'public', table },
+                        (payload: { new?: Record<string, unknown> }) => {
+                            if (!rowMatchesPayload(payload)) return;
+                            scheduleRefresh();
+                        }
+                    )
+                    .subscribe((status, err) => {
+                        if (import.meta.env.DEV) {
+                            if (status === 'SUBSCRIBED') {
+                                console.info('[ClientHeader] Realtime subscribed:', table, idStr);
+                            }
+                            if (status === 'CHANNEL_ERROR' || err) {
+                                console.warn('[ClientHeader] Realtime channel issue:', status, err);
+                            }
+                        }
+                    });
+
+                pollIntervalId = window.setInterval(() => {
+                    void pollActiveHandlerFromDb();
+                }, pollMs);
+                void pollActiveHandlerFromDb();
+            })
+            .catch(() => {
+                if (cancelled) return;
+                channel = supabase
+                    .channel(`client-header-lead-${encodeURIComponent(idStr)}-fallback`)
+                    .on(
+                        'postgres_changes',
+                        { event: 'UPDATE', schema: 'public', table },
+                        (payload: { new?: Record<string, unknown> }) => {
+                            if (!rowMatchesPayload(payload)) return;
+                            scheduleRefresh();
+                        }
+                    )
+                    .subscribe();
+                pollIntervalId = window.setInterval(() => {
+                    void pollActiveHandlerFromDb();
+                }, pollMs);
+                void pollActiveHandlerFromDb();
+            });
+
+        return () => {
+            cancelled = true;
+            if (activeHandlerLeadRealtimeTimerRef.current) {
+                clearTimeout(activeHandlerLeadRealtimeTimerRef.current);
+                activeHandlerLeadRealtimeTimerRef.current = null;
+            }
+            if (pollIntervalId != null) {
+                window.clearInterval(pollIntervalId);
+                pollIntervalId = null;
+            }
+            if (channel) {
+                void supabase.removeChannel(channel);
+                channel = null;
+            }
+        };
+    }, [selectedClient?.id, selectedClient?.lead_type, refreshClientData]);
+
+    /** Keep poll + realtime row match in sync when active_handler_type updates without remounting the channel. */
+    useEffect(() => {
+        const r = leadHandlerSyncRef.current;
+        if (!r || String(r.idStr) !== String(selectedClient?.id ?? '')) return;
+        r.activeType = Number((selectedClient as any)?.active_handler_type) === 1 ? 1 : 2;
+    }, [selectedClient?.id, (selectedClient as any)?.active_handler_type]);
+
+    useEffect(() => {
+        selectedClientRef.current = selectedClient;
+    }, [selectedClient]);
 
     useEffect(() => {
         let cancelled = false;
@@ -423,11 +624,45 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         };
     }, []);
 
+    /**
+     * Sub-efforts dropdown + inline log + SubEffortsLogModal for stages 60, 70, 100, 105, 110, 150 (and name equivalents).
+     * "Finalize case" in that row only for 110 / 150. Stage 200: fetch + catalog for log-only UI elsewhere.
+     */
+    const subEffortsStageFlags = useMemo(() => {
+        const inferred = Number((selectedClient as any)?.stage ?? stageNumeric ?? NaN);
+        const n = (val: number) => inferred === val || (isStageNumeric && stageNumeric === val);
+
+        const clientSigned = areStagesEquivalent(currentStageName, 'Client signed agreement') || n(60);
+        const paymentRequestSent = areStagesEquivalent(currentStageName, 'payment_request_sent') || n(70);
+        const successStage = areStagesEquivalent(currentStageName, 'Success') || n(100);
+        const handlerSet = areStagesEquivalent(currentStageName, 'Handler Set') || n(105);
+        const handlerStarted = areStagesEquivalent(currentStageName, 'Handler Started') || n(110);
+        const applicationSubmitted = areStagesEquivalent(currentStageName, 'Application submitted') || n(150);
+
+        const showPickerLogAndModal =
+            clientSigned ||
+            paymentRequestSent ||
+            successStage ||
+            handlerSet ||
+            handlerStarted ||
+            applicationSubmitted;
+
+        const showFinalizeCaseWithSubEfforts = handlerStarted || applicationSubmitted;
+
+        const closed200 = (isStageNumeric && stageNumeric === 200) || inferred === 200;
+        return {
+            showPickerLogAndModal,
+            showFinalizeCaseWithSubEfforts,
+            loadSubEffortsCatalog: showPickerLogAndModal || closed200,
+            fetchLeadSubEffortRows: showPickerLogAndModal || closed200,
+        };
+    }, [selectedClient?.id, (selectedClient as any)?.stage, currentStageName, isStageNumeric, stageNumeric]);
+
     useEffect(() => {
         let cancelled = false;
         const load = async () => {
             // Only load when relevant to avoid extra DB calls
-            if (!areStagesEquivalent(currentStageName, 'Handler Started') && !(isStageNumeric && stageNumeric === 110)) {
+            if (!subEffortsStageFlags.loadSubEffortsCatalog) {
                 return;
             }
             setIsLoadingSubEfforts(true);
@@ -474,18 +709,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         };
         void load();
         return () => { cancelled = true; };
-    }, [currentStageName, isStageNumeric, stageNumeric]);
+    }, [subEffortsStageFlags.loadSubEffortsCatalog]);
 
     const fetchLeadSubEfforts = useCallback(async () => {
         if (!selectedClient?.id) return;
-        const inferredStageNumeric = Number((selectedClient as any)?.stage ?? stageNumeric ?? NaN);
-        const isRelevantStage =
-            areStagesEquivalent(currentStageName, 'Handler Started') ||
-            (isStageNumeric && stageNumeric === 110) ||
-            inferredStageNumeric === 110 ||
-            (isStageNumeric && stageNumeric === 200) ||
-            inferredStageNumeric === 200;
-        if (!isRelevantStage) return;
+        if (!subEffortsStageFlags.fetchLeadSubEffortRows) return;
 
         const idStr = String(selectedClient.id);
         const isLegacy = idStr.startsWith('legacy_') || selectedClient.lead_type === 'legacy';
@@ -530,7 +758,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         } finally {
             setIsLoadingLeadSubEfforts(false);
         }
-    }, [selectedClient?.id, selectedClient?.lead_type, (selectedClient as any)?.stage, currentStageName, isStageNumeric, stageNumeric]);
+    }, [selectedClient?.id, selectedClient?.lead_type, subEffortsStageFlags.fetchLeadSubEffortRows]);
 
     useEffect(() => {
         void fetchLeadSubEfforts();
@@ -619,6 +847,137 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     // Use prop if available, otherwise use local state (matching RolesTab pattern)
     const employeesToUse = (allEmployees && allEmployees.length > 0) ? allEmployees : localAllEmployees;
+    const employeesToUseRef = useRef(employeesToUse);
+    employeesToUseRef.current = employeesToUse;
+
+    const updateActiveHandlerType = useCallback(
+        async (newType: 1 | 2) => {
+            const sc = selectedClientRef.current;
+            if (!sc?.id || togglingActiveHandlerRef.current) return;
+            const current = Number((sc as any).active_handler_type) === 1 ? 1 : 2;
+            if (current === newType) return;
+
+            const idStr = String(sc.id);
+            const isLegacy = idStr.startsWith('legacy_') || sc.lead_type === 'legacy';
+
+            const employees = employeesToUseRef.current || [];
+            const resolveNumericEmployeeId = (value: unknown): number | null => {
+                if (value == null || value === '' || value === '---' || value === '--') return null;
+                if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+                const s = String(value).trim();
+                if (!s) return null;
+                if (/^\d+$/.test(s)) {
+                    const n = Number(s);
+                    return Number.isFinite(n) && n > 0 ? n : null;
+                }
+                const emp = employees.find(
+                    (e: any) => e?.display_name && e.display_name.trim().toLowerCase() === s.toLowerCase()
+                );
+                if (emp?.id == null) return null;
+                const n = typeof emp.id === 'bigint' ? Number(emp.id) : Number(emp.id);
+                return Number.isFinite(n) && n > 0 ? n : null;
+            };
+
+            const isLegacyLead = sc.lead_type === 'legacy' || idStr.startsWith('legacy_');
+            const ch = (sc as any).case_handler_id;
+            let handlerId: number | null = null;
+            if (ch != null && String(ch).trim() !== '') {
+                const n = Number(ch);
+                handlerId = Number.isFinite(n) && n > 0 ? n : null;
+            } else if (!isLegacyLead) {
+                handlerId = resolveNumericEmployeeId((sc as any).handler);
+            }
+            const retentionHandlerId = (sc as any).retainer_handler_id ? Number((sc as any).retainer_handler_id) : null;
+
+            const getName = (id: number | null) => {
+                if (id == null) return '---';
+                const idAsNumber = id;
+                const employee = employees.find((emp: any) => {
+                    if (!emp?.id) return false;
+                    const empId = typeof emp.id === 'bigint' ? Number(emp.id) : Number(emp.id);
+                    return !Number.isNaN(empId) && empId === idAsNumber;
+                });
+                return employee?.display_name || '---';
+            };
+
+            const buildReveal = (): ActiveRoleRevealState => {
+                if (newType === 2) {
+                    return {
+                        activeType: 2,
+                        employeeId: handlerId,
+                        displayName: getName(handlerId),
+                        roleTitle: 'Case handler',
+                    };
+                }
+                return {
+                    activeType: 1,
+                    employeeId: retentionHandlerId,
+                    displayName: getName(retentionHandlerId),
+                    roleTitle: 'Retention handler',
+                };
+            };
+
+            togglingActiveHandlerRef.current = true;
+            try {
+                if (isLegacy) {
+                    const legacyId = parseInt(idStr.replace(/^legacy_/, ''), 10);
+                    if (Number.isNaN(legacyId)) throw new Error('Invalid legacy lead id');
+                    const { error } = await supabase
+                        .from('leads_lead')
+                        .update({ active_handler_type: newType })
+                        .eq('id', legacyId);
+                    if (error) throw error;
+                } else {
+                    const { error } = await supabase
+                        .from('leads')
+                        .update({ active_handler_type: newType })
+                        .eq('id', sc.id);
+                    if (error) throw error;
+                }
+                setHandlerActiveRingNonce((n) => n + 1);
+                setActiveRoleReveal(buildReveal());
+                await refreshClientData(sc.id);
+            } catch (e: any) {
+                console.error('updateActiveHandlerType:', e);
+                toast.error(e?.message || 'Failed to update active handler');
+            } finally {
+                togglingActiveHandlerRef.current = false;
+            }
+        },
+        [refreshClientData]
+    );
+
+    useEffect(() => {
+        if (!activeRoleReveal) {
+            setActiveRoleRevealEntered(false);
+            return;
+        }
+        setActiveRoleRevealEntered(false);
+        if (activeRoleRevealRafRef.current != null) {
+            cancelAnimationFrame(activeRoleRevealRafRef.current);
+        }
+        activeRoleRevealRafRef.current = requestAnimationFrame(() => {
+            activeRoleRevealRafRef.current = requestAnimationFrame(() => {
+                setActiveRoleRevealEntered(true);
+                activeRoleRevealRafRef.current = null;
+            });
+        });
+        if (activeRoleRevealTimerRef.current) clearTimeout(activeRoleRevealTimerRef.current);
+        activeRoleRevealTimerRef.current = setTimeout(() => {
+            setActiveRoleReveal(null);
+            activeRoleRevealTimerRef.current = null;
+        }, 2800);
+        return () => {
+            if (activeRoleRevealTimerRef.current) {
+                clearTimeout(activeRoleRevealTimerRef.current);
+                activeRoleRevealTimerRef.current = null;
+            }
+            if (activeRoleRevealRafRef.current != null) {
+                cancelAnimationFrame(activeRoleRevealRafRef.current);
+                activeRoleRevealRafRef.current = null;
+            }
+        };
+    }, [activeRoleReveal]);
 
     // Helper function to get employee by ID or name (matching RolesTab logic exactly)
     const getEmployeeById = (employeeIdOrName: string | number | null | undefined) => {
@@ -813,11 +1172,20 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     // Component to render employee avatar (exact copy from RolesTab)
     const EmployeeAvatar: React.FC<{
         employeeId: string | number | null | undefined;
-        size?: 'sm' | 'md' | 'lg';
+        size?: 'sm' | 'md' | 'lg' | 'xl' | 'hero';
     }> = ({ employeeId, size = 'md' }) => {
         const [imageError, setImageError] = useState(false);
         const employee = getEmployeeById(employeeId);
-        const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : size === 'md' ? 'w-12 h-12 text-sm' : 'w-16 h-16 text-base';
+        const sizeClasses =
+            size === 'sm'
+                ? 'w-8 h-8 text-xs'
+                : size === 'md'
+                  ? 'w-12 h-12 text-sm'
+                  : size === 'lg'
+                    ? 'w-16 h-16 text-base'
+                    : size === 'xl'
+                      ? 'w-24 h-24 text-2xl'
+                      : 'w-36 h-36 text-4xl';
 
         // Check cache first to prevent flickering
         const cacheKey = employeeId?.toString() || '';
@@ -878,10 +1246,18 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         );
     };
     const [showCategoryModal, setShowCategoryModal] = useState(false);
-    const [categoryInputValue, setCategoryInputValue] = useState(selectedClient?.category || '');
+    const [categoryInputValue, setCategoryInputValue] = useState('');
     const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
     const [allCategories, setAllCategories] = useState<any[]>([]);
     const [isLoadingCategories, setIsLoadingCategories] = useState(false);
+    const [showLanguageModal, setShowLanguageModal] = useState(false);
+    const [languageInputValue, setLanguageInputValue] = useState('');
+    const [showLanguageDropdown, setShowLanguageDropdown] = useState(false);
+    const [allLanguages, setAllLanguages] = useState<Array<{ id: number | string; name: string }>>([]);
+    const [savingLanguage, setSavingLanguage] = useState(false);
+    const [showTopicModal, setShowTopicModal] = useState(false);
+    const [topicInputValue, setTopicInputValue] = useState('');
+    const [savingTopic, setSavingTopic] = useState(false);
     const [allSources, setAllSources] = useState<Array<{ id: number | string, name: string }>>([]);
     const [allCurrencies, setAllCurrencies] = useState<Array<{ id: number | string, name: string, iso_code: string | null }>>([]);
     const [showStageDropdown, setShowStageDropdown] = useState(false);
@@ -906,11 +1282,22 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             return;
         }
         setLegacyContactInfo({ email: null, phone: null });
-        setCategoryInputValue(selectedClient?.category ?? '');
+        setCategoryInputValue('');
         setShowCategoryDropdown(false);
         setShowStageDropdown(false);
         setShowCategoryModal(false);
         setIsEditingCategory(false);
+        setShowLanguageModal(false);
+        setShowLanguageDropdown(false);
+        setLanguageInputValue('');
+        setShowTopicModal(false);
+        setTopicInputValue('');
+        setActiveRoleReveal(null);
+        setActiveRoleRevealEntered(false);
+        if (activeRoleRevealTimerRef.current) {
+            clearTimeout(activeRoleRevealTimerRef.current);
+            activeRoleRevealTimerRef.current = null;
+        }
         legacyContactFetchRef.current = null;
     }, [selectedClient?.id]);
 
@@ -1007,6 +1394,34 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             }
         };
         fetchCategories();
+    }, []);
+
+    // Fetch languages (misc_language) — same list as Edit Lead / legacy language_id resolution
+    useEffect(() => {
+        const fetchLanguages = async () => {
+            try {
+                if (cachedLanguages) {
+                    setAllLanguages(cachedLanguages);
+                    return;
+                }
+                if (!cachedLanguagesPromise) {
+                    cachedLanguagesPromise = (async () => {
+                        const { data, error } = await supabase
+                            .from('misc_language')
+                            .select('id, name')
+                            .order('name', { ascending: true });
+                        if (error) throw error;
+                        return (data || []).filter((row: any) => row?.name);
+                    })();
+                }
+                const rows = await cachedLanguagesPromise;
+                cachedLanguages = rows;
+                setAllLanguages(rows);
+            } catch (error) {
+                console.error('Error fetching languages:', error);
+            }
+        };
+        fetchLanguages();
     }, []);
 
     // Fetch legacy contact info — clear first when client changes to avoid showing previous lead's data
@@ -1107,6 +1522,76 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         }
     };
 
+    const handleSaveLanguage = async () => {
+        if (!selectedClient) return;
+        const trimmed = languageInputValue.trim();
+        if (!trimmed) {
+            toast.error('Please select a language from the list.');
+            return;
+        }
+        const foundLanguage =
+            allLanguages.find((l) => l.name.toLowerCase() === trimmed.toLowerCase()) ||
+            allLanguages.find(
+                (l) =>
+                    l.name.toLowerCase().includes(trimmed.toLowerCase()) ||
+                    trimmed.toLowerCase().includes(l.name.toLowerCase())
+            );
+        if (!foundLanguage) {
+            toast.error('Language not found. Please select from the dropdown.');
+            return;
+        }
+        setSavingLanguage(true);
+        try {
+            const isLegacyLead =
+                selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+            const tableName = isLegacyLead ? 'leads_lead' : 'leads';
+            const clientId = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : selectedClient.id;
+
+            const payload: Record<string, unknown> = isLegacyLead
+                ? { language_id: foundLanguage.id }
+                : { language: foundLanguage.name, language_id: foundLanguage.id };
+
+            const { error } = await supabase.from(tableName).update(payload).eq('id', clientId);
+
+            if (error) throw error;
+            toast.success('Language updated');
+            setShowLanguageModal(false);
+            setShowLanguageDropdown(false);
+            setLanguageInputValue('');
+            if (refreshClientData) await refreshClientData(selectedClient.id);
+        } catch (error) {
+            console.error(error);
+            toast.error('Failed to update language');
+        } finally {
+            setSavingLanguage(false);
+        }
+    };
+
+    const handleSaveTopic = async () => {
+        if (!selectedClient) return;
+        const nextTopic = topicInputValue.trim();
+        setSavingTopic(true);
+        try {
+            const isLegacyLead =
+                selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+            const tableName = isLegacyLead ? 'leads_lead' : 'leads';
+            const clientId = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : selectedClient.id;
+
+            const { error } = await supabase.from(tableName).update({ topic: nextTopic }).eq('id', clientId);
+
+            if (error) throw error;
+            toast.success('Topic updated');
+            setShowTopicModal(false);
+            setTopicInputValue('');
+            if (refreshClientData) await refreshClientData(selectedClient.id);
+        } catch (error) {
+            console.error(error);
+            toast.error('Failed to update topic');
+        } finally {
+            setSavingTopic(false);
+        }
+    };
+
     const displayEmail = legacyContactInfo.email || selectedClient?.email;
     const displayPhone = legacyContactInfo.phone || selectedClient?.phone;
 
@@ -1199,6 +1684,30 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         return categoryName.toLowerCase().includes((categoryInputValue || '').toLowerCase());
     });
 
+    const displayLanguageChip =
+        selectedClient?.language && String(selectedClient.language).trim() !== ''
+            ? String(selectedClient.language).trim()
+            : '---';
+
+    const displayTopicChip =
+        selectedClient?.topic && String(selectedClient.topic).trim() !== ''
+            ? String(selectedClient.topic).trim()
+            : '---';
+
+    const filteredLanguages = allLanguages.filter((lang) =>
+        lang.name.toLowerCase().includes((languageInputValue || '').toLowerCase())
+    );
+
+    const openMetaModal = (which: 'category' | 'language' | 'topic') => {
+        setShowCategoryModal(which === 'category');
+        setShowCategoryDropdown(false);
+        setShowLanguageModal(which === 'language');
+        setShowLanguageDropdown(false);
+        setShowTopicModal(which === 'topic');
+        if (which === 'category') setCategoryInputValue('');
+        if (which === 'language') setLanguageInputValue('');
+        if (which === 'topic') setTopicInputValue('');
+    };
 
     // --- Render Helpers ---
 
@@ -1831,15 +2340,21 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         </div>
 
                         <div className="relative z-0 flex flex-col gap-4 pt-1">
-                            <div className="flex flex-wrap justify-center gap-2 px-0.5">
-                                {selectedClient.language && (
-                                    <span className={META_CHIP}>
-                                        <GlobeAltIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-                                        <span className="truncate">{selectedClient.language}</span>
-                                    </span>
-                                )}
-                                <span className={META_CHIP}>
-                                    <LinkIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                            <div className="flex flex-wrap justify-center gap-2.5 px-0.5">
+                                <button
+                                    type="button"
+                                    className={`${META_CHIP_TOP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
+                                        disableCategoryModal
+                                            ? 'cursor-default'
+                                            : 'cursor-pointer hover:bg-gray-200/90 dark:hover:bg-gray-600'
+                                    }`}
+                                    onClick={disableCategoryModal ? undefined : () => openMetaModal('language')}
+                                >
+                                    <GlobeAltIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
+                                    <span className="truncate">{displayLanguageChip}</span>
+                                </button>
+                                <span className={META_CHIP_TOP}>
+                                    <LinkIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
                                     <span className="min-w-0 max-w-[14rem] truncate">
                                         {getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---'}
                                     </span>
@@ -1852,29 +2367,28 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 )}
                                 <button
                                     type="button"
-                                    className={`${META_CHIP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
+                                    className={`${META_CHIP_TOP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
                                         disableCategoryModal
                                             ? 'cursor-default'
                                             : 'cursor-pointer hover:bg-gray-200/90 dark:hover:bg-gray-600'
                                     }`}
-                                    onClick={
-                                        disableCategoryModal
-                                            ? undefined
-                                            : () => {
-                                                  setShowCategoryModal(true);
-                                                  setCategoryInputValue(displayCategory);
-                                              }
-                                    }
+                                    onClick={disableCategoryModal ? undefined : () => openMetaModal('category')}
                                 >
-                                    <RectangleStackIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                                    <RectangleStackIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
                                     <span className="min-w-0 max-w-[14rem] truncate">{displayCategory}</span>
                                 </button>
-                                {selectedClient.topic ? (
-                                    <span className={META_CHIP}>
-                                        <DocumentTextIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-                                        <span className="min-w-0 max-w-[14rem] truncate">{selectedClient.topic}</span>
-                                    </span>
-                                ) : null}
+                                <button
+                                    type="button"
+                                    className={`${META_CHIP_TOP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
+                                        disableCategoryModal
+                                            ? 'cursor-default'
+                                            : 'cursor-pointer hover:bg-gray-200/90 dark:hover:bg-gray-600'
+                                    }`}
+                                    onClick={disableCategoryModal ? undefined : () => openMetaModal('topic')}
+                                >
+                                    <DocumentTextIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
+                                    <span className="min-w-0 max-w-[14rem] truncate">{displayTopicChip}</span>
+                                </button>
                             </div>
 
                         </div>
@@ -2176,15 +2690,21 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 <div className="flex shrink-0 justify-center">{renderStageBadge('desktop')}</div>
                                 {stageAdjacentTagsFlags}
                             </div>
-                            <div className="flex w-full max-w-xl flex-wrap items-center justify-center gap-2">
-                                {selectedClient.language && (
-                                    <span className={META_CHIP}>
-                                        <GlobeAltIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-                                        <span className="truncate">{selectedClient.language}</span>
-                                    </span>
-                                )}
-                                <span className={META_CHIP}>
-                                    <LinkIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                            <div className="flex w-full max-w-xl flex-wrap items-center justify-center gap-2.5">
+                                <button
+                                    type="button"
+                                    className={`${META_CHIP_TOP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
+                                        disableCategoryModal
+                                            ? 'cursor-default'
+                                            : 'cursor-pointer hover:bg-gray-200/90 dark:hover:bg-gray-600'
+                                    }`}
+                                    onClick={disableCategoryModal ? undefined : () => openMetaModal('language')}
+                                >
+                                    <GlobeAltIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
+                                    <span className="truncate">{displayLanguageChip}</span>
+                                </button>
+                                <span className={META_CHIP_TOP}>
+                                    <LinkIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
                                     <span className="min-w-0 max-w-[12rem] truncate lg:max-w-[16rem]">
                                         {getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---'}
                                     </span>
@@ -2197,29 +2717,28 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 )}
                                 <button
                                     type="button"
-                                    className={`${META_CHIP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
+                                    className={`${META_CHIP_TOP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
                                         disableCategoryModal
                                             ? 'cursor-default'
                                             : 'cursor-pointer hover:bg-gray-200/90 dark:hover:bg-gray-600'
                                     }`}
-                                    onClick={
-                                        disableCategoryModal
-                                            ? undefined
-                                            : () => {
-                                                  setShowCategoryModal(true);
-                                                  setCategoryInputValue(displayCategory);
-                                              }
-                                    }
+                                    onClick={disableCategoryModal ? undefined : () => openMetaModal('category')}
                                 >
-                                    <RectangleStackIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
+                                    <RectangleStackIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
                                     <span className="min-w-0 max-w-[12rem] truncate lg:max-w-[16rem]">{displayCategory}</span>
                                 </button>
-                                {selectedClient.topic ? (
-                                    <span className={META_CHIP}>
-                                        <DocumentTextIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-                                        <span className="min-w-0 max-w-[12rem] truncate lg:max-w-[16rem]">{selectedClient.topic}</span>
-                                    </span>
-                                ) : null}
+                                <button
+                                    type="button"
+                                    className={`${META_CHIP_TOP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
+                                        disableCategoryModal
+                                            ? 'cursor-default'
+                                            : 'cursor-pointer hover:bg-gray-200/90 dark:hover:bg-gray-600'
+                                    }`}
+                                    onClick={disableCategoryModal ? undefined : () => openMetaModal('topic')}
+                                >
+                                    <DocumentTextIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
+                                    <span className="min-w-0 max-w-[12rem] truncate lg:max-w-[16rem]">{displayTopicChip}</span>
+                                </button>
                             </div>
 
                         </div>
@@ -2509,105 +3028,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             return null; // Don't show any stage buttons if unactivated
                         }
 
-                        const isHandlerSetStageNumeric =
-                            (isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105;
-
-                        // Stage 105 must not show any stage-action buttons even if stage name is mis-mapped.
-                        if (isHandlerSetStageNumeric) {
-                            if (!hasPaymentPlan) {
-                                return (
-                                    <div className="w-full flex justify-center">
-                                        <div className="w-full max-w-xl rounded-2xl border border-red-200/70 bg-red-50 px-4 py-3 text-red-900 shadow-sm">
-                                            <div className="flex items-center justify-between gap-3">
-                                                <div className="flex items-center gap-2 text-sm font-semibold">
-                                                    <ExclamationTriangleIcon className="h-5 w-5" />
-                                                    Missing payment plan
-                                                </div>
-                                                <div className="text-xs text-red-800/80 whitespace-nowrap">
-                                                    Finances → payment plan
-                                                </div>
-                                            </div>
-                                        </div>
-                                    </div>
-                                );
-                            }
-
-                            if (!nextDuePayment) return null;
-
-                            return (
-                                <div className="w-full flex justify-center">
-                                    <div className="w-full max-w-xl rounded-2xl border border-amber-200/70 bg-amber-50 px-4 py-3 text-amber-900 shadow-sm">
-                                        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
-                                            <div className="text-sm font-semibold">Next payment due</div>
-                                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
-                                                <div className="text-sm tabular-nums text-right whitespace-nowrap">
-                                                    {(() => {
-                                                        const isLegacy = !!(nextDuePayment as any)?.isLegacy;
-                                                        const base = Number((nextDuePayment as any)?.value ?? 0);
-                                                        const vat = Number(
-                                                            isLegacy
-                                                                ? (nextDuePayment as any)?.vat_value ?? 0
-                                                                : (nextDuePayment as any)?.value_vat ?? 0
-                                                        );
-                                                        const gross =
-                                                            (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
-                                                        const currency =
-                                                            (nextDuePayment as any)?.currency ??
-                                                            (nextDuePayment as any)?.accounting_currencies?.iso_code ??
-                                                            (nextDuePayment as any)?.accounting_currencies?.name ??
-                                                            '';
-                                                        const dateRaw =
-                                                            (nextDuePayment as any)?.due_date ?? (nextDuePayment as any)?.date ?? null;
-                                                        const dateLabel = dateRaw ? new Date(dateRaw).toLocaleDateString() : '—';
-                                                        const amountLabel = Number.isFinite(gross)
-                                                            ? gross.toLocaleString(undefined, {
-                                                                  minimumFractionDigits: 0,
-                                                                  maximumFractionDigits: 2,
-                                                              })
-                                                            : '0';
-                                                        return (
-                                                            <span>
-                                                                <span className="font-semibold">
-                                                                    {currency ? `${currency} ` : ''}
-                                                                    {amountLabel}
-                                                                </span>
-                                                                {' · '}
-                                                                <span className="opacity-80">{dateLabel}</span>
-                                                            </span>
-                                                        );
-                                                    })()}
-                                                </div>
-                                                {(() => {
-                                                    const isLegacy = !!(nextDuePayment as any)?.isLegacy;
-                                                    const ready =
-                                                        (nextDuePayment as any)?.ready_to_pay === true ||
-                                                        ((isLegacy && !!(nextDuePayment as any)?.due_date) ? true : false);
-                                                    if (!ready) return null;
-                                                    const by =
-                                                        (nextDuePayment as any)?.ready_to_pay_by_display_name ??
-                                                        (nextDuePayment as any)?.tenants_employee?.display_name ??
-                                                        (nextDuePayment as any)?.updated_by ??
-                                                        (nextDuePayment as any)?.paid_by ??
-                                                        '—';
-                                                    return (
-                                                        <div className="flex items-center justify-end gap-2 whitespace-nowrap">
-                                                            <span className="btn btn-success btn-sm pointer-events-none gap-1.5 text-white rounded-full px-3">
-                                                                <CheckCircleIcon className="h-4 w-4" />
-                                                                Sent to finance
-                                                            </span>
-                                                            <span className="text-xs text-amber-800/80 whitespace-nowrap">
-                                                                by <span className="font-semibold">{String(by)}</span>
-                                                            </span>
-                                                        </div>
-                                                    );
-                                                })()}
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-                            );
-                        }
-
                         // Closed state: keep showing Sub efforts log for stage 200, otherwise show "No action available"
                         if (selectedClient && (areStagesEquivalent(currentStageName, 'Case Closed') || (isStageNumeric && stageNumeric === 200))) {
                             if ((isStageNumeric && stageNumeric === 200) || Number((selectedClient as any)?.stage) === 200) {
@@ -2767,17 +3187,19 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </div>
                                 ) : null}
 
-                                {/* Handler Started Stage */}
-                                {areStagesEquivalent(currentStageName, 'Handler Started') && (
+                                {/* Stages 60 / 70 / 100 / 105 / 110 / 150: sub-efforts; finalize only on 110 & 150 */}
+                                {subEffortsStageFlags.showPickerLogAndModal && (
                                     <>
                                         <div className="flex items-center justify-end gap-3">
-                                            <button
-                                                onClick={() => updateLeadStage(200)}
-                                                className="btn btn-neutral btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
-                                            >
-                                                <CheckCircleIcon className="w-4 h-4" />
-                                                Finalize Case
-                                            </button>
+                                            {subEffortsStageFlags.showFinalizeCaseWithSubEfforts && (
+                                                <button
+                                                    onClick={() => updateLeadStage(200)}
+                                                    className="btn btn-neutral btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
+                                                >
+                                                    <CheckCircleIcon className="w-4 h-4" />
+                                                    Finalize Case
+                                                </button>
+                                            )}
                                             <div className="dropdown dropdown-end">
                                                 <button
                                                     type="button"
@@ -2949,17 +3371,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             onRefresh={() => void fetchLeadSubEfforts()}
                                         />
                                     </>
-                                )}
-
-                                {/* Application submitted Stage */}
-                                {areStagesEquivalent(currentStageName, 'Application submitted') && (
-                                    <button
-                                        onClick={() => updateLeadStage(200)}
-                                        className="btn btn-neutral btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
-                                    >
-                                        <CheckCircleIcon className="w-4 h-4" />
-                                                Finalize Case
-                                    </button>
                                 )}
 
                                 {/* Payment request sent Stage */}
@@ -3232,13 +3643,28 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             return selectedClient.scheduler || '---';
                         };
 
+                        /** tenants_employee.id is numeric — never pass display names into avatar / batch id queries. */
+                        const resolveNumericEmployeeId = (value: unknown): number | null => {
+                            if (value == null || value === '' || value === '---' || value === '--') return null;
+                            if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+                            const s = String(value).trim();
+                            if (!s) return null;
+                            if (/^\d+$/.test(s)) {
+                                const n = Number(s);
+                                return Number.isFinite(n) && n > 0 ? n : null;
+                            }
+                            const emp = allEmployees.find((e: any) =>
+                                e?.display_name && e.display_name.trim().toLowerCase() === s.toLowerCase()
+                            );
+                            if (emp?.id == null) return null;
+                            const n = typeof emp.id === 'bigint' ? Number(emp.id) : Number(emp.id);
+                            return Number.isFinite(n) && n > 0 ? n : null;
+                        };
+
                         // Role IDs for Avatars
                         const closerId = (() => {
                             if (isLegacyLead) return (selectedClient as any).closer_id ? Number((selectedClient as any).closer_id) : null;
-                            const closer = selectedClient.closer;
-                            if (!closer || closer === '---' || closer === '--') return null;
-                            if (/^\d+$/.test(String(closer).trim())) return Number(closer);
-                            return closer;
+                            return resolveNumericEmployeeId(selectedClient.closer);
                         })();
 
                         const expertId = (() => {
@@ -3248,22 +3674,18 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         })();
 
                         const handlerId = (() => {
-                            if ((selectedClient as any).case_handler_id) return Number((selectedClient as any).case_handler_id);
-                            if (isLegacyLead) return null;
-                            const handler = (selectedClient as any).handler;
-                            if (!handler || handler === '---' || handler === '--') return null;
-                            if (typeof handler === 'number' || (typeof handler === 'string' && !isNaN(Number(handler)) && handler.toString().trim() !== '')) {
-                                return Number(handler);
+                            const ch = (selectedClient as any).case_handler_id;
+                            if (ch != null && String(ch).trim() !== '') {
+                                const n = Number(ch);
+                                return Number.isFinite(n) && n > 0 ? n : null;
                             }
-                            return handler;
+                            if (isLegacyLead) return null;
+                            return resolveNumericEmployeeId((selectedClient as any).handler);
                         })();
 
                         const schedulerId = (() => {
                             if (isLegacyLead) return (selectedClient as any).meeting_scheduler_id ? Number((selectedClient as any).meeting_scheduler_id) : null;
-                            const scheduler = selectedClient.scheduler;
-                            if (!scheduler || scheduler === '---' || scheduler === '--') return null;
-                            if (/^\d+$/.test(String(scheduler).trim())) return Number(scheduler);
-                            return scheduler;
+                            return resolveNumericEmployeeId(selectedClient.scheduler);
                         })();
 
                         const retentionHandlerId = (selectedClient as any).retainer_handler_id ? Number((selectedClient as any).retainer_handler_id) : null;
@@ -3285,6 +3707,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         const isUnactivated = isLegacyLead
                             ? (selectedClient?.status === 10)
                             : (selectedClient?.status === 'inactive');
+
+                        const activeHandlerTypeForLead = Number((selectedClient as any).active_handler_type) === 1 ? 1 : 2;
+                        const hasHandlerRole = !isRoleEmpty(handlerId, handlerDisplay);
+                        const hasRetentionRole = !isRoleEmpty(retentionHandlerId, retentionHandlerDisplay);
+                        const showDualHandlerToggle = hasHandlerRole && hasRetentionRole && !isUnactivated;
 
                         // Group roles by employee ID
                         const roleGroups = new Map<string, { id: string | number | null; roles: string[]; display: string }>();
@@ -3330,38 +3757,126 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     ))}
                                 </div>
 
-                                {/* Handler and Retainer Handler - inline with small avatars */}
-                                {(!isRoleEmpty(handlerId, handlerDisplay) || !isRoleEmpty(retentionHandlerId, retentionHandlerDisplay)) && (
-                                    <div className="flex items-center gap-6 mx-auto">
-                                        {!isRoleEmpty(handlerId, handlerDisplay) && (
-                                            <div className="flex items-center gap-2">
-                                                <div className={`relative ${selectedClient.active_handler_type === 2 ? 'ring-2 ring-emerald-500 rounded-full p-0.5' : ''}`}>
-                                                    <EmployeeAvatar employeeId={handlerId} size="md" />
-                                                    {selectedClient.active_handler_type === 2 && (
-                                                        <div className="absolute -top-0.5 -right-0.5 bg-emerald-500 rounded-full p-0.5 ring-2 ring-white">
+                                {/* Handler and Retainer Handler - avatars + active role segmented control (same semantics as My Cases) */}
+                                {(hasHandlerRole || hasRetentionRole) && (
+                                    <div className="flex flex-wrap items-end justify-center gap-4 sm:gap-6 mx-auto">
+                                        {hasHandlerRole && (
+                                            <div className="flex items-center gap-2 min-w-0">
+                                                <div
+                                                    className={`relative shrink-0 overflow-visible rounded-full p-0.5 transition-[box-shadow,opacity,ring-color] duration-500 ease-out ${
+                                                        activeHandlerTypeForLead === 2
+                                                            ? 'opacity-100 ring-2 ring-emerald-500 shadow-[0_0_14px_rgba(16,185,129,0.32)]'
+                                                            : 'opacity-80 ring-2 ring-transparent'
+                                                    }`}
+                                                >
+                                                    {activeHandlerTypeForLead === 2 && (
+                                                        <span
+                                                            key={handlerActiveRingNonce}
+                                                            className="pointer-events-none absolute inset-[-4px] z-0 rounded-full animate-handler-active-ring-flash"
+                                                            aria-hidden
+                                                        />
+                                                    )}
+                                                    <div className="relative z-[1]">
+                                                        <EmployeeAvatar employeeId={handlerId} size="md" />
+                                                    </div>
+                                                    {activeHandlerTypeForLead === 2 && (
+                                                        <div className="absolute -top-0.5 -right-0.5 z-[2] bg-emerald-500 rounded-full p-0.5 ring-2 ring-white transition-transform duration-300 ease-out">
                                                             <CheckCircleIcon className="w-3 h-3 text-white" />
                                                         </div>
                                                     )}
                                                 </div>
                                                 <div className="flex flex-col min-w-0">
-                                                    <span className="text-[10px] text-gray-400 uppercase tracking-wide font-medium">Handler</span>
-                                                    <span className="text-sm font-medium text-gray-700 truncate">{formatRoleDisplay(handlerDisplay)}</span>
+                                                    <span className="text-[10px] text-gray-400 uppercase tracking-wide font-medium">
+                                                        Handler
+                                                    </span>
+                                                    <span className="text-sm font-medium text-gray-700 truncate">
+                                                        {formatRoleDisplay(handlerDisplay)}
+                                                    </span>
                                                 </div>
                                             </div>
                                         )}
-                                        {!isRoleEmpty(retentionHandlerId, retentionHandlerDisplay) && (
-                                            <div className="flex items-center gap-2">
-                                                <div className={`relative ${selectedClient.active_handler_type === 1 ? 'ring-2 ring-emerald-500 rounded-full p-0.5' : ''}`}>
-                                                    <EmployeeAvatar employeeId={retentionHandlerId} size="md" />
-                                                    {selectedClient.active_handler_type === 1 && (
-                                                        <div className="absolute -top-0.5 -right-0.5 bg-emerald-500 rounded-full p-0.5 ring-2 ring-white">
+
+                                        {showDualHandlerToggle && (
+                                            <div className="relative flex shrink-0 items-center">
+                                                <div className="inline-flex h-11 min-w-[8.25rem] items-stretch gap-0.5 rounded-full border border-base-300/50 bg-base-200/90 p-1 shadow-inner">
+                                                    <button
+                                                        type="button"
+                                                        aria-label="Case handler active on this file"
+                                                        onClick={() => void updateActiveHandlerType(2)}
+                                                        title="Case handler drives this file (Active Cases)"
+                                                        className={`relative flex h-9 min-w-[3.25rem] flex-1 shrink-0 items-center justify-center rounded-full transition-all duration-300 ease-out ${
+                                                            activeHandlerTypeForLead === 2
+                                                                ? 'bg-emerald-500 shadow-md ring-1 ring-emerald-600/20'
+                                                                : 'bg-transparent hover:bg-base-100/70'
+                                                        }`}
+                                                    >
+                                                        <UserIcon
+                                                            className={`h-4 w-4 shrink-0 transition-colors duration-300 ${
+                                                                activeHandlerTypeForLead === 2
+                                                                    ? 'text-white'
+                                                                    : 'text-gray-500'
+                                                            }`}
+                                                            aria-hidden
+                                                        />
+                                                        <span className="sr-only">Case handler</span>
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        aria-label="Retention handler active on this file"
+                                                        onClick={() => void updateActiveHandlerType(1)}
+                                                        title="Retention handler active (Non-Active Cases)"
+                                                        className={`relative flex h-9 min-w-[3.25rem] flex-1 shrink-0 items-center justify-center rounded-full transition-all duration-300 ease-out ${
+                                                            activeHandlerTypeForLead === 1
+                                                                ? 'bg-rose-500 shadow-md ring-1 ring-rose-600/20'
+                                                                : 'bg-transparent hover:bg-base-100/70'
+                                                        }`}
+                                                    >
+                                                        <RectangleStackIcon
+                                                            className={`h-4 w-4 shrink-0 transition-colors duration-300 ${
+                                                                activeHandlerTypeForLead === 1
+                                                                    ? 'text-white'
+                                                                    : 'text-gray-500'
+                                                            }`}
+                                                            aria-hidden
+                                                        />
+                                                        <span className="sr-only">Retention handler</span>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {hasRetentionRole && (
+                                            <div className="flex items-center gap-2 min-w-0">
+                                                <div
+                                                    className={`relative shrink-0 overflow-visible rounded-full p-0.5 transition-[box-shadow,opacity,ring-color] duration-500 ease-out ${
+                                                        activeHandlerTypeForLead === 1
+                                                            ? 'opacity-100 ring-2 ring-emerald-500 shadow-[0_0_14px_rgba(16,185,129,0.32)]'
+                                                            : 'opacity-80 ring-2 ring-transparent'
+                                                    }`}
+                                                >
+                                                    {activeHandlerTypeForLead === 1 && (
+                                                        <span
+                                                            key={handlerActiveRingNonce}
+                                                            className="pointer-events-none absolute inset-[-4px] z-0 rounded-full animate-handler-active-ring-flash"
+                                                            aria-hidden
+                                                        />
+                                                    )}
+                                                    <div className="relative z-[1]">
+                                                        <EmployeeAvatar employeeId={retentionHandlerId} size="md" />
+                                                    </div>
+                                                    {activeHandlerTypeForLead === 1 && (
+                                                        <div className="absolute -top-0.5 -right-0.5 z-[2] bg-emerald-500 rounded-full p-0.5 ring-2 ring-white transition-transform duration-300 ease-out">
                                                             <CheckCircleIcon className="w-3 h-3 text-white" />
                                                         </div>
                                                     )}
                                                 </div>
                                                 <div className="flex flex-col min-w-0">
-                                                    <span className="text-[10px] text-gray-400 uppercase tracking-wide font-medium">R-Handler</span>
-                                                    <span className="text-sm font-medium text-gray-700 truncate">{formatRoleDisplay(retentionHandlerDisplay)}</span>
+                                                    <span className="text-[10px] text-gray-400 uppercase tracking-wide font-medium">
+                                                        R-Handler
+                                                    </span>
+                                                    <span className="text-sm font-medium text-gray-700 truncate">
+                                                        {formatRoleDisplay(retentionHandlerDisplay)}
+                                                    </span>
                                                 </div>
                                             </div>
                                         )}
@@ -3530,17 +4045,19 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         </div>
                                                     ) : null}
 
-                                                    {/* Handler Started Stage */}
-                                                    {areStagesEquivalent(currentStageName, 'Handler Started') && (
+                                                    {/* Stages 60 / 70 / 100 / 105 / 110 / 150: sub-efforts; finalize only on 110 & 150 */}
+                                                    {subEffortsStageFlags.showPickerLogAndModal && (
                                                         <>
                                                             <div className="flex items-center justify-end gap-3">
-                                                                <button
-                                                                    onClick={() => updateLeadStage(200)}
-                                                                    className="btn btn-outline btn-ghost rounded-full px-5 gap-2"
-                                                                >
-                                                                    <CheckCircleIcon className="w-5 h-5" />
-                                                                    Finalize Case
-                                                                </button>
+                                                                {subEffortsStageFlags.showFinalizeCaseWithSubEfforts && (
+                                                                    <button
+                                                                        onClick={() => updateLeadStage(200)}
+                                                                        className="btn btn-outline btn-ghost rounded-full px-5 gap-2"
+                                                                    >
+                                                                        <CheckCircleIcon className="w-5 h-5" />
+                                                                        Finalize Case
+                                                                    </button>
+                                                                )}
                                                                 <div className="dropdown dropdown-end">
                                                                     <button
                                                                         type="button"
@@ -3714,17 +4231,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                 onRefresh={() => void fetchLeadSubEfforts()}
                                                             />
                                                         </>
-                                                    )}
-
-                                                    {/* Application submitted Stage */}
-                                                    {areStagesEquivalent(currentStageName, 'Application submitted') && (
-                                                        <button
-                                                            onClick={() => updateLeadStage(200)}
-                                                            className="btn btn-outline btn-ghost rounded-full px-5 gap-2"
-                                                        >
-                                                            <CheckCircleIcon className="w-5 h-5" />
-                                                                    Finalize Case
-                                                        </button>
                                                     )}
 
                                                     {/* Payment request sent Stage */}
@@ -3937,7 +4443,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                 {/* Category Edit Modal */}
                 {showCategoryModal && (
-                    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-[330]" onClick={() => setShowCategoryModal(false)}>
+                    <div
+                        className="fixed inset-0 bg-black/50 flex items-center justify-center z-[330]"
+                        onClick={() => {
+                            setShowCategoryModal(false);
+                            setShowCategoryDropdown(false);
+                            setCategoryInputValue('');
+                        }}
+                    >
                         <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
                             <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">Edit Category</h3>
 
@@ -3950,10 +4463,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     placeholder="Search categories..."
                                     value={categoryInputValue}
                                     onChange={e => {
-                                        setCategoryInputValue(e.target.value);
-                                        setShowCategoryDropdown(true);
+                                        const v = e.target.value;
+                                        setCategoryInputValue(v);
+                                        setShowCategoryDropdown(v.trim().length > 0);
                                     }}
-                                    onFocus={() => setShowCategoryDropdown(true)}
+                                    onFocus={() => setShowCategoryDropdown(categoryInputValue.trim().length > 0)}
                                 />
                                 {showCategoryDropdown && filteredCategories.length > 0 && (
                                     <div className="mt-2 max-h-60 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 shadow-lg">
@@ -3984,7 +4498,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     onClick={() => {
                                         setShowCategoryModal(false);
                                         setShowCategoryDropdown(false);
-                                        setCategoryInputValue(displayCategory);
+                                        setCategoryInputValue('');
                                     }}
                                 >
                                     Cancel
@@ -3995,9 +4509,139 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         await handleSaveCategory();
                                         setShowCategoryModal(false);
                                         setShowCategoryDropdown(false);
+                                        setCategoryInputValue('');
                                     }}
                                 >
                                     Save
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {showLanguageModal && (
+                    <div
+                        className="fixed inset-0 bg-black/50 flex items-center justify-center z-[330]"
+                        onClick={() => {
+                            setShowLanguageModal(false);
+                            setShowLanguageDropdown(false);
+                            setLanguageInputValue('');
+                        }}
+                    >
+                        <div
+                            className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md p-6"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">Edit Language</h3>
+
+                            <div className="mb-6">
+                                <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+                                    Language
+                                </label>
+                                <input
+                                    autoFocus
+                                    type="text"
+                                    className="input input-bordered w-full"
+                                    placeholder="Search languages..."
+                                    value={languageInputValue}
+                                    onChange={(e) => {
+                                        const v = e.target.value;
+                                        setLanguageInputValue(v);
+                                        setShowLanguageDropdown(v.trim().length > 0);
+                                    }}
+                                    onFocus={() => setShowLanguageDropdown(languageInputValue.trim().length > 0)}
+                                />
+                                {showLanguageDropdown && filteredLanguages.length > 0 && (
+                                    <div className="mt-2 max-h-60 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 shadow-lg">
+                                        {filteredLanguages.slice(0, 20).map((lang) => (
+                                            <div
+                                                key={String(lang.id)}
+                                                className="px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer text-sm"
+                                                onClick={() => {
+                                                    setLanguageInputValue(lang.name);
+                                                    setShowLanguageDropdown(false);
+                                                }}
+                                            >
+                                                {lang.name}
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div className="flex gap-3 justify-end">
+                                <button
+                                    type="button"
+                                    className="btn btn-ghost"
+                                    disabled={savingLanguage}
+                                    onClick={() => {
+                                        setShowLanguageModal(false);
+                                        setShowLanguageDropdown(false);
+                                        setLanguageInputValue('');
+                                    }}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn btn-primary"
+                                    disabled={savingLanguage}
+                                    onClick={() => void handleSaveLanguage()}
+                                >
+                                    {savingLanguage ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {showTopicModal && (
+                    <div
+                        className="fixed inset-0 bg-black/50 flex items-center justify-center z-[330]"
+                        onClick={() => {
+                            setShowTopicModal(false);
+                            setTopicInputValue('');
+                        }}
+                    >
+                        <div
+                            className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md p-6"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">Edit Topic</h3>
+
+                            <div className="mb-6">
+                                <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
+                                    Topic
+                                </label>
+                                <input
+                                    autoFocus
+                                    type="text"
+                                    className="input input-bordered w-full"
+                                    placeholder="Topic (optional)"
+                                    value={topicInputValue}
+                                    onChange={(e) => setTopicInputValue(e.target.value)}
+                                />
+                            </div>
+
+                            <div className="flex gap-3 justify-end">
+                                <button
+                                    type="button"
+                                    className="btn btn-ghost"
+                                    disabled={savingTopic}
+                                    onClick={() => {
+                                        setShowTopicModal(false);
+                                        setTopicInputValue('');
+                                    }}
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="button"
+                                    className="btn btn-primary"
+                                    disabled={savingTopic}
+                                    onClick={() => void handleSaveTopic()}
+                                >
+                                    {savingTopic ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
                                 </button>
                             </div>
                         </div>
@@ -4035,6 +4679,131 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         }
                     }}
                 />
+
+                {activeRoleReveal &&
+                    createPortal(
+                        <div
+                            className={`fixed inset-0 z-[500] flex items-center justify-center p-4 sm:p-8 transition-[opacity,backdrop-filter] duration-500 ease-out ${
+                                activeRoleRevealEntered ? 'bg-black/60 opacity-100 backdrop-blur-[10px]' : 'opacity-0 backdrop-blur-0'
+                            }`}
+                            onClick={() => setActiveRoleReveal(null)}
+                            role="dialog"
+                            aria-modal="true"
+                            aria-labelledby="active-role-reveal-title"
+                        >
+                            <div
+                                className={`relative w-full max-w-md overflow-hidden rounded-2xl border px-8 pb-0 pt-11 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.22)] transition-all duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none dark:shadow-[0_24px_64px_-16px_rgba(0,0,0,0.55)] ${
+                                    activeRoleRevealEntered
+                                        ? 'translate-y-0 scale-100 rotate-0 opacity-100'
+                                        : 'translate-y-10 scale-[0.82] rotate-[-2deg] opacity-0'
+                                } ${
+                                    activeRoleReveal.activeType === 2
+                                        ? 'border-emerald-200/90 bg-gradient-to-b from-white via-white to-emerald-50/50 dark:border-emerald-900/50 dark:from-gray-950 dark:via-gray-950 dark:to-emerald-950/25'
+                                        : 'border-rose-200/90 bg-gradient-to-b from-white via-white to-rose-50/45 dark:border-rose-900/45 dark:from-gray-950 dark:via-gray-950 dark:to-rose-950/20'
+                                }`}
+                                onClick={(e) => e.stopPropagation()}
+                            >
+                                {/* Single static wash — no pulse/blur stacks (reads cleaner on screen) */}
+                                <div
+                                    className={`pointer-events-none absolute inset-0 ${
+                                        activeRoleReveal.activeType === 2
+                                            ? 'bg-[radial-gradient(ellipse_85%_55%_at_50%_-5%,rgba(16,185,129,0.11),transparent_62%)]'
+                                            : 'bg-[radial-gradient(ellipse_85%_55%_at_50%_-5%,rgba(244,63,94,0.09),transparent_62%)]'
+                                    }`}
+                                    aria-hidden
+                                />
+
+                                <div className="relative flex flex-col items-center text-center">
+                                    <p
+                                        id="active-role-reveal-title"
+                                        className="text-[10px] font-semibold uppercase tracking-[0.28em] text-gray-500/90 dark:text-gray-400"
+                                    >
+                                        Active role on this lead
+                                    </p>
+                                    <p
+                                        className={`mt-3 text-2xl font-bold tracking-tight sm:text-3xl ${
+                                            activeRoleReveal.activeType === 2
+                                                ? 'text-emerald-700 dark:text-emerald-300'
+                                                : 'text-rose-700 dark:text-rose-300'
+                                        }`}
+                                    >
+                                        {activeRoleReveal.roleTitle}
+                                    </p>
+                                    <p className="mt-2 max-w-xs text-sm text-gray-600 dark:text-gray-300">
+                                        {activeRoleReveal.displayName !== '---'
+                                            ? activeRoleReveal.displayName
+                                            : 'This role is now driving the file for workflows and visibility.'}
+                                    </p>
+
+                                    <div
+                                        className={`relative mt-10 flex items-center justify-center transition-transform duration-700 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none ${
+                                            activeRoleRevealEntered ? 'scale-100' : 'scale-50'
+                                        }`}
+                                    >
+                                        <div
+                                            className={`absolute inset-[-14px] rounded-full opacity-80 motion-safe:animate-[ping_1.4s_cubic-bezier(0,0,0.2,1)_1] ${
+                                                activeRoleReveal.activeType === 2
+                                                    ? 'bg-emerald-400/35'
+                                                    : 'bg-rose-400/35'
+                                            }`}
+                                            aria-hidden
+                                        />
+                                        <div
+                                            className={`relative rounded-full p-1 shadow-xl ring-4 ring-offset-4 ring-offset-base-100 dark:ring-offset-gray-950 ${
+                                                activeRoleReveal.activeType === 2
+                                                    ? 'ring-emerald-500/80 shadow-emerald-500/25'
+                                                    : 'ring-rose-500/80 shadow-rose-500/25'
+                                            }`}
+                                        >
+                                            {activeRoleReveal.employeeId ? (
+                                                <EmployeeAvatar employeeId={activeRoleReveal.employeeId} size="hero" />
+                                            ) : (
+                                                <div
+                                                    className={`flex h-36 w-36 items-center justify-center rounded-full bg-gradient-to-br font-bold text-white shadow-inner ${
+                                                        activeRoleReveal.activeType === 2
+                                                            ? 'from-emerald-500 to-teal-700'
+                                                            : 'from-rose-500 to-pink-700'
+                                                    }`}
+                                                >
+                                                    {getEmployeeInitials(activeRoleReveal.displayName) ? (
+                                                        <span className="text-4xl tracking-tight">
+                                                            {getEmployeeInitials(activeRoleReveal.displayName)}
+                                                        </span>
+                                                    ) : (
+                                                        <UserIcon className="h-16 w-16 opacity-90" aria-hidden />
+                                                    )}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <StarIcon
+                                            className={`pointer-events-none absolute -right-2 -top-2 h-8 w-8 motion-safe:animate-pulse ${
+                                                activeRoleReveal.activeType === 2
+                                                    ? 'text-amber-400 drop-shadow-md'
+                                                    : 'text-amber-300 drop-shadow-md'
+                                            }`}
+                                            aria-hidden
+                                        />
+                                    </div>
+
+                                </div>
+
+                                <div className="relative mt-10 border-t border-gray-200/80 bg-white/60 px-6 py-4 dark:border-gray-700/80 dark:bg-gray-950/40">
+                                    <button
+                                        type="button"
+                                        className="mx-auto flex w-full max-w-[14rem] items-center justify-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 shadow-sm transition-colors hover:border-gray-300 hover:bg-gray-50 active:bg-gray-100 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-200 dark:hover:border-gray-500 dark:hover:bg-gray-800 dark:active:bg-gray-950"
+                                        onClick={() => setActiveRoleReveal(null)}
+                                    >
+                                        <XMarkIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
+                                        Dismiss
+                                    </button>
+                                    <p className="mt-2.5 text-center text-[11px] font-medium text-gray-400 dark:text-gray-500">
+                                        Or click outside to close
+                                    </p>
+                                </div>
+                            </div>
+                        </div>,
+                        document.body
+                    )}
 
                 {pendingProbabilityValues &&
                     createPortal(

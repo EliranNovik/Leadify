@@ -227,14 +227,25 @@ const OverdueFollowups: React.FC = () => {
                         };
                     });
 
-                // Process legacy leads (filter for active leads: status = 0, stage < 100)
+                // Legacy active status only — stage must not hide follow-ups (matches Dashboard fetchFollowUpLeadsData)
+                const legacyEmbed = (row: any) => {
+                    const r = row?.leads_lead;
+                    return Array.isArray(r) ? r[0] : r;
+                };
+                const isActiveLegacyForFollowup = (lead: any) => {
+                    if (!lead) return false;
+                    const s = lead.status;
+                    if (s === 10 || s === '10') return false;
+                    return s === 0 || s === '0' || s === null || s === undefined;
+                };
+
                 const processedLegacyLeads: CombinedLead[] = (legacyFollowupsData || [])
                     .filter(followup => {
-                        const lead = followup.leads_lead as any;
-                        return lead && lead.status === 0 && (lead.stage === null || lead.stage < 100);
+                        const lead = legacyEmbed(followup);
+                        return isActiveLegacyForFollowup(lead);
                     })
                     .map(followup => {
-                        const lead = followup.leads_lead as any;
+                        const lead = legacyEmbed(followup);
                         return {
                             id: `legacy_${lead.id}`,
                             lead_number: formatLegacyLeadNumber(lead),

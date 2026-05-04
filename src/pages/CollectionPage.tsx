@@ -229,10 +229,14 @@ const CollectionPage: React.FC = () => {
         console.log('🔍 Unique meeting_paid values found:', uniqueMeetingPaidValues);
 
         // Fetch related data for better display
-        const employeeIds = [...new Set([
-          ...legacyLeads.map(lead => lead.expert_id).filter(Boolean),
-          ...legacyLeads.map(lead => lead.meeting_manager_id).filter(Boolean)
-        ])];
+        // tenants_employee.id is numeric — legacy rows may store text/slugs in id columns; never pass those to .in('id', …).
+        const employeeIds = [
+          ...new Set(
+            [...legacyLeads.map((lead) => lead.expert_id), ...legacyLeads.map((lead) => lead.meeting_manager_id)]
+              .map((v) => (v == null || v === '' ? NaN : typeof v === 'bigint' ? Number(v) : Number(v)))
+              .filter((n) => Number.isFinite(n) && n > 0)
+          ),
+        ];
         const categoryIds = [...new Set(legacyLeads.map(lead => lead.category_id).filter(Boolean))];
         const stageIds = [...new Set(legacyLeads.map(lead => lead.stage).filter(Boolean))];
         console.log('🔍 Stage IDs to fetch:', stageIds.slice(0, 10));

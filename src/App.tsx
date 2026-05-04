@@ -463,34 +463,37 @@ const AppContentInner: React.FC = () => {
         // Create a completely new object reference to ensure React detects the change
         // Spread all properties to create a new object reference
         // CRITICAL: Preserve ALL financial columns exactly as they come from the database
-        const newClientData = {
-          ...data,
-          // Explicitly preserve financial columns - don't let them be overridden
-          balance: data.balance,
-          currency_id: data.currency_id, // Store currency_id
-          proposal_total: data.proposal_total,
-          subcontractor_fee: data.subcontractor_fee,
-          potential_total: data.potential_total,
-          vat: data.vat,
-          vat_value: data.vat_value,
-          number_of_applicants_meeting: data.number_of_applicants_meeting,
-          // Compute currency symbols for backward compatibility
-          balance_currency: currencySymbol,
-          proposal_currency: currencySymbol,
-          // Preserve category name from existing state if available (since DB might only have ID)
-          category: selectedClient?.category || data.category || '',
-          // Explicitly spread nested objects/arrays to ensure new references
-          emails: data.emails ? [...(Array.isArray(data.emails) ? data.emails : [])] : []
-        };
-        console.log('🔄 Setting selectedClient with fresh data:', {
-          currency_id: newClientData.currency_id,
-          currency_iso_code: currencyData?.iso_code,
-          currency_symbol: currencySymbol,
-          balance: newClientData.balance,
-          category: newClientData.category
+        setSelectedClient((prev: any) => {
+          const sameLead = prev != null && String(prev.id) === String(data.id);
+          const newClientData = {
+            ...data,
+            balance: data.balance,
+            currency_id: data.currency_id,
+            proposal_total: data.proposal_total,
+            subcontractor_fee: data.subcontractor_fee,
+            potential_total: data.potential_total,
+            vat: data.vat,
+            vat_value: data.vat_value,
+            number_of_applicants_meeting: data.number_of_applicants_meeting,
+            balance_currency: currencySymbol,
+            proposal_currency: currencySymbol,
+            category:
+              sameLead && prev?.category && String(prev.category).trim() !== ''
+                ? prev.category
+                : data.category || '',
+            emails: data.emails ? [...(Array.isArray(data.emails) ? data.emails : [])] : [],
+          };
+          console.log('🔄 Setting selectedClient with fresh data:', {
+            currency_id: newClientData.currency_id,
+            currency_iso_code: currencyData?.iso_code,
+            currency_symbol: currencySymbol,
+            balance: newClientData.balance,
+            category: newClientData.category,
+            active_handler_type: (newClientData as any).active_handler_type,
+          });
+          return newClientData;
         });
-        setSelectedClient(newClientData);
-        console.log('✅ setSelectedClient called with new data, currency_id:', newClientData.currency_id, 'currency_symbol:', currencySymbol);
+        console.log('✅ setSelectedClient (functional) applied for new lead refresh');
       }
     } catch (error) {
       console.error('Error refreshing client data:', error);

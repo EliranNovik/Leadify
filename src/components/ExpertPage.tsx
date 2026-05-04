@@ -851,7 +851,13 @@ const ExpertPage: React.FC = () => {
         }
 
         // Fetch employee names for legacy leads to display properly
-        const expertIds = legacyLeadsData?.map(lead => lead.expert_id).filter(id => id !== null) || [];
+        const expertIds = [
+          ...new Set(
+            (legacyLeadsData?.map((lead) => lead.expert_id) || [])
+              .map((v) => (v == null || v === '' ? NaN : typeof v === 'bigint' ? Number(v) : Number(v)))
+              .filter((n) => Number.isFinite(n) && n > 0)
+          ),
+        ];
         let employeeNameMap: Record<number, string> = {};
         
         if (expertIds.length > 0) {

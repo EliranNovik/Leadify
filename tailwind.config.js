@@ -30,9 +30,15 @@ module.exports = {
             transform: 'translateY(0)',
           },
         },
+        /** One-shot pulse when case / retention handler becomes active (ClientHeader avatars). */
+        'handler-active-ring-flash': {
+          '0%': { opacity: '1', boxShadow: '0 0 0 2px rgba(16, 185, 129, 0.45)' },
+          '100%': { opacity: '0', boxShadow: '0 0 0 12px rgba(16, 185, 129, 0)' },
+        },
       },
       animation: {
         'fade-in': 'fade-in 0.5s ease-out',
+        'handler-active-ring-flash': 'handler-active-ring-flash 0.75s ease-out forwards',
       },
     },
   },

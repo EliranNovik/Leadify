@@ -1209,6 +1209,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       interactionsClientIdRef.current = null;
     }
   }, [interactions, client?.id]);
+
+  // Latest interactions for fetch merge (avoids race: in-flight fetch completes after optimistic manual save)
+  const interactionsRef = useRef<Interaction[]>([]);
+  useEffect(() => {
+    interactionsRef.current = interactions;
+  }, [interactions]);
   
   const [employeePhoneMap, setEmployeePhoneMap] = useState<Map<string, string>>(new Map()); // phone/ext -> display_name
   const [employeePhotoMap, setEmployeePhotoMap] = useState<Map<string, string>>(new Map()); // display_name -> photo_url
@@ -3309,7 +3315,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const isFetchingInteractionsRef = useRef(false);
   
   const fetchInteractions = useCallback(
-    async (options?: { bypassCache?: boolean }) => {
+    async (options?: { bypassCache?: boolean; quiet?: boolean }) => {
       // DEBUG: Log client info for target lead
       const targetClientId = 'f8b9220f-f93b-4830-b011-766b357689d0';
       if (client?.id === targetClientId) {
@@ -3337,6 +3343,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       }
       
       isFetchingInteractionsRef.current = true;
+      const skipLoadingSpinner = Boolean(options?.quiet);
 
       const cacheForLead: ClientInteractionsCache | null =
         interactionsCache && interactionsCache.leadId === client.id ? interactionsCache : null;
@@ -3481,7 +3488,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
       const startTime = performance.now();
       console.log('🚀 Starting InteractionsTab fetch...');
-      if (isMountedRef.current) {
+      if (isMountedRef.current && !skipLoadingSpinner) {
         setInteractionsLoading(true);
       }
       try {
@@ -5088,17 +5095,32 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           const dateB = new Date(b.raw_date).getTime();
           return dateB - dateA;
         });
+
+        // Merge in optimistic new-lead manual rows if this fetch started before they were persisted (stale read)
+        const sortedIds = new Set(sorted.map((i: Interaction) => String(i.id)));
+        const orphanManuals = interactionsRef.current.filter((i: Interaction) => {
+          const sid = String(i.id);
+          return sid.startsWith('manual_') && !sortedIds.has(sid);
+        });
+        const merged =
+          orphanManuals.length > 0
+            ? [...orphanManuals, ...sorted].sort((a, b) => {
+                const dateA = new Date(a.raw_date).getTime();
+                const dateB = new Date(b.raw_date).getTime();
+                return dateB - dateA;
+              })
+            : sorted;
         
         // Log WhatsApp messages count for debugging
-        const whatsappCount = sorted.filter((i: any) => i.kind === 'whatsapp').length;
+        const whatsappCount = merged.filter((i: any) => i.kind === 'whatsapp').length;
         if (whatsappCount > 0) {
           console.log(`✅ Processed ${whatsappCount} WhatsApp messages in interactions timeline`);
         }
         
         // Persist interactions to sessionStorage for tab switching
-        if (client?.id && sorted.length > 0) {
+        if (client?.id && merged.length > 0) {
           try {
-            sessionStorage.setItem(`interactions_${client.id}`, JSON.stringify(sorted));
+            sessionStorage.setItem(`interactions_${client.id}`, JSON.stringify(merged));
           } catch (e) {
             const isQuota = e instanceof DOMException && e.name === 'QuotaExceededError';
             if (isQuota) console.warn('SessionStorage full; skipping persist of interactions for this client.');
@@ -5130,20 +5152,20 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         });
         // Always set interactions - React will handle unmounted components gracefully
         // If component remounts, we want the data anyway
-        const whatsappInSorted = sorted.filter((i: any) => i.kind === 'whatsapp').length;
-        console.log(`📊 Setting interactions: ${sorted.length} total, ${whatsappInSorted} WhatsApp messages`);
+        const whatsappInSorted = merged.filter((i: any) => i.kind === 'whatsapp').length;
+        console.log(`📊 Setting interactions: ${merged.length} total, ${whatsappInSorted} WhatsApp messages`);
         console.log(`📊 isMountedRef.current: ${isMountedRef.current}`);
         
         if (!isMountedRef.current) {
           console.warn('⚠️ Component appears unmounted, but setting interactions anyway (component may remount)');
         }
         
-        setInteractions(sorted as Interaction[]);
+        setInteractions(merged as Interaction[]);
         interactionsClientIdRef.current = client?.id?.toString() || null; // Track that these interactions belong to this client
         // Persist interactions to sessionStorage for tab switching
-        if (client?.id && sorted.length > 0) {
+        if (client?.id && merged.length > 0) {
           try {
-            sessionStorage.setItem(`interactions_${client.id}`, JSON.stringify(sorted));
+            sessionStorage.setItem(`interactions_${client.id}`, JSON.stringify(merged));
           } catch (e) {
             const isQuota = e instanceof DOMException && e.name === 'QuotaExceededError';
             if (isQuota) console.warn('SessionStorage full; skipping persist of interactions for this client.');
@@ -5153,34 +5175,39 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         
         const endTime = performance.now();
         const duration = Math.round(endTime - startTime);
-        console.log(`✅ InteractionsTab loaded in ${duration}ms with ${sorted.length} interactions`);
+        console.log(`✅ InteractionsTab loaded in ${duration}ms with ${merged.length} interactions`);
         setEmails(formattedEmailsForModal);
 
-        onInteractionCountUpdate?.(sorted.length);
+        onInteractionCountUpdate?.(merged.length);
         onInteractionsCacheUpdate?.({
           leadId: client.id,
-          interactions: sorted,
+          interactions: merged,
           emails: formattedEmailsForModal,
-          count: sorted.length,
+          count: merged.length,
           fetchedAt: new Date().toISOString(),
         });
       } catch (error) {
         console.error('Error in fetchAndCombineInteractions:', error);
-        if (isMountedRef.current) {
+        // Background (quiet) revalidation must not wipe an already-shown timeline
+        if (isMountedRef.current && !skipLoadingSpinner) {
           setInteractions([]);
           setEmails([]);
         }
-        onInteractionCountUpdate?.(0);
-        onInteractionsCacheUpdate?.({
-          leadId: client.id,
-          interactions: [],
-          emails: [],
-          count: 0,
-          fetchedAt: new Date().toISOString(),
-        });
+        if (!skipLoadingSpinner) {
+          onInteractionCountUpdate?.(0);
+          onInteractionsCacheUpdate?.({
+            leadId: client.id,
+            interactions: [],
+            emails: [],
+            count: 0,
+            fetchedAt: new Date().toISOString(),
+          });
+        }
       } finally {
         isFetchingInteractionsRef.current = false;
-        if (isMountedRef.current) setInteractionsLoading(false);
+        if (isMountedRef.current && !skipLoadingSpinner) {
+          setInteractionsLoading(false);
+        }
       }
     },
     [
@@ -5279,8 +5306,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         // sessionStorage might not be available
       }
       
-      // If we have persisted data, don't fetch
+      // If we have persisted data, show it immediately but still revalidate from the server.
+      // Session snapshots can omit emails (older saves, partial state) — without this, emails only
+      // appeared after unrelated actions like saving a manual interaction (which triggered a full fetch).
       if (hasPersistedData) {
+        fetchInteractions({ bypassCache: true, quiet: true }).catch((err) =>
+          console.error('Background revalidation after sessionStorage restore failed:', err)
+        );
         return;
       }
       
@@ -5294,6 +5326,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           onInteractionCountUpdate(interactionsCache.count || interactionsCache.interactions.length);
         }
         lastClientIdRef.current = currentClientId;
+        // Same as sessionStorage: cache can be stale vs emails table / manual_interactions — refresh in background
+        fetchInteractions({ bypassCache: true, quiet: true }).catch((err) =>
+          console.error('Background revalidation after interactions cache hit failed:', err)
+        );
         return;
       }
       
@@ -7481,8 +7517,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             
             if (savedInteraction) {
               console.log('✅ [InteractionsTab] New interaction confirmed in DB, refreshing interactions');
-              // Only refresh if we don't already have this interaction in our state
-              const hasInteraction = interactions.some(
+              // Use ref — stale closure on `interactions` would skip refresh after optimistic add
+              const hasInteraction = interactionsRef.current.some(
                 (i: any) => i.id === newInteraction.id || i.id === Number(newInteraction.id)
               );
               

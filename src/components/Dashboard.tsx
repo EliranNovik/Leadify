@@ -863,11 +863,52 @@ const Dashboard: React.FC = () => {
 
       legacyFollowupsQuery = legacyFollowupsQuery.limit(fetchAll ? 1000 : 1000);
 
-      const { data: legacyFollowupsData, error: legacyFollowupsError } = await legacyFollowupsQuery;
+      const { data: legacyFollowupsDataRaw, error: legacyFollowupsError } = await legacyFollowupsQuery;
       if (legacyFollowupsError) throw legacyFollowupsError;
+      let legacyFollowupsData = legacyFollowupsDataRaw || [];
+
+      // If PostgREST embed fails (RLS/FK), still resolve rows using lead_id
+      const tmpLegacyRow = (row: any) => {
+        const r = row?.leads_lead;
+        return Array.isArray(r) ? r[0] : r;
+      };
+      const orphanLegacyIds = [
+        ...new Set(
+          (legacyFollowupsData || [])
+            .filter((f: any) => f?.lead_id != null && !tmpLegacyRow(f))
+            .map((f: any) => Number(f.lead_id))
+            .filter((n: number) => Number.isFinite(n))
+        ),
+      ];
+      if (orphanLegacyIds.length > 0) {
+        const { data: orphanLeads, error: orphanErr } = await supabase
+          .from('leads_lead')
+          .select(
+            `id, name, lead_number, master_id, stage, topic, status, expert_id, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, case_handler_id, closer_id, category_id, total, currency_id`
+          )
+          .in('id', orphanLegacyIds);
+        if (!orphanErr && orphanLeads?.length) {
+          const byId = new Map(orphanLeads.map((r: any) => [Number(r.id), r]));
+          legacyFollowupsData = (legacyFollowupsData || []).map((f: any) => {
+            if (tmpLegacyRow(f) || f?.lead_id == null) return f;
+            const resolved = byId.get(Number(f.lead_id));
+            return resolved ? { ...f, leads_lead: resolved } : f;
+          });
+        }
+      }
 
       // Fetch master lead_numbers for sublead display (match CalendarPage / OverdueFollowups)
-      const legacyMasterIds = [...new Set((legacyFollowupsData || []).map((f: any) => f.leads_lead?.master_id).filter((id: unknown) => id != null))] as number[];
+      const legacyMasterIds = [
+        ...new Set(
+          (legacyFollowupsData || [])
+            .map((f: any) => {
+              const ll = f.leads_lead;
+              const row = Array.isArray(ll) ? ll[0] : ll;
+              return row?.master_id;
+            })
+            .filter((id: unknown) => id != null)
+        ),
+      ] as number[];
       const newMasterIds = [...new Set((newFollowupsData || []).map((f: any) => f.leads?.master_id).filter((id: unknown) => id != null))] as number[];
       let legacyMasterMap: Record<string, { lead_number: string }> = {};
       let newMasterMap: Record<string, { lead_number: string; manual_id?: string | null }> = {};
@@ -927,16 +968,28 @@ const Dashboard: React.FC = () => {
           return num !== '' && !isUuid(num); // drop new leads with no valid number (avoids duplicate row showing UUID)
         });
 
-      // Process legacy leads - filter for active leads only (status = 0, stage < 100)
+      // Normalize embedded row (PostgREST may return object or single-element array)
+      const legacyRow = (row: any) => {
+        const r = row?.leads_lead;
+        return Array.isArray(r) ? r[0] : r;
+      };
+
+      // Active legacy for follow-up list: status only — stage is never used to exclude a row here.
+      const isActiveLegacyLead = (lead: any) => {
+        if (!lead) return false;
+        const s = lead.status;
+        if (s === 10 || s === '10') return false;
+        return s === 0 || s === '0' || s === null || s === undefined;
+      };
+
+      // Process legacy leads — include subleads (status null) per PipelinePage / CalendarPage
       const processedLegacyLeads = (legacyFollowupsData || [])
-        .filter(followup => {
-          const lead = followup.leads_lead as any;
-          return lead &&
-            lead.status === 0 &&
-            (lead.stage === null || lead.stage < 100);
+        .filter((followup) => {
+          const lead = legacyRow(followup);
+          return isActiveLegacyLead(lead);
         })
-        .map(followup => {
-          const lead = followup.leads_lead as any;
+        .map((followup) => {
+          const lead = legacyRow(followup);
           return {
             ...lead,
             next_followup: followup.date, // Include follow-up date for compatibility
@@ -946,25 +999,21 @@ const Dashboard: React.FC = () => {
           };
         });
 
-      // Deduplicate: (1) one row per lead id within type, (2) same person in both new and legacy = one row (prefer new)
+      // One row per follow_up row (same lead can have multiple follow_ups in DB; dedupe only duplicate ids)
       const combined = [...processedNewLeads, ...processedLegacyLeads].sort((a, b) => {
         const da = a.next_followup ? new Date(a.next_followup).getTime() : 0;
         const db = b.next_followup ? new Date(b.next_followup).getTime() : 0;
         if (da !== db) return da - db;
-        // Same date: prefer new over legacy so we keep new when both exist for same person
         return (a.lead_type === 'new' ? 0 : 1) - (b.lead_type === 'new' ? 0 : 1);
       });
-      const seenById = new Set<string>();
-      const nameDateKeptForNew = new Set<string>(); // when we keep a new lead, record name+date so we can drop legacy duplicate
-      const deduped = combined.filter(lead => {
-        const idKey = lead.lead_type === 'new' ? `new_${lead.id}` : `legacy_${lead.id}`;
-        if (seenById.has(idKey)) return false;
-        const name = (lead.name || '').trim().toLowerCase();
-        const dateStr = lead.next_followup || '';
-        const nameDateKey = `${name}_${dateStr}`;
-        if (lead.lead_type === 'legacy' && nameDateKeptForNew.has(nameDateKey)) return false; // already have new lead for this person+date
-        seenById.add(idKey);
-        if (lead.lead_type === 'new') nameDateKeptForNew.add(nameDateKey);
+      const seenFollowUpIds = new Set<number>();
+      const deduped = combined.filter((lead) => {
+        const fid = lead.follow_up_id;
+        if (fid == null) return true;
+        const n = Number(fid);
+        if (!Number.isFinite(n)) return true;
+        if (seenFollowUpIds.has(n)) return false;
+        seenFollowUpIds.add(n);
         return true;
       });
       const dedupedNew = deduped.filter(l => l.lead_type === 'new');
@@ -978,6 +1027,7 @@ const Dashboard: React.FC = () => {
 
       return result;
     } catch (error) {
+      console.error('Dashboard fetchFollowUpLeadsData:', error);
       return { newLeads: [], legacyLeads: [], totalCount: 0 };
     }
   };
@@ -2331,49 +2381,11 @@ const Dashboard: React.FC = () => {
           return;
         }
 
-        // Use display_name from employee table or full_name from users table
-        const userFullName = (userData.tenants_employee as any)?.display_name || userData.full_name;
-        const userEmployeeId = userData.employee_id;
-
-        if (!userFullName) {
-          setOverdueFollowups(0);
-          return;
-        }
-
-        // Get today's date for filtering
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const todayStart = today.toISOString();
-        today.setHours(23, 59, 59, 999);
-        const todayEnd = today.toISOString();
-
-        const userId = userData.id;
-
-        // Fetch today's follow-ups count for new leads from follow_ups table
-        const newLeadsPromise = supabase
-          .from('follow_ups')
-          .select('*', { count: 'exact', head: true })
-          .eq('user_id', userId)
-          .not('new_lead_id', 'is', null)
-          .gte('date', todayStart)
-          .lte('date', todayEnd);
-
-        // Fetch today's follow-ups count for legacy leads from follow_ups table
-        const legacyLeadsPromise = supabase
-          .from('follow_ups')
-          .select('*', { count: 'exact', head: true })
-          .eq('user_id', userId)
-          .not('lead_id', 'is', null)
-          .gte('date', todayStart)
-          .lte('date', todayEnd);
-
-        const countPromises = [newLeadsPromise, legacyLeadsPromise];
-
-        const results = await Promise.all(countPromises);
-        const [newLeadsCount, legacyLeadsCount] = results;
-
-        const totalCount = (newLeadsCount.count || 0) + (legacyLeadsCount?.count || 0);
-        setOverdueFollowups(totalCount);
+        // Same pipeline as the Today tab + processOverdueLeadsForDisplay so the card matches visible rows
+        const { newLeads, legacyLeads } = await fetchFollowUpLeadsData('today', true);
+        const combinedLeads = [...newLeads, ...legacyLeads];
+        const processedLeads = await processOverdueLeadsForDisplay(combinedLeads, true);
+        setOverdueFollowups(processedLeads.length);
       } catch (error) {
         setOverdueFollowups(0);
       }
@@ -5868,6 +5880,7 @@ const Dashboard: React.FC = () => {
           const combinedLeads = [...newLeads, ...legacyLeads];
           const processedLeads = await processOverdueLeadsForDisplay(combinedLeads, true);
           setTodayFollowUps(processedLeads);
+          setOverdueFollowups(processedLeads.length);
         } catch (error) {
           setTodayFollowUps([]);
         } finally {
@@ -5936,25 +5949,24 @@ const Dashboard: React.FC = () => {
   // Helper function to process overdue leads for display
   const processOverdueLeadsForDisplay = async (leadsData: any[], processAll = false) => {
     try {
-      // Separate new and legacy leads based on table structure
-      // New leads come from 'leads' table and have lead_number field (string)
-      // Legacy leads come from 'leads_lead' table and don't have lead_number, or have any role ID fields
-      const newLeads = leadsData.filter(lead => {
-        // New leads have lead_number as a string field
-        // Filter out deleted leads (those without lead_number)
-        return lead.lead_number &&
+      // Prefer explicit lead_type from follow_ups fetch — legacy rows always have string lead_number
+      // and were wrongly classified as "new" then dropped by validNewLeads (lead_number === String(id)).
+      const newLeads = leadsData.filter((lead) => {
+        if (lead.lead_type === 'legacy') return false;
+        if (lead.lead_type === 'new') return true;
+        return (
+          lead.lead_number &&
           typeof lead.lead_number === 'string' &&
           lead.lead_number.trim() !== '' &&
-          !lead.id?.toString().startsWith('legacy_');
+          !lead.id?.toString().startsWith('legacy_')
+        );
       });
 
-      const legacyLeads = leadsData.filter(lead => {
-        // Legacy leads either:
-        // 1. Don't have lead_number (from leads_lead table)
-        // 2. Have any of the role ID fields (expert_id, meeting_manager_id, etc.)
-        // 3. Have id that starts with 'legacy_' (already processed)
-        // 4. Have id as a number (legacy leads have bigint id)
-        const hasRoleField = lead.expert_id ||
+      const legacyLeads = leadsData.filter((lead) => {
+        if (lead.lead_type === 'legacy') return true;
+        if (lead.lead_type === 'new') return false;
+        const hasRoleField =
+          lead.expert_id ||
           lead.meeting_manager_id ||
           lead.meeting_lawyer_id ||
           lead.meeting_scheduler_id ||
@@ -5993,24 +6005,32 @@ const Dashboard: React.FC = () => {
 
         // Collect from ID fields
         newLeads.forEach(lead => {
-          if (lead.expert_id && typeof lead.expert_id === 'number') {
-            employeeIdSet.add(lead.expert_id);
+          if (lead.expert_id != null && lead.expert_id !== '') {
+            const eid = typeof lead.expert_id === 'bigint' ? Number(lead.expert_id) : Number(lead.expert_id);
+            if (Number.isFinite(eid) && eid > 0) employeeIdSet.add(eid);
           }
-          if (lead.meeting_manager_id && typeof lead.meeting_manager_id === 'number') {
-            employeeIdSet.add(lead.meeting_manager_id);
+          if (lead.meeting_manager_id != null && lead.meeting_manager_id !== '') {
+            const mid = typeof lead.meeting_manager_id === 'bigint' ? Number(lead.meeting_manager_id) : Number(lead.meeting_manager_id);
+            if (Number.isFinite(mid) && mid > 0) employeeIdSet.add(mid);
           }
 
-          // Also check expert and manager text fields - they might contain numeric IDs
-          if (lead.expert && typeof lead.expert === 'string' && !isNaN(Number(lead.expert))) {
-            const expertId = Number(lead.expert);
-            if (expertId > 0) {
-              employeeIdSet.add(expertId);
+          // expert / manager may be stored as numeric id (number, bigint) or numeric string — never add non-numeric text
+          if (lead.expert != null && lead.expert !== '') {
+            if (typeof lead.expert === 'number' || typeof lead.expert === 'bigint') {
+              const expertId = Number(lead.expert);
+              if (Number.isFinite(expertId) && expertId > 0) employeeIdSet.add(expertId);
+            } else if (typeof lead.expert === 'string' && !isNaN(Number(lead.expert))) {
+              const expertId = Number(lead.expert);
+              if (Number.isFinite(expertId) && expertId > 0) employeeIdSet.add(expertId);
             }
           }
-          if (lead.manager && typeof lead.manager === 'string' && !isNaN(Number(lead.manager))) {
-            const managerId = Number(lead.manager);
-            if (managerId > 0) {
-              employeeIdSet.add(managerId);
+          if (lead.manager != null && lead.manager !== '') {
+            if (typeof lead.manager === 'number' || typeof lead.manager === 'bigint') {
+              const managerId = Number(lead.manager);
+              if (Number.isFinite(managerId) && managerId > 0) employeeIdSet.add(managerId);
+            } else if (typeof lead.manager === 'string' && !isNaN(Number(lead.manager))) {
+              const managerId = Number(lead.manager);
+              if (Number.isFinite(managerId) && managerId > 0) employeeIdSet.add(managerId);
             }
           }
         });
