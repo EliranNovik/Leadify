@@ -2098,7 +2098,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const renderMoreActionsDropdown = (triggerClassName: string) => (
         <div className="dropdown dropdown-end">
             <label tabIndex={0} className={triggerClassName} aria-label="More actions">
-                <EllipsisHorizontalIcon className="h-5 w-5" />
+                <EllipsisHorizontalIcon className="h-6 w-6" />
             </label>
             <ul tabIndex={0} className={moreActionsMenuUlClass}>
                 {moreActionsMenuItems}
@@ -2119,7 +2119,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         title="Case documents on OneDrive"
                         aria-label="Case documents"
                     >
-                        <DocumentArrowUpIcon className="h-5 w-5" />
+                        <DocumentArrowUpIcon className="h-6 w-6" />
                     </button>
                 ) : null}
                 {!hideHistoryAndTimeline && (
@@ -2362,7 +2362,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     type="button"
                                                     onClick={openHeaderDocumentsModal}
                                                     disabled={!headerDocsLeadNumber}
-                                                    className="btn btn-square rounded-full border-2 border-base-300 btn-ghost min-h-[3rem] min-w-[3rem] disabled:pointer-events-none disabled:opacity-40"
+                                                    className="btn btn-square rounded-full border-2 border-base-300 btn-ghost min-h-[3.25rem] min-w-[3.25rem] disabled:pointer-events-none disabled:opacity-40"
                                                     title={
                                                         headerDocsLeadNumber
                                                             ? 'Case documents on OneDrive'
@@ -2373,7 +2373,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     <DocumentArrowUpIcon className="h-6 w-6" aria-hidden />
                                                 </button>
                                                 {renderMoreActionsDropdown(
-                                                    'btn btn-square rounded-full border-2 border-base-300 btn-ghost min-h-[3rem] min-w-[3rem]'
+                                                    'btn btn-square rounded-full border-2 border-base-300 btn-ghost min-h-[3.25rem] min-w-[3.25rem]'
                                                 )}
                                             </>
                                         )}
@@ -2982,7 +2982,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             type="button"
                                             onClick={openHeaderDocumentsModal}
                                             disabled={!headerDocsLeadNumber}
-                                            className="btn btn-sm btn-square rounded-full border border-base-300 btn-ghost min-h-9 min-w-9 disabled:pointer-events-none disabled:opacity-40"
+                                            className="btn btn-sm btn-square rounded-full border border-base-300 btn-ghost min-h-10 min-w-10 disabled:pointer-events-none disabled:opacity-40"
                                             title={
                                                 headerDocsLeadNumber
                                                     ? 'Case documents on OneDrive'
@@ -2990,10 +2990,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             }
                                             aria-label="Case documents"
                                         >
-                                            <DocumentArrowUpIcon className="h-5 w-5" aria-hidden />
+                                            <DocumentArrowUpIcon className="h-6 w-6" aria-hidden />
                                         </button>
                                         {renderMoreActionsDropdown(
-                                            'btn btn-sm btn-square rounded-full border border-base-300 btn-ghost min-h-9 min-w-9'
+                                            'btn btn-sm btn-square rounded-full border border-base-300 btn-ghost min-h-10 min-w-10'
                                         )}
                                     </>
                                 )}
@@ -3147,6 +3147,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             open={isSubEffortsModalOpen}
                                             onClose={() => setIsSubEffortsModalOpen(false)}
                                             rows={leadSubEfforts}
+                                            leadNumber={selectedClient?.lead_number ?? null}
                                             initialSelectedRowId={subEffortsModalRowId}
                                             onRefresh={() => void fetchLeadSubEfforts()}
                                         />
@@ -3363,6 +3364,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             open={isSubEffortsModalOpen}
                                             onClose={() => setIsSubEffortsModalOpen(false)}
                                             rows={leadSubEfforts}
+                                            leadNumber={selectedClient?.lead_number ?? null}
                                             initialSelectedRowId={subEffortsModalRowId}
                                             onRefresh={() => void fetchLeadSubEfforts()}
                                         />
@@ -3428,6 +3430,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             open={isSubEffortsModalOpen}
                                             onClose={() => setIsSubEffortsModalOpen(false)}
                                             rows={leadSubEfforts}
+                                            leadNumber={selectedClient?.lead_number ?? null}
                                             initialSelectedRowId={subEffortsModalRowId}
                                             onRefresh={() => void fetchLeadSubEfforts()}
                                         />
@@ -4009,6 +4012,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                             open={isSubEffortsModalOpen}
                                                             onClose={() => setIsSubEffortsModalOpen(false)}
                                                             rows={leadSubEfforts}
+                                                            leadNumber={selectedClient?.lead_number ?? null}
                                                             initialSelectedRowId={subEffortsModalRowId}
                                                             onRefresh={() => void fetchLeadSubEfforts()}
                                                         />
@@ -4223,6 +4227,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                 open={isSubEffortsModalOpen}
                                                                 onClose={() => setIsSubEffortsModalOpen(false)}
                                                                 rows={leadSubEfforts}
+                                                                leadNumber={selectedClient?.lead_number ?? null}
                                                                 initialSelectedRowId={subEffortsModalRowId}
                                                                 onRefresh={() => void fetchLeadSubEfforts()}
                                                             />
@@ -4288,6 +4293,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                 open={isSubEffortsModalOpen}
                                                                 onClose={() => setIsSubEffortsModalOpen(false)}
                                                                 rows={leadSubEfforts}
+                                                                leadNumber={selectedClient?.lead_number ?? null}
                                                                 initialSelectedRowId={subEffortsModalRowId}
                                                                 onRefresh={() => void fetchLeadSubEfforts()}
                                                             />
@@ -4722,6 +4728,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     onClose={() => setHeaderDocumentsModalOpen(false)}
                     leadNumber={headerDocsLeadNumber}
                     clientName={selectedClient.name || ''}
+                    clientId={(selectedClient as any)?.id ?? null}
                     onedriveSubFolder={CLIENT_HEADER_ONEDRIVE_SUBFOLDER}
                     modalTitle="Case documents"
                     requireCaseDocumentClassification

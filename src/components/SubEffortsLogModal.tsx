@@ -3,16 +3,27 @@ import {
   ArrowPathIcon,
   ArrowUpTrayIcon,
   EyeIcon,
+  PlusIcon,
   LockClosedIcon,
   PencilSquareIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
+import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
 
 type LeadSubEffortRow = any;
 
 const SUB_EFFORTS_DOCS_BUCKET = 'lead-sub-efforts-documents';
+
+type CaseDocPick = {
+  id: string;
+  file_name: string;
+  storage_path: string;
+  mime_type: string | null;
+  created_at: string;
+  signedUrl?: string;
+};
 
 function formatDateTime(value: any): string {
   if (!value) return '—';
@@ -116,6 +127,21 @@ function isPdfUrl(url: string): boolean {
   if (!raw) return false;
   const withoutQuery = raw.split('?')[0].split('#')[0].toLowerCase();
   return withoutQuery.endsWith('.pdf');
+}
+
+function isImageMime(mime: string | null | undefined): boolean {
+  const m = String(mime || '').toLowerCase();
+  return m.startsWith('image/');
+}
+
+function inferMimeFromName(name: string): string {
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  if (ext === 'pdf') return 'application/pdf';
+  if (ext === 'png') return 'image/png';
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'gif') return 'image/gif';
+  if (ext === 'webp') return 'image/webp';
+  return 'application/octet-stream';
 }
 
 function guessPathList(documentUrl: any): string[] {
@@ -331,12 +357,16 @@ export function SubEffortsLogModal({
   open,
   onClose,
   rows,
+  leadNumber,
+  caseDocumentsSubfolder = CLIENT_HEADER_ONEDRIVE_SUBFOLDER,
   initialSelectedRowId,
   onRefresh,
 }: {
   open: boolean;
   onClose: () => void;
   rows: LeadSubEffortRow[];
+  leadNumber?: string | null;
+  caseDocumentsSubfolder?: string | null;
   initialSelectedRowId?: string | number | null;
   onRefresh?: () => void;
 }) {
@@ -350,6 +380,11 @@ export function SubEffortsLogModal({
   const [notesDraft, setNotesDraft] = useState('');
   const [isSavingNotes, setIsSavingNotes] = useState(false);
   const [isTogglingInternal, setIsTogglingInternal] = useState(false);
+  const [isAttachModalOpen, setIsAttachModalOpen] = useState(false);
+  const [caseDocs, setCaseDocs] = useState<CaseDocPick[]>([]);
+  const [caseDocsLoading, setCaseDocsLoading] = useState(false);
+  const [selectedCaseDocIds, setSelectedCaseDocIds] = useState<Set<string>>(() => new Set());
+  const [isAttaching, setIsAttaching] = useState(false);
   const selectedRow = useMemo(() => {
     if (!rows?.length) return null;
     if (selectedId == null) return rows[0] ?? null;
@@ -520,9 +555,109 @@ export function SubEffortsLogModal({
     }
   };
 
+  const openAttachFromCaseDocs = async () => {
+    if (!leadNumber?.trim()) {
+      toast.error('Lead number is missing, cannot load case documents.');
+      return;
+    }
+    setIsAttachModalOpen(true);
+    setSelectedCaseDocIds(new Set());
+    setCaseDocsLoading(true);
+    try {
+      const sub = caseDocumentsSubfolder?.trim() ? caseDocumentsSubfolder.trim() : null;
+      let q = supabase
+        .from('lead_case_documents')
+        .select('id, file_name, storage_path, mime_type, created_at')
+        .eq('lead_number', leadNumber.trim())
+        .not('storage_path', 'is', null)
+        .order('created_at', { ascending: false })
+        .limit(100);
+      if (sub) q = q.eq('onedrive_subfolder', sub);
+      else q = q.is('onedrive_subfolder', null);
+
+      const { data, error } = await q;
+      if (error) throw error;
+      const base = ((data as any[]) || []).map((r) => ({
+        id: String(r.id),
+        file_name: String(r.file_name || ''),
+        storage_path: String(r.storage_path || ''),
+        mime_type: typeof r.mime_type === 'string' ? (r.mime_type as string) : null,
+        created_at: String(r.created_at || new Date().toISOString()),
+      })) as CaseDocPick[];
+
+      // Sign URLs for preview/open (images + docs)
+      const storage = supabase.storage.from(SUB_EFFORTS_DOCS_BUCKET) as any;
+      const signSeconds = 60 * 60;
+
+      const withUrls: CaseDocPick[] = await Promise.all(
+        base.map(async (d) => {
+          if (!d.storage_path) return d;
+          try {
+            const { data: signed } = await storage.createSignedUrl(d.storage_path, signSeconds);
+            const u = signed?.signedUrl ? String(signed.signedUrl) : '';
+            return u ? { ...d, signedUrl: u } : d;
+          } catch {
+            return d;
+          }
+        }),
+      );
+
+      setCaseDocs(withUrls);
+    } catch (e: any) {
+      console.error('openAttachFromCaseDocs:', e);
+      toast.error(String(e?.message || 'Failed to load case documents'));
+      setCaseDocs([]);
+    } finally {
+      setCaseDocsLoading(false);
+    }
+  };
+
+  const attachSelectedCaseDocs = async () => {
+    if (!selectedRow?.id) return;
+    if (isAttaching) return;
+    const ids = [...selectedCaseDocIds];
+    if (ids.length === 0) {
+      toast.error('Select at least one file to attach.');
+      return;
+    }
+    setIsAttaching(true);
+    try {
+      const existingItems = normalizeDocItems(selectedRow?.document_url);
+      const existingKeySet = new Set(existingItems.map((d) => (d.path || d.url || '').trim()).filter(Boolean));
+
+      const picked = caseDocs.filter((d) => selectedCaseDocIds.has(d.id));
+      const addedItems: DocItem[] = picked
+        .filter((d) => d.storage_path?.trim())
+        .map((d) => ({
+          path: d.storage_path.trim(),
+          name: d.file_name || undefined,
+          mimeType: d.mime_type || inferMimeFromName(d.file_name),
+        }))
+        .filter((d) => d.path && !existingKeySet.has(String(d.path)));
+
+      const merged = [...existingItems, ...addedItems];
+
+      const { error } = await supabase
+        .from('lead_sub_efforts')
+        .update({ document_url: merged })
+        .eq('id', selectedRow.id);
+      if (error) throw error;
+
+      toast.success('Attached to sub effort');
+      setIsAttachModalOpen(false);
+      onRefresh?.();
+    } catch (e: any) {
+      console.error('attachSelectedCaseDocs:', e);
+      toast.error(String(e?.message || 'Failed to attach'));
+    } finally {
+      setIsAttaching(false);
+    }
+  };
+
   return (
-    <div className="modal modal-open">
-      <div className="modal-box w-full max-w-none h-[100svh] md:w-11/12 md:max-w-6xl md:h-[85vh] p-0 overflow-hidden rounded-none md:rounded-2xl">
+    <div className="fixed inset-0 z-50">
+      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
+      <div className="absolute inset-0 bg-base-100 p-0 overflow-hidden rounded-none">
         <div className="flex items-center justify-between px-5 py-4 border-b border-base-200">
           <div className="min-w-0">
             <div className="text-sm font-semibold">Sub efforts</div>
@@ -535,7 +670,7 @@ export function SubEffortsLogModal({
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 h-[calc(100svh-65px)] md:h-[calc(85vh-65px)]">
+        <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] lg:grid-cols-[300px_1fr] h-[calc(100vh-65px)]">
           <div className="border-b md:border-b-0 md:border-r border-base-200 overflow-auto">
             <div className="p-3">
               {rows?.length ? (
@@ -568,7 +703,7 @@ export function SubEffortsLogModal({
             </div>
           </div>
 
-          <div className="md:col-span-2 overflow-auto">
+          <div className="overflow-auto">
             <div className="p-5">
               {selectedRow ? (
                 <div className="space-y-4">
@@ -680,8 +815,36 @@ export function SubEffortsLogModal({
                   </div>
 
                   <div className="rounded-2xl border border-base-200 bg-base-100 p-4">
-                    <div className="text-xs font-semibold uppercase tracking-wide opacity-70 mb-3">
-                      Documents
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <div className="text-xs font-semibold uppercase tracking-wide opacity-70">
+                        Documents
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs btn-circle"
+                          onClick={() => void openAttachFromCaseDocs()}
+                          disabled={!selectedRow?.id}
+                          aria-label="Attach from case documents"
+                          title="Attach from case documents"
+                        >
+                          <PlusIcon className="w-5 h-5" aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs btn-circle"
+                          disabled={isUploading || !selectedRow?.id}
+                          onClick={() => fileInputRef.current?.click()}
+                          aria-label="Upload documents"
+                          title="Upload documents"
+                        >
+                          {isUploading ? (
+                            <span className="loading loading-spinner loading-sm" />
+                          ) : (
+                            <ArrowUpTrayIcon className="w-5 h-5" aria-hidden />
+                          )}
+                        </button>
+                      </div>
                     </div>
                     {(() => {
                       const items = normalizeDocItems(selectedRow?.document_url);
@@ -830,30 +993,13 @@ export function SubEffortsLogModal({
                         </div>
                       );
                     })()}
-
-                    <div className="mt-4 flex items-center justify-end gap-2">
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        className="hidden"
-                        multiple
-                        onChange={(e) => void handleUploadFiles(e.target.files)}
-                      />
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-outline btn-circle"
-                        disabled={isUploading || !selectedRow?.id}
-                        onClick={() => fileInputRef.current?.click()}
-                        aria-label="Upload documents"
-                        title="Upload documents"
-                      >
-                        {isUploading ? (
-                          <span className="loading loading-spinner loading-xs" />
-                        ) : (
-                          <ArrowUpTrayIcon className="w-4 h-4" />
-                        )}
-                      </button>
-                    </div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      className="hidden"
+                      multiple
+                      onChange={(e) => void handleUploadFiles(e.target.files)}
+                    />
                   </div>
                 </div>
               ) : (
@@ -877,7 +1023,6 @@ export function SubEffortsLogModal({
           </div>
         ) : null}
       </div>
-      <div className="modal-backdrop" onClick={onClose} />
 
       {isNotesModalOpen ? (
         <div className="modal modal-open">
@@ -916,6 +1061,125 @@ export function SubEffortsLogModal({
             </div>
           </div>
           <div className="modal-backdrop" onClick={() => setIsNotesModalOpen(false)} />
+        </div>
+      ) : null}
+
+      {isAttachModalOpen ? (
+        <div className="modal modal-open">
+          <div className="modal-box w-full max-w-4xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">Attach from case documents</div>
+                <div className="text-xs opacity-70">Select files to show in this sub effort row.</div>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => (isAttaching ? null : setIsAttachModalOpen(false))}
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="mt-4">
+              {caseDocsLoading ? (
+                <div className="flex items-center justify-center py-10">
+                  <span className="loading loading-spinner loading-md" />
+                  <span className="ml-3 text-sm opacity-70">Loading…</span>
+                </div>
+              ) : caseDocs.length === 0 ? (
+                <div className="text-sm opacity-70">No case documents found.</div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {caseDocs.map((d) => {
+                    const checked = selectedCaseDocIds.has(d.id);
+                    const mime = d.mime_type || inferMimeFromName(d.file_name);
+                    const isImg = isImageMime(mime);
+                    return (
+                      <button
+                        key={d.id}
+                        type="button"
+                        className={`text-left rounded-xl border p-3 transition ${
+                          checked ? 'border-primary bg-primary/5' : 'border-base-200 hover:bg-base-200/40'
+                        }`}
+                        onClick={() => {
+                          setSelectedCaseDocIds((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(d.id)) next.delete(d.id);
+                            else next.add(d.id);
+                            return next;
+                          });
+                        }}
+                      >
+                        <div className="flex items-start gap-3">
+                          <div
+                            className="h-14 w-14 shrink-0 rounded-lg bg-base-200 overflow-hidden flex items-center justify-center cursor-pointer"
+                            title="Open file"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              const url = String(d.signedUrl || '').trim();
+                              if (!url) {
+                                toast.error('No preview link is available for this file yet.');
+                                return;
+                              }
+                              window.open(url, '_blank', 'noopener,noreferrer');
+                            }}
+                          >
+                            {isImg && d.signedUrl ? (
+                              <img src={d.signedUrl} alt="" className="h-full w-full object-cover" />
+                            ) : (
+                              <span className="text-[10px] opacity-70">{isImg ? 'IMG' : 'DOC'}</span>
+                            )}
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div
+                              className="text-sm font-semibold truncate hover:underline"
+                              title="Open file"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                const url = String(d.signedUrl || '').trim();
+                                if (!url) {
+                                  toast.error('No preview link is available for this file yet.');
+                                  return;
+                                }
+                                window.open(url, '_blank', 'noopener,noreferrer');
+                              }}
+                            >
+                              {d.file_name}
+                            </div>
+                            <div className="text-xs opacity-70 tabular-nums">{formatDateTime(d.created_at)}</div>
+                          </div>
+                          <input type="checkbox" className="checkbox checkbox-sm mt-1" checked={checked} readOnly />
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setIsAttachModalOpen(false)}
+                disabled={isAttaching}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => void attachSelectedCaseDocs()}
+                disabled={isAttaching}
+              >
+                {isAttaching ? <span className="loading loading-spinner loading-sm" /> : 'Attach'}
+              </button>
+            </div>
+          </div>
+          <div className="modal-backdrop" onClick={() => (isAttaching ? null : setIsAttachModalOpen(false))} />
         </div>
       ) : null}
     </div>

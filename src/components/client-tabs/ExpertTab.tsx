@@ -3141,6 +3141,7 @@ ${combinedText}`;
         onClose={handleDocumentModalClose}
         leadNumber={client.lead_number || ''}
         clientName={client.name || ''}
+        clientId={(client as any)?.id ?? null}
         onDocumentCountChange={handleDocumentCountChange}
       />
 

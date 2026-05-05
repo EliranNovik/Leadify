@@ -13,6 +13,7 @@ export interface AIAssistantBoxProps {
   currentUserDisplayName?: string;
 }
 
+/** Shell around `AISuggestions`. Other GPT features use the same pattern: Supabase Edge + `OPENAI_API_KEY` (`ai-notifications`, `ai-lead-summary`, `case-document-summarize`). */
 const AIAssistantBox = forwardRef<HTMLDivElement, AIAssistantBoxProps>(
   function AIAssistantBox({ height, onClose, currentUserEmployeeId, currentUserDisplayName }, ref) {
     return (

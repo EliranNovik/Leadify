@@ -19,10 +19,19 @@ import {
   CodeBracketIcon,
   EllipsisVerticalIcon,
   ShareIcon,
+  SparklesIcon,
+  TrashIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
+import {
+  CASE_DOCUMENTS_STORAGE_BUCKET,
+  CASE_DOCUMENTS_SIGNED_URL_SECONDS,
+  buildCaseDocumentStoragePath,
+} from '../lib/caseDocumentsStorage';
 import { createPortal } from 'react-dom';
 import { toast } from 'react-hot-toast';
+
+type CaseDocumentAiSummaryStatus = 'pending' | 'ready' | 'failed' | 'skipped';
 
 interface Document {
   id: string;
@@ -32,11 +41,23 @@ interface Document {
   downloadUrl: string;
   webUrl: string;
   fileType: string;
+  /** Where the document comes from. */
+  source?: 'case' | 'subeffort';
+  /** Storage object path inside `CASE_DOCUMENTS_STORAGE_BUCKET` when available. */
+  storagePath?: string | null;
+  /** DB id in `lead_case_documents` for case documents only. */
+  caseDocDbId?: string | null;
+  /** Row id in `lead_sub_efforts` for sub-efforts documents only. */
+  subEffortRowId?: number | null;
   caseClassificationId?: string | null;
   caseClassificationLabel?: string | null;
   /** Resolved from `lead_case_documents.uploaded_by` + `users` / employee photo. */
   uploadedByName?: string | null;
   uploadedByPhotoUrl?: string | null;
+  /** AI summary from `lead_case_documents.ai_summary` (edge function `case-document-summarize`). */
+  aiSummary?: string | null;
+  aiSummaryStatus?: CaseDocumentAiSummaryStatus | null;
+  aiSummaryError?: string | null;
 }
 
 interface CaseClassificationRow {
@@ -51,14 +72,18 @@ interface DocumentModalProps {
   onClose: () => void;
   leadNumber: string;
   clientName: string;
+  /** Optional: stable client id (`leads.id` for new; `legacy_123` for legacy). Enables attaching sub-efforts documents. */
+  clientId?: string | null;
   onDocumentCountChange?: (count: number) => void;
-  /** When set, list/upload uses this subfolder under the lead’s OneDrive folder (expert tab omits this). */
+  /** Logical folder key stored in `lead_case_documents.onedrive_subfolder` (e.g. ClientHeader bucket); omit for lead-root expert documents. */
   onedriveSubFolder?: string | null;
   modalTitle?: string;
-  /** Shown under the lead line (e.g. OneDrive path hint). */
+  /** Shown under the lead line (optional UI hint). */
   folderPathHint?: string | null;
   /** When true, uploads use the active category tab; mapping is stored in `lead_case_documents`. */
   requireCaseDocumentClassification?: boolean;
+  /** After opening, select the classification tab matching this slug (e.g. `contract`). Requires `requireCaseDocumentClassification`. */
+  initialClassificationSlug?: string | null;
 }
 
 function copyTextToClipboardFallback(text: string): boolean {
@@ -128,14 +153,80 @@ async function shareDocumentFile(doc: Document): Promise<void> {
   toast.error('Sharing is not available in this browser.');
 }
 
+async function shareDocumentSummary(doc: Document): Promise<void> {
+  const title = doc.name?.trim() || 'Document';
+  const summary = doc.aiSummary?.trim() || '';
+  if (!summary) {
+    toast.error('No AI summary is available to share.');
+    return;
+  }
+
+  const text = `${title}\n\n${summary}`;
+
+  if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+    const shareData: ShareData = { title, text };
+    const canTry = typeof navigator.canShare !== 'function' || navigator.canShare(shareData);
+    if (canTry) {
+      try {
+        await navigator.share(shareData);
+        return;
+      } catch (err: unknown) {
+        const aborted =
+          err instanceof DOMException
+            ? err.name === 'AbortError'
+            : (err as { name?: string })?.name === 'AbortError';
+        if (aborted) return;
+      }
+    }
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success('Summary copied to clipboard');
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
+
+  if (copyTextToClipboardFallback(text)) {
+    toast.success('Summary copied to clipboard');
+    return;
+  }
+
+  toast.error('Sharing is not available in this browser.');
+}
+
+/** Same stack as other AI features (`ai-lead-summary`, `chat`): OpenAI via Supabase Edge + `OPENAI_API_KEY`. */
+async function requestCaseDocumentSummarize(documentId: string, opts?: { force?: boolean }) {
+  try {
+    const { error } = await supabase.functions.invoke('case-document-summarize', {
+      body: { documentId, ...(opts?.force ? { force: true } : {}) },
+    });
+    if (error) console.warn('case-document-summarize:', error.message);
+  } catch (e) {
+    console.warn('case-document-summarize:', e);
+  }
+}
+
 type DocumentRowActionMenuProps = {
   doc: Document;
   isDownloading: boolean;
+  isDeleting: boolean;
   onPreview: (d: Document) => void;
   onDownload: (d: Document) => void;
+  onDelete: (d: Document) => void;
 };
 
-function DocumentRowActionMenu({ doc, isDownloading, onPreview, onDownload }: DocumentRowActionMenuProps) {
+function DocumentRowActionMenu({
+  doc,
+  isDownloading,
+  isDeleting,
+  onPreview,
+  onDownload,
+  onDelete,
+}: DocumentRowActionMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -170,7 +261,7 @@ function DocumentRowActionMenu({ doc, isDownloading, onPreview, onDownload }: Do
       className="relative shrink-0 self-center md:self-stretch md:flex md:items-center"
       onClick={(e) => e.stopPropagation()}
     >
-      {/* Desktop: dark action strip — view / share / download */}
+      {/* Desktop: dark action strip — view / share / download / delete */}
       <div
         className="hidden h-full min-h-[2.75rem] shrink-0 items-center rounded-lg bg-gray-700 px-1 shadow-inner md:flex dark:bg-gray-900"
         role="group"
@@ -208,6 +299,21 @@ function DocumentRowActionMenu({ doc, isDownloading, onPreview, onDownload }: Do
             <span className="loading loading-spinner loading-sm text-white" />
           ) : (
             <ArrowDownTrayIcon className="h-5 w-5 text-white" aria-hidden />
+          )}
+        </button>
+        <div className="mx-px w-px shrink-0 self-stretch bg-white/20" aria-hidden />
+        <button
+          type="button"
+          className={iconBtnClassDesktop}
+          title="Delete"
+          aria-label={`Delete ${doc.name}`}
+          disabled={isDeleting}
+          onClick={() => void onDelete(doc)}
+        >
+          {isDeleting ? (
+            <span className="loading loading-spinner loading-sm text-white" />
+          ) : (
+            <TrashIcon className="h-5 w-5 text-white" aria-hidden />
           )}
         </button>
       </div>
@@ -278,6 +384,26 @@ function DocumentRowActionMenu({ doc, isDownloading, onPreview, onDownload }: Do
                   <ArrowDownTrayIcon className="h-4 w-4 shrink-0" />
                 )}
                 Download
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 text-sm text-error"
+                role="menuitem"
+                disabled={isDeleting}
+                onClick={(e) => {
+                  e.preventDefault();
+                  setOpen(false);
+                  void onDelete(doc);
+                }}
+              >
+                {isDeleting ? (
+                  <span className="loading loading-spinner loading-xs" />
+                ) : (
+                  <TrashIcon className="h-4 w-4 shrink-0" />
+                )}
+                {isDeleting ? 'Deleting…' : 'Delete'}
               </button>
             </li>
           </ul>
@@ -498,7 +624,7 @@ function DocumentFileGlyph({ fileType, fileName }: { fileType: string; fileName:
     case 'powerpoint':
       return <PresentationChartBarIcon className={`${cn} text-orange-600 dark:text-orange-400`} aria-hidden />;
     case 'image':
-      return <PhotoIcon className={`${cn} text-violet-600 dark:text-violet-400`} aria-hidden />;
+      return <DocumentIcon className={`${cn} text-violet-600 dark:text-violet-400`} aria-hidden />;
     case 'video':
       return <FilmIcon className={`${cn} text-fuchsia-700 dark:text-fuchsia-400`} aria-hidden />;
     case 'audio':
@@ -519,36 +645,50 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   onClose,
   leadNumber,
   clientName,
+  clientId = null,
   onDocumentCountChange,
   onedriveSubFolder = null,
   modalTitle,
   folderPathHint = null,
   requireCaseDocumentClassification = false,
+  initialClassificationSlug = null,
 }) => {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewDocument, setPreviewDocument] = useState<Document | null>(null);
+  const [summaryModalDoc, setSummaryModalDoc] = useState<Document | null>(null);
+  const documentsRef = useRef<Document[]>([]);
   const [downloading, setDownloading] = useState<string[]>([]);
+  const [deleting, setDeleting] = useState<string[]>([]);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [isUploading, setIsUploading] = useState(false);
   const [classifications, setClassifications] = useState<CaseClassificationRow[]>([]);
   const [classificationsLoading, setClassificationsLoading] = useState(false);
   const [classificationsError, setClassificationsError] = useState<string | null>(null);
-  /** Latest classifications for merge logic inside async fetch (avoids extra DB round-trip when already loaded). */
+  /** Latest classifications for classification labels in fetch (avoids extra DB round-trip when already loaded). */
   const classificationsRef = useRef<CaseClassificationRow[]>([]);
   /** Which category tab is selected when browsing the document list (case documents only). */
-  const [activeBrowseCategoryId, setActiveBrowseCategoryId] = useState<string | 'uncategorized' | null>(null);
+  const [activeBrowseCategoryId, setActiveBrowseCategoryId] = useState<string | null>(null);
   const lastBrowseLeadRef = useRef<string | null>(null);
   /** Avoid re-running browse sync when `classifications` is only a new array instance with the same ids. */
   const lastClassificationIdsKeyRef = useRef<string>('');
+  /** Set when the modal opens; consumed once after classifications resolve to pick a tab (`initialClassificationSlug`). */
+  const initialClassificationSlugToApplyRef = useRef<string | null>(null);
 
   // Fetch documents when modal opens
   useEffect(() => {
     if (isOpen && leadNumber) {
       fetchDocuments();
     }
-  }, [isOpen, leadNumber, onedriveSubFolder, requireCaseDocumentClassification]);
+  }, [isOpen, leadNumber, onedriveSubFolder]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      setSummaryModalDoc(null);
+      setPreviewDocument(null);
+    }
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen || !requireCaseDocumentClassification) {
@@ -583,29 +723,120 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   }, [classifications]);
 
   useEffect(() => {
-    if (!requireCaseDocumentClassification) return;
+    documentsRef.current = documents;
+  }, [documents]);
+
+  /** Refresh AI summary fields for pending rows while the documents tray is open (not only when the summary dialog is open). */
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const validAi: CaseDocumentAiSummaryStatus[] = ['pending', 'ready', 'failed', 'skipped'];
+
+    const tick = async () => {
+      const pendingIds = documentsRef.current
+        .filter((d) => d.aiSummaryStatus === 'pending')
+        .map((d) => d.id);
+      if (pendingIds.length === 0) return;
+
+      const { data, error: qErr } = await supabase
+        .from('lead_case_documents')
+        .select('id, ai_summary, ai_summary_status, ai_summary_error')
+        .in('id', pendingIds);
+
+      if (qErr) {
+        console.warn('AI summary poll:', qErr.message);
+        return;
+      }
+      const rows = (data ?? []) as {
+        id: string;
+        ai_summary: string | null;
+        ai_summary_status: string | null;
+        ai_summary_error: string | null;
+      }[];
+
+      const updates = new Map<
+        string,
+        { aiSummary: string | null; aiSummaryStatus: CaseDocumentAiSummaryStatus; aiSummaryError: string | null }
+      >();
+
+      for (const row of rows) {
+        const stRaw =
+          typeof row.ai_summary_status === 'string' ? row.ai_summary_status.trim().toLowerCase() : '';
+        const st = (stRaw as CaseDocumentAiSummaryStatus) || null;
+        if (!st || !validAi.includes(st) || st === 'pending') continue;
+        updates.set(row.id, {
+          aiSummary: row.ai_summary ?? null,
+          aiSummaryStatus: st,
+          aiSummaryError: row.ai_summary_error ?? null,
+        });
+      }
+
+      if (updates.size === 0) return;
+
+      setDocuments((prev) =>
+        prev.map((d) => {
+          const u = updates.get(d.id);
+          return u ? { ...d, ...u } : d;
+        }),
+      );
+
+      setSummaryModalDoc((prev) => {
+        if (!prev) return prev;
+        const u = updates.get(prev.id);
+        return u ? { ...prev, ...u } : prev;
+      });
+    };
+
+    void tick();
+    const interval = window.setInterval(() => void tick(), 2500);
+    return () => window.clearInterval(interval);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !initialClassificationSlug?.trim()) {
+      initialClassificationSlugToApplyRef.current = null;
+      return;
+    }
+    initialClassificationSlugToApplyRef.current = initialClassificationSlug.trim();
+  }, [isOpen, initialClassificationSlug]);
+
+  useEffect(() => {
+    if (!requireCaseDocumentClassification || !isOpen) return;
     if (classifications.length === 0) return;
+
+    const tryApplyInitialSlug = (): boolean => {
+      const slug = initialClassificationSlugToApplyRef.current?.trim();
+      if (!slug) return false;
+      const match = classifications.find((c) => c.slug === slug);
+      if (match) {
+        setActiveBrowseCategoryId(match.id);
+        initialClassificationSlugToApplyRef.current = null;
+        return true;
+      }
+      return false;
+    };
 
     const idsKey = [...classifications.map((c) => c.id)].sort().join('|');
 
     if (lastBrowseLeadRef.current !== leadNumber) {
       lastBrowseLeadRef.current = leadNumber;
       lastClassificationIdsKeyRef.current = idsKey;
-      setActiveBrowseCategoryId(classifications[0].id);
+      if (!tryApplyInitialSlug()) {
+        setActiveBrowseCategoryId(classifications[0].id);
+      }
       return;
     }
 
-    if (lastClassificationIdsKeyRef.current === idsKey) {
-      return;
-    }
+    if (tryApplyInitialSlug()) return;
+
+    if (lastClassificationIdsKeyRef.current === idsKey) return;
     lastClassificationIdsKeyRef.current = idsKey;
 
     setActiveBrowseCategoryId((prev) => {
-      if (prev === 'uncategorized') return prev;
       if (prev && classifications.some((c) => c.id === prev)) return prev;
       return classifications[0].id;
     });
-  }, [leadNumber, classifications, requireCaseDocumentClassification]);
+  }, [isOpen, leadNumber, classifications, requireCaseDocumentClassification]);
 
   useEffect(() => {
     // Only update count when modal is open and documents have been loaded
@@ -618,9 +849,6 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   const documentsInActiveCategory = useMemo(() => {
     if (!requireCaseDocumentClassification || activeBrowseCategoryId === null) {
       return documents;
-    }
-    if (activeBrowseCategoryId === 'uncategorized') {
-      return documents.filter((d) => !d.caseClassificationId);
     }
     return documents.filter((d) => d.caseClassificationId === activeBrowseCategoryId);
   }, [documents, requireCaseDocumentClassification, activeBrowseCategoryId]);
@@ -641,8 +869,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   const uploadClassificationId = useMemo(() => {
     if (
       !requireCaseDocumentClassification ||
-      !activeBrowseCategoryId ||
-      activeBrowseCategoryId === 'uncategorized'
+      !activeBrowseCategoryId
     ) {
       return null;
     }
@@ -653,98 +880,224 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const listBody: { leadNumber: string; subFolder?: string } = { leadNumber };
-      if (onedriveSubFolder?.trim()) listBody.subFolder = onedriveSubFolder.trim();
+      const subKey = onedriveSubFolder?.trim() ? onedriveSubFolder.trim() : null;
 
-      const subTrim = onedriveSubFolder?.trim() ?? '';
-      const mergeMaps =
-        requireCaseDocumentClassification && leadNumber && subTrim
-          ? supabase
-              .from('lead_case_documents')
-              .select('onedrive_item_id, classification_id, uploaded_by')
-              .eq('lead_number', leadNumber)
-              .eq('onedrive_subfolder', subTrim)
-          : null;
+      let query = supabase
+        .from('lead_case_documents')
+        .select(
+          'id, storage_path, file_name, file_size, mime_type, classification_id, uploaded_by, created_at, ai_summary, ai_summary_status, ai_summary_error',
+        )
+        .eq('lead_number', leadNumber)
+        .not('storage_path', 'is', null);
 
-      const [{ data, error }, mapRes] = await Promise.all([
-        supabase.functions.invoke('list-lead-documents', { body: listBody }),
-        mergeMaps ?? Promise.resolve({ data: null, error: null }),
-      ]);
+      if (subKey) query = query.eq('onedrive_subfolder', subKey);
+      else query = query.is('onedrive_subfolder', null);
 
-      if (error) {
-        console.error('Supabase function error:', error);
-        setError(`Function error: ${error.message}`);
+      const { data: rows, error: qErr } = await query.order('created_at', { ascending: false });
+
+      if (qErr) {
+        console.error('lead_case_documents fetch:', qErr);
+        setError(`Failed to fetch documents: ${qErr.message}`);
         return;
       }
 
-      if (data && data.success) {
-        let mappedDocuments: Document[] = (data.files || []).map((item: any) => ({
-          id: item.id,
-          name: item.name,
-          size: item.size ?? 0,
-          lastModified: item.lastModifiedDateTime || item.lastModified || new Date().toISOString(),
-          downloadUrl: item.downloadUrl || item['@microsoft.graph.downloadUrl'] || item.webUrl,
-          webUrl: item.webUrl,
-          fileType: item.file?.mimeType || item.fileType || 'application/octet-stream',
-        }));
+      const list = (rows ?? []) as {
+        id: string;
+        storage_path: string;
+        file_name: string;
+        file_size: number | null;
+        mime_type: string | null;
+        classification_id: string | null;
+        uploaded_by: string | null;
+        created_at: string;
+        ai_summary: string | null;
+        ai_summary_status: string | null;
+        ai_summary_error: string | null;
+      }[];
 
-        if (mergeMaps && mapRes && !mapRes.error && mapRes.data != null) {
-          type MapRow = {
-            onedrive_item_id: string;
-            classification_id: string;
-            uploaded_by: string | null;
-          };
-          const rows = (mapRes.data as MapRow[]) || [];
-          const itemToMeta = new Map<string, { classificationId: string; uploadedBy: string | null }>();
-          for (const r of rows) {
-            itemToMeta.set(r.onedrive_item_id, {
-              classificationId: r.classification_id,
-              uploadedBy: r.uploaded_by?.trim() || null,
-            });
-          }
-          const uploaderKeys = [...new Set(rows.map((r) => r.uploaded_by?.trim()).filter(Boolean))] as string[];
-          const uploaderMap = await resolveUploaderDisplayByKey(uploaderKeys);
-
-          let idToLabel = new Map<string, string>(
-            classificationsRef.current.map((c) => [c.id, c.label]),
-          );
-          if (idToLabel.size === 0) {
-            const { data: catRows } = await supabase.from('case_document_classifications').select('id, label');
-            idToLabel = new Map<string, string>(
-              (catRows || []).map((c: { id: string; label: string }) => [c.id, c.label]),
-            );
-          }
-
-          mappedDocuments = mappedDocuments.map((d) => {
-            const meta = itemToMeta.get(d.id);
-            const cid = meta?.classificationId;
-            const rawUploader = meta?.uploadedBy ?? null;
-            const resolved = rawUploader ? uploaderMap.get(rawUploader) : undefined;
-            return {
-              ...d,
-              caseClassificationId: cid ?? null,
-              caseClassificationLabel: cid ? idToLabel.get(cid) ?? null : null,
-              uploadedByName: resolved?.name ?? rawUploader,
-              uploadedByPhotoUrl: resolved?.photoUrl ?? null,
-            };
-          });
-        } else if (mergeMaps && mapRes?.error) {
-          console.warn('lead_case_documents merge skipped:', mapRes.error);
-        }
-
-        setDocuments(mappedDocuments);
-      } else if (data && !data.success) {
-        console.error('Function returned error:', data);
-        // Handle specific 404 case (folder not found)
-        if (data.error && data.error.includes('not found')) {
-          setError(`No documents found for lead ${leadNumber}. Documents may not have been uploaded yet.`);
-        } else {
-          setError(data.error || 'Failed to fetch documents');
-        }
-      } else {
-        console.error('Unexpected response format:', data);
-        setError('Unexpected response format from server');
+      let idToLabel = new Map<string, string>(classificationsRef.current.map((c) => [c.id, c.label]));
+      if (idToLabel.size === 0) {
+        const { data: catRows } = await supabase.from('case_document_classifications').select('id, label');
+        idToLabel = new Map<string, string>(
+          (catRows || []).map((c: { id: string; label: string }) => [c.id, c.label]),
+        );
       }
+
+      const uploaderKeys = [...new Set(list.map((r) => r.uploaded_by?.trim()).filter(Boolean))] as string[];
+      const uploaderMap = await resolveUploaderDisplayByKey(uploaderKeys);
+
+      const mappedDocuments: Document[] = await Promise.all(
+        list.map(async (r) => {
+          const { data: signed, error: signErr } = await supabase.storage
+            .from(CASE_DOCUMENTS_STORAGE_BUCKET)
+            .createSignedUrl(r.storage_path, CASE_DOCUMENTS_SIGNED_URL_SECONDS);
+
+          if (signErr) {
+            console.warn('createSignedUrl:', signErr.message, r.storage_path);
+          }
+
+          const url = signed?.signedUrl?.trim() || '';
+          const cid = r.classification_id;
+          const rawUploader = r.uploaded_by?.trim() || null;
+          const resolved = rawUploader ? uploaderMap.get(rawUploader) : undefined;
+          const mime =
+            r.mime_type?.trim() ||
+            (r.file_name.match(/\.([^.]+)$/)?.[1]?.toLowerCase() === 'pdf'
+              ? 'application/pdf'
+              : 'application/octet-stream');
+
+          const validAi: CaseDocumentAiSummaryStatus[] = ['pending', 'ready', 'failed', 'skipped'];
+          const aiStRaw = typeof r.ai_summary_status === 'string' ? r.ai_summary_status.trim().toLowerCase() : '';
+          const aiSt = (aiStRaw as CaseDocumentAiSummaryStatus) || null;
+          return {
+            id: r.id,
+            name: r.file_name,
+            size: typeof r.file_size === 'number' && Number.isFinite(r.file_size) ? Number(r.file_size) : 0,
+            lastModified: r.created_at || new Date().toISOString(),
+            downloadUrl: url,
+            webUrl: url,
+            fileType: mime,
+            source: 'case',
+            storagePath: r.storage_path,
+            caseDocDbId: r.id,
+            subEffortRowId: null,
+            caseClassificationId: cid ?? null,
+            caseClassificationLabel: cid ? idToLabel.get(cid) ?? null : null,
+            uploadedByName: resolved?.name ?? rawUploader ?? null,
+            uploadedByPhotoUrl: resolved?.photoUrl ?? null,
+            aiSummary: r.ai_summary ?? null,
+            aiSummaryStatus: aiSt && validAi.includes(aiSt) ? aiSt : null,
+            aiSummaryError: r.ai_summary_error ?? null,
+          };
+        }),
+      );
+
+      // Also include sub-efforts uploaded documents under the mapped category tab (when enabled + configured).
+      const subEffortDocuments: Document[] = [];
+      if (requireCaseDocumentClassification) {
+        // Resolve lead id (needed for lead_sub_efforts). Prefer caller-provided clientId.
+        let newLeadId: string | null = null;
+        let legacyLeadId: number | null = null;
+        const rawClientId = String(clientId ?? '').trim();
+        if (rawClientId) {
+          if (rawClientId.startsWith('legacy_')) {
+            const n = Number.parseInt(rawClientId.replace('legacy_', ''), 10);
+            legacyLeadId = Number.isFinite(n) ? n : null;
+          } else {
+            newLeadId = rawClientId;
+          }
+        } else if (leadNumber?.trim()) {
+          const { data: leadRow } = await supabase
+            .from('leads')
+            .select('id')
+            .eq('lead_number', leadNumber.trim())
+            .maybeSingle();
+          const id = (leadRow as { id?: string } | null)?.id;
+          if (typeof id === 'string' && id.trim()) newLeadId = id.trim();
+        }
+
+        if (newLeadId || legacyLeadId) {
+          let q = supabase
+            .from('lead_sub_efforts')
+            .select(
+              `id, created_at, created_by, document_url,
+               sub_efforts ( id, name, case_document_classification_id ),
+               tenants_employee ( id, display_name, photo_url )`,
+            )
+            .order('created_at', { ascending: false })
+            .limit(50);
+
+          if (legacyLeadId) q = q.eq('legacy_lead_id', legacyLeadId);
+          else if (newLeadId) q = q.eq('new_lead_id', newLeadId);
+
+          const { data: seRows, error: seErr } = await q;
+          if (seErr) {
+            console.warn('lead_sub_efforts fetch:', seErr.message);
+          } else {
+            const normalizeDocItems = (
+              raw: unknown,
+            ): { path?: string; url?: string; name?: string; mimeType?: string }[] => {
+              if (!raw) return [];
+              if (Array.isArray(raw)) return raw as any[];
+              if (typeof raw === 'string') {
+                try {
+                  const parsed = JSON.parse(raw);
+                  if (Array.isArray(parsed)) return parsed as any[];
+                } catch {
+                  /* ignore */
+                }
+                return [{ url: raw }];
+              }
+              if (typeof raw === 'object') return [raw as any];
+              return [];
+            };
+
+            const inferMime = (name: string, fallback?: string | null) => {
+              const t = (fallback || '').trim();
+              if (t) return t;
+              const ext = name.split('.').pop()?.toLowerCase() || '';
+              if (ext === 'pdf') return 'application/pdf';
+              if (ext === 'png') return 'image/png';
+              if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+              if (ext === 'gif') return 'image/gif';
+              if (ext === 'webp') return 'image/webp';
+              return 'application/octet-stream';
+            };
+
+            for (const r of (seRows || []) as any[]) {
+              const categoryId = r?.sub_efforts?.case_document_classification_id ?? null;
+              if (!categoryId) continue; // only show when mapped to a category
+              const who = r?.tenants_employee?.display_name ?? r?.created_by ?? null;
+              const photo = r?.tenants_employee?.photo_url ?? null;
+              const createdAt = r?.created_at ?? new Date().toISOString();
+              const items = normalizeDocItems(r?.document_url);
+              for (const it of items) {
+                const path = (it as any)?.path as string | undefined;
+                const url = (it as any)?.url as string | undefined;
+                const name =
+                  ((it as any)?.name as string | undefined)?.trim() ||
+                  (path ? path.split('/').pop() : url ? url.split('/').pop() : '') ||
+                  'Document';
+                const mime = inferMime(name, (it as any)?.mimeType as string | null | undefined);
+
+                let signedUrl = '';
+                if (path && typeof path === 'string') {
+                  const { data: signed } = await supabase.storage
+                    .from(CASE_DOCUMENTS_STORAGE_BUCKET)
+                    .createSignedUrl(path, CASE_DOCUMENTS_SIGNED_URL_SECONDS);
+                  signedUrl = signed?.signedUrl?.trim() || '';
+                } else if (url && typeof url === 'string') {
+                  signedUrl = url.trim();
+                }
+                if (!signedUrl) continue;
+
+                subEffortDocuments.push({
+                  id: `subeffort:${String(r?.id ?? '')}:${path || signedUrl}`,
+                  name,
+                  size: 0,
+                  lastModified: createdAt,
+                  downloadUrl: signedUrl,
+                  webUrl: signedUrl,
+                  fileType: mime,
+                  source: 'subeffort',
+                  storagePath: path || null,
+                  caseDocDbId: null,
+                  subEffortRowId: Number.isFinite(Number(r?.id)) ? Number(r?.id) : null,
+                  caseClassificationId: categoryId,
+                  caseClassificationLabel: idToLabel.get(categoryId) ?? null,
+                  uploadedByName: who ? String(who) : null,
+                  uploadedByPhotoUrl: photo ? String(photo) : null,
+                  aiSummary: null,
+                  aiSummaryStatus: null,
+                  aiSummaryError: null,
+                });
+              }
+            }
+          }
+        }
+      }
+
+      setDocuments([...subEffortDocuments, ...mappedDocuments]);
     } catch (err) {
       console.error('Error fetching documents:', err);
       setError(`Failed to fetch documents: ${err instanceof Error ? err.message : 'Unknown error'}`);
@@ -798,6 +1151,92 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
   const handlePreview = (document: Document) => {
     setPreviewDocument(document);
+  };
+
+  const handleDeleteDocument = async (doc: Document) => {
+    if (deleting.includes(doc.id)) return;
+    const ok = window.confirm(`Delete "${doc.name}"? This cannot be undone.`);
+    if (!ok) return;
+
+    setDeleting((prev) => [...prev, doc.id]);
+    try {
+      setSummaryModalDoc((prev) => (prev?.id === doc.id ? null : prev));
+      setPreviewDocument((prev) => (prev?.id === doc.id ? null : prev));
+
+      if (doc.source === 'subeffort') {
+        const rowId = doc.subEffortRowId;
+        const path = doc.storagePath?.trim() || '';
+        if (!rowId || !path) {
+          throw new Error('This sub-effort document cannot be deleted (missing storage path).');
+        }
+
+        const { error: rmErr } = await supabase.storage.from(CASE_DOCUMENTS_STORAGE_BUCKET).remove([path]);
+        if (rmErr) throw rmErr;
+
+        const { data: seRow, error: seFetchErr } = await supabase
+          .from('lead_sub_efforts')
+          .select('document_url')
+          .eq('id', rowId)
+          .maybeSingle();
+        if (seFetchErr) throw seFetchErr;
+
+        const normalizeDocItems = (raw: unknown): any[] => {
+          if (!raw) return [];
+          if (Array.isArray(raw)) return raw as any[];
+          if (typeof raw === 'string') {
+            try {
+              const parsed = JSON.parse(raw);
+              if (Array.isArray(parsed)) return parsed as any[];
+            } catch {
+              /* ignore */
+            }
+            return [{ url: raw }];
+          }
+          if (typeof raw === 'object') return [raw as any];
+          return [];
+        };
+
+        const items = normalizeDocItems((seRow as any)?.document_url);
+        const next = items.filter((it) => String((it as any)?.path || '') !== path);
+
+        const { error: seUpdErr } = await supabase.from('lead_sub_efforts').update({ document_url: next }).eq('id', rowId);
+        if (seUpdErr) throw seUpdErr;
+      } else {
+        const dbId = doc.caseDocDbId || doc.id;
+        const path = doc.storagePath?.trim() || '';
+        if (!path) throw new Error('Missing storage path for this document.');
+
+        const { error: rmErr } = await supabase.storage.from(CASE_DOCUMENTS_STORAGE_BUCKET).remove([path]);
+        if (rmErr) throw rmErr;
+
+        const { error: delErr } = await supabase.from('lead_case_documents').delete().eq('id', dbId);
+        if (delErr) throw delErr;
+      }
+
+      setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
+      toast.success('Deleted');
+    } catch (e: any) {
+      console.error('Delete document:', e);
+      toast.error(String(e?.message || 'Failed to delete'));
+    } finally {
+      setDeleting((prev) => prev.filter((id) => id !== doc.id));
+    }
+  };
+
+  const handleRetryDocumentSummary = async () => {
+    if (!summaryModalDoc) return;
+    const id = summaryModalDoc.id;
+    setSummaryModalDoc((d) =>
+      d && d.id === id ? { ...d, aiSummaryStatus: 'pending', aiSummaryError: null } : d,
+    );
+    setDocuments((prev) =>
+      prev.map((x) => (x.id === id ? { ...x, aiSummaryStatus: 'pending', aiSummaryError: null } : x)),
+    );
+    await supabase
+      .from('lead_case_documents')
+      .update({ ai_summary_status: 'pending', ai_summary_error: null })
+      .eq('id', id);
+    void requestCaseDocumentSummarize(id, { force: true });
   };
 
   const formatDate = (dateString: string) => {
@@ -916,51 +1355,54 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       }
     };
 
+    const subKey = onedriveSubFolder?.trim() ? onedriveSubFolder.trim() : null;
+
     for (const file of files) {
       startProgressSimulation(file.name, file.size);
       
       try {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('leadNumber', leadNumber);
-        if (onedriveSubFolder?.trim()) {
-          formData.append('subFolder', onedriveSubFolder.trim());
-        }
+        const storagePath = buildCaseDocumentStoragePath(leadNumber, subKey ?? undefined, file.name);
 
-        const { data, error } = await supabase.functions.invoke('upload-to-onedrive', {
-          body: formData,
-        });
+        const { error: storageErr } = await supabase.storage
+          .from(CASE_DOCUMENTS_STORAGE_BUCKET)
+          .upload(storagePath, file, {
+            contentType: file.type?.trim() || undefined,
+            upsert: false,
+          });
 
         stopProgressSimulation(file.name);
 
-        if (error) throw new Error(error.message);
-        if (!data || !data.success) {
-          throw new Error(data.error || 'Upload function returned an error.');
+        if (storageErr) throw storageErr;
+
+        const uploadedBy = await getCurrentUserName();
+        const mimeType = file.type?.trim() || 'application/octet-stream';
+
+        const { data: insertedRow, error: insErr } = await supabase
+          .from('lead_case_documents')
+          .insert({
+            lead_number: leadNumber,
+            onedrive_subfolder: subKey,
+            onedrive_item_id: null,
+            storage_path: storagePath,
+            file_name: file.name,
+            file_size: file.size,
+            mime_type: mimeType,
+            classification_id:
+              requireCaseDocumentClassification && classificationIdForBatch ? classificationIdForBatch : null,
+            uploaded_by: uploadedBy,
+            ai_summary_status: 'pending',
+          })
+          .select('id')
+          .single();
+
+        if (insErr) {
+          console.error('lead_case_documents insert:', insErr);
+          await supabase.storage.from(CASE_DOCUMENTS_STORAGE_BUCKET).remove([storagePath]);
+          throw new Error(insErr.message);
         }
 
-        if (requireCaseDocumentClassification && classificationIdForBatch && onedriveSubFolder?.trim()) {
-          const fileId = data.fileId as string | undefined;
-          if (!fileId) {
-            toast.error('Upload succeeded but file id was missing. Redeploy upload-to-onedrive and try again.');
-          } else {
-            const uploadedBy = await getCurrentUserName();
-            const subTrim = onedriveSubFolder.trim();
-            const { error: mapErr } = await supabase.from('lead_case_documents').upsert(
-              {
-                lead_number: leadNumber,
-                onedrive_subfolder: subTrim,
-                onedrive_item_id: fileId,
-                file_name: file.name,
-                classification_id: classificationIdForBatch,
-                uploaded_by: uploadedBy,
-              },
-              { onConflict: 'lead_number,onedrive_item_id' },
-            );
-            if (mapErr) {
-              console.error('lead_case_documents upsert:', mapErr);
-              toast.error(`Saved to OneDrive but classification was not saved: ${mapErr.message}`);
-            }
-          }
+        if (insertedRow?.id) {
+          void requestCaseDocumentSummarize(insertedRow.id as string);
         }
 
         setUploadedFiles(prev => prev.map(f => 
@@ -1069,9 +1511,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             <p className="mb-4 text-sm text-error">{classificationsError}</p>
           ) : null}
 
-          {requireCaseDocumentClassification &&
-          activeBrowseCategoryId === 'uncategorized' &&
-          !caseUploadBlocked ? (
+          {requireCaseDocumentClassification && !uploadClassificationId && !caseUploadBlocked ? (
             <p className="mb-4 text-xs text-base-content/60">
               Select a document category below to upload new files.
             </p>
@@ -1189,7 +1629,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             </div>
           )}
 
-          {/* Documents list: case mode — tabs show as soon as classifications load; OneDrive fetch only affects the list below */}
+          {/* Documents list: case mode — tabs show as soon as classifications load; storage-backed list loads below */}
           {requireCaseDocumentClassification && classifications.length > 0 ? (
                 <div className="mb-4 flex w-full min-w-0 max-w-full flex-col gap-4">
                   <nav
@@ -1221,30 +1661,6 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                         </button>
                       );
                     })}
-                    {(() => {
-                      const uncCount = documents.filter((d) => !d.caseClassificationId).length;
-                      const active = activeBrowseCategoryId === 'uncategorized';
-                      return (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setActiveBrowseCategoryId('uncategorized');
-                          }}
-                          className={`btn btn-sm inline-flex h-auto min-h-0 shrink-0 touch-manipulation select-none items-center gap-2 whitespace-nowrap rounded-lg border-0 px-3 py-2.5 text-sm font-normal shadow-none ${
-                            active
-                              ? 'btn-primary text-white'
-                              : 'bg-base-200/90 text-base-content hover:bg-base-300/80'
-                          }`}
-                        >
-                          <span>Uncategorized</span>
-                          <span className={`tabular-nums text-sm ${active ? 'opacity-90' : 'opacity-70'}`}>
-                            {uncCount}
-                          </span>
-                        </button>
-                      );
-                    })()}
                   </nav>
                   <div className="min-w-0 w-full">
                     {loading ? (
@@ -1274,7 +1690,17 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                           return (
                             <div
                               key={doc.id}
-                              className="flex min-w-0 max-w-full items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-4 transition-colors hover:bg-gray-100/90 dark:bg-gray-800/45 dark:hover:bg-gray-800/70 sm:gap-3 sm:p-5 md:items-stretch"
+                              className="flex min-w-0 max-w-full cursor-pointer items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-4 transition-colors hover:bg-gray-100/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 dark:bg-gray-800/45 dark:hover:bg-gray-800/70 sm:gap-3 sm:p-5 md:items-stretch"
+                              role="button"
+                              tabIndex={0}
+                              aria-label={`Open AI summary for ${doc.name}`}
+                              onClick={() => setSummaryModalDoc(doc)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  e.preventDefault();
+                                  setSummaryModalDoc(doc);
+                                }
+                              }}
                             >
                               <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4">
                                 <span className="shrink-0">
@@ -1289,6 +1715,17 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                                       {formatDate(doc.lastModified)}
                                     </span>
                                     <DocumentUploaderAttribution doc={doc} />
+                                    {doc.aiSummaryStatus === 'ready' && doc.aiSummary?.trim() ? (
+                                      <span className="inline-flex items-center gap-0.5 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                                        <SparklesIcon className="h-3 w-3 shrink-0" aria-hidden />
+                                        Summary
+                                      </span>
+                                    ) : doc.aiSummaryStatus === 'pending' ? (
+                                      <span className="inline-flex items-center gap-1 text-xs text-base-content/55">
+                                        <span className="loading loading-spinner loading-xs" aria-hidden />
+                                        Summarizing…
+                                      </span>
+                                    ) : null}
                                   </div>
                                 </div>
                               </div>
@@ -1296,8 +1733,10 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                               <DocumentRowActionMenu
                                 doc={doc}
                                 isDownloading={isDownloading}
+                                isDeleting={deleting.includes(doc.id)}
                                 onPreview={handlePreview}
                                 onDownload={handleDownload}
+                                onDelete={handleDeleteDocument}
                               />
                             </div>
                           );
@@ -1341,7 +1780,17 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                 return (
                   <div
                     key={doc.id}
-                    className="flex min-w-0 max-w-full items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-4 transition-colors hover:bg-gray-100/90 dark:bg-gray-800/45 dark:hover:bg-gray-800/70 sm:gap-3 sm:p-5 md:items-stretch"
+                    className="flex min-w-0 max-w-full cursor-pointer items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-4 transition-colors hover:bg-gray-100/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 dark:bg-gray-800/45 dark:hover:bg-gray-800/70 sm:gap-3 sm:p-5 md:items-stretch"
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Open AI summary for ${doc.name}`}
+                    onClick={() => setSummaryModalDoc(doc)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSummaryModalDoc(doc);
+                      }
+                    }}
                   >
                     <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4">
                       <span className="shrink-0">
@@ -1356,6 +1805,17 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                             {formatDate(doc.lastModified)}
                           </span>
                           <DocumentUploaderAttribution doc={doc} />
+                          {doc.aiSummaryStatus === 'ready' && doc.aiSummary?.trim() ? (
+                            <span className="inline-flex items-center gap-0.5 rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+                              <SparklesIcon className="h-3 w-3 shrink-0" aria-hidden />
+                              Summary
+                            </span>
+                          ) : doc.aiSummaryStatus === 'pending' ? (
+                            <span className="inline-flex items-center gap-1 text-xs text-base-content/55">
+                              <span className="loading loading-spinner loading-xs" aria-hidden />
+                              Summarizing…
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                     </div>
@@ -1363,8 +1823,10 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                     <DocumentRowActionMenu
                       doc={doc}
                       isDownloading={isDownloading}
+                      isDeleting={deleting.includes(doc.id)}
                       onPreview={handlePreview}
                       onDownload={handleDownload}
+                      onDelete={handleDeleteDocument}
                     />
                   </div>
                 );
@@ -1373,6 +1835,113 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           )}
         </div>
       </div>
+
+      {/* AI summary (row click) */}
+      {summaryModalDoc && (
+        <div className="fixed inset-0 z-[1060] flex items-center justify-center p-4">
+          <button
+            type="button"
+            className="absolute inset-0 bg-black/60"
+            aria-label="Close summary"
+            onClick={() => setSummaryModalDoc(null)}
+          />
+          <div
+            className="relative z-[1] flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-base-100 shadow-xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="case-doc-summary-title"
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-base-300 p-4 md:p-5">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-base-content/55">
+                    Document
+                  </p>
+                  {requireCaseDocumentClassification ? (
+                    <span className="inline-flex items-center rounded-full bg-base-200 px-2 py-0.5 text-xs font-medium text-base-content/70">
+                      {summaryModalDoc.caseClassificationLabel?.trim() || 'Uncategorized'}
+                    </span>
+                  ) : null}
+                </div>
+                <h3
+                  id="case-doc-summary-title"
+                  className="mt-0.5 break-words text-lg font-semibold leading-snug text-base-content [overflow-wrap:anywhere]"
+                >
+                  {summaryModalDoc.name}
+                </h3>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => void shareDocumentSummary(summaryModalDoc)}
+                  disabled={!summaryModalDoc.aiSummary?.trim()}
+                  title="Share summary"
+                >
+                  <ShareIcon className="h-4 w-4" aria-hidden />
+                  Share
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-circle btn-ghost btn-sm"
+                  aria-label="Close"
+                  onClick={() => setSummaryModalDoc(null)}
+                >
+                  <XMarkIcon className="h-6 w-6" />
+                </button>
+              </div>
+            </div>
+            <div className="min-h-[12rem] flex-1 overflow-y-auto p-4 md:p-5">
+              {summaryModalDoc.aiSummaryStatus === 'pending' ? (
+                <div className="flex flex-col items-center justify-center gap-3 py-12 text-base-content/70">
+                  <span className="loading loading-spinner loading-lg" />
+                  <p className="text-center text-sm">Generating AI summary…</p>
+                </div>
+              ) : summaryModalDoc.aiSummaryStatus === 'ready' && summaryModalDoc.aiSummary?.trim() ? (
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-base-content/90">
+                  {summaryModalDoc.aiSummary.trim()}
+                </p>
+              ) : summaryModalDoc.aiSummaryStatus === 'skipped' ? (
+                <p className="text-sm text-base-content/70">
+                  {summaryModalDoc.aiSummaryError?.trim() ||
+                    'This file type is not supported for automatic summary.'}
+                </p>
+              ) : summaryModalDoc.aiSummaryStatus === 'failed' ? (
+                <div className="space-y-3">
+                  <p className="text-sm text-error">
+                    {summaryModalDoc.aiSummaryError?.trim() || 'Could not generate summary.'}
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={() => void handleRetryDocumentSummary()}
+                  >
+                    Try again
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-sm text-base-content/70">
+                    No summary is stored for this file yet.
+                  </p>
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={() => void handleRetryDocumentSummary()}
+                  >
+                    Generate summary
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="border-t border-base-200 px-4 py-3 text-xs text-base-content/55 md:px-5">
+              <div className="flex items-center justify-end">
+                <span className="tabular-nums">{formatDate(summaryModalDoc.lastModified)}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Preview Modal */}
       {previewDocument && (

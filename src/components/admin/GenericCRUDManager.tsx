@@ -47,6 +47,8 @@ interface GenericCRUDManagerProps {
   description?: string;
   pageSize?: number;
   sortColumn?: string;
+  /** When true, list order is ascending (e.g. sort_order low → high). Default false preserves existing behaviour. */
+  sortAscending?: boolean;
   hideAddButton?: boolean;
   hideTitle?: boolean;
   refreshKey?: number;
@@ -66,6 +68,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   description,
   pageSize = 50,
   sortColumn = 'created_at',
+  sortAscending = false,
   hideAddButton = false,
   hideTitle = false,
   refreshKey = 0,
@@ -143,7 +146,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       
       // Order by the specified sort column (default to created_at, fallback to id)
       const columnToSort = sortColumn || 'id';
-      query = query.order(columnToSort, { ascending: false });
+      query = query.order(columnToSort, { ascending: sortAscending });
 
       const { data, error, count } = await query;
 
@@ -568,7 +571,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   useEffect(() => {
     fetchRecords();
     fetchAllForeignKeyOptions();
-  }, [currentPage, searchTerm, isActiveFilter, userActiveFilter, showAllRecords, refreshKey]);
+  }, [currentPage, searchTerm, isActiveFilter, userActiveFilter, showAllRecords, refreshKey, sortColumn, sortAscending]);
 
   // Handle boolean toggle changes
   const handleToggleBoolean = async (record: Record, fieldName: string, newValue: boolean) => {

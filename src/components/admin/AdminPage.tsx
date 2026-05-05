@@ -37,6 +37,7 @@ import LeadStageReasonsManager from './LeadStageReasonsManager';
 import MainCategoriesManager from './MainCategoriesManager';
 import SubCategoriesManager from './SubCategoriesManager';
 import SubEffortsManager from './SubEffortsManager';
+import CaseDocumentCategoriesManager from './CaseDocumentCategoriesManager';
 import WhatsAppNumbersManager from './WhatsAppNumbersManager';
 import WhatsAppTemplatesManager from './WhatsAppTemplatesManager';
 import EmailTemplatesManager from './EmailTemplatesManager';
@@ -98,6 +99,7 @@ const ADMIN_TABS: AdminTab[] = [
     subcategories: [
       'Bonus formulas',
       'Contract templates',
+      'Case document categories',
       'Countries',
       'Email Templates',
       'Email Templates Placement',
@@ -1538,6 +1540,9 @@ const AdminPage: React.FC = () => {
               return selectedTab?.label === 'Misc' &&
                 selectedTab?.subcategories[selected.sub] === 'Contract templates' ? (
                 <div className="w-full"><ContractTemplatesManager /></div>
+              ) : selectedTab?.label === 'Misc' &&
+                  selectedTab?.subcategories[selected.sub] === 'Case document categories' ? (
+                  <div className="w-full"><CaseDocumentCategoriesManager /></div>
               ) : selectedTab?.label === 'Authentication' &&
                 selectedTab?.subcategories[selected.sub] === 'Users' ? (
                 <div className="w-full"><UsersManager /></div>

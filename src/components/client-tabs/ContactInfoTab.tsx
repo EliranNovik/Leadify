@@ -1,7 +1,7 @@
 import React, { useState, useEffect, Fragment, useMemo, useRef, startTransition } from 'react';
 import { usePersistedState } from '../../hooks/usePersistedState';
 import { ClientTabProps } from '../../types/client';
-import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, MinusIcon, DocumentTextIcon, XMarkIcon, PencilSquareIcon, CheckIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, MinusIcon, DocumentTextIcon, XMarkIcon, PencilSquareIcon, CheckIcon, TrashIcon, FolderOpenIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import { createPortal } from 'react-dom';
 import SignaturePad from 'react-signature-canvas';
@@ -19,6 +19,8 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
 import CallOptionsModal from '../CallOptionsModal';
+import DocumentModal from '../DocumentModal';
+import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../../lib/leadOneDrivePaths';
 import { getFrontendBaseUrl } from '../../lib/api';
 
 // Function to clean HTML content and make it readable
@@ -432,6 +434,23 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
   // State to track contract status
   const [contractStatuses, setContractStatuses] = useState<{ [id: string]: { status: string; signed_at?: string } }>({});
+
+  /** Lead number string for Case documents / Contract folder (same derivation as ClientHeader). */
+  const docsLeadNumber = useMemo(() => {
+    const fromLead = String(client.lead_number ?? '').trim();
+    const manualId = String((client as any)?.manual_id ?? '').trim();
+    return fromLead || manualId;
+  }, [client.lead_number, client]);
+
+  const [physicalContractDocsModalOpen, setPhysicalContractDocsModalOpen] = useState(false);
+
+  const openPhysicalContractDocs = () => {
+    if (!docsLeadNumber) {
+      toast.error('Add a lead number to view physical contract documents.');
+      return;
+    }
+    setPhysicalContractDocsModalOpen(true);
+  };
 
   // Add state for most recent contract (for backward compatibility)
   const [mostRecentContract, setMostRecentContract] = useState<any>(null);
@@ -4241,13 +4260,23 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                     {contractForMainCard.status}
                                   </span>
                                 </div>
-                                <div className="flex gap-2">
+                                <div className="flex flex-wrap gap-2 justify-end">
                                   <button
                                     className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start"
                                     onClick={() => handleViewContract(contractForMainCard.id)}
                                   >
                                     <DocumentTextIcon className="w-4 h-4" />
                                     View Contract
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-outline btn-primary btn-sm justify-start w-auto min-w-0 px-2 self-start"
+                                    onClick={openPhysicalContractDocs}
+                                    disabled={!docsLeadNumber}
+                                    title="Opens case documents filtered to Contract (physical / scanned uploads)"
+                                  >
+                                    <FolderOpenIcon className="w-4 h-4" />
+                                    View physical contract
                                   </button>
                                   {contractForMainCard.status === 'draft' && (
                                     <button
@@ -5862,6 +5891,17 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         onClose={() => setIsCallModalOpen(false)}
         phoneNumber={callPhoneNumber}
         leadName={callContactName}
+      />
+
+      <DocumentModal
+        isOpen={physicalContractDocsModalOpen}
+        onClose={() => setPhysicalContractDocsModalOpen(false)}
+        leadNumber={docsLeadNumber}
+        clientName={client.name ?? ''}
+        onedriveSubFolder={CLIENT_HEADER_ONEDRIVE_SUBFOLDER}
+        modalTitle="Case documents"
+        requireCaseDocumentClassification
+        initialClassificationSlug="contract"
       />
     </Fragment>
   );

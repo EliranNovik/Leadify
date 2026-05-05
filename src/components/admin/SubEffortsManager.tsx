@@ -7,21 +7,33 @@ type SubEffortRow = {
   id: number;
   name: string;
   active?: boolean | null;
+  case_document_classification_id?: string | null;
+  // Supabase nested selects can return object OR array depending on relationship cardinality.
+  case_document_classification?: { id: string; label: string } | { id: string; label: string }[] | null;
   created_at?: string | null;
   updated_at?: string | null;
   created_by?: string | null;
   updated_by?: string | null;
 };
 
+function categoryLabelFromRow(row: SubEffortRow): string | null {
+  const v = row.case_document_classification;
+  if (!v) return null;
+  if (Array.isArray(v)) return v[0]?.label?.trim() || null;
+  return v.label?.trim() || null;
+}
+
 const normalizeName = (value: string) => value.trim().replace(/\s+/g, ' ');
 
 const SubEffortsManager: React.FC = () => {
   const [rows, setRows] = useState<SubEffortRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [caseDocCategories, setCaseDocCategories] = useState<{ id: string; label: string }[]>([]);
 
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [editingRow, setEditingRow] = useState<SubEffortRow | null>(null);
   const [draftName, setDraftName] = useState('');
+  const [draftCategoryId, setDraftCategoryId] = useState<string>('');
   const [saving, setSaving] = useState(false);
 
   const title = useMemo(() => (editingRow ? 'Edit sub effort' : 'Add sub effort'), [editingRow]);
@@ -31,10 +43,12 @@ const SubEffortsManager: React.FC = () => {
     try {
       const { data, error } = await supabase
         .from('sub_efforts')
-        .select('id, name, active, created_at, created_by, updated_at, updated_by')
+        .select(
+          'id, name, active, case_document_classification_id, created_at, created_by, updated_at, updated_by, case_document_classification:case_document_classifications(id, label)',
+        )
         .order('name', { ascending: true });
       if (error) throw error;
-      setRows((data || []) as SubEffortRow[]);
+      setRows(((data || []) as unknown) as SubEffortRow[]);
     } catch (e: any) {
       console.error('Failed to fetch sub_efforts:', e);
       toast.error(String(e?.message || 'Failed to load sub efforts'));
@@ -48,9 +62,26 @@ const SubEffortsManager: React.FC = () => {
     void fetchRows();
   }, []);
 
+  useEffect(() => {
+    void (async () => {
+      const { data, error } = await supabase
+        .from('case_document_classifications')
+        .select('id, label')
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true });
+      if (error) {
+        console.error('case_document_classifications:', error);
+        setCaseDocCategories([]);
+        return;
+      }
+      setCaseDocCategories(((data as any[]) || []).map((r) => ({ id: r.id, label: r.label })));
+    })();
+  }, []);
+
   const openAdd = () => {
     setEditingRow(null);
     setDraftName('');
+    setDraftCategoryId('');
     // default new rows to active
     setIsDrawerOpen(true);
   };
@@ -58,6 +89,7 @@ const SubEffortsManager: React.FC = () => {
   const openEdit = (row: SubEffortRow) => {
     setEditingRow(row);
     setDraftName(row.name || '');
+    setDraftCategoryId(row.case_document_classification_id || '');
     setIsDrawerOpen(true);
   };
 
@@ -66,6 +98,7 @@ const SubEffortsManager: React.FC = () => {
     setIsDrawerOpen(false);
     setEditingRow(null);
     setDraftName('');
+    setDraftCategoryId('');
   };
 
   const draftActive = useMemo(() => {
@@ -80,12 +113,13 @@ const SubEffortsManager: React.FC = () => {
       return;
     }
 
+    const case_document_classification_id = draftCategoryId.trim() || null;
     setSaving(true);
     try {
       if (editingRow) {
         const { error } = await supabase
           .from('sub_efforts')
-          .update({ name, active: draftActive })
+          .update({ name, active: draftActive, case_document_classification_id })
           .eq('id', editingRow.id)
           .select('id')
           .maybeSingle();
@@ -94,7 +128,7 @@ const SubEffortsManager: React.FC = () => {
       } else {
         const { error } = await supabase
           .from('sub_efforts')
-          .insert({ name, active: draftActive })
+          .insert({ name, active: draftActive, case_document_classification_id })
           .select('id')
           .maybeSingle();
         if (error) throw error;
@@ -163,6 +197,7 @@ const SubEffortsManager: React.FC = () => {
               <thead>
                 <tr>
                   <th className="text-gray-500">Name</th>
+                  <th className="text-gray-500">Case documents category</th>
                   <th className="text-gray-500">Active</th>
                   <th className="text-gray-500">Updated</th>
                 </tr>
@@ -176,6 +211,9 @@ const SubEffortsManager: React.FC = () => {
                     title="Click to edit"
                   >
                     <td className="font-medium text-gray-900">{r.name}</td>
+                    <td className="text-gray-500 text-xs">
+                      {categoryLabelFromRow(r) || '—'}
+                    </td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
@@ -229,6 +267,24 @@ const SubEffortsManager: React.FC = () => {
                   placeholder="e.g. Application submitted"
                   autoFocus
                 />
+              </label>
+
+              <label className="form-control w-full mt-4">
+                <div className="label">
+                  <span className="label-text">Case documents category</span>
+                </div>
+                <select
+                  className="select select-bordered w-full"
+                  value={draftCategoryId}
+                  onChange={(e) => setDraftCategoryId(e.target.value)}
+                >
+                  <option value="">No category (won’t show in Case Documents tabs)</option>
+                  {caseDocCategories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
               </label>
 
               <div className="mt-5 flex items-center justify-between">
