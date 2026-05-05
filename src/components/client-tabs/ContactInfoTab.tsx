@@ -3625,7 +3625,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               return (
                 <div
                   key={contact.id}
-                  className="bg-white border border-gray-200 rounded-lg overflow-visible"
+                  className="bg-white rounded-lg overflow-visible"
                 >
                   {/* Header - clean white, data-first */}
                   <div className="px-4 py-3 border-b border-gray-100">
@@ -3934,12 +3934,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               }}
                               className="text-base text-gray-900 hover:text-purple-600 flex items-center justify-end gap-2 transition-colors cursor-pointer"
                             >
-                              <PhoneIcon className="w-4 h-4 text-gray-400" />
                               <span className="text-base font-medium">{contact.mobile}</span>
                             </button>
                           ) : (
                             <div className="text-base text-gray-900 flex items-center justify-end gap-2">
-                              <PhoneIcon className="w-4 h-4 text-gray-400" />
                               <span className="text-base font-medium">{contact.mobile}</span>
                             </div>
                           )}
@@ -4103,12 +4101,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               }}
                               className="text-base text-gray-900 hover:text-purple-600 flex items-center justify-end gap-2 transition-colors cursor-pointer"
                             >
-                              <PhoneIcon className="w-4 h-4 text-gray-400" />
                               <span className="text-base font-medium">{contact.phone}</span>
                             </button>
                           ) : (
                             <div className="text-base text-gray-900 flex items-center justify-end gap-2">
-                              <PhoneIcon className="w-4 h-4 text-gray-400" />
                               <span className="text-base font-medium">{contact.phone}</span>
                             </div>
                           )}
@@ -4137,12 +4133,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             />
                           ) : contact.email && contact.email !== '---' ? (
                             <a href={`mailto:${contact.email}`} className="text-base text-gray-900 hover:text-purple-600 flex items-center justify-end gap-2 transition-colors">
-                              <EnvelopeIcon className="w-4 h-4 text-gray-400" />
                               <span className="text-base font-medium">{contact.email}</span>
                             </a>
                           ) : (
                             <div className="text-base text-gray-900 flex items-center justify-end gap-2">
-                              <EnvelopeIcon className="w-4 h-4 text-gray-400" />
                               <span className="text-base font-medium">{contact.email}</span>
                             </div>
                           )}
@@ -4358,7 +4352,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             })}
 
             {/* Add New Contact Card */}
-            <div className="bg-white border border-dashed border-gray-300 rounded-lg overflow-hidden">
+            <div className="bg-white rounded-lg overflow-hidden">
               <div className="p-6">
                 <div className="flex flex-col items-center justify-center py-8">
                   {/* Removed plus icon and circle */}

@@ -21,6 +21,7 @@ import {
   ShareIcon,
   SparklesIcon,
   TrashIcon,
+  PencilSquareIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import {
@@ -658,6 +659,73 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [previewDocument, setPreviewDocument] = useState<Document | null>(null);
   const [summaryModalDoc, setSummaryModalDoc] = useState<Document | null>(null);
+  const [isEditingSummary, setIsEditingSummary] = useState(false);
+  const [editedSummaryText, setEditedSummaryText] = useState('');
+  const [isSavingSummary, setIsSavingSummary] = useState(false);
+
+  useEffect(() => {
+    if (!summaryModalDoc) {
+      setIsEditingSummary(false);
+      setEditedSummaryText('');
+      setIsSavingSummary(false);
+      return;
+    }
+    setIsEditingSummary(false);
+    setEditedSummaryText(summaryModalDoc.aiSummary ?? '');
+    setIsSavingSummary(false);
+  }, [summaryModalDoc]);
+
+  const canEditSummary = !!summaryModalDoc?.caseDocDbId;
+
+  const saveEditedSummary = async (opts?: { clear?: boolean }) => {
+    if (!summaryModalDoc?.caseDocDbId) return;
+    if (isSavingSummary) return;
+    setIsSavingSummary(true);
+    try {
+      const next = opts?.clear ? '' : editedSummaryText;
+      const { error } = await supabase
+        .from('lead_case_documents')
+        .update({
+          ai_summary: next,
+          ai_summary_status: next.trim() ? 'ready' : 'skipped',
+          ai_summary_error: null,
+          ai_summary_at: new Date().toISOString(),
+        })
+        .eq('id', summaryModalDoc.caseDocDbId);
+
+      if (error) throw error;
+
+      setSummaryModalDoc((prev) =>
+        prev
+          ? {
+              ...prev,
+              aiSummary: next,
+              aiSummaryStatus: next.trim() ? 'ready' : 'skipped',
+              aiSummaryError: null,
+            }
+          : prev,
+      );
+      setDocuments((prev) =>
+        prev.map((d) =>
+          d.id === summaryModalDoc.id
+            ? {
+                ...d,
+                aiSummary: next,
+                aiSummaryStatus: next.trim() ? 'ready' : 'skipped',
+                aiSummaryError: null,
+              }
+            : d,
+        ),
+      );
+
+      setIsEditingSummary(false);
+      toast.success(opts?.clear ? 'Summary deleted' : 'Summary saved');
+    } catch (e: any) {
+      toast.error(e?.message ? String(e.message) : 'Failed to save summary');
+    } finally {
+      setIsSavingSummary(false);
+    }
+  };
   const documentsRef = useRef<Document[]>([]);
   const [downloading, setDownloading] = useState<string[]>([]);
   const [deleting, setDeleting] = useState<string[]>([]);
@@ -1648,14 +1716,21 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                             e.stopPropagation();
                             setActiveBrowseCategoryId(c.id);
                           }}
-                          className={`btn btn-sm inline-flex h-auto min-h-0 shrink-0 touch-manipulation select-none items-center gap-2 whitespace-nowrap rounded-lg border-0 px-3 py-2.5 text-sm font-normal shadow-none ${
+                          className={`btn btn-sm inline-flex h-auto min-h-0 shrink-0 touch-manipulation select-none items-center gap-2 whitespace-nowrap rounded-lg border-0 px-3 py-2.5 text-sm font-bold shadow-none ${
                             active
                               ? 'btn-primary text-white'
                               : 'bg-base-200/90 text-base-content hover:bg-base-300/80'
                           }`}
                         >
                           <span className="max-w-[12rem] truncate sm:max-w-[14rem]">{c.label}</span>
-                          <span className={`tabular-nums text-sm ${active ? 'opacity-90' : 'opacity-70'}`}>
+                          <span
+                            className="ml-0 inline-flex min-w-[22px] items-center justify-center rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums"
+                            style={
+                              active
+                                ? { backgroundColor: '#ffffff', color: '#3b28c7' }
+                                : { backgroundColor: '#3a3a3a', color: '#ffffff' }
+                            }
+                          >
                             {count}
                           </span>
                         </button>
@@ -1690,7 +1765,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                           return (
                             <div
                               key={doc.id}
-                              className="flex min-w-0 max-w-full cursor-pointer items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-4 transition-colors hover:bg-gray-100/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 dark:bg-gray-800/45 dark:hover:bg-gray-800/70 sm:gap-3 sm:p-5 md:items-stretch"
+                              className="flex min-w-0 max-w-full cursor-pointer items-center justify-between gap-2 rounded-lg border border-base-200 bg-transparent px-3 py-4 transition-colors hover:bg-base-200/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 sm:gap-3 sm:p-5 md:items-stretch"
                               role="button"
                               tabIndex={0}
                               aria-label={`Open AI summary for ${doc.name}`}
@@ -1780,7 +1855,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                 return (
                   <div
                     key={doc.id}
-                    className="flex min-w-0 max-w-full cursor-pointer items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-4 transition-colors hover:bg-gray-100/90 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 dark:bg-gray-800/45 dark:hover:bg-gray-800/70 sm:gap-3 sm:p-5 md:items-stretch"
+                              className="flex min-w-0 max-w-full cursor-pointer items-center justify-between gap-2 rounded-lg border border-base-200 bg-transparent px-3 py-4 transition-colors hover:bg-base-200/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30 sm:gap-3 sm:p-5 md:items-stretch"
                     role="button"
                     tabIndex={0}
                     aria-label={`Open AI summary for ${doc.name}`}
@@ -1871,6 +1946,25 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                 </h3>
               </div>
               <div className="flex shrink-0 items-center gap-1.5">
+                {canEditSummary ? (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      if (isEditingSummary) {
+                        setIsEditingSummary(false);
+                        setEditedSummaryText(summaryModalDoc.aiSummary ?? '');
+                        return;
+                      }
+                      setIsEditingSummary(true);
+                    }}
+                    disabled={isSavingSummary}
+                    title={isEditingSummary ? 'Cancel edit' : 'Edit summary'}
+                  >
+                    <PencilSquareIcon className="h-4 w-4" aria-hidden />
+                    {isEditingSummary ? 'Cancel' : 'Edit'}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
@@ -1892,7 +1986,52 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
               </div>
             </div>
             <div className="min-h-[12rem] flex-1 overflow-y-auto p-4 md:p-5">
-              {summaryModalDoc.aiSummaryStatus === 'pending' ? (
+              {isEditingSummary ? (
+                <div className="space-y-3">
+                  <textarea
+                    className="textarea textarea-bordered w-full min-h-[220px] text-sm leading-relaxed"
+                    value={editedSummaryText}
+                    onChange={(e) => setEditedSummaryText(e.target.value)}
+                    placeholder="Write a summary…"
+                  />
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm text-error"
+                      disabled={isSavingSummary}
+                      onClick={() => void saveEditedSummary({ clear: true })}
+                      title="Delete summary"
+                    >
+                      <TrashIcon className="h-4 w-4" aria-hidden />
+                      Delete
+                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        disabled={isSavingSummary}
+                        onClick={() => {
+                          setIsEditingSummary(false);
+                          setEditedSummaryText(summaryModalDoc.aiSummary ?? '');
+                        }}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-primary btn-sm"
+                        disabled={isSavingSummary}
+                        onClick={() => void saveEditedSummary()}
+                      >
+                        {isSavingSummary ? (
+                          <span className="loading loading-spinner loading-xs" />
+                        ) : null}
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : summaryModalDoc.aiSummaryStatus === 'pending' ? (
                 <div className="flex flex-col items-center justify-center gap-3 py-12 text-base-content/70">
                   <span className="loading loading-spinner loading-lg" />
                   <p className="text-center text-sm">Generating AI summary…</p>

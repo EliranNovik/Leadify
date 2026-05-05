@@ -1639,11 +1639,10 @@ const InfoTab: React.FC<ClientTabProps> = ({
       <div className="space-y-8">
         <div className="space-y-1 mb-4">
           <h3 className="text-xs font-semibold tracking-wide text-gray-500 uppercase">Overview</h3>
-          <div className="h-px w-full bg-gradient-to-r from-transparent via-gray-300/45 to-transparent" />
         </div>
         {/* Overview: row 1 = Case Probability + Follow-up; row 2 = Eligibility + File ID */}
         <div className="mb-10 flex flex-col gap-10 lg:mb-16 lg:gap-14">
-          <div className="flex flex-col divide-y divide-gray-200/50 lg:flex-row lg:divide-x lg:divide-y-0 lg:items-stretch">
+          <div className="flex flex-col lg:flex-row lg:items-stretch">
           {/* Case Probability */}
           <div className="flex-1 min-w-0 overflow-hidden">
             <div className="px-0 sm:px-1 pt-2 pb-8 lg:py-2 lg:pr-6 lg:pb-6 space-y-5">
@@ -1864,7 +1863,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
           </div>
           </div>
 
-          <div className="flex flex-col divide-y divide-gray-200/50 border-t border-gray-200/50 pt-10 lg:flex-row lg:divide-x lg:divide-y-0 lg:items-stretch lg:pt-14">
+          <div className="flex flex-col pt-10 lg:flex-row lg:items-stretch lg:pt-14">
           {/* Eligibility */}
           <div className="flex-1 min-w-0 overflow-hidden">
             <div className="space-y-5 px-0 pb-8 pt-2 sm:px-1 lg:pb-6 lg:pl-0 lg:pr-6 lg:pt-2">
@@ -1882,7 +1881,6 @@ const InfoTab: React.FC<ClientTabProps> = ({
                 </div>
 
                 <div>
-                  <div className="h-px w-full bg-gradient-to-r from-transparent via-gray-300/40 to-transparent mb-3" aria-hidden />
                   <div className="flex items-center justify-between gap-3 py-1">
                     <div className="flex items-center gap-2">
                       <span className={`w-2.5 h-2.5 rounded-full ${eligibilityDisplay.text === 'Not checked' ? 'bg-gray-300' : 'bg-emerald-500'}`} />
@@ -1895,7 +1893,6 @@ const InfoTab: React.FC<ClientTabProps> = ({
                 </div>
 
                 <div>
-                  <div className="h-px w-full bg-gradient-to-r from-transparent via-gray-300/40 to-transparent mb-3" aria-hidden />
                   <div className="flex items-center justify-between gap-3 py-1">
                     <div className="flex items-center gap-2">
                       <span className={`w-2.5 h-2.5 rounded-full ${eligible ? 'bg-emerald-500' : 'bg-gray-300'}`} />
@@ -1941,10 +1938,10 @@ const InfoTab: React.FC<ClientTabProps> = ({
             </div>
           </div>
 
-          {/* File ID — same row as Eligibility; grey panel fills column */}
+          {/* File ID — same row as Eligibility */}
           <div className="flex min-h-0 min-w-0 flex-1 flex-col self-stretch overflow-hidden">
             <div className="flex min-h-0 flex-1 flex-col px-0 pb-8 pt-2 sm:px-1 lg:pb-6 lg:pl-6 lg:pr-0 lg:pt-2">
-              <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl border border-gray-200 bg-gray-50 p-4 shadow-sm dark:border-gray-600 dark:bg-gray-800/90">
+              <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl p-0">
                 <div className="flex min-h-0 flex-1 flex-col gap-5">
                   <div className="flex shrink-0 items-center justify-between gap-1">
                     <h4 className="text-base font-semibold text-gray-900 dark:text-gray-100">File ID</h4>
@@ -1959,7 +1956,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
                         }}
                         onSave={saveFileIdEdits}
                         onCancel={() => setIsEditingFileId(false)}
-                        editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-gray-200/80 dark:hover:bg-gray-700/80 active:scale-95 transition-transform"
+                        editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-base-200/70 active:scale-95 transition-transform"
                         editIconClassName="w-4 h-4 text-gray-500 dark:text-gray-400"
                       />
                     )}
@@ -1980,7 +1977,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
                           <p className="text-sm font-bold text-gray-900 break-all leading-snug dark:text-gray-100">{fileId}</p>
                           <button
                             type="button"
-                            className="btn btn-ghost btn-xs rounded-md self-start gap-1 border border-gray-400/80 bg-gray-300/50 text-gray-800 hover:bg-gray-300 dark:border-gray-500 dark:bg-gray-700/50 dark:text-gray-100 dark:hover:bg-gray-600"
+                            className="btn btn-ghost btn-xs rounded-md self-start gap-1 border border-base-300 bg-base-200/60 text-base-content/80 hover:bg-base-200"
                             onClick={async () => {
                               try {
                                 await navigator.clipboard.writeText(fileId);
@@ -2030,7 +2027,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
         {/* Row 2: Special Notes and General Notes */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           {/* Special Notes */}
-          <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm hover:shadow-md transition-all duration-200">
+          <div className="p-0">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-base font-semibold text-gray-900">Special Notes</h4>
                 {useMobileEditModal && isEditingSpecialNotes ? (
@@ -2044,7 +2041,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
                     }}
                     onSave={saveSpecialNotesEdits}
                     onCancel={() => setIsEditingSpecialNotes(false)}
-                    editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-gray-100 active:scale-95 transition-transform"
+                    editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-base-200/70 active:scale-95 transition-transform"
                     editIconClassName="w-4 h-4 text-gray-400"
                   />
                 )}
@@ -2108,7 +2105,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
           </div>
 
           {/* General Notes */}
-          <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm hover:shadow-md transition-all duration-200">
+          <div className="p-0">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-base font-semibold text-gray-900">General Notes</h4>
                 {useMobileEditModal && isEditingGeneralNotes ? (
@@ -2122,7 +2119,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
                     }}
                     onSave={saveGeneralNotesEdits}
                     onCancel={() => setIsEditingGeneralNotes(false)}
-                    editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-gray-100 active:scale-95 transition-transform"
+                    editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-base-200/70 active:scale-95 transition-transform"
                     editIconClassName="w-4 h-4 text-gray-400"
                   />
                 )}
@@ -2334,7 +2331,6 @@ const InfoTab: React.FC<ClientTabProps> = ({
                   editIconClassName="w-5 h-5 text-black"
                 />
               </div>
-              <div className="border-b border-gray-200 mt-2"></div>
             </div>
             <div className="p-6">
               {isEditingAnchor ? (

@@ -2,6 +2,8 @@ import React, { useMemo, useRef, useState } from 'react';
 import {
   ArrowPathIcon,
   ArrowUpTrayIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
   EyeIcon,
   PlusIcon,
   LockClosedIcon,
@@ -371,6 +373,7 @@ export function SubEffortsLogModal({
   onRefresh?: () => void;
 }) {
   const [selectedId, setSelectedId] = useState<string | number | null>(initialSelectedRowId ?? null);
+  const [mobileStep, setMobileStep] = useState<'list' | 'details'>('list');
   const [isUploading, setIsUploading] = useState(false);
   const [signedUrls, setSignedUrls] = useState<Map<string, string>>(() => new Map());
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -394,6 +397,7 @@ export function SubEffortsLogModal({
   // Keep selection in sync when opened with a specific row
   React.useEffect(() => {
     if (!open) return;
+    setMobileStep('list');
     if (initialSelectedRowId != null) setSelectedId(initialSelectedRowId);
     else if (rows?.[0]?.id != null) setSelectedId(rows[0].id);
   }, [open, initialSelectedRowId, rows]);
@@ -658,11 +662,24 @@ export function SubEffortsLogModal({
     <div className="fixed inset-0 z-50">
       <div className="absolute inset-0 bg-black/30" onClick={onClose} />
       <div className="absolute inset-0 bg-base-100 p-0 overflow-hidden rounded-none">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-base-200">
-          <div className="min-w-0">
-            <div className="text-sm font-semibold">Sub efforts</div>
-            <div className="text-xs opacity-70 truncate">
-              {rows?.length ? `${rows.length} row${rows.length === 1 ? '' : 's'}` : 'No rows'}
+        <div className="flex items-center justify-between px-4 py-4 border-b border-base-200">
+          <div className="min-w-0 flex items-center gap-3">
+            {mobileStep === 'details' ? (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm md:hidden"
+                onClick={() => setMobileStep('list')}
+                aria-label="Back to list"
+                title="Back"
+              >
+                <ChevronLeftIcon className="w-5 h-5" />
+              </button>
+            ) : null}
+            <div className="min-w-0">
+              <div className="text-base font-semibold">Sub efforts</div>
+              <div className="text-xs opacity-70 truncate">
+                {rows?.length ? `${rows.length} row${rows.length === 1 ? '' : 's'}` : 'No rows'}
+              </div>
             </div>
           </div>
           <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>
@@ -671,10 +688,15 @@ export function SubEffortsLogModal({
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] lg:grid-cols-[300px_1fr] h-[calc(100vh-65px)]">
-          <div className="border-b md:border-b-0 md:border-r border-base-200 overflow-auto">
-            <div className="p-3">
+          <div
+            className={[
+              'border-b md:border-b-0 md:border-r border-base-200 overflow-auto',
+              mobileStep === 'details' ? 'hidden md:block' : 'block',
+            ].join(' ')}
+          >
+            <div className="p-4">
               {rows?.length ? (
-                <div className="menu bg-base-100 rounded-box">
+                <div className="flex flex-col gap-2">
                   {rows.map((r: any) => {
                     const name = r?.sub_efforts?.name ?? '—';
                     const who = r?.tenants_employee?.display_name ?? r?.created_by ?? '—';
@@ -684,14 +706,22 @@ export function SubEffortsLogModal({
                       <button
                         key={r?.id ?? `${name}-${when}`}
                         type="button"
-                        className={`text-left px-3 py-2 rounded-xl hover:bg-base-200 ${
+                        className={`w-full text-left px-4 py-3 rounded-2xl border border-base-200/80 hover:bg-base-200/60 hover:border-base-300 ${
                           isSelected ? 'bg-base-200' : ''
                         }`}
-                        onClick={() => setSelectedId(r?.id ?? null)}
+                        onClick={() => {
+                          setSelectedId(r?.id ?? null);
+                          setMobileStep('details');
+                        }}
                       >
-                        <div className="text-sm font-semibold truncate">{name}</div>
-                        <div className="text-xs opacity-70 truncate">
-                          by <span className="font-medium">{String(who)}</span> · {when}
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[15px] font-semibold truncate leading-snug">{name}</div>
+                            <div className="mt-1 text-[13px] opacity-70 truncate">
+                              by <span className="font-medium">{String(who)}</span> · {when}
+                            </div>
+                          </div>
+                          <ChevronRightIcon className="h-5 w-5 opacity-50 md:hidden" aria-hidden />
                         </div>
                       </button>
                     );
@@ -703,7 +733,12 @@ export function SubEffortsLogModal({
             </div>
           </div>
 
-          <div className="overflow-auto">
+          <div
+            className={[
+              'overflow-auto',
+              mobileStep === 'details' ? 'block' : 'hidden md:block',
+            ].join(' ')}
+          >
             <div className="p-5">
               {selectedRow ? (
                 <div className="space-y-4">
@@ -1009,19 +1044,7 @@ export function SubEffortsLogModal({
           </div>
         </div>
 
-        {/* Fixed Updated-by chip (bottom-right) */}
-        {selectedRow ? (
-          <div className="pointer-events-none absolute bottom-4 right-4 z-[50]">
-            <div className="pointer-events-auto rounded-full border border-base-200 bg-base-100/95 backdrop-blur px-3 py-2 shadow-sm">
-              <EmployeeChip
-                label="Updated"
-                name={String(selectedRow?.updated_by ?? '—')}
-                employee={selectedRow?.tenants_employee}
-                timestamp={selectedRow?.updated_at}
-              />
-            </div>
-          </div>
-        ) : null}
+        {/* Removed: floating expand/summary side control to declutter mobile modal */}
       </div>
 
       {isNotesModalOpen ? (

@@ -38,6 +38,7 @@ import FlagTypeFlagButton from '../FlagTypeFlagButton';
 import DocumentModal from '../DocumentModal';
 import ExpertNotesModal from '../ExpertNotesModal';
 import { toast } from 'react-hot-toast';
+import { buildCaseDocumentStoragePath, CASE_DOCUMENTS_STORAGE_BUCKET } from '../../lib/caseDocumentsStorage';
 
 interface UploadedFile {
   name: string;
@@ -66,11 +67,30 @@ interface EligibilityStatus {
   timestamp: string;
 }
 
+type OneDriveFileItem = {
+  id: string;
+  name: string;
+  webUrl?: string;
+  downloadUrl?: string;
+  lastModifiedDateTime?: string;
+  size?: number;
+  file?: { mimeType?: string };
+};
+
 // Helper to detect Hebrew (RTL) vs English (LTR) for text direction
 const getTextDirection = (text: string): 'rtl' | 'ltr' => {
   if (!text || !text.trim()) return 'ltr';
   const hebrewRegex = /[\u0590-\u05FF]/;
   return hebrewRegex.test(text) ? 'rtl' : 'ltr';
+};
+
+const formatBytes = (bytes?: number): string => {
+  const b = typeof bytes === 'number' && Number.isFinite(bytes) ? bytes : 0;
+  if (b <= 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(b) / Math.log(k));
+  return `${parseFloat((b / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
 };
 
 // Safe date formatter - returns empty string for invalid dates to avoid "Invalid Date"
@@ -321,7 +341,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   // Function to fetch docs_url for legacy leads
-  const fetchDocsUrl = async () => {
+  const fetchDocsUrl = async (): Promise<string | null> => {
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
 
     if (isLegacyLead) {
@@ -334,16 +354,18 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .single();
 
         if (error) {
-          return;
+          return null;
         }
 
         if (data && data.docs_url) {
           setDocsUrl(data.docs_url);
+          return String(data.docs_url);
         }
       } catch (error) {
         // Silent error handling
       }
     }
+    return null;
   };
 
   // Function to fetch the assigned expert (legacy + new leads)
@@ -666,7 +688,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   // AI Summary state - MUST be declared before useEffect hooks that use them
   const [showAISummary, setShowAISummary] = useState(false);
-  const [isSummaryCollapsed, setIsSummaryCollapsed] = useState(true);
+  const [isSummaryCollapsed, setIsSummaryCollapsed] = useState(false);
   const [aiSummary, setAiSummary] = useState<string>('');
   const [savedAiSummary, setSavedAiSummary] = useState<string>('');
   const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
@@ -711,6 +733,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const generateAISummary = async () => {
     setIsGeneratingSummary(true);
     setAiSummary('');
+    let combinedText = '';
 
     try {
       // Debug: Log individual field data
@@ -738,7 +761,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       });
 
       // Combine all the summary fields
-      const combinedText = `
+      combinedText = `
 Special Notes:
 ${summaryData.specialNotes || 'No special notes'}
 
@@ -1274,7 +1297,15 @@ ${combinedText}`;
   // Refresh summary data when client updates
   useEffect(() => {
     fetchSummaryData();
-  }, [client.special_notes, client.general_notes, client.facts, client.manager_notes, client.notes, client.description, client.management_notes]);
+  }, [
+    (client as any).special_notes,
+    (client as any).general_notes,
+    (client as any).facts,
+    (client as any).manager_notes,
+    (client as any).notes,
+    (client as any).description,
+    (client as any).management_notes,
+  ]);
 
   // Load saved AI summary when client.ai_summary changes
   useEffect(() => {
@@ -1289,7 +1320,7 @@ ${combinedText}`;
         setUseSavedSummary(true);
       }
     }
-  }, [client.ai_summary, showAISummary, aiSummary]);
+  }, [(client as any).ai_summary, showAISummary, aiSummary]);
 
   // Expert Notes
   const [expertNotes, setExpertNotes] = useState<Note[]>(client.expert_notes || []);
@@ -1312,6 +1343,138 @@ ${combinedText}`;
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const [documentCount, setDocumentCount] = useState<number>(0);
   const isFetchingCountRef = useRef(false); // Prevent duplicate fetches
+
+  // Get docs_url for legacy leads (used for OneDrive folder resolution)
+  const [docsUrl, setDocsUrl] = useState<string>('');
+  const hasDocsUrl = !!docsUrl;
+
+  // OneDrive legacy documents drawer (read-only)
+  const [isOneDriveDrawerOpen, setIsOneDriveDrawerOpen] = useState(false);
+  const [oneDriveFiles, setOneDriveFiles] = useState<OneDriveFileItem[]>([]);
+  const [isLoadingOneDriveFiles, setIsLoadingOneDriveFiles] = useState(false);
+  const [oneDriveFilesError, setOneDriveFilesError] = useState<string | null>(null);
+  const [oneDriveQuery, setOneDriveQuery] = useState('');
+  const [oneDriveDocumentCount, setOneDriveDocumentCount] = useState<number>(0);
+
+  // Keep OneDrive count stable across tab switches (component remounts).
+  useEffect(() => {
+    if (!client?.lead_number) return;
+    const key = `onedrive_doc_count:${client.lead_number}`;
+    const cached = sessionStorage.getItem(key);
+    if (cached != null) {
+      const parsed = Number(cached);
+      if (Number.isFinite(parsed)) setOneDriveDocumentCount(parsed);
+    }
+  }, [client?.lead_number]);
+
+  // Case-documents "Expert" classification id (for uploads from this tab)
+  const [expertCaseDocClassificationId, setExpertCaseDocClassificationId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void supabase
+      .from('case_document_classifications')
+      .select('id')
+      .eq('slug', 'expert')
+      .eq('is_active', true)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          console.warn('case_document_classifications lookup (expert):', error.message);
+          setExpertCaseDocClassificationId(null);
+          return;
+        }
+        setExpertCaseDocClassificationId(data?.id ?? null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const fetchOneDriveFiles = useCallback(async (folderUrlHint?: string) => {
+    if (!client?.lead_number) return;
+    setIsLoadingOneDriveFiles(true);
+    setOneDriveFilesError(null);
+    try {
+      const folderUrl = String(folderUrlHint || (client as any).onedrive_folder_link || '').trim();
+      const { data, error } = await supabase.functions.invoke('list-onedrive-files', {
+        body: { leadNumber: client.lead_number, folderUrl: folderUrl || undefined },
+      });
+
+      if (error) throw new Error(error.message);
+      if (data && data.success) {
+        const files = (data.files || []) as OneDriveFileItem[];
+        setOneDriveFiles(files);
+        setOneDriveDocumentCount(files.length);
+        try {
+          sessionStorage.setItem(`onedrive_doc_count:${client.lead_number}`, String(files.length));
+        } catch {
+          // ignore
+        }
+      } else {
+        if (data?.retryable) {
+          // quick retry for transient OneDrive/Graph issues
+          await new Promise((r) => setTimeout(r, 900));
+          const { data: data2, error: error2 } = await supabase.functions.invoke('list-onedrive-files', {
+            body: { leadNumber: client.lead_number, folderUrl: folderUrl || undefined },
+          });
+          if (!error2 && data2 && data2.success) {
+            const files2 = (data2.files || []) as OneDriveFileItem[];
+            setOneDriveFiles(files2);
+            setOneDriveDocumentCount(files2.length);
+            try {
+              sessionStorage.setItem(`onedrive_doc_count:${client.lead_number}`, String(files2.length));
+            } catch {
+              // ignore
+            }
+            return;
+          }
+        }
+        if (data?.error) setOneDriveFilesError(String(data.error));
+      }
+    } catch (e: any) {
+      const msg = String(e?.message || 'Failed to load OneDrive documents');
+      setOneDriveFilesError(msg);
+    } finally {
+      setIsLoadingOneDriveFiles(false);
+    }
+  }, [client?.lead_number, (client as any).onedrive_folder_link]);
+
+  const openOneDriveDrawer = useCallback(async () => {
+    setIsOneDriveDrawerOpen(true);
+
+    const urlNow = (docsUrl || (client as any).onedrive_folder_link || '').trim();
+    const fetched = !urlNow ? await fetchDocsUrl() : null;
+    const finalUrl = String(fetched || urlNow || (client as any).onedrive_folder_link || '').trim();
+    void fetchOneDriveFiles(finalUrl || undefined);
+  }, [docsUrl, client, fetchOneDriveFiles]);
+
+  const fetchOneDriveDocumentCount = useCallback(async (folderUrlHint?: string) => {
+    if (!client?.lead_number) return;
+    try {
+      const folderUrl = String(folderUrlHint || (client as any).onedrive_folder_link || '').trim();
+      const { data, error } = await supabase.functions.invoke('list-onedrive-files', {
+        body: { leadNumber: client.lead_number, folderUrl: folderUrl || undefined },
+      });
+      if (error) return; // keep previous count on transient errors
+      if (data && data.success) {
+        const files = (data.files || []) as OneDriveFileItem[];
+        setOneDriveDocumentCount(files.length);
+        try {
+          sessionStorage.setItem(`onedrive_doc_count:${client.lead_number}`, String(files.length));
+        } catch {
+          // ignore
+        }
+      } // else keep previous count (avoid flicker)
+    } catch {
+      // keep previous count (avoid flicker)
+    }
+  }, [client?.lead_number, (client as any).onedrive_folder_link]);
+
+  useEffect(() => {
+    void fetchOneDriveDocumentCount();
+  }, [fetchOneDriveDocumentCount]);
 
   // Function to fetch document count - using useCallback to memoize
   const fetchDocumentCount = useCallback(async () => {
@@ -1381,10 +1544,6 @@ ${combinedText}`;
 
   // Placeholder for document count and link
   const documentLink = client.onedrive_folder_link || '#';
-
-  // Get docs_url for legacy leads
-  const [docsUrl, setDocsUrl] = useState<string>('');
-  const hasDocsUrl = !!docsUrl;
 
   // Check if this is a legacy lead (used elsewhere in the component)
   const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
@@ -2195,6 +2354,8 @@ ${combinedText}`;
     if (files) {
       await uploadFiles(Array.from(files));
     }
+    // Reset input so the same file can be selected again (matches DocumentModal)
+    e.target.value = '';
   };
 
   // The main upload function
@@ -2259,57 +2420,42 @@ ${combinedText}`;
       startProgressSimulation(file.name, file.size);
 
       try {
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('leadNumber', client.lead_number);
+        if (!expertCaseDocClassificationId) {
+          throw new Error('Expert documents category is missing. Please create the "Expert" case documents category first.');
+        }
 
-        const { data, error } = await supabase.functions.invoke('upload-to-onedrive', {
-          body: formData,
-        });
+        const storagePath = buildCaseDocumentStoragePath(client.lead_number, null, file.name);
+        const { error: storageErr } = await supabase.storage
+          .from(CASE_DOCUMENTS_STORAGE_BUCKET)
+          .upload(storagePath, file, {
+            contentType: file.type?.trim() || undefined,
+            upsert: false,
+          });
 
         // Stop progress simulation
         stopProgressSimulation(file.name);
 
-        if (error) throw new Error(error.message);
-        if (!data || !data.success) {
-          throw new Error(data.error || 'Upload function returned an error.');
-        }
+        if (storageErr) throw storageErr;
 
-        const folderUrl = data.folderUrl;
-        if (folderUrl && folderUrl !== client.onedrive_folder_link) {
-          // Get current user for tracking who uploaded documents
-          const currentUser = await getCurrentUserName();
+        const uploadedBy = await getCurrentUserName();
+        const mimeType = file.type?.trim() || 'application/octet-stream';
 
-          // Check if this is a legacy lead
-          const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+        const { error: insErr } = await supabase.from('lead_case_documents').insert({
+          lead_number: client.lead_number,
+          onedrive_subfolder: null,
+          onedrive_item_id: null,
+          storage_path: storagePath,
+          file_name: file.name,
+          file_size: file.size,
+          mime_type: mimeType,
+          classification_id: expertCaseDocClassificationId,
+          uploaded_by: uploadedBy,
+          ai_summary_status: 'pending',
+        });
 
-          if (isLegacyLead) {
-            // For legacy leads, save to leads_lead table using the actual integer ID
-            const legacyId = client.id.toString().replace('legacy_', '');
-            await supabase
-              .from('leads_lead')
-              .update({
-                onedrive_folder_link: folderUrl,
-                // Update new AI notification columns
-                documents_uploaded_date: new Date().toISOString(),
-                documents_uploaded_by: currentUser
-              })
-              .eq('id', legacyId);
-          } else {
-            // For new leads, save to leads table
-            await supabase
-              .from('leads')
-              .update({
-                onedrive_folder_link: folderUrl,
-                // Update new AI notification columns
-                documents_uploaded_date: new Date().toISOString(),
-                documents_uploaded_by: currentUser
-              })
-              .eq('id', client.id);
-          }
-          if (onClientUpdate) {
-            await onClientUpdate();
-          }
+        if (insErr) {
+          await supabase.storage.from(CASE_DOCUMENTS_STORAGE_BUCKET).remove([storagePath]);
+          throw new Error(insErr.message);
         }
 
         // Update file status to success with smooth transition to 100%
@@ -2421,96 +2567,81 @@ ${combinedText}`;
 
 
   return (
-    <div className="p-2 sm:p-4 md:p-6">
+    <div className="p-3 sm:p-4 md:p-6">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-8">
-        <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
-          <AcademicCapIcon className="w-5 h-5 text-gray-600" />
+      <div className="flex items-start justify-between gap-4 mb-6">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-base-200 flex items-center justify-center">
+            <AcademicCapIcon className="w-5 h-5 text-base-content/70" />
+          </div>
+          <div>
+            <h2 className="text-xl font-semibold text-base-content">Expert</h2>
+            <p className="text-sm text-base-content/60">Case evaluation, documents, and expert opinions</p>
+          </div>
         </div>
-        <div>
-          <h2 className="text-xl font-semibold text-gray-900">Expert Assignment</h2>
-          <p className="text-sm text-gray-500">Case evaluation and expert opinions</p>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm rounded-full"
+            onClick={() => setIsSummaryCollapsed((v) => !v)}
+            title={isSummaryCollapsed ? 'Show lead summary' : 'Hide lead summary'}
+          >
+            <DocumentTextIcon className="w-4 h-4" />
+            <span className="hidden sm:inline">{isSummaryCollapsed ? 'Show summary' : 'Hide summary'}</span>
+          </button>
         </div>
       </div>
 
-      {/* Main Content Grid - Left side with all boxes, Right side with summary (when expanded) */}
-      <div className="relative">
-      <div className={`grid gap-8 ${isSummaryCollapsed ? 'grid-cols-1' : 'grid-cols-1 lg:grid-cols-3'}`}>
-        {/* Left Column - All existing boxes (full width when summary collapsed) */}
-        <div className={`space-y-12 sm:space-y-16 ${!isSummaryCollapsed ? 'lg:col-span-2' : ''}`}>
+      {/* Main Content */}
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6 items-start">
+        {/* Left column */}
+        <div className="space-y-6">
 
           {/* Expert Information */}
-          <div className="mb-14 w-full max-w-2xl mx-auto flex flex-col items-center text-center">
-            <h4 className="text-base font-semibold text-gray-900 mb-4">Expert Information</h4>
-            <div className="flex flex-col items-center gap-6 w-full">
-                <div className="space-y-6 w-full">
-                  <div className="flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-3">
-                    <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Assigned Expert</label>
-                    <span className="text-2xl font-bold text-gray-900">{expertName}</span>
+          <div className="rounded-2xl border border-base-200 bg-base-100 p-5 shadow-sm">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold uppercase tracking-wide text-base-content/60">Overview</div>
+                <div className="mt-2 flex flex-wrap items-end gap-x-6 gap-y-3">
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-base-content/50">Assigned expert</div>
+                    <div className="text-lg font-semibold text-base-content truncate">{expertName}</div>
                   </div>
-                  <div className="space-y-2 flex flex-col items-center">
-                    <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Eligibility Status</label>
-                    <span className={`inline-flex items-center px-3 py-1 rounded-full text-base font-medium ${!eligibilityValueStr ? 'bg-gray-100 text-gray-500' :
-                      eligibilityValueStr === 'Not checked' ? 'bg-gray-100 text-gray-800' :
-                      eligibilityValueStr.includes('feasible_no_check') ? 'bg-green-100 text-green-800' :
-                        eligibilityValueStr.includes('feasible_check') ? 'bg-yellow-100 text-yellow-800' :
-                          eligibilityValueStr.includes('not_feasible') ? 'bg-red-100 text-red-800' :
-                            'bg-gray-100 text-gray-800'
-                      }`}>
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-base-content/50">Eligibility</div>
+                    <span
+                      className={`mt-1 inline-flex items-center gap-2 rounded-full px-3 py-1 text-sm font-semibold ${
+                        !eligibilityValueStr
+                          ? 'bg-base-200 text-base-content/60'
+                          : eligibilityValueStr.includes('feasible_no_check')
+                            ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-900/25 dark:text-emerald-100'
+                            : eligibilityValueStr.includes('feasible_check')
+                              ? 'bg-amber-50 text-amber-800 dark:bg-amber-900/25 dark:text-amber-100'
+                              : eligibilityValueStr.includes('not_feasible')
+                                ? 'bg-rose-50 text-rose-800 dark:bg-rose-900/25 dark:text-rose-100'
+                                : 'bg-base-200 text-base-content/70'
+                      }`}
+                    >
                       {selectedEligibilityLabel}
-                      {eligibilityValueStr && selectedSection && ['feasible_no_check', 'feasible_check'].includes(eligibilityValueStr) && (
-                        <span className="ml-2 px-2 py-0.5 rounded text-white font-semibold text-xs bg-[#3b28c7]">
+                      {eligibilityValueStr && selectedSection && ['feasible_no_check', 'feasible_check'].includes(eligibilityValueStr) ? (
+                        <span className="rounded-full bg-[#3b28c7] px-2 py-0.5 text-[11px] font-bold text-white">
                           {selectedSectionLabel}
                         </span>
-                      )}
+                      ) : null}
                     </span>
                   </div>
                 </div>
-                <div className="flex flex-col items-stretch gap-2 w-full max-w-xs">
-                  {/* Documents Link button for legacy leads */}
-                  {hasDocsUrl && (
-                    <button
-                      onClick={() => window.open(docsUrl, '_blank')}
-                      className="btn btn-outline bg-white shadow-sm w-full"
-                      style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.backgroundColor = '#f3f0ff';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.backgroundColor = 'white';
-                      }}
-                      title="Open Documents Link"
-                    >
-                      <PaperClipIcon className="w-5 h-5" />
-                      Documents Link
-                    </button>
-                  )}
-
-                  <button
-                    onClick={() => setIsDocumentModalOpen(true)}
-                    className="btn btn-outline bg-white shadow-sm w-full"
-                    style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.backgroundColor = '#f3f0ff';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.backgroundColor = 'white';
-                    }}
-                  >
-                    <FolderIcon className="w-5 h-5" />
-                    Documents
-                    <span className="badge badge-primary text-white ml-2" style={{ backgroundColor: '#3b28c7', minWidth: '24px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
-                      {documentCount}
-                    </span>
-                  </button>
-                </div>
               </div>
+            </div>
           </div>
 
-          {/* Section Eligibility + Citizenship + Document Upload (centered, single column; upload below citizenship) */}
-          <div className="w-full max-w-2xl mx-auto flex flex-col items-stretch text-center">
-            <div className="space-y-8">
-              <h4 className="text-base font-semibold text-gray-900">Section Eligibility</h4>
+          {/* Section Eligibility + Citizenship + Document Upload */}
+          <div className="rounded-2xl border border-base-200 bg-base-100 p-5 shadow-sm">
+            <div className="space-y-6">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-base-content/60">Eligibility</div>
+                <div className="mt-1 text-base font-semibold text-base-content">Section eligibility</div>
+              </div>
 
               {/* Eligibility Dropdown */}
               <div className="space-y-2 text-left">
@@ -2568,67 +2699,47 @@ ${combinedText}`;
 
               {/* Section Eligibility Last Edited */}
               {sectionEligibilityLastEditedBy && sectionEligibilityLastEditedAt && (
-                <div className="text-sm text-gray-400 flex flex-col sm:flex-row sm:justify-between gap-1 border-t border-gray-100 pt-3 text-left">
+                <div className="text-xs text-base-content/55 flex flex-col sm:flex-row sm:justify-between gap-1 border-t border-base-200 pt-3 text-left">
                   <span>Last edited by {sectionEligibilityLastEditedBy}</span>
                   <span>{new Date(sectionEligibilityLastEditedAt).toLocaleString()}</span>
                 </div>
               )}
 
               {/* Document Upload — below citizenship selector */}
-              <div className="space-y-5 pt-6 border-t border-gray-100">
-                <h4 className="text-base font-semibold text-gray-900">Document Upload</h4>
+              <div className="space-y-5 pt-6 border-t border-base-200">
+                <div className="text-base font-semibold text-base-content">Document upload</div>
                 {/* Upload Area */}
                 <div
-                  className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors duration-200 ${isUploading
-                    ? 'bg-gray-50 border-gray-300'
-                    : 'bg-gray-50 border-gray-300'
-                    }`}
-                  style={{
-                    borderColor: isUploading ? '#3b28c7' : '',
-                    backgroundColor: isUploading ? '#f3f0ff' : ''
+                  className={`rounded-lg border-2 border-dashed p-6 text-center transition-colors duration-200 sm:p-8 ${
+                    isUploading
+                      ? 'border-primary bg-gray-50'
+                      : 'border-gray-300 bg-gray-50 hover:border-primary hover:bg-purple-50'
+                  }`}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
                   }}
-                  onMouseEnter={(e) => {
-                    if (!isUploading) {
-                      e.currentTarget.style.borderColor = '#3b28c7';
-                      e.currentTarget.style.backgroundColor = '#f3f0ff';
-                    }
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
                   }}
-                  onMouseLeave={(e) => {
-                    if (!isUploading) {
-                      e.currentTarget.style.borderColor = '#d1d5db';
-                      e.currentTarget.style.backgroundColor = '#f9fafb';
-                    }
-                  }}
-                  onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                  onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
                   onDrop={handleFileDrop}
                 >
-                  <DocumentArrowUpIcon className="w-12 h-12 mx-auto text-gray-400 mb-4" />
-                  <div className="text-base text-gray-600 mb-4">
-                    {isUploading ? 'Processing files...' : 'Drag and drop files here, or click to select files'}
-                  </div>
                   <input
                     type="file"
                     className="hidden"
-                    id="file-upload"
+                    id="file-upload-expert"
                     multiple
                     onChange={handleFileInput}
                     disabled={isUploading}
                   />
+                  <DocumentArrowUpIcon className="mx-auto mb-4 h-12 w-12 text-gray-400" />
+                  <div className="mb-4 text-base text-gray-600">
+                    {isUploading ? 'Processing files...' : 'Drag and drop files here, or click to select files'}
+                  </div>
                   <label
-                    htmlFor="file-upload"
-                    className={`btn btn-outline bg-white ${isUploading ? 'btn-disabled' : ''}`}
-                    style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-                    onMouseEnter={(e) => {
-                      if (!isUploading) {
-                        e.currentTarget.style.backgroundColor = '#f3f0ff';
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!isUploading) {
-                        e.currentTarget.style.backgroundColor = 'white';
-                      }
-                    }}
+                    htmlFor="file-upload-expert"
+                    className={`btn btn-outline btn-primary ${isUploading ? 'btn-disabled' : ''}`}
                   >
                     <PaperClipIcon className="w-5 h-5" />
                     Choose Files
@@ -2678,11 +2789,11 @@ ${combinedText}`;
             </div>
           </div>
 
-          {/* Expert Opinion — full width like Handler Opinion */}
-          <div className="w-full" id="expert-opinion-section">
+          {/* Expert Opinion */}
+          <div className="rounded-2xl border border-base-200 bg-base-100 p-5 shadow-sm" id="expert-opinion-section">
             <div className="flex items-center justify-between mb-4 gap-2">
               <div className="flex min-w-0 items-center gap-2">
-                <h4 className="text-base font-semibold text-gray-900">Expert Opinion</h4>
+                <h4 className="text-base font-semibold text-base-content">Expert Opinion</h4>
                 <FlagTypeFlagButton
                   flagTypes={flagTypes}
                   isFlagged={leadFieldFlagMeta.has('expert_notes')}
@@ -2751,7 +2862,7 @@ ${combinedText}`;
                 )}
 
                 {/* Expert Notes List */}
-                <div className="space-y-6 overflow-y-auto max-h-[300px]">
+                <div className="space-y-6 overflow-y-auto max-h-[340px]">
                   {expertNotes.length > 0 ? (
                     expertNotes.map((note, index) => (
                       <div
@@ -2824,7 +2935,7 @@ ${combinedText}`;
                       </div>
                     ))
                   ) : (
-                    <div className="text-center py-8 text-gray-500">
+                    <div className="text-center py-8 text-base-content/60">
                       <div className="min-h-[80px]">
                         <p className="text-lg font-medium mb-1">No expert opinion yet</p>
                         <p className="text-base">Expert opinions and assessments will appear here</p>
@@ -2842,10 +2953,10 @@ ${combinedText}`;
           </div>
 
           {/* Handler Opinion */}
-          <div className="mt-16" id="handler-opinion-section">
+          <div className="rounded-2xl border border-base-200 bg-base-100 p-5 shadow-sm" id="handler-opinion-section">
             <div className="flex items-center justify-between mb-4 gap-2">
               <div className="flex min-w-0 items-center gap-2">
-                <h4 className="text-base font-semibold text-gray-900">Handler Opinion</h4>
+                <h4 className="text-base font-semibold text-base-content">Handler Opinion</h4>
                 <FlagTypeFlagButton
                   flagTypes={flagTypes}
                   isFlagged={leadFieldFlagMeta.has('handler_notes')}
@@ -2903,7 +3014,7 @@ ${combinedText}`;
                 )}
 
                 {/* Handler Notes List */}
-                <div className="space-y-6 overflow-y-auto max-h-[300px]">
+                <div className="space-y-6 overflow-y-auto max-h-[340px]">
                   {handlerNotes.length > 0 ? (
                     handlerNotes.map((note, index) => (
                       <div
@@ -2935,7 +3046,7 @@ ${combinedText}`;
                       </div>
                     ))
                   ) : (
-                    <div className="text-center py-8 text-gray-500">
+                    <div className="text-center py-8 text-base-content/60">
                       <div className="min-h-[80px]">
                         <p className="text-lg font-medium mb-1">No handler opinion yet</p>
                         <p className="text-base">Case handling notes and updates will appear here</p>
@@ -2953,21 +3064,79 @@ ${combinedText}`;
           </div>
         </div>
 
-        {/* Right Column - Summary Box (only in grid when expanded) */}
-        {!isSummaryCollapsed && (
-        <div className="lg:col-span-1">
-          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden h-full sticky top-6 flex flex-col">
+        {/* Right column */}
+        <div className="space-y-6">
+          {/* Documents */}
+          <div className="rounded-2xl border border-base-200 bg-base-100 p-5 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-xs font-semibold uppercase tracking-wide text-base-content/60">Documents</div>
+                <div className="mt-1 text-base font-semibold text-base-content truncate">
+                  Client files
+                </div>
+              </div>
+              <div className="shrink-0 rounded-full bg-base-200 px-2.5 py-1 text-xs font-bold tabular-nums text-base-content/70">
+                {documentCount}
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-col gap-2">
+              {hasDocsUrl ? (
+                <button
+                  type="button"
+                  onClick={() => window.open(docsUrl, '_blank')}
+                  className="btn btn-outline btn-ghost justify-between rounded-xl"
+                  title="Open legacy documents link"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <PaperClipIcon className="w-5 h-5" />
+                    Documents link
+                  </span>
+                  <ArrowPathIcon className="w-4 h-4 opacity-40" />
+                </button>
+              ) : null}
+
+              <button
+                type="button"
+                onClick={() => setIsDocumentModalOpen(true)}
+                className="btn btn-outline btn-ghost justify-between rounded-xl"
+                title="Open case documents"
+              >
+                <span className="inline-flex items-center gap-2">
+                  <FolderIcon className="w-5 h-5" />
+                  Case documents
+                </span>
+                <span className="inline-flex items-center gap-2 text-base-content/60">
+                  <span className="font-bold tabular-nums">{documentCount}</span>
+                  <ChevronRightIcon className="w-4 h-4 opacity-50" />
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void openOneDriveDrawer()}
+                className="btn btn-outline btn-ghost justify-between rounded-xl"
+                title="Browse OneDrive (legacy)"
+              >
+                <span className="inline-flex items-center gap-2">
+                  <PaperClipIcon className="w-5 h-5" />
+                  OneDrive
+                </span>
+                <span className="inline-flex items-center gap-2 text-base-content/60">
+                  <span className="font-bold tabular-nums">{oneDriveDocumentCount}</span>
+                  <ChevronRightIcon className="w-4 h-4 opacity-50" />
+                </span>
+              </button>
+            </div>
+          </div>
+
+          {/* Lead Summary */}
+          {!isSummaryCollapsed ? (
+          <div className="border border-base-200 rounded-2xl shadow-sm overflow-hidden h-full sticky top-6 bg-base-100 flex flex-col">
             <div className="pl-6 pt-2 pb-2 flex-shrink-0">
               <div className="flex items-center justify-between pr-6">
                 <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setIsSummaryCollapsed(true)}
-                    className="btn btn-ghost btn-square btn-sm"
-                    title="Collapse Lead Summary"
-                  >
-                    <ChevronRightIcon className="w-5 h-5 text-gray-600" />
-                  </button>
-                  <h4 className="text-lg font-semibold text-black">Lead Summary</h4>
+                  <h4 className="text-base font-semibold text-base-content">Lead Summary</h4>
                 </div>
                 <div className="flex items-center gap-2">
                   {/* Toggle between AI Summary and Individual Fields */}
@@ -3019,7 +3188,7 @@ ${combinedText}`;
             </div>
             <div className="p-6 flex-1 overflow-y-auto">
               {showAISummary ? (
-                <div className="space-y-4" dir="rtl">
+                <div className="space-y-4">
                   <div className="p-4">
                     <div className="flex items-center justify-between mb-2">
                       <div className="flex items-center gap-2">
@@ -3050,26 +3219,43 @@ ${combinedText}`;
                         </button>
                       )}
                     </div>
-                    <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed" dir="rtl">
+                    <div
+                      className={`text-sm text-gray-800 whitespace-pre-wrap leading-relaxed ${
+                        getTextDirection(aiSummary || savedAiSummary) === 'rtl' ? 'text-right' : 'text-left'
+                      }`}
+                      dir={getTextDirection(aiSummary || savedAiSummary)}
+                    >
                       {aiSummary || (savedAiSummary || 'No AI summary available. Click "Generate" to create one.')}
                     </div>
                     {useSavedSummary && savedAiSummary && (
-                      <div className="mt-3 pt-3 border-t border-purple-200 text-xs text-purple-600" dir="rtl">
+                      <div
+                        className={`mt-3 pt-3 border-t border-purple-200 text-xs text-purple-600 ${
+                          getTextDirection(savedAiSummary) === 'rtl' ? 'text-right' : 'text-left'
+                        }`}
+                        dir={getTextDirection(savedAiSummary)}
+                      >
                         This is a saved summary. Click "Regenerate" to create a new one.
                       </div>
                     )}
                   </div>
                 </div>
               ) : (
-                <div className="space-y-6" dir="rtl">
+                <div className="space-y-6">
                   {/* Special Notes */}
                   <div className="space-y-2">
-                    <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Special Notes</label>
+                    <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide text-left block">Special Notes</label>
                     <div className="p-2 min-h-[80px]">
                       {summaryData.specialNotes ? (
-                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed" dir="rtl">{summaryData.specialNotes}</p>
+                        <p
+                          className={`text-sm text-gray-800 whitespace-pre-wrap leading-relaxed ${
+                            getTextDirection(summaryData.specialNotes) === 'rtl' ? 'text-right' : 'text-left'
+                          }`}
+                          dir={getTextDirection(summaryData.specialNotes)}
+                        >
+                          {summaryData.specialNotes}
+                        </p>
                       ) : (
-                        <p className="text-sm text-gray-400 italic" dir="rtl">No special notes</p>
+                        <p className="text-sm text-gray-400 italic text-left" dir="ltr">No special notes</p>
                       )}
                     </div>
                     <div className="border-b border-gray-200 mt-4"></div>
@@ -3077,12 +3263,19 @@ ${combinedText}`;
 
                   {/* General Notes */}
                   <div className="space-y-2">
-                    <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">General Notes</label>
+                    <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide text-left block">General Notes</label>
                     <div className="p-2 min-h-[80px]">
                       {summaryData.generalNotes ? (
-                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed" dir="rtl">{summaryData.generalNotes}</p>
+                        <p
+                          className={`text-sm text-gray-800 whitespace-pre-wrap leading-relaxed ${
+                            getTextDirection(summaryData.generalNotes) === 'rtl' ? 'text-right' : 'text-left'
+                          }`}
+                          dir={getTextDirection(summaryData.generalNotes)}
+                        >
+                          {summaryData.generalNotes}
+                        </p>
                       ) : (
-                        <p className="text-sm text-gray-400 italic" dir="rtl">No general notes</p>
+                        <p className="text-sm text-gray-400 italic text-left" dir="ltr">No general notes</p>
                       )}
                     </div>
                     <div className="border-b border-gray-200 mt-4"></div>
@@ -3090,12 +3283,19 @@ ${combinedText}`;
 
                   {/* Facts of Case */}
                   <div className="space-y-2">
-                    <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Facts of Case</label>
+                    <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide text-left block">Facts of Case</label>
                     <div className="p-2 min-h-[80px]">
                       {summaryData.facts ? (
-                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed" dir="rtl">{summaryData.facts}</p>
+                        <p
+                          className={`text-sm text-gray-800 whitespace-pre-wrap leading-relaxed ${
+                            getTextDirection(summaryData.facts) === 'rtl' ? 'text-right' : 'text-left'
+                          }`}
+                          dir={getTextDirection(summaryData.facts)}
+                        >
+                          {summaryData.facts}
+                        </p>
                       ) : (
-                        <p className="text-sm text-gray-400 italic" dir="rtl">No facts available</p>
+                        <p className="text-sm text-gray-400 italic text-left" dir="ltr">No facts available</p>
                       )}
                     </div>
                     <div className="border-b border-gray-200 mt-4"></div>
@@ -3103,12 +3303,19 @@ ${combinedText}`;
 
                   {/* Manager Notes */}
                   <div className="space-y-2">
-                    <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Manager Notes</label>
+                    <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide text-left block">Manager Notes</label>
                     <div className="p-2 min-h-[80px]">
                       {summaryData.managerNotes ? (
-                        <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed" dir="rtl">{summaryData.managerNotes}</p>
+                        <p
+                          className={`text-sm text-gray-800 whitespace-pre-wrap leading-relaxed ${
+                            getTextDirection(summaryData.managerNotes) === 'rtl' ? 'text-right' : 'text-left'
+                          }`}
+                          dir={getTextDirection(summaryData.managerNotes)}
+                        >
+                          {summaryData.managerNotes}
+                        </p>
                       ) : (
-                        <p className="text-sm text-gray-400 italic" dir="rtl">No manager notes</p>
+                        <p className="text-sm text-gray-400 italic text-left" dir="ltr">No manager notes</p>
                       )}
                     </div>
                   </div>
@@ -3116,23 +3323,23 @@ ${combinedText}`;
               )}
             </div>
           </div>
+          ) : (
+            <div className="rounded-2xl border border-base-200 bg-base-100 p-5 shadow-sm sticky top-6">
+              <button
+                type="button"
+                className="btn btn-outline btn-ghost w-full rounded-xl justify-between"
+                onClick={() => setIsSummaryCollapsed(false)}
+                title="Show Lead Summary"
+              >
+                <span className="inline-flex items-center gap-2">
+                  <DocumentTextIcon className="w-5 h-5" />
+                  Lead summary
+                </span>
+                <ChevronLeftIcon className="w-4 h-4 opacity-60" />
+              </button>
+            </div>
+          )}
         </div>
-        )}
-
-        {/* Collapsed Summary - Fixed on right edge, centered vertically */}
-        {isSummaryCollapsed && (
-          <div className="fixed right-0 top-1/2 -translate-y-1/2 z-50">
-            <button
-              onClick={() => setIsSummaryCollapsed(false)}
-              className="flex flex-col items-center justify-center gap-2 w-12 py-6 bg-white border border-gray-200 rounded-l-2xl shadow-lg hover:shadow-xl hover:bg-gray-50 transition-all duration-200"
-              title="Expand Lead Summary"
-            >
-              <DocumentTextIcon className="w-6 h-6 text-gray-600" />
-              <ChevronLeftIcon className="w-5 h-5 text-gray-500" />
-            </button>
-          </div>
-        )}
-      </div>
       </div>
 
       {/* Document Modal */}
@@ -3158,6 +3365,133 @@ ${combinedText}`;
         getCurrentUserName={getCurrentUserName}
         onSave={handleSaveExpertNotes}
       />
+
+      {/* OneDrive legacy documents drawer */}
+      {isOneDriveDrawerOpen && (
+        <div className="fixed inset-0 z-[90]">
+          <div
+            className="absolute inset-0 bg-black/30"
+            onClick={() => {
+              setIsOneDriveDrawerOpen(false);
+              setOneDriveQuery('');
+              setOneDriveFilesError(null);
+            }}
+          />
+          <div className="absolute inset-y-0 right-0 w-full max-w-xl bg-base-100 shadow-2xl border-l border-base-200 flex flex-col">
+            <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-base-200">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold truncate">OneDrive documents</div>
+                <div className="text-xs opacity-70 truncate">
+                  Lead {String(client.lead_number || '')}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm btn-circle"
+                onClick={() => {
+                  setIsOneDriveDrawerOpen(false);
+                  setOneDriveQuery('');
+                  setOneDriveFilesError(null);
+                }}
+                aria-label="Close OneDrive drawer"
+                title="Close"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 border-b border-base-200">
+              <div className="flex items-center gap-2">
+                <div className="flex-1">
+                  <label className="input input-bordered flex items-center gap-2">
+                    <MagnifyingGlassIcon className="w-4 h-4 opacity-60" />
+                    <input
+                      type="text"
+                      className="grow"
+                      placeholder="Search documents…"
+                      value={oneDriveQuery}
+                      onChange={(e) => setOneDriveQuery(e.target.value)}
+                    />
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+                  onClick={() => void openOneDriveDrawer()}
+                  disabled={isLoadingOneDriveFiles}
+                  title="Refresh"
+                >
+                  {isLoadingOneDriveFiles ? (
+                    <span className="loading loading-spinner loading-sm" />
+                  ) : (
+                    <ArrowPathIcon className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+              {oneDriveFilesError ? (
+                <div className="mt-3 text-xs text-error">{oneDriveFilesError}</div>
+              ) : null}
+            </div>
+
+            <div className="flex-1 overflow-auto">
+              {isLoadingOneDriveFiles ? (
+                <div className="p-6 text-sm opacity-70 flex items-center gap-2">
+                  <span className="loading loading-spinner loading-sm" />
+                  Loading OneDrive documents…
+                </div>
+              ) : (() => {
+                const q = oneDriveQuery.trim().toLowerCase();
+                const filtered = (oneDriveFiles || []).filter((f) =>
+                  !q ? true : String(f?.name || '').toLowerCase().includes(q),
+                );
+                if (!filtered.length) {
+                  if (oneDriveFilesError) {
+                    return (
+                      <div className="p-6 text-sm opacity-70">
+                        Failed to load OneDrive documents. Please try refresh.
+                      </div>
+                    );
+                  }
+                  return <div className="p-6 text-sm opacity-70">No OneDrive documents found.</div>;
+                }
+                return (
+                  <div className="divide-y divide-base-200">
+                    {filtered.map((f) => {
+                      const href = f.downloadUrl || f.webUrl || '';
+                      return (
+                        <div key={f.id || f.name} className="p-4 flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold truncate">{f.name}</div>
+                            <div className="mt-1 text-xs opacity-70 flex flex-wrap gap-x-3 gap-y-1">
+                              <span>{formatBytes(f.size)}</span>
+                              {f.lastModifiedDateTime ? (
+                                <span>{safeFormatDate(f.lastModifiedDateTime) || String(f.lastModifiedDateTime)}</span>
+                              ) : null}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <a
+                              className="btn btn-sm btn-outline"
+                              style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+                              href={href}
+                              target="_blank"
+                              rel="noreferrer"
+                              title="Open"
+                            >
+                              Open
+                            </a>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

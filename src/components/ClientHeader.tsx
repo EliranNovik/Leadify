@@ -490,6 +490,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [flagTypes, setFlagTypes] = useState<FlagTypeRow[]>([]);
     const [tagsModalOpen, setTagsModalOpen] = useState(false);
     const [headerDocumentsModalOpen, setHeaderDocumentsModalOpen] = useState(false);
+    const [headerSupabaseDocumentsCount, setHeaderSupabaseDocumentsCount] = useState<number>(0);
     const [leadTags, setLeadTags] = useState<string[]>([]);
     /** RMQ chat messages flagged to this lead (all users). */
     const [rmqMessageFlagCount, setRmqMessageFlagCount] = useState(0);
@@ -2115,11 +2116,19 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     <button
                         type="button"
                         onClick={openHeaderDocumentsModal}
-                        className="btn btn-ghost btn-sm h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
+                        className="btn btn-ghost btn-sm relative h-auto min-h-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
                         title="Case documents on OneDrive"
                         aria-label="Case documents"
                     >
                         <DocumentArrowUpIcon className="h-6 w-6" />
+                        {headerSupabaseDocumentsCount > 0 && (
+                            <span
+                                className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-[11px] font-bold text-white"
+                                style={{ backgroundColor: '#3a3a3a' }}
+                            >
+                                {headerSupabaseDocumentsCount > 99 ? '99+' : headerSupabaseDocumentsCount}
+                            </span>
+                        )}
                     </button>
                 ) : null}
                 {!hideHistoryAndTimeline && (
@@ -2256,11 +2265,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     navigate(`/clients/${encodeURIComponent(identifier)}/master`);
                                                 }
                                             }}
-                                            className="btn btn-square btn-sm relative shrink-0 border-red-300 bg-red-100 text-red-700 hover:bg-red-200"
+                                            className="btn btn-square btn-sm btn-ghost relative shrink-0 border-0 text-gray-700 hover:bg-base-200 hover:text-gray-900"
                                             title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
                                         >
-                                            <Squares2X2Icon className="h-5 w-5" />
-                                            <span className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-600 px-1 text-xs font-bold text-white">
+                                            <Squares2X2Icon className="h-6 w-6" />
+                                            <span
+                                                className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
+                                                style={{ backgroundColor: '#3a3a3a' }}
+                                            >
                                                 {(subLeadsCount || 0) + 1}
                                             </span>
                                         </button>
@@ -2324,7 +2336,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {displayPhone ? (
                                             <button
                                                 type="button"
-                                                className="btn btn-outline btn-square min-h-[3rem] min-w-[3rem] rounded-full border-2 border-base-300 p-0"
+                                                className="btn btn-square min-h-[3rem] min-w-[3rem] rounded-full border-0 bg-gray-100 p-0 text-gray-700 hover:bg-gray-200 dark:bg-gray-700/40 dark:text-gray-100 dark:hover:bg-gray-700/60"
                                                 title="Call"
                                                 aria-label="Call"
                                                 onClick={handleCallPrimaryPhone}
@@ -2335,7 +2347,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {onOpenWhatsAppForContact && displayPhone ? (
                                             <button
                                                 type="button"
-                                                className="btn btn-outline btn-square min-h-[3rem] min-w-[3rem] rounded-full border-2 border-base-300 p-0 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50"
+                                                className="btn btn-square min-h-[3rem] min-w-[3rem] rounded-full border-0 bg-emerald-50 p-0 text-emerald-800 hover:bg-emerald-100 dark:bg-emerald-900/30 dark:text-emerald-200 dark:hover:bg-emerald-900/45"
                                                 title="WhatsApp"
                                                 aria-label="WhatsApp"
                                                 onClick={() => void handleHeaderWhatsAppClick()}
@@ -2346,7 +2358,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         {displayEmail ? (
                                             <button
                                                 type="button"
-                                                className="btn btn-outline btn-square min-h-[3rem] min-w-[3rem] rounded-full border-2 border-base-300 p-0"
+                                                className="btn btn-square min-h-[3rem] min-w-[3rem] rounded-full border-0 bg-sky-50 p-0 text-sky-800 hover:bg-sky-100 dark:bg-sky-900/25 dark:text-sky-200 dark:hover:bg-sky-900/40"
                                                 title="Email"
                                                 aria-label="Email"
                                                 onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
@@ -2362,7 +2374,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     type="button"
                                                     onClick={openHeaderDocumentsModal}
                                                     disabled={!headerDocsLeadNumber}
-                                                    className="btn btn-square rounded-full border-2 border-base-300 btn-ghost min-h-[3.25rem] min-w-[3.25rem] disabled:pointer-events-none disabled:opacity-40"
+                                                    className="btn btn-square relative rounded-full border-2 border-base-300 btn-ghost min-h-[3.25rem] min-w-[3.25rem] disabled:pointer-events-none disabled:opacity-40"
                                                     title={
                                                         headerDocsLeadNumber
                                                             ? 'Case documents on OneDrive'
@@ -2371,6 +2383,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     aria-label="Case documents"
                                                 >
                                                     <DocumentArrowUpIcon className="h-6 w-6" aria-hidden />
+                                                    {headerSupabaseDocumentsCount > 0 && (
+                                                        <span
+                                                            className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-[11px] font-bold text-white"
+                                                            style={{ backgroundColor: '#3a3a3a' }}
+                                                        >
+                                                            {headerSupabaseDocumentsCount > 99 ? '99+' : headerSupabaseDocumentsCount}
+                                                        </span>
+                                                    )}
                                                 </button>
                                                 {renderMoreActionsDropdown(
                                                     'btn btn-square rounded-full border-2 border-base-300 btn-ghost min-h-[3.25rem] min-w-[3.25rem]'
@@ -2579,16 +2599,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         )}
                                         {unpaidOutstandingPair !== null && unpaidGross > 0 && (
                                             <div className="pt-2 border-t border-gray-200/80 dark:border-gray-600">
-                                                <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">
+                                                <p className="text-[10px] font-semibold uppercase tracking-wide text-base-content/35">
                                                     Outstanding
                                                 </p>
                                                 <div className="flex items-end justify-end gap-2">
-                                                    <p className="text-xl font-bold leading-none text-amber-900 dark:text-amber-200">
+                                                    <p className="text-xl font-bold leading-none text-base-content/55">
                                                         {currency}
                                                         {Number(unpaidOutstandingPair.base.toFixed(2)).toLocaleString()}
                                                     </p>
                                                     {unpaidOutstandingPair.vat > 0 && (
-                                                        <p className="pb-0.5 text-sm text-amber-700/85 dark:text-amber-400">
+                                                        <p className="pb-0.5 text-sm text-base-content/40">
                                                             +
                                                             {unpaidOutstandingPair.vat.toLocaleString(undefined, {
                                                                 minimumFractionDigits: 0,
@@ -2634,15 +2654,18 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 navigate(`/clients/${encodeURIComponent(identifier)}/master`);
                                             }
                                         }}
-                                        className="btn btn-square btn-sm relative shrink-0 bg-red-100 hover:bg-red-200 text-red-700 border-red-300"
+                                        className="btn btn-square btn-sm btn-ghost relative shrink-0 border-0 text-gray-700 hover:bg-base-200 hover:text-gray-900"
                                         title={
                                             isSubLead
                                                 ? `View master dashboard (${(subLeadsCount || 0) + 1} total leads)`
                                                 : `View all ${subLeadsCount || 0} sub-lead${subLeadsCount !== 1 ? 's' : ''} and master lead (${(subLeadsCount || 0) + 1} total)`
                                         }
                                     >
-                                        <Squares2X2Icon className="w-5 h-5" />
-                                        <span className="absolute -top-1 -right-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-600 px-1 text-xs font-bold text-white">
+                                        <Squares2X2Icon className="w-6 h-6" />
+                                        <span
+                                            className="absolute -top-1 -right-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
+                                            style={{ backgroundColor: '#3a3a3a' }}
+                                        >
                                             {(subLeadsCount || 0) + 1}
                                         </span>
                                     </button>
@@ -2695,7 +2718,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     {displayPhone ? (
                                         <button
                                             type="button"
-                                            className="btn btn-outline btn-square min-h-11 min-w-11 rounded-full border-2 border-base-300 p-0"
+                                            className="btn btn-square min-h-11 min-w-11 rounded-full border-0 bg-gray-100 p-0 text-gray-700 hover:bg-gray-200 dark:bg-gray-700/40 dark:text-gray-100 dark:hover:bg-gray-700/60"
                                             title="Call"
                                             aria-label="Call"
                                             onClick={handleCallPrimaryPhone}
@@ -2706,7 +2729,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     {onOpenWhatsAppForContact && displayPhone ? (
                                         <button
                                             type="button"
-                                            className="btn btn-outline btn-square min-h-11 min-w-11 rounded-full border-2 border-base-300 p-0 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50"
+                                            className="btn btn-square min-h-11 min-w-11 rounded-full border-0 bg-emerald-50 p-0 text-emerald-800 hover:bg-emerald-100 dark:bg-emerald-900/30 dark:text-emerald-200 dark:hover:bg-emerald-900/45"
                                             title="WhatsApp"
                                             aria-label="WhatsApp"
                                             onClick={() => void handleHeaderWhatsAppClick()}
@@ -2717,7 +2740,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     {displayEmail ? (
                                         <button
                                             type="button"
-                                            className="btn btn-outline btn-square min-h-11 min-w-11 rounded-full border-2 border-base-300 p-0"
+                                            className="btn btn-square min-h-11 min-w-11 rounded-full border-0 bg-sky-50 p-0 text-sky-800 hover:bg-sky-100 dark:bg-sky-900/25 dark:text-sky-200 dark:hover:bg-sky-900/40"
                                             title="Email"
                                             aria-label="Email"
                                             onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
@@ -2950,16 +2973,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             )}
                                             {unpaidOutstandingPairDesktop !== null && unpaidGrossDesktop > 0 && (
                                                 <div className="border-t border-gray-200/80 pt-1 dark:border-gray-600">
-                                                    <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-700/90 dark:text-amber-400">
+                                                    <p className="text-[10px] font-semibold uppercase tracking-wide text-base-content/35">
                                                         Outstanding
                                                     </p>
                                                     <div className="flex items-end justify-end gap-2">
-                                                        <p className="text-2xl font-bold leading-none text-amber-900 dark:text-amber-200">
+                                                        <p className="text-2xl font-bold leading-none text-base-content/55">
                                                             {currency}
                                                             {Number(unpaidOutstandingPairDesktop.base.toFixed(2)).toLocaleString()}
                                                         </p>
                                                         {unpaidOutstandingPairDesktop.vat > 0 && (
-                                                            <p className="pb-1 text-sm text-amber-700/85 dark:text-amber-400">
+                                                            <p className="pb-1 text-sm text-base-content/40">
                                                                 +
                                                                 {unpaidOutstandingPairDesktop.vat.toLocaleString(undefined, {
                                                                     minimumFractionDigits: 0,
@@ -2982,7 +3005,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             type="button"
                                             onClick={openHeaderDocumentsModal}
                                             disabled={!headerDocsLeadNumber}
-                                            className="btn btn-sm btn-square rounded-full border border-base-300 btn-ghost min-h-10 min-w-10 disabled:pointer-events-none disabled:opacity-40"
+                                            className="btn btn-sm btn-square relative rounded-full border border-base-300 btn-ghost min-h-10 min-w-10 disabled:pointer-events-none disabled:opacity-40"
                                             title={
                                                 headerDocsLeadNumber
                                                     ? 'Case documents on OneDrive'
@@ -2991,6 +3014,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             aria-label="Case documents"
                                         >
                                             <DocumentArrowUpIcon className="h-6 w-6" aria-hidden />
+                                            {headerSupabaseDocumentsCount > 0 && (
+                                                <span
+                                                    className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-[11px] font-bold text-white"
+                                                    style={{ backgroundColor: '#3a3a3a' }}
+                                                >
+                                                    {headerSupabaseDocumentsCount > 99 ? '99+' : headerSupabaseDocumentsCount}
+                                                </span>
+                                            )}
                                         </button>
                                         {renderMoreActionsDropdown(
                                             'btn btn-sm btn-square rounded-full border border-base-300 btn-ghost min-h-10 min-w-10'
@@ -3265,12 +3296,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             <div className="dropdown dropdown-end">
                                                 <button
                                                     type="button"
-                                                className="btn btn-success btn-md !text-white rounded-full px-4 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 text-base transition-all hover:scale-105"
+                                                    className="btn btn-neutral btn-md rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105"
                                                     disabled={isLoadingSubEfforts || isSavingSubEffort}
                                                 >
-                                                <DocumentCheckIcon className="w-4 h-4 text-white" />
+                                                    <DocumentCheckIcon className="w-4 h-4" />
                                                     Sub efforts
-                                                <ChevronDownIcon className="w-4 h-4 text-white" />
+                                                    <ChevronDownIcon className="w-4 h-4" />
                                                 </button>
                                                 <ul tabIndex={0} className="dropdown-content z-[330] menu p-2 shadow bg-base-100 rounded-box w-72">
                                                     {(() => {
@@ -3870,14 +3901,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         title="Case handler drives this file (Active Cases)"
                                                         className={`relative flex h-9 min-w-[3.25rem] flex-1 shrink-0 items-center justify-center rounded-full transition-all duration-300 ease-out ${
                                                             activeHandlerTypeForLead === 2
-                                                                ? 'bg-emerald-500 shadow-md ring-1 ring-emerald-600/20'
+                                                                ? 'bg-emerald-50 shadow-sm ring-1 ring-emerald-200 dark:bg-emerald-900/30 dark:ring-emerald-900/40'
                                                                 : 'bg-transparent hover:bg-base-100/70'
                                                         }`}
                                                     >
                                                         <UserIcon
                                                             className={`h-4 w-4 shrink-0 transition-colors duration-300 ${
                                                                 activeHandlerTypeForLead === 2
-                                                                    ? 'text-white'
+                                                                    ? 'text-emerald-800 dark:text-emerald-100'
                                                                     : 'text-gray-500'
                                                             }`}
                                                             aria-hidden
@@ -3891,14 +3922,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         title="Retention handler active (Non-Active Cases)"
                                                         className={`relative flex h-9 min-w-[3.25rem] flex-1 shrink-0 items-center justify-center rounded-full transition-all duration-300 ease-out ${
                                                             activeHandlerTypeForLead === 1
-                                                                ? 'bg-rose-500 shadow-md ring-1 ring-rose-600/20'
+                                                                ? 'bg-sky-50 shadow-sm ring-1 ring-sky-200 dark:bg-sky-900/25 dark:ring-sky-900/40'
                                                                 : 'bg-transparent hover:bg-base-100/70'
                                                         }`}
                                                     >
                                                         <RectangleStackIcon
                                                             className={`h-4 w-4 shrink-0 transition-colors duration-300 ${
                                                                 activeHandlerTypeForLead === 1
-                                                                    ? 'text-white'
+                                                                    ? 'text-sky-800 dark:text-sky-100'
                                                                     : 'text-gray-500'
                                                             }`}
                                                             aria-hidden
@@ -4126,12 +4157,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                 <div className="dropdown dropdown-end">
                                                                     <button
                                                                         type="button"
-                                                                        className="btn btn-success rounded-full px-5 gap-2 !text-white"
+                                                                        className="btn btn-outline btn-ghost rounded-full px-5 gap-2"
                                                                         disabled={isLoadingSubEfforts || isSavingSubEffort}
                                                                     >
-                                                                        <DocumentCheckIcon className="w-5 h-5 text-white" />
+                                                                        <DocumentCheckIcon className="w-5 h-5" />
                                                                         Sub efforts
-                                                                        <ChevronDownIcon className="w-4 h-4 text-white" />
+                                                                        <ChevronDownIcon className="w-4 h-4" />
                                                                     </button>
                                                                     <ul tabIndex={0} className="dropdown-content z-[330] menu p-2 shadow bg-base-100 rounded-box w-72">
                                                                         {(() => {
@@ -4732,6 +4763,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     onedriveSubFolder={CLIENT_HEADER_ONEDRIVE_SUBFOLDER}
                     modalTitle="Case documents"
                     requireCaseDocumentClassification
+                    onDocumentCountChange={setHeaderSupabaseDocumentsCount}
                 />
 
                 <LeadTagsModal

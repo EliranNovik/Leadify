@@ -967,7 +967,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
         <div className="w-full max-w-5xl space-y-10">
           {ROLE_SECTIONS.map((section) => (
             <div key={section.title}>
-              <h3 className="text-lg font-semibold text-gray-900 mb-4 pb-2 border-b border-gray-200">
+              <h3 className="text-lg font-semibold text-gray-900 mb-3">
                 {section.title}
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -981,10 +981,10 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
                   return (
                     <div
                       key={role.id}
-                      className={`rounded-xl px-6 py-4 border transition-colors ${
+                      className={`rounded-xl px-2 py-3 transition-colors ${
                         roleUiDisabled
-                          ? 'bg-gray-100/90 border-gray-200/80 opacity-75 pointer-events-none select-none'
-                          : 'bg-white border-gray-200 hover:bg-gray-50/50'
+                          ? 'opacity-45 pointer-events-none select-none'
+                          : 'hover:bg-base-200/60'
                       }`}
                       aria-disabled={roleUiDisabled}
                       title={roleUiDisabled ? 'This role is temporarily unavailable' : undefined}
@@ -992,7 +992,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
                       <div className="flex items-start justify-between gap-2 mb-2">
                         <div className="text-sm font-medium text-gray-500">{role.title}</div>
                         {roleUiDisabled && (
-                          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-gray-500 bg-gray-200/80 px-2 py-0.5 rounded">
+                          <span className="shrink-0 text-[10px] font-semibold uppercase tracking-wide text-gray-500 bg-base-200 px-2 py-0.5 rounded">
                             Unavailable
                           </span>
                         )}
@@ -1046,14 +1046,14 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
                         {!isRolesLocked && !roleUiDisabled && (
                           isEditingRow ? (
                             <button
-                              className="btn btn-ghost btn-sm border border-gray-300 flex-shrink-0"
+                              className="btn btn-ghost btn-sm flex-shrink-0"
                               onClick={handleCancelRowEdit}
                             >
                               <XMarkIcon className="w-4 h-4" />
                             </button>
                           ) : (
                             <button
-                              className="btn btn-ghost btn-sm border border-gray-300 flex-shrink-0"
+                              className="btn btn-ghost btn-sm flex-shrink-0"
                               onClick={() => handleStartRowEdit(role.id)}
                               title="Edit"
                             >
