@@ -18,6 +18,7 @@ import {
   PresentationChartBarIcon,
   CodeBracketIcon,
   EllipsisVerticalIcon,
+  ShareIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { createPortal } from 'react-dom';
@@ -60,6 +61,73 @@ interface DocumentModalProps {
   requireCaseDocumentClassification?: boolean;
 }
 
+function copyTextToClipboardFallback(text: string): boolean {
+  if (typeof document === 'undefined') return false;
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(ta);
+  }
+}
+
+/** Uses Web Share API (system share on mobile + many desktop browsers); otherwise copies link. */
+async function shareDocumentFile(doc: Document): Promise<void> {
+  const url = (doc.webUrl || doc.downloadUrl || '').trim();
+  if (!url) {
+    toast.error('No link is available to share for this file.');
+    return;
+  }
+
+  const shareData: ShareData = {
+    title: doc.name,
+    text: doc.name,
+    url,
+  };
+
+  if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+    const canTry =
+      typeof navigator.canShare !== 'function' || navigator.canShare(shareData);
+    if (canTry) {
+      try {
+        await navigator.share(shareData);
+        return;
+      } catch (err: unknown) {
+        const aborted =
+          err instanceof DOMException
+            ? err.name === 'AbortError'
+            : (err as { name?: string })?.name === 'AbortError';
+        if (aborted) return;
+      }
+    }
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success('Link copied to clipboard');
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
+
+  if (copyTextToClipboardFallback(url)) {
+    toast.success('Link copied to clipboard');
+    return;
+  }
+
+  toast.error('Sharing is not available in this browser.');
+}
+
 type DocumentRowActionMenuProps = {
   doc: Document;
   isDownloading: boolean;
@@ -90,65 +158,131 @@ function DocumentRowActionMenu({ doc, isDownloading, onPreview, onDownload }: Do
     };
   }, [open]);
 
+  const iconBtnClassMobile =
+    'flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-md text-base-content/55 transition-colors hover:bg-base-300/45 hover:text-base-content focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/25 focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-50';
+
+  const iconBtnClassDesktop =
+    'flex h-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-md text-white transition-colors hover:bg-white/15 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40 focus-visible:ring-offset-0 disabled:cursor-not-allowed disabled:opacity-45';
+
   return (
     <div
       ref={rootRef}
-      className="relative shrink-0 self-center"
+      className="relative shrink-0 self-center md:self-stretch md:flex md:items-center"
       onClick={(e) => e.stopPropagation()}
     >
-      <button
-        type="button"
-        className="flex h-12 w-12 shrink-0 cursor-pointer items-center justify-center rounded-xl border border-base-300/70 bg-base-100 text-base-content shadow-sm transition-colors hover:border-primary/40 hover:bg-base-200/80 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/30"
+      {/* Desktop: dark action strip — view / share / download */}
+      <div
+        className="hidden h-full min-h-[2.75rem] shrink-0 items-center rounded-lg bg-gray-700 px-1 shadow-inner md:flex dark:bg-gray-900"
+        role="group"
         aria-label={`Actions for ${doc.name}`}
-        title="Actions"
-        aria-expanded={open}
-        aria-haspopup="menu"
-        onClick={() => setOpen((o) => !o)}
       >
-        <EllipsisVerticalIcon className="h-6 w-6" aria-hidden />
-      </button>
-      {open ? (
-        <ul
-          className="menu absolute right-0 top-full z-[1100] mt-1.5 min-w-[10.5rem] rounded-box border border-base-300 bg-base-100 p-2 shadow-lg"
-          role="menu"
+        <button
+          type="button"
+          className={iconBtnClassDesktop}
+          title="View"
+          aria-label={`View ${doc.name}`}
+          onClick={() => onPreview(doc)}
         >
-          <li>
-            <button
-              type="button"
-              className="flex w-full items-center gap-2 text-sm"
-              role="menuitem"
-              onClick={(e) => {
-                e.preventDefault();
-                setOpen(false);
-                onPreview(doc);
-              }}
-            >
-              <EyeIcon className="h-4 w-4 shrink-0" />
-              View
-            </button>
-          </li>
-          <li>
-            <button
-              type="button"
-              className="flex w-full items-center gap-2 text-sm"
-              role="menuitem"
-              disabled={isDownloading}
-              onClick={(e) => {
-                e.preventDefault();
-                setOpen(false);
-                void onDownload(doc);
-              }}
-            >
-              {isDownloading ? (
-                <span className="loading loading-spinner loading-xs" />
-              ) : (
-                <ArrowDownTrayIcon className="h-4 w-4 shrink-0" />
-              )}
-              Download
-            </button>
-          </li>
-        </ul>
-      ) : null}
+          <EyeIcon className="h-5 w-5 text-white" aria-hidden />
+        </button>
+        <div className="mx-px w-px shrink-0 self-stretch bg-white/20" aria-hidden />
+        <button
+          type="button"
+          className={iconBtnClassDesktop}
+          title="Share"
+          aria-label={`Share ${doc.name}`}
+          onClick={() => void shareDocumentFile(doc)}
+        >
+          <ShareIcon className="h-5 w-5 text-white" aria-hidden />
+        </button>
+        <div className="mx-px w-px shrink-0 self-stretch bg-white/20" aria-hidden />
+        <button
+          type="button"
+          className={iconBtnClassDesktop}
+          title="Download"
+          aria-label={`Download ${doc.name}`}
+          disabled={isDownloading}
+          onClick={() => void onDownload(doc)}
+        >
+          {isDownloading ? (
+            <span className="loading loading-spinner loading-sm text-white" />
+          ) : (
+            <ArrowDownTrayIcon className="h-5 w-5 text-white" aria-hidden />
+          )}
+        </button>
+      </div>
+
+      {/* Mobile: kebab + dropdown */}
+      <div className="md:hidden">
+        <button
+          type="button"
+          className={iconBtnClassMobile}
+          aria-label={`Actions for ${doc.name}`}
+          title="Actions"
+          aria-expanded={open}
+          aria-haspopup="menu"
+          onClick={() => setOpen((o) => !o)}
+        >
+          <EllipsisVerticalIcon className="h-6 w-6" aria-hidden />
+        </button>
+        {open ? (
+          <ul
+            className="menu absolute right-0 top-full z-[1100] mt-1.5 min-w-[10.5rem] rounded-box border border-base-300 bg-base-100 p-2 shadow-lg"
+            role="menu"
+          >
+            <li>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 text-sm"
+                role="menuitem"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setOpen(false);
+                  onPreview(doc);
+                }}
+              >
+                <EyeIcon className="h-4 w-4 shrink-0" />
+                View
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 text-sm"
+                role="menuitem"
+                onClick={(e) => {
+                  e.preventDefault();
+                  setOpen(false);
+                  void shareDocumentFile(doc);
+                }}
+              >
+                <ShareIcon className="h-4 w-4 shrink-0" />
+                Share
+              </button>
+            </li>
+            <li>
+              <button
+                type="button"
+                className="flex w-full items-center gap-2 text-sm"
+                role="menuitem"
+                disabled={isDownloading}
+                onClick={(e) => {
+                  e.preventDefault();
+                  setOpen(false);
+                  void onDownload(doc);
+                }}
+              >
+                {isDownloading ? (
+                  <span className="loading loading-spinner loading-xs" />
+                ) : (
+                  <ArrowDownTrayIcon className="h-4 w-4 shrink-0" />
+                )}
+                Download
+              </button>
+            </li>
+          </ul>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -327,24 +461,24 @@ function DocumentUploaderAttribution({ doc }: { doc: Document }) {
   if (!name) return null;
   const initial = name.charAt(0).toUpperCase();
   return (
-    <span className="inline-flex max-w-full min-w-0 shrink-0 items-center gap-1.5 text-sm text-base-content/65">
+    <span className="inline-flex max-w-full min-w-0 items-center gap-1.5 text-sm text-base-content/65">
       {doc.uploadedByPhotoUrl ? (
         <img
           src={doc.uploadedByPhotoUrl}
           alt=""
-          className="h-7 w-7 shrink-0 rounded-full object-cover outline-none sm:h-8 sm:w-8"
+          className="h-6 w-6 shrink-0 rounded-full object-cover outline-none"
           loading="lazy"
         />
       ) : (
         <span
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-base-300/90 text-[10px] font-semibold text-base-content/85 outline-none sm:h-8 sm:w-8 sm:text-xs"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-base-300/90 text-[10px] font-semibold text-base-content/85 outline-none"
           aria-hidden
         >
           {initial}
         </span>
       )}
-      <span className="min-w-0 truncate sm:max-w-[14rem]">
-        by <span className="font-semibold text-base-content/90">{name}</span>
+      <span className="min-w-0 truncate sm:max-w-[12rem]">
+        by <span className="font-semibold text-base-content/85">{name}</span>
       </span>
     </span>
   );
@@ -401,6 +535,8 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   const [classifications, setClassifications] = useState<CaseClassificationRow[]>([]);
   const [classificationsLoading, setClassificationsLoading] = useState(false);
   const [classificationsError, setClassificationsError] = useState<string | null>(null);
+  /** Latest classifications for merge logic inside async fetch (avoids extra DB round-trip when already loaded). */
+  const classificationsRef = useRef<CaseClassificationRow[]>([]);
   /** Which category tab is selected when browsing the document list (case documents only). */
   const [activeBrowseCategoryId, setActiveBrowseCategoryId] = useState<string | 'uncategorized' | null>(null);
   const lastBrowseLeadRef = useRef<string | null>(null);
@@ -441,6 +577,10 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       cancelled = true;
     };
   }, [isOpen, requireCaseDocumentClassification]);
+
+  useEffect(() => {
+    classificationsRef.current = classifications;
+  }, [classifications]);
 
   useEffect(() => {
     if (!requireCaseDocumentClassification) return;
@@ -513,15 +653,23 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     setLoading(true);
     setError(null);
     try {
-      console.log('Fetching documents for lead:', leadNumber);
       const listBody: { leadNumber: string; subFolder?: string } = { leadNumber };
       if (onedriveSubFolder?.trim()) listBody.subFolder = onedriveSubFolder.trim();
 
-      const { data, error } = await supabase.functions.invoke('list-lead-documents', {
-        body: listBody,
-      });
+      const subTrim = onedriveSubFolder?.trim() ?? '';
+      const mergeMaps =
+        requireCaseDocumentClassification && leadNumber && subTrim
+          ? supabase
+              .from('lead_case_documents')
+              .select('onedrive_item_id, classification_id, uploaded_by')
+              .eq('lead_number', leadNumber)
+              .eq('onedrive_subfolder', subTrim)
+          : null;
 
-      console.log('Function response:', { data, error });
+      const [{ data, error }, mapRes] = await Promise.all([
+        supabase.functions.invoke('list-lead-documents', { body: listBody }),
+        mergeMaps ?? Promise.resolve({ data: null, error: null }),
+      ]);
 
       if (error) {
         console.error('Supabase function error:', error);
@@ -530,8 +678,6 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       }
 
       if (data && data.success) {
-        console.log('Documents fetched successfully:', data.files);
-
         let mappedDocuments: Document[] = (data.files || []).map((item: any) => ({
           id: item.id,
           name: item.name,
@@ -542,51 +688,48 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           fileType: item.file?.mimeType || item.fileType || 'application/octet-stream',
         }));
 
-        if (requireCaseDocumentClassification && leadNumber && onedriveSubFolder?.trim()) {
-          const subTrim = onedriveSubFolder.trim();
-          const { data: mapRows, error: mapErr } = await supabase
-            .from('lead_case_documents')
-            .select('onedrive_item_id, classification_id, uploaded_by')
-            .eq('lead_number', leadNumber)
-            .eq('onedrive_subfolder', subTrim);
-
-          if (mapErr) {
-            console.warn('lead_case_documents merge skipped:', mapErr);
-          } else {
-            type MapRow = {
-              onedrive_item_id: string;
-              classification_id: string;
-              uploaded_by: string | null;
-            };
-            const rows = (mapRows as MapRow[]) || [];
-            const itemToMeta = new Map<string, { classificationId: string; uploadedBy: string | null }>();
-            for (const r of rows) {
-              itemToMeta.set(r.onedrive_item_id, {
-                classificationId: r.classification_id,
-                uploadedBy: r.uploaded_by?.trim() || null,
-              });
-            }
-            const uploaderKeys = [...new Set(rows.map((r) => r.uploaded_by?.trim()).filter(Boolean))] as string[];
-            const uploaderMap = await resolveUploaderDisplayByKey(uploaderKeys);
-
-            const { data: catRows } = await supabase.from('case_document_classifications').select('id, label');
-            const idToLabel = new Map<string, string>(
-              (catRows || []).map((c: { id: string; label: string }) => [c.id, c.label]),
-            );
-            mappedDocuments = mappedDocuments.map((d) => {
-              const meta = itemToMeta.get(d.id);
-              const cid = meta?.classificationId;
-              const rawUploader = meta?.uploadedBy ?? null;
-              const resolved = rawUploader ? uploaderMap.get(rawUploader) : undefined;
-              return {
-                ...d,
-                caseClassificationId: cid ?? null,
-                caseClassificationLabel: cid ? idToLabel.get(cid) ?? null : null,
-                uploadedByName: resolved?.name ?? rawUploader,
-                uploadedByPhotoUrl: resolved?.photoUrl ?? null,
-              };
+        if (mergeMaps && mapRes && !mapRes.error && mapRes.data != null) {
+          type MapRow = {
+            onedrive_item_id: string;
+            classification_id: string;
+            uploaded_by: string | null;
+          };
+          const rows = (mapRes.data as MapRow[]) || [];
+          const itemToMeta = new Map<string, { classificationId: string; uploadedBy: string | null }>();
+          for (const r of rows) {
+            itemToMeta.set(r.onedrive_item_id, {
+              classificationId: r.classification_id,
+              uploadedBy: r.uploaded_by?.trim() || null,
             });
           }
+          const uploaderKeys = [...new Set(rows.map((r) => r.uploaded_by?.trim()).filter(Boolean))] as string[];
+          const uploaderMap = await resolveUploaderDisplayByKey(uploaderKeys);
+
+          let idToLabel = new Map<string, string>(
+            classificationsRef.current.map((c) => [c.id, c.label]),
+          );
+          if (idToLabel.size === 0) {
+            const { data: catRows } = await supabase.from('case_document_classifications').select('id, label');
+            idToLabel = new Map<string, string>(
+              (catRows || []).map((c: { id: string; label: string }) => [c.id, c.label]),
+            );
+          }
+
+          mappedDocuments = mappedDocuments.map((d) => {
+            const meta = itemToMeta.get(d.id);
+            const cid = meta?.classificationId;
+            const rawUploader = meta?.uploadedBy ?? null;
+            const resolved = rawUploader ? uploaderMap.get(rawUploader) : undefined;
+            return {
+              ...d,
+              caseClassificationId: cid ?? null,
+              caseClassificationLabel: cid ? idToLabel.get(cid) ?? null : null,
+              uploadedByName: resolved?.name ?? rawUploader,
+              uploadedByPhotoUrl: resolved?.photoUrl ?? null,
+            };
+          });
+        } else if (mergeMaps && mapRes?.error) {
+          console.warn('lead_case_documents merge skipped:', mapRes.error);
         }
 
         setDocuments(mappedDocuments);
@@ -658,13 +801,14 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   };
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
+    const d = new Date(dateString);
+    if (Number.isNaN(d.getTime())) return dateString;
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const yy = String(d.getFullYear()).slice(-2);
+    const hh = String(d.getHours()).padStart(2, '0');
+    const min = String(d.getMinutes()).padStart(2, '0');
+    return `${dd}.${mm}.${yy}, ${hh}:${min}`;
   };
 
   // Helper function to get current user's full name
@@ -855,35 +999,70 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   return createPortal(
     <div className={`fixed inset-0 z-[1000] flex items-end justify-end bg-black bg-opacity-40 transition-opacity duration-300 ${isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`} style={{ top: 0, left: 0 }}>
       <div
-        className={`fixed right-0 top-0 flex h-full max-h-full w-full min-w-0 max-w-2xl min-h-[350px] flex-col overflow-hidden rounded-l-2xl bg-white p-10 shadow-2xl transition-transform duration-500 ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}
+        className={`fixed top-0 flex h-full max-h-full min-h-[350px] min-w-0 flex-col overflow-hidden bg-white shadow-2xl transition-transform duration-500 max-md:inset-x-0 max-md:w-full max-md:max-w-none max-md:rounded-none md:right-0 md:w-full md:max-w-2xl md:rounded-l-2xl px-3 py-5 sm:px-4 md:p-8 lg:p-10 ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}
         style={{ boxShadow: '0 0 40px 0 rgba(0,0,0,0.2)' }}
       >
         {/* Modal Header */}
-        <div className="mb-6 flex min-w-0 shrink-0 items-center justify-between gap-3">
-          <div className="min-w-0 flex-1 pr-2">
-            <h2 className="text-2xl font-bold mb-1">{modalTitle ?? 'Documents'}</h2>
-            <p className="text-base-content/70 text-sm">Lead: {clientName} ({leadNumber})</p>
-            {folderPathHint ? (
-              <p className="text-base-content/60 mt-1 text-xs">{folderPathHint}</p>
-            ) : null}
+        <header className="relative mb-4 shrink-0 md:mb-6">
+          {/* Mobile: close badge in top-most right corner */}
+          <button
+            type="button"
+            className="btn btn-circle btn-sm absolute right-0 top-0 z-10 h-11 w-11 border-0 bg-white text-black shadow-md ring-1 ring-base-300 hover:bg-base-200 hover:text-black md:hidden"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            <XMarkIcon className="h-6 w-6 text-black" strokeWidth={2} aria-hidden />
+          </button>
+
+          <div className="flex min-w-0 flex-col gap-4 md:flex-row md:items-start md:justify-between md:gap-6">
+            <div className="min-w-0 flex-1 max-md:pr-14 md:pr-2">
+              <h2 className="mb-1 text-xl font-bold sm:text-2xl">{modalTitle ?? 'Documents'}</h2>
+              <p className="text-sm text-base-content/70">Lead: {clientName} ({leadNumber})</p>
+              {folderPathHint ? (
+                <p className="mt-1 text-xs text-base-content/60">{folderPathHint}</p>
+              ) : null}
+              <button
+                type="button"
+                className="btn btn-primary btn-sm mt-3 gap-1.5 shadow-sm md:hidden"
+                onClick={handleDownloadAll}
+                disabled={
+                  loading ||
+                  (requireCaseDocumentClassification ? documentsInActiveCategory.length === 0 : documents.length === 0)
+                }
+                title="Download all"
+              >
+                <ArrowDownTrayIcon className="h-5 w-5 shrink-0" />
+                All
+              </button>
+            </div>
+
+            {/* Desktop: dark toolbar strip with white icons */}
+            <div className="hidden shrink-0 items-center gap-0.5 rounded-xl bg-gray-700 px-2 py-1.5 shadow-inner dark:bg-gray-900 md:flex">
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm gap-2 rounded-lg border-transparent text-white hover:bg-white/10 hover:text-white disabled:border-transparent disabled:bg-transparent disabled:text-white/35"
+                onClick={handleDownloadAll}
+                disabled={
+                  loading ||
+                  (requireCaseDocumentClassification ? documentsInActiveCategory.length === 0 : documents.length === 0)
+                }
+                title="Download all"
+              >
+                <ArrowDownTrayIcon className="h-5 w-5 shrink-0 text-white" />
+                <span className="font-medium">Download All</span>
+              </button>
+              <div className="mx-0.5 h-6 w-px shrink-0 bg-white/25" aria-hidden />
+              <button
+                type="button"
+                className="btn btn-ghost btn-circle btn-sm border-transparent text-white hover:bg-white/10 hover:text-white"
+                onClick={onClose}
+                aria-label="Close"
+              >
+                <XMarkIcon className="h-5 w-5" aria-hidden />
+              </button>
+            </div>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={handleDownloadAll}
-              disabled={
-                loading ||
-                (requireCaseDocumentClassification ? documentsInActiveCategory.length === 0 : documents.length === 0)
-              }
-            >
-              <ArrowDownTrayIcon className="w-5 h-5 mr-1" />
-              Download All
-            </button>
-            <button className="btn btn-ghost btn-circle" onClick={onClose}>
-              <XMarkIcon className="w-6 h-6" />
-            </button>
-          </div>
-        </div>
+        </header>
         {/* Modal body: vertical scroll only; horizontal overflow clipped (tab row scrolls inside its own strip). */}
         <div className="min-h-0 w-full min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain [-webkit-overflow-scrolling:touch]">
           {requireCaseDocumentClassification && classificationsError ? (
@@ -912,8 +1091,32 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                     Uploads are added to <span className="font-medium text-base-content/90">{uploadLabel}</span>.
                   </p>
                 ) : null}
+                <input
+                  type="file"
+                  className="hidden"
+                  id="file-upload-modal"
+                  multiple
+                  onChange={handleFileInput}
+                  disabled={isUploading || caseUploadBlocked}
+                />
+                {/* Mobile: one control → native file picker (no drag-and-drop UI) */}
                 <div
-                  className={`mb-6 max-w-full min-w-0 rounded-lg border-2 border-dashed p-6 text-center transition-colors duration-200 sm:p-8 ${
+                  className={`mb-6 md:hidden ${caseUploadBlocked || isUploading ? 'pointer-events-none opacity-50' : ''}`}
+                >
+                  <label
+                    htmlFor="file-upload-modal"
+                    className={`btn btn-outline btn-primary btn-block min-h-12 gap-2 border-2 bg-white text-primary shadow-none hover:bg-primary/5 active:bg-primary/10 dark:bg-base-100 dark:hover:bg-primary/10 ${isUploading || caseUploadBlocked ? 'btn-disabled' : ''}`}
+                  >
+                    <DocumentArrowUpIcon className="h-5 w-5 shrink-0" />
+                    {isUploading ? 'Processing…' : 'Upload document'}
+                  </label>
+                  {isUploading ? (
+                    <p className="mt-2 text-center text-xs text-base-content/60">Processing files…</p>
+                  ) : null}
+                </div>
+                {/* md+: drag-and-drop zone + choose files */}
+                <div
+                  className={`mb-6 hidden max-w-full min-w-0 md:block rounded-lg border-2 border-dashed p-6 text-center transition-colors duration-200 sm:p-8 ${
                     isUploading
                       ? 'border-primary bg-gray-50'
                       : 'border-gray-300 bg-gray-50 hover:border-primary hover:bg-purple-50'
@@ -936,14 +1139,6 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                         ? 'Unable to upload while classifications are loading.'
                         : 'Drag and drop files here, or click to select files'}
                   </div>
-                  <input
-                    type="file"
-                    className="hidden"
-                    id="file-upload-modal"
-                    multiple
-                    onChange={handleFileInput}
-                    disabled={isUploading || caseUploadBlocked}
-                  />
                   <label
                     htmlFor="file-upload-modal"
                     className={`btn btn-outline btn-primary ${isUploading || caseUploadBlocked ? 'btn-disabled' : ''}`}
@@ -994,25 +1189,8 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
             </div>
           )}
 
-          {/* Documents List */}
-          {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <div className="loading loading-spinner loading-lg"></div>
-              <span className="ml-3">Loading documents...</span>
-            </div>
-          ) : error ? (
-            <div className="flex items-center justify-center py-12 text-error">
-              <ExclamationTriangleIcon className="w-8 h-8 mr-3" />
-              <span>{error}</span>
-            </div>
-          ) : documents.length === 0 && !requireCaseDocumentClassification ? (
-            <div className="text-center py-12 text-base-content/70">
-              <DocumentIcon className="w-16 h-16 mx-auto mb-4 opacity-50" />
-              <p>No documents found for this lead.</p>
-            </div>
-          ) : (
-            <>
-              {requireCaseDocumentClassification && classifications.length > 0 ? (
+          {/* Documents list: case mode — tabs show as soon as classifications load; OneDrive fetch only affects the list below */}
+          {requireCaseDocumentClassification && classifications.length > 0 ? (
                 <div className="mb-4 flex w-full min-w-0 max-w-full flex-col gap-4">
                   <nav
                     className="flex w-full min-w-0 max-w-full touch-pan-x flex-nowrap items-stretch gap-2 overflow-x-auto overflow-y-hidden overscroll-x-contain border-b border-base-200 pb-2 [-webkit-overflow-scrolling:touch]"
@@ -1069,7 +1247,17 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                     })()}
                   </nav>
                   <div className="min-w-0 w-full">
-                    {documents.length === 0 ? (
+                    {loading ? (
+                      <div className="flex items-center justify-center py-10">
+                        <div className="loading loading-spinner loading-lg" />
+                        <span className="ml-3 text-base-content/70">Loading documents…</span>
+                      </div>
+                    ) : error ? (
+                      <div className="flex items-center justify-center py-10 text-error">
+                        <ExclamationTriangleIcon className="mr-3 h-8 w-8 shrink-0" />
+                        <span>{error}</span>
+                      </div>
+                    ) : documents.length === 0 ? (
                       <div className="py-12 text-center text-base-content/70">
                         <DocumentIcon className="mx-auto mb-4 h-16 w-16 opacity-50" />
                         <p>No documents found for this lead.</p>
@@ -1086,20 +1274,22 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                           return (
                             <div
                               key={doc.id}
-                              className="flex min-w-0 max-w-full items-center justify-between gap-3 rounded-lg bg-gray-50 p-5 transition-colors hover:bg-gray-100/90 dark:bg-gray-800/45 dark:hover:bg-gray-800/70"
+                              className="flex min-w-0 max-w-full items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-4 transition-colors hover:bg-gray-100/90 dark:bg-gray-800/45 dark:hover:bg-gray-800/70 sm:gap-3 sm:p-5 md:items-stretch"
                             >
-                              <div className="flex min-w-0 flex-1 items-center gap-4">
+                              <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4">
                                 <span className="shrink-0">
                                   <DocumentFileGlyph fileType={doc.fileType} fileName={doc.name} />
                                 </span>
                                 <div className="min-w-0 flex-1 overflow-hidden">
-                                  <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                                    <p className="min-w-0 break-words text-base font-semibold leading-snug text-base-content [overflow-wrap:anywhere]">
-                                      {doc.name}
-                                    </p>
+                                  <p className="min-w-0 break-words text-base font-semibold leading-snug text-base-content [overflow-wrap:anywhere]">
+                                    {doc.name}
+                                  </p>
+                                  <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                                    <span className="shrink-0 text-sm tabular-nums text-base-content/70">
+                                      {formatDate(doc.lastModified)}
+                                    </span>
                                     <DocumentUploaderAttribution doc={doc} />
                                   </div>
-                                  <p className="mt-1 text-sm text-base-content/70">{formatDate(doc.lastModified)}</p>
                                 </div>
                               </div>
 
@@ -1116,52 +1306,70 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                     )}
                   </div>
                 </div>
-              ) : (
-                <>
-                  {documents.length === 0 ? (
-                    <div className="py-12 text-center text-base-content/70">
-                      <DocumentIcon className="mx-auto mb-4 h-16 w-16 opacity-50" />
-                      <p>No documents found for this lead.</p>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {documents.map((doc) => {
-                        const isDownloading = downloading.includes(doc.id);
+          ) : requireCaseDocumentClassification && classificationsLoading ? (
+            <div className="mb-4 flex w-full min-w-0 flex-col gap-3">
+              <div
+                className="flex w-full min-w-0 max-w-full gap-2 overflow-x-auto border-b border-base-200 pb-2"
+                aria-hidden
+              >
+                {[1, 2, 3, 4, 5, 6, 7].map((i) => (
+                  <div key={i} className="h-10 w-24 shrink-0 animate-pulse rounded-lg bg-base-300/40 sm:w-28" />
+                ))}
+              </div>
+              <p className="text-sm text-base-content/60">Loading categories…</p>
+            </div>
+          ) : requireCaseDocumentClassification ? null : loading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="loading loading-spinner loading-lg" />
+              <span className="ml-3">Loading documents...</span>
+            </div>
+          ) : error ? (
+            <div className="flex items-center justify-center py-12 text-error">
+              <ExclamationTriangleIcon className="w-8 h-8 mr-3" />
+              <span>{error}</span>
+            </div>
+          ) : documents.length === 0 ? (
+            <div className="text-center py-12 text-base-content/70">
+              <DocumentIcon className="w-16 h-16 mx-auto mb-4 opacity-50" />
+              <p>No documents found for this lead.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {documents.map((doc) => {
+                const isDownloading = downloading.includes(doc.id);
 
-                        return (
-                          <div
-                            key={doc.id}
-                            className="flex min-w-0 max-w-full items-center justify-between gap-3 rounded-lg bg-gray-50 p-5 transition-colors hover:bg-gray-100/90 dark:bg-gray-800/45 dark:hover:bg-gray-800/70"
-                          >
-                            <div className="flex min-w-0 flex-1 items-center gap-4">
-                              <span className="shrink-0">
-                                <DocumentFileGlyph fileType={doc.fileType} fileName={doc.name} />
-                              </span>
-                              <div className="min-w-0 flex-1 overflow-hidden">
-                                <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                                  <p className="min-w-0 break-words text-base font-semibold leading-snug text-base-content [overflow-wrap:anywhere]">
-                                    {doc.name}
-                                  </p>
-                                  <DocumentUploaderAttribution doc={doc} />
-                                </div>
-                                <p className="mt-1 text-sm text-base-content/70">{formatDate(doc.lastModified)}</p>
-                              </div>
-                            </div>
-
-                            <DocumentRowActionMenu
-                              doc={doc}
-                              isDownloading={isDownloading}
-                              onPreview={handlePreview}
-                              onDownload={handleDownload}
-                            />
-                          </div>
-                        );
-                      })}
+                return (
+                  <div
+                    key={doc.id}
+                    className="flex min-w-0 max-w-full items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-4 transition-colors hover:bg-gray-100/90 dark:bg-gray-800/45 dark:hover:bg-gray-800/70 sm:gap-3 sm:p-5 md:items-stretch"
+                  >
+                    <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-4">
+                      <span className="shrink-0">
+                        <DocumentFileGlyph fileType={doc.fileType} fileName={doc.name} />
+                      </span>
+                      <div className="min-w-0 flex-1 overflow-hidden">
+                        <p className="min-w-0 break-words text-base font-semibold leading-snug text-base-content [overflow-wrap:anywhere]">
+                          {doc.name}
+                        </p>
+                        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                          <span className="shrink-0 text-sm tabular-nums text-base-content/70">
+                            {formatDate(doc.lastModified)}
+                          </span>
+                          <DocumentUploaderAttribution doc={doc} />
+                        </div>
+                      </div>
                     </div>
-                  )}
-                </>
-              )}
-            </>
+
+                    <DocumentRowActionMenu
+                      doc={doc}
+                      isDownloading={isDownloading}
+                      onPreview={handlePreview}
+                      onDownload={handleDownload}
+                    />
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       </div>

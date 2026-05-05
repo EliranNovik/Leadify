@@ -88,11 +88,12 @@ const ensureLeadFolder = async (leadNumber: string) => {
     return null;
   };
 
-  // 1) Try to find `/Leads/Lead_<number>` directly (primary, then alternate L/C prefix)
-  let leadFolder = await tryLeadsRootFolder(primaryFolderName);
-  if (!leadFolder && alternateFolderName) {
-    leadFolder = await tryLeadsRootFolder(alternateFolderName);
-  }
+  // 1) Try to find `/Leads/Lead_<number>` directly (primary + alternate L/C prefix in parallel)
+  const [primaryLeads, altLeads] = await Promise.all([
+    tryLeadsRootFolder(primaryFolderName),
+    alternateFolderName ? tryLeadsRootFolder(alternateFolderName) : Promise.resolve(null),
+  ]);
+  let leadFolder = primaryLeads || altLeads;
   if (leadFolder) return leadFolder;
 
   // Helper to try a given folder name under `/Documents/Leads`
@@ -113,11 +114,12 @@ const ensureLeadFolder = async (leadNumber: string) => {
     return null;
   };
 
-  // 2) Fallback: check if an older `/Documents/Leads/Lead_<number>` exists (primary, then alternate)
-  let legacyLeadFolder = await tryDocumentsLeadsFolder(primaryFolderName);
-  if (!legacyLeadFolder && alternateFolderName) {
-    legacyLeadFolder = await tryDocumentsLeadsFolder(alternateFolderName);
-  }
+  // 2) Fallback: `/Documents/Leads/Lead_<number>` (primary + alternate in parallel)
+  const [primaryLegacy, altLegacy] = await Promise.all([
+    tryDocumentsLeadsFolder(primaryFolderName),
+    alternateFolderName ? tryDocumentsLeadsFolder(alternateFolderName) : Promise.resolve(null),
+  ]);
+  const legacyLeadFolder = primaryLegacy || altLegacy;
   if (legacyLeadFolder) return legacyLeadFolder;
 
   // 3) Create `/Leads` (if needed) and then `/Leads/Lead_<number>`
@@ -215,27 +217,27 @@ serve(async (req) => {
       }
     }
 
-    // Create or reuse a shareable link for the folder (organization scope)
-    let shareableLink = '';
-    try {
-      const permission = await graphClient
-        .api(`/users/${targetUserId}/drive/items/${folderId}/createLink`)
-        .post({
-          type: 'view',
-          scope: 'organization',
-        });
-
-      if (permission?.link?.webUrl) {
-        shareableLink = permission.link.webUrl;
-      }
-    } catch (err) {
-      console.log('list-lead-documents: createLink failed, continuing without folderUrl', err);
-    }
-
-    // List files in the lead folder
-    const folderContents = await graphClient
+    // List folder children and (in parallel) try to create a share link — both are independent Graph calls
+    const listChildrenPromise = graphClient
       .api(`/users/${targetUserId}/drive/items/${folderId}/children`)
       .get();
+
+    const shareLinkPromise = (async (): Promise<string> => {
+      try {
+        const permission = await graphClient
+          .api(`/users/${targetUserId}/drive/items/${folderId}/createLink`)
+          .post({
+            type: 'view',
+            scope: 'organization',
+          });
+        return permission?.link?.webUrl || '';
+      } catch (err) {
+        console.log('list-lead-documents: createLink failed, continuing without folderUrl', err);
+        return '';
+      }
+    })();
+
+    const [folderContents, shareableLink] = await Promise.all([listChildrenPromise, shareLinkPromise]);
 
     const files = (folderContents.value || [])
       .filter((item: any) => item.file) // only files
