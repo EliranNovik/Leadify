@@ -18,15 +18,22 @@ import {
   DocumentTextIcon,
   SignalIcon,
   FunnelIcon,
-  EllipsisHorizontalIcon,
+  EllipsisVerticalIcon,
   ExclamationTriangleIcon,
   ChevronUpDownIcon,
   ChevronUpIcon,
   ChevronDownIcon,
   XMarkIcon,
+  PlusIcon,
+  BanknotesIcon,
+  ReceiptPercentIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
+import {
+  FIRM_INVOICE_DOCUMENTS_BUCKET,
+  buildFirmInvoiceStoragePath,
+} from '../lib/firmInvoiceDocuments';
 import { Link } from 'react-router-dom';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -63,6 +70,31 @@ type FirmContactRow = {
   created_at: string | null;
   updated_at: string | null;
   users?: UserRow | null;
+};
+
+type FirmManagementCostRow = {
+  id: string;
+  firm_id: string;
+  billing_month: string;
+  amount: number | string | null;
+  currency: string | null;
+  notes: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+type FirmInvoiceRow = {
+  id: string;
+  firm_id: string;
+  invoice_month: string;
+  amount: number | string | null;
+  currency: string | null;
+  notes: string | null;
+  storage_path: string | null;
+  file_name: string | null;
+  mime_type: string | null;
+  created_at: string | null;
+  updated_at: string | null;
 };
 
 type SavedView = {
@@ -108,6 +140,8 @@ type FirmRow = {
   updated_at: string | null;
   firm_types?: FirmTypeRow | null;
   firm_contacts?: FirmContactRow[] | null;
+  firm_management_costs?: FirmManagementCostRow[] | null;
+  firm_invoices?: FirmInvoiceRow[] | null;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -117,6 +151,47 @@ function formatDate(v?: string | null) {
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return String(v);
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+/** Display YYYY-MM-DD (month anchor) as e.g. Apr 2026 */
+function formatMonthAnchor(isoDate?: string | null) {
+  if (!isoDate) return '—';
+  const d = new Date(isoDate);
+  if (Number.isNaN(d.getTime())) return isoDate;
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short' });
+}
+
+function parseAmount(n: unknown): number | null {
+  if (n == null || n === '') return null;
+  const x = typeof n === 'number' ? n : Number.parseFloat(String(n));
+  return Number.isFinite(x) ? x : null;
+}
+
+/** Israeli new shekel (NIS); ISO 4217 for DB and Intl.NumberFormat */
+const FIRM_MONEY_CURRENCY = 'ILS' as const;
+
+function moneyStr(amount: unknown, currency?: string | null) {
+  const a = parseAmount(amount);
+  if (a == null) return '—';
+  const cur = (currency || FIRM_MONEY_CURRENCY).trim();
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency: cur }).format(a);
+  } catch {
+    return `${a.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${cur}`;
+  }
+}
+
+/** `<input type="month" />` uses YYYY-MM; store as first day of month in DB */
+function monthInputToIsoFirstDay(ym: string): string {
+  if (!ym || !/^\d{4}-\d{2}$/.test(ym)) return `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}-01`;
+  return `${ym}-01`;
+}
+
+function isoFirstDayToMonthInput(iso?: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
 function parseExternSourceIds(value: unknown): string[] {
@@ -149,17 +224,43 @@ function ProfileAvatar({
   name,
   imageUrl,
   size = 'md',
+  borderless = false,
+  roundedFull = false,
 }: {
   name?: string | null;
   imageUrl?: string | null;
-  size?: 'sm' | 'md' | 'lg';
+  size?: 'sm' | 'md' | 'lg' | 'xl' | 'report';
+  /** Omit grey ring (e.g. firm contacts table) */
+  borderless?: boolean;
+  /** Circular crop (e.g. contact photos) */
+  roundedFull?: boolean;
 }) {
   const initials = initialsFromName(name);
-  const sizeClass = size === 'sm' ? 'h-8 w-8 text-xs' : size === 'lg' ? 'h-16 w-16 text-lg' : 'h-11 w-11 text-sm';
+  const sizeClass =
+    size === 'sm'
+      ? 'h-8 w-8 text-xs'
+      : size === 'lg'
+        ? 'h-16 w-16 text-lg'
+        : size === 'xl'
+          ? 'h-24 w-24 text-2xl'
+          : size === 'report'
+            ? 'h-12 w-12 text-sm'
+            : 'h-11 w-11 text-sm';
+  const radiusClass = roundedFull ? 'rounded-full' : 'rounded-xl';
+  const borderClass = borderless ? '' : 'border border-base-300';
   return (
-    <div className={`relative shrink-0 ${sizeClass} overflow-hidden rounded-xl border border-base-300 bg-primary/10`}>
+    <div
+      className={['relative shrink-0', sizeClass, 'overflow-hidden', radiusClass, borderClass, 'bg-primary/10']
+        .filter(Boolean)
+        .join(' ')}
+    >
       {imageUrl ? (
-        <img src={imageUrl} alt="" className="h-full w-full object-cover" />
+        <img
+          src={imageUrl}
+          alt=""
+          className="h-full w-full object-cover border-0 outline-none ring-0"
+          draggable={false}
+        />
       ) : (
         <div className="flex h-full w-full items-center justify-center font-bold text-primary">
           {initials}
@@ -295,6 +396,18 @@ export default function ExternalFirmsReportPage() {
   const [editingContact, setEditingContact] = useState<FirmContactRow | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
 
+  /** management cost modal */
+  const [costModalFirmId, setCostModalFirmId] = useState<string | null>(null);
+  const [costModalEditingId, setCostModalEditingId] = useState<string | null>(null);
+  const [costForm, setCostForm] = useState({ month: '', amount: '', notes: '' });
+
+  /** invoice modal */
+  const [invoiceModalFirmId, setInvoiceModalFirmId] = useState<string | null>(null);
+  const [invoiceModalEditingId, setInvoiceModalEditingId] = useState<string | null>(null);
+  const [invoiceForm, setInvoiceForm] = useState({ month: '', amount: '', notes: '' });
+  const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
+  const [invoiceUploading, setInvoiceUploading] = useState(false);
+
   // Phase 3 State
   const [savedViews, setSavedViews] = useState<SavedView[]>([]);
   const [activeLogs, setActiveLogs] = useState<ActivityLog[]>([]);
@@ -344,6 +457,29 @@ export default function ExternalFirmsReportPage() {
             created_at,
             updated_at,
             users:user_id(*)
+          ),
+          firm_management_costs(
+            id,
+            firm_id,
+            billing_month,
+            amount,
+            currency,
+            notes,
+            created_at,
+            updated_at
+          ),
+          firm_invoices(
+            id,
+            firm_id,
+            invoice_month,
+            amount,
+            currency,
+            notes,
+            storage_path,
+            file_name,
+            mime_type,
+            created_at,
+            updated_at
           )
         `,
         )
@@ -451,6 +587,19 @@ export default function ExternalFirmsReportPage() {
       fetchActivityLogs(selectedFirmId);
     }
   }, [selectedFirmId]);
+
+  /** Close firm table row action menus when clicking outside (details + dropdown-content). */
+  useEffect(() => {
+    const onPointerDown = (e: PointerEvent) => {
+      const t = e.target;
+      if (!(t instanceof Node)) return;
+      document.querySelectorAll<HTMLDetailsElement>('details.firm-table-actions-dropdown[open]').forEach((el) => {
+        if (!el.contains(t)) el.removeAttribute('open');
+      });
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, []);
 
   const availableTypes = useMemo(() => {
     const typesMap = new Map<string, string>();
@@ -613,6 +762,348 @@ export default function ExternalFirmsReportPage() {
     }
   };
 
+  const mergeFirmChildRows = (
+    firmId: string,
+    patch: {
+      firm_management_costs?: FirmManagementCostRow[];
+      firm_invoices?: FirmInvoiceRow[];
+    },
+  ) => {
+    setFirms((prev) =>
+      prev.map((f) =>
+        f.id === firmId
+          ? {
+              ...f,
+              ...(patch.firm_management_costs != null ? { firm_management_costs: patch.firm_management_costs } : {}),
+              ...(patch.firm_invoices != null ? { firm_invoices: patch.firm_invoices } : {}),
+            }
+          : f,
+      ),
+    );
+  };
+
+  const sortCostRows = (rows: FirmManagementCostRow[]) =>
+    [...rows].sort((a, b) => String(b.billing_month).localeCompare(String(a.billing_month)));
+
+  const sortInvoiceRows = (rows: FirmInvoiceRow[]) =>
+    [...rows].sort((a, b) => String(b.invoice_month).localeCompare(String(a.invoice_month)));
+
+  const openAddCost = (firmId: string) => {
+    setCostModalEditingId(null);
+    setCostForm({
+      month: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
+      amount: '',
+      notes: '',
+    });
+    setCostModalFirmId(firmId);
+  };
+
+  const openEditCost = (firmId: string, row: FirmManagementCostRow) => {
+    setCostModalEditingId(row.id);
+    setCostForm({
+      month: isoFirstDayToMonthInput(row.billing_month),
+      amount: row.amount != null ? String(row.amount) : '',
+      notes: row.notes || '',
+    });
+    setCostModalFirmId(firmId);
+  };
+
+  const submitCostModal = async () => {
+    if (!costModalFirmId) return;
+    const amt = parseAmount(costForm.amount);
+    if (amt == null || amt < 0) {
+      toast.error('Enter a valid amount.');
+      return;
+    }
+    const billing_month = monthInputToIsoFirstDay(costForm.month);
+    setIsUpdating(true);
+    try {
+      if (costModalEditingId) {
+        const { error } = await supabase
+          .from('firm_management_costs')
+          .update({
+            billing_month,
+            amount: amt,
+            currency: FIRM_MONEY_CURRENCY,
+            notes: costForm.notes.trim() || null,
+          })
+          .eq('id', costModalEditingId);
+        if (error) throw error;
+        toast.success('Management cost updated');
+      } else {
+        const { data, error } = await supabase
+          .from('firm_management_costs')
+          .insert([
+            {
+              firm_id: costModalFirmId,
+              billing_month,
+              amount: amt,
+              currency: FIRM_MONEY_CURRENCY,
+              notes: costForm.notes.trim() || null,
+            },
+          ])
+          .select(
+            'id, firm_id, billing_month, amount, currency, notes, created_at, updated_at',
+          )
+          .single();
+        if (error) throw error;
+        toast.success('Management cost added');
+        const firm = firms.find((f) => f.id === costModalFirmId);
+        const next = sortCostRows([...(firm?.firm_management_costs || []), data as FirmManagementCostRow]);
+        mergeFirmChildRows(costModalFirmId, { firm_management_costs: next });
+        await logActivity({
+          firm_id: costModalFirmId,
+          contact_id: null,
+          action_type: 'ADD_MANAGEMENT_COST',
+          description: `Added management cost for ${formatMonthAnchor(billing_month)}.`,
+        });
+        setCostModalFirmId(null);
+        setIsUpdating(false);
+        if (selectedFirmId === costModalFirmId) await fetchActivityLogs(costModalFirmId);
+        return;
+      }
+      const firm = firms.find((f) => f.id === costModalFirmId);
+      const next = sortCostRows(
+        (firm?.firm_management_costs || []).map((r) =>
+          r.id === costModalEditingId
+            ? {
+                ...r,
+                billing_month,
+                amount: amt,
+                currency: FIRM_MONEY_CURRENCY,
+                notes: costForm.notes.trim() || null,
+              }
+            : r,
+        ),
+      );
+      mergeFirmChildRows(costModalFirmId, { firm_management_costs: next });
+      await logActivity({
+        firm_id: costModalFirmId,
+        contact_id: null,
+        action_type: 'UPDATE_MANAGEMENT_COST',
+        description: `Updated management cost (${formatMonthAnchor(billing_month)}).`,
+      });
+      setCostModalFirmId(null);
+      if (selectedFirmId === costModalFirmId) await fetchActivityLogs(costModalFirmId);
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || 'Failed to save');
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const deleteCostRow = async (firmId: string, row: FirmManagementCostRow) => {
+    if (!window.confirm('Delete this management cost row?')) return;
+    setIsUpdating(true);
+    try {
+      const { error } = await supabase.from('firm_management_costs').delete().eq('id', row.id);
+      if (error) throw error;
+      const firm = firms.find((f) => f.id === firmId);
+      const next = (firm?.firm_management_costs || []).filter((r) => r.id !== row.id);
+      mergeFirmChildRows(firmId, { firm_management_costs: next });
+      toast.success('Deleted');
+      await logActivity({
+        firm_id: firmId,
+        contact_id: null,
+        action_type: 'DELETE_MANAGEMENT_COST',
+        description: `Removed management cost (${formatMonthAnchor(row.billing_month)}).`,
+      });
+      if (selectedFirmId === firmId) await fetchActivityLogs(firmId);
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || 'Delete failed');
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const openAddInvoice = (firmId: string) => {
+    setInvoiceModalEditingId(null);
+    setInvoiceFile(null);
+    setInvoiceForm({
+      month: `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`,
+      amount: '',
+      notes: '',
+    });
+    setInvoiceModalFirmId(firmId);
+  };
+
+  const openEditInvoice = (firmId: string, row: FirmInvoiceRow) => {
+    setInvoiceModalEditingId(row.id);
+    setInvoiceFile(null);
+    setInvoiceForm({
+      month: isoFirstDayToMonthInput(row.invoice_month),
+      amount: row.amount != null ? String(row.amount) : '',
+      notes: row.notes || '',
+    });
+    setInvoiceModalFirmId(firmId);
+  };
+
+  const submitInvoiceModal = async () => {
+    if (!invoiceModalFirmId) return;
+    const amt = invoiceForm.amount.trim() === '' ? null : parseAmount(invoiceForm.amount);
+    if (invoiceForm.amount.trim() !== '' && amt == null) {
+      toast.error('Enter a valid amount or leave empty.');
+      return;
+    }
+    const invoice_month = monthInputToIsoFirstDay(invoiceForm.month);
+    setInvoiceUploading(true);
+    setIsUpdating(true);
+    try {
+      let rowId = invoiceModalEditingId;
+      if (!rowId) {
+        const { data, error } = await supabase
+          .from('firm_invoices')
+          .insert([
+            {
+              firm_id: invoiceModalFirmId,
+              invoice_month,
+              amount: amt,
+              currency: FIRM_MONEY_CURRENCY,
+              notes: invoiceForm.notes.trim() || null,
+            },
+          ])
+          .select(
+            'id, firm_id, invoice_month, amount, currency, notes, storage_path, file_name, mime_type, created_at, updated_at',
+          )
+          .single();
+        if (error) throw error;
+        rowId = (data as FirmInvoiceRow).id;
+        const firm = firms.find((f) => f.id === invoiceModalFirmId);
+        const next = sortInvoiceRows([...(firm?.firm_invoices || []), data as FirmInvoiceRow]);
+        mergeFirmChildRows(invoiceModalFirmId, { firm_invoices: next });
+        toast.success('Invoice added');
+        await logActivity({
+          firm_id: invoiceModalFirmId,
+          contact_id: null,
+          action_type: 'ADD_INVOICE',
+          description: `Added invoice for ${formatMonthAnchor(invoice_month)}.`,
+        });
+      } else {
+        const { error } = await supabase
+          .from('firm_invoices')
+          .update({
+            invoice_month,
+            amount: amt,
+            currency: FIRM_MONEY_CURRENCY,
+            notes: invoiceForm.notes.trim() || null,
+          })
+          .eq('id', rowId);
+        if (error) throw error;
+        const firm = firms.find((f) => f.id === invoiceModalFirmId);
+        const next = sortInvoiceRows(
+          (firm?.firm_invoices || []).map((r) =>
+            r.id === rowId
+              ? {
+                  ...r,
+                  invoice_month,
+                  amount: amt,
+                  currency: FIRM_MONEY_CURRENCY,
+                  notes: invoiceForm.notes.trim() || null,
+                }
+              : r,
+          ),
+        );
+        mergeFirmChildRows(invoiceModalFirmId, { firm_invoices: next });
+        toast.success('Invoice updated');
+        await logActivity({
+          firm_id: invoiceModalFirmId,
+          contact_id: null,
+          action_type: 'UPDATE_INVOICE',
+          description: `Updated invoice (${formatMonthAnchor(invoice_month)}).`,
+        });
+      }
+
+      if (invoiceFile && rowId) {
+        const path = buildFirmInvoiceStoragePath(invoiceModalFirmId, rowId, invoiceFile.name);
+        const { error: upErr } = await supabase.storage
+          .from(FIRM_INVOICE_DOCUMENTS_BUCKET)
+          .upload(path, invoiceFile, { contentType: invoiceFile.type || undefined, upsert: true });
+        if (upErr) throw upErr;
+        const { error: uErr } = await supabase
+          .from('firm_invoices')
+          .update({
+            storage_path: path,
+            file_name: invoiceFile.name,
+            mime_type: invoiceFile.type || null,
+          })
+          .eq('id', rowId);
+        if (uErr) throw uErr;
+        const firm = firms.find((f) => f.id === invoiceModalFirmId);
+        const list = firm?.firm_invoices || [];
+        const next = sortInvoiceRows(
+          list.map((r) =>
+            r.id === rowId
+              ? {
+                  ...r,
+                  storage_path: path,
+                  file_name: invoiceFile.name,
+                  mime_type: invoiceFile.type || null,
+                  invoice_month,
+                  amount: amt,
+                  currency: FIRM_MONEY_CURRENCY,
+                  notes: invoiceForm.notes.trim() || null,
+                }
+              : r,
+          ),
+        );
+        mergeFirmChildRows(invoiceModalFirmId, { firm_invoices: next });
+        toast.success('File uploaded');
+      }
+
+      setInvoiceModalFirmId(null);
+      setInvoiceFile(null);
+      if (selectedFirmId === invoiceModalFirmId) await fetchActivityLogs(invoiceModalFirmId);
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || 'Failed to save invoice');
+    } finally {
+      setInvoiceUploading(false);
+      setIsUpdating(false);
+    }
+  };
+
+  const deleteInvoiceRow = async (firmId: string, row: FirmInvoiceRow) => {
+    if (!window.confirm('Delete this invoice row' + (row.storage_path ? ' and its file?' : '?'))) return;
+    setIsUpdating(true);
+    try {
+      if (row.storage_path) {
+        await supabase.storage.from(FIRM_INVOICE_DOCUMENTS_BUCKET).remove([row.storage_path]);
+      }
+      const { error } = await supabase.from('firm_invoices').delete().eq('id', row.id);
+      if (error) throw error;
+      const firm = firms.find((f) => f.id === firmId);
+      const next = (firm?.firm_invoices || []).filter((r) => r.id !== row.id);
+      mergeFirmChildRows(firmId, { firm_invoices: next });
+      toast.success('Deleted');
+      await logActivity({
+        firm_id: firmId,
+        contact_id: null,
+        action_type: 'DELETE_INVOICE',
+        description: `Removed invoice (${formatMonthAnchor(row.invoice_month)}).`,
+      });
+      if (selectedFirmId === firmId) await fetchActivityLogs(firmId);
+    } catch (err: any) {
+      console.error(err);
+      toast.error(err.message || 'Delete failed');
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
+  const openInvoiceFile = async (row: FirmInvoiceRow) => {
+    if (!row.storage_path) return;
+    const { data, error } = await supabase.storage
+      .from(FIRM_INVOICE_DOCUMENTS_BUCKET)
+      .createSignedUrl(row.storage_path, 3600);
+    if (error || !data?.signedUrl) {
+      toast.error('Could not open file');
+      return;
+    }
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer');
+  };
+
   const handleSaveView = async () => {
     const name = window.prompt('Enter a name for this view:');
     if (!name) return;
@@ -737,7 +1228,7 @@ export default function ExternalFirmsReportPage() {
   // ─────────────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-[calc(100vh-3rem)] bg-base-100 px-4 py-6 md:px-10 md:py-8">
+    <div className="min-h-[calc(100vh-3rem)] bg-base-100 px-4 py-6 md:px-10 md:py-8 [zoom:1.075]">
       <div className="mx-auto w-full max-w-6xl space-y-5">
 
         {/* ── Page Header ──────────────────────────────────────────────────── */}
@@ -781,7 +1272,7 @@ export default function ExternalFirmsReportPage() {
 
         {/* ── Breadcrumb (sub-views only) ───────────────────────────────── */}
         {view !== 'firms' && (
-          <div className="rounded-lg border border-base-300/60 bg-base-200/30 px-3 py-2">
+          <div className="py-1">
             <Breadcrumb items={breadcrumbItems} />
           </div>
         )}
@@ -1057,8 +1548,9 @@ export default function ExternalFirmsReportPage() {
                                   setEditingFirm(firm);
                                 }} 
                                 className="opacity-0 group-hover:opacity-100 p-1 text-base-content/40 hover:text-base-content/80 transition-all duration-150 rounded-md hover:bg-base-300"
+                                aria-label="Firm actions"
                               >
-                                <EllipsisHorizontalIcon className="h-5 w-5" />
+                                <EllipsisVerticalIcon className="h-5 w-5" />
                               </button>
                             </div>
                           </td>
@@ -1073,44 +1565,40 @@ export default function ExternalFirmsReportPage() {
             // ── Firm detail ──────────────────────────────────────────────
             selectedFirm ? (
               <div className="space-y-4">
-                {/* Firm header card */}
-                <div className="rounded-xl border border-base-300 bg-base-100 p-5">
-                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                    <div className="flex items-start gap-3 min-w-0">
-                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary text-sm font-bold">
-                        {selectedFirm.name.slice(0, 2).toUpperCase()}
-                      </div>
-                      <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                          <h2 className="text-xl font-bold text-base-content/95 truncate max-w-[22rem]">
-                            {selectedFirm.name}
-                          </h2>
-                          {selectedFirm.is_active === false ? (
-                            <span className="rounded-md bg-red-500 px-3 py-1 text-xs font-semibold text-white">Inactive</span>
-                          ) : (
-                            <span className="rounded-md bg-emerald-500 px-3 py-1 text-xs font-semibold text-white">Active</span>
-                          )}
-                        </div>
-                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-base-content/50">
-                          {selectedFirm.firm_types?.label && (
-                            <span className="rounded-md border border-base-300 bg-base-200/60 px-2 py-0.5 font-medium">
-                              {selectedFirm.firm_types.label}
-                            </span>
-                          )}
-                          {selectedFirm.vat_number && (
-                            <span className="font-mono">VAT {selectedFirm.vat_number}</span>
-                          )}
-                          {selectedFirm.website && (
-                            <span className="flex items-center gap-1 text-base-content/40">
-                              <GlobeAltIcon className="h-3.5 w-3.5" />
-                              {selectedFirm.website}
-                            </span>
-                          )}
-                        </div>
-                        <div className="mt-2 text-xs text-base-content/35">
-                          Created {formatDate(selectedFirm.created_at)} · Updated {formatDate(selectedFirm.updated_at)}
-                        </div>
-                      </div>
+                {/* Firm header — no card shell */}
+                <div className="flex items-start gap-3 min-w-0">
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary text-sm font-bold">
+                    {selectedFirm.name.slice(0, 2).toUpperCase()}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="text-xl font-bold text-base-content/95 truncate max-w-[22rem]">
+                        {selectedFirm.name}
+                      </h2>
+                      {selectedFirm.is_active === false ? (
+                        <span className="rounded-md bg-red-500 px-3 py-1 text-xs font-semibold text-white">Inactive</span>
+                      ) : (
+                        <span className="rounded-md bg-emerald-500 px-3 py-1 text-xs font-semibold text-white">Active</span>
+                      )}
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-base-content/50">
+                      {selectedFirm.firm_types?.label && (
+                        <span className="rounded-md border border-base-300 bg-base-200/60 px-2 py-0.5 font-medium">
+                          {selectedFirm.firm_types.label}
+                        </span>
+                      )}
+                      {selectedFirm.vat_number && (
+                        <span className="font-mono">VAT {selectedFirm.vat_number}</span>
+                      )}
+                      {selectedFirm.website && (
+                        <span className="flex items-center gap-1 text-base-content/40">
+                          <GlobeAltIcon className="h-3.5 w-3.5" />
+                          {selectedFirm.website}
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-2 text-xs text-base-content/35">
+                      Created {formatDate(selectedFirm.created_at)} · Updated {formatDate(selectedFirm.updated_at)}
                     </div>
                   </div>
                 </div>
@@ -1164,7 +1652,13 @@ export default function ExternalFirmsReportPage() {
                             >
                               <td className="px-5 py-4">
                                 <div className="flex items-center gap-3">
-                                  <ProfileAvatar name={c.name} imageUrl={c.profile_image_url} size="sm" />
+                                  <ProfileAvatar
+                                    name={c.name}
+                                    imageUrl={c.profile_image_url}
+                                    size="report"
+                                    borderless
+                                    roundedFull
+                                  />
                                   <span className="font-semibold text-base-content/90 truncate max-w-[12rem]">{c.name || '—'}</span>
                                 </div>
                               </td>
@@ -1247,6 +1741,231 @@ export default function ExternalFirmsReportPage() {
                     </table>
                   )}
                 </div>
+
+                {/* Management costs */}
+                <div className="rounded-xl border border-base-300 bg-base-100">
+                  <div className="flex items-center justify-between border-b border-base-300 bg-base-200/30 px-5 py-3">
+                    <div className="flex items-center gap-2">
+                      <BanknotesIcon className="h-4 w-4 text-base-content/50" />
+                      <span className="text-sm font-semibold text-base-content/80">Management costs</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`rounded-md px-2 py-0.5 text-xs font-semibold ${
+                          (selectedFirm.firm_management_costs || []).length > 0
+                            ? 'bg-primary/8 text-primary'
+                            : 'bg-base-200 text-base-content/40'
+                        }`}
+                      >
+                        {(selectedFirm.firm_management_costs || []).length}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-xs gap-1"
+                        onClick={() => openAddCost(selectedFirm.id)}
+                      >
+                        <PlusIcon className="h-4 w-4" />
+                        Add
+                      </button>
+                    </div>
+                  </div>
+                  {(selectedFirm.firm_management_costs || []).length === 0 ? (
+                    <div className="flex flex-col items-center justify-center gap-2 py-10 text-sm text-base-content/40">
+                      <BanknotesIcon className="h-5 w-5" />
+                      No management costs yet
+                    </div>
+                  ) : (
+                    <table className="w-full text-base">
+                      <thead>
+                        <tr className="border-b border-base-300/50">
+                          <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-base-content/35">
+                            Month
+                          </th>
+                          <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-base-content/35">
+                            Amount
+                          </th>
+                          <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-base-content/35 hidden sm:table-cell">
+                            Notes
+                          </th>
+                          <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-base-content/35 w-[7rem]">
+                            Actions
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-base-300/50">
+                        {sortCostRows([...(selectedFirm.firm_management_costs || [])]).map((row) => (
+                          <tr key={row.id} className="hover:bg-base-200/40">
+                            <td className="px-5 py-3 text-base-content/90">{formatMonthAnchor(row.billing_month)}</td>
+                            <td className="px-5 py-3 font-medium tabular-nums">{moneyStr(row.amount, FIRM_MONEY_CURRENCY)}</td>
+                            <td className="px-5 py-3 text-sm text-base-content/60 hidden sm:table-cell max-w-[20rem] truncate" title={row.notes || ''}>
+                              {row.notes || '—'}
+                            </td>
+                            <td className="px-5 py-3 text-right">
+                              <details className="dropdown dropdown-end firm-table-actions-dropdown inline-block">
+                                <summary
+                                  className="btn btn-ghost btn-xs btn-square min-h-8 min-w-8 list-none [&::-webkit-details-marker]:hidden"
+                                  aria-label="Management cost actions"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <EllipsisVerticalIcon className="h-5 w-5" />
+                                </summary>
+                                <ul className="dropdown-content menu z-[120] mt-1 w-36 rounded-box border border-base-300 bg-base-100 p-2 shadow-lg">
+                                  <li>
+                                    <button
+                                      type="button"
+                                      className="text-sm"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        (e.currentTarget.closest('details') as HTMLDetailsElement | null)?.removeAttribute('open');
+                                        openEditCost(selectedFirm.id, row);
+                                      }}
+                                    >
+                                      Edit
+                                    </button>
+                                  </li>
+                                  <li>
+                                    <button
+                                      type="button"
+                                      className="text-error text-sm"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        (e.currentTarget.closest('details') as HTMLDetailsElement | null)?.removeAttribute('open');
+                                        void deleteCostRow(selectedFirm.id, row);
+                                      }}
+                                    >
+                                      Delete
+                                    </button>
+                                  </li>
+                                </ul>
+                              </details>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+
+                {/* Invoices */}
+                <div className="rounded-xl border border-base-300 bg-base-100">
+                  <div className="flex items-center justify-between border-b border-base-300 bg-base-200/30 px-5 py-3">
+                    <div className="flex items-center gap-2">
+                      <ReceiptPercentIcon className="h-4 w-4 text-base-content/50" />
+                      <span className="text-sm font-semibold text-base-content/80">Invoices</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`rounded-md px-2 py-0.5 text-xs font-semibold ${
+                          (selectedFirm.firm_invoices || []).length > 0
+                            ? 'bg-primary/8 text-primary'
+                            : 'bg-base-200 text-base-content/40'
+                        }`}
+                      >
+                        {(selectedFirm.firm_invoices || []).length}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-xs gap-1"
+                        onClick={() => openAddInvoice(selectedFirm.id)}
+                      >
+                        <PlusIcon className="h-4 w-4" />
+                        Add
+                      </button>
+                    </div>
+                  </div>
+                  {(selectedFirm.firm_invoices || []).length === 0 ? (
+                    <div className="flex flex-col items-center justify-center gap-2 py-10 text-sm text-base-content/40">
+                      <ReceiptPercentIcon className="h-5 w-5" />
+                      No invoices yet
+                    </div>
+                  ) : (
+                    <table className="w-full text-base">
+                      <thead>
+                        <tr className="border-b border-base-300/50">
+                          <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-base-content/35">
+                            Month
+                          </th>
+                          <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-base-content/35">
+                            Amount
+                          </th>
+                          <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-base-content/35 hidden md:table-cell">
+                            Document
+                          </th>
+                          <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-base-content/35 hidden lg:table-cell">
+                            Notes
+                          </th>
+                          <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wider text-base-content/35 w-[7rem]">
+                            Actions
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-base-300/50">
+                        {sortInvoiceRows([...(selectedFirm.firm_invoices || [])]).map((row) => (
+                          <tr key={row.id} className="hover:bg-base-200/40">
+                            <td className="px-5 py-3 text-base-content/90">{formatMonthAnchor(row.invoice_month)}</td>
+                            <td className="px-5 py-3 font-medium tabular-nums">{moneyStr(row.amount, FIRM_MONEY_CURRENCY)}</td>
+                            <td className="px-5 py-3 hidden md:table-cell">
+                              {row.storage_path && row.file_name ? (
+                                <button
+                                  type="button"
+                                  className="link link-primary text-sm"
+                                  onClick={() => void openInvoiceFile(row)}
+                                >
+                                  <DocumentTextIcon className="inline h-4 w-4 mr-1 align-text-bottom" />
+                                  {row.file_name}
+                                </button>
+                              ) : (
+                                <span className="text-base-content/35">—</span>
+                              )}
+                            </td>
+                            <td className="px-5 py-3 text-sm text-base-content/60 hidden lg:table-cell max-w-[16rem] truncate" title={row.notes || ''}>
+                              {row.notes || '—'}
+                            </td>
+                            <td className="px-5 py-3 text-right">
+                              <details className="dropdown dropdown-end firm-table-actions-dropdown inline-block">
+                                <summary
+                                  className="btn btn-ghost btn-xs btn-square min-h-8 min-w-8 list-none [&::-webkit-details-marker]:hidden"
+                                  aria-label="Invoice actions"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  <EllipsisVerticalIcon className="h-5 w-5" />
+                                </summary>
+                                <ul className="dropdown-content menu z-[120] mt-1 w-36 rounded-box border border-base-300 bg-base-100 p-2 shadow-lg">
+                                  <li>
+                                    <button
+                                      type="button"
+                                      className="text-sm"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        (e.currentTarget.closest('details') as HTMLDetailsElement | null)?.removeAttribute('open');
+                                        openEditInvoice(selectedFirm.id, row);
+                                      }}
+                                    >
+                                      Edit
+                                    </button>
+                                  </li>
+                                  <li>
+                                    <button
+                                      type="button"
+                                      className="text-error text-sm"
+                                      onClick={(e) => {
+                                        e.preventDefault();
+                                        (e.currentTarget.closest('details') as HTMLDetailsElement | null)?.removeAttribute('open');
+                                        void deleteInvoiceRow(selectedFirm.id, row);
+                                      }}
+                                    >
+                                      Delete
+                                    </button>
+                                  </li>
+                                </ul>
+                              </details>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
               </div>
             ) : (
               <EmptyState title="Firm not found" subtitle="This firm may have been removed." />
@@ -1276,32 +1995,36 @@ export default function ExternalFirmsReportPage() {
 
               return (
                 <div className="space-y-4">
-                  {/* Contact hero card */}
-                  <div className="rounded-xl border border-base-300 bg-base-100 p-5">
-                    <div className="flex items-start gap-4">
-                      <ProfileAvatar name={selectedContact.name} imageUrl={userPhoto ? String(userPhoto) : null} size="lg" />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h2 className="text-2xl font-bold text-base-content/95">{selectedContact.name || 'Contact'}</h2>
-                          {selectedContact.is_active === false ? (
-                            <span className="rounded-md bg-red-500 px-3 py-1 text-xs font-semibold text-white">Inactive</span>
-                          ) : (
-                            <span className="rounded-md bg-emerald-500 px-3 py-1 text-xs font-semibold text-white">Active</span>
-                          )}
-                          {selectedContact.firm_owner && (
-                            <span className="rounded-md bg-amber-500 px-3 py-1 text-xs font-semibold text-white">Owner</span>
-                          )}
-                          {linkedUser && (
-                            <span className="rounded-md border border-base-300 bg-base-200 px-3 py-1 text-xs font-semibold text-base-content/65">Linked user</span>
-                          )}
-                        </div>
-                        <div className="mt-1 text-sm text-base-content/45">
-                          {selectedFirm.name}
-                          {selectedFirm.firm_types?.label && ` · ${selectedFirm.firm_types.label}`}
-                        </div>
-                        <div className="mt-2 text-xs text-base-content/35">
-                          Created {formatDate(selectedContact.created_at)} · Updated {formatDate(selectedContact.updated_at)}
-                        </div>
+                  {/* Contact hero — no card shell */}
+                  <div className="flex items-start gap-4">
+                    <ProfileAvatar
+                      name={selectedContact.name}
+                      imageUrl={userPhoto ? String(userPhoto) : null}
+                      size="xl"
+                      borderless
+                      roundedFull
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-2xl font-bold text-base-content/95">{selectedContact.name || 'Contact'}</h2>
+                        {selectedContact.is_active === false ? (
+                          <span className="rounded-md bg-red-500 px-3 py-1 text-xs font-semibold text-white">Inactive</span>
+                        ) : (
+                          <span className="rounded-md bg-emerald-500 px-3 py-1 text-xs font-semibold text-white">Active</span>
+                        )}
+                        {selectedContact.firm_owner && (
+                          <span className="rounded-md bg-amber-500 px-3 py-1 text-xs font-semibold text-white">Owner</span>
+                        )}
+                        {linkedUser && (
+                          <span className="rounded-md border border-base-300 bg-base-200 px-3 py-1 text-xs font-semibold text-base-content/65">Linked user</span>
+                        )}
+                      </div>
+                      <div className="mt-1 text-sm text-base-content/45">
+                        {selectedFirm.name}
+                        {selectedFirm.firm_types?.label && ` · ${selectedFirm.firm_types.label}`}
+                      </div>
+                      <div className="mt-2 text-xs text-base-content/35">
+                        Created {formatDate(selectedContact.created_at)} · Updated {formatDate(selectedContact.updated_at)}
                       </div>
                     </div>
                   </div>
@@ -1434,9 +2157,9 @@ export default function ExternalFirmsReportPage() {
                     </div>
                   </div>
 
-                  {/* Firm context strip */}
-                  <div className="rounded-xl border border-base-300 bg-base-100 px-5 py-4">
-                    <div className="flex items-center gap-2 mb-3">
+                  {/* Firm context — no card shell */}
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
                       <BuildingOffice2Icon className="h-4 w-4 text-base-content/40" />
                       <span className="text-sm font-semibold text-base-content/75">Firm context</span>
                       {selectedFirm.firm_types?.label && (
@@ -1749,6 +2472,158 @@ export default function ExternalFirmsReportPage() {
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {costModalFirmId && (
+          <div className="modal modal-open z-[110]">
+            <div className="modal-box max-w-md">
+              <h3 className="font-bold text-lg">{costModalEditingId ? 'Edit management cost' : 'Add management cost'}</h3>
+              <div className="mt-4 space-y-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-base-content/50">Month</label>
+                  <input
+                    type="month"
+                    className="input input-bordered w-full"
+                    value={costForm.month}
+                    onChange={(e) => setCostForm((f) => ({ ...f, month: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-base-content/50">
+                    Amount (NIS)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    className="input input-bordered w-full"
+                    value={costForm.amount}
+                    onChange={(e) => setCostForm((f) => ({ ...f, amount: e.target.value }))}
+                  />
+                  
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-base-content/50">Notes</label>
+                  <textarea
+                    className="textarea textarea-bordered w-full min-h-[4rem]"
+                    value={costForm.notes}
+                    onChange={(e) => setCostForm((f) => ({ ...f, notes: e.target.value }))}
+                  />
+                </div>
+              </div>
+              <div className="modal-action">
+                <button type="button" className="btn btn-ghost" onClick={() => setCostModalFirmId(null)}>
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={isUpdating}
+                  onClick={() => void submitCostModal()}
+                >
+                  {isUpdating ? <span className="loading loading-sm loading-spinner" /> : 'Save'}
+                </button>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="modal-backdrop bg-black/40"
+              aria-label="Close"
+              onClick={() => !isUpdating && setCostModalFirmId(null)}
+            />
+          </div>
+        )}
+
+        {invoiceModalFirmId && (
+          <div className="modal modal-open z-[110]">
+            <div className="modal-box max-w-md">
+              <h3 className="font-bold text-lg">{invoiceModalEditingId ? 'Edit invoice' : 'Add invoice'}</h3>
+              <div className="mt-4 space-y-3">
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-base-content/50">Invoice month</label>
+                  <input
+                    type="month"
+                    className="input input-bordered w-full"
+                    value={invoiceForm.month}
+                    onChange={(e) => setInvoiceForm((f) => ({ ...f, month: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-base-content/50">
+                    Amount in NIS (optional)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    className="input input-bordered w-full"
+                    value={invoiceForm.amount}
+                    onChange={(e) => setInvoiceForm((f) => ({ ...f, amount: e.target.value }))}
+                  />
+                  
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-base-content/50">Notes</label>
+                  <textarea
+                    className="textarea textarea-bordered w-full min-h-[4rem]"
+                    value={invoiceForm.notes}
+                    onChange={(e) => setInvoiceForm((f) => ({ ...f, notes: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs font-semibold uppercase tracking-wide text-base-content/50">
+                    Document (PDF, image, office)
+                  </label>
+                  <input
+                    type="file"
+                    className="file-input file-input-bordered w-full file-input-sm"
+                    accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,.xls,.xlsx"
+                    onChange={(e) => setInvoiceFile(e.target.files?.[0] ?? null)}
+                  />
+                  {invoiceModalEditingId && !invoiceFile && (firms.find((x) => x.id === invoiceModalFirmId)?.firm_invoices || []).find((r) => r.id === invoiceModalEditingId)?.file_name ? (
+                    <p className="text-xs text-base-content/50">
+                      Current:{' '}
+                      {
+                        (firms.find((x) => x.id === invoiceModalFirmId)?.firm_invoices || []).find((r) => r.id === invoiceModalEditingId)?.file_name
+                      }{' '}
+                      — upload a new file to replace.
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+              <div className="modal-action">
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setInvoiceModalFirmId(null);
+                    setInvoiceFile(null);
+                  }}
+                  disabled={invoiceUploading}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={isUpdating || invoiceUploading}
+                  onClick={() => void submitInvoiceModal()}
+                >
+                  {invoiceUploading || isUpdating ? (
+                    <span className="loading loading-sm loading-spinner" />
+                  ) : (
+                    'Save'
+                  )}
+                </button>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="modal-backdrop bg-black/40"
+              aria-label="Close"
+              onClick={() => !invoiceUploading && !isUpdating && setInvoiceModalFirmId(null)}
+            />
           </div>
         )}
 

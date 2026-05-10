@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ClientTabProps } from '../../types/client';
 import {
   AcademicCapIcon,
@@ -39,6 +39,24 @@ import DocumentModal from '../DocumentModal';
 import ExpertNotesModal from '../ExpertNotesModal';
 import { toast } from 'react-hot-toast';
 import { buildCaseDocumentStoragePath, CASE_DOCUMENTS_STORAGE_BUCKET } from '../../lib/caseDocumentsStorage';
+import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../../lib/leadOneDrivePaths';
+
+/** Same parsing as `DocumentModal` for `lead_sub_efforts.document_url` — used only for total count. */
+function normalizeSubEffortDocumentItems(raw: unknown): unknown[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      /* plain URL string */
+    }
+    return [{ url: raw }];
+  }
+  if (typeof raw === 'object') return [raw];
+  return [];
+}
 
 interface UploadedFile {
   name: string;
@@ -1342,7 +1360,6 @@ ${combinedText}`;
   // Document Modal State
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const [documentCount, setDocumentCount] = useState<number>(0);
-  const isFetchingCountRef = useRef(false); // Prevent duplicate fetches
 
   // Get docs_url for legacy leads (used for OneDrive folder resolution)
   const [docsUrl, setDocsUrl] = useState<string>('');
@@ -1476,71 +1493,87 @@ ${combinedText}`;
     void fetchOneDriveDocumentCount();
   }, [fetchOneDriveDocumentCount]);
 
-  // Function to fetch document count - using useCallback to memoize
+  /** Matches `DocumentModal` totals: ClientHeader bucket rows in `lead_case_documents` + sub-effort category attachments. */
   const fetchDocumentCount = useCallback(async () => {
-    if (!client.lead_number) {
+    const leadNum = client.lead_number != null ? String(client.lead_number).trim() : '';
+    if (!leadNum) {
+      setDocumentCount(0);
       return;
     }
 
     try {
-      const { data, error } = await supabase.functions.invoke('list-lead-documents', {
-        body: { leadNumber: client.lead_number }
-      });
+      const { count: caseRowCount, error: caseErr } = await supabase
+        .from('lead_case_documents')
+        .select('id', { count: 'exact', head: true })
+        .eq('lead_number', leadNum)
+        .not('storage_path', 'is', null)
+        .eq('onedrive_subfolder', CLIENT_HEADER_ONEDRIVE_SUBFOLDER);
 
-      if (error) {
-        console.error('Error fetching document count:', error);
-        setDocumentCount(0); // Set to 0 on error
-        return;
+      if (caseErr) {
+        console.error('Error fetching case document count:', caseErr);
       }
 
-      if (data && data.success) {
-        // The API returns a count field
-        const count = data.count || (data.files ? data.files.length : 0);
-        setDocumentCount(count);
+      let subItemCount = 0;
+      const rawClientId = String((client as any)?.id ?? '').trim();
+      let newLeadId: string | null = null;
+      let legacyLeadId: number | null = null;
+      if (rawClientId) {
+        if (rawClientId.startsWith('legacy_')) {
+          const n = Number.parseInt(rawClientId.replace('legacy_', ''), 10);
+          legacyLeadId = Number.isFinite(n) ? n : null;
+        } else {
+          newLeadId = rawClientId;
+        }
       } else {
-        setDocumentCount(0);
+        const { data: leadRow } = await supabase
+          .from('leads')
+          .select('id')
+          .eq('lead_number', leadNum)
+          .maybeSingle();
+        const id = (leadRow as { id?: string } | null)?.id;
+        if (typeof id === 'string' && id.trim()) newLeadId = id.trim();
       }
-    } catch (error) {
-      console.error('Error fetching document count:', error);
-      setDocumentCount(0); // Set to 0 on error
-    }
-  }, [client.lead_number]);
 
-  // Fetch document count when lead_number is available
+      if (newLeadId || legacyLeadId) {
+        let q = supabase
+          .from('lead_sub_efforts')
+          .select('id, document_url, sub_efforts ( case_document_classification_id )')
+          .order('created_at', { ascending: false })
+          .limit(50);
+
+        if (legacyLeadId) q = q.eq('legacy_lead_id', legacyLeadId);
+        else if (newLeadId) q = q.eq('new_lead_id', newLeadId);
+
+        const { data: seRows, error: seErr } = await q;
+        if (seErr) {
+          console.warn('lead_sub_efforts count:', seErr.message);
+        } else {
+          for (const r of (seRows || []) as any[]) {
+            const se = r?.sub_efforts;
+            const subEff = Array.isArray(se) ? se[0] : se;
+            const categoryId = subEff?.case_document_classification_id ?? null;
+            if (!categoryId) continue;
+            const items = normalizeSubEffortDocumentItems(r?.document_url);
+            for (const it of items) {
+              const path = (it as { path?: string })?.path;
+              const url = (it as { url?: string })?.url;
+              if ((path && String(path).trim()) || (url && String(url).trim())) {
+                subItemCount++;
+              }
+            }
+          }
+        }
+      }
+
+      setDocumentCount((caseRowCount ?? 0) + subItemCount);
+    } catch (e) {
+      console.error('Error fetching document count:', e);
+    }
+  }, [client.lead_number, (client as any)?.id]);
+
   useEffect(() => {
-    // Skip if already fetching or no lead_number
-    if (isFetchingCountRef.current || !client.lead_number) {
-      return;
-    }
-
-    const fetchCount = async () => {
-      isFetchingCountRef.current = true;
-
-      try {
-        const { data, error } = await supabase.functions.invoke('list-lead-documents', {
-          body: { leadNumber: client.lead_number }
-        });
-
-        if (error) {
-          console.error('Error fetching document count:', error);
-          // Don't reset to 0 on error - keep previous count
-          return;
-        }
-
-        if (data && data.success) {
-          const count = data.count || (data.files ? data.files.length : 0);
-          setDocumentCount(count);
-        }
-      } catch (error) {
-        console.error('Error fetching document count:', error);
-        // Don't reset to 0 on error - keep previous count
-      } finally {
-        isFetchingCountRef.current = false;
-      }
-    };
-
-    fetchCount();
-  }, [client.lead_number]);
+    void fetchDocumentCount();
+  }, [fetchDocumentCount]);
 
   // Placeholder for document count and link
   const documentLink = client.onedrive_folder_link || '#';
@@ -2549,13 +2582,9 @@ ${combinedText}`;
   );
 
 
-  // Function to update document count from DocumentModal
+  // Sync with the same total `DocumentModal` computes after load (keeps UI exact while tray is open).
   const handleDocumentCountChange = (count: number) => {
-    // Only update if modal is open (to prevent resetting when modal initializes)
-    // Or if the new count is greater than 0 (to allow updates when documents are added/removed)
-    if (isDocumentModalOpen || count > 0) {
-      setDocumentCount(count);
-    }
+    setDocumentCount(count);
   };
 
   // Function to handle modal close and refresh count
@@ -3350,6 +3379,9 @@ ${combinedText}`;
         clientName={client.name || ''}
         clientId={(client as any)?.id ?? null}
         onDocumentCountChange={handleDocumentCountChange}
+        onedriveSubFolder={CLIENT_HEADER_ONEDRIVE_SUBFOLDER}
+        modalTitle="Case documents"
+        requireCaseDocumentClassification
       />
 
       {/* Expert Notes Modal */}

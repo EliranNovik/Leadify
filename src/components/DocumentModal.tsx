@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { 
   XMarkIcon, 
   EyeIcon, 
@@ -22,6 +22,8 @@ import {
   SparklesIcon,
   TrashIcon,
   PencilSquareIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import {
@@ -583,25 +585,49 @@ async function resolveUploaderDisplayByKey(
   return out;
 }
 
+/** Same idea as Assigned Team / ClientHeader — first + last initial, or first two letters. */
+function initialsFromUploaderName(name: string): string {
+  const t = name.trim();
+  if (!t) return '?';
+  const parts = t.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    const a = parts[0][0];
+    const b = parts[parts.length - 1][0];
+    if (a && b) return (a + b).toUpperCase();
+  }
+  return t.slice(0, 2).toUpperCase();
+}
+
 function DocumentUploaderAttribution({ doc }: { doc: Document }) {
   const name = doc.uploadedByName?.trim();
+  const [photoFailed, setPhotoFailed] = useState(false);
+  const photoUrl = typeof doc.uploadedByPhotoUrl === 'string' ? doc.uploadedByPhotoUrl.trim() : '';
+
+  useEffect(() => {
+    setPhotoFailed(false);
+  }, [doc.id, photoUrl]);
+
   if (!name) return null;
-  const initial = name.charAt(0).toUpperCase();
+
+  const initials = initialsFromUploaderName(name);
+  const showPhoto = photoUrl.length > 0 && !photoFailed;
+
   return (
     <span className="inline-flex max-w-full min-w-0 items-center gap-1.5 text-sm text-base-content/65">
-      {doc.uploadedByPhotoUrl ? (
+      {showPhoto ? (
         <img
-          src={doc.uploadedByPhotoUrl}
+          src={photoUrl}
           alt=""
           className="h-6 w-6 shrink-0 rounded-full object-cover outline-none"
           loading="lazy"
+          onError={() => setPhotoFailed(true)}
         />
       ) : (
         <span
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-base-300/90 text-[10px] font-semibold text-base-content/85 outline-none"
+          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gray-200 text-[10px] font-semibold leading-none text-gray-700 outline-none dark:bg-gray-600 dark:text-gray-100"
           aria-hidden
         >
-          {initial}
+          {initials}
         </span>
       )}
       <span className="min-w-0 truncate sm:max-w-[12rem]">
@@ -657,7 +683,8 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [previewDocument, setPreviewDocument] = useState<Document | null>(null);
+  /** Gallery index when lightbox open; all uploaded rows in `documents` are in the filmstrip. */
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [summaryModalDoc, setSummaryModalDoc] = useState<Document | null>(null);
   const [isEditingSummary, setIsEditingSummary] = useState(false);
   const [editedSummaryText, setEditedSummaryText] = useState('');
@@ -754,7 +781,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   useEffect(() => {
     if (!isOpen) {
       setSummaryModalDoc(null);
-      setPreviewDocument(null);
+      setPreviewIndex(null);
     }
   }, [isOpen]);
 
@@ -793,6 +820,87 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   useEffect(() => {
     documentsRef.current = documents;
   }, [documents]);
+
+  const previewDocument =
+    previewIndex !== null && documents[previewIndex] != null ? documents[previewIndex] : null;
+
+  useEffect(() => {
+    if (previewIndex === null) return;
+    if (documents.length === 0) {
+      setPreviewIndex(null);
+      return;
+    }
+    if (previewIndex >= documents.length) {
+      setPreviewIndex(documents.length - 1);
+    }
+  }, [documents.length, previewIndex]);
+
+  const previewGoPrev = useCallback(() => {
+    setPreviewIndex((i) => {
+      if (i === null) return null;
+      const len = documentsRef.current.length;
+      if (len === 0) return null;
+      return (i - 1 + len) % len;
+    });
+  }, []);
+
+  const previewGoNext = useCallback(() => {
+    setPreviewIndex((i) => {
+      if (i === null) return null;
+      const len = documentsRef.current.length;
+      if (len === 0) return null;
+      return (i + 1) % len;
+    });
+  }, []);
+
+  /** Avoid re-running when `documents` is refreshed (poll) but the same file is still selected. */
+  const previewActiveId =
+    previewIndex !== null && documents[previewIndex] != null ? String(documents[previewIndex].id) : null;
+
+  useEffect(() => {
+    if (previewIndex === null || !previewActiveId) return;
+    const id = `doc-preview-thumb-${previewActiveId}`;
+    requestAnimationFrame(() => {
+      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    });
+  }, [previewIndex, previewActiveId]);
+
+  /** Horizontal swipe / trackpad only; cooldown prevents rapid cycling. Vertical wheel scrolls the image area. */
+  const lastPreviewWheelNavRef = useRef(0);
+  const handlePreviewStageWheel = useCallback(
+    (e: React.WheelEvent<HTMLDivElement>) => {
+      if (!previewDocument?.fileType.includes('image/')) return;
+      if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+      if (Math.abs(e.deltaX) < 12) return;
+      const now = Date.now();
+      if (now - lastPreviewWheelNavRef.current < 400) return;
+      lastPreviewWheelNavRef.current = now;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.deltaX > 0) previewGoNext();
+      else previewGoPrev();
+    },
+    [previewDocument, previewGoNext, previewGoPrev],
+  );
+
+  useEffect(() => {
+    if (previewIndex === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setPreviewIndex(null);
+        return;
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        previewGoPrev();
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        previewGoNext();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [previewIndex, previewGoPrev, previewGoNext]);
 
   /** Refresh AI summary fields for pending rows while the documents tray is open (not only when the summary dialog is open). */
   useEffect(() => {
@@ -1218,7 +1326,9 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   };
 
   const handlePreview = (document: Document) => {
-    setPreviewDocument(document);
+    const idx = documents.findIndex((d) => d.id === document.id);
+    if (idx < 0) return;
+    setPreviewIndex(idx);
   };
 
   const handleDeleteDocument = async (doc: Document) => {
@@ -1229,7 +1339,10 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     setDeleting((prev) => [...prev, doc.id]);
     try {
       setSummaryModalDoc((prev) => (prev?.id === doc.id ? null : prev));
-      setPreviewDocument((prev) => (prev?.id === doc.id ? null : prev));
+      setPreviewIndex((prevIdx) => {
+        if (prevIdx === null) return null;
+        return documents[prevIdx]?.id === doc.id ? null : prevIdx;
+      });
 
       if (doc.source === 'subeffort') {
         const rowId = doc.subEffortRowId;
@@ -1507,6 +1620,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   if (typeof window === 'undefined') return null;
 
   return createPortal(
+    <>
     <div className={`fixed inset-0 z-[1000] flex items-end justify-end bg-black bg-opacity-40 transition-opacity duration-300 ${isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`} style={{ top: 0, left: 0 }}>
       <div
         className={`fixed top-0 flex h-full max-h-full min-h-[350px] min-w-0 flex-col overflow-hidden bg-white shadow-2xl transition-transform duration-500 max-md:inset-x-0 max-md:w-full max-md:max-w-none max-md:rounded-none md:right-0 md:w-full md:max-w-2xl md:rounded-l-2xl px-3 py-5 sm:px-4 md:p-8 lg:p-10 ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}
@@ -2080,44 +2194,154 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         </div>
       )}
 
-      {/* Preview Modal */}
-      {previewDocument && (
-        <div className="fixed inset-0 z-60 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black bg-opacity-75" onClick={() => setPreviewDocument(null)} />
-          <div className="relative bg-base-100 rounded-lg shadow-xl w-full max-w-4xl max-h-[90vh] overflow-hidden">
-            <div className="flex items-center justify-between p-4 border-b border-base-300">
-              <h3 className="text-lg font-semibold">{previewDocument.name}</h3>
-              <button
-                onClick={() => setPreviewDocument(null)}
-                className="btn btn-ghost btn-circle"
+    </div>
+
+      {/* Full-screen preview + bottom carousel (above documents drawer & summary dialog) */}
+      {previewDocument && previewIndex !== null && (
+        <div
+          className="fixed inset-0 z-[1200] flex flex-col bg-base-100"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Document preview"
+        >
+          <header className="flex shrink-0 items-center justify-between gap-3 border-b border-base-300 bg-base-100 px-4 py-3 md:px-6">
+            <div className="min-w-0 flex-1">
+              <p className="text-xs text-base-content/55 tabular-nums">
+                Uploaded {formatDate(previewDocument.lastModified)}
+              </p>
+              <h2 className="mt-0.5 truncate text-lg font-semibold md:text-xl">{previewDocument.name}</h2>
+              <p className="mt-0.5 text-xs text-base-content/60 tabular-nums">
+                {previewIndex + 1} / {documents.length}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="btn btn-ghost btn-circle shrink-0"
+              onClick={() => setPreviewIndex(null)}
+              aria-label="Close preview"
+            >
+              <XMarkIcon className="h-6 w-6" />
+            </button>
+          </header>
+
+          <div className="flex min-h-0 flex-1 items-stretch">
+            <button
+              type="button"
+              className="hidden w-12 shrink-0 items-center justify-center border-r border-base-300 bg-base-200/70 text-base-content hover:bg-base-300/80 md:flex lg:w-16"
+              aria-label="Previous file"
+              onClick={previewGoPrev}
+            >
+              <ChevronLeftIcon className="h-9 w-9 lg:h-10 lg:w-10" />
+            </button>
+
+            <div
+              className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-neutral-900"
+              onWheel={handlePreviewStageWheel}
+            >
+              <div
+                className={`flex min-h-0 w-full flex-1 p-3 md:p-6 ${
+                  previewDocument.fileType.includes('pdf')
+                    ? 'min-h-0 flex-col overflow-hidden'
+                    : 'items-center justify-center overflow-auto'
+                }`}
               >
-                <XMarkIcon className="w-6 h-6" />
-              </button>
+                {previewDocument.fileType.includes('image/') ? (
+                  <img
+                    src={previewDocument.downloadUrl}
+                    alt={previewDocument.name}
+                    className="max-h-full max-w-full object-contain"
+                  />
+                ) : previewDocument.fileType.includes('pdf') ? (
+                  <iframe
+                    src={previewDocument.downloadUrl}
+                    className="min-h-0 w-full flex-1 border-0"
+                    title={previewDocument.name}
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center gap-3 px-4 text-center text-neutral-200">
+                    <DocumentIcon className="h-16 w-16 shrink-0 opacity-80" />
+                    <p className="text-sm">Preview not available for this file type.</p>
+                  </div>
+                )}
+              </div>
+              <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center gap-3 md:hidden">
+                <button
+                  type="button"
+                  className="pointer-events-auto btn btn-circle btn-neutral btn-sm shadow-lg"
+                  aria-label="Previous file"
+                  onClick={previewGoPrev}
+                >
+                  <ChevronLeftIcon className="h-6 w-6" />
+                </button>
+                <button
+                  type="button"
+                  className="pointer-events-auto btn btn-circle btn-neutral btn-sm shadow-lg"
+                  aria-label="Next file"
+                  onClick={previewGoNext}
+                >
+                  <ChevronRightIcon className="h-6 w-6" />
+                </button>
+              </div>
             </div>
-            <div className="p-4 h-[calc(90vh-120px)] overflow-auto">
-              {previewDocument.fileType.includes('image/') ? (
-                <img
-                  src={previewDocument.downloadUrl}
-                  alt={previewDocument.name}
-                  className="max-w-full h-auto mx-auto"
-                />
-              ) : previewDocument.fileType.includes('pdf') ? (
-                <iframe
-                  src={previewDocument.downloadUrl}
-                  className="w-full h-full border-0"
-                  title={previewDocument.name}
-                />
-              ) : (
-                <div className="flex items-center justify-center h-full text-base-content/70">
-                  <DocumentIcon className="w-16 h-16 mr-4" />
-                  <p>Preview not available for this file type.</p>
-                </div>
-              )}
-            </div>
+
+            <button
+              type="button"
+              className="hidden w-12 shrink-0 items-center justify-center border-l border-base-300 bg-base-200/70 text-base-content hover:bg-base-300/80 md:flex lg:w-16"
+              aria-label="Next file"
+              onClick={previewGoNext}
+            >
+              <ChevronRightIcon className="h-9 w-9 lg:h-10 lg:w-10" />
+            </button>
           </div>
+
+          <footer className="shrink-0 border-t border-base-300 bg-base-200/50 px-2 py-3 dark:bg-base-300/30">
+            <div
+              className="mx-auto flex max-w-[100vw] gap-2 overflow-x-auto overflow-y-hidden pb-1 [-webkit-overflow-scrolling:touch]"
+              onWheel={(e) => {
+                if (!e.shiftKey) return;
+                e.currentTarget.scrollLeft += e.deltaY;
+                e.preventDefault();
+              }}
+            >
+              {documents.map((d, i) => {
+                const isActive = i === previewIndex;
+                const isImg = d.fileType.includes('image/');
+                return (
+                  <button
+                    key={d.id}
+                    id={`doc-preview-thumb-${d.id}`}
+                    type="button"
+                    onClick={() => setPreviewIndex(i)}
+                    title={d.name}
+                    className={`shrink-0 rounded-lg border-2 p-0.5 transition ${
+                      isActive
+                        ? 'border-primary shadow-md ring-2 ring-primary/40'
+                        : 'border-transparent opacity-75 hover:opacity-100'
+                    }`}
+                  >
+                    {isImg ? (
+                      <img
+                        src={d.downloadUrl}
+                        alt=""
+                        className="h-16 w-16 rounded-md object-cover md:h-20 md:w-20"
+                        loading="lazy"
+                        draggable={false}
+                      />
+                    ) : (
+                      <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-md bg-base-300 md:h-20 md:w-20">
+                        <div className="flex origin-center scale-[0.42] items-center justify-center">
+                          <DocumentFileGlyph fileType={d.fileType} fileName={d.name} />
+                        </div>
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </footer>
         </div>
       )}
-    </div>,
+    </>,
     window.document.body
   );
 };
