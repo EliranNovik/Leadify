@@ -13,6 +13,15 @@ const GRAPH_BASE_URL = 'https://graph.microsoft.com/v1.0';
 const DEFAULT_SYNC_BATCH = parseInt(process.env.GRAPH_DELTA_PAGE_SIZE || '50', 10);
 const MEMBERSHIP_DOMAINS = (process.env.CLIENT_EMAIL_DOMAINS || '').split(',').map((item) => item.trim().toLowerCase()).filter(Boolean);
 const WEBHOOK_URL = process.env.GRAPH_WEBHOOK_NOTIFICATION_URL;
+/** Graph max for mail message subscriptions (~2.9 days). */
+const GRAPH_MAIL_SUBSCRIPTION_MAX_MINUTES = Math.min(
+  4230,
+  Math.max(60, parseInt(process.env.GRAPH_MAIL_SUBSCRIPTION_MAX_MINUTES || '4200', 10) || 4200)
+);
+const _renewBeforeEnv = parseInt(process.env.GRAPH_SUBSCRIPTION_RENEW_BEFORE_MS || '', 10);
+/** Renew / extend subscription when remaining lifetime is below this (default 36h). */
+const GRAPH_SUBSCRIPTION_RENEW_BEFORE_MS =
+  Number.isFinite(_renewBeforeEnv) && _renewBeforeEnv > 0 ? _renewBeforeEnv : 36 * 60 * 60 * 1000;
 
 const normalise = (value) => (value || '').trim().toLowerCase();
 
@@ -142,6 +151,41 @@ const chunkArray = (arr, size = 100) => {
   return chunks;
 };
 
+/** PostgREST `.or()` filter: case-insensitive exact email match (quoted value so `@` / `.` parse correctly). */
+const emailIlikeOrFilter = (column, emails) =>
+  emails
+    .map((e) => {
+      if (!e) return null;
+      const esc = e
+        .replace(/\\/g, '\\\\')
+        .replace(/%/g, '\\%')
+        .replace(/_/g, '\\_')
+        .replace(/"/g, '\\"');
+      return `${column}.ilike."${esc}"`;
+    })
+    .filter(Boolean)
+    .join(',');
+
+/** Smaller chunks keep `.or()` query strings under proxy/PostgREST limits. Override with GRAPH_EMAIL_MAPPING_CHUNK (10–99). */
+const _emailChunkEnv = parseInt(process.env.GRAPH_EMAIL_MAPPING_CHUNK || '40', 10);
+const EMAIL_MAPPING_CHUNK = Math.min(99, Math.max(10, Number.isFinite(_emailChunkEnv) ? _emailChunkEnv : 40));
+
+/** Try case-insensitive `.or(ilike…)`; on failure fall back to exact `.in()` (still normalized addresses from Graph). */
+const selectRowsMatchingEmailChunk = async (table, selectFields, chunk) => {
+  if (!chunk.length) {
+    return { data: [], error: null };
+  }
+  const emailOr = emailIlikeOrFilter('email', chunk);
+  let res = await supabase.from(table).select(selectFields).or(emailOr);
+  if (res.error) {
+    console.warn(
+      `⚠️ ${table} email lookup .or() failed (${res.error.code || ''} ${res.error.message || res.error}); using .in() fallback`
+    );
+    res = await supabase.from(table).select(selectFields).in('email', chunk);
+  }
+  return res;
+};
+
 // Fetch ALL leads and contacts that match email addresses
 // Returns: { email: [{ clientId, legacyId, contactId, leadId }] }
 const fetchLeadMappingsForAddresses = async (addresses) => {
@@ -171,11 +215,12 @@ const fetchLeadMappingsForAddresses = async (addresses) => {
 
   try {
     for (const chunk of chunkArray(unique, 99)) {
-      // Fetch new leads that match email addresses
+      const emailOr = emailIlikeOrFilter('email', chunk);
+      // Fetch new leads that match email addresses (case-insensitive)
       const { data: leadMatches, error: leadError } = await supabase
         .from('leads')
         .select('id,email')
-        .in('email', chunk);
+        .or(emailOr);
 
       if (leadError) {
         console.error('❌ Failed to resolve leads for email addresses:', leadError.message || leadError);
@@ -188,11 +233,11 @@ const fetchLeadMappingsForAddresses = async (addresses) => {
         });
       }
 
-      // Fetch legacy leads that match email addresses
-      const { data: legacyMatches, error: legacyError } = await supabase
-        .from('leads_lead')
-        .select('id,email')
-        .in('email', chunk);
+      const { data: legacyMatches, error: legacyError } = await selectRowsMatchingEmailChunk(
+        'leads_lead',
+        'id,email',
+        chunk
+      );
 
       if (legacyError) {
         console.error('❌ Failed to resolve legacy leads for email addresses:', legacyError.message || legacyError);
@@ -205,11 +250,11 @@ const fetchLeadMappingsForAddresses = async (addresses) => {
         });
       }
 
-      // Fetch contacts that match email addresses and get their associated leads
-      const { data: contactMatches, error: contactError } = await supabase
-        .from('leads_contact')
-        .select('id,email,newlead_id')
-        .in('email', chunk);
+      const { data: contactMatches, error: contactError } = await selectRowsMatchingEmailChunk(
+        'leads_contact',
+        'id,email,newlead_id',
+        chunk
+      );
 
       if (contactError) {
         console.error('❌ Failed to resolve contacts for email addresses:', contactError.message || contactError);
@@ -298,6 +343,81 @@ const fetchJson = async (url, options = {}) => {
     throw new Error(`Graph request failed (${response.status}): ${errorText}`);
   }
   return response.json();
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** GET JSON from Graph with 429 / MailboxConcurrency backoff (serial callers should still pass delay between calls). */
+const fetchGraphJsonWithRetry = async (url, options = {}, { maxAttempts = 6 } = {}) => {
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const response = await fetch(url, options);
+    if (response.status === 429) {
+      let waitMs = parseInt(response.headers.get('Retry-After') || '', 10);
+      if (!Number.isFinite(waitMs) || waitMs < 1) {
+        waitMs = Math.min(60, 2 ** attempt);
+      } else {
+        waitMs = Math.min(120, waitMs);
+      }
+      waitMs *= 1000;
+      const snippet = (await response.text()).slice(0, 200);
+      console.warn(`⚠️ Graph 429 (attempt ${attempt}/${maxAttempts}), waiting ${waitMs}ms: ${snippet}`);
+      await sleep(waitMs);
+      lastError = new Error(`Graph request failed (429): ${snippet}`);
+      continue;
+    }
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Graph request failed (${response.status}): ${errorText}`);
+    }
+    return response.json();
+  }
+  throw lastError || new Error('Graph request failed after retries');
+};
+
+/** Metadata only (no contentBytes) for UI + download-by-id. */
+const normalizeAttachmentForStorage = (att) => {
+  if (!att || !att.id) return null;
+  const size =
+    typeof att.size === 'number' && Number.isFinite(att.size)
+      ? att.size
+      : typeof att.sizeInBytes === 'number' && Number.isFinite(att.sizeInBytes)
+        ? att.sizeInBytes
+        : 0;
+  return {
+    id: att.id,
+    name: att.name || 'attachment',
+    contentType: att.contentType || 'application/octet-stream',
+    size,
+    isInline: Boolean(att.isInline),
+  };
+};
+
+/**
+ * List message attachments from Graph (lightweight; excludes contentBytes).
+ * Paginates @odata.nextLink up to 200 items total.
+ */
+const isGraphMessageNotFound = (err) => {
+  const msg = err?.message || String(err);
+  return msg.includes('404') || msg.includes('ErrorItemNotFound') || msg.includes('itemNotFound');
+};
+
+const fetchMessageAttachmentsMetadata = async (accessToken, mailboxAddress, messageId) => {
+  const encodedUser = encodeURIComponent(mailboxAddress);
+  const encodedMsg = encodeURIComponent(messageId);
+  let url = `${GRAPH_BASE_URL}/users/${encodedUser}/messages/${encodedMsg}/attachments?$select=id,name,contentType,size,isInline&$top=50`;
+  const headers = { Authorization: `Bearer ${accessToken}` };
+  const collected = [];
+  while (url && collected.length < 200) {
+    const json = await fetchGraphJsonWithRetry(url, { headers });
+    const page = Array.isArray(json.value) ? json.value : [];
+    for (const raw of page) {
+      const n = normalizeAttachmentForStorage(raw);
+      if (n) collected.push(n);
+    }
+    url = json['@odata.nextLink'] || null;
+  }
+  return collected;
 };
 
 const toGraphRecipients = (list = []) =>
@@ -404,30 +524,35 @@ class GraphMailboxSyncService {
       last_synced_at: new Date().toISOString(),
     });
 
-    // Read subscription from database (subscriptions are managed elsewhere, not created here)
-    // Just log subscription status for debugging
+    try {
+      await this.ensureInboxMailSubscription(resolvedUserId, tokenResponse.accessToken, mailboxAddress);
+    } catch (subErr) {
+      console.warn(`⚠️ Graph mail subscription ensure failed (sync still succeeded):`, subErr.message || subErr);
+    }
+
     try {
       const dbState = await mailboxStateService.getState(resolvedUserId);
       const subscriptionId = dbState?.subscription_id;
       const subscriptionExpiry = dbState?.subscription_expiry;
-      
+
       if (subscriptionId && subscriptionExpiry) {
         const expiresAt = new Date(subscriptionExpiry).getTime();
         const now = Date.now();
         const isExpired = expiresAt < now;
         const expiresSoon = expiresAt - now < 24 * 60 * 60 * 1000;
-        
-        console.log(`✅ Subscription found in DB for user ${resolvedUserId} (${mailboxAddress})`, {
+
+        console.log(`✅ Graph webhook subscription for user ${resolvedUserId} (${mailboxAddress})`, {
           subscriptionId,
           expiresAt: subscriptionExpiry,
           status: isExpired ? 'expired' : expiresSoon ? 'expires_soon' : 'active',
         });
       } else {
-        console.log(`ℹ️  No subscription found in DB for user ${resolvedUserId} (${mailboxAddress})`);
+        console.log(
+          `ℹ️  No Graph mail subscription in DB for user ${resolvedUserId} (${mailboxAddress}) — set GRAPH_WEBHOOK_NOTIFICATION_URL to enable push-triggered sync`
+        );
       }
     } catch (error) {
       console.error(`⚠️  Error reading subscription from DB for user ${resolvedUserId}:`, error.message || error);
-      // Don't fail the sync if subscription check fails
     }
 
     return {
@@ -437,6 +562,155 @@ class GraphMailboxSyncService {
       trackedConversations: stored.trackedCount,
       deltaLink: nextDeltaLink || deltaLink || null,
     };
+  }
+
+  /**
+   * Microsoft Graph delta tokens and sync generations always expire eventually (410 / SyncStateNotFound).
+   * Webhook subscriptions + periodic sync keep a fresh delta link; this cannot be disabled on Microsoft's side.
+   */
+  async deleteGraphMailSubscription(accessToken, subscriptionId) {
+    if (!subscriptionId) return;
+    const res = await fetch(`${GRAPH_BASE_URL}/subscriptions/${encodeURIComponent(subscriptionId)}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok && res.status !== 404) {
+      const t = await res.text();
+      throw new Error(`DELETE subscription failed (${res.status}): ${t}`);
+    }
+  }
+
+  nextMailSubscriptionExpiryIso() {
+    return new Date(Date.now() + GRAPH_MAIL_SUBSCRIPTION_MAX_MINUTES * 60 * 1000).toISOString();
+  }
+
+  /**
+   * Create or renew a Graph change notification on Inbox messages so webhooks trigger sync before delta goes stale.
+   * Requires GRAPH_WEBHOOK_NOTIFICATION_URL (public HTTPS URL to POST /api/graph/webhook).
+   * clientState must be the internal CRM user id — webhook handler uses it to enqueue sync.
+   */
+  async ensureInboxMailSubscription(resolvedUserId, accessToken, mailboxAddress) {
+    if (!WEBHOOK_URL) {
+      return { skipped: true, reason: 'GRAPH_WEBHOOK_NOTIFICATION_URL not set' };
+    }
+    if (!resolvedUserId || !accessToken || !mailboxAddress) {
+      return { skipped: true, reason: 'missing_parameters' };
+    }
+
+    const state = await mailboxStateService.getState(resolvedUserId);
+    const now = Date.now();
+    const subId = state?.subscription_id || null;
+    const subExpMs = state?.subscription_expiry ? new Date(state.subscription_expiry).getTime() : 0;
+
+    if (subId && subExpMs > now + GRAPH_SUBSCRIPTION_RENEW_BEFORE_MS) {
+      return { skipped: true, reason: 'subscription_valid', expiry: state.subscription_expiry };
+    }
+
+    if (subId && subExpMs > now) {
+      try {
+        const newExp = this.nextMailSubscriptionExpiryIso();
+        const res = await fetch(`${GRAPH_BASE_URL}/subscriptions/${encodeURIComponent(subId)}`, {
+          method: 'PATCH',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ expirationDateTime: newExp }),
+        });
+        const text = await res.text();
+        if (!res.ok) {
+          throw new Error(text || `PATCH ${res.status}`);
+        }
+        let json = {};
+        if (text) {
+          try {
+            json = JSON.parse(text);
+          } catch {
+            json = {};
+          }
+        }
+        const expiry = json.expirationDateTime || newExp;
+        await mailboxStateService.upsertState(resolvedUserId, {
+          subscription_id: json.id || subId,
+          subscription_expiry: expiry,
+        });
+        console.log(`🔔 Extended Graph mail subscription for user ${resolvedUserId} until ${expiry}`);
+        return { renewed: true, subscriptionId: json.id || subId, expirationDateTime: expiry };
+      } catch (patchErr) {
+        console.warn(`⚠️ Subscription PATCH failed, recreating:`, patchErr.message || patchErr);
+        await this.deleteGraphMailSubscription(accessToken, subId).catch(() => {});
+        await mailboxStateService.upsertState(resolvedUserId, {
+          subscription_id: null,
+          subscription_expiry: null,
+        });
+      }
+    } else if (subId) {
+      await this.deleteGraphMailSubscription(accessToken, subId).catch(() => {});
+      await mailboxStateService.upsertState(resolvedUserId, {
+        subscription_id: null,
+        subscription_expiry: null,
+      });
+    }
+
+    const expirationDateTime = this.nextMailSubscriptionExpiryIso();
+    const resource = `users/${encodeURIComponent(mailboxAddress)}/mailFolders('Inbox')/messages`;
+    const body = {
+      changeType: 'created,updated',
+      notificationUrl: WEBHOOK_URL,
+      resource,
+      expirationDateTime,
+      clientState: String(resolvedUserId),
+    };
+
+    const res = await fetch(`${GRAPH_BASE_URL}/subscriptions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`Create subscription failed (${res.status}): ${text.slice(0, 500)}`);
+    }
+    const json = JSON.parse(text);
+    await mailboxStateService.upsertState(resolvedUserId, {
+      subscription_id: json.id,
+      subscription_expiry: json.expirationDateTime || expirationDateTime,
+    });
+    console.log(`🔔 Created Graph mail subscription for user ${resolvedUserId} (${mailboxAddress}) until ${json.expirationDateTime}`);
+    return { created: true, subscriptionId: json.id, expirationDateTime: json.expirationDateTime };
+  }
+
+  /** Ensure webhook subscription only (no mail fetch). Used after OAuth connect from the client. */
+  async ensureSubscriptionForUser(userId) {
+    const tokenRecord = await mailboxTokenService.getTokenByUserId(userId);
+    if (!tokenRecord) {
+      throw new Error('Mailbox is not connected for this user');
+    }
+    const resolvedUserId = tokenRecord.user_id;
+    if (!resolvedUserId) {
+      throw new Error('Mailbox token is missing CRM user reference');
+    }
+    const account = {
+      homeAccountId: tokenRecord.home_account_id,
+      environment: tokenRecord.environment,
+      tenantId: tokenRecord.tenant_id,
+      username: tokenRecord.mailbox_address,
+    };
+    const tokenResponse = await graphAuthService.acquireTokenByRefreshToken(
+      tokenRecord.refresh_token,
+      account
+    );
+    if (!tokenResponse?.accessToken) {
+      throw new Error('Unable to acquire Microsoft Graph access token');
+    }
+    return this.ensureInboxMailSubscription(
+      resolvedUserId,
+      tokenResponse.accessToken,
+      tokenRecord.mailbox_address
+    );
   }
 
   async syncAllMailboxes(options = {}) {
@@ -517,66 +791,67 @@ class GraphMailboxSyncService {
   }
 
   async refreshAllSubscriptions() {
-    // Read subscriptions from database (mailbox_state table)
-    // Subscriptions are created/managed elsewhere, we just read from DB
     const tokens = await mailboxTokenService.getAllTokens();
     if (!tokens.length) {
       return { processed: 0, successful: 0, failed: 0, skipped: 0, details: [] };
     }
 
-    const results = await tokens.reduce(
-      async (promise, token) => {
-        const acc = await promise;
-        if (!token?.user_id) {
-          return acc;
-        }
+    const acc = { successful: 0, failed: 0, skipped: 0, details: [] };
 
-        try {
-          const state = await mailboxStateService.getState(token.user_id);
-          const subscriptionId = state?.subscription_id;
-          const subscriptionExpiry = state?.subscription_expiry;
-
-          if (subscriptionId && subscriptionExpiry) {
-            const expiresAt = new Date(subscriptionExpiry).getTime();
-            const now = Date.now();
-            const isExpired = expiresAt < now;
-            const expiresSoon = expiresAt - now < 24 * 60 * 60 * 1000;
-
-            acc.successful += 1;
-            acc.details.push({
-              userId: token.user_id,
-              mailbox: token.mailbox_address,
-              subscriptionId,
-              expiry: subscriptionExpiry,
-              status: isExpired ? 'expired' : expiresSoon ? 'expires_soon' : 'active',
-            });
-          } else {
-            acc.skipped = (acc.skipped || 0) + 1;
-            acc.details.push({
-              userId: token.user_id,
-              mailbox: token.mailbox_address,
-              status: 'missing',
-              reason: 'No subscription found in database',
-            });
-          }
-        } catch (error) {
-          acc.failed += 1;
+    for (const token of tokens) {
+      if (!token?.user_id) continue;
+      try {
+        const tokenRecord = await mailboxTokenService.getTokenByUserId(token.user_id);
+        if (!tokenRecord?.refresh_token) {
+          acc.skipped += 1;
           acc.details.push({
             userId: token.user_id,
             mailbox: token.mailbox_address,
-            status: 'failed',
-            error: error.message || 'Unknown error',
+            status: 'skipped',
+            reason: 'no_refresh_token',
           });
+          continue;
         }
 
-        return acc;
-      },
-      Promise.resolve({ successful: 0, failed: 0, skipped: 0, details: [] })
-    );
+        const account = {
+          homeAccountId: tokenRecord.home_account_id,
+          environment: tokenRecord.environment,
+          tenantId: tokenRecord.tenant_id,
+          username: tokenRecord.mailbox_address,
+        };
+        const tokenResponse = await graphAuthService.acquireTokenByRefreshToken(
+          tokenRecord.refresh_token,
+          account
+        );
+        if (!tokenResponse?.accessToken) {
+          throw new Error('No access token');
+        }
+
+        const result = await this.ensureInboxMailSubscription(
+          token.user_id,
+          tokenResponse.accessToken,
+          tokenRecord.mailbox_address
+        );
+        acc.successful += 1;
+        acc.details.push({
+          userId: token.user_id,
+          mailbox: token.mailbox_address,
+          ...result,
+        });
+      } catch (error) {
+        acc.failed += 1;
+        acc.details.push({
+          userId: token.user_id,
+          mailbox: token.mailbox_address,
+          status: 'failed',
+          error: error.message || 'Unknown error',
+        });
+      }
+    }
 
     return {
       processed: tokens.length,
-      ...results,
+      ...acc,
     };
   }
 
@@ -622,11 +897,11 @@ class GraphMailboxSyncService {
   }
 
   async fetchDeltaMessages({ accessToken, mailboxAddress, deltaLink }) {
-    let url =
-      deltaLink ||
-      `${GRAPH_BASE_URL}/users/${mailboxAddress}/mailFolders('MsgFolderRoot')/messages/delta?$select=id,subject,from,toRecipients,ccRecipients,conversationId,bodyPreview,receivedDateTime,sentDateTime,isRead,hasAttachments,internetMessageId,parentFolderId&$top=${DEFAULT_SYNC_BATCH}`;
+    const initialUrl = `${GRAPH_BASE_URL}/users/${mailboxAddress}/mailFolders('MsgFolderRoot')/messages/delta?$select=id,subject,from,toRecipients,ccRecipients,conversationId,bodyPreview,receivedDateTime,sentDateTime,isRead,hasAttachments,internetMessageId,parentFolderId&$top=${DEFAULT_SYNC_BATCH}`;
+    let url = deltaLink || initialUrl;
     const messages = [];
     let nextLink = null;
+    let retried410 = false;
 
     while (url) {
       const response = await fetch(url, {
@@ -635,6 +910,21 @@ class GraphMailboxSyncService {
           Prefer: `outlook.body-preview="text"`,
         },
       });
+
+      if (response.status === 410) {
+        const errorText = await response.text();
+        if (!retried410) {
+          console.warn(
+            `⚠️ Graph delta returned 410 (expired or invalid delta); restarting from full delta once. ${errorText.slice(0, 240)}`
+          );
+          retried410 = true;
+          messages.length = 0;
+          nextLink = null;
+          url = initialUrl;
+          continue;
+        }
+        throw new Error(`Graph delta request failed (${response.status}): ${errorText}`);
+      }
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -650,7 +940,8 @@ class GraphMailboxSyncService {
         url = json['@odata.nextLink'];
       } else {
         url = null;
-        nextLink = json['@odata.deltaLink'] || deltaLink;
+        // After a 410 retry the previous delta token is invalid — do not fall back to it if Graph omits a new link.
+        nextLink = json['@odata.deltaLink'] || (retried410 ? null : deltaLink);
       }
     }
 
@@ -664,7 +955,8 @@ class GraphMailboxSyncService {
 
     const rows = messages.map((msg) => {
       const normalizedMailbox = normalise(mailboxAddress);
-      const senderEmail = normalise(msg.from?.emailAddress?.address);
+      const senderFromGraph = normalise(msg.from?.emailAddress?.address) || null;
+      const effectiveSender = senderFromGraph || normalizedMailbox || null;
       const senderName =
         msg.from?.emailAddress?.name ||
         msg.from?.emailAddress?.address ||
@@ -680,7 +972,7 @@ class GraphMailboxSyncService {
         .filter(Boolean)
         .join(', ');
 
-      const direction = senderEmail === normalizedMailbox ? 'outgoing' : 'incoming';
+      const direction = effectiveSender === normalizedMailbox ? 'outgoing' : 'incoming';
       const sentAt = msg.sentDateTime || msg.receivedDateTime || new Date().toISOString();
 
       // Note: bodyPreview from Graph API is truncated (usually ~255 chars)
@@ -690,14 +982,15 @@ class GraphMailboxSyncService {
         message_id: msg.id,
         user_id: userId,
         sender_name: senderName,
-        sender_email: senderEmail || normalizedMailbox || null,
+        sender_email: effectiveSender,
         recipient_list: recipientList,
         subject: msg.subject || '(no subject)',
         body_html: '', // Will be populated when full body is fetched
         body_preview: msg.bodyPreview || '', // Truncated preview from Graph API
         sent_at: sentAt,
         direction,
-        attachments: msg.hasAttachments ? [] : null,
+        // Filled after insert by fetchFullBodiesForMessages (Graph list attachments); avoid storing [] forever
+        attachments: null,
         client_id: null,
         legacy_id: null,
         body_cached: false, // Flag to indicate full body needs to be fetched
@@ -735,16 +1028,16 @@ class GraphMailboxSyncService {
             .filter(Boolean)
         : [];
 
-      // Check if sender is from office (internal email)
       const senderEmail = row.sender_email ? normalise(row.sender_email) : null;
-      const isSenderFromOffice = senderEmail ? shouldFilterEmail(senderEmail) : false;
-      
+      // Outgoing = synced mailbox is the sender — match To/Cc to leads/contacts (not blocked-sender list).
+      const isOutgoing = row.direction === 'outgoing';
+
       // Collect matches based on sender vs recipient logic
       const allMatches = new Set();
       const matchKeys = new Set(); // Track unique match keys to avoid duplicates
-      
-      if (isSenderFromOffice) {
-        // If sender is from office, match based on recipients (outgoing emails)
+
+      if (isOutgoing) {
+        // Outgoing: match leads/contacts by recipient addresses
         recipientAddresses.forEach((addr) => {
           const recipientMatches = leadMappings[addr] || [];
           recipientMatches.forEach((match) => {
@@ -756,8 +1049,7 @@ class GraphMailboxSyncService {
           });
         });
       } else {
-        // If sender is NOT from office (client email), ONLY match if sender matches a contact in that lead
-        // This prevents matching emails to leads where the sender doesn't belong
+        // Incoming: match by sender only (avoid attaching to wrong lead via other recipients)
         if (senderEmail) {
           const senderMatches = leadMappings[senderEmail] || [];
           senderMatches.forEach((match) => {
@@ -832,16 +1124,10 @@ class GraphMailboxSyncService {
         }
 
         // Filter out matches where lead or contact email should be filtered
-        // BUT: For outgoing emails (sender is from office), we should NOT filter based on lead/contact email domain
-        // because these are system-sent emails that should always be saved
-        // For incoming emails, we should NOT filter based on lead/contact email domain either,
-        // because a client might send from their personal email even if the lead/contact record has an office email
-        // We only filter based on the sender email domain (handled elsewhere)
+        // Outgoing: do not drop matches based on lead/contact stored email domain (handled elsewhere on sender).
         const filteredMatches = Array.from(allMatches).filter((match) => {
-          // If sender is from office (outgoing email), don't filter based on lead/contact email domain
-          // These are system-sent emails that should always be saved
-          if (isSenderFromOffice) {
-            return true; // Always include outgoing emails regardless of lead/contact email domain
+          if (isOutgoing) {
+            return true;
           }
           
           // For incoming emails, we should NOT filter based on lead/contact email domain
@@ -1004,75 +1290,82 @@ class GraphMailboxSyncService {
     // we need to check for exact duplicates: same message_id + same client_id + same legacy_id + same contact_id
     const messageIds = [...new Set(filteredRows.map(row => row.message_id).filter(Boolean))];
     let existingEmailKeys = new Set();
-    
+    /** message_ids that already had at least one row before this sync (used for lead push dedupe) */
+    const existingMessageIds = new Set();
+
     if (messageIds.length > 0) {
       const { data: existingEmails, error: checkError } = await supabase
         .from(EMAIL_HEADERS_TABLE)
         .select('message_id, client_id, legacy_id, contact_id')
         .in('message_id', messageIds);
-      
+
       if (!checkError && existingEmails) {
-        // Create unique keys for each existing email record
         existingEmails.forEach((e) => {
           const key = `${e.message_id}_${e.client_id || 'null'}_${e.legacy_id || 'null'}_${e.contact_id || 'null'}`;
           existingEmailKeys.add(key);
+          if (e.message_id) {
+            existingMessageIds.add(e.message_id);
+          }
         });
       }
     }
 
-    // Check for duplicates based on body_preview + legacy_id or body_preview + contact_id
-    // This prevents saving the same email content multiple times for the same lead/contact
+    // Secondary dedupe: same Graph message_id + same preview + same lead/contact (must include message_id).
+    // Without message_id, identical truncated previews across *different* messages blocked inserts for valid new mail.
     const bodyPreviewKeys = new Set();
-    const rowsWithBodyPreview = filteredRows.filter(row => row.body_preview && (row.legacy_id || row.contact_id));
-    
+    const rowsWithBodyPreview = filteredRows.filter(
+      (row) => row.message_id && row.body_preview && (row.legacy_id || row.contact_id)
+    );
+
     if (rowsWithBodyPreview.length > 0) {
-      // Collect unique body_preview values and their associated legacy_id/contact_id
-      const bodyPreviewQueries = [];
-      const legacyIds = [...new Set(rowsWithBodyPreview.map(row => row.legacy_id).filter(Boolean))];
-      const contactIds = [...new Set(rowsWithBodyPreview.map(row => row.contact_id).filter(Boolean))];
-      
-      // Query for existing emails with same body_preview and legacy_id
+      const legacyIds = [...new Set(rowsWithBodyPreview.map((row) => row.legacy_id).filter(Boolean))];
+      const contactIds = [...new Set(rowsWithBodyPreview.map((row) => row.contact_id).filter(Boolean))];
+
       if (legacyIds.length > 0) {
-        const bodyPreviews = [...new Set(rowsWithBodyPreview.filter(row => row.legacy_id && row.body_preview).map(row => row.body_preview))];
+        const bodyPreviews = [
+          ...new Set(
+            rowsWithBodyPreview.filter((row) => row.legacy_id && row.body_preview).map((row) => row.body_preview)
+          ),
+        ];
         if (bodyPreviews.length > 0) {
-          // Query in batches to avoid too many conditions
           for (const bodyPreview of bodyPreviews) {
             const { data: existingByBodyPreview, error: bodyPreviewError } = await supabase
               .from(EMAIL_HEADERS_TABLE)
-              .select('body_preview, legacy_id, contact_id')
+              .select('message_id, body_preview, legacy_id, contact_id')
               .eq('body_preview', bodyPreview)
               .in('legacy_id', legacyIds)
               .not('body_preview', 'is', null);
-            
+
             if (!bodyPreviewError && existingByBodyPreview) {
               existingByBodyPreview.forEach((e) => {
-                if (e.legacy_id) {
-                  const key = `${e.body_preview}_legacy_${e.legacy_id}`;
-                  bodyPreviewKeys.add(key);
+                if (e.message_id && e.legacy_id && e.body_preview) {
+                  bodyPreviewKeys.add(`${e.message_id}_${e.body_preview}_legacy_${e.legacy_id}`);
                 }
               });
             }
           }
         }
       }
-      
-      // Query for existing emails with same body_preview and contact_id
+
       if (contactIds.length > 0) {
-        const bodyPreviews = [...new Set(rowsWithBodyPreview.filter(row => row.contact_id && row.body_preview).map(row => row.body_preview))];
+        const bodyPreviews = [
+          ...new Set(
+            rowsWithBodyPreview.filter((row) => row.contact_id && row.body_preview).map((row) => row.body_preview)
+          ),
+        ];
         if (bodyPreviews.length > 0) {
           for (const bodyPreview of bodyPreviews) {
             const { data: existingByBodyPreview, error: bodyPreviewError } = await supabase
               .from(EMAIL_HEADERS_TABLE)
-              .select('body_preview, legacy_id, contact_id')
+              .select('message_id, body_preview, legacy_id, contact_id')
               .eq('body_preview', bodyPreview)
               .in('contact_id', contactIds)
               .not('body_preview', 'is', null);
-            
+
             if (!bodyPreviewError && existingByBodyPreview) {
               existingByBodyPreview.forEach((e) => {
-                if (e.contact_id) {
-                  const key = `${e.body_preview}_contact_${e.contact_id}`;
-                  bodyPreviewKeys.add(key);
+                if (e.message_id && e.contact_id && e.body_preview) {
+                  bodyPreviewKeys.add(`${e.message_id}_${e.body_preview}_contact_${e.contact_id}`);
                 }
               });
             }
@@ -1097,20 +1390,22 @@ class GraphMailboxSyncService {
         return false;
       }
       
-      // Check for body_preview duplicates with legacy_id
-      if (row.body_preview && row.legacy_id) {
-        const bodyPreviewKey = `${row.body_preview}_legacy_${row.legacy_id}`;
+      if (row.message_id && row.body_preview && row.legacy_id) {
+        const bodyPreviewKey = `${row.message_id}_${row.body_preview}_legacy_${row.legacy_id}`;
         if (bodyPreviewKeys.has(bodyPreviewKey)) {
-          console.log(`🔄 Skipping duplicate email record ${row.message_id?.substring(0, 20) || 'unknown'}... (same body_preview + legacy_id=${row.legacy_id}) already exists`);
+          console.log(
+            `🔄 Skipping duplicate email record ${row.message_id.substring(0, 20)}... (same message_id + body_preview + legacy_id=${row.legacy_id})`
+          );
           return false;
         }
       }
-      
-      // Check for body_preview duplicates with contact_id
-      if (row.body_preview && row.contact_id) {
-        const bodyPreviewKey = `${row.body_preview}_contact_${row.contact_id}`;
+
+      if (row.message_id && row.body_preview && row.contact_id) {
+        const bodyPreviewKey = `${row.message_id}_${row.body_preview}_contact_${row.contact_id}`;
         if (bodyPreviewKeys.has(bodyPreviewKey)) {
-          console.log(`🔄 Skipping duplicate email record ${row.message_id?.substring(0, 20) || 'unknown'}... (same body_preview + contact_id=${row.contact_id}) already exists`);
+          console.log(
+            `🔄 Skipping duplicate email record ${row.message_id.substring(0, 20)}... (same message_id + body_preview + contact_id=${row.contact_id})`
+          );
           return false;
         }
       }
@@ -1232,6 +1527,9 @@ class GraphMailboxSyncService {
         console.error('⚠️  Error fetching full email bodies:', err.message || err);
         // Don't throw - this is a background operation
       });
+      this.backfillAttachmentMetadata(userId, mailboxAddress, accessToken, { limit: 40 }).catch((err) => {
+        console.error('⚠️  Error backfilling attachment metadata:', err.message || err);
+      });
     }
 
     const duplicatesSkipped = filteredRows.length - newEmailsToSave.length;
@@ -1240,8 +1538,8 @@ class GraphMailboxSyncService {
 
     return {
       processed: messages.length,
-      inserted: newEmailsToSave.length,
-      skipped: filteredOut + duplicatesSkipped,
+      inserted: insertedCount,
+      skipped: filteredOut + duplicatesSkipped + (newEmailsToSave.length - insertedCount),
       trackedCount: 0,
     };
   }
@@ -1250,75 +1548,174 @@ class GraphMailboxSyncService {
   async fetchFullBodiesForMessages(userId, mailboxAddress, emailRows, accessToken) {
     if (!emailRows || emailRows.length === 0 || !accessToken) return;
 
-    console.log(`📧 Fetching full bodies for ${emailRows.length} email(s)...`);
+    const graphDelayMs = Math.max(
+      200,
+      parseInt(process.env.GRAPH_EMAIL_BODY_GRAPH_DELAY_MS || '500', 10) || 500
+    );
 
-    // Fetch full bodies in parallel (but limit concurrency to avoid rate limits)
-    const BATCH_SIZE = 5;
-    for (let i = 0; i < emailRows.length; i += BATCH_SIZE) {
-      const batch = emailRows.slice(i, i + BATCH_SIZE);
-      
-      await Promise.all(
-        batch.map(async (row) => {
-          try {
-            // Fetch full body from Graph API
-            const message = await fetchJson(
-              `${GRAPH_BASE_URL}/users/${mailboxAddress}/messages/${row.message_id}?$select=body`,
-              {
-                headers: {
-                  Authorization: `Bearer ${accessToken}`,
-                },
-              }
-            );
+    const uniqueMessageIds = [...new Set(emailRows.map((r) => r.message_id).filter(Boolean))];
+    console.log(
+      `📧 Fetching full bodies + attachment metadata: ${uniqueMessageIds.length} unique Graph message(s) for ${emailRows.length} DB row(s) (serial + 429 backoff; avoids MailboxConcurrency)`
+    );
 
-            const fullBody = message.body?.content || '';
-            
-            if (!fullBody || fullBody.trim().length === 0) {
-              // If no body content, keep the preview
-              return;
-            }
+    const applyLeadKeysToEmailUpdate = (query, row) => {
+      if (row.client_id == null) query = query.is('client_id', null);
+      else query = query.eq('client_id', row.client_id);
+      if (row.legacy_id == null) query = query.is('legacy_id', null);
+      else query = query.eq('legacy_id', row.legacy_id);
+      if (row.contact_id == null) query = query.is('contact_id', null);
+      else query = query.eq('contact_id', row.contact_id);
+      return query;
+    };
 
-            // Update both body_html and body_preview with full content
-            const { error: updateError } = await supabase
-              .from(EMAIL_HEADERS_TABLE)
-              .update({
-                body_html: fullBody,
-                body_preview: fullBody, // Store full content in preview too
-                body_cached: true,
-              })
-              .eq('message_id', row.message_id);
+    const graphHeaders = {
+      Authorization: `Bearer ${accessToken}`,
+      Prefer: `outlook.body-preview="text"`,
+    };
 
-            if (updateError) {
-              console.error(`⚠️  Failed to update body for ${row.message_id}:`, updateError.message);
-            } else {
-              // Also store in email_bodies table for consistency
-              const { data: headerData } = await supabase
-                .from(EMAIL_HEADERS_TABLE)
-                .select('id')
-                .eq('message_id', row.message_id)
-                .single();
+    for (let u = 0; u < uniqueMessageIds.length; u++) {
+      const messageId = uniqueMessageIds[u];
+      const rowsForMessage = emailRows.filter((r) => r.message_id === messageId);
+      const encodedUser = encodeURIComponent(mailboxAddress);
+      const encodedMsg = encodeURIComponent(messageId);
 
-              if (headerData?.id) {
-                await supabase.from(EMAIL_BODIES_TABLE).upsert({
-                  email_id: headerData.id,
-                  body_html: fullBody,
-                  updated_at: new Date().toISOString(),
-                });
-              }
-            }
-          } catch (err) {
-            console.error(`⚠️  Error fetching body for ${row.message_id}:`, err.message || err);
-            // Continue with other messages even if one fails
+      let fullBody = '';
+      try {
+        const message = await fetchGraphJsonWithRetry(
+          `${GRAPH_BASE_URL}/users/${encodedUser}/messages/${encodedMsg}?$select=body`,
+          { headers: graphHeaders }
+        );
+        fullBody = message.body?.content || '';
+      } catch (err) {
+        console.error(`⚠️  Error fetching body for ${messageId?.substring(0, 40) || 'unknown'}...:`, err.message || err);
+      }
+
+      let attachmentsMeta = [];
+      let attachmentsFetched = false;
+      try {
+        attachmentsMeta = await fetchMessageAttachmentsMetadata(accessToken, mailboxAddress, messageId);
+        attachmentsFetched = true;
+      } catch (attErr) {
+        if (!isGraphMessageNotFound(attErr)) {
+          console.warn(
+            `⚠️  Error fetching attachments for ${messageId?.substring(0, 40) || 'unknown'}...:`,
+            attErr.message || attErr
+          );
+        }
+      }
+
+      const hasBody = Boolean(fullBody && fullBody.trim().length > 0);
+      const patch = {};
+      if (hasBody) {
+        patch.body_html = fullBody;
+        patch.body_preview = fullBody;
+        patch.body_cached = true;
+      }
+      if (attachmentsFetched) {
+        patch.attachments = attachmentsMeta.length ? attachmentsMeta : null;
+      }
+
+      if (Object.keys(patch).length > 0) {
+        for (const row of rowsForMessage) {
+          let q = supabase.from(EMAIL_HEADERS_TABLE).update(patch).eq('message_id', messageId);
+          q = applyLeadKeysToEmailUpdate(q, row);
+          const { error: updateError } = await q;
+          if (updateError) {
+            console.error(`⚠️  Failed to update email row for ${messageId.substring(0, 24)}...:`, updateError.message);
           }
-        })
-      );
+        }
+      }
 
-      // Small delay between batches to avoid rate limiting
-      if (i + BATCH_SIZE < emailRows.length) {
-        await new Promise(resolve => setTimeout(resolve, 100));
+      if (hasBody) {
+        const { data: headerRow } = await supabase
+          .from(EMAIL_HEADERS_TABLE)
+          .select('id')
+          .eq('message_id', messageId)
+          .order('id', { ascending: true })
+          .limit(1)
+          .maybeSingle();
+
+        if (headerRow?.id) {
+          const { error: bodyUpsertError } = await supabase.from(EMAIL_BODIES_TABLE).upsert({
+            email_id: headerRow.id,
+            body_html: fullBody,
+            updated_at: new Date().toISOString(),
+          });
+          if (bodyUpsertError) {
+            console.warn(`⚠️  email_bodies upsert skipped for message ${messageId.substring(0, 20)}...:`, bodyUpsertError.message);
+          }
+        }
+      }
+
+      if (u + 1 < uniqueMessageIds.length) {
+        await sleep(graphDelayMs);
       }
     }
 
-    console.log(`✅ Finished fetching full bodies for ${emailRows.length} email(s)`);
+    console.log(`✅ Finished full-body + attachments pass (${uniqueMessageIds.length} unique message(s))`);
+  }
+
+  /**
+   * Older syncs stored `attachments: []` when hasAttachments was true, or never fetched metadata.
+   * Refreshes attachment JSON for recent cached rows that still have null/empty attachments.
+   */
+  async backfillAttachmentMetadata(userId, mailboxAddress, accessToken, { limit = 30 } = {}) {
+    if (!userId || !mailboxAddress || !accessToken) return;
+
+    const graphDelayMs = Math.max(
+      200,
+      parseInt(process.env.GRAPH_EMAIL_BODY_GRAPH_DELAY_MS || '500', 10) || 500
+    );
+
+    const take = Math.min(200, Math.max(5, limit * 5));
+    const { data: rows, error } = await supabase
+      .from(EMAIL_HEADERS_TABLE)
+      .select('message_id, attachments')
+      .eq('user_id', userId)
+      .eq('body_cached', true)
+      .order('sent_at', { ascending: false })
+      .limit(take);
+
+    if (error || !rows?.length) {
+      if (error) console.warn('⚠️  backfillAttachmentMetadata query failed:', error.message);
+      return;
+    }
+
+    const needsMeta = rows.filter((r) => {
+      if (!r.message_id) return false;
+      const a = r.attachments;
+      if (a == null) return true;
+      if (Array.isArray(a) && a.length === 0) return true;
+      return false;
+    });
+    const uniqueIds = [...new Set(needsMeta.map((r) => r.message_id).filter(Boolean))].slice(0, limit);
+
+    if (!uniqueIds.length) return;
+
+    console.log(`📎 Backfilling attachment metadata for up to ${uniqueIds.length} message(s)`);
+
+    for (let i = 0; i < uniqueIds.length; i++) {
+      const messageId = uniqueIds[i];
+      try {
+        const attachmentsMeta = await fetchMessageAttachmentsMetadata(accessToken, mailboxAddress, messageId);
+        const payload = attachmentsMeta.length ? attachmentsMeta : null;
+        const { error: upErr } = await supabase
+          .from(EMAIL_HEADERS_TABLE)
+          .update({ attachments: payload })
+          .eq('user_id', userId)
+          .eq('message_id', messageId);
+        if (upErr) {
+          console.warn(`⚠️  Failed to backfill attachments for ${messageId?.substring(0, 24)}...:`, upErr.message);
+        }
+      } catch (err) {
+        if (!isGraphMessageNotFound(err)) {
+          console.warn(`⚠️  Attachment backfill Graph error for ${messageId?.substring(0, 24)}...:`, err.message || err);
+        }
+      }
+      if (i + 1 < uniqueIds.length) {
+        await sleep(graphDelayMs);
+      }
+    }
   }
 
   matchesAllowList(addresses, allowList) {
@@ -1424,35 +1821,104 @@ class GraphMailboxSyncService {
     return record;
   }
 
+  normalizeAttachmentsArray(raw) {
+    if (raw == null) return [];
+    if (Array.isArray(raw)) return raw;
+    if (typeof raw === 'string') {
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+      } catch {
+        return [];
+      }
+    }
+    if (typeof raw === 'object' && raw !== null && Array.isArray(raw.value)) {
+      return raw.value;
+    }
+    return [];
+  }
+
+  /**
+   * When attachments are missing or [], fetch metadata from Graph and persist (so UI can list files).
+   * Returns the attachment array to include in API responses (may be empty). Does not throw on 404.
+   */
+  async ensureAttachmentsOnHeader(userId, header) {
+    if (!header?.id || !header.message_id || String(header.message_id).startsWith('offer_')) {
+      return this.normalizeAttachmentsArray(header.attachments);
+    }
+
+    const { data: row } = await supabase
+      .from(EMAIL_HEADERS_TABLE)
+      .select('attachments')
+      .eq('id', header.id)
+      .maybeSingle();
+
+    const fromDb = this.normalizeAttachmentsArray(row?.attachments ?? header.attachments);
+    if (fromDb.length > 0) return fromDb;
+
+    const emailOwnerId = header.user_id || userId;
+    const tokenRecord = await mailboxTokenService.getTokenByUserId(emailOwnerId);
+    if (!tokenRecord?.mailbox_address) return [];
+
+    let tokenResponse;
+    try {
+      tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, {
+        homeAccountId: tokenRecord.home_account_id,
+        environment: tokenRecord.environment,
+        tenantId: tokenRecord.tenant_id,
+        username: tokenRecord.mailbox_address,
+      });
+    } catch {
+      return [];
+    }
+    if (!tokenResponse?.accessToken) return [];
+
+    try {
+      const list = await fetchMessageAttachmentsMetadata(
+        tokenResponse.accessToken,
+        tokenRecord.mailbox_address,
+        header.message_id
+      );
+      const payload = list.length ? list : null;
+      await supabase.from(EMAIL_HEADERS_TABLE).update({ attachments: payload }).eq('id', header.id);
+      return list;
+    } catch (e) {
+      if (!isGraphMessageNotFound(e)) {
+        console.warn(`⚠️  ensureAttachmentsOnHeader failed for ${header.message_id?.substring(0, 30)}...:`, e.message || e);
+      }
+      return [];
+    }
+  }
+
+  /** @returns {{ body: string, attachments: any[] }} */
   async getEmailBody(userId, emailId) {
     const header = await this.getEmailById(userId, emailId);
     if (!header) throw new Error('Email not found');
 
+    const attachments = await this.ensureAttachmentsOnHeader(userId, header);
+
     // Check if this is an "offer_" message ID (optimistic price offer insert)
     const isOfferEmail = header.message_id && header.message_id.startsWith('offer_');
-    
+
     if (isOfferEmail) {
-      // For "offer_" emails, check body_html first, then body_preview
       if (header.body_html && header.body_html.trim() !== '') {
         console.log(`✅ Returning body_html for offer email: ${header.message_id.substring(0, 30)}...`);
-        return header.body_html;
+        return { body: header.body_html, attachments };
       }
-      
+
       if (header.body_preview && header.body_preview.trim() !== '') {
         console.log(`✅ Returning body_preview for offer email: ${header.message_id.substring(0, 30)}...`);
-        return header.body_preview;
+        return { body: header.body_preview, attachments };
       }
-      
+
       console.warn(`⚠️ No body_html or body_preview found for offer email: ${header.message_id}`);
       throw new Error('Email body not available for price offer email');
     }
 
-    // For regular emails, first check if body_html is already in the header
     if (header.body_html && header.body_html.trim() !== '') {
-      return header.body_html;
+      return { body: header.body_html, attachments };
     }
 
-    // Second, check the email_bodies table
     const { data, error } = await supabase
       .from(EMAIL_BODIES_TABLE)
       .select('body_html')
@@ -1461,12 +1927,13 @@ class GraphMailboxSyncService {
     if (error) throw new Error(error.message || 'Failed to load email body');
 
     if (data && data.length && data[0].body_html && data[0].body_html.trim() !== '') {
-      return data[0].body_html;
+      return { body: data[0].body_html, attachments };
     }
 
-    // Third, try to fetch from Graph API
     const html = await this.fetchAndCacheBody(userId, header);
-    return html;
+    const headerAfter = await this.getEmailById(userId, emailId);
+    const attachmentsAfter = await this.ensureAttachmentsOnHeader(userId, headerAfter || header);
+    return { body: html, attachments: attachmentsAfter };
   }
 
   async fetchAndCacheBody(userId, header) {
@@ -1513,10 +1980,28 @@ class GraphMailboxSyncService {
       updated_at: new Date().toISOString(),
     });
 
-    await supabase
-      .from(EMAIL_HEADERS_TABLE)
-      .update({ body_cached: true })
-      .eq('id', header.id);
+    let attachmentsPayload = null;
+    let attachmentsOk = false;
+    try {
+      const list = await fetchMessageAttachmentsMetadata(
+        tokenResponse.accessToken,
+        tokenRecord.mailbox_address,
+        header.message_id
+      );
+      attachmentsOk = true;
+      attachmentsPayload = list.length ? list : null;
+    } catch (e) {
+      if (!isGraphMessageNotFound(e)) {
+        console.warn(`⚠️  fetchAndCacheBody: attachments list failed for ${header.message_id}:`, e.message || e);
+      }
+    }
+
+    const headerUpdate = { body_cached: true };
+    if (attachmentsOk) {
+      headerUpdate.attachments = attachmentsPayload;
+    }
+
+    await supabase.from(EMAIL_HEADERS_TABLE).update(headerUpdate).eq('id', header.id);
 
     return bodyHtml;
   }

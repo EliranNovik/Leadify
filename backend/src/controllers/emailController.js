@@ -25,8 +25,8 @@ const emailController = {
       if (!userId) {
         return res.status(400).json({ success: false, error: 'userId query parameter is required' });
       }
-      const html = await graphMailboxSyncService.getEmailBody(userId, id);
-      res.status(200).json({ success: true, body: html });
+      const { body, attachments } = await graphMailboxSyncService.getEmailBody(userId, id);
+      res.status(200).json({ success: true, body, attachments: attachments || [] });
     } catch (error) {
       console.error('❌ Get body error:', error);
       res.status(500).json({ success: false, error: error.message || 'Failed to load email body' });

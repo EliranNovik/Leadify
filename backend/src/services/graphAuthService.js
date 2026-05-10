@@ -211,13 +211,29 @@ class GraphAuthService {
     // If token exists, mailbox is connected (state might not exist yet if never synced)
     // State is created on first sync, but connection exists as soon as token is present
     const state = await mailboxStateService.getState(userId).catch(() => null);
-    
+    const webhookConfigured = Boolean(process.env.GRAPH_WEBHOOK_NOTIFICATION_URL);
+    const staleAfterMs = Math.max(
+      10 * 60 * 1000,
+      parseInt(process.env.MAILBOX_SYNC_STALE_AFTER_MS || '', 10) || 4 * 60 * 60 * 1000
+    );
+    const lastMs = state?.last_synced_at ? new Date(state.last_synced_at).getTime() : 0;
+    const syncStale = !lastMs || Date.now() - lastMs > staleAfterMs;
+    const subExpMs = state?.subscription_expiry ? new Date(state.subscription_expiry).getTime() : 0;
+    const subscriptionMissingOrExpired =
+      webhookConfigured &&
+      (!state?.subscription_id || !subExpMs || subExpMs < Date.now());
+    const needsMailboxSync = syncStale || subscriptionMissingOrExpired;
+
     return {
       connected: true,
       mailbox: state?.mailbox_address || tokenRecord.mailbox_address,
       displayName: state?.display_name || null,
       lastSyncedAt: state?.last_synced_at || null,
       subscriptionExpiry: state?.subscription_expiry || null,
+      webhookConfigured,
+      syncStale,
+      subscriptionMissingOrExpired,
+      needsMailboxSync,
     };
   }
 

@@ -974,13 +974,13 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
 
       if (requiresHydration.length === 0) return;
 
-      const updates: Record<string, { html: string; preview: string }> = {};
+      const updates: Record<string, { html: string; preview: string; attachments?: any[] }> = {};
 
       await Promise.all(
         requiresHydration.map(async message => {
           if (!message.message_id) return;
           try {
-            const rawContent = await fetchEmailBodyFromBackend(userId, message.message_id);
+            const { body: rawContent, attachments } = await fetchEmailBodyFromBackend(userId, message.message_id);
             if (!rawContent || typeof rawContent !== 'string') return;
             
             // Filter problematic images before processing
@@ -991,11 +991,13 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
             updates[message.message_id] = {
               html: sanitised,
               preview: sanitised,
+              attachments: Array.isArray(attachments) ? attachments : undefined,
             };
-            await supabase
-              .from('emails')
-              .update({ body_html: rawContent, body_preview: rawContent })
-              .eq('message_id', message.message_id);
+            const patch: Record<string, unknown> = { body_html: rawContent, body_preview: rawContent };
+            if (Array.isArray(attachments) && attachments.length > 0) {
+              patch.attachments = attachments;
+            }
+            await supabase.from('emails').update(patch).eq('message_id', message.message_id);
           } catch (error) {
             console.warn('Failed to hydrate scheduler email body from backend:', error);
           }
@@ -1011,6 +1013,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
               ...email,
               body_html: update.html,
               body_preview: update.preview,
+              ...(update.attachments && update.attachments.length > 0 ? { attachments: update.attachments } : {}),
             };
           })
         );

@@ -17,6 +17,7 @@ import { CelebrationProvider } from './contexts/CelebrationContext';
 import { MailboxReconnectProvider } from './contexts/MailboxReconnectContext';
 import MoneyRainCelebration from './components/MoneyRainCelebration';
 import MailboxReconnectModal from './components/MailboxReconnectModal';
+import MailboxHealthMonitor from './components/MailboxHealthMonitor';
 import PWAUpdateNotification from './components/PWAUpdateNotification';
 import MobileBottomNav from './components/MobileBottomNav';
 import { MagnifyingGlassIcon, Cog6ToothIcon, HomeIcon, CalendarIcon, ChartBarIcon, UserGroupIcon, DocumentArrowUpIcon } from '@heroicons/react/24/outline';
@@ -579,7 +580,9 @@ const AppContentInner: React.FC = () => {
   // The auth will load in the background
 
   return (
-    <Routes>
+    <>
+      <MailboxHealthMonitor />
+      <Routes>
       <Route path="/login" element={<RouteSuspense><LazyLoginPage /></RouteSuspense>} />
       <Route path="/about" element={<RouteSuspense><LazyAboutPage /></RouteSuspense>} />
       <Route path="/contact" element={<RouteSuspense><LazyContactPage /></RouteSuspense>} />
@@ -1018,7 +1021,8 @@ const AppContentInner: React.FC = () => {
           </ProtectedRoute >
         }
       />
-    </Routes >
+    </Routes>
+    </>
   );
 };
 

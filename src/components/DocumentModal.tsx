@@ -1546,11 +1546,11 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
               </button>
             </div>
 
-            {/* Desktop: dark toolbar strip with white icons */}
-            <div className="hidden shrink-0 items-center gap-0.5 rounded-xl bg-gray-700 px-2 py-1.5 shadow-inner dark:bg-gray-900 md:flex">
+            {/* Desktop: plain action + close (no grey pill toolbar) */}
+            <div className="hidden shrink-0 items-center gap-2 md:flex">
               <button
                 type="button"
-                className="btn btn-ghost btn-sm gap-2 rounded-lg border-transparent text-white hover:bg-white/10 hover:text-white disabled:border-transparent disabled:bg-transparent disabled:text-white/35"
+                className="btn btn-ghost btn-sm h-auto min-h-0 gap-1.5 border-0 bg-transparent px-2 py-1 font-medium text-base-content shadow-none hover:bg-base-200/60 hover:text-base-content disabled:bg-transparent disabled:opacity-40"
                 onClick={handleDownloadAll}
                 disabled={
                   loading ||
@@ -1558,17 +1558,16 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                 }
                 title="Download all"
               >
-                <ArrowDownTrayIcon className="h-5 w-5 shrink-0 text-white" />
-                <span className="font-medium">Download All</span>
+                <ArrowDownTrayIcon className="h-5 w-5 shrink-0" aria-hidden />
+                Download All
               </button>
-              <div className="mx-0.5 h-6 w-px shrink-0 bg-white/25" aria-hidden />
               <button
                 type="button"
-                className="btn btn-ghost btn-circle btn-sm border-transparent text-white hover:bg-white/10 hover:text-white"
+                className="btn btn-ghost btn-circle h-11 w-11 min-h-11 min-w-11 border-0 bg-transparent p-0 text-base-content shadow-none hover:bg-base-200/60"
                 onClick={onClose}
                 aria-label="Close"
               >
-                <XMarkIcon className="h-5 w-5" aria-hidden />
+                <XMarkIcon className="h-7 w-7" strokeWidth={2} aria-hidden />
               </button>
             </div>
           </div>
@@ -1652,7 +1651,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                     className={`btn btn-outline btn-primary ${isUploading || caseUploadBlocked ? 'btn-disabled' : ''}`}
                   >
                     <PaperClipIcon className="h-5 w-5" />
-                    Choose Files
+                    Upload Files
                   </label>
                 </div>
               </>
@@ -1724,11 +1723,10 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                         >
                           <span className="max-w-[12rem] truncate sm:max-w-[14rem]">{c.label}</span>
                           <span
-                            className="ml-0 inline-flex min-w-[22px] items-center justify-center rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums"
-                            style={
+                            className={
                               active
-                                ? { backgroundColor: '#ffffff', color: '#3b28c7' }
-                                : { backgroundColor: '#3a3a3a', color: '#ffffff' }
+                                ? 'ml-0 inline-flex min-w-[22px] items-center justify-center rounded-full bg-white px-2 py-0.5 text-xs font-semibold tabular-nums text-[#3b28c7]'
+                                : 'ml-0 text-xs font-semibold tabular-nums text-black dark:text-gray-100'
                             }
                           >
                             {count}

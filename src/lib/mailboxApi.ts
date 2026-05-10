@@ -64,6 +64,25 @@ export const getMailboxLoginUrl = async (userId: string, redirectTo?: string) =>
   return payload.url as string;
 };
 
+/** Register/renew Microsoft Graph Inbox webhook (needs GRAPH_WEBHOOK_NOTIFICATION_URL on server). */
+export const ensureMailboxGraphSubscription = async (userId: string) => {
+  if (!userId) throw new Error('userId is required');
+  const response = await fetch(buildUrl('/api/graph/subscriptions/ensure'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userId }),
+  });
+  const payload = await parseJsonResponse(response);
+  return payload?.data ?? null;
+};
+
+/** Webhook + delta sync (used after login / “Sync now”). */
+export const runMailboxCatchUpSync = async (userId: string, options?: { reset?: boolean }) => {
+  if (!userId) throw new Error('userId is required');
+  await ensureMailboxGraphSubscription(userId).catch(() => {});
+  return triggerMailboxSync(userId, { reset: options?.reset ?? false });
+};
+
 export const triggerMailboxSync = async (userId: string, options?: { reset?: boolean }) => {
   if (!userId) throw new Error('userId is required');
   const response = await fetch(buildUrl('/api/sync/now'), {
@@ -124,13 +143,21 @@ export const sendEmailViaBackend = async (payload: BackendSendEmailPayload) => {
   return data?.data || null;
 };
 
-export const fetchEmailBodyFromBackend = async (userId: string, emailId: string) => {
+export type EmailBodyFromBackend = {
+  body: string;
+  /** File attachment metadata from Graph (id, name, size, …); empty if none */
+  attachments: any[];
+};
+
+export const fetchEmailBodyFromBackend = async (userId: string, emailId: string): Promise<EmailBodyFromBackend> => {
   if (!userId || !emailId) throw new Error('userId and emailId are required');
   const url = new URL(buildUrl(`/api/emails/${encodeURIComponent(emailId)}/body`));
   url.searchParams.set('userId', userId);
   const response = await fetch(url.toString());
   const data = await parseJsonResponse(response);
-  return data?.body || '';
+  const body = typeof data?.body === 'string' ? data.body : '';
+  const attachments = Array.isArray(data?.attachments) ? data.attachments : [];
+  return { body, attachments };
 };
 
 export const buildAttachmentDownloadUrl = (userId: string, emailId: string, attachmentId: string) => {

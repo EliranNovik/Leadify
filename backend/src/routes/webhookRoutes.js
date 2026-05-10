@@ -54,6 +54,7 @@ router.get('/graph/webhook/test', (req, res) => {
 
 // Graph subscription management
 router.post('/graph/subscriptions/refresh', graphEmailController.refreshSubscriptions);
+router.post('/graph/subscriptions/ensure', graphEmailController.ensureSubscription);
 router.get('/graph/subscriptions/status', graphEmailController.checkSubscriptions);
 
 // Manual sync all mailboxes (for testing/debugging)

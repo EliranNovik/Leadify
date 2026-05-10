@@ -46,6 +46,20 @@ interface EmailMessage {
   attachments?: any[];
 }
 
+/** Hebrew + common Hebrew presentation forms in HTML email */
+const HEBREW_CHAR_RE = /[\u0590-\u05FF\uFB1D-\uFB4F]/;
+
+function stripTagsForRtl(text: string) {
+  return (text || '').replace(/<[^>]*>/g, ' ');
+}
+
+/** True if any snippet contains Hebrew — used for RTL / logical end alignment of email boxes */
+function emailContentLikelyHebrew(...parts: (string | null | undefined)[]) {
+  const combined = parts.filter(Boolean).join('\n');
+  const plain = stripTagsForRtl(combined);
+  return plain.trim().length > 0 && HEBREW_CHAR_RE.test(plain);
+}
+
 const EmailThreadLeadPage: React.FC = () => {
   const [leads, setLeads] = useState<EmailLead[]>([]);
   const [loading, setLoading] = useState(true);
@@ -784,7 +798,7 @@ const EmailThreadLeadPage: React.FC = () => {
 
     console.log(`📧 Hydrating ${requiresHydration.length} email body(ies)...`);
 
-    const updates: Record<string, { html: string; preview: string }> = {};
+    const updates: Record<string, { html: string; preview: string; attachments?: any[] }> = {};
 
     await Promise.all(
       requiresHydration.map(async message => {
@@ -792,19 +806,22 @@ const EmailThreadLeadPage: React.FC = () => {
         if (!messageId) return;
 
         try {
-          const rawContent = await fetchEmailBodyFromBackend(userId, messageId);
+          const { body: rawContent, attachments } = await fetchEmailBodyFromBackend(userId, messageId);
           if (!rawContent || typeof rawContent !== 'string') return;
 
-          // Store the raw content as both html and preview
           updates[messageId] = {
             html: rawContent,
             preview: rawContent,
+            attachments: Array.isArray(attachments) ? attachments : undefined,
           };
 
-          // Update the database
           await supabase
             .from('emails')
-            .update({ body_html: rawContent, body_preview: rawContent })
+            .update({
+              body_html: rawContent,
+              body_preview: rawContent,
+              ...(Array.isArray(attachments) && attachments.length > 0 ? { attachments } : {}),
+            })
             .eq('message_id', messageId);
 
           console.log(`✅ Hydrated body for message: ${message.subject?.substring(0, 50)}...`);
@@ -814,7 +831,6 @@ const EmailThreadLeadPage: React.FC = () => {
       })
     );
 
-    // Update the messages state with hydrated bodies
     if (Object.keys(updates).length > 0) {
       setMessages(prev =>
         prev.map(message => {
@@ -826,6 +842,7 @@ const EmailThreadLeadPage: React.FC = () => {
             ...message,
             body_html: update.html,
             body_preview: update.preview,
+            ...(update.attachments && update.attachments.length > 0 ? { attachments: update.attachments } : {}),
           };
         })
       );
@@ -1909,6 +1926,7 @@ const EmailThreadLeadPage: React.FC = () => {
               ) : (
                 filteredLeads.map((lead) => {
                   const isSelected = selectedLead?.id === lead.id;
+                  const leadPreviewRtl = emailContentLikelyHebrew(lead.last_subject, lead.last_message_preview);
 
                   return (
                     <div
@@ -1965,10 +1983,16 @@ const EmailThreadLeadPage: React.FC = () => {
                             </div>
                           </div>
 
-                          <p className="text-sm text-gray-600 truncate mb-1 font-medium">
+                          <p
+                            dir={leadPreviewRtl ? 'rtl' : 'ltr'}
+                            className="text-sm text-gray-600 truncate mb-1 font-medium text-start"
+                          >
                             {lead.last_subject}
                           </p>
-                          <p className="text-sm text-gray-600 truncate">
+                          <p
+                            dir={leadPreviewRtl ? 'rtl' : 'ltr'}
+                            className="text-sm text-gray-600 truncate text-start"
+                          >
                             {getMessagePreview(lead.last_message_preview)}
                           </p>
 
@@ -2236,6 +2260,11 @@ const EmailThreadLeadPage: React.FC = () => {
                       const showDateSeparator = index === 0 ||
                         new Date(message.sent_at).toDateString() !== new Date(messages[index - 1].sent_at).toDateString();
                       const isOutgoing = message.direction === 'outgoing';
+                      const messageRtl = emailContentLikelyHebrew(
+                        message.subject,
+                        message.body_preview,
+                        message.body_html || undefined
+                      );
 
                       // Create a unique key combining message_id, direction, and sent_at to ensure uniqueness
                       const uniqueKey = `${message.message_id || message.id || 'msg'}_${message.direction}_${message.sent_at}_${index}`;
@@ -2255,8 +2284,9 @@ const EmailThreadLeadPage: React.FC = () => {
                               {isOutgoing ? (currentUserFullName || userEmail || 'You') : (message.sender_name || selectedLead?.sender_name || 'Sender')}
                             </div>
                             <div
-                              className="max-w-full md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm border border-gray-200 bg-white text-gray-900"
-                              style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                              dir={messageRtl ? 'rtl' : 'ltr'}
+                              className="max-w-full md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm border border-gray-200 bg-white text-gray-900 text-start"
+                              style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', unicodeBidi: 'plaintext' }}
                             >
                               <div className="mb-2">
                                 <div className="text-sm font-semibold text-gray-900">{message.subject}</div>
@@ -2271,12 +2301,12 @@ const EmailThreadLeadPage: React.FC = () => {
                               {message.body_html ? (
                                 <div
                                   dangerouslySetInnerHTML={{ __html: message.body_html }}
-                                  className="prose prose-sm max-w-none text-gray-700 break-words"
+                                  className={`prose prose-sm max-w-none text-gray-700 break-words [&_*]:max-w-full ${messageRtl ? 'prose-headings:text-start prose-p:text-start' : ''}`}
                                   style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
                                 />
                               ) : message.body_preview ? (
                                 <div
-                                  className="text-gray-700 whitespace-pre-wrap break-words"
+                                  className="text-gray-700 whitespace-pre-wrap break-words text-start"
                                   style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
                                 >
                                   {message.body_preview}
@@ -2286,7 +2316,7 @@ const EmailThreadLeadPage: React.FC = () => {
                               )}
 
                               {message.attachments && Array.isArray(message.attachments) && message.attachments.length > 0 && (
-                                <div className="mt-3 pt-3 border-t border-gray-200">
+                                <div className="mt-3 pt-3 border-t border-gray-200 text-start">
                                   <div className="text-xs font-medium text-gray-600 mb-2">
                                     Attachments ({message.attachments.length}):
                                   </div>
@@ -2305,7 +2335,7 @@ const EmailThreadLeadPage: React.FC = () => {
                                         <button
                                           key={attachmentKey}
                                           type="button"
-                                          className="flex items-center gap-2 text-xs font-medium text-blue-600 hover:text-blue-800 transition-colors w-full text-left"
+                                          className={`flex items-center gap-2 text-xs font-medium text-blue-600 hover:text-blue-800 transition-colors w-full ${messageRtl ? 'flex-row-reverse text-start' : 'text-start'}`}
                                           onClick={() => handleAttachmentDownload(message, attachment)}
                                           disabled={Boolean(isDownloading)}
                                         >
@@ -2452,6 +2482,7 @@ const EmailThreadLeadPage: React.FC = () => {
                               <input
                                 ref={subjectInputRef}
                                 type="text"
+                                dir={emailContentLikelyHebrew(subject) ? 'rtl' : 'ltr'}
                                 value={subject}
                                 onChange={(e) => setSubject(e.target.value)}
                                 placeholder="Subject"
@@ -2480,6 +2511,7 @@ const EmailThreadLeadPage: React.FC = () => {
 
                       <textarea
                         ref={textareaRef}
+                        dir={emailContentLikelyHebrew(newMessage) ? 'rtl' : 'ltr'}
                         value={newMessage}
                         onChange={(e) => handleMessageChange(e.target.value)}
                         placeholder="Write your reply..."

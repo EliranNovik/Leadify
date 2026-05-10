@@ -1844,15 +1844,23 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             error: result?.error,
             details: result?.details,
           });
-          // Continue to optimistic upsert below - message was sent successfully
+          // Continue to optimistic insert below - message was sent successfully
         }
 
-        // Message was sent successfully (either backend saved it or we need to save it optimistically)
-        // Use the message ID from backend response if available, otherwise generate one
-        // Note: If DB save failed, result won't have whatsapp_message_id, so we'll generate one
-        const whatsappMessageId = result.whatsapp_message_id || result.message_id || result.data?.whatsapp_message_id || result.id;
+        // Successful API responses already persist the row in whatsapp_messages (see whatsappController.sendMessage).
+        // A second client insert here caused duplicate timeline entries in InteractionsTab.
+        if (response.ok) {
+          return { success: true, phoneNumber };
+        }
 
-        // Add optimistic upsert to database (always do this, even if backend saved it, to ensure it appears immediately)
+        // DB save failed after send: insert from client so the timeline can still show the message.
+        const whatsappMessageId =
+          result?.messageId ??
+          result?.message_id ??
+          result?.whatsapp_message_id ??
+          result?.data?.whatsapp_message_id ??
+          result?.id;
+
         try {
           const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
           const legacyId = isLegacyLead

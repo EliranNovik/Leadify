@@ -83,6 +83,70 @@ const SCHEDULER_STAGE_TARGETS = [
 ];
 const FALLBACK_SCHEDULER_STAGE_IDS = [0, 10, 11, 15];
 
+/** Rows per page in the scheduler UI */
+const SCHEDULER_LEADS_PAGE_SIZE = 100;
+/** Supabase/PostgREST often caps responses (~1000); batch fetches to load all rows */
+const SUPABASE_LEADS_FETCH_BATCH = 1000;
+
+async function fetchSupabaseAllRows<T>(
+  fetchPage: (from: number, to: number) => Promise<{ data: T[] | null; error: unknown }>
+): Promise<T[]> {
+  const out: T[] = [];
+  let from = 0;
+  for (;;) {
+    const { data, error } = await fetchPage(from, from + SUPABASE_LEADS_FETCH_BATCH - 1);
+    if (error) throw error;
+    const rows = data ?? [];
+    if (rows.length === 0) break;
+    out.push(...rows);
+    if (rows.length < SUPABASE_LEADS_FETCH_BATCH) break;
+    from += SUPABASE_LEADS_FETCH_BATCH;
+  }
+  return out;
+}
+
+/**
+ * Traces why a lead may be missing on the scheduler page. Enabled in dev, or set
+ * `VITE_SCHEDULER_DEBUG_LEAD=1` in `.env` for production diagnostics.
+ * Change the number below if you need a different lead.
+ */
+const SCHEDULER_DEBUG_LEAD_NUMBER =
+  import.meta.env.DEV || import.meta.env.VITE_SCHEDULER_DEBUG_LEAD === '1' ? '217348' : '';
+
+function schedulerDebugMatchesNewRow(row: any): boolean {
+  if (!SCHEDULER_DEBUG_LEAD_NUMBER) return false;
+  const ln = String(row?.lead_number ?? '').replace(/^L/i, '').trim();
+  const id = String(row?.id ?? '');
+  const master = row?.master_id != null ? String(row.master_id).trim() : '';
+  return (
+    ln === SCHEDULER_DEBUG_LEAD_NUMBER ||
+    ln.startsWith(`${SCHEDULER_DEBUG_LEAD_NUMBER}/`) ||
+    id === SCHEDULER_DEBUG_LEAD_NUMBER ||
+    master === SCHEDULER_DEBUG_LEAD_NUMBER
+  );
+}
+
+function schedulerDebugMatchesLegacyRow(row: any): boolean {
+  if (!SCHEDULER_DEBUG_LEAD_NUMBER) return false;
+  const manual = row?.manual_id != null ? String(row.manual_id).trim() : '';
+  const id = String(row?.id ?? '');
+  return manual === SCHEDULER_DEBUG_LEAD_NUMBER || id === SCHEDULER_DEBUG_LEAD_NUMBER;
+}
+
+function schedulerDebugMatchesSchedulerLead(lead: SchedulerLead): boolean {
+  if (!SCHEDULER_DEBUG_LEAD_NUMBER) return false;
+  const nav = String(lead.lead_number_nav ?? '').replace(/^L/i, '').trim();
+  const disp = String(lead.lead_number ?? '').replace(/^L/i, '').trim();
+  const id = String(lead.id ?? '').replace(/^legacy_/i, '');
+  return (
+    nav === SCHEDULER_DEBUG_LEAD_NUMBER ||
+    nav.startsWith(`${SCHEDULER_DEBUG_LEAD_NUMBER}/`) ||
+    disp === SCHEDULER_DEBUG_LEAD_NUMBER ||
+    disp.startsWith(`${SCHEDULER_DEBUG_LEAD_NUMBER}/`) ||
+    id === SCHEDULER_DEBUG_LEAD_NUMBER
+  );
+}
+
 // Helper function to calculate contrasting text color based on background
 const getContrastingTextColor = (hexColor?: string | null) => {
   if (!hexColor) return '#111827';
@@ -211,6 +275,10 @@ const SchedulerToolPage: React.FC = () => {
   const [viewMode, setViewMode] = usePersistedState<'table' | 'box'>('schedulerTool_viewMode', 'box', {
     storage: 'sessionStorage',
   });
+
+  const [schedulerListPage, setSchedulerListPage] = usePersistedState<number>('schedulerTool_listPage', 1, {
+    storage: 'sessionStorage',
+  });
   
   // Editing state
   const [editingField, setEditingField] = useState<{leadId: string, field: string} | null>(null);
@@ -224,6 +292,7 @@ const SchedulerToolPage: React.FC = () => {
   
   // Track if we've already loaded from persisted state to prevent refetching
   const hasLoadedFromStorageRef = useRef(false);
+  const skipSchedulerPageResetOnMount = useRef(true);
 
   // Fetch current user information
   const fetchCurrentUser = async () => {
@@ -884,10 +953,93 @@ const SchedulerToolPage: React.FC = () => {
         return;
       }
 
-      // Build and execute new leads query (with joins for stage, category, source - no client-side mapping)
-      let newLeadsQueryBuilder = supabase
-        .from('leads')
-        .select(`
+      // --- Debug: why lead L217348 (or #217348) may not appear for this user ---
+      if (SCHEDULER_DEBUG_LEAD_NUMBER) {
+        try {
+        const lnBare = SCHEDULER_DEBUG_LEAD_NUMBER;
+        const lnPrefixed = `L${lnBare}`;
+        // leads.id is UUID — never query id=eq.<numeric>; lead_number may be "217348" or "L217348"
+        const { data: dbgNewRows, error: dbgNewErr } = await supabase
+          .from('leads')
+          .select('id, lead_number, name, scheduler, stage, eligible, unactivated_at')
+          .or(`lead_number.eq.${lnBare},lead_number.eq.${lnPrefixed}`)
+          .limit(3);
+        if (dbgNewErr) {
+          console.warn(`[SchedulerDebug L${lnBare}] leads lookup error`, dbgNewErr);
+        }
+        const dbgNew = dbgNewRows?.[0] ?? null;
+        const { data: dbgLegacyList } = await supabase
+          .from('leads_lead')
+          .select('id, manual_id, name, meeting_scheduler_id, stage, eligibile, status, master_id')
+          .or(
+            `manual_id.eq.${lnBare},manual_id.eq.${lnPrefixed},id.eq.${lnBare}`
+          )
+          .limit(5);
+        const empIdNum = Number(userData.employee_id);
+        console.groupCollapsed(
+          `[SchedulerDebug L${SCHEDULER_DEBUG_LEAD_NUMBER}] Direct DB read (if null, RLS or lead does not exist)`
+        );
+        console.log('Logged-in user', {
+          employee_id: userData.employee_id,
+          newLeadsSchedulerColumnMustMatch: employeeDisplayName,
+          legacyMeetingSchedulerIdMustMatch: empIdNum,
+          stageIdsToUse,
+        });
+        console.log('Table leads — row by lead_number (bare or L-prefixed)', dbgNew);
+        if (dbgNew) {
+          const hotListExcludesEligible =
+            'Hot Leads intentionally hides new leads where eligible === true (see transform filter).';
+          console.log('New-leads query would require', {
+            schedulerEqualsDisplayName: dbgNew.scheduler === employeeDisplayName,
+            schedulerOnRow: dbgNew.scheduler,
+            stageInSchedulerView: stageIdsToUse.includes(Number(dbgNew.stage)),
+            stageRaw: dbgNew.stage,
+            hiddenBecauseEligibleTrue: dbgNew.eligible === true,
+            noteIfEligible: dbgNew.eligible === true ? hotListExcludesEligible : undefined,
+            eligibleRaw: dbgNew.eligible,
+            excludedIfUnactivated: dbgNew.unactivated_at != null,
+            unactivated_at: dbgNew.unactivated_at,
+          });
+          if (dbgNew.eligible === true) {
+            console.info(
+              `[SchedulerDebug L${SCHEDULER_DEBUG_LEAD_NUMBER}] Root cause: lead has eligible=true — it is excluded from this page by design.`
+            );
+          }
+        }
+        console.log('Table leads_lead — rows with manual_id or id match', dbgLegacyList);
+        if (dbgLegacyList && dbgLegacyList.length > 0) {
+          dbgLegacyList.forEach((row: any) => {
+            console.log('Legacy row checks', {
+              id: row.id,
+              manual_id: row.manual_id,
+              meeting_scheduler_id: row.meeting_scheduler_id,
+              meetingSchedulerMatchesUser: Number(row.meeting_scheduler_id) === empIdNum,
+              stage: row.stage,
+              stageInSchedulerView: [0, 10, 11, 15].includes(Number(row.stage)),
+              eligibile: row.eligibile,
+              hiddenBecauseEligibleYes:
+                String(row.eligibile ?? '')
+                  .toLowerCase()
+                  .trim() === 'yes' ||
+                String(row.eligibile ?? '')
+                  .toLowerCase()
+                  .trim() === 'true',
+              status: row.status,
+              statusOkForScheduler: row.status === 0 || row.status == null,
+            });
+          });
+        }
+        console.groupEnd();
+        } catch (dbgErr) {
+          console.warn(`[SchedulerDebug L${SCHEDULER_DEBUG_LEAD_NUMBER}] Direct lookup error`, dbgErr);
+        }
+      }
+
+      // Build and execute new leads query (batched — avoids PostgREST default row cap)
+      const buildNewLeadsQuery = () => {
+        let q = supabase
+          .from('leads')
+          .select(`
           id,
           lead_number,
           name,
@@ -949,21 +1101,38 @@ const SchedulerToolPage: React.FC = () => {
             misc_leadtag ( name )
           )
         `)
-        .eq('scheduler', employeeDisplayName)
-        .is('unactivated_at', null)
-        .neq('stage', 110);
+          .eq('scheduler', employeeDisplayName)
+          .is('unactivated_at', null)
+          .neq('stage', 110);
+        if (stageIdsToUse.length === 1) {
+          q = q.eq('stage', stageIdsToUse[0]);
+        } else {
+          q = q.in('stage', stageIdsToUse);
+        }
+        return q;
+      };
 
-      if (stageIdsToUse.length === 1) {
-        newLeadsQueryBuilder = newLeadsQueryBuilder.eq('stage', stageIdsToUse[0]);
-      } else {
-        newLeadsQueryBuilder = newLeadsQueryBuilder.in('stage', stageIdsToUse);
-      }
+      const newLeads = await fetchSupabaseAllRows<any>(async (rangeFrom, rangeTo) =>
+        buildNewLeadsQuery().range(rangeFrom, rangeTo)
+      );
 
-      const { data: newLeads, error: newError } = await newLeadsQueryBuilder;
-
-      if (newError) {
-        console.error('Error fetching new leads:', newError);
-        throw newError;
+      if (SCHEDULER_DEBUG_LEAD_NUMBER) {
+        const dbgHits = (newLeads || []).filter(schedulerDebugMatchesNewRow);
+        console.log(
+          `[SchedulerDebug L${SCHEDULER_DEBUG_LEAD_NUMBER}] Rows in batched fetch from \`leads\` (scheduler+stage+active filters already applied)`,
+          { count: dbgHits.length, rows: dbgHits }
+        );
+        dbgHits.forEach((row: any) => {
+          const droppedByEligible = row.eligible === true;
+          console.log(`[SchedulerDebug L${SCHEDULER_DEBUG_LEAD_NUMBER}] New row post-fetch`, {
+            id: row.id,
+            lead_number: row.lead_number,
+            scheduler: row.scheduler,
+            stage: row.stage,
+            eligible: row.eligible,
+            droppedByEligibleFilterBeforeTransform: droppedByEligible,
+          });
+        });
       }
 
       // Calculate sublead suffixes for new leads (run in parallel with legacy leads fetch)
@@ -1015,10 +1184,11 @@ const SchedulerToolPage: React.FC = () => {
         return suffixMap;
       })();
 
-      // Fetch legacy leads with joins for stage, category, source, language (no client-side mapping)
-      let legacyLeadsQuery = supabase
-        .from('leads_lead')
-        .select(`
+      // Fetch legacy leads (batched — avoids PostgREST default row cap)
+      const buildLegacyLeadsQuery = () =>
+        supabase
+          .from('leads_lead')
+          .select(`
           id,
           name,
           cdate,
@@ -1073,23 +1243,25 @@ const SchedulerToolPage: React.FC = () => {
             misc_leadtag ( name )
           )
         `)
-        .eq('meeting_scheduler_id', Number(userData.employee_id))
-        .in('stage', [0, 10, 11, 15])
-        .neq('stage', 110)
-        .or('status.eq.0,status.is.null');
-      
-      const [legacyLeadsResult, newSubLeadSuffixMap] = await Promise.all([
-        legacyLeadsQuery,
+          .eq('meeting_scheduler_id', Number(userData.employee_id))
+          .in('stage', [0, 10, 11, 15])
+          .neq('stage', 110)
+          .or('status.eq.0,status.is.null');
+
+      const [legacyLeads, newSubLeadSuffixMap] = await Promise.all([
+        fetchSupabaseAllRows<any>(async (rangeFrom, rangeTo) =>
+          buildLegacyLeadsQuery().range(rangeFrom, rangeTo)
+        ),
         newSubLeadSuffixMapPromise
       ]);
-      
-      const { data: legacyLeads, error: legacyError } = legacyLeadsResult;
 
-      if (legacyError) {
-        console.error('❌ Error fetching legacy leads:', legacyError);
-        throw legacyError;
+      if (SCHEDULER_DEBUG_LEAD_NUMBER) {
+        const dbgLeg = (legacyLeads || []).filter(schedulerDebugMatchesLegacyRow);
+        console.log(
+          `[SchedulerDebug L${SCHEDULER_DEBUG_LEAD_NUMBER}] Rows in batched \`leads_lead\` fetch (meeting_scheduler+stage+status filters)`,
+          { count: dbgLeg.length, rows: dbgLeg }
+        );
       }
-
 
       // Calculate sublead suffixes for legacy leads AND fetch subleads to display
       const subLeadSuffixMap = new Map<string, number>();
@@ -1236,6 +1408,25 @@ const SchedulerToolPage: React.FC = () => {
       
       // Combine master leads with their subleads
       const allLegacyLeads = [...(legacyLeads || []), ...subLeadsToAdd];
+
+      if (SCHEDULER_DEBUG_LEAD_NUMBER) {
+        const dbgCombined = allLegacyLeads.filter(schedulerDebugMatchesLegacyRow);
+        console.log(
+          `[SchedulerDebug L${SCHEDULER_DEBUG_LEAD_NUMBER}] Legacy rows after merging subleads`,
+          { count: dbgCombined.length, rows: dbgCombined }
+        );
+        dbgCombined.forEach((row: any) => {
+          const ev = String((row as any).eligibile ?? '')
+            .toLowerCase()
+            .trim();
+          console.log(`[SchedulerDebug L${SCHEDULER_DEBUG_LEAD_NUMBER}] Legacy row before eligibile filter`, {
+            id: row.id,
+            manual_id: row.manual_id,
+            eligibile: (row as any).eligibile,
+            droppedByEligibileYes: ev === 'yes' || ev === 'true',
+          });
+        });
+      }
 
       // Fetch all additional data in parallel for better performance
       const legacyLeadIds = allLegacyLeads?.map(lead => lead.id) || [];
@@ -1422,8 +1613,7 @@ const SchedulerToolPage: React.FC = () => {
       // Transform new leads - use joined names first (fast), fallback to getters only when join missing
       const transformedNewLeads: SchedulerLead[] = (newLeads || [])
         .filter(lead => {
-          // Show only leads that are NOT eligible (false, null, undefined)
-          // Hide leads that are explicitly set to true (eligible)
+          // Hot Leads = pre-eligibility queue only: hide once marked eligible (eligible === true).
           return lead.eligible !== true;
         })
         .map(lead => {
@@ -1607,6 +1797,14 @@ const SchedulerToolPage: React.FC = () => {
       // Combine and sort by created date (newest first)
       const allLeads = [...transformedNewLeads, ...transformedLegacyLeads]
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+      if (SCHEDULER_DEBUG_LEAD_NUMBER) {
+        const dbgMerged = allLeads.filter(schedulerDebugMatchesSchedulerLead);
+        console.log(
+          `[SchedulerDebug L${SCHEDULER_DEBUG_LEAD_NUMBER}] In merged \`leads\` after eligible filters + sort`,
+          { count: dbgMerged.length, leads: dbgMerged }
+        );
+      }
 
       setLeads(allLeads);
 
@@ -2304,6 +2502,67 @@ const SchedulerToolPage: React.FC = () => {
       });
     }
 
+    const dbgSchedulerLead = leads.find(schedulerDebugMatchesSchedulerLead);
+    if (dbgSchedulerLead) {
+      const dbgStillVisible = filtered.find(schedulerDebugMatchesSchedulerLead);
+      if (!dbgStillVisible) {
+        const reasons: string[] = [];
+        if (searchTerm.trim()) {
+          const s = searchTerm.toLowerCase().trim();
+          const searchOk =
+            dbgSchedulerLead.lead_number.toLowerCase().includes(s) ||
+            dbgSchedulerLead.name.toLowerCase().includes(s) ||
+            (dbgSchedulerLead.phone && dbgSchedulerLead.phone.toLowerCase().includes(s)) ||
+            (dbgSchedulerLead.mobile && dbgSchedulerLead.mobile.toLowerCase().includes(s)) ||
+            (dbgSchedulerLead.email && dbgSchedulerLead.email.toLowerCase().includes(s));
+          if (!searchOk) reasons.push(`search (“${searchTerm}”)`);
+        }
+        if (dateFrom || dateTo) {
+          const leadDate = new Date(dbgSchedulerLead.created_at);
+          const fromDate = dateFrom ? new Date(dateFrom) : null;
+          const toDate = dateTo ? new Date(dateTo) : null;
+          let dateOk = true;
+          if (fromDate && toDate) dateOk = leadDate >= fromDate && leadDate <= toDate;
+          else if (fromDate) dateOk = leadDate >= fromDate;
+          else if (toDate) dateOk = leadDate <= toDate;
+          if (!dateOk) reasons.push(`date range (${dateFrom || '…'} → ${dateTo || '…'})`);
+        }
+        if (filters.stage && !dbgSchedulerLead.stage.toLowerCase().includes(filters.stage.toLowerCase())) {
+          reasons.push(`stage filter (“${filters.stage}”)`);
+        }
+        if (filters.language && !dbgSchedulerLead.language.toLowerCase().includes(filters.language.toLowerCase())) {
+          reasons.push(`language filter (“${filters.language}”)`);
+        }
+        if (filters.source && !dbgSchedulerLead.source.toLowerCase().includes(filters.source.toLowerCase())) {
+          reasons.push(`source filter (“${filters.source}”)`);
+        }
+        if (filters.category && !dbgSchedulerLead.category.toLowerCase().includes(filters.category.toLowerCase())) {
+          reasons.push(`category filter (“${filters.category}”)`);
+        }
+        if (filters.topic && !dbgSchedulerLead.topic.toLowerCase().includes(filters.topic.toLowerCase())) {
+          reasons.push(`topic filter (“${filters.topic}”)`);
+        }
+        if (
+          filters.tags &&
+          (!dbgSchedulerLead.tags ||
+            !dbgSchedulerLead.tags.toLowerCase().includes(filters.tags.toLowerCase()))
+        ) {
+          reasons.push(`tags filter (“${filters.tags}”)`);
+        }
+        if (
+          filters.country &&
+          (!dbgSchedulerLead.country ||
+            !dbgSchedulerLead.country.toLowerCase().includes(filters.country.toLowerCase()))
+        ) {
+          reasons.push(`country filter (“${filters.country}”)`);
+        }
+        console.warn(
+          `[SchedulerDebug L${SCHEDULER_DEBUG_LEAD_NUMBER}] In loaded list but hidden by UI filters`,
+          { reasons, dbgSchedulerLead, filters, searchTerm, dateFrom, dateTo }
+        );
+      }
+    }
+
     setFilteredLeads(filtered);
   };
 
@@ -2384,6 +2643,57 @@ const SchedulerToolPage: React.FC = () => {
   useEffect(() => {
     applyFilters();
   }, [leads, filters, searchTerm, dateFrom, dateTo, sortConfig]);
+
+  const schedulerFilteredTotal = filteredLeads.length;
+  const schedulerTotalPages = Math.max(1, Math.ceil(schedulerFilteredTotal / SCHEDULER_LEADS_PAGE_SIZE));
+  const schedulerSafePage = Math.min(Math.max(1, schedulerListPage), schedulerTotalPages);
+
+  const paginatedFilteredLeads = useMemo(() => {
+    const start = (schedulerSafePage - 1) * SCHEDULER_LEADS_PAGE_SIZE;
+    return filteredLeads.slice(start, start + SCHEDULER_LEADS_PAGE_SIZE);
+  }, [filteredLeads, schedulerSafePage]);
+
+  useEffect(() => {
+    if (!SCHEDULER_DEBUG_LEAD_NUMBER) return;
+    const inFiltered = filteredLeads.find(schedulerDebugMatchesSchedulerLead);
+    const inPage = paginatedFilteredLeads.find(schedulerDebugMatchesSchedulerLead);
+    if (inFiltered && !inPage) {
+      const idx = filteredLeads.findIndex(schedulerDebugMatchesSchedulerLead);
+      const page = Math.floor(idx / SCHEDULER_LEADS_PAGE_SIZE) + 1;
+      console.warn(
+        `[SchedulerDebug L${SCHEDULER_DEBUG_LEAD_NUMBER}] Lead is in the filtered list but not on the current page (pagination)`,
+        { currentPage: schedulerSafePage, openPage: page, indexInFilteredList: idx, pageSize: SCHEDULER_LEADS_PAGE_SIZE }
+      );
+    }
+  }, [filteredLeads, paginatedFilteredLeads, schedulerSafePage]);
+
+  useEffect(() => {
+    if (schedulerListPage !== schedulerSafePage) {
+      setSchedulerListPage(schedulerSafePage);
+    }
+  }, [schedulerListPage, schedulerSafePage, setSchedulerListPage]);
+
+  useEffect(() => {
+    if (skipSchedulerPageResetOnMount.current) {
+      skipSchedulerPageResetOnMount.current = false;
+      return;
+    }
+    setSchedulerListPage(1);
+  }, [
+    searchTerm,
+    dateFrom,
+    dateTo,
+    sortConfig.key,
+    sortConfig.direction,
+    filters.stage,
+    filters.language,
+    filters.source,
+    filters.category,
+    filters.topic,
+    filters.tags,
+    filters.country,
+    setSchedulerListPage,
+  ]);
 
   // Set default view mode based on screen size
   useEffect(() => {
@@ -2537,7 +2847,7 @@ const SchedulerToolPage: React.FC = () => {
           {/* Search bar centered with toggle right next to it */}
           <div className="flex justify-center items-center w-full">
             <div className="flex items-center gap-2 w-full max-w-xl">
-              <div className="relative flex-1 min-w-0 flex items-center rounded-full bg-gray-100 dark:bg-gray-600 border border-gray-200 dark:border-gray-500 shadow-inner">
+              <div className="relative flex-1 min-w-0 flex items-center rounded-full bg-gray-50 dark:bg-gray-500/55 border border-gray-100 dark:border-gray-500/70 shadow-inner">
                 <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                   <svg className="h-5 w-5 text-gray-500 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -2848,6 +3158,65 @@ const SchedulerToolPage: React.FC = () => {
         </div>
       </div>
 
+      {leads.length > 0 && schedulerFilteredTotal > 0 && (
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mb-4">
+          <p className="text-sm text-gray-600 dark:text-gray-400">
+            Showing{' '}
+            <span className="font-medium tabular-nums">
+              {(schedulerSafePage - 1) * SCHEDULER_LEADS_PAGE_SIZE + 1}
+            </span>
+            –
+            <span className="font-medium tabular-nums">
+              {Math.min(schedulerSafePage * SCHEDULER_LEADS_PAGE_SIZE, schedulerFilteredTotal)}
+            </span>{' '}
+            of <span className="font-medium tabular-nums">{schedulerFilteredTotal}</span>
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="join border border-base-300 rounded-lg overflow-hidden">
+              <button
+                type="button"
+                className="btn btn-sm join-item rounded-none"
+                disabled={schedulerSafePage <= 1}
+                onClick={() => setSchedulerListPage(1)}
+                aria-label="First page"
+              >
+                First
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm join-item rounded-none"
+                disabled={schedulerSafePage <= 1}
+                onClick={() => setSchedulerListPage((p) => Math.max(1, p - 1))}
+                aria-label="Previous page"
+              >
+                Prev
+              </button>
+              <span className="btn btn-sm join-item btn-ghost no-animation pointer-events-none cursor-default rounded-none tabular-nums">
+                {schedulerSafePage} / {schedulerTotalPages}
+              </span>
+              <button
+                type="button"
+                className="btn btn-sm join-item rounded-none"
+                disabled={schedulerSafePage >= schedulerTotalPages}
+                onClick={() => setSchedulerListPage((p) => Math.min(schedulerTotalPages, p + 1))}
+                aria-label="Next page"
+              >
+                Next
+              </button>
+              <button
+                type="button"
+                className="btn btn-sm join-item rounded-none"
+                disabled={schedulerSafePage >= schedulerTotalPages}
+                onClick={() => setSchedulerListPage(schedulerTotalPages)}
+                aria-label="Last page"
+              >
+                Last
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {leads.length === 0 ? (
         <div className="text-center py-12">
           <div className="text-gray-500 text-lg">
@@ -2860,7 +3229,7 @@ const SchedulerToolPage: React.FC = () => {
       ) : viewMode === 'box' ? (
         // Box View
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-          {filteredLeads.map((lead) => {
+          {paginatedFilteredLeads.map((lead) => {
             const cardClasses = [
               'card',
               'shadow-lg',
@@ -3084,6 +3453,7 @@ const SchedulerToolPage: React.FC = () => {
           })}
         </div>
       ) : (
+        <>
         <div className="overflow-x-auto">
           <table className="table w-full text-xs sm:text-sm">
             <thead className="bg-white">
@@ -3128,7 +3498,7 @@ const SchedulerToolPage: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {filteredLeads.map((lead) => (
+                {paginatedFilteredLeads.map((lead) => (
                   <React.Fragment key={lead.id}>
                     <tr 
                       className={`hover:bg-gray-50 cursor-pointer transition-all duration-200 ${selectedRowId === lead.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
@@ -3351,6 +3721,65 @@ const SchedulerToolPage: React.FC = () => {
               </tbody>
             </table>
           </div>
+          {leads.length > 0 && schedulerFilteredTotal > 0 && (
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mt-6 pt-4 border-t border-base-200/60">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Showing{' '}
+                <span className="font-medium tabular-nums">
+                  {(schedulerSafePage - 1) * SCHEDULER_LEADS_PAGE_SIZE + 1}
+                </span>
+                –
+                <span className="font-medium tabular-nums">
+                  {Math.min(schedulerSafePage * SCHEDULER_LEADS_PAGE_SIZE, schedulerFilteredTotal)}
+                </span>{' '}
+                of <span className="font-medium tabular-nums">{schedulerFilteredTotal}</span>
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="join border border-base-300 rounded-lg overflow-hidden">
+                  <button
+                    type="button"
+                    className="btn btn-sm join-item rounded-none"
+                    disabled={schedulerSafePage <= 1}
+                    onClick={() => setSchedulerListPage(1)}
+                    aria-label="First page"
+                  >
+                    First
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm join-item rounded-none"
+                    disabled={schedulerSafePage <= 1}
+                    onClick={() => setSchedulerListPage((p) => Math.max(1, p - 1))}
+                    aria-label="Previous page"
+                  >
+                    Prev
+                  </button>
+                  <span className="btn btn-sm join-item btn-ghost no-animation pointer-events-none cursor-default rounded-none tabular-nums">
+                    {schedulerSafePage} / {schedulerTotalPages}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn btn-sm join-item rounded-none"
+                    disabled={schedulerSafePage >= schedulerTotalPages}
+                    onClick={() => setSchedulerListPage((p) => Math.min(schedulerTotalPages, p + 1))}
+                    aria-label="Next page"
+                  >
+                    Next
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm join-item rounded-none"
+                    disabled={schedulerSafePage >= schedulerTotalPages}
+                    onClick={() => setSchedulerListPage(schedulerTotalPages)}
+                    aria-label="Last page"
+                  >
+                    Last
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* Floating Action Buttons - Fixed position on right side */}

@@ -2350,13 +2350,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
       if (requiresHydration.length === 0) return;
 
-      const updates: Record<string, { html: string; preview: string }> = {};
+      const updates: Record<string, { html: string; preview: string; attachments?: any[] }> = {};
 
       await Promise.all(
         requiresHydration.map(async message => {
           if (!message.id) return;
           try {
-            const rawContent = await fetchEmailBodyFromBackend(userId, message.id);
+            const { body: rawContent, attachments } = await fetchEmailBodyFromBackend(userId, message.id);
             if (!rawContent || typeof rawContent !== 'string') return;
 
             // Filter problematic images before processing
@@ -2381,12 +2381,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             updates[message.id] = {
               html: cleanedHtml,
               preview: previewHtml,
+              attachments: Array.isArray(attachments) ? attachments : undefined,
             };
 
-            await supabase
-              .from('emails')
-              .update({ body_html: rawContent, body_preview: rawContent })
-              .eq('message_id', message.id);
+            const patch: Record<string, unknown> = { body_html: rawContent, body_preview: rawContent };
+            if (Array.isArray(attachments) && attachments.length > 0) {
+              patch.attachments = attachments;
+            }
+            await supabase.from('emails').update(patch).eq('message_id', message.id);
           } catch (err) {
             console.warn('Failed to hydrate email body from backend', err);
           }
@@ -2402,6 +2404,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               ...email,
               body_html: update.html,
               body_preview: update.preview,
+              ...(update.attachments && update.attachments.length > 0 ? { attachments: update.attachments } : {}),
             };
           })
         );

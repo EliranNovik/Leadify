@@ -977,7 +977,7 @@ export function SubEffortsLogModal({
                       }
 
                       return (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                        <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1 snap-x snap-mandatory sm:grid sm:overflow-visible sm:pb-0 sm:mx-0 sm:px-0 sm:snap-none sm:grid-cols-2 xl:grid-cols-3 sm:gap-3">
                           {resolved.map((doc, idx) => {
                             const href = doc.url || doc.raw;
                             const canPreview = !!doc.url;
@@ -987,10 +987,10 @@ export function SubEffortsLogModal({
                                 href={href}
                                 target="_blank"
                                 rel="noreferrer"
-                                className="rounded-xl border border-base-200 bg-base-100 hover:bg-base-200/40 transition overflow-hidden"
+                                className="snap-start shrink-0 w-[78vw] max-w-[340px] sm:w-auto rounded-xl border border-base-200 bg-base-100 hover:bg-base-200/40 transition overflow-hidden"
                               >
                                 {doc.isImage ? (
-                                  <div className="h-56 md:h-64 bg-black/5 flex items-center justify-center">
+                                  <div className="h-44 sm:h-52 md:h-56 bg-black/5 flex items-center justify-center">
                                     {canPreview ? (
                                       <img
                                         src={doc.url}
@@ -1007,7 +1007,7 @@ export function SubEffortsLogModal({
                                     )}
                                   </div>
                                 ) : doc.isPdf ? (
-                                  <div className="h-56 md:h-64 bg-base-200 relative">
+                                  <div className="h-44 sm:h-52 md:h-56 bg-base-200 relative">
                                     {canPreview ? (
                                       <PdfCanvasPreview url={doc.url} title={doc.name || 'PDF document'} />
                                     ) : (

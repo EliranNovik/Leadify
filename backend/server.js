@@ -438,6 +438,7 @@ server.listen(PORT, () => {
     console.log(`   - GET  /api/graph/webhook (validation)`);
     console.log(`   - POST /api/graph/webhook (notifications)`);
     console.log(`   - POST /api/graph/subscriptions/refresh (refresh all subscriptions)`);
+    console.log(`   - POST /api/graph/subscriptions/ensure (body: { userId } — create/renew one user)`);
     console.log(`   - GET  /api/graph/subscriptions/status (check subscription status)`);
   } else {
     console.warn(`⚠️  GRAPH_WEBHOOK_NOTIFICATION_URL not configured. Webhook subscriptions will not work.`);

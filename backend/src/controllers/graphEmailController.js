@@ -181,6 +181,25 @@ const graphEmailController = {
     }
   },
 
+  async ensureSubscription(req, res) {
+    try {
+      const { userId } = req.body || {};
+      if (!userId) {
+        return res.status(400).json({ success: false, error: 'userId is required' });
+      }
+      const data = await graphMailboxSyncService.ensureSubscriptionForUser(userId);
+      res.status(200).json({ success: true, data });
+    } catch (error) {
+      console.error('❌ ensureSubscription failed:', error);
+      const statusCode =
+        error.message?.includes('not connected') || error.message?.includes('Mailbox') ? 400 : 500;
+      res.status(statusCode).json({
+        success: false,
+        error: error.message || 'Failed to ensure Graph mail subscription',
+      });
+    }
+  },
+
   async syncAllMailboxes(req, res) {
     try {
       console.log('🔄 Manual sync all mailboxes requested...');

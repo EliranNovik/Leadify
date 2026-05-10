@@ -43,6 +43,7 @@ import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } fr
 import { getRecentLeads, addRecentLead, type RecentLead } from '../lib/recentSearchStorage';
 import { useExternalUser, shouldDeferInternalChrome } from '../hooks/useExternalUser';
 import { useAuthContext } from '../contexts/AuthContext';
+import { runMailboxCatchUpSync } from '../lib/mailboxApi';
 
 interface HeaderProps {
   onMenuClick: () => void;
@@ -6571,6 +6572,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
         // Dispatch custom event to signal sign-in success
         window.dispatchEvent(new CustomEvent('msal:signInSuccess'));
+
+        try {
+          const { data: authData } = await supabase.auth.getUser();
+          const uid = authData?.user?.id;
+          if (uid) {
+            void runMailboxCatchUpSync(uid).catch(() => {});
+          }
+        } catch {
+          /* ignore */
+        }
       }
     } catch (error) {
       // Dispatch custom event to signal sign-in failure

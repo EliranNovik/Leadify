@@ -4964,13 +4964,13 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
     if (requiresHydration.length === 0) return;
 
     try {
-      const updates: Record<string, { html: string; preview: string }> = {};
+      const updates: Record<string, { html: string; preview: string; attachments?: any[] }> = {};
 
       await Promise.all(
         requiresHydration.map(async message => {
           if (!message.id) return;
           try {
-            const rawContent = await fetchEmailBodyFromBackend(userId, message.id);
+            const { body: rawContent, attachments } = await fetchEmailBodyFromBackend(userId, message.id);
             if (!rawContent || typeof rawContent !== 'string') return;
 
             // Use formatEmailHtmlForDisplay to preserve line breaks and apply RTL
@@ -4984,19 +4984,21 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
             updates[message.id] = {
               html: cleanedHtml,
               preview: previewHtml,
+              attachments: Array.isArray(attachments) ? attachments : undefined,
             };
 
             // Skip database update for "offer_" emails (they're already stored correctly)
             // Also skip if we don't have permission (403 errors) - the backend will handle updates
             if (!message.id.startsWith('offer_')) {
               try {
-                await supabase
-                  .from('emails')
-                  .update({ 
-                    body_html: rawContent, 
-                    body_preview: rawContent 
-                  })
-                  .eq('message_id', message.id);
+                const patch: Record<string, unknown> = {
+                  body_html: rawContent,
+                  body_preview: rawContent,
+                };
+                if (Array.isArray(attachments) && attachments.length > 0) {
+                  patch.attachments = attachments;
+                }
+                await supabase.from('emails').update(patch).eq('message_id', message.id);
               } catch (dbErr: any) {
                 // Silently fail - backend will handle updates, and we don't want to spam errors
                 if (dbErr?.code !== 'PGRST116') { // PGRST116 is "no rows updated", which is fine
@@ -5025,6 +5027,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
               body_html: update.html, // Update body_html with full content
               bodyPreview: update.preview, // Keep bodyPreview for backward compatibility
               body_preview: update.preview, // Also update body_preview
+              ...(update.attachments && update.attachments.length > 0 ? { attachments: update.attachments } : {}),
             };
           })
         );
@@ -5039,6 +5042,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({
             body_html: update.html, // Update body_html with full content
             bodyPreview: update.preview, // Keep bodyPreview for backward compatibility
             body_preview: update.preview, // Also update body_preview
+            ...(update.attachments && update.attachments.length > 0 ? { attachments: update.attachments } : {}),
           };
         });
       }
