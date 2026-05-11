@@ -123,6 +123,12 @@ VITE_MSAL_TENANT_ID=
 
 # Supabase Edge Functions
 OPENAI_API_KEY= (set in Supabase dashboard)
+
+# Bad leads → Google Sheet (`google-sheets-bad-leads-sync`)
+# GOOGLE_SERVICE_ACCOUNT_EMAIL=…@….iam.gserviceaccount.com
+# GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----\n
+# Optional: GOOGLE_SHEET_BAD_LEADS_SPREADSHEET_ID (default sheet id in function), GOOGLE_SHEET_BAD_LEADS_TAB (exact tab title; default conversion-import-template)
+# Optional cron: BAD_LEADS_SYNC_CRON_SECRET + POST header x-cron-secret
 ```
 
 ### Development Patterns

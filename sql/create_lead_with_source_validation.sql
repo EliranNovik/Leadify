@@ -187,6 +187,7 @@ BEGIN
   END IF;
   
   -- Insert the new lead with user tracking and source information
+  -- leads.source is NOT NULL in many deployments: store misc_leadsource name (v_source_name) while source_id is the FK source of truth.
   INSERT INTO leads (
     lead_number,
     name,
@@ -240,7 +241,7 @@ BEGIN
     l.name AS name,
     l.email AS email,
     v_source_id AS source_id,
-    l.source AS source_name,
+    v_source_name AS source_name,
     l.topic AS final_topic,
     v_final_category_id AS final_category_id
   FROM leads l

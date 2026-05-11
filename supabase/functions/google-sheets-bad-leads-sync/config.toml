@@ -1,0 +1,2 @@
+# Manual JWT + optional x-cron-secret (see index.ts). Do not expose without BAD_LEADS_SYNC_CRON_SECRET set.
+verify_jwt = false

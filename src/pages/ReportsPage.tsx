@@ -1,10 +1,11 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ClipboardDocumentCheckIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, ArrowLeftIcon, InformationCircleIcon, RectangleStackIcon, DocumentTextIcon, MegaphoneIcon } from '@heroicons/react/24/solid';
-import { XMarkIcon, ArrowDownTrayIcon, ScaleIcon, GlobeAltIcon, HomeIcon, ShieldCheckIcon, UsersIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, BuildingOfficeIcon, HeartIcon, CogIcon, CalendarIcon, CurrencyDollarIcon as CurrencyDollarIconOutline, TagIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, ArrowDownTrayIcon, ScaleIcon, GlobeAltIcon, HomeIcon, ShieldCheckIcon, UsersIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, BuildingOfficeIcon, HeartIcon, CogIcon, CalendarIcon, CurrencyDollarIcon as CurrencyDollarIconOutline, TagIcon, CloudArrowUpIcon } from '@heroicons/react/24/outline';
 import * as XLSX from 'xlsx';
 import { toast } from 'react-hot-toast';
 import FullSearchReport from './FullSearchReport';
 import MarketingDashboardReport from './MarketingDashboardReport';
+import BadLeadsGoogleSheetExportReport from './BadLeadsGoogleSheetExportReport';
 import { supabase } from '../lib/supabase';
 import EmployeeLeadDrawer, {
   EmployeeLeadDrawerItem,
@@ -8205,6 +8206,7 @@ const reports: ReportSection[] = [
     category: 'Marketing',
     items: [
       { label: 'Marketing dashboard', icon: MegaphoneIcon, component: MarketingDashboardReport },
+      { label: 'Bad leads → Google Sheet', icon: CloudArrowUpIcon, component: BadLeadsGoogleSheetExportReport },
       { label: 'Sources pie', icon: ChartPieIcon, component: SourcesPieReport },
       { label: 'Category & source', icon: AdjustmentsHorizontalIcon, component: CategorySourceReport },
       { label: 'Convertion', icon: FunnelIcon, component: ConvertionReport },

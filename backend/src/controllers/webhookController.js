@@ -93,6 +93,66 @@ const FACEBOOK_FORM_SOURCE_CODES = (() => {
 
 const FACEBOOK_DEFAULT_SOURCE_CODE = parseIntegerSourceCode(process.env.FACEBOOK_DEFAULT_SOURCE_CODE);
 
+/** Fallback misc_leadsource.code when inbound form webhook sends no resolvable source (optional). */
+const WEBHOOK_DEFAULT_SOURCE_CODE = parseIntegerSourceCode(process.env.WEBHOOK_DEFAULT_SOURCE_CODE);
+
+/**
+ * Positive integer misc_leadsource.id from JSON/query payloads.
+ * @param {string|number|null|undefined} value
+ * @returns {number|null}
+ */
+function parseMiscLeadsourceId(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || !Number.isInteger(numeric) || numeric < 1) return null;
+  if (numeric > Number.MAX_SAFE_INTEGER) return null;
+  return numeric;
+}
+
+/**
+ * Resolve misc_leadsource.code for POST /hook/catch so create_lead_with_source_validation always gets p_source_code.
+ * @returns {Promise<{ code: number|null, resolution: string }>}
+ */
+async function resolveLeadSourceCodeForFormWebhook({ parsedSourceCode, sourceIdRaw, sourceNameForLookup }) {
+  if (parsedSourceCode !== null) {
+    return { code: parsedSourceCode, resolution: 'source_code' };
+  }
+
+  const sid = parseMiscLeadsourceId(sourceIdRaw);
+  if (sid !== null) {
+    const { data, error } = await supabase
+      .from('misc_leadsource')
+      .select('code')
+      .eq('id', sid)
+      .eq('active', true)
+      .maybeSingle();
+    if (!error && data && data.code != null) {
+      const c = parseIntegerSourceCode(data.code);
+      if (c !== null) return { code: c, resolution: 'source_id' };
+    }
+  }
+
+  if (sourceNameForLookup && String(sourceNameForLookup).trim().length > 0) {
+    const t = String(sourceNameForLookup).trim();
+    const { data: rows, error: nameErr } = await supabase
+      .from('misc_leadsource')
+      .select('code')
+      .ilike('name', t)
+      .eq('active', true)
+      .limit(2);
+    if (!nameErr && rows?.length === 1 && rows[0].code != null) {
+      const c = parseIntegerSourceCode(rows[0].code);
+      if (c !== null) return { code: c, resolution: 'source_name' };
+    }
+  }
+
+  if (WEBHOOK_DEFAULT_SOURCE_CODE !== null) {
+    return { code: WEBHOOK_DEFAULT_SOURCE_CODE, resolution: 'env_default' };
+  }
+
+  return { code: null, resolution: 'unresolved' };
+}
+
 const resolveSourceCodeFromIdentifier = (identifier) => {
   if (!identifier) return null;
   if (FACEBOOK_FORM_SOURCE_CODES[identifier] !== undefined) {
@@ -545,6 +605,14 @@ const webhookController = {
         }
       }
 
+      const rawSourceFromBody = bodyData?.source;
+      const hasExplicitSourceText = rawSourceFromBody != null && String(rawSourceFromBody).trim() !== '';
+      const sourceTextIsUrl = hasExplicitSourceText &&
+        (String(rawSourceFromBody).startsWith('http://') || String(rawSourceFromBody).startsWith('https://'));
+      const sourceNameForLookup = hasExplicitSourceText && !sourceTextIsUrl
+        ? String(rawSourceFromBody).trim()
+        : null;
+
       const formData = {
         name: bodyData?.name,
         email: bodyData?.email,
@@ -864,6 +932,27 @@ const webhookController = {
         sourceUrl: formData.source_url
       });
 
+      const resolvedSource = await resolveLeadSourceCodeForFormWebhook({
+        parsedSourceCode: formData.source_code,
+        sourceIdRaw: bodyData?.source_id ?? bodyData?.lead_source_id,
+        sourceNameForLookup
+      });
+
+      if (resolvedSource.code === null) {
+        console.error('❌ Inbound webhook: could not resolve misc_leadsource.code', {
+          resolution: resolvedSource.resolution,
+          parsedSourceCode: formData.source_code,
+          source_id: bodyData?.source_id ?? bodyData?.lead_source_id,
+          sourceNameForLookup
+        });
+        return res.status(400).json({
+          error: 'Could not resolve lead source',
+          message:
+            'Provide source_code or lead_source (misc_leadsource.code), source_id (misc_leadsource.id), or source (exact display name matching misc_leadsource). For unnamed forms, set env WEBHOOK_DEFAULT_SOURCE_CODE.',
+          details: { resolution: resolvedSource.resolution }
+        });
+      }
+
       // Create new lead using the source validation function
       // Pass language_id and country_id directly if we found them
       const rpcParams = {
@@ -872,9 +961,9 @@ const webhookController = {
         p_lead_phone: formData.phone || null,
         p_lead_topic: formData.topic || null,
         p_lead_language: formData.language || 'EN',
-        p_lead_source: formData.source || 'Webhook',
+        p_lead_source: 'Webhook',
         p_created_by: 'webhook@system',
-        p_source_code: formData.source_code || null,
+        p_source_code: resolvedSource.code,
         p_balance_currency: 'NIS',
         p_proposal_currency: 'NIS',
         p_language_id: languageId || null,
@@ -1139,12 +1228,12 @@ const webhookController = {
       }
 
       if (!source_code) {
-        console.warn('⚠️ Missing source_code. Lead will be created without source validation:', {
+        console.error('❌ Facebook lead skipped: no misc_leadsource.code resolved (configure FACEBOOK_FORM_SOURCE_CODES / FACEBOOK_DEFAULT_SOURCE_CODE or source_code field on the form):', {
           name,
           email,
           sourceResolutionDetails
         });
-        // Continue anyway - the function will handle null source_code
+        return;
       }
 
       console.log('📥 Mapped Facebook lead:', {

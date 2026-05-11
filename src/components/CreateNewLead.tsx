@@ -18,7 +18,8 @@ const CreateNewLead: React.FC = () => {
     name: '',
     email: '',
     phone: '',
-    source: '',
+    /** misc_leadsource.code — required; persisted as leads.source_id via create_lead_with_source_validation */
+    source_code: null as number | null,
     language: '',
     /** Selected misc_category.id — saved to leads.category_id */
     category_id: null as number | null,
@@ -30,7 +31,7 @@ const CreateNewLead: React.FC = () => {
     proposal_currency: 'NIS',
   });
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
-  const [sourceOptions, setSourceOptions] = useState<Array<{ id: number; name: string }>>([]);
+  const [sourceOptions, setSourceOptions] = useState<Array<{ id: number; name: string; code: number }>>([]);
   const [languageOptions, setLanguageOptions] = useState<Array<{ id: number; name: string | null }>>([]);
   const [categoryOptions, setCategoryOptions] = useState<Array<{ id: number; name: string; displayName: string }>>([]);
   const [countryOptions, setCountryOptions] = useState<Array<{ id: number; name: string; phone_code: string; iso_code: string }>>([]);
@@ -76,7 +77,7 @@ const CreateNewLead: React.FC = () => {
         ] = await Promise.all([
           supabase
             .from('misc_leadsource')
-            .select('id, name')
+            .select('id, name, code')
             .eq('active', true)
             .order('order', { ascending: true }),
           supabase
@@ -111,8 +112,17 @@ const CreateNewLead: React.FC = () => {
         if (!sourcesError && sourcesData) {
           setSourceOptions(
             sourcesData
-              .filter(source => source?.name)
-              .map(source => ({ id: source.id, name: source.name }))
+              .filter(
+                (source) =>
+                  source?.name &&
+                  source.code != null &&
+                  Number.isFinite(Number(source.code))
+              )
+              .map((source) => ({
+                id: source.id,
+                name: source.name as string,
+                code: Number(source.code),
+              }))
           );
         }
 
@@ -239,13 +249,12 @@ const CreateNewLead: React.FC = () => {
   // Auto-select source if search term exactly matches an option
   useEffect(() => {
     const exactMatch = sourceOptions.find(
-      source => source.name.toLowerCase() === sourceSearchTerm.toLowerCase()
+      (source) => source.name.toLowerCase() === sourceSearchTerm.toLowerCase()
     );
     if (exactMatch) {
-      setForm(prev => ({ ...prev, source: exactMatch.name }));
+      setForm((prev) => ({ ...prev, source_code: exactMatch.code }));
     } else if (sourceSearchTerm && !exactMatch) {
-      // Clear form.source if search term doesn't match exactly
-      setForm(prev => ({ ...prev, source: '' }));
+      setForm((prev) => ({ ...prev, source_code: null }));
     }
   }, [sourceSearchTerm, sourceOptions]);
 
@@ -399,9 +408,9 @@ const CreateNewLead: React.FC = () => {
     setForm({ ...form, [e.target.name]: e.target.value });
   };
 
-  const handleSourceSelect = (sourceName: string) => {
-    setForm({ ...form, source: sourceName });
-    setSourceSearchTerm(sourceName);
+  const handleSourceSelect = (source: { id: number; name: string; code: number }) => {
+    setForm((prev) => ({ ...prev, source_code: source.code }));
+    setSourceSearchTerm(source.name);
     setShowSourceDropdown(false);
   };
 
@@ -479,54 +488,56 @@ const CreateNewLead: React.FC = () => {
         fullPhoneNumber = form.phone.trim();
       }
 
-      // Call the wrapper database function that syncs sequences before creating the lead
-      // This function (create_new_lead_v4) automatically syncs sequences to prevent duplicate key errors
-      // If create_new_lead_v4 doesn't exist, fall back to create_new_lead_v3
-      let data, error;
+      if (form.source_code == null || !Number.isFinite(form.source_code)) {
+        alert('Please select a source from the list (only active sources with a code can be used).');
+        setIsLoading(false);
+        return;
+      }
+
+      const countryIdInt =
+        form.country_id && form.country_id.trim() !== ''
+          ? parseInt(form.country_id, 10)
+          : NaN;
+      const countryIdForRpc = !Number.isNaN(countryIdInt) ? countryIdInt : null;
+
+      const languageId =
+        languageOptions.find(
+          (l) => (l.name ?? '').toLowerCase() === (form.language || '').toLowerCase()
+        )?.id ?? null;
+
+      let data: NewLeadResult[] | null = null;
+      let error: unknown = null;
       try {
-        const result = await supabase.rpc('create_new_lead_v4', {
+        const result = await supabase.rpc('create_lead_with_source_validation', {
           p_lead_name: form.name,
-          p_lead_email: form.email,
-          p_lead_phone: fullPhoneNumber,
-          p_lead_topic: form.topic,
-          p_lead_language: form.language,
-          p_lead_source: form.source,
+          p_lead_email: form.email?.trim() || null,
+          p_lead_phone: fullPhoneNumber || null,
+          p_lead_topic: form.topic?.trim() || null,
+          p_lead_language: form.language || 'EN',
+          p_lead_source: 'Manual',
           p_created_by: currentUserEmail,
+          p_source_code: form.source_code,
           p_balance_currency: form.balance_currency,
           p_proposal_currency: form.proposal_currency,
+          p_language_id: languageId,
+          p_country_id: countryIdForRpc,
+          p_source_url: null,
         });
-        data = result.data;
+        data = result.data as NewLeadResult[] | null;
         error = result.error;
-        
-        // If the wrapper function doesn't exist, fall back to the original function
-        if (error && error.message?.includes('function') && error.message?.includes('does not exist')) {
-          console.warn('create_new_lead_v4 not found, falling back to create_new_lead_v3');
-          const fallbackResult = await supabase.rpc('create_new_lead_v3', {
-            p_lead_name: form.name,
-            p_lead_email: form.email,
-            p_lead_phone: fullPhoneNumber,
-            p_lead_topic: form.topic,
-            p_lead_language: form.language,
-            p_lead_source: form.source,
-            p_created_by: currentUserEmail,
-            p_balance_currency: form.balance_currency,
-            p_proposal_currency: form.proposal_currency,
-          });
-          data = fallbackResult.data;
-          error = fallbackResult.error;
-        }
       } catch (rpcError) {
-        error = rpcError as any;
+        error = rpcError;
       }
 
       let newLead: NewLeadResult | null = null;
 
       if (error) {
+        const err = error as { code?: string; message?: string };
         // Handle duplicate key errors - database sequences are out of sync
-        if (error.code === '23505') {
+        if (err.code === '23505') {
           let errorMsg = '';
           
-          if (error.message?.includes('lead_leadcontact_pkey')) {
+          if (err.message?.includes('lead_leadcontact_pkey')) {
             console.error('CRITICAL: Database sequence is out of sync. The trigger cannot create relationships.');
             console.error('This must be fixed in the database before leads can be created.');
             
@@ -537,7 +548,7 @@ const CreateNewLead: React.FC = () => {
               `Run this SQL command in your database:\n\n` +
               `SELECT setval('lead_leadcontact_id_seq', (SELECT MAX(id) FROM lead_leadcontact));\n\n` +
               `After running this command, try creating the lead again.`;
-          } else if (error.message?.includes('leads_contact_pkey')) {
+          } else if (err.message?.includes('leads_contact_pkey')) {
             console.error('CRITICAL: Database sequence is out of sync. The trigger cannot create contacts.');
             console.error('This must be fixed in the database before leads can be created.');
             
@@ -552,7 +563,7 @@ const CreateNewLead: React.FC = () => {
             // Generic duplicate key error
             errorMsg = 
               `❌ Cannot create lead: Database sequence error\n\n` +
-              `A database sequence is out of sync. Error: ${error.message}\n\n` +
+              `A database sequence is out of sync. Error: ${err.message}\n\n` +
               `Please contact support to fix this issue.`;
           }
           
@@ -563,7 +574,7 @@ const CreateNewLead: React.FC = () => {
         }
         
         // If not a duplicate key error, throw the original error
-        throw error;
+        throw err;
       } else {
         newLead = data?.[0] as NewLeadResult;
       }
@@ -733,11 +744,19 @@ const CreateNewLead: React.FC = () => {
               className="input input-bordered w-full"
               value={sourceSearchTerm}
               onChange={(e) => {
-                setSourceSearchTerm(e.target.value);
+                const v = e.target.value;
+                setSourceSearchTerm(v);
                 setShowSourceDropdown(true);
-                if (e.target.value !== form.source) {
-                  setForm({ ...form, source: '' });
-                }
+                setForm((prev) => {
+                  const selectedName =
+                    prev.source_code != null
+                      ? sourceOptions.find((o) => o.code === prev.source_code)?.name
+                      : undefined;
+                  if (v !== selectedName) {
+                    return { ...prev, source_code: null };
+                  }
+                  return prev;
+                });
               }}
               onFocus={() => setShowSourceDropdown(true)}
               placeholder="Search or type source..."
@@ -750,7 +769,7 @@ const CreateNewLead: React.FC = () => {
                     key={source.id}
                     type="button"
                     className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
-                    onClick={() => handleSourceSelect(source.name)}
+                    onClick={() => handleSourceSelect(source)}
                   >
                     {source.name}
                   </button>
