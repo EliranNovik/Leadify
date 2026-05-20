@@ -7,6 +7,7 @@ import { generateProformaName } from '../lib/proforma';
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
 import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
 import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
+import ProformaIssuedByFooter from '../components/proforma/ProformaIssuedByFooter';
 import ProformaBankAccountSelect from '../components/proforma/ProformaBankAccountSelect';
 import ProformaBankDetails from '../components/proforma/ProformaBankDetails';
 import ProformaFromCompanyInfo from '../components/proforma/ProformaFromCompanyInfo';
@@ -27,6 +28,23 @@ import {
 } from '../lib/proformaExchangeRate';
 
 import { computeProformaVatFromPayment, getVatRateForLegacyLead } from '../lib/proformaVat';
+import { currencyIdFromSymbol, resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
+
+function parseContactId(value: string | number | null | undefined): number | null {
+  if (value == null || value === '') return null;
+  const n = typeof value === 'number' ? value : parseInt(String(value), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** URL client_id, then payment-plan row client_id (contact), then main-contact fallback. */
+function resolveLegacyProformaContactId(
+  urlClientId: string | null,
+  pprClientId: number | string | null | undefined,
+): number | null {
+  const fromUrl = urlClientId ? parseContactId(urlClientId) : null;
+  if (fromUrl != null) return fromUrl;
+  return parseContactId(pprClientId ?? null);
+}
 
 function getCurrencySymbolFromCode(code: string | undefined): string {
   if (!code) return '₪';
@@ -98,17 +116,19 @@ const ProformaLegacyCreatePage: React.FC = () => {
 
       let paymentPlanDate: string | null = null;
       let paymentPlanOrder: number | string | null = null;
+      let paymentPlanCurrencyId: number | string | null = null;
       let paymentPaid = false;
       let paidAt: string | null = null;
       if (invoiceMeta?.ppr_id) {
         const { data: pprData } = await supabase
           .from('finances_paymentplanrow')
-          .select('date, due_date, actual_date, order')
+          .select('date, due_date, actual_date, order, currency_id')
           .eq('id', invoiceMeta.ppr_id)
           .single();
         if (pprData) {
           paymentPlanDate = pprData.date || pprData.due_date || null;
           paymentPlanOrder = pprData.order ?? null;
+          paymentPlanCurrencyId = pprData.currency_id ?? null;
           paymentPaid = Boolean(pprData.actual_date);
           paidAt = pprData.actual_date || null;
         }
@@ -169,10 +189,13 @@ const ProformaLegacyCreatePage: React.FC = () => {
         }
       }
 
-      const currencyId = data.currency_id ?? leadData.currency_id;
-      const currencySymbol = data.currency_code
-        ? getCurrencySymbolFromCode(data.currency_code)
-        : getCurrencySymbol(currencyId);
+      const resolvedCurrencyId =
+        paymentPlanCurrencyId ?? data.currency_id ?? leadData.currency_id;
+      const { displaySymbol: currencySymbol } = await resolvePaymentPlanCurrency({
+        currency_id: resolvedCurrencyId,
+        currency: data.currency_code ? getCurrencySymbolFromCode(data.currency_code) : null,
+        lead_currency_id: leadData.currency_id,
+      });
 
       const rows = Array.isArray(data.rows)
         ? data.rows.map((row: { description?: string; qty?: number; rate?: number; total?: number }) => ({
@@ -188,6 +211,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
       const editSubtotal = rows.reduce((sum: number, r: { total: number }) => sum + Number(r.total), 0);
       const editVatState = computeProformaVatFromPayment({
         currency: currencySymbol,
+        currency_id: resolvedCurrencyId,
         valueVat: data.vat_value,
         paymentOrder: paymentPlanOrder,
         dueDate: paymentPlanDate,
@@ -209,7 +233,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
         addVat: editVatState.addVat,
         totalWithVat: editVatState.totalWithVat,
         currency: currencySymbol,
-        currency_id: currencyId,
+        currency_id: resolvedCurrencyId,
         paymentPaid,
         paid_at: paidAt,
         bankAccount: bankAccountDetails?.name ?? '',
@@ -218,6 +242,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
         notes: getPublicProformaDisplayNotes(data.notes),
         email: clientEmail,
         phone: clientPhone,
+        issuedDate: data.cdate ?? null,
       });
       setLoading(false);
     };
@@ -237,14 +262,6 @@ const ProformaLegacyCreatePage: React.FC = () => {
       console.log('🔍 ProformaLegacyCreate - pprId from URL:', pprId);
       console.log('🔍 ProformaLegacyCreate - clientId from URL:', clientIdParam);
 
-      // Set client_id if provided
-      if (clientIdParam) {
-        const parsedClientId = parseInt(clientIdParam);
-        if (!isNaN(parsedClientId)) {
-          setClientId(parsedClientId);
-        }
-      }
-
       // Fetch payment plan row description and order if ppr_id is available
       let paymentPlanDescription = '';
       let paymentPlanOrder = '';
@@ -263,7 +280,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
 
         const { data: fetchedPprData, error: pprError } = await supabase
           .from('finances_paymentplanrow')
-          .select('"order", notes, value, value_base, vat_value, currency_id, date, due_date, actual_date')
+          .select('"order", notes, value, value_base, vat_value, currency_id, date, due_date, actual_date, client_id')
           .eq('id', pprId)
           .single();
 
@@ -305,6 +322,11 @@ const ProformaLegacyCreatePage: React.FC = () => {
         }
       } else {
         console.log('🔍 No pprId found in URL parameters');
+      }
+
+      const resolvedContactId = resolveLegacyProformaContactId(clientIdParam, pprData?.client_id);
+      if (resolvedContactId != null) {
+        setClientId(resolvedContactId);
       }
 
       const { data, error } = await supabase
@@ -370,21 +392,17 @@ const ProformaLegacyCreatePage: React.FC = () => {
       let clientPhone = '';
 
       try {
-        // If client_id is provided in URL, use it to fetch the specific contact
-        if (clientIdParam) {
-          const parsedClientId = parseInt(clientIdParam);
-          if (!isNaN(parsedClientId)) {
-            const { data: contactData } = await supabase
-              .from('leads_contact')
-              .select('name, email, phone')
-              .eq('id', parsedClientId)
-              .single();
+        if (resolvedContactId != null) {
+          const { data: contactData } = await supabase
+            .from('leads_contact')
+            .select('name, email, phone')
+            .eq('id', resolvedContactId)
+            .single();
 
-            if (contactData) {
-              clientName = contactData.name || clientName;
-              clientEmail = contactData.email || '';
-              clientPhone = contactData.phone || '';
-            }
+          if (contactData) {
+            clientName = contactData.name || clientName;
+            clientEmail = contactData.email || '';
+            clientPhone = contactData.phone || '';
           }
         } else {
           // Fallback: get main contact from lead_leadcontact
@@ -481,26 +499,22 @@ const ProformaLegacyCreatePage: React.FC = () => {
         finalDescription: paymentPlanOrder || paymentPlanDescription || data.description || 'Legal Services'
       });
 
-      // Determine currency and amounts - prioritize payment plan data over lead data
-      const currencyId = pprData?.currency_id || data.currency_id;
+      // Determine currency and amounts — payment plan row currency wins over lead
+      const resolvedCurrencyId = pprData?.currency_id ?? data.currency_id;
       const paymentAmount = pprData?.value ? Number(pprData.value) : (data.total || 0);
       const baseAmount = pprData?.value_base ? Number(pprData.value_base) : (data.total || 0);
       const vatAmount = pprData?.vat_value ? Number(pprData.vat_value) : 0;
 
-      // Get currency symbol - use accounting_currencies data if available, otherwise fallback to mapping
-      let currencySymbol = '₪'; // Default
-      if (data.accounting_currencies) {
-        currencySymbol = data.accounting_currencies.name || data.accounting_currencies.iso_code || '₪';
-      } else {
-        currencySymbol = getCurrencySymbol(currencyId);
-      }
+      const { displaySymbol: currencySymbol } = await resolvePaymentPlanCurrency({
+        currency_id: resolvedCurrencyId,
+        lead_currency_id: data.currency_id,
+      });
 
       console.log('🔍 Currency info:', {
         leadCurrencyId: data.currency_id,
         paymentPlanCurrencyId: pprData?.currency_id,
-        finalCurrencyId: currencyId,
-        accountingCurrency: data.accounting_currencies,
-        currencySymbol: currencySymbol
+        finalCurrencyId: resolvedCurrencyId,
+        currencySymbol,
       });
 
       console.log('🔍 Amount info:', {
@@ -525,6 +539,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
       const initialSubtotal = paymentAmount;
       const createVatState = computeProformaVatFromPayment({
         currency: currencySymbol,
+        currency_id: resolvedCurrencyId,
         valueVat: vatAmount,
         paymentOrder: pprData?.order ?? null,
         dueDate: paymentPlanDate,
@@ -541,12 +556,13 @@ const ProformaLegacyCreatePage: React.FC = () => {
         payment: paymentAmount,
         base: baseAmount,
         vat: createVatState.vat,
+        paymentValueVat: vatAmount,
         language: 'EN',
         rows: initialRows,
         addVat: createVatState.addVat,
         totalWithVat: createVatState.totalWithVat,
         currency: currencySymbol,
-        currency_id: currencyId,
+        currency_id: resolvedCurrencyId,
         paymentPaid: Boolean(pprData?.actual_date),
         paid_at: pprData?.actual_date ?? null,
         bankAccount: '',
@@ -578,7 +594,8 @@ const ProformaLegacyCreatePage: React.FC = () => {
         const subtotal = proformaData.rows.reduce((sum: number, r: { total: number }) => sum + Number(r.total), 0);
         const { vat, totalWithVat: total } = computeProformaVatFromPayment({
           currency: proformaData.currency,
-          valueVat: proformaData.vat,
+          currency_id: proformaData.currency_id,
+          valueVat: proformaData.paymentValueVat ?? proformaData.vat,
           paymentOrder: proformaData.paymentOrder,
           dueDate: proformaData.paymentPlanDate,
           subtotal,
@@ -702,6 +719,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
 
       const { addVat, vat, totalWithVat } = computeProformaVatFromPayment({
         currency: proformaData.currency,
+        currency_id: proformaData.currency_id,
         valueVat: proformaData.vat,
         paymentOrder: proformaData.paymentOrder,
         dueDate: proformaData.paymentPlanDate,
@@ -716,36 +734,19 @@ const ProformaLegacyCreatePage: React.FC = () => {
         total: Number(row.total)
       }));
 
-      // Get currency_id from payment plan or lead
-      let currencyId = 1; // Default to Israeli Shekel
-      if (proformaData.pprId) {
-        // Fetch currency_id from payment plan row
-        const { data: pprData } = await supabase
-          .from('finances_paymentplanrow')
-          .select('currency_id')
-          .eq('id', proformaData.pprId)
-          .single();
-        if (pprData?.currency_id) {
-          currencyId = Number(pprData.currency_id);
-        }
-      } else {
-        // Fallback to lead currency_id
-        if (lead?.currency_id) {
+      let currencyId = proformaData.currency_id != null ? Number(proformaData.currency_id) : NaN;
+      if (!Number.isFinite(currencyId) || currencyId <= 0) {
+        if (proformaData.pprId) {
+          const { data: pprData } = await supabase
+            .from('finances_paymentplanrow')
+            .select('currency_id')
+            .eq('id', proformaData.pprId)
+            .single();
+          if (pprData?.currency_id) currencyId = Number(pprData.currency_id);
+        } else if (lead?.currency_id) {
           currencyId = Number(lead.currency_id);
-        }
-      }
-
-      // Map currency symbol to ID if needed (fallback)
-      if (proformaData.currency) {
-        const currencySymbol = proformaData.currency;
-        if (currencySymbol === '₪' || currencySymbol === 'NIS' || currencySymbol === 'ILS') {
-          currencyId = 1;
-        } else if (currencySymbol === '$' || currencySymbol === 'USD') {
-          currencyId = 3;
-        } else if (currencySymbol === '€' || currencySymbol === 'EUR') {
-          currencyId = 2;
-        } else if (currencySymbol === '£' || currencySymbol === 'GBP') {
-          currencyId = 4;
+        } else {
+          currencyId = currencyIdFromSymbol(proformaData.currency);
         }
       }
 
@@ -895,23 +896,6 @@ const ProformaLegacyCreatePage: React.FC = () => {
     }
   };
 
-  // Helper to get currency symbol
-  const getCurrencySymbol = (currencyId: string | number | undefined) => {
-    if (!currencyId) return '₪';
-
-    // Convert to number if it's a string
-    const id = typeof currencyId === 'string' ? parseInt(currencyId) : currencyId;
-
-    // Map currency IDs to symbols (based on common currency ID mappings)
-    switch (id) {
-      case 1: return '₪'; // NIS/ILS
-      case 2: return '$'; // USD
-      case 3: return '€'; // EUR
-      case 4: return '£'; // GBP
-      default: return '₪'; // Default to NIS
-    }
-  };
-
   if (loading || !proformaData) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen text-center">
@@ -927,7 +911,8 @@ const ProformaLegacyCreatePage: React.FC = () => {
   );
   const previewVat = computeProformaVatFromPayment({
     currency: proformaData.currency,
-    valueVat: proformaData.vat,
+    currency_id: proformaData.currency_id,
+    valueVat: proformaData.paymentValueVat ?? proformaData.vat,
     paymentOrder: proformaData.paymentOrder,
     dueDate: proformaData.paymentPlanDate,
     subtotal: previewSubtotal,
@@ -1106,7 +1091,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
                 };
 
                 return (
-                  <div className="text-sm text-gray-500 font-semibold">Lead #: {formatLeadNumber()}</div>
+                  <div className="text-sm text-gray-500 font-semibold">Case #: {formatLeadNumber()}</div>
                 );
               })()}
               {!(proformaData.phone || proformaData.email) && (
@@ -1174,10 +1159,12 @@ const ProformaLegacyCreatePage: React.FC = () => {
           )}
           <ProformaBankDetails details={resolveBankAccountFromProforma(proformaData)} variant="card" />
           <ProformaExchangeRateFooter info={exchangeInfo} loading={exchangeLoading} variant="card" />
-          {/* Created by at bottom left inside the card */}
-          <div className="mt-8 text-xs text-gray-400 text-left">
-            Created by: {userFullName || ''}
-          </div>
+          <ProformaIssuedByFooter
+            name={userFullName}
+            date={proformaData?.issuedDate ?? new Date().toISOString()}
+            label="Created by"
+            className="mt-8 text-xs text-gray-400 text-left"
+          />
           <ProformaDocumentStamp variant="card" />
           </div>
         </div>

@@ -4,11 +4,19 @@ import { supabase } from '../lib/supabase';
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
 import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
 import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
+import ProformaIssuedByFooter from '../components/proforma/ProformaIssuedByFooter';
 import ProformaBankDetails from '../components/proforma/ProformaBankDetails';
 import ProformaPublicToolbar from '../components/proforma/ProformaPublicToolbar';
 import ProformaPublicContactButtons from '../components/proforma/ProformaPublicContactButtons';
 import ProformaPublicFooter from '../components/proforma/ProformaPublicFooter';
 import ProformaFromCompanyInfo from '../components/proforma/ProformaFromCompanyInfo';
+import ProformaVatTotalsBlock from '../components/proforma/ProformaVatTotalsBlock';
+import {
+  applyResolvedVatToNewProforma,
+  resolveNewProformaVat,
+  type ResolvedProformaVat,
+} from '../lib/proformaVat';
+import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
 import { getPublicProformaMainLayoutClass } from '../lib/publicProformaLayout';
 import { resolveBankAccountFromProforma } from '../lib/bankAccounts';
 import { shareCurrentPageUrl } from '../lib/proformaPublicLink';
@@ -18,9 +26,12 @@ import {
   fetchProformaExchangeRateInfo,
   type ProformaExchangeRateInfo,
 } from '../lib/proformaExchangeRate';
+import { useAuthContext } from '../contexts/AuthContext';
+import { buildClientFinancesTabPath } from '../lib/proformaClientNavigation';
 
 const PublicProformaViewPage: React.FC = () => {
   const { id, token } = useParams<{ id: string; token: string }>();
+  const { user } = useAuthContext();
   const [proforma, setProforma] = useState<any>(null);
   const [paymentPlanMeta, setPaymentPlanMeta] = useState<{
     paid: boolean;
@@ -35,6 +46,7 @@ const PublicProformaViewPage: React.FC = () => {
   const [sharing, setSharing] = useState(false);
   const [issuerEmployee, setIssuerEmployee] = useState<EmployeeProfile | null>(null);
   const [publicLeadNumber, setPublicLeadNumber] = useState<string | null>(null);
+  const [vatTotals, setVatTotals] = useState<ResolvedProformaVat | null>(null);
 
   useEffect(() => {
     const fetchProforma = async () => {
@@ -64,14 +76,25 @@ const PublicProformaViewPage: React.FC = () => {
           parsed = JSON.parse(parsed);
         }
 
-        if (
-          parsed.addVat &&
-          parsed.currency === '₪' &&
-          (!parsed.vat || parsed.vat === 0)
-        ) {
-          parsed.vat = Math.round(parsed.total * 0.18 * 100) / 100;
-          parsed.totalWithVat = parsed.total + parsed.vat;
-        }
+        const { displaySymbol: resolvedCurrency, currencyId: resolvedCurrencyId } =
+          await resolvePaymentPlanCurrency({
+            currency: data.currency,
+            currency_id: data.currency_id,
+          });
+
+        parsed.currency = resolvedCurrency;
+        parsed.paymentOrder = parsed.paymentOrder ?? data.payment_order;
+        parsed.dueDate = parsed.dueDate ?? data.due_date;
+
+        const resolvedVat = resolveNewProformaVat(parsed, {
+          currency: resolvedCurrency,
+          currency_id: data.currency_id ?? resolvedCurrencyId,
+          value_vat: data.value_vat ?? parsed.vat,
+          payment_order: data.payment_order ?? parsed.paymentOrder,
+          due_date: data.due_date ?? parsed.dueDate,
+        });
+        setVatTotals(resolvedVat);
+        parsed = applyResolvedVatToNewProforma(parsed, resolvedVat);
 
         const resolvedLeadNumber =
           (typeof data.lead_number === 'string' && data.lead_number.trim()) ||
@@ -87,8 +110,8 @@ const PublicProformaViewPage: React.FC = () => {
         setPaymentPlanMeta({
           paid: Boolean(data.paid),
           paid_at: data.paid_at ?? null,
-          currency: data.currency ?? null,
-          currency_id: data.currency_id ?? null,
+          currency: resolvedCurrency,
+          currency_id: data.currency_id ?? resolvedCurrencyId ?? null,
         });
       } catch {
         setError('Failed to load invoice.');
@@ -130,9 +153,9 @@ const PublicProformaViewPage: React.FC = () => {
     const loadExchange = async () => {
       setExchangeLoading(true);
       try {
-        const subtotal = Number(proforma.total) || 0;
-        const totalWithVat = Number(proforma.totalWithVat) || subtotal;
-        const vat = Number(proforma.vat) || Math.max(0, totalWithVat - subtotal);
+        const subtotal = vatTotals?.subtotal ?? (Number(proforma.total) || 0);
+        const vat = vatTotals?.vat ?? (Number(proforma.vat) || 0);
+        const totalWithVat = vatTotals?.totalWithVat ?? (Number(proforma.totalWithVat) || subtotal + vat);
         const info = await fetchProformaExchangeRateInfo({
           currency: currencyInputFromNewPayment(paymentPlanMeta, proforma.currency),
           paid: paymentPlanMeta.paid,
@@ -154,7 +177,7 @@ const PublicProformaViewPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [proforma, paymentPlanMeta]);
+  }, [proforma, paymentPlanMeta, vatTotals]);
 
   const handlePrint = () => window.print();
 
@@ -188,6 +211,13 @@ const PublicProformaViewPage: React.FC = () => {
   const hasDesktopSidePanels = Boolean(
     (leadLabel !== '—' ? leadLabel : '') || displayNotes,
   );
+  const financesTabPath = user
+    ? buildClientFinancesTabPath({
+        isLegacy: false,
+        leadNumber: leadLabel !== '—' ? leadLabel : proforma.lead_number,
+        leadId: proforma.clientId,
+      })
+    : null;
 
   return (
     <div className="min-h-screen bg-white md:bg-gray-50">
@@ -201,6 +231,7 @@ const PublicProformaViewPage: React.FC = () => {
         onPrint={handlePrint}
         onShare={handleShare}
         sharing={sharing}
+        backToLeadHref={financesTabPath}
       />
 
       <style>{`
@@ -251,7 +282,7 @@ const PublicProformaViewPage: React.FC = () => {
               <div className="mb-1 font-semibold text-gray-700">Bill To:</div>
               <div className="text-lg font-bold text-gray-900">{proforma.client}</div>
               {proforma.lead_number && (
-                <div className="text-sm font-semibold text-gray-600">Lead #: {leadLabel}</div>
+                <div className="text-sm font-semibold text-gray-600">Case #: {leadLabel}</div>
               )}
               {proforma.phone && <div className="text-sm text-gray-500">{proforma.phone}</div>}
               {proforma.email && <div className="text-sm text-gray-500">{proforma.email}</div>}
@@ -283,22 +314,9 @@ const PublicProformaViewPage: React.FC = () => {
 
           <div className="mb-6 flex flex-col gap-4 md:flex-row md:justify-end">
             <div className="w-full rounded-xl border border-gray-200 bg-white p-6 md:w-1/2">
-              <div className="mb-2 flex justify-between text-lg">
-                <span className="font-semibold text-gray-700">Subtotal</span>
-                <span className="font-bold text-gray-900">{proforma.currency} {proforma.total}</span>
-              </div>
-              {proforma.addVat && (
-                <div className="mb-2 flex justify-between text-lg">
-                  <span className="font-semibold text-gray-700">VAT (18%)</span>
-                  <span className="font-bold text-gray-900">
-                    {proforma.currency} {(proforma.totalWithVat - proforma.total).toFixed(2)}
-                  </span>
-                </div>
+              {vatTotals && (
+                <ProformaVatTotalsBlock currencyLabel={proforma.currency || '₪'} resolved={vatTotals} />
               )}
-              <div className="mt-4 flex justify-between border-t pt-4 text-xl font-extrabold">
-                <span>Total</span>
-                <span className="text-primary">{proforma.currency} {proforma.totalWithVat}</span>
-              </div>
               <ProformaTotalInNis info={exchangeInfo} loading={exchangeLoading} variant="card" />
             </div>
           </div>
@@ -306,11 +324,7 @@ const PublicProformaViewPage: React.FC = () => {
           <ProformaBankDetails details={resolveBankAccountFromProforma(proforma)} variant="card" />
           <ProformaExchangeRateFooter info={exchangeInfo} loading={exchangeLoading} variant="card" />
 
-          {proforma.createdBy && (
-            <div className="mt-8 text-xs text-gray-500">
-              <span className="font-semibold">Issued by:</span> {proforma.createdBy}
-            </div>
-          )}
+          <ProformaIssuedByFooter name={proforma.createdBy} date={proforma.createdAt} />
 
           <ProformaDocumentStamp variant="card" />
         </div>

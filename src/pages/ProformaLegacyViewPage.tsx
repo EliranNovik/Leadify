@@ -10,6 +10,7 @@ import { useMailboxReconnect } from '../contexts/MailboxReconnectContext';
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
 import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
 import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
+import ProformaIssuedByFooter from '../components/proforma/ProformaIssuedByFooter';
 import ProformaBankDetails from '../components/proforma/ProformaBankDetails';
 import ProformaFromCompanyInfo from '../components/proforma/ProformaFromCompanyInfo';
 import {
@@ -23,9 +24,13 @@ import {
   type ProformaExchangeRateInfo,
 } from '../lib/proformaExchangeRate';
 
-import { getVatRateForLegacyLead } from '../lib/legacyProformaVat';
+import ProformaVatTotalsBlock from '../components/proforma/ProformaVatTotalsBlock';
+import { resolveLegacyProformaVat, type ResolvedProformaVat } from '../lib/proformaVat';
+import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
 import { getPublicProformaDisplayNotes } from '../lib/proformaNotes';
 import ProformaViewSideNotes from '../components/proforma/ProformaViewSideNotes';
+import ProformaBackToLeadButton from '../components/proforma/ProformaBackToLeadButton';
+import { buildClientFinancesTabPath } from '../lib/proformaClientNavigation';
 
 const ProformaLegacyViewPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -44,6 +49,7 @@ const ProformaLegacyViewPage: React.FC = () => {
   const [isMasterLead, setIsMasterLead] = useState<boolean>(false);
   const [exchangeInfo, setExchangeInfo] = useState<ProformaExchangeRateInfo | null>(null);
   const [exchangeLoading, setExchangeLoading] = useState(false);
+  const [vatTotals, setVatTotals] = useState<ResolvedProformaVat | null>(null);
 
   // Helper to get currency symbol
   const getCurrencySymbol = (currency: string | undefined) => {
@@ -102,19 +108,23 @@ const ProformaLegacyViewPage: React.FC = () => {
       // Fetch payment plan row date and client_id if ppr_id exists
       let paymentPlanDate: string | null = null;
       let paymentPlanClientId: number | null = null;
+      let paymentPlanOrder: string | number | null = null;
+      let paymentPlanVatValue: number | string | null = null;
       let paymentPaid = false;
       let paymentPaidAt: string | null = null;
       let paymentCurrencyId: number | string | null = proformaData?.currency_id ?? null;
       if (!proformaError && proformaData?.ppr_id) {
         const { data: pprData } = await supabase
           .from('finances_paymentplanrow')
-          .select('date, due_date, client_id, actual_date, currency_id')
+          .select('date, due_date, client_id, actual_date, currency_id, order, vat_value')
           .eq('id', proformaData.ppr_id)
           .single();
 
         if (pprData) {
           paymentPlanDate = pprData.date || pprData.due_date || null;
           paymentPlanClientId = pprData.client_id ? Number(pprData.client_id) : null;
+          paymentPlanOrder = pprData.order ?? null;
+          paymentPlanVatValue = pprData.vat_value ?? null;
           paymentPaid = Boolean(pprData.actual_date);
           paymentPaidAt = pprData.actual_date || null;
           if (pprData.currency_id != null) paymentCurrencyId = pprData.currency_id;
@@ -520,8 +530,21 @@ const ProformaLegacyViewPage: React.FC = () => {
         currency_id: data.currency_id ?? paymentCurrencyId,
         paymentPaid,
         paid_at: paymentPaidAt,
+        paymentPlanDate,
+        paymentOrder: paymentPlanOrder,
         bankAccountDetails,
       };
+      const { displaySymbol: resolvedCurrency } = await resolvePaymentPlanCurrency({
+        currency_id: enriched.currency_id ?? paymentCurrencyId,
+        currency: enriched.currency_code,
+      });
+      enriched.currency_code = resolvedCurrency;
+
+      const resolvedVat = resolveLegacyProformaVat(enriched, {
+        order: paymentPlanOrder,
+        vat_value: paymentPlanVatValue,
+      });
+      setVatTotals(resolvedVat);
       setContactIdForEmail(paymentPlanClientId);
       setProforma(enriched);
       setLoading(false);
@@ -539,9 +562,9 @@ const ProformaLegacyViewPage: React.FC = () => {
     const loadExchange = async () => {
       setExchangeLoading(true);
       try {
-        const subtotal = Number(proforma.sub_total || proforma.total_base || 0);
-        const vat = Number(proforma.vat_value || 0);
-        const total = Number(proforma.total || 0);
+        const subtotal = vatTotals?.subtotal ?? Number(proforma.sub_total || proforma.total_base || 0);
+        const vat = vatTotals?.vat ?? 0;
+        const total = vatTotals?.totalWithVat ?? Number(proforma.total || 0);
         const info = await fetchProformaExchangeRateInfo({
           currency: currencyInputFromLegacyProforma(proforma),
           paid: Boolean(proforma.paymentPaid),
@@ -563,7 +586,7 @@ const ProformaLegacyViewPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [proforma]);
+  }, [proforma, vatTotals]);
 
   // Format lead number using same logic as Clients.tsx formatLegacyLeadNumber (for legacy leads)
   const formatLeadNumber = () => {
@@ -684,16 +707,28 @@ const ProformaLegacyViewPage: React.FC = () => {
   if (!proforma) return <div className="p-8 text-center text-yellow-600">No proforma data found.</div>;
 
   const displayNotes = getPublicProformaDisplayNotes(proforma.notes);
+  const isLegacySubLead = Boolean(leadData?.master_id && String(leadData.master_id).trim() !== '');
+  const financesTabPath = buildClientFinancesTabPath({
+    isLegacy: true,
+    leadId: proforma.lead_id,
+    leadNumber: formatLeadNumber(),
+    manualId: isLegacySubLead
+      ? String(leadData.master_id)
+      : String(leadData?.id ?? proforma.lead_id ?? ''),
+  });
 
   return (
     <div className="w-full min-h-0">
       <ProformaViewSideNotes notes={displayNotes || null} />
       {/* Fixed action bar — screen only, under header, clear of sidebar on md+ */}
       <div className="print-hide fixed top-[calc(env(safe-area-inset-top,0px)+2.75rem+0.5rem+0.75rem)] md:top-[calc(3rem+0.75rem)] left-0 md:left-24 right-0 z-30 flex items-center justify-between gap-4 border-b border-gray-200 bg-base-100 px-6 py-3 shadow-sm">
-        <h1 className="text-lg font-bold text-gray-900 truncate min-w-0">
-          Invoice - {formatLeadNumber()}
-          {proforma.client_name ? ` - ${proforma.client_name}` : ''}
-        </h1>
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <ProformaBackToLeadButton href={financesTabPath} />
+          <h1 className="min-w-0 truncate text-lg font-bold text-gray-900">
+            Invoice - {formatLeadNumber()}
+            {proforma.client_name ? ` - ${proforma.client_name}` : ''}
+          </h1>
+        </div>
         <div className="flex shrink-0 gap-2">
           <button
             className="btn btn-primary btn-sm gap-2"
@@ -798,7 +833,7 @@ const ProformaLegacyViewPage: React.FC = () => {
               <div className="text-sm text-gray-500">{proforma.client_email}</div>
             )}
             {proforma.lead_number && (
-              <div className="text-sm text-gray-500 font-semibold">Lead #: {formatLeadNumber()}</div>
+              <div className="text-sm text-gray-500 font-semibold">Case #: {formatLeadNumber()}</div>
             )}
             {!(proforma.client_phone || proforma.client_email) && (
               <div className="text-xs text-red-400">No client phone/email saved in proforma.</div>
@@ -831,37 +866,20 @@ const ProformaLegacyViewPage: React.FC = () => {
         {/* Totals summary */}
         <div className="flex flex-col md:flex-row md:justify-end gap-4 mb-6">
           <div className="w-full md:w-1/2 bg-white rounded-xl p-6 border border-gray-200">
-            <div className="flex justify-between text-lg mb-2">
-              <span className="font-semibold text-gray-700">Subtotal</span>
-              <span className="font-bold text-gray-900">{getCurrencySymbol(proforma.currency_code)} {Number(proforma.sub_total || proforma.total_base || 0).toFixed(2)}</span>
-            </div>
-            {proforma.add_vat === 't' && (() => {
-              // Determine VAT rate based on payment plan date or proforma creation date
-              const vatDate = proforma.paymentPlanDate || proforma.cdate || null;
-              const vatRate = getVatRateForLegacyLead(vatDate);
-              const vatPercentage = Math.round(vatRate * 100);
-              return (
-                <div className="flex justify-between text-lg mb-2">
-                  <span className="font-semibold text-gray-700">VAT ({vatPercentage}%)</span>
-                  <span className="font-bold text-gray-900">{getCurrencySymbol(proforma.currency_code)} {Number(proforma.vat_value || 0).toFixed(2)}</span>
-                </div>
-              );
-            })()}
-            <div className="flex justify-between text-xl mt-4 border-t pt-4 font-extrabold">
-              <span>Total</span>
-              <span style={{ color: '#006BB1' }}>{getCurrencySymbol(proforma.currency_code)} {Number(proforma.total || 0).toFixed(2)}</span>
-            </div>
+            {vatTotals && (
+              <ProformaVatTotalsBlock
+                currencyLabel={getCurrencySymbol(proforma.currency_code)}
+                resolved={vatTotals}
+                totalAmountClassName=""
+                totalAmountStyle={{ color: '#006BB1' }}
+              />
+            )}
             <ProformaTotalInNis info={exchangeInfo} loading={exchangeLoading} variant="card" />
           </div>
         </div>
         <ProformaBankDetails details={resolveBankAccountFromProforma(proforma)} variant="card" />
         <ProformaExchangeRateFooter info={exchangeInfo} loading={exchangeLoading} variant="card" />
-        {/* Issued by and timestamp at bottom */}
-        {proforma.issuedBy && (
-          <div className="mt-8 text-xs text-gray-500">
-            <span className="font-semibold">Issued by:</span> <span>{proforma.issuedBy}</span>
-          </div>
-        )}
+        <ProformaIssuedByFooter name={proforma.issuedBy} date={proforma.issuedDate} />
         <ProformaDocumentStamp variant="card" />
       </div>
       {pdfLoading && (

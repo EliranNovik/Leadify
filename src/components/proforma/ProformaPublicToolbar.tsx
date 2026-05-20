@@ -1,19 +1,31 @@
 import React from 'react';
 import { PrinterIcon, ShareIcon } from '@heroicons/react/24/outline';
+import ProformaBackToLeadButton from './ProformaBackToLeadButton';
 
 type Props = {
   title: string;
   onPrint: () => void;
   onShare: () => void;
   sharing?: boolean;
+  /** Shown only when set (e.g. signed-in staff on public invoice link). */
+  backToLeadHref?: string | null;
 };
 
-const ProformaPublicToolbar: React.FC<Props> = ({ title, onPrint, onShare, sharing }) => (
+const ProformaPublicToolbar: React.FC<Props> = ({
+  title,
+  onPrint,
+  onShare,
+  sharing,
+  backToLeadHref,
+}) => (
   <div className="print-hide fixed inset-x-0 top-0 z-40 border-b border-gray-200 bg-white/95 backdrop-blur-sm md:sticky">
     <div className="mx-auto flex max-w-4xl items-center justify-between gap-4 px-4 py-3 sm:px-6">
-      <div className="min-w-0">
-        <div className="truncate text-lg font-bold text-gray-900">{title}</div>
-        <div className="text-xs text-gray-500">Decker Pex Levi Law Offices</div>
+      <div className="flex min-w-0 flex-1 items-center gap-2">
+        <ProformaBackToLeadButton href={backToLeadHref ?? null} />
+        <div className="min-w-0">
+          <div className="truncate text-lg font-bold text-gray-900">{title}</div>
+          <div className="text-xs text-gray-500">Decker Pex Levi Law Offices</div>
+        </div>
       </div>
       <div className="flex shrink-0 gap-1 md:gap-2">
         <button

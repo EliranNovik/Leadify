@@ -93,6 +93,27 @@ export async function fetchEmployeeProfileByDisplayName(
 }
 
 /** Resolve issuer for public proforma — prefers employee id, falls back to display name. */
+/** True when the string looks like a dialable phone number (has at least one digit). */
+function isUsablePhone(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.length > 0 && /\d/.test(trimmed);
+}
+
+/** Prefer mobile; use office phone when mobile is missing or not dialable. */
+export function getEmployeeCallPhone(
+  employee: Pick<EmployeeProfile, 'mobile' | 'phone'> | null | undefined,
+): string {
+  if (!employee) return '';
+
+  const mobile = String(employee.mobile ?? '').trim();
+  if (isUsablePhone(mobile)) return mobile;
+
+  const phone = String(employee.phone ?? '').trim();
+  if (isUsablePhone(phone)) return phone;
+
+  return '';
+}
+
 export async function fetchIssuerEmployee(options: {
   employeeId?: number | string | null;
   displayName?: string | null;

@@ -10,9 +10,19 @@ import { useMailboxReconnect } from '../contexts/MailboxReconnectContext';
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
 import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
 import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
+import ProformaIssuedByFooter from '../components/proforma/ProformaIssuedByFooter';
 import ProformaBankDetails from '../components/proforma/ProformaBankDetails';
 import ProformaFromCompanyInfo from '../components/proforma/ProformaFromCompanyInfo';
 import ProformaViewSideNotes from '../components/proforma/ProformaViewSideNotes';
+import ProformaBackToLeadButton from '../components/proforma/ProformaBackToLeadButton';
+import { buildClientFinancesTabPath } from '../lib/proformaClientNavigation';
+import ProformaVatTotalsBlock from '../components/proforma/ProformaVatTotalsBlock';
+import {
+  applyResolvedVatToNewProforma,
+  resolveNewProformaVat,
+  type ResolvedProformaVat,
+} from '../lib/proformaVat';
+import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
 import { resolveBankAccountFromProforma, fetchBankAccountById } from '../lib/bankAccounts';
 import {
   currencyInputFromNewPayment,
@@ -43,6 +53,7 @@ const ProformaViewPage: React.FC = () => {
     currency?: string | null;
     currency_id?: number | string | null;
   } | null>(null);
+  const [vatTotals, setVatTotals] = useState<ResolvedProformaVat | null>(null);
 
   useEffect(() => {
     const fetchProforma = async () => {
@@ -51,7 +62,7 @@ const ProformaViewPage: React.FC = () => {
       // Fetch both proforma and client_id from payment plan
       const { data, error } = await supabase
         .from('payment_plans')
-        .select('proforma, client_id, paid, paid_at, currency, currency_id')
+        .select('proforma, client_id, lead_id, paid, paid_at, currency, currency_id, value_vat, payment_order, due_date')
         .eq('id', id)
         .single();
       if (error || !data || !data.proforma) {
@@ -180,15 +191,44 @@ const ProformaViewPage: React.FC = () => {
             console.error('Error fetching lead data:', error);
           }
         }
-        // Patch: If addVat true, currency is NIS/ILS/₪, and vat is 0, recalc vat
-        if (
-          parsed.addVat &&
-          (parsed.currency === '₪') &&
-          (!parsed.vat || parsed.vat === 0)
-        ) {
-          parsed.vat = Math.round(parsed.total * 0.18 * 100) / 100;
-          parsed.totalWithVat = parsed.total + parsed.vat;
+        let leadCurrencyId: number | string | null = null;
+        let proposalCurrency: string | null = null;
+        let balanceCurrency: string | null = null;
+        if (data.lead_id) {
+          const { data: leadRow } = await supabase
+            .from('leads')
+            .select('currency_id, proposal_currency, balance_currency')
+            .eq('id', data.lead_id)
+            .maybeSingle();
+          if (leadRow) {
+            leadCurrencyId = leadRow.currency_id ?? null;
+            proposalCurrency = leadRow.proposal_currency ?? null;
+            balanceCurrency = leadRow.balance_currency ?? null;
+          }
         }
+
+        const { displaySymbol: resolvedCurrency, currencyId: resolvedCurrencyId } =
+          await resolvePaymentPlanCurrency({
+            currency: data.currency,
+            currency_id: data.currency_id,
+            lead_currency_id: leadCurrencyId,
+            proposal_currency: proposalCurrency,
+            balance_currency: balanceCurrency,
+          });
+
+        parsed.currency = resolvedCurrency;
+        parsed.paymentOrder = parsed.paymentOrder ?? data.payment_order;
+        parsed.dueDate = parsed.dueDate ?? data.due_date;
+
+        const resolvedVat = resolveNewProformaVat(parsed, {
+          currency: resolvedCurrency,
+          currency_id: data.currency_id ?? resolvedCurrencyId,
+          value_vat: data.value_vat,
+          payment_order: data.payment_order,
+          due_date: data.due_date,
+        });
+        setVatTotals(resolvedVat);
+        parsed = applyResolvedVatToNewProforma(parsed, resolvedVat);
         if (!parsed.bankAccountDetails && parsed.bankAccountId) {
           parsed.bankAccountDetails = await fetchBankAccountById(String(parsed.bankAccountId));
         }
@@ -197,8 +237,8 @@ const ProformaViewPage: React.FC = () => {
         setPaymentPlanMeta({
           paid: Boolean(data.paid),
           paid_at: data.paid_at ?? null,
-          currency: data.currency ?? null,
-          currency_id: data.currency_id ?? null,
+          currency: resolvedCurrency,
+          currency_id: data.currency_id ?? resolvedCurrencyId ?? null,
         });
       } catch (e) {
         setError('Failed to parse proforma data.');
@@ -218,9 +258,9 @@ const ProformaViewPage: React.FC = () => {
     const loadExchange = async () => {
       setExchangeLoading(true);
       try {
-        const subtotal = Number(proforma.total) || 0;
-        const totalWithVat = Number(proforma.totalWithVat) || subtotal;
-        const vat = Number(proforma.vat) || Math.max(0, totalWithVat - subtotal);
+        const subtotal = vatTotals?.subtotal ?? (Number(proforma.total) || 0);
+        const vat = vatTotals?.vat ?? (Number(proforma.vat) || 0);
+        const totalWithVat = vatTotals?.totalWithVat ?? (Number(proforma.totalWithVat) || subtotal + vat);
         const info = await fetchProformaExchangeRateInfo({
           currency: currencyInputFromNewPayment(paymentPlanMeta, proforma.currency),
           paid: paymentPlanMeta.paid,
@@ -242,7 +282,7 @@ const ProformaViewPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [proforma, paymentPlanMeta]);
+  }, [proforma, paymentPlanMeta, vatTotals]);
 
   // Format lead number using same logic as ClientHeader
   const formatLeadNumber = () => {
@@ -341,16 +381,25 @@ const ProformaViewPage: React.FC = () => {
   if (!proforma) return null;
 
   const displayNotes = (proforma.notes as string | undefined)?.trim() ?? '';
+  const financesTabPath = buildClientFinancesTabPath({
+    isLegacy: false,
+    leadNumber: formatLeadNumber(),
+    manualId: leadData?.manual_id,
+    leadId: proforma.clientId ?? leadData?.id,
+  });
 
   return (
     <div className="w-full min-h-0">
       <ProformaViewSideNotes notes={displayNotes || null} />
       {/* Fixed action bar — screen only, under header, clear of sidebar on md+ */}
       <div className="print-hide fixed top-[calc(env(safe-area-inset-top,0px)+2.75rem+0.5rem+0.75rem)] md:top-[calc(3rem+0.75rem)] left-0 md:left-24 right-0 z-30 flex items-center justify-between gap-4 border-b border-gray-200 bg-base-100 px-6 py-3 shadow-sm">
-        <h1 className="text-lg font-bold text-gray-900 truncate min-w-0">
-          Invoice - {formatLeadNumber()}
-          {proforma.client ? ` - ${proforma.client}` : ''}
-        </h1>
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <ProformaBackToLeadButton href={financesTabPath} />
+          <h1 className="min-w-0 truncate text-lg font-bold text-gray-900">
+            Invoice - {formatLeadNumber()}
+            {proforma.client ? ` - ${proforma.client}` : ''}
+          </h1>
+        </div>
         <div className="flex shrink-0 gap-2">
           <button
             className="btn btn-primary btn-sm gap-2"
@@ -458,7 +507,7 @@ const ProformaViewPage: React.FC = () => {
             <div className="font-semibold text-gray-700 mb-1">Bill To:</div>
             <div className="text-lg font-bold text-gray-900">{proforma.client}</div>
             {proforma.lead_number && (
-              <div className="text-sm text-gray-600 font-semibold">Lead #: {formatLeadNumber()}</div>
+              <div className="text-sm text-gray-600 font-semibold">Case #: {formatLeadNumber()}</div>
             )}
             {proforma.phone && (
               <div className="text-sm text-gray-500">{proforma.phone}</div>
@@ -497,42 +546,17 @@ const ProformaViewPage: React.FC = () => {
         {/* Totals summary */}
         <div className="flex flex-col md:flex-row md:justify-end gap-4 mb-6">
           <div className="w-full md:w-1/2 bg-white rounded-xl p-6 border border-gray-200">
-            <div className="flex justify-between text-lg mb-2">
-              <span className="font-semibold text-gray-700">Subtotal</span>
-              <span className="font-bold text-gray-900">{proforma.currency} {proforma.total}</span>
-            </div>
-            {proforma.addVat && (
-              <div className="flex justify-between text-lg mb-2">
-                <span className="font-semibold text-gray-700">VAT (18%)</span>
-                <span className="font-bold text-gray-900">{proforma.currency} {(proforma.totalWithVat - proforma.total).toFixed(2)}</span>
-              </div>
+            {vatTotals && (
+              <ProformaVatTotalsBlock currencyLabel={proforma.currency || '₪'} resolved={vatTotals} />
             )}
-            <div className="flex justify-between text-xl mt-4 border-t pt-4 font-extrabold">
-              <span>Total</span>
-              <span className="text-primary">{proforma.currency} {proforma.totalWithVat}</span>
-            </div>
             <ProformaTotalInNis info={exchangeInfo} loading={exchangeLoading} variant="card" />
           </div>
         </div>
         <ProformaBankDetails details={resolveBankAccountFromProforma(proforma)} variant="card" />
         <ProformaExchangeRateFooter info={exchangeInfo} loading={exchangeLoading} variant="card" />
-        {/* Issued by and timestamp at bottom */}
-        {proforma.createdBy && (
-          <div className="mt-8 text-xs text-gray-500">
-            <span className="font-semibold">Issued by:</span> <span>{proforma.createdBy}</span>
-          </div>
-        )}
+        <ProformaIssuedByFooter name={proforma.createdBy} date={proforma.createdAt} />
         <ProformaDocumentStamp variant="card" />
       </div>
-      {/* Created by, visible on screen only, hidden in print */}
-      {proforma.createdBy && (
-        <div className="mt-4 text-xs text-gray-400 text-left print-hide">
-          Created by: {proforma.createdBy}
-          {proforma.createdAt && (
-            <> on {new Date(proforma.createdAt).toLocaleDateString()}, {new Date(proforma.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</>
-          )}
-        </div>
-      )}
       {pdfLoading && (
         <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl p-8 shadow-lg flex flex-col items-center">

@@ -9,6 +9,7 @@ import { computeProformaVatFromPayment } from '../lib/proformaVat';
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
 import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
 import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
+import ProformaIssuedByFooter from '../components/proforma/ProformaIssuedByFooter';
 import ProformaBankAccountSelect from '../components/proforma/ProformaBankAccountSelect';
 import ProformaBankDetails from '../components/proforma/ProformaBankDetails';
 import ProformaFromCompanyInfo from '../components/proforma/ProformaFromCompanyInfo';
@@ -23,6 +24,7 @@ import {
   fetchProformaExchangeRateInfo,
   type ProformaExchangeRateInfo,
 } from '../lib/proformaExchangeRate';
+import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
 
 const ProformaCreatePage: React.FC = () => {
   const { paymentId } = useParams<{ paymentId: string }>();
@@ -154,7 +156,37 @@ const ProformaCreatePage: React.FC = () => {
           }
         }
       }
-      setPayment(data);
+      let leadCurrencyId: number | string | null = null;
+      let proposalCurrency: string | null = null;
+      let balanceCurrency: string | null = null;
+      if (data.lead_id) {
+        const { data: leadRow } = await supabase
+          .from('leads')
+          .select('currency_id, proposal_currency, balance_currency')
+          .eq('id', data.lead_id)
+          .maybeSingle();
+        if (leadRow) {
+          leadCurrencyId = leadRow.currency_id ?? null;
+          proposalCurrency = leadRow.proposal_currency ?? null;
+          balanceCurrency = leadRow.balance_currency ?? null;
+        }
+      }
+
+      const { displaySymbol: resolvedCurrency, currencyId: resolvedCurrencyId } =
+        await resolvePaymentPlanCurrency({
+          currency: data.currency,
+          currency_id: data.currency_id,
+          lead_currency_id: leadCurrencyId,
+          proposal_currency: proposalCurrency,
+          balance_currency: balanceCurrency,
+        });
+
+      const paymentWithCurrency = {
+        ...data,
+        currency: resolvedCurrency,
+        currency_id: data.currency_id ?? resolvedCurrencyId,
+      };
+      setPayment(paymentWithCurrency);
 
       let existingProforma: Record<string, unknown> | null = null;
       if (data.proforma) {
@@ -171,7 +203,8 @@ const ProformaCreatePage: React.FC = () => {
       ];
       const initialSubtotal = initialRows.reduce((sum: number, r: { total: number }) => sum + Number(r.total), 0);
       const vatState = computeProformaVatFromPayment({
-        currency: data.currency,
+        currency: resolvedCurrency,
+        currency_id: paymentWithCurrency.currency_id,
         valueVat: data.value_vat,
         paymentOrder: data.payment_order,
         dueDate: data.due_date,
@@ -183,7 +216,8 @@ const ProformaCreatePage: React.FC = () => {
         const rows = Array.isArray(existingProforma.rows) ? existingProforma.rows : initialRows;
         const subtotal = rows.reduce((sum: number, r: { total: number }) => sum + Number(r.total), 0);
         const refreshedVat = computeProformaVatFromPayment({
-          currency: (existingProforma.currency as string) || data.currency,
+          currency: resolvedCurrency,
+          currency_id: paymentWithCurrency.currency_id,
           valueVat: data.value_vat,
           paymentOrder: data.payment_order,
           dueDate: data.due_date,
@@ -201,6 +235,8 @@ const ProformaCreatePage: React.FC = () => {
           bankAccountDetails:
             existingProforma.bankAccountDetails ??
             resolveBankAccountFromProforma(existingProforma as { bankAccountDetails?: BankAccountSnapshot | null }),
+          currency: resolvedCurrency,
+          currency_id: paymentWithCurrency.currency_id,
           addVat: refreshedVat.addVat,
           vat: refreshedVat.vat,
           totalWithVat: refreshedVat.totalWithVat,
@@ -220,7 +256,8 @@ const ProformaCreatePage: React.FC = () => {
           rows: initialRows,
           addVat: vatState.addVat,
           totalWithVat: vatState.totalWithVat,
-          currency: data.currency || '₪',
+          currency: resolvedCurrency,
+          currency_id: paymentWithCurrency.currency_id,
           bankAccount: '',
           bankAccountId: '',
           bankAccountDetails: null as BankAccountSnapshot | null,
@@ -444,6 +481,7 @@ const ProformaCreatePage: React.FC = () => {
   );
   const previewVat = computeProformaVatFromPayment({
     currency: proformaData.currency,
+    currency_id: payment?.currency_id ?? proformaData.currency_id,
     valueVat: payment?.value_vat,
     paymentOrder: proformaData.paymentOrder ?? payment?.payment_order,
     dueDate: proformaData.dueDate ?? payment?.due_date,
@@ -619,7 +657,7 @@ const ProformaCreatePage: React.FC = () => {
                 };
 
                 return (
-                  <div className="text-sm text-gray-500 font-semibold">Lead #: {formatLeadNumber()}</div>
+                  <div className="text-sm text-gray-500 font-semibold">Case #: {formatLeadNumber()}</div>
                 );
               })()}
               {!(proformaData.phone || proformaData.email) && (
@@ -683,10 +721,12 @@ const ProformaCreatePage: React.FC = () => {
           )}
           <ProformaBankDetails details={resolveBankAccountFromProforma(proformaData)} variant="card" />
           <ProformaExchangeRateFooter info={exchangeInfo} loading={exchangeLoading} variant="card" />
-          {/* Created by at bottom left inside the card */}
-          <div className="mt-8 text-xs text-gray-400 text-left">
-            Created by: {userFullName || ''}
-          </div>
+          <ProformaIssuedByFooter
+            name={userFullName}
+            date={proformaData?.createdAt ?? new Date().toISOString()}
+            label="Created by"
+            className="mt-8 text-xs text-gray-400 text-left"
+          />
           <ProformaDocumentStamp variant="card" />
           </div>
         </div>

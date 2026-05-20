@@ -79,7 +79,10 @@ BEGIN
     'currency_id', v_row.currency_id,
     'client_id', v_row.client_id,
     'lead_id', v_row.lead_id,
-    'lead_number', v_lead_number
+    'lead_number', v_lead_number,
+    'value_vat', v_row.value_vat,
+    'payment_order', v_row.payment_order,
+    'due_date', v_row.due_date
   );
 END;
 $$;
@@ -202,6 +205,9 @@ BEGIN
     'issuer_employee_id', v_pi.creator_id,
     'issuedDate', v_pi.cdate,
     'paymentPlanDate', COALESCE(v_ppr.date, v_ppr.due_date),
+    'payment_order', v_ppr."order",
+    'payment_plan_vat_value', v_ppr.vat_value,
+    'ppr_id', v_pi.ppr_id,
     'paymentPaid', (v_ppr.actual_date IS NOT NULL),
     'paid_at', v_ppr.actual_date
   );

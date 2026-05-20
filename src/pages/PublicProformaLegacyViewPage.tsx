@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
 import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
 import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
+import ProformaIssuedByFooter from '../components/proforma/ProformaIssuedByFooter';
 import ProformaBankDetails from '../components/proforma/ProformaBankDetails';
 import ProformaPublicToolbar from '../components/proforma/ProformaPublicToolbar';
 import ProformaPublicContactButtons from '../components/proforma/ProformaPublicContactButtons';
@@ -14,12 +15,16 @@ import { parseLegacyBankFromNotes, resolveBankAccountFromProforma } from '../lib
 import { getPublicProformaDisplayNotes } from '../lib/proformaNotes';
 import { shareCurrentPageUrl } from '../lib/proformaPublicLink';
 import { fetchIssuerEmployee, type EmployeeProfile } from '../lib/fetchEmployeeProfile';
-import { getVatRateForLegacyLead } from '../lib/legacyProformaVat';
+import ProformaVatTotalsBlock from '../components/proforma/ProformaVatTotalsBlock';
+import { resolveLegacyProformaVat, type ResolvedProformaVat } from '../lib/proformaVat';
+import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
 import {
   currencyInputFromLegacyProforma,
   fetchProformaExchangeRateInfo,
   type ProformaExchangeRateInfo,
 } from '../lib/proformaExchangeRate';
+import { useAuthContext } from '../contexts/AuthContext';
+import { buildClientFinancesTabPath } from '../lib/proformaClientNavigation';
 
 function getCurrencySymbol(currency: string | undefined): string {
   if (!currency) return '₪';
@@ -33,6 +38,7 @@ function getCurrencySymbol(currency: string | undefined): string {
 
 const PublicProformaLegacyViewPage: React.FC = () => {
   const { id, token } = useParams<{ id: string; token: string }>();
+  const { user } = useAuthContext();
   const [proforma, setProforma] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -40,6 +46,7 @@ const PublicProformaLegacyViewPage: React.FC = () => {
   const [exchangeLoading, setExchangeLoading] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [issuerEmployee, setIssuerEmployee] = useState<EmployeeProfile | null>(null);
+  const [vatTotals, setVatTotals] = useState<ResolvedProformaVat | null>(null);
 
   useEffect(() => {
     const fetchProforma = async () => {
@@ -65,11 +72,28 @@ const PublicProformaLegacyViewPage: React.FC = () => {
 
       const bankAccountDetails = parseLegacyBankFromNotes(data.notes) ?? null;
 
-      setProforma({
+      const { displaySymbol: resolvedCurrency } = await resolvePaymentPlanCurrency({
+        currency_id: data.currency_id,
+        currency: data.currency_code,
+      });
+
+      const proformaPayload = {
         ...data,
         rows: data.rows || [],
         bankAccountDetails,
+        currency_code: resolvedCurrency,
+      };
+
+      const paymentPlanVat =
+        data.payment_plan_vat_value ?? data.paymentPlanVatValue ?? null;
+
+      const resolvedVat = resolveLegacyProformaVat(proformaPayload, {
+        order: data.payment_order,
+        vat_value: paymentPlanVat ?? data.vat_value,
       });
+
+      setVatTotals(resolvedVat);
+      setProforma(proformaPayload);
       setLoading(false);
     };
 
@@ -107,9 +131,15 @@ const PublicProformaLegacyViewPage: React.FC = () => {
     const loadExchange = async () => {
       setExchangeLoading(true);
       try {
-        const subtotal = Number(proforma.sub_total || proforma.total_base || 0);
-        const vat = Number(proforma.vat_value || 0);
-        const total = Number(proforma.total || 0);
+        const resolved =
+          vatTotals ??
+          resolveLegacyProformaVat(proforma, {
+            order: proforma.payment_order,
+            vat_value: proforma.payment_plan_vat_value ?? proforma.vat_value,
+          });
+        const subtotal = resolved.subtotal;
+        const vat = resolved.vat;
+        const total = resolved.totalWithVat;
         const info = await fetchProformaExchangeRateInfo({
           currency: currencyInputFromLegacyProforma(proforma),
           paid: Boolean(proforma.paymentPaid),
@@ -131,7 +161,7 @@ const PublicProformaLegacyViewPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [proforma]);
+  }, [proforma, vatTotals]);
 
   const handlePrint = () => window.print();
 
@@ -161,11 +191,19 @@ const PublicProformaLegacyViewPage: React.FC = () => {
   }
 
   const currencySymbol = getCurrencySymbol(proforma.currency_code);
-  const vatDate = proforma.paymentPlanDate || proforma.cdate || null;
-  const vatRate = getVatRateForLegacyLead(vatDate);
-  const vatPercentage = Math.round(vatRate * 100);
   const displayNotes = getPublicProformaDisplayNotes(proforma.notes);
   const hasDesktopSidePanels = Boolean(proforma.lead_number || displayNotes);
+  const legacyLeadNumber = proforma.lead_number?.trim() || '';
+  const financesTabPath = user
+    ? buildClientFinancesTabPath({
+        isLegacy: true,
+        leadId: proforma.lead_id,
+        leadNumber: legacyLeadNumber || undefined,
+        manualId: legacyLeadNumber.includes('/')
+          ? legacyLeadNumber.split('/')[0]
+          : undefined,
+      })
+    : null;
 
   return (
     <div className="min-h-screen bg-white md:bg-gray-50">
@@ -179,6 +217,7 @@ const PublicProformaLegacyViewPage: React.FC = () => {
         onPrint={handlePrint}
         onShare={handleShare}
         sharing={sharing}
+        backToLeadHref={financesTabPath}
       />
 
       <style>{`
@@ -230,7 +269,7 @@ const PublicProformaLegacyViewPage: React.FC = () => {
               {proforma.client_phone && <div className="text-sm text-gray-500">{proforma.client_phone}</div>}
               {proforma.client_email && <div className="text-sm text-gray-500">{proforma.client_email}</div>}
               {proforma.lead_number && (
-                <div className="text-sm font-semibold text-gray-500">Lead #: {proforma.lead_number}</div>
+                <div className="text-sm font-semibold text-gray-500">Case #: {proforma.lead_number}</div>
               )}
             </div>
           </div>
@@ -260,26 +299,14 @@ const PublicProformaLegacyViewPage: React.FC = () => {
 
           <div className="mb-6 flex flex-col gap-4 md:flex-row md:justify-end">
             <div className="w-full rounded-xl border border-gray-200 bg-white p-6 md:w-1/2">
-              <div className="mb-2 flex justify-between text-lg">
-                <span className="font-semibold text-gray-700">Subtotal</span>
-                <span className="font-bold text-gray-900">
-                  {currencySymbol} {Number(proforma.sub_total || proforma.total_base || 0).toFixed(2)}
-                </span>
-              </div>
-              {proforma.add_vat === 't' && (
-                <div className="mb-2 flex justify-between text-lg">
-                  <span className="font-semibold text-gray-700">VAT ({vatPercentage}%)</span>
-                  <span className="font-bold text-gray-900">
-                    {currencySymbol} {Number(proforma.vat_value || 0).toFixed(2)}
-                  </span>
-                </div>
+              {vatTotals && (
+                <ProformaVatTotalsBlock
+                  currencyLabel={currencySymbol}
+                  resolved={vatTotals}
+                  totalAmountClassName=""
+                  totalAmountStyle={{ color: '#006BB1' }}
+                />
               )}
-              <div className="mt-4 flex justify-between border-t pt-4 text-xl font-extrabold">
-                <span>Total</span>
-                <span style={{ color: '#006BB1' }}>
-                  {currencySymbol} {Number(proforma.total || 0).toFixed(2)}
-                </span>
-              </div>
               <ProformaTotalInNis info={exchangeInfo} loading={exchangeLoading} variant="card" />
             </div>
           </div>
@@ -287,11 +314,10 @@ const PublicProformaLegacyViewPage: React.FC = () => {
           <ProformaBankDetails details={resolveBankAccountFromProforma(proforma)} variant="card" />
           <ProformaExchangeRateFooter info={exchangeInfo} loading={exchangeLoading} variant="card" />
 
-          {proforma.issuedBy && (
-            <div className="mt-8 text-xs text-gray-500">
-              <span className="font-semibold">Issued by:</span> {proforma.issuedBy}
-            </div>
-          )}
+          <ProformaIssuedByFooter
+            name={proforma.issuedBy}
+            date={proforma.issuedDate ?? proforma.cdate}
+          />
 
           <ProformaDocumentStamp variant="card" />
         </div>

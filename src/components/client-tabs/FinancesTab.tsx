@@ -58,6 +58,7 @@ const AdminDropdownPortal: React.FC<{
 };
 
 import { generateProformaName } from '../../lib/proforma';
+import { currencyIdFromSymbol } from '../../lib/paymentPlanCurrency';
 import { sumUnpaidBaseAndVatByCurrencyFromPayments } from '../../lib/financeUnpaidTotal';
 import { getClientContracts, getContractDetails } from '../../lib/contractAutomation';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
@@ -3453,6 +3454,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             value: paymentDataToUse.value,
             value_vat: vatValue, // Save VAT: 0 if checkbox unchecked, otherwise use value from state
             currency: paymentDataToUse.currency || originalPayment.currency || '₪', // Update currency if provided
+            currency_id: currencyIdFromSymbol(
+              paymentDataToUse.currency || originalPayment.currency || '₪',
+            ),
             client_name: paymentDataToUse.client,
             payment_order: paymentDataToUse.order,
             notes: paymentDataToUse.notes,
@@ -4080,6 +4084,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           payment_order: dataToSave.paymentOrder || 'One-time Payment',
           notes: dataToSave.notes || '',
           currency: dataToSave.currency || '₪',
+          currency_id: currencyIdFromSymbol(dataToSave.currency || '₪'),
           created_by: currentUserName,
         };
 
@@ -4429,6 +4434,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             payment_order: orderText,
             notes: '',
             currency: autoPlanData.currency,
+            currency_id: currencyIdFromSymbol(autoPlanData.currency || '₪'),
             created_by: currentUserName,
           };
 
@@ -6418,7 +6424,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                       <button
                                                         className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
                                                         title="Create Proforma"
-                                                        onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}`); }}
+                                                        onClick={e => {
+                                                          e.preventDefault();
+                                                          const clientId = p.client_id ? `&client_id=${p.client_id}` : '';
+                                                          navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}${clientId}`);
+                                                        }}
                                                         style={{ padding: 0 }}
                                                       >
                                                         <PlusIcon className="w-5 h-5" />

@@ -8,7 +8,7 @@ const ProformaPublicFooter: React.FC = () => (
         <div className="space-y-2 text-center md:space-y-3">
           <div className="flex items-center justify-center gap-3">
             <img src="/DPL-LOGO1.png" alt="DPL Logo" className="h-12 w-auto object-contain" />
-            <p className="text-xl font-bold text-gray-900">Decker, Pex, Levi Law Offices</p>
+            <p className="text-xl font-bold text-gray-900">Decker, Pex & Co Law Offices</p>
           </div>
           <p className="text-sm text-gray-500">Menachem Begin Rd. 11, Ramat Gan, Israel</p>
         </div>

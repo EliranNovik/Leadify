@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { PhoneIcon } from '@heroicons/react/24/solid';
 import { FaWhatsapp, FaEnvelope } from 'react-icons/fa';
-import type { EmployeeProfile } from '../../lib/fetchEmployeeProfile';
+import { getEmployeeCallPhone, type EmployeeProfile } from '../../lib/fetchEmployeeProfile';
 import EmployeeBusinessCardModal from '../EmployeeBusinessCardModal';
 import ProformaNotesBox from './ProformaNotesBox';
 import ProformaPublicCaseReferenceBox, {
@@ -12,6 +12,27 @@ import ProformaPublicCaseReferenceBox, {
 const FIRM_WHATSAPP_URL = 'https://wa.me/972552780162';
 const FIRM_EMAIL = 'office@lawoffice.org.il';
 const FIRM_PHONE_TEL = 'tel:+972503489649';
+
+function toTelHref(phone: string): string {
+  const trimmed = phone.trim();
+  if (!trimmed) return FIRM_PHONE_TEL;
+  if (trimmed.startsWith('tel:')) return trimmed;
+  return `tel:${trimmed.replace(/[\s()-]/g, '')}`;
+}
+
+function getIssuerCallLink(employee: EmployeeProfile | null | undefined): {
+  href: string;
+  title: string;
+} {
+  const raw = getEmployeeCallPhone(employee);
+  if (raw) {
+    return {
+      href: toTelHref(raw),
+      title: employee?.official_name ? `Call ${employee.official_name}` : 'Call',
+    };
+  }
+  return { href: FIRM_PHONE_TEL, title: 'Call Office' };
+}
 
 type Props = {
   issuerEmployee?: EmployeeProfile | null;
@@ -60,6 +81,7 @@ const ProformaPublicContactButtons: React.FC<Props> = ({ issuerEmployee, leadNum
   const displayNotes = notes?.trim() ?? '';
   const caseLeadNumber = leadNumber?.trim() ?? '';
   const hasMoreContent = Boolean(caseLeadNumber || displayNotes);
+  const callLink = getIssuerCallLink(issuerEmployee);
 
   return (
     <>
@@ -100,9 +122,9 @@ const ProformaPublicContactButtons: React.FC<Props> = ({ issuerEmployee, leadNum
           <FaEnvelope className="h-6 w-6" />
         </a>
         <a
-          href={FIRM_PHONE_TEL}
+          href={callLink.href}
           className={`${mobileBarBtnClass} bg-purple-600 text-white hover:bg-purple-700`}
-          title="Call Office"
+          title={callLink.title}
         >
           <PhoneIcon className="h-6 w-6" />
         </a>
@@ -141,9 +163,9 @@ const ProformaPublicContactButtons: React.FC<Props> = ({ issuerEmployee, leadNum
           <FaEnvelope className="h-5 w-5 md:h-8 md:w-8" />
         </a>
         <a
-          href={FIRM_PHONE_TEL}
+          href={callLink.href}
           className={`${desktopContactBtnClass} bg-purple-600 text-white hover:bg-purple-700`}
-          title="Call Office"
+          title={callLink.title}
         >
           <PhoneIcon className="h-5 w-5 md:h-8 md:w-8" />
         </a>
