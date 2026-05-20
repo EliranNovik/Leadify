@@ -1,6 +1,17 @@
 import React, { Suspense, lazy, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useLocation, useNavigate, useParams, useNavigationType } from 'react-router-dom';
 import { supabase, type Lead, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
+import {
+  applyLeadSourceIdUpdate,
+  fetchActiveLeadSourceOptions,
+  getSourceDisplayFromJoin as getSourceDisplayFromJoinLib,
+  leadSourceIdForDb,
+  lookupSourceNameById,
+  normalizeLeadSourceId,
+  resolveSourceFromInputValue,
+  resolveSourceIdForEditSave,
+  type LeadSourceOption,
+} from '../lib/leadSourceId';
 import { buildLeadTagJunctionAuditFields } from '../lib/leadTagJunctionAudit';
 import { getStageName, fetchStageNames, areStagesEquivalent, normalizeStageName, getStageColour } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
@@ -1682,6 +1693,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [editLeadData, setEditLeadData] = useState({
     tags: selectedClient?.tags || '',
     source: selectedClient?.source || '',
+    source_id: null as string | null,
     name: selectedClient?.name || '',
     language: selectedClient?.language || '',
     category: getCategoryDisplayNameForEdit(selectedClient?.category_id, selectedClient?.category),
@@ -1699,7 +1711,7 @@ const Clients: React.FC<ClientsProps> = ({
   });
   // Main categories for Edit Lead drawer
   const [mainCategories, setMainCategories] = useState<string[]>([]);
-  const [sources, setSources] = useState<string[]>([]);
+  const [sourceOptions, setSourceOptions] = useState<LeadSourceOption[]>([]);
   const [languagesList, setLanguagesList] = useState<string[]>([]);
   const [currencies, setCurrencies] = useState<Array<{ id: string, front_name: string, iso_code: string, name: string }>>([]);
   const [allTags, setAllTags] = useState<any[]>([]);
@@ -3466,7 +3478,8 @@ const Clients: React.FC<ClientsProps> = ({
                 id,
                 name
               )
-            )
+            ),
+            misc_leadsource!fk_leads_source_id ( id, name )
           `)
           .eq('id', selectedClient.id)
           .single();
@@ -3522,6 +3535,7 @@ const Clients: React.FC<ClientsProps> = ({
           const transformedData = {
             ...data,
             category: categoryName,
+            source: getSourceDisplayFromJoin(data) ?? '',
             stage: newLeadStageId ?? (typeof data.stage === 'number' ? data.stage : null),
             emails: [],
             handler:
@@ -4743,7 +4757,15 @@ const Clients: React.FC<ClientsProps> = ({
             if (data.categoryObjects && Array.isArray(data.categoryObjects)) {
               setAllCategories(data.categoryObjects);
             }
-            setSources(data.sources || []);
+            if (Array.isArray(data.sourceOptions) && data.sourceOptions.length > 0) {
+              setSourceOptions(data.sourceOptions);
+            } else if (Array.isArray(data.sources)) {
+              setSourceOptions(
+                data.sources
+                  .filter((name: string) => name)
+                  .map((name: string) => ({ id: '', name: String(name) })),
+              );
+            }
             setLanguagesList(data.languages || []);
             setCurrencies(data.currencies || []);
             setMeetingLocations(data.meetingLocations || []);
@@ -4779,10 +4801,7 @@ const Clients: React.FC<ClientsProps> = ({
               )
             `)
             .order('name', { ascending: true }),
-          supabase.from('misc_leadsource')
-            .select('name')
-            .eq('active', true)
-            .order('name', { ascending: true }),
+          fetchActiveLeadSourceOptions(),
           supabase.from('misc_language').select('name'),
           // Fetch currencies (try both tables)
           Promise.all([
@@ -4812,9 +4831,8 @@ const Clients: React.FC<ClientsProps> = ({
           setAllCategories(categoriesResult.data);
         }
 
-        if (!sourcesResult.error && sourcesResult.data) {
-          const names = sourcesResult.data.map((row: any) => row.name).filter(Boolean);
-          setSources(names);
+        if (Array.isArray(sourcesResult) && sourcesResult.length > 0) {
+          setSourceOptions(sourcesResult);
         }
 
         if (!languagesResult.error && languagesResult.data) {
@@ -4874,7 +4892,10 @@ const Clients: React.FC<ClientsProps> = ({
             }
           }).filter(Boolean) : []),
           categoryObjects: categoriesResult.data || [], // Store raw category objects for getCategoryName
-          sources: sources.length > 0 ? sources : (sourcesResult.data ? sourcesResult.data.map((row: any) => row.name).filter(Boolean) : []),
+          sourceOptions:
+            sourceOptions.length > 0
+              ? sourceOptions
+              : (Array.isArray(sourcesResult) ? sourcesResult : []),
           languages: languagesList.length > 0 ? languagesList : (languagesResult.data ? languagesResult.data.map((row: any) => row.name).filter(Boolean) : []),
           currencies: currencies.length > 0 ? currencies : ((currenciesResult.newCurrencies?.data && currenciesResult.newCurrencies.data.length > 0) ? currenciesResult.newCurrencies.data : (currenciesResult.legacyCurrencies?.data ? currenciesResult.legacyCurrencies.data.map((currency: any) => ({
             id: currency.id.toString(),
@@ -8118,6 +8139,7 @@ const Clients: React.FC<ClientsProps> = ({
       setEditLeadData({
         tags: selectedClient.tags || '',
         source: selectedClient.source || '',
+        source_id: normalizeLeadSourceId(selectedClient.source_id),
         name: selectedClient.name || '',
         language: selectedClient.language || '',
         category: categoryDisplayName,
@@ -8139,6 +8161,15 @@ const Clients: React.FC<ClientsProps> = ({
   const handleEditLeadChange = (field: string, value: any) => {
     // For category field, keep the full formatted string (subcategory + main category)
     setEditLeadData(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleSourceInputChange = (value: string) => {
+    const resolved = resolveSourceFromInputValue(value, sourceOptions);
+    setEditLeadData((prev) => ({
+      ...prev,
+      source: resolved.source,
+      source_id: resolved.source_id,
+    }));
   };
 
   // Fetch current lead tags for editing
@@ -8438,7 +8469,8 @@ const Clients: React.FC<ClientsProps> = ({
 
     // Fetch follow-up from follow_ups table for current user
     let followUpDate = '';
-    let sourceName = selectedClient?.source || '';
+    let sourceName = (getSourceDisplayFromJoin(selectedClient) ?? selectedClient?.source) || '';
+    let sourceIdForForm: string | null = normalizeLeadSourceId(selectedClient?.source_id);
     let languageName = selectedClient?.language || '';
 
     const { data: { user } } = await supabase.auth.getUser();
@@ -8469,16 +8501,19 @@ const Clients: React.FC<ClientsProps> = ({
           }
 
           // Fetch source name from source_id for legacy leads
-          if (selectedClient.source && !isNaN(Number(selectedClient.source))) {
-            const sourceId = Number(selectedClient.source);
-            const { data: sourceData } = await supabase
-              .from('misc_leadsource')
-              .select('name')
-              .eq('id', sourceId)
-              .maybeSingle();
-
-            if (sourceData?.name) {
-              sourceName = sourceData.name;
+          const legacySourceId = normalizeLeadSourceId(selectedClient.source_id);
+          if (legacySourceId) {
+            sourceIdForForm = legacySourceId;
+            const cached = sourceOptions.find((s) => s.id === legacySourceId);
+            if (cached) {
+              sourceName = cached.name;
+            } else {
+              const { data: sourceData } = await supabase
+                .from('misc_leadsource')
+                .select('name')
+                .eq('id', legacySourceId)
+                .maybeSingle();
+              if (sourceData?.name) sourceName = sourceData.name;
             }
           }
 
@@ -8508,6 +8543,21 @@ const Clients: React.FC<ClientsProps> = ({
           if (followUpData?.date) {
             followUpDate = new Date(followUpData.date).toISOString().split('T')[0];
           }
+
+          const { data: leadSourceRow } = await supabase
+            .from('leads')
+            .select('source_id, misc_leadsource!fk_leads_source_id ( id, name )')
+            .eq('id', selectedClient.id)
+            .maybeSingle();
+
+          sourceIdForForm =
+            normalizeLeadSourceId(leadSourceRow?.source_id) ?? sourceIdForForm;
+          sourceName =
+            getSourceDisplayFromJoin(leadSourceRow) ??
+            getSourceDisplayFromJoinLib(leadSourceRow) ??
+            (sourceIdForForm
+              ? sourceOptions.find((s) => s.id === sourceIdForForm)?.name ?? sourceName
+              : sourceName);
         }
       }
     }
@@ -8548,6 +8598,7 @@ const Clients: React.FC<ClientsProps> = ({
     setEditLeadData({
       tags: tagsString || selectedClient?.tags || '',
       source: sourceName,
+      source_id: sourceIdForForm,
       name: selectedClient?.name || '',
       language: languageName,
       category: categoryDisplayName,
@@ -8889,28 +8940,24 @@ const Clients: React.FC<ClientsProps> = ({
           ? (selectedClient.probability === '' ? 0 : Number(selectedClient.probability) || 0)
           : (selectedClient.probability || 0);
         if (Math.round(currentProbability) !== nextProb) updateData.probability = nextProb;
-        // Handle source - convert source name to source_id
-        if (editLeadData.source !== selectedClient.source) {
-          if (editLeadData.source && editLeadData.source.trim() !== '') {
-            // Look up source_id from misc_leadsource table by name
-            const { data: sourceData } = await supabase
-              .from('misc_leadsource')
-              .select('id')
-              .eq('name', editLeadData.source)
-              .maybeSingle();
-
-            if (sourceData?.id) {
-              updateData.source_id = sourceData.id;
-            } else {
-              // If source not found, try to parse as ID (in case user entered ID directly)
-              const sourceId = parseInt(editLeadData.source);
-              if (!isNaN(sourceId)) {
-                updateData.source_id = sourceId;
-              }
-            }
-          } else {
-            updateData.source_id = null;
-          }
+        // Handle source via source_id (legacy leads_lead)
+        const resolvedLegacySource = await resolveSourceIdForEditSave({
+          sourceDisplay: editLeadData.source,
+          sourceIdInForm: editLeadData.source_id,
+          options: sourceOptions,
+        });
+        const currentLegacySourceId = normalizeLeadSourceId(selectedClient.source_id);
+        const nextLegacySourceId = resolvedLegacySource?.id ?? null;
+        if (editLeadData.source?.trim() && !nextLegacySourceId) {
+          toast.error('Please select a source from the list (only active sources can be used).');
+          return;
+        }
+        if (nextLegacySourceId !== currentLegacySourceId) {
+          applyLeadSourceIdUpdate(
+            updateData,
+            nextLegacySourceId,
+            resolvedLegacySource?.name ?? editLeadData.source,
+          );
         }
         // Handle language - convert language name to language_id
         if (editLeadData.language !== selectedClient.language) {
@@ -8995,8 +9042,30 @@ const Clients: React.FC<ClientsProps> = ({
           // Use saveLeadTags function for proper tag management
           await saveLeadTags(selectedClient.id, editLeadData.tags);
         }
-        if (editLeadData.source !== selectedClient.source) {
-          updateData.source = editLeadData.source;
+        const { data: currentLeadRow } = await supabase
+          .from('leads')
+          .select('source_id')
+          .eq('id', selectedClient.id)
+          .maybeSingle();
+        const resolvedNewSource = await resolveSourceIdForEditSave({
+          sourceDisplay: editLeadData.source,
+          sourceIdInForm: editLeadData.source_id,
+          options: sourceOptions,
+        });
+        const currentNewSourceId = normalizeLeadSourceId(
+          currentLeadRow?.source_id ?? selectedClient.source_id,
+        );
+        const nextNewSourceId = resolvedNewSource?.id ?? null;
+        if (editLeadData.source?.trim() && !nextNewSourceId) {
+          toast.error('Please select a source from the list (only active sources can be used).');
+          return;
+        }
+        if (nextNewSourceId !== currentNewSourceId) {
+          applyLeadSourceIdUpdate(
+            updateData,
+            nextNewSourceId,
+            resolvedNewSource?.name ?? editLeadData.source,
+          );
         }
         if (editLeadData.name !== selectedClient.name) {
           updateData.name = editLeadData.name;
@@ -9183,7 +9252,10 @@ const Clients: React.FC<ClientsProps> = ({
 
       if (updateError) {
         console.error('Error updating lead:', updateError);
-        toast.error('Failed to update lead.');
+        const msg =
+          (updateError as { message?: string }).message ||
+          'Failed to update lead.';
+        toast.error(msg);
         return;
       }
 
@@ -17291,13 +17363,13 @@ const Clients: React.FC<ClientsProps> = ({
                       className="input input-bordered w-full"
                       placeholder="Search or select a source..."
                       value={editLeadData.source}
-                      onChange={e => handleEditLeadChange('source', e.target.value)}
+                      onChange={e => handleSourceInputChange(e.target.value)}
                       list={sourceListId}
                       autoComplete="off"
                     />
                     <datalist id={sourceListId}>
-                      {sources.map((name, index) => (
-                        <option key={`${name}-${index}`} value={name} />
+                      {sourceOptions.map((source, index) => (
+                        <option key={`${source.id}-${index}`} value={source.name} />
                       ))}
                     </datalist>
                   </div>

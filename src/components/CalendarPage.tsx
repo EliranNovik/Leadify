@@ -15,6 +15,8 @@ import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import sanitizeHtml from 'sanitize-html';
 import { buildApiUrl } from '../lib/api';
+import { fetchLeadActionPanelData } from '../lib/leadActionCounts';
+import CalendarLeadRecentInteractions from './calendar/CalendarLeadRecentInteractions';
 import { fetchStageNames, getStageName, refreshStageNames, getStageColour } from '../lib/stageUtils';
 import TeamsMeetingModal from './TeamsMeetingModal';
 import StaffMeetingEditModal from './StaffMeetingEditModal';
@@ -333,6 +335,10 @@ const CalendarPage: React.FC = () => {
   const [selectedRowId, setSelectedRowId] = useState<string | number | null>(null);
   const [showActionMenu, setShowActionMenu] = useState(false);
   const [selectedLeadForActions, setSelectedLeadForActions] = useState<any>(null);
+  const [leadActionPanel, setLeadActionPanel] = useState<Awaited<
+    ReturnType<typeof fetchLeadActionPanelData>
+  > | null>(null);
+  const [leadActionPanelLoading, setLeadActionPanelLoading] = useState(false);
 
   // WhatsApp functionality
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
@@ -3558,6 +3564,37 @@ const CalendarPage: React.FC = () => {
       setSelectedLeadForActions(meeting.lead);
     }
   };
+
+  useEffect(() => {
+    if (!selectedRowId || !selectedLeadForActions) {
+      setLeadActionPanel(null);
+      setLeadActionPanelLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLeadActionPanelLoading(true);
+    fetchLeadActionPanelData(selectedLeadForActions)
+      .then((data) => {
+        if (!cancelled) {
+          setLeadActionPanel(data);
+          setLeadActionPanelLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLeadActionPanel({
+            counts: { calls: 0, emails: 0, whatsapp: 0, documents: 0 },
+            recent: { calls: [], emails: [], whatsapp: [] },
+          });
+          setLeadActionPanelLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRowId, selectedLeadForActions]);
 
   // Action handlers
   const handleCall = (lead: any) => {
@@ -8233,7 +8270,7 @@ const CalendarPage: React.FC = () => {
         document.body
       )}
 
-      {/* Floating Action Buttons - Fixed position on right side */}
+      {/* Row action menu — centered horizontal buttons */}
       {selectedRowId && (() => {
         const selectedMeetingForActions = meetings.find(m => m.id === selectedRowId) || filteredMeetings.find(m => m.id === selectedRowId);
         if (!selectedMeetingForActions || !selectedMeetingForActions.lead || selectedMeetingForActions.calendar_type === 'staff') return null;
@@ -8251,132 +8288,143 @@ const CalendarPage: React.FC = () => {
               }}
             />
 
-            {/* Floating Action Buttons - Centered vertically on right side */}
-            <div className="fixed right-6 top-1/2 -translate-y-1/2 z-50 flex flex-col items-end gap-3">
-              {/* Call Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Call</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleCall(lead);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                    setSelectedLeadForActions(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Call"
-                >
-                  <PhoneIcon className="w-6 h-6" />
-                </button>
-              </div>
+            {/* Centered action bar */}
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div
+                className="pointer-events-auto w-full max-w-5xl max-h-[min(92vh,900px)] overflow-y-auto rounded-2xl bg-white shadow-2xl border border-gray-200 px-4 py-6 sm:px-8 sm:py-8"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex flex-wrap items-center justify-center gap-3 sm:gap-4 mb-5 sm:mb-6">
+                  <p className="text-center text-sm font-medium text-gray-500 m-0">
+                    <span className="text-base font-semibold text-gray-900">{lead?.name || 'Client'}</span>
+                    {lead?.lead_number ? (
+                      <>
+                        {' · '}
+                        <span className="font-semibold text-gray-700">{lead.lead_number}</span>
+                      </>
+                    ) : null}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleViewClient(lead, e);
+                      setShowActionMenu(false);
+                      setSelectedRowId(null);
+                      setSelectedLeadForActions(null);
+                    }}
+                    className="btn btn-primary shrink-0 inline-flex h-12 min-w-[8.5rem] sm:h-14 sm:min-w-[10rem] items-center justify-center gap-1.5 rounded-xl text-xs sm:text-sm font-semibold leading-snug px-4 sm:px-5 shadow-md hover:scale-[1.02] transition-all duration-200 border-0"
+                    title="Enter lead page"
+                  >
+                    <span>Enter lead page</span>
+                    <ChevronRightIcon className="w-4 h-4 sm:w-5 sm:h-5 shrink-0" aria-hidden />
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-start justify-center gap-3 sm:gap-5 md:gap-6">
+                  {[
+                    {
+                      label: 'Call',
+                      title: 'Call',
+                      countKey: 'calls' as const,
+                      icon: <PhoneIcon className="w-8 h-8" />,
+                      buttonClass: 'bg-gray-900 text-white border-gray-900 hover:bg-gray-800',
+                      onClick: () => handleCall(lead),
+                    },
+                    {
+                      label: 'Email',
+                      title: 'Email',
+                      countKey: 'emails' as const,
+                      icon: <EnvelopeIcon className="w-8 h-8" />,
+                      buttonClass: 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700',
+                      onClick: () => handleEmail(lead, selectedMeetingForActions),
+                    },
+                    {
+                      label: 'WhatsApp',
+                      title: 'WhatsApp',
+                      countKey: 'whatsapp' as const,
+                      icon: <FaWhatsapp className="w-8 h-8" />,
+                      buttonClass: 'bg-[#25D366] text-white border-[#25D366] hover:bg-[#1ebe5d]',
+                      onClick: () => handleWhatsApp(lead, selectedMeetingForActions),
+                    },
+                    {
+                      label: 'Edit Lead',
+                      title: 'Edit Lead',
+                      icon: <PencilSquareIcon className="w-8 h-8" />,
+                      buttonClass: 'bg-amber-500 text-white border-amber-500 hover:bg-amber-600',
+                      onClick: () => handleEditLead(lead),
+                    },
+                    {
+                      label: 'Documents',
+                      title: 'Documents',
+                      countKey: 'documents' as const,
+                      icon: <FolderIcon className="w-8 h-8" />,
+                      buttonClass: 'bg-rose-600 text-white border-rose-600 hover:bg-rose-700',
+                      onClick: () => handleDocuments(lead, selectedMeetingForActions),
+                    },
+                  ].map((action) => {
+                    const count =
+                      action.countKey && leadActionPanel && !leadActionPanelLoading
+                        ? leadActionPanel.counts[action.countKey]
+                        : null;
+                    const badgeText =
+                      count != null ? (count > 99 ? '99+' : String(count)) : null;
 
-              {/* Email Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Email</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleEmail(lead, selectedMeetingForActions);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                    setSelectedLeadForActions(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Email"
-                >
-                  <EnvelopeIcon className="w-6 h-6" />
-                </button>
-              </div>
+                    return (
+                    <button
+                      key={action.label}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        action.onClick();
+                        setShowActionMenu(false);
+                        setSelectedRowId(null);
+                        setSelectedLeadForActions(null);
+                      }}
+                      className="flex flex-col items-center gap-2 sm:gap-3 min-w-[4.5rem] sm:min-w-[5.5rem] group"
+                      title={
+                        badgeText != null
+                          ? `${action.title} (${badgeText})`
+                          : action.title
+                      }
+                    >
+                      <span className="relative inline-flex">
+                        <span
+                          className={`btn btn-circle h-16 w-16 sm:h-20 sm:w-20 border shadow-lg group-hover:scale-105 transition-transform duration-200 ${action.buttonClass}`}
+                        >
+                          {action.icon}
+                        </span>
+                        {badgeText != null && (
+                          <span className="absolute -top-1 -right-1 min-w-[1.35rem] h-[1.35rem] px-1 flex items-center justify-center rounded-full bg-white text-gray-900 text-[11px] sm:text-xs font-bold shadow-md ring-2 ring-white">
+                            {badgeText}
+                          </span>
+                        )}
+                        {action.countKey && leadActionPanelLoading && (
+                          <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-white/90 ring-2 ring-white">
+                            <span className="loading loading-spinner loading-xs text-gray-600" />
+                          </span>
+                        )}
+                      </span>
+                      <span className="text-xs sm:text-sm font-semibold text-gray-700 text-center leading-tight max-w-[5.5rem]">
+                        {action.label}
+                      </span>
+                    </button>
+                    );
+                  })}
+                </div>
 
-              {/* WhatsApp Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">WhatsApp</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleWhatsApp(lead, selectedMeetingForActions);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                    setSelectedLeadForActions(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="WhatsApp"
-                >
-                  <FaWhatsapp className="w-6 h-6" />
-                </button>
-              </div>
-
-              {/* Timeline Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Timeline</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
+                <CalendarLeadRecentInteractions
+                  recent={leadActionPanel?.recent ?? null}
+                  loading={leadActionPanelLoading}
+                  onOpenTimeline={() => {
                     handleTimeline(lead);
                     setShowActionMenu(false);
                     setSelectedRowId(null);
                     setSelectedLeadForActions(null);
                   }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Timeline"
-                >
-                  <ClockIcon className="w-6 h-6" />
-                </button>
-              </div>
-
-              {/* Edit Lead Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Edit Lead</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleEditLead(lead);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                    setSelectedLeadForActions(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Edit Lead"
-                >
-                  <PencilSquareIcon className="w-6 h-6" />
-                </button>
-              </div>
-
-              {/* View Client Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">View Client</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleViewClient(lead);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                    setSelectedLeadForActions(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="View Client"
-                >
-                  <EyeIcon className="w-6 h-6" />
-                </button>
-              </div>
-
-              {/* Documents Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Documents</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleDocuments(lead, selectedMeetingForActions);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                    setSelectedLeadForActions(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Documents"
-                >
-                  <FolderIcon className="w-6 h-6" />
-                </button>
+                />
               </div>
             </div>
           </>

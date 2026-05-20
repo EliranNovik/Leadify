@@ -15,6 +15,8 @@ import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
 import { convertToNIS } from '../lib/currencyConversion';
 import CallOptionsModal from '../components/CallOptionsModal';
 import EditLeadDrawer from '../components/EditLeadDrawer';
+import { fetchLeadActionPanelData } from '../lib/leadActionCounts';
+import CalendarLeadRecentInteractions from '../components/calendar/CalendarLeadRecentInteractions';
 
 // Add a helper for currency symbol
 const getCurrencySymbol = (currency?: string) => {
@@ -264,6 +266,10 @@ const SchedulerToolPage: React.FC = () => {
   // Selected row state (for action menu)
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
   const [showActionMenu, setShowActionMenu] = useState(false);
+  const [leadActionPanel, setLeadActionPanel] = useState<Awaited<
+    ReturnType<typeof fetchLeadActionPanelData>
+  > | null>(null);
+  const [leadActionPanelLoading, setLeadActionPanelLoading] = useState(false);
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   
   // Call options modal state
@@ -2745,6 +2751,48 @@ const SchedulerToolPage: React.FC = () => {
     setShowActionMenu(false);
   }, [selectedRowId]);
 
+  useEffect(() => {
+    if (!selectedRowId) {
+      setLeadActionPanel(null);
+      setLeadActionPanelLoading(false);
+      return;
+    }
+
+    const lead = filteredLeads.find((l) => l.id === selectedRowId);
+    if (!lead) {
+      setLeadActionPanel(null);
+      setLeadActionPanelLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setLeadActionPanelLoading(true);
+    fetchLeadActionPanelData({
+      id: lead.id,
+      lead_type: lead.lead_type,
+      lead_number: lead.lead_number,
+    })
+      .then((data) => {
+        if (!cancelled) {
+          setLeadActionPanel(data);
+          setLeadActionPanelLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLeadActionPanel({
+            counts: { calls: 0, emails: 0, whatsapp: 0, documents: 0 },
+            recent: { calls: [], emails: [], whatsapp: [] },
+          });
+          setLeadActionPanelLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRowId, filteredLeads]);
+
   // Don't block the UI with a loading screen - show content immediately if we have persisted state
   // Only show loading spinner if we have no data at all
   if (loading && leads.length === 0 && filteredLeads.length === 0) {
@@ -3782,160 +3830,165 @@ const SchedulerToolPage: React.FC = () => {
         </>
       )}
 
-      {/* Floating Action Buttons - Fixed position on right side */}
+      {/* Row action menu — centered (matches Calendar page) */}
       {selectedRowId && (() => {
-        const selectedLead = filteredLeads.find(l => l.id === selectedRowId);
+        const selectedLead = filteredLeads.find((l) => l.id === selectedRowId);
         if (!selectedLead) return null;
-        
+
+        const closeActionMenu = () => {
+          setShowActionMenu(false);
+          setSelectedRowId(null);
+        };
+
         return (
           <>
-            {/* Overlay to close buttons */}
             <div
               className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm"
-              onClick={() => {
-                setShowActionMenu(false);
-                setSelectedRowId(null);
-              }}
+              onClick={closeActionMenu}
             />
-            
-            {/* Floating Action Buttons - Centered vertically on right side */}
-            <div className="fixed right-6 top-1/2 -translate-y-1/2 z-50 flex flex-col items-end gap-3">
-              {/* Call Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Call</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleCall(selectedLead);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Call"
-                >
-                  <PhoneIcon className="w-6 h-6" />
-                </button>
-              </div>
-              
-              {/* Email Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Email</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleEmail(selectedLead);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Email"
-                >
-                  <EnvelopeIcon className="w-6 h-6" />
-                </button>
-              </div>
-              
-              {/* WhatsApp Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">WhatsApp</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleWhatsApp(selectedLead);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="WhatsApp"
-                >
-                  <FaWhatsapp className="w-6 h-6" />
-                </button>
-              </div>
-              
-              {/* Timeline Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Timeline</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleTimeline(selectedLead);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Timeline"
-                >
-                  <ClockIcon className="w-6 h-6" />
-                </button>
-              </div>
-              
-              {/* Edit Lead Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Edit Lead</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedLead(selectedLead);
-                    openEditLeadDrawer();
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Edit Lead"
-                >
-                  <PencilSquareIcon className="w-6 h-6" />
-                </button>
-              </div>
-              
-              {/* View Client Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">View Client</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleViewClient(selectedLead, e);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="View Client"
-                >
-                  <EyeIcon className="w-6 h-6" />
-                </button>
-              </div>
-              
-              {/* Documents Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Documents</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedLead(selectedLead);
-                    setIsDocumentModalOpen(true);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                  }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Documents"
-                >
-                  <FolderIcon className="w-6 h-6" />
-                </button>
-              </div>
 
-              {/* Highlight Button */}
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Highlight</span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleHighlight(selectedLead);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div
+                className="pointer-events-auto w-full max-w-5xl max-h-[min(92vh,900px)] overflow-y-auto rounded-2xl bg-white shadow-2xl border border-gray-200 px-4 py-6 sm:px-8 sm:py-8"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex flex-wrap items-center justify-center gap-3 sm:gap-4 mb-5 sm:mb-6">
+                  <p className="text-center text-sm font-medium text-gray-500 m-0">
+                    <span className="text-base font-semibold text-gray-900">{selectedLead.name || 'Client'}</span>
+                    {selectedLead.lead_number ? (
+                      <>
+                        {' · '}
+                        <span className="font-semibold text-gray-700">{selectedLead.lead_number}</span>
+                      </>
+                    ) : null}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleViewClient(selectedLead, e);
+                      closeActionMenu();
+                    }}
+                    className="btn btn-primary shrink-0 inline-flex h-12 min-w-[8.5rem] sm:h-14 sm:min-w-[10rem] items-center justify-center gap-1.5 rounded-xl text-xs sm:text-sm font-semibold leading-snug px-4 sm:px-5 shadow-md hover:scale-[1.02] transition-all duration-200 border-0"
+                    title="Enter lead page"
+                  >
+                    <span>Enter lead page</span>
+                    <ChevronRightIcon className="w-4 h-4 sm:w-5 sm:h-5 shrink-0" aria-hidden />
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-start justify-center gap-3 sm:gap-5 md:gap-6">
+                  {[
+                    {
+                      label: 'Call',
+                      title: 'Call',
+                      countKey: 'calls' as const,
+                      icon: <PhoneIcon className="w-8 h-8" />,
+                      buttonClass: 'bg-gray-900 text-white border-gray-900 hover:bg-gray-800',
+                      onClick: () => handleCall(selectedLead),
+                    },
+                    {
+                      label: 'Email',
+                      title: 'Email',
+                      countKey: 'emails' as const,
+                      icon: <EnvelopeIcon className="w-8 h-8" />,
+                      buttonClass: 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700',
+                      onClick: () => handleEmail(selectedLead),
+                    },
+                    {
+                      label: 'WhatsApp',
+                      title: 'WhatsApp',
+                      countKey: 'whatsapp' as const,
+                      icon: <FaWhatsapp className="w-8 h-8" />,
+                      buttonClass: 'bg-[#25D366] text-white border-[#25D366] hover:bg-[#1ebe5d]',
+                      onClick: () => handleWhatsApp(selectedLead),
+                    },
+                    {
+                      label: 'Edit Lead',
+                      title: 'Edit Lead',
+                      icon: <PencilSquareIcon className="w-8 h-8" />,
+                      buttonClass: 'bg-amber-500 text-white border-amber-500 hover:bg-amber-600',
+                      onClick: () => {
+                        setSelectedLead(selectedLead);
+                        openEditLeadDrawer();
+                      },
+                    },
+                    {
+                      label: 'Documents',
+                      title: 'Documents',
+                      countKey: 'documents' as const,
+                      icon: <FolderIcon className="w-8 h-8" />,
+                      buttonClass: 'bg-rose-600 text-white border-rose-600 hover:bg-rose-700',
+                      onClick: () => {
+                        setSelectedLead(selectedLead);
+                        setIsDocumentModalOpen(true);
+                      },
+                    },
+                    {
+                      label: 'Highlight',
+                      title: 'Highlight',
+                      icon: <StarIcon className="w-8 h-8" />,
+                      buttonClass: 'bg-yellow-500 text-white border-yellow-500 hover:bg-yellow-600',
+                      onClick: () => handleHighlight(selectedLead),
+                    },
+                  ].map((action) => {
+                    const count =
+                      action.countKey && leadActionPanel && !leadActionPanelLoading
+                        ? leadActionPanel.counts[action.countKey]
+                        : null;
+                    const badgeText =
+                      count != null ? (count > 99 ? '99+' : String(count)) : null;
+
+                    return (
+                      <button
+                        key={action.label}
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          action.onClick();
+                          closeActionMenu();
+                        }}
+                        className="flex flex-col items-center gap-2 sm:gap-3 min-w-[4.5rem] sm:min-w-[5.5rem] group"
+                        title={
+                          badgeText != null ? `${action.title} (${badgeText})` : action.title
+                        }
+                      >
+                        <span className="relative inline-flex">
+                          <span
+                            className={`btn btn-circle h-16 w-16 sm:h-20 sm:w-20 border shadow-lg group-hover:scale-105 transition-transform duration-200 ${action.buttonClass}`}
+                          >
+                            {action.icon}
+                          </span>
+                          {badgeText != null && (
+                            <span className="absolute -top-1 -right-1 min-w-[1.35rem] h-[1.35rem] px-1 flex items-center justify-center rounded-full bg-white text-gray-900 text-[11px] sm:text-xs font-bold shadow-md ring-2 ring-white">
+                              {badgeText}
+                            </span>
+                          )}
+                          {action.countKey && leadActionPanelLoading && (
+                            <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-white/90 ring-2 ring-white">
+                              <span className="loading loading-spinner loading-xs text-gray-600" />
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-xs sm:text-sm font-semibold text-gray-700 text-center leading-tight max-w-[5.5rem]">
+                          {action.label}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <CalendarLeadRecentInteractions
+                  recent={leadActionPanel?.recent ?? null}
+                  loading={leadActionPanelLoading}
+                  onOpenTimeline={() => {
+                    handleTimeline(selectedLead);
+                    closeActionMenu();
                   }}
-                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                  title="Highlight"
-                >
-                  <StarIcon className="w-6 h-6 text-white" style={{ color: '#ffffff' }} />
-                </button>
+                />
               </div>
             </div>
           </>

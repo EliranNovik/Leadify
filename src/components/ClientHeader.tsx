@@ -48,6 +48,13 @@ import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
 import CallOptionsModal from './CallOptionsModal';
 import LeadTagsModal from './LeadTagsModal';
 import { fetchLeadContacts } from '../lib/contactHelpers';
+import {
+    fetchActiveLeadSourceOptions,
+    getSourceDisplayFromJoin,
+    leadSourceIdForDb,
+    lookupSourceNameById,
+    normalizeLeadSourceId,
+} from '../lib/leadSourceId';
 import type { ContactInfo } from '../lib/contactHelpers';
 import type { WhatsAppPageSelectedContact } from '../pages/WhatsAppPage';
 import { FaWhatsapp } from 'react-icons/fa';
@@ -73,8 +80,8 @@ import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
 import ClientHeaderTotalInNis from './ClientHeaderTotalInNis';
 
 // Lightweight in-memory caches to avoid refetching static dropdown data on mobile.
-let cachedLeadSources: Array<{ id: number | string; name: string }> | null = null;
-let cachedLeadSourcesPromise: Promise<Array<{ id: number | string; name: string }>> | null = null;
+let cachedLeadSources: Array<{ id: string; name: string }> | null = null;
+let cachedLeadSourcesPromise: Promise<Array<{ id: string; name: string }>> | null = null;
 
 let cachedCurrencies: Array<{ id: number | string; name: string; iso_code: string | null }> | null = null;
 let cachedCurrenciesPromise: Promise<
@@ -1264,7 +1271,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [showTopicModal, setShowTopicModal] = useState(false);
     const [topicInputValue, setTopicInputValue] = useState('');
     const [savingTopic, setSavingTopic] = useState(false);
-    const [allSources, setAllSources] = useState<Array<{ id: number | string, name: string }>>([]);
+    const [allSources, setAllSources] = useState<Array<{ id: string; name: string }>>([]);
+    /** New leads: source_id + name from DB (not leads.source text) */
+    const [resolvedNewLeadSource, setResolvedNewLeadSource] = useState<{
+        sourceId: string | null;
+        name: string | null;
+    } | null>(null);
     const [allCurrencies, setAllCurrencies] = useState<Array<{ id: number | string, name: string, iso_code: string | null }>>([]);
     const [showStageDropdown, setShowStageDropdown] = useState(false);
     const [isCallModalOpen, setIsCallModalOpen] = useState(false);
@@ -1284,9 +1296,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         if (!clientId) {
             setLegacyContactInfo({ email: null, phone: null });
             setCategoryInputValue('');
+            setResolvedNewLeadSource(null);
             legacyContactFetchRef.current = null;
             return;
         }
+        setResolvedNewLeadSource(null);
         setLegacyContactInfo({ email: null, phone: null });
         setCategoryInputValue('');
         setShowCategoryDropdown(false);
@@ -1316,15 +1330,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     return;
                 }
                 if (!cachedLeadSourcesPromise) {
-                    cachedLeadSourcesPromise = (async () => {
-                        const { data, error } = await supabase
-                            .from('misc_leadsource')
-                            .select('id, name')
-                            .eq('active', true)
-                            .order('order', { ascending: true, nullsFirst: false });
-                        if (error) throw error;
-                        return data || [];
-                    })();
+                    cachedLeadSourcesPromise = fetchActiveLeadSourceOptions().then((opts) =>
+                        opts.map((o) => ({ id: o.id, name: o.name })),
+                    );
                 }
                 const rows = await cachedLeadSourcesPromise;
                 cachedLeadSources = rows;
@@ -1336,6 +1344,94 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
         fetchSources();
     }, []);
+
+    // New leads: resolve display from source_id (+ misc_leadsource join), not leads.source text
+    useEffect(() => {
+        const clientId = selectedClient?.id?.toString() ?? null;
+        if (!clientId) {
+            setResolvedNewLeadSource(null);
+            return;
+        }
+
+        const isLegacyLead =
+            selectedClient?.lead_type === 'legacy' || clientId.startsWith('legacy_');
+
+        const joinName = getSourceDisplayFromJoin(selectedClient);
+        const propSourceId = normalizeLeadSourceId(selectedClient?.source_id);
+
+        if (isLegacyLead) {
+            const name =
+                joinName ??
+                (propSourceId ? lookupSourceNameById(propSourceId, allSources) : null);
+            setResolvedNewLeadSource(
+                propSourceId || name
+                    ? { sourceId: propSourceId, name: name ?? null }
+                    : null,
+            );
+            return;
+        }
+
+        let cancelled = false;
+
+        const applyResolved = (sourceId: string | null, name: string | null) => {
+            if (cancelled) return;
+            setResolvedNewLeadSource(
+                sourceId || name ? { sourceId, name } : null,
+            );
+        };
+
+        if (joinName && propSourceId) {
+            applyResolved(propSourceId, joinName);
+            return;
+        }
+
+        if (propSourceId && !joinName) {
+            const cachedName = lookupSourceNameById(propSourceId, allSources);
+            if (cachedName) {
+                applyResolved(propSourceId, cachedName);
+                return;
+            }
+        }
+
+        (async () => {
+            try {
+                const { data, error } = await supabase
+                    .from('leads')
+                    .select('source_id, misc_leadsource!fk_leads_source_id ( id, name )')
+                    .eq('id', selectedClient.id)
+                    .maybeSingle();
+
+                if (cancelled) return;
+                if (error) throw error;
+
+                const sourceId = normalizeLeadSourceId(data?.source_id);
+                const name =
+                    getSourceDisplayFromJoin(data) ??
+                    (sourceId ? lookupSourceNameById(sourceId, allSources) : null);
+                applyResolved(sourceId, name);
+            } catch (error) {
+                console.error('Error fetching lead source_id:', error);
+                if (!cancelled) {
+                    const fallbackName =
+                        joinName ??
+                        (propSourceId
+                            ? lookupSourceNameById(propSourceId, allSources)
+                            : null);
+                    applyResolved(propSourceId, fallbackName);
+                }
+            }
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [
+        selectedClient?.id,
+        selectedClient?.lead_type,
+        selectedClient?.source_id,
+        selectedClient?.misc_leadsource,
+        allSources,
+    ]);
 
     // Fetch currencies from accounting_currencies table
     useEffect(() => {
@@ -1717,32 +1813,40 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     // --- Render Helpers ---
 
-    // Helper function to get source display name from misc_leadsource
-    const getSourceDisplayName = (sourceId: string | number | null | undefined, fallbackSource?: string) => {
-        if (!sourceId || sourceId === '---' || sourceId === '' || sourceId === null || sourceId === undefined) {
-            return fallbackSource || '';
-        }
-
-        // Convert sourceId to string/number for comparison (handle bigint)
-        const sourceIdStr = String(sourceId).trim();
-        if (sourceIdStr === '' || sourceIdStr === 'null' || sourceIdStr === 'undefined') {
-            return fallbackSource || '';
-        }
-
-        // Find source in loaded sources - compare as numbers or strings
-        const source = allSources.find((src: any) => {
-            const srcId = String(src.id).trim();
-            const searchId = sourceIdStr;
-            return srcId === searchId || Number(srcId) === Number(searchId);
-        });
-
-        if (source) {
-            return source.name;
-        }
-
-        // Fallback to the source name if source_id not found
-        return fallbackSource || '';
+    // Helper: misc_leadsource name via source_id (bigint-safe string compare)
+    const getSourceDisplayName = (sourceId: string | number | null | undefined) => {
+        const sourceIdStr = normalizeLeadSourceId(sourceId);
+        if (!sourceIdStr) return '';
+        return lookupSourceNameById(sourceIdStr, allSources) || '';
     };
+
+    const isLegacyLeadClient =
+        selectedClient?.lead_type === 'legacy' ||
+        String(selectedClient?.id ?? '').startsWith('legacy_');
+
+    const displaySourceChip = (() => {
+        if (!selectedClient) return '---';
+        if (!isLegacyLeadClient) {
+            const name = resolvedNewLeadSource?.name?.trim();
+            if (name) return name;
+            const id =
+                resolvedNewLeadSource?.sourceId ??
+                normalizeLeadSourceId(selectedClient.source_id);
+            if (id) {
+                const fromId = getSourceDisplayName(id);
+                if (fromId) return fromId;
+            }
+            return '---';
+        }
+        const joinName = getSourceDisplayFromJoin(selectedClient);
+        if (joinName) return joinName;
+        const sourceId = normalizeLeadSourceId(selectedClient.source_id);
+        if (sourceId) {
+            const fromId = getSourceDisplayName(sourceId);
+            if (fromId) return fromId;
+        }
+        return '---';
+    })();
 
     // Helper function to get currency name from accounting_currencies table
     // Always uses accounting_currencies.name column, never hardcoded values
@@ -2421,7 +2525,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 <span className={META_CHIP_TOP}>
                                     <LinkIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
                                     <span className="min-w-0 max-w-[14rem] truncate">
-                                        {getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---'}
+                                        {displaySourceChip}
                                     </span>
                                 </span>
                                 {applicantsCount != null && Number(applicantsCount) > 0 && (
@@ -2781,7 +2885,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 <span className={META_CHIP_TOP}>
                                     <LinkIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
                                     <span className="min-w-0 max-w-[12rem] truncate lg:max-w-[16rem]">
-                                        {getSourceDisplayName(selectedClient.source_id, selectedClient.source) || '---'}
+                                        {displaySourceChip}
                                     </span>
                                 </span>
                                 {applicantsCount != null && Number(applicantsCount) > 0 && (

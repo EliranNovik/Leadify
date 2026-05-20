@@ -5,6 +5,17 @@ import { XMarkIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import ProbabilityFactorsSliders, { type ProbabilityFactors } from './ProbabilityFactorsSliders';
 import { caseProbabilityFromFactors, clampProbabilityPart, splitProbabilityEvenly } from './client-tabs/ProbabilitySlidersModal';
+import {
+  applyLeadSourceIdUpdate,
+  fetchActiveLeadSourceOptions,
+  getSourceDisplayFromJoin,
+  leadSourceIdForDb,
+  lookupSourceNameById,
+  normalizeLeadSourceId,
+  resolveSourceFromInputValue,
+  resolveSourceIdForEditSave,
+  type LeadSourceOption,
+} from '../lib/leadSourceId';
 
 interface EditLeadDrawerProps {
   isOpen: boolean;
@@ -38,7 +49,10 @@ interface EditLeadDrawerProps {
 const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, onSave }) => {
   const [editLeadData, setEditLeadData] = useState({
     tags: '',
+    /** Display name for source datalist */
     source: '',
+    /** misc_leadsource.id — authoritative for new leads */
+    source_id: null as string | null,
     name: '',
     language: '',
     category: '',
@@ -56,7 +70,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
   });
   const [currentLeadTags, setCurrentLeadTags] = useState<string>('');
   const [mainCategories, setMainCategories] = useState<string[]>([]);
-  const [sources, setSources] = useState<string[]>([]);
+  const [sourceOptions, setSourceOptions] = useState<LeadSourceOption[]>([]);
   const [languagesList, setLanguagesList] = useState<string[]>([]);
   const [tagsList, setTagsList] = useState<string[]>([]);
   const [currencies, setCurrencies] = useState<Array<{id: string, front_name: string, iso_code: string, name: string}>>([]);
@@ -93,17 +107,8 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
           setCurrencies(fallbackCurrencies);
         }
 
-        // Fetch sources for dropdown
-        const { data: sourcesData, error: sourcesError } = await supabase
-          .from('misc_leadsource')
-          .select('name')
-          .order('name', { ascending: true });
-        
-        if (sourcesError) {
-          console.error('Error fetching sources:', sourcesError);
-        } else if (sourcesData) {
-          setSources(sourcesData.map(s => s.name));
-        }
+        const sources = await fetchActiveLeadSourceOptions();
+        setSourceOptions(sources);
 
         // Fetch languages for dropdown
         const { data: languagesData, error: languagesError } = await supabase
@@ -207,13 +212,16 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
         let sourceName = '';
         let languageName = '';
         
-        if (leadDetails?.source_id) {
-          const { data: sourceData } = await supabase
-            .from('misc_leadsource')
-            .select('name')
-            .eq('id', leadDetails.source_id)
-            .single();
-          sourceName = sourceData?.name || '';
+        const legacySourceId = leadSourceIdForDb(leadDetails?.source_id);
+        if (legacySourceId) {
+          sourceName =
+            lookupSourceNameById(legacySourceId, sourceOptions) ??
+            (await supabase
+              .from('misc_leadsource')
+              .select('name')
+              .eq('id', legacySourceId)
+              .maybeSingle()).data?.name ??
+            '';
         }
         
         if (leadDetails?.language_id) {
@@ -230,7 +238,23 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
       } else {
         const { data, error } = await supabase
           .from('leads')
-          .select('name, topic, probability, legal_potential, seriousness, financial_ability, number_of_applicants_meeting, potential_applicants_meeting, balance, balance_currency, eligible, source, language, category_id')
+          .select(`
+            name,
+            topic,
+            probability,
+            legal_potential,
+            seriousness,
+            financial_ability,
+            number_of_applicants_meeting,
+            potential_applicants_meeting,
+            balance,
+            balance_currency,
+            eligible,
+            source_id,
+            language,
+            category_id,
+            misc_leadsource!fk_leads_source_id ( id, name )
+          `)
           .eq('id', leadId)
           .single();
         
@@ -241,6 +265,14 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
         }
         
         leadDetails = data;
+        const sourceId = normalizeLeadSourceId(leadDetails?.source_id);
+        const sourceName =
+          getSourceDisplayFromJoin(leadDetails) ??
+          (sourceId
+            ? sourceOptions.find((s) => s.id === sourceId)?.name ?? ''
+            : '');
+        leadDetails.source_id = sourceId;
+        leadDetails.source = sourceName;
       }
       
       // Get category name
@@ -314,6 +346,9 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
       setEditLeadData({
         tags: '',
         source: leadDetails?.source || lead.source || '',
+        source_id: isLegacyLead
+          ? null
+          : normalizeLeadSourceId(leadDetails?.source_id),
         name: leadDetails?.name || lead.name || '',
         language: leadDetails?.language || lead.language || '',
         category: categoryName,
@@ -539,6 +574,15 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
     setEditLeadData(prev => ({ ...prev, [field]: value }));
   };
 
+  const handleSourceInputChange = (value: string) => {
+    const resolved = resolveSourceFromInputValue(value, sourceOptions);
+    setEditLeadData((prev) => ({
+      ...prev,
+      source: resolved.source,
+      source_id: resolved.source_id,
+    }));
+  };
+
   const handleSaveEditLead = async () => {
     if (!lead) return;
     
@@ -573,17 +617,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
           .eq('id', legacyId)
           .single();
         
-        // Fetch current source and language names for comparison
-        let currentSourceName = '';
         let currentLanguageName = '';
-        if (currentData?.source_id) {
-          const { data: sourceData } = await supabase
-            .from('misc_leadsource')
-            .select('name')
-            .eq('id', currentData.source_id)
-            .single();
-          currentSourceName = sourceData?.name || '';
-        }
         if (currentData?.language_id) {
           const { data: languageData } = await supabase
             .from('misc_language')
@@ -652,20 +686,23 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
           if (editLeadData.eligible !== currentEligibleValue) {
             updateData.eligibile = editLeadData.eligible ? 'yes' : 'no';
           }
-          // Handle source - convert name to ID for legacy leads
-          if (editLeadData.source !== currentSourceName) {
-            if (editLeadData.source && editLeadData.source.trim()) {
-              const { data: sourceData } = await supabase
-                .from('misc_leadsource')
-                .select('id')
-                .eq('name', editLeadData.source)
-                .single();
-              if (sourceData) {
-                updateData.source_id = sourceData.id;
-              }
-            } else {
-              updateData.source_id = null;
-            }
+          const resolvedLegacySource = await resolveSourceIdForEditSave({
+            sourceDisplay: editLeadData.source,
+            sourceIdInForm: editLeadData.source_id,
+            options: sourceOptions,
+          });
+          const currentLegacySourceId = normalizeLeadSourceId(currentData?.source_id);
+          const nextLegacySourceId = resolvedLegacySource?.id ?? null;
+          if (editLeadData.source?.trim() && !nextLegacySourceId) {
+            toast.error('Please select a source from the list (only active sources can be used).');
+            return;
+          }
+          if (nextLegacySourceId !== currentLegacySourceId) {
+            applyLeadSourceIdUpdate(
+              updateData,
+              nextLegacySourceId,
+              resolvedLegacySource?.name ?? editLeadData.source,
+            );
           }
           // Handle language - convert name to ID for legacy leads
           if (editLeadData.language !== currentLanguageName) {
@@ -690,13 +727,28 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
         // Fetch current lead data to compare
         const { data: currentData } = await supabase
           .from('leads')
-          .select('name, topic, probability, legal_potential, seriousness, financial_ability, number_of_applicants_meeting, potential_applicants_meeting, balance, next_followup, balance_currency, eligible, source, language, category_id')
+          .select('name, topic, probability, legal_potential, seriousness, financial_ability, number_of_applicants_meeting, potential_applicants_meeting, balance, next_followup, balance_currency, eligible, source_id, language, category_id')
           .eq('id', leadId)
           .single();
         
         if (currentData) {
-          if (editLeadData.source !== currentData.source) {
-            updateData.source = editLeadData.source;
+          const resolvedNewSource = await resolveSourceIdForEditSave({
+            sourceDisplay: editLeadData.source,
+            sourceIdInForm: editLeadData.source_id,
+            options: sourceOptions,
+          });
+          const currentSourceId = normalizeLeadSourceId(currentData.source_id);
+          const nextSourceId = resolvedNewSource?.id ?? null;
+          if (editLeadData.source?.trim() && !nextSourceId) {
+            toast.error('Please select a source from the list (only active sources can be used).');
+            return;
+          }
+          if (nextSourceId !== currentSourceId) {
+            applyLeadSourceIdUpdate(
+              updateData,
+              nextSourceId,
+              resolvedNewSource?.name ?? editLeadData.source,
+            );
           }
           if (editLeadData.name !== currentData.name) {
             updateData.name = editLeadData.name;
@@ -903,7 +955,10 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
         
       if (updateError) {
         console.error('Error updating lead:', updateError);
-        toast.error('Failed to update lead.');
+        const msg =
+          (updateError as { message?: string }).message ||
+          'Failed to update lead.';
+        toast.error(msg);
         return;
       }
       
@@ -985,12 +1040,12 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
               className="input input-bordered w-full"
               placeholder="Search or select a source..."
               value={editLeadData.source}
-              onChange={e => handleEditLeadChange('source', e.target.value)}
+              onChange={e => handleSourceInputChange(e.target.value)}
               list="source-options"
             />
             <datalist id="source-options">
-              {sources.map((name, index) => (
-                <option key={`${name}-${index}`} value={name} />
+              {sourceOptions.map((source, index) => (
+                <option key={`${source.id}-${index}`} value={source.name} />
               ))}
             </datalist>
           </div>

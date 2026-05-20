@@ -1,5 +1,6 @@
 -- Drop existing function if it exists
 DROP FUNCTION IF EXISTS create_lead_with_source_validation(text, text, text, text, text, text, text, integer, text, text, bigint, bigint, text);
+DROP FUNCTION IF EXISTS create_lead_with_source_validation(text, text, text, text, text, text, text, bigint, text, text, bigint, bigint, text);
 
 -- Create function to create a new lead with source validation and default values
 CREATE OR REPLACE FUNCTION create_lead_with_source_validation(
@@ -10,7 +11,7 @@ CREATE OR REPLACE FUNCTION create_lead_with_source_validation(
   p_lead_language text DEFAULT 'EN',
   p_lead_source text DEFAULT 'Webhook',
   p_created_by text DEFAULT NULL,
-  p_source_code integer DEFAULT NULL,
+  p_source_code bigint DEFAULT NULL,
   p_balance_currency text DEFAULT 'NIS',
   p_proposal_currency text DEFAULT 'NIS',
   p_language_id bigint DEFAULT NULL,
@@ -65,7 +66,7 @@ BEGIN
     SELECT mls.id, mls.name, mls.active, mls.default_topic, mls.default_category_id
     INTO v_source_record
     FROM misc_leadsource mls
-    WHERE mls.code = p_source_code;
+    WHERE mls.code = p_source_code OR mls.id = p_source_code;
     
     -- Check if source exists
     IF NOT FOUND THEN

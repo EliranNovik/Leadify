@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import {
+  fetchActiveLeadSourceOptions,
+  type LeadSourceOption,
+} from '../lib/leadSourceId';
 import { useMsal } from '@azure/msal-react';
 
 interface NewLeadResult {
@@ -8,6 +12,16 @@ interface NewLeadResult {
   lead_number: string;
   name: string;
   email: string;
+}
+
+function sourceMatchesSearch(source: LeadSourceOption, searchTerm: string): boolean {
+  const term = searchTerm.trim().toLowerCase();
+  if (!term) return true;
+  return (
+    source.name.toLowerCase().includes(term) ||
+    source.code.toLowerCase().includes(term) ||
+    source.id.toLowerCase().includes(term)
+  );
 }
 
 const CreateNewLead: React.FC = () => {
@@ -18,8 +32,8 @@ const CreateNewLead: React.FC = () => {
     name: '',
     email: '',
     phone: '',
-    /** misc_leadsource.code — required; persisted as leads.source_id via create_lead_with_source_validation */
-    source_code: null as number | null,
+    /** misc_leadsource.code (or id when code is null) — string to preserve bigint values */
+    source_code: null as string | null,
     language: '',
     /** Selected misc_category.id — saved to leads.category_id */
     category_id: null as number | null,
@@ -31,7 +45,7 @@ const CreateNewLead: React.FC = () => {
     proposal_currency: 'NIS',
   });
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
-  const [sourceOptions, setSourceOptions] = useState<Array<{ id: number; name: string; code: number }>>([]);
+  const [sourceOptions, setSourceOptions] = useState<LeadSourceOption[]>([]);
   const [languageOptions, setLanguageOptions] = useState<Array<{ id: number; name: string | null }>>([]);
   const [categoryOptions, setCategoryOptions] = useState<Array<{ id: number; name: string; displayName: string }>>([]);
   const [countryOptions, setCountryOptions] = useState<Array<{ id: number; name: string; phone_code: string; iso_code: string }>>([]);
@@ -69,17 +83,13 @@ const CreateNewLead: React.FC = () => {
     const fetchSourcesAndLanguages = async () => {
       try {
         const [
-          { data: sourcesData, error: sourcesError },
+          sourceOptionsList,
           { data: languagesData, error: languagesError },
           { data: categoriesData, error: categoriesError },
           { data: countriesData, error: countriesError },
           { data: allCountriesData, error: allCountriesError }
         ] = await Promise.all([
-          supabase
-            .from('misc_leadsource')
-            .select('id, name, code')
-            .eq('active', true)
-            .order('order', { ascending: true }),
+          fetchActiveLeadSourceOptions(),
           supabase
             .from('misc_language')
             .select('id, name')
@@ -109,21 +119,8 @@ const CreateNewLead: React.FC = () => {
             .order('name', { ascending: true }),
         ]);
 
-        if (!sourcesError && sourcesData) {
-          setSourceOptions(
-            sourcesData
-              .filter(
-                (source) =>
-                  source?.name &&
-                  source.code != null &&
-                  Number.isFinite(Number(source.code))
-              )
-              .map((source) => ({
-                id: source.id,
-                name: source.name as string,
-                code: Number(source.code),
-              }))
-          );
+        if (sourceOptionsList.length > 0) {
+          setSourceOptions(sourceOptionsList);
         }
 
         if (!languagesError && languagesData) {
@@ -246,15 +243,23 @@ const CreateNewLead: React.FC = () => {
     }
   }, [selectedCountryCode, showCountryCodeDropdown]);
 
-  // Auto-select source if search term exactly matches an option
+  // Auto-select source if search term exactly matches name, code, or id
   useEffect(() => {
+    const term = sourceSearchTerm.trim();
+    if (!term) return;
+    const termLower = term.toLowerCase();
     const exactMatch = sourceOptions.find(
-      (source) => source.name.toLowerCase() === sourceSearchTerm.toLowerCase()
+      (source) =>
+        source.name.toLowerCase() === termLower ||
+        source.code === term ||
+        source.id === term,
     );
     if (exactMatch) {
       setForm((prev) => ({ ...prev, source_code: exactMatch.code }));
-    } else if (sourceSearchTerm && !exactMatch) {
-      setForm((prev) => ({ ...prev, source_code: null }));
+      // When user typed code/id, show the source name so selection is not cleared on blur/change
+      if (exactMatch.name.toLowerCase() !== termLower) {
+        setSourceSearchTerm(exactMatch.name);
+      }
     }
   }, [sourceSearchTerm, sourceOptions]);
 
@@ -327,9 +332,9 @@ const CreateNewLead: React.FC = () => {
     }
   }, [showSourceDropdown, showCategoryDropdown, showCountryDropdown, showCountryCodeDropdown, selectedCountryCode]);
 
-  // Filter source options based on search term
-  const filteredSourceOptions = sourceOptions.filter(source =>
-    source.name.toLowerCase().includes(sourceSearchTerm.toLowerCase())
+  // Filter source options by name, code, or id (all as strings)
+  const filteredSourceOptions = sourceOptions.filter((source) =>
+    sourceMatchesSearch(source, sourceSearchTerm),
   );
 
   // Filter category options based on search term
@@ -408,7 +413,7 @@ const CreateNewLead: React.FC = () => {
     setForm({ ...form, [e.target.name]: e.target.value });
   };
 
-  const handleSourceSelect = (source: { id: number; name: string; code: number }) => {
+  const handleSourceSelect = (source: LeadSourceOption) => {
     setForm((prev) => ({ ...prev, source_code: source.code }));
     setSourceSearchTerm(source.name);
     setShowSourceDropdown(false);
@@ -488,7 +493,16 @@ const CreateNewLead: React.FC = () => {
         fullPhoneNumber = form.phone.trim();
       }
 
-      if (form.source_code == null || !Number.isFinite(form.source_code)) {
+      const sourceCode =
+        form.source_code?.trim() ||
+        sourceOptions.find(
+          (s) =>
+            s.name.toLowerCase() === sourceSearchTerm.trim().toLowerCase() ||
+            s.code === sourceSearchTerm.trim() ||
+            s.id === sourceSearchTerm.trim(),
+        )?.code ||
+        '';
+      if (!sourceCode) {
         alert('Please select a source from the list (only active sources with a code can be used).');
         setIsLoading(false);
         return;
@@ -516,7 +530,7 @@ const CreateNewLead: React.FC = () => {
           p_lead_language: form.language || 'EN',
           p_lead_source: 'Manual',
           p_created_by: currentUserEmail,
-          p_source_code: form.source_code,
+          p_source_code: sourceCode,
           p_balance_currency: form.balance_currency,
           p_proposal_currency: form.proposal_currency,
           p_language_id: languageId,
@@ -748,14 +762,18 @@ const CreateNewLead: React.FC = () => {
                 setSourceSearchTerm(v);
                 setShowSourceDropdown(true);
                 setForm((prev) => {
-                  const selectedName =
-                    prev.source_code != null
-                      ? sourceOptions.find((o) => o.code === prev.source_code)?.name
-                      : undefined;
-                  if (v !== selectedName) {
-                    return { ...prev, source_code: null };
+                  if (prev.source_code == null) return prev;
+                  const selected = sourceOptions.find((o) => o.code === prev.source_code);
+                  if (!selected) return { ...prev, source_code: null };
+                  const vTrim = v.trim();
+                  if (
+                    v === selected.name ||
+                    vTrim === selected.code ||
+                    vTrim === selected.id
+                  ) {
+                    return prev;
                   }
-                  return prev;
+                  return { ...prev, source_code: null };
                 });
               }}
               onFocus={() => setShowSourceDropdown(true)}
