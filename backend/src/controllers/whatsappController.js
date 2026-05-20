@@ -1622,6 +1622,18 @@ const updateMessageStatus = async (status) => {
   }
 };
 
+/** Map DB language codes to Meta template language codes (e.g. en → en_US). */
+function toWhatsAppApiLanguageCode(lang) {
+  const code = (lang || 'en_US').trim();
+  if (!code) return 'en_US';
+  const lower = code.toLowerCase();
+  if (lower === 'en') return 'en_US';
+  if (lower.startsWith('en_')) return code;
+  if (lower === 'he') return 'he';
+  if (lower.startsWith('he_')) return code;
+  return code;
+}
+
 // Send WhatsApp message
 const sendMessage = async (req, res) => {
   try {
@@ -1763,7 +1775,9 @@ const sendMessage = async (req, res) => {
           
           if (!templateError && template) {
             finalTemplateName = template.name || templateName;
-            finalTemplateLanguage = template.language || templateLanguage || 'en_US';
+            finalTemplateLanguage = toWhatsAppApiLanguageCode(
+              template.language || templateLanguage || 'en_US',
+            );
             console.log(`✅ Found template by database ID ${templateId}: ${finalTemplateName} (${finalTemplateLanguage}), WhatsApp ID: ${template.whatsapp_template_id || template.number_id}`);
           } else {
             console.warn(`⚠️ Template with database ID ${templateId} not found, using provided templateName: ${templateName}`);
@@ -1784,8 +1798,8 @@ const sendMessage = async (req, res) => {
           template: {
             name: finalTemplateName || 'second_test',
             language: {
-              code: finalTemplateLanguage || 'en_US'
-            }
+              code: toWhatsAppApiLanguageCode(finalTemplateLanguage || 'en_US'),
+            },
           }
         };
         

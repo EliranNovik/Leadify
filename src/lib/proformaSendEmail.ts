@@ -20,6 +20,8 @@ export type ProformaSendEmailInput = {
   recordId: string | number;
   contactId?: string | number | null;
   contactEmail?: string | null;
+  /** Phone shown on the proforma (used for WhatsApp when contact DB lookup differs). */
+  contactPhone?: string | null;
   clientName: string;
   leadNumber: string;
   leadId?: string | number | null;

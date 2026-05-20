@@ -2,10 +2,11 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import html2pdf from 'html2pdf.js';
-import { EnvelopeIcon, PencilSquareIcon, PrinterIcon, ShareIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { PaperAirplaneIcon, PencilSquareIcon, PrinterIcon, ShareIcon, TrashIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { shareProformaPublicLink } from '../lib/proformaPublicLink';
 import { sendProformaInvoiceEmail } from '../lib/proformaSendEmail';
+import { sendProformaInvoiceWhatsApp } from '../lib/proformaSendWhatsApp';
 import { useMailboxReconnect } from '../contexts/MailboxReconnectContext';
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
 import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
@@ -353,17 +354,35 @@ const ProformaViewPage: React.FC = () => {
     if (!id || !proforma) return;
     setSending(true);
     try {
-      await sendProformaInvoiceEmail({
-        kind: 'new',
+      const sendInput = {
+        kind: 'new' as const,
         recordId: id,
         contactId: contactIdForEmail ?? proforma.contactId,
         contactEmail: proforma.email,
+        contactPhone: proforma.phone,
         clientName: proforma.client || 'Client',
         leadNumber: formatLeadNumber(),
         leadId: proforma.clientId,
         isLegacyLead: false,
-      });
-      toast.success('Invoice sent by email.');
+      };
+      await sendProformaInvoiceEmail(sendInput);
+      let whatsAppSent = false;
+      let whatsAppPhone = '';
+      try {
+        const wa = await sendProformaInvoiceWhatsApp(sendInput);
+        whatsAppSent = true;
+        whatsAppPhone = wa.phoneNumber;
+      } catch (whatsAppErr) {
+        console.warn('[ProformaViewPage] WhatsApp send:', whatsAppErr);
+        toast.error(
+          whatsAppErr instanceof Error ? whatsAppErr.message : 'WhatsApp invoice was not sent.',
+        );
+      }
+      toast.success(
+        whatsAppSent
+          ? `Invoice sent by email and WhatsApp (${whatsAppPhone}).`
+          : 'Invoice sent by email.',
+      );
     } catch (e: unknown) {
       const err = e as Error & { code?: string };
       if (err.code === 'MAILBOX_NOT_CONNECTED') {
@@ -413,9 +432,9 @@ const ProformaViewPage: React.FC = () => {
             className="btn btn-outline btn-sm gap-2"
             onClick={handleSend}
             disabled={sending}
-            title="Email invoice to contact via Outlook"
+            title="Send invoice to the linked contact by email (Outlook) and WhatsApp"
           >
-            {sending ? <span className="loading loading-spinner loading-xs" /> : <EnvelopeIcon className="w-5 h-5" />} Send
+            {sending ? <span className="loading loading-spinner loading-xs" /> : <PaperAirplaneIcon className="w-5 h-5" />} Send
           </button>
           <button className="btn btn-outline btn-sm gap-2" onClick={handleShare} disabled={sharing} title="Share link with client">
             {sharing ? <span className="loading loading-spinner loading-xs" /> : <ShareIcon className="w-5 h-5" />} Share

@@ -2,10 +2,11 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import html2pdf from 'html2pdf.js';
-import { EnvelopeIcon, PencilSquareIcon, PrinterIcon, ShareIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { PaperAirplaneIcon, PencilSquareIcon, PrinterIcon, ShareIcon, TrashIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { shareProformaPublicLink } from '../lib/proformaPublicLink';
 import { sendProformaInvoiceEmail } from '../lib/proformaSendEmail';
+import { sendProformaInvoiceWhatsApp } from '../lib/proformaSendWhatsApp';
 import { useMailboxReconnect } from '../contexts/MailboxReconnectContext';
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
 import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
@@ -31,6 +32,8 @@ import { getPublicProformaDisplayNotes } from '../lib/proformaNotes';
 import ProformaViewSideNotes from '../components/proforma/ProformaViewSideNotes';
 import ProformaBackToLeadButton from '../components/proforma/ProformaBackToLeadButton';
 import { buildClientFinancesTabPath } from '../lib/proformaClientNavigation';
+import { fetchLeadContacts } from '../lib/contactHelpers';
+import { pickWhatsAppPhoneFromContactFields } from '../lib/whatsappPhone';
 
 const ProformaLegacyViewPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -157,14 +160,17 @@ const ProformaLegacyViewPage: React.FC = () => {
           if (paymentPlanClientId) {
             const { data: contactData, error: contactError } = await supabase
               .from('leads_contact')
-              .select('name, email, phone')
+              .select('name, email, phone, mobile')
               .eq('id', paymentPlanClientId)
               .single();
 
             if (!contactError && contactData) {
               data.client_name = contactData.name || data.client_name || 'Client';
               data.client_email = contactData.email || data.client_email || '';
-              data.client_phone = contactData.phone || data.client_phone || '';
+              data.client_phone =
+                pickWhatsAppPhoneFromContactFields(contactData.phone, contactData.mobile) ||
+                data.client_phone ||
+                '';
             }
           } else {
             // Fallback: get main contact from lead_leadcontact
@@ -227,28 +233,34 @@ const ProformaLegacyViewPage: React.FC = () => {
               // Get the contact details from leads_contact table (including name)
               const { data: contactData, error: contactError } = await supabase
                 .from('leads_contact')
-                .select('name, email, phone')
+                .select('name, email, phone, mobile')
                 .eq('id', leadContacts[0].contact_id)
                 .single();
 
               if (!contactError && contactData) {
                 data.client_name = contactData.name || data.client_name || 'Client';
                 data.client_email = contactData.email || data.client_email || '';
-                data.client_phone = contactData.phone || data.client_phone || '';
+                data.client_phone =
+                  pickWhatsAppPhoneFromContactFields(contactData.phone, contactData.mobile) ||
+                  data.client_phone ||
+                  '';
               }
             } else {
               // Fallback: try to get any contact for this lead
               if (allContacts && allContacts.length > 0) {
                 const { data: contactData, error: contactError } = await supabase
                   .from('leads_contact')
-                  .select('name, email, phone')
+                  .select('name, email, phone, mobile')
                   .eq('id', allContacts[0].contact_id)
                   .single();
 
                 if (!contactError && contactData) {
                   data.client_name = contactData.name || data.client_name || 'Client';
                   data.client_email = contactData.email || data.client_email || '';
-                  data.client_phone = contactData.phone || data.client_phone || '';
+                  data.client_phone =
+                    pickWhatsAppPhoneFromContactFields(contactData.phone, contactData.mobile) ||
+                    data.client_phone ||
+                    '';
                 }
               }
             }
@@ -545,7 +557,13 @@ const ProformaLegacyViewPage: React.FC = () => {
         vat_value: paymentPlanVatValue,
       });
       setVatTotals(resolvedVat);
-      setContactIdForEmail(paymentPlanClientId);
+      let contactIdForSend: number | null = paymentPlanClientId;
+      if (!contactIdForSend && data?.lead_id) {
+        const contacts = await fetchLeadContacts(data.lead_id, true);
+        const main = contacts.find((c) => c.isMain) || contacts[0];
+        if (main?.id) contactIdForSend = main.id;
+      }
+      setContactIdForEmail(contactIdForSend);
       setProforma(enriched);
       setLoading(false);
     };
@@ -679,17 +697,35 @@ const ProformaLegacyViewPage: React.FC = () => {
     if (!id || !proforma) return;
     setSending(true);
     try {
-      await sendProformaInvoiceEmail({
-        kind: 'legacy',
+      const sendInput = {
+        kind: 'legacy' as const,
         recordId: id,
         contactId: contactIdForEmail,
         contactEmail: proforma.client_email,
+        contactPhone: proforma.client_phone,
         clientName: proforma.client_name || 'Client',
         leadNumber: formatLeadNumber(),
         leadId: proforma.lead_id,
         isLegacyLead: true,
-      });
-      toast.success('Invoice sent by email.');
+      };
+      await sendProformaInvoiceEmail(sendInput);
+      let whatsAppSent = false;
+      let whatsAppPhone = '';
+      try {
+        const wa = await sendProformaInvoiceWhatsApp(sendInput);
+        whatsAppSent = true;
+        whatsAppPhone = wa.phoneNumber;
+      } catch (whatsAppErr) {
+        console.warn('[ProformaLegacyViewPage] WhatsApp send:', whatsAppErr);
+        toast.error(
+          whatsAppErr instanceof Error ? whatsAppErr.message : 'WhatsApp invoice was not sent.',
+        );
+      }
+      toast.success(
+        whatsAppSent
+          ? `Invoice sent by email and WhatsApp (${whatsAppPhone}).`
+          : 'Invoice sent by email.',
+      );
     } catch (e: unknown) {
       const err = e as Error & { code?: string };
       if (err.code === 'MAILBOX_NOT_CONNECTED') {
@@ -742,9 +778,9 @@ const ProformaLegacyViewPage: React.FC = () => {
             className="btn btn-outline btn-sm gap-2"
             onClick={handleSend}
             disabled={sending}
-            title="Email invoice to contact via Outlook"
+            title="Send invoice to the linked contact by email (Outlook) and WhatsApp"
           >
-            {sending ? <span className="loading loading-spinner loading-xs" /> : <EnvelopeIcon className="w-5 h-5" />} Send
+            {sending ? <span className="loading loading-spinner loading-xs" /> : <PaperAirplaneIcon className="w-5 h-5" />} Send
           </button>
           <button className="btn btn-outline btn-sm gap-2" onClick={handleShare} disabled={sharing} title="Share link with client">
             {sharing ? <span className="loading loading-spinner loading-xs" /> : <ShareIcon className="w-5 h-5" />} Share

@@ -1,7 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { ChevronDownIcon, PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
 
-export type ParamType = 'name' | 'meeting_datetime' | 'meeting_date' | 'meeting_time' | 'phone_number' | 'mobile_number' | 'email' | 'meeting_location' | 'meeting_link' | 'custom';
+export type ParamType =
+  | 'name'
+  | 'meeting_datetime'
+  | 'meeting_date'
+  | 'meeting_time'
+  | 'phone_number'
+  | 'mobile_number'
+  | 'email'
+  | 'meeting_location'
+  | 'meeting_link'
+  | 'invoice_link'
+  | 'lead_number'
+  | 'custom';
 
 export interface ParameterDefinition {
   type: ParamType;
@@ -25,6 +37,16 @@ const PARAM_TYPE_OPTIONS: Array<{ value: ParamType; label: string; description: 
   { value: 'meeting_time', label: 'Meeting Time Only', description: 'Just the meeting time (e.g., "10:00 AM")' },
   { value: 'meeting_location', label: 'Meeting Location', description: 'The location of the meeting' },
   { value: 'meeting_link', label: 'Meeting Link', description: 'The Zoom/Teams meeting link (URL)' },
+  {
+    value: 'invoice_link',
+    label: 'Invoice Link',
+    description: 'Public proforma invoice URL (used when sending invoice via WhatsApp from proforma view)',
+  },
+  {
+    value: 'lead_number',
+    label: 'Lead / Case Number',
+    description: 'Formatted lead or case number for the proforma',
+  },
   { value: 'custom', label: 'Custom Text', description: 'Enter a custom static value' },
 ];
 

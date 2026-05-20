@@ -16,7 +16,21 @@
  */
 
 export interface TemplateParamDefinition {
-  type: 'name' | 'contact_name' | 'client_name' | 'meeting_datetime' | 'meeting_date' | 'meeting_time' | 'phone_number' | 'mobile_number' | 'email' | 'meeting_location' | 'meeting_link' | 'custom';
+  type:
+    | 'name'
+    | 'contact_name'
+    | 'client_name'
+    | 'meeting_datetime'
+    | 'meeting_date'
+    | 'meeting_time'
+    | 'phone_number'
+    | 'mobile_number'
+    | 'email'
+    | 'meeting_location'
+    | 'meeting_link'
+    | 'invoice_link'
+    | 'lead_number'
+    | 'custom';
   value?: string; // For custom params, specify the value
   // Note: 'contact_name' and 'client_name' are deprecated but supported for backward compatibility.
   // They both resolve to the same 'name' behavior - the frontend automatically determines which to use.
@@ -90,20 +104,41 @@ export async function getTemplateParamDefinitions(
 /**
  * Generate parameters based on template definitions
  */
+/** Optional proforma invoice context (Send on view proforma). */
+export type ProformaWhatsAppParamContext = {
+  invoiceLink?: string;
+  leadNumber?: string;
+};
+
 export async function generateParamsFromDefinitions(
   definitions: TemplateParamDefinition[],
   client: any,
-  contactId?: number | null
+  contactId?: number | null,
+  proformaContext?: ProformaWhatsAppParamContext | null,
 ): Promise<Array<{ type: string; text: string }>> {
-  const { 
-    getClientOrContactName, 
+  const {
+    getClientOrContactName,
     getMeetingDateTime,
     getPhoneNumber,
     getMobileNumber,
     getEmailAddress,
     getMeetingLocation,
-    getMeetingLink
+    getMeetingLink,
+    sanitizeWhatsAppTemplateVariableText,
   } = await import('./whatsappTemplateParams');
+
+  const ctx: ProformaWhatsAppParamContext = {
+    invoiceLink:
+      proformaContext?.invoiceLink ??
+      client?.proformaPublicUrl ??
+      client?.invoiceLink ??
+      '',
+    leadNumber:
+      proformaContext?.leadNumber ??
+      client?.proformaLeadNumber ??
+      client?.lead_number ??
+      '',
+  };
   
   const parameters: Array<{ type: string; text: string }> = [];
   
@@ -177,6 +212,12 @@ export async function generateParamsFromDefinitions(
         value = await getMeetingLink(clientIdForMeeting, isLegacyLead);
         break;
       }
+      case 'invoice_link':
+        value = sanitizeWhatsAppTemplateVariableText(ctx.invoiceLink || '');
+        break;
+      case 'lead_number':
+        value = sanitizeWhatsAppTemplateVariableText(ctx.leadNumber || '');
+        break;
       case 'custom':
         value = def.value || '';
         break;
