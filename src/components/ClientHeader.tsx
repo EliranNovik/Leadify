@@ -70,6 +70,7 @@ import { fetchRmqFlagCountForLead } from '../lib/rmqMessageLeadFlags';
 import { caseProbabilityFromFactors, type ProbabilitySlidersValues } from './client-tabs/ProbabilitySlidersModal';
 import DocumentModal from './DocumentModal';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
+import ClientHeaderTotalInNis from './ClientHeaderTotalInNis';
 
 // Lightweight in-memory caches to avoid refetching static dropdown data on mobile.
 let cachedLeadSources: Array<{ id: number | string; name: string }> | null = null;
@@ -2580,6 +2581,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 </p>
                                             )}
                                         </div>
+                                        <ClientHeaderTotalInNis
+                                            clientId={selectedClient?.id}
+                                            leadType={selectedClient?.lead_type}
+                                            currencyInput={(selectedClient as any)?.currency_id ?? 1}
+                                            subtotal={mainAmount}
+                                            vat={shouldShowVAT && vatAmount > 0 ? vatAmount : 0}
+                                        />
                                         {subcontractorFee > 0 && netAfterSubcontractor !== null && (
                                             <p className="text-[11px] text-base-content/50">
                                                 Net {currency}
@@ -2954,6 +2962,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     </p>
                                                 )}
                                             </div>
+                                            <ClientHeaderTotalInNis
+                                                clientId={selectedClient?.id}
+                                                leadType={selectedClient?.lead_type}
+                                                currencyInput={(selectedClient as any)?.currency_id ?? 1}
+                                                subtotal={mainAmount}
+                                                vat={shouldShowVAT && vatAmount > 0 ? vatAmount : 0}
+                                            />
                                             {subcontractorFee > 0 && netAfterSubcontractor !== null && (
                                                 <p className="text-[11px] text-base-content/50">
                                                     Net {currency}

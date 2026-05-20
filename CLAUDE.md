@@ -129,6 +129,11 @@ OPENAI_API_KEY= (set in Supabase dashboard)
 # GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY=-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----\n
 # Optional: GOOGLE_SHEET_BAD_LEADS_SPREADSHEET_ID (default sheet id in function), GOOGLE_SHEET_BAD_LEADS_TAB (exact tab title; default conversion-import-template)
 # Optional cron: BAD_LEADS_SYNC_CRON_SECRET + POST header x-cron-secret
+
+# Bank of Israel daily FX rates (boi_exchange_rates table + boi-exchange-rates-sync edge function; separate from currency_rates)
+# BOI_BASE_CURRENCIES=USD,EUR,GBP,CHF,CAD,AUD
+# BOI_RATES_SYNC_CRON_SECRET=… + POST header x-cron-secret (6:00 Asia/Jerusalem via Dashboard cron or backend scheduler)
+# ENABLE_BOI_RATES_SCHEDULER=true  BOI_RATES_SYNC_HOUR_JERUSALEM=6
 ```
 
 ### Development Patterns

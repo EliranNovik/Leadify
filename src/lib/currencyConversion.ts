@@ -1,5 +1,5 @@
-// Currency conversion utility
-// This file provides smart currency conversion functionality for the application
+// Currency conversion utility (legacy static rates).
+// For BOI daily rates + currency_id resolution, use ./boiCurrencyConversion.ts instead.
 
 // Currency conversion rates (you can make this dynamic by fetching from an API)
 export const currencyRates = {

@@ -52,8 +52,15 @@ export function isLegacyPlanRowPaid(plan: Record<string, unknown>): boolean {
   return !!plan.actual_date;
 }
 
+/** Strict paid flag — avoids truthy strings like "false" from legacy char columns. */
 export function isNewPlanRowPaid(plan: Record<string, unknown>): boolean {
-  return !!plan.paid;
+  const p = plan.paid;
+  if (p === true || p === 1) return true;
+  if (typeof p === 'string') {
+    const s = p.trim().toLowerCase();
+    return s === 't' || s === 'true' || s === 'yes' || s === '1';
+  }
+  return false;
 }
 
 /** Sum unpaid (gross) from normalized FinancesTab payment rows — same as DB fetch when data is in sync. */

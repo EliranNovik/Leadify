@@ -45,6 +45,7 @@ import {
   LazyCreateNewLead,
   LazyCTIPopupPage,
   LazyDebugTestPage,
+  LazyBoiExchangeRatesTestPage,
   LazyDocumentsPage,
   LazyDoubleLeadsPage,
   LazyEditContractsPage,
@@ -79,6 +80,8 @@ import {
   LazyProformaLegacyCreatePage,
   LazyProformaLegacyViewPage,
   LazyProformaViewPage,
+  LazyPublicProformaLegacyViewPage,
+  LazyPublicProformaViewPage,
   LazyPublicContractView,
   LazyPublicLegacyContractView,
   LazyPublicProfilePage,
@@ -587,6 +590,8 @@ const AppContentInner: React.FC = () => {
       <Route path="/about" element={<RouteSuspense><LazyAboutPage /></RouteSuspense>} />
       <Route path="/contact" element={<RouteSuspense><LazyContactPage /></RouteSuspense>} />
       <Route path="/how-it-works" element={<RouteSuspense><LazyHowItWorksPage /></RouteSuspense>} />
+      <Route path="/public-proforma/:id/:token" element={<RouteSuspense><LazyPublicProformaViewPage /></RouteSuspense>} />
+      <Route path="/public-proforma-legacy/:id/:token" element={<RouteSuspense><LazyPublicProformaLegacyViewPage /></RouteSuspense>} />
       <Route path="/public-contract/:contractId/:token" element={<RouteSuspense><LazyPublicContractView /></RouteSuspense>} />
       <Route path="/public-legacy-contract/:contractId/:token" element={<RouteSuspense><LazyPublicLegacyContractView /></RouteSuspense>} />
       <Route path="/payment/:token" element={<RouteSuspense><LazyPaymentPage /></RouteSuspense>} />
@@ -927,6 +932,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/proforma/create/:paymentId" element={<RouteSuspense><LazyProformaCreatePage /></RouteSuspense>} />
                     <Route path="/proforma-legacy/:id" element={<RouteSuspense><LazyProformaLegacyViewPage /></RouteSuspense>} />
                     <Route path="/proforma-legacy/create/:leadId" element={<RouteSuspense><LazyProformaLegacyCreatePage /></RouteSuspense>} />
+                    <Route path="/proforma-legacy/edit/:proformaId" element={<RouteSuspense><LazyProformaLegacyCreatePage /></RouteSuspense>} />
                     <Route path="/reports" element={<RouteSuspense><LazyReportsPage /></RouteSuspense>} />
                     <Route path="/reports/collection-finances" element={<RouteSuspense><LazyCollectionFinancesReport /></RouteSuspense>} />
                     <Route path="/reports/collection-due" element={<RouteSuspense><LazyCollectionDueReportPage /></RouteSuspense>} />
@@ -944,6 +950,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/external-settings" element={<RouteSuspense><LazyExternalUserSettingsPage /></RouteSuspense>} />
                     <Route path="/sales/signed" element={<RouteSuspense><LazySignedSalesReportPage /></RouteSuspense>} />
                     <Route path="/settings" element={<RouteSuspense><LazySettingsPage /></RouteSuspense>} />
+                    <Route path="/tools/boi-exchange-rates" element={<RouteSuspense><LazyBoiExchangeRatesTestPage /></RouteSuspense>} />
                     <Route path="/test-meeting-summary" element={<RouteSuspense><LazyMeetingSummaryTestPage /></RouteSuspense>} />
                     <Route path="/simple-test" element={<RouteSuspense><LazySimpleTestPage /></RouteSuspense>} />
                     <Route path="/debug-test" element={<RouteSuspense><LazyDebugTestPage /></RouteSuspense>} />

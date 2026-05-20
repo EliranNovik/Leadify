@@ -1,118 +1,22 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import jsPDF from 'jspdf';
 import html2pdf from 'html2pdf.js';
-import { PrinterIcon, EnvelopeIcon, ArrowDownTrayIcon, TrashIcon } from '@heroicons/react/24/outline';
-import { useMsal } from '@azure/msal-react';
-import { loginRequest } from '../msalConfig';
+import { PencilSquareIcon, PrinterIcon, ShareIcon, TrashIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import { createPaymentLink } from '../lib/supabase';
-
-// To fix TypeScript linter error, add a file src/types/html2pdf.js.d.ts with: declare module 'html2pdf.js';
-// And run: npm install html2pdf.js
-
-// MinimalInvoice: style-isolated, hex/rgb only, no class names
-const MinimalInvoice = React.forwardRef(({ proforma, formatLeadNumber }: { proforma: any, formatLeadNumber?: () => string }, ref: React.Ref<HTMLDivElement>) => (
-  <div ref={ref} style={{ background: '#fff', color: '#18181b', maxWidth: 800, width: '100%', margin: '0 auto', padding: 32, borderRadius: 24, boxShadow: '0 2px 8px #e5e7eb', border: '1px solid #e5e7eb', overflow: 'hidden', fontFamily: 'Inter, Arial, sans-serif' }}>
-    {/* Google Fonts link for Inter */}
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet" />
-    <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 56 }}>
-      <div style={{ width: 64, height: 64, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-        <img src="/dpl_logo2.jpg" alt="DPL Logo" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
-      </div>
-      <div>
-        <div style={{ color: '#18181b', fontWeight: 800, fontSize: 32, letterSpacing: '-0.02em', fontFamily: 'Inter, Arial, sans-serif' }}>Proforma Invoice</div>
-        <div style={{ color: '#6b7280', fontWeight: 600, fontSize: 16, marginTop: 4, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.proformaName}</div>
-      </div>
-    </div>
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 32, marginBottom: 32 }}>
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ color: '#404040', fontWeight: 600, marginBottom: 4, fontFamily: 'Inter, Arial, sans-serif' }}>Decker Pex Levi Law office</div>
-        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>Yad Haruzim 10, Jerusalem;</div>
-        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>150 Begin Rd. Tel-Aviv, Israel</div>
-        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>+972737895444, +972262914009</div>
-        <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>PaymentReport3@lawoffice.org.il</div>
-        <div style={{ display: 'flex', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 24, width: '100%' }}>
-          <div><span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Proforma #:</span> <span style={{ color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.proformaName}</span></div>
-          <div style={{ textAlign: 'right' }}><span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Date:</span> <span style={{ color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>{new Date(proforma.createdAt).toLocaleDateString()}</span></div>
-        </div>
-        <div style={{ marginBottom: 48 }}></div>
-      </div>
-      <div>
-        <div style={{ color: '#404040', fontWeight: 600, marginBottom: 4, fontFamily: 'Inter, Arial, sans-serif' }}>Bill To:</div>
-        <div style={{ color: '#18181b', fontWeight: 700, fontSize: 18, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.client}</div>
-        {proforma.lead_number && (
-          <div style={{ color: '#4b5563', fontSize: 14, fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Lead #: {formatLeadNumber ? formatLeadNumber() : proforma.lead_number}</div>
-        )}
-        {proforma.phone && (
-          <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.phone}</div>
-        )}
-        {proforma.email && (
-          <div style={{ color: '#6b7280', fontSize: 14, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.email}</div>
-        )}
-        {!(proforma.phone || proforma.email) && (
-          <div style={{ color: '#f87171', fontSize: 12, fontFamily: 'Inter, Arial, sans-serif' }}>No client phone/email saved in proforma.</div>
-        )}
-      </div>
-    </div>
-    <div style={{ marginBottom: 32, width: '100%', maxWidth: 720, marginLeft: 'auto', marginRight: 'auto' }}>
-      <table style={{ width: '100%', borderRadius: 12, overflow: 'hidden', border: '1px solid #e5e7eb', fontFamily: 'Inter, Arial, sans-serif' }}>
-        <thead style={{ background: '#f3f4f6', borderBottom: '1px solid #e5e7eb' }}>
-          <tr>
-            <th style={{ padding: '12px 16px', textAlign: 'left', fontSize: 12, fontWeight: 700, color: '#404040', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Inter, Arial, sans-serif' }}>Description</th>
-            <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: 12, fontWeight: 700, color: '#404040', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Inter, Arial, sans-serif' }}>Qty</th>
-            <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: 12, fontWeight: 700, color: '#404040', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Inter, Arial, sans-serif' }}>Rate</th>
-            <th style={{ padding: '12px 16px', textAlign: 'right', fontSize: 12, fontWeight: 700, color: '#404040', textTransform: 'uppercase', letterSpacing: '0.05em', fontFamily: 'Inter, Arial, sans-serif' }}>Total</th>
-          </tr>
-        </thead>
-        <tbody>
-          {proforma.rows.map((row: any, idx: number) => (
-            <tr key={idx} style={{ background: idx % 2 === 0 ? '#fff' : '#f3f4f6' }}>
-              <td style={{ padding: '8px 16px', color: '#18181b', fontWeight: 500, fontFamily: 'Inter, Arial, sans-serif' }}>{row.description}</td>
-              <td style={{ padding: '8px 16px', textAlign: 'right', color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>{row.qty}</td>
-              <td style={{ padding: '8px 16px', textAlign: 'right', color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.currency} {row.rate}</td>
-              <td style={{ padding: '8px 16px', textAlign: 'right', color: '#18181b', fontWeight: 700, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.currency} {row.total}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24, justifyContent: 'flex-end', width: '100%', maxWidth: 720, marginLeft: 'auto', marginRight: 'auto' }}>
-      <div style={{ width: '100%', maxWidth: 400, background: '#f3f4f6', borderRadius: 16, padding: 24, border: '1px solid #e5e7eb', fontFamily: 'Inter, Arial, sans-serif', marginLeft: 'auto', marginRight: 0 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, marginBottom: 8 }}>
-          <span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Subtotal</span>
-          <span style={{ color: '#18181b', fontWeight: 700, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.currency} {proforma.total}</span>
-        </div>
-        {proforma.addVat && (
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, marginBottom: 8 }}>
-            <span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>VAT (18%)</span>
-            <span style={{ color: '#18181b', fontWeight: 700, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.currency} {(proforma.totalWithVat - proforma.total).toFixed(2)}</span>
-          </div>
-        )}
-        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 22, marginTop: 16, borderTop: '1px solid #e5e7eb', paddingTop: 16, fontWeight: 800 }}>
-          <span style={{ color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>Total</span>
-          <span style={{ color: '#006BB1', fontWeight: 800, fontFamily: 'Inter, Arial, sans-serif' }}>{proforma.currency} {proforma.totalWithVat}</span>
-        </div>
-      </div>
-    </div>
-    {/* Issued by and timestamp at bottom */}
-    {(proforma.createdBy || proforma.createdAt) && (
-      <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid #e5e7eb', fontSize: 12, color: '#6b7280', fontFamily: 'Inter, Arial, sans-serif' }}>
-        {proforma.createdBy && (
-          <div style={{ marginBottom: 4 }}>
-            <span style={{ fontWeight: 600 }}>Issued by:</span> <span>{proforma.createdBy}</span>
-          </div>
-        )}
-        {proforma.createdAt && (
-          <div>
-            <span style={{ fontWeight: 600 }}>Date:</span> <span>{new Date(proforma.createdAt).toLocaleDateString()}, {new Date(proforma.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-          </div>
-        )}
-      </div>
-    )}
-  </div>
-));
+import { shareProformaPublicLink } from '../lib/proformaPublicLink';
+import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
+import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
+import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
+import ProformaBankDetails from '../components/proforma/ProformaBankDetails';
+import ProformaFromCompanyInfo from '../components/proforma/ProformaFromCompanyInfo';
+import ProformaViewSideNotes from '../components/proforma/ProformaViewSideNotes';
+import { resolveBankAccountFromProforma, fetchBankAccountById } from '../lib/bankAccounts';
+import {
+  currencyInputFromNewPayment,
+  fetchProformaExchangeRateInfo,
+  type ProformaExchangeRateInfo,
+} from '../lib/proformaExchangeRate';
 
 const ProformaViewPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -122,12 +26,18 @@ const ProformaViewPage: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const invoiceRef = useRef<HTMLDivElement>(null);
   const [pdfLoading, setPdfLoading] = useState(false);
-  const { instance, accounts } = useMsal();
-  const [sendingEmail, setSendingEmail] = useState(false);
-  const minimalInvoiceRef = useRef<HTMLDivElement>(null);
+  const [sharing, setSharing] = useState(false);
   const [leadData, setLeadData] = useState<any>(null);
   const [subLeadsCount, setSubLeadsCount] = useState<number>(0);
   const [isMasterLead, setIsMasterLead] = useState<boolean>(false);
+  const [exchangeInfo, setExchangeInfo] = useState<ProformaExchangeRateInfo | null>(null);
+  const [exchangeLoading, setExchangeLoading] = useState(false);
+  const [paymentPlanMeta, setPaymentPlanMeta] = useState<{
+    paid: boolean;
+    paid_at: string | null;
+    currency?: string | null;
+    currency_id?: number | string | null;
+  } | null>(null);
 
   useEffect(() => {
     const fetchProforma = async () => {
@@ -136,7 +46,7 @@ const ProformaViewPage: React.FC = () => {
       // Fetch both proforma and client_id from payment plan
       const { data, error } = await supabase
         .from('payment_plans')
-        .select('proforma, client_id')
+        .select('proforma, client_id, paid, paid_at, currency, currency_id')
         .eq('id', id)
         .single();
       if (error || !data || !data.proforma) {
@@ -274,7 +184,16 @@ const ProformaViewPage: React.FC = () => {
           parsed.vat = Math.round(parsed.total * 0.18 * 100) / 100;
           parsed.totalWithVat = parsed.total + parsed.vat;
         }
+        if (!parsed.bankAccountDetails && parsed.bankAccountId) {
+          parsed.bankAccountDetails = await fetchBankAccountById(String(parsed.bankAccountId));
+        }
         setProforma(parsed);
+        setPaymentPlanMeta({
+          paid: Boolean(data.paid),
+          paid_at: data.paid_at ?? null,
+          currency: data.currency ?? null,
+          currency_id: data.currency_id ?? null,
+        });
       } catch (e) {
         setError('Failed to parse proforma data.');
       }
@@ -282,6 +201,42 @@ const ProformaViewPage: React.FC = () => {
     };
     if (id) fetchProforma();
   }, [id]);
+
+  useEffect(() => {
+    if (!proforma || !paymentPlanMeta) {
+      setExchangeInfo(null);
+      return;
+    }
+
+    let cancelled = false;
+    const loadExchange = async () => {
+      setExchangeLoading(true);
+      try {
+        const subtotal = Number(proforma.total) || 0;
+        const totalWithVat = Number(proforma.totalWithVat) || subtotal;
+        const vat = Number(proforma.vat) || Math.max(0, totalWithVat - subtotal);
+        const info = await fetchProformaExchangeRateInfo({
+          currency: currencyInputFromNewPayment(paymentPlanMeta, proforma.currency),
+          paid: paymentPlanMeta.paid,
+          paidAt: paymentPlanMeta.paid_at,
+          subtotal,
+          vat,
+          total: totalWithVat,
+        });
+        if (!cancelled) setExchangeInfo(info);
+      } catch (err) {
+        console.error('[ProformaViewPage] exchange rate:', err);
+        if (!cancelled) setExchangeInfo(null);
+      } finally {
+        if (!cancelled) setExchangeLoading(false);
+      }
+    };
+
+    void loadExchange();
+    return () => {
+      cancelled = true;
+    };
+  }, [proforma, paymentPlanMeta]);
 
   // Format lead number using same logic as ClientHeader
   const formatLeadNumber = () => {
@@ -336,127 +291,49 @@ const ProformaViewPage: React.FC = () => {
     navigate(-1);
   };
 
-  // Helper: Convert Blob to base64
-  const blobToBase64 = (blob: Blob): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const dataUrl = reader.result as string;
-        resolve(dataUrl.split(',')[1]); // Remove data URL prefix
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  };
-
-  // Handler: Send proforma as email with PDF attachment
-  const handleSendEmail = async () => {
-    if (!proforma?.email) {
-      toast.error('No client email found in proforma.');
-      return;
-    }
-    if (!minimalInvoiceRef.current) {
-      toast.error('Invoice not ready.');
-      return;
-    }
-    if (!instance || !accounts[0]) {
-      toast.error('Not authenticated.');
-      return;
-    }
-    setSendingEmail(true);
+  const handleShare = async () => {
+    if (!id) return;
+    setSharing(true);
     try {
-      // 0. Create payment link for this proforma
-      let paymentLink = '';
-      try {
-        paymentLink = await createPaymentLink({
-          paymentPlanId: proforma.paymentRowId,
-          clientId: proforma.clientId,
-          value: proforma.base,
-          valueVat: proforma.vat,
-          currency: proforma.currency,
-          order: proforma.rows[0]?.description || '',
-          clientName: proforma.client,
-          leadNumber: proforma.clientId // or pass lead_number if available
-        });
-      } catch (err) {
-        toast.error('Failed to create payment link. Email not sent.');
-        setSendingEmail(false);
-        return;
-      }
-      // 1. Generate PDF Blob from minimal invoice
-      const pdfBlob: Blob = await html2pdf()
-        .from(minimalInvoiceRef.current)
-        .set({
-          margin: 0,
-          filename: `${proforma?.proformaName || 'proforma'}.pdf`,
-          image: { type: 'jpeg', quality: 0.98 },
-          html2canvas: { scale: 2, useCORS: true, logging: true },
-          jsPDF: { unit: 'pt', format: 'a4', orientation: 'portrait' },
-        })
-        .outputPdf('blob');
-      // 2. Convert Blob to base64
-      const pdfBase64 = await blobToBase64(pdfBlob);
-      // 3. Acquire Graph token
-      let tokenResponse;
-      try {
-        tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
-      } catch (error) {
-        tokenResponse = await instance.acquireTokenPopup({ ...loginRequest, account: accounts[0] });
-      }
-      const accessToken = tokenResponse.accessToken;
-      // 4. Prepare email
-      const senderName = accounts[0]?.name || 'Your Team';
-      const subject = `Proforma Invoice: ${proforma.proformaName || ''}`;
-      const paymentLinkHtml = paymentLink ? `<p><strong>Payment Link:</strong> <a href="${paymentLink}">${paymentLink}</a><br/>You can pay securely online using the link above.</p>` : '';
-      const body = `<p>Dear ${proforma.client || 'Client'},</p><p>Please find attached your proforma invoice.</p>${paymentLinkHtml}<p>Best regards,<br>${senderName}<br>Decker Pex Levi Law Offices</p>`;
-      const attachments = [
-        {
-          '@odata.type': '#microsoft.graph.fileAttachment',
-          name: `${proforma?.proformaName || 'proforma'}.pdf`,
-          contentType: 'application/pdf',
-          contentBytes: pdfBase64,
-        },
-      ];
-      const draftMessage = {
-        subject,
-        body: { contentType: 'HTML', content: body },
-        toRecipients: [{ emailAddress: { address: proforma.email } }],
-        attachments,
-      };
-      // 5. Send email via Graph API (draft + send)
-      // Create draft
-      const draftRes = await fetch('https://graph.microsoft.com/v1.0/me/messages', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(draftMessage),
-      });
-      if (!draftRes.ok) {
-        throw new Error('Failed to create email draft.');
-      }
-      const createdDraft = await draftRes.json();
-      const messageId = createdDraft.id;
-      if (!messageId) throw new Error('Could not get message ID from draft.');
-      // Send draft
-      const sendRes = await fetch(`https://graph.microsoft.com/v1.0/me/messages/${messageId}/send`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (!sendRes.ok) {
-        throw new Error('Failed to send email.');
-      }
-      toast.success('Proforma sent to client!');
-    } catch (e: any) {
-      toast.error(e?.message || 'Failed to send email.');
+      await shareProformaPublicLink('new', id, { clientName: proforma?.client });
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Failed to share link.');
+    } finally {
+      setSharing(false);
     }
-    setSendingEmail(false);
   };
 
   if (loading) return <div className="p-8 text-center">Loading...</div>;
   if (error) return <div className="p-8 text-center text-red-600">{error}</div>;
   if (!proforma) return null;
 
+  const displayNotes = (proforma.notes as string | undefined)?.trim() ?? '';
+
   return (
-    <div className="max-w-3xl mx-auto bg-white shadow-2xl rounded-2xl p-8 mt-10 print:bg-white print:shadow-none print:p-2">
+    <div className="w-full min-h-0">
+      <ProformaViewSideNotes notes={displayNotes || null} />
+      {/* Fixed action bar — screen only, under header, clear of sidebar on md+ */}
+      <div className="print-hide fixed top-[calc(env(safe-area-inset-top,0px)+2.75rem+0.5rem+0.75rem)] md:top-[calc(3rem+0.75rem)] left-0 md:left-24 right-0 z-30 flex items-center justify-between gap-4 border-b border-gray-200 bg-base-100 px-6 py-3 shadow-sm">
+        <h1 className="text-lg font-bold text-gray-900 truncate min-w-0">
+          Invoice - {formatLeadNumber()}
+          {proforma.client ? ` - ${proforma.client}` : ''}
+        </h1>
+        <div className="flex shrink-0 gap-2">
+          <button
+            className="btn btn-primary btn-sm gap-2"
+            onClick={() => navigate(`/proforma/create/${id}`)}
+            title="Edit proforma"
+          >
+            <PencilSquareIcon className="w-5 h-5" /> Edit
+          </button>
+          <button className="btn btn-outline btn-sm gap-2" onClick={handlePrint} title="Print"><PrinterIcon className="w-5 h-5" /> Print</button>
+          <button className="btn btn-outline btn-sm gap-2" onClick={handleShare} disabled={sharing} title="Share link with client">
+            {sharing ? <span className="loading loading-spinner loading-xs" /> : <ShareIcon className="w-5 h-5" />} Share
+          </button>
+          <button className="btn btn-error btn-sm gap-2" onClick={handleDelete} title="Delete"><TrashIcon className="w-5 h-5" /> Delete</button>
+        </div>
+      </div>
+      <div className="max-w-3xl mx-auto bg-white p-8 pt-16 print:bg-white print:pt-8 print:p-2">
       {/* Inline style override for html2pdf/html2canvas color compatibility */}
       <style>{`
         @media print {
@@ -494,6 +371,11 @@ const ProformaViewPage: React.FC = () => {
           #invoice-print-area .border {
             border: 1px solid #e5e7eb !important;
           }
+          #invoice-print-area .proforma-from-bill-grid {
+            display: grid !important;
+            grid-template-columns: 1fr 1fr !important;
+            gap: 2rem !important;
+          }
           .print-hide {
             display: none !important;
           }
@@ -508,42 +390,27 @@ const ProformaViewPage: React.FC = () => {
           }
         }
       `}</style>
-      {/* Header with action buttons, visible on screen only */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-8 border-b pb-6 print-hide">
-        <div /> {/* Empty left side, no logo/title here */}
-        <div className="flex gap-2 mt-6 md:mt-0">
-          <button className="btn btn-outline btn-sm gap-2" onClick={handlePrint} title="Print"><PrinterIcon className="w-5 h-5" /> Print</button>
-          <button className="btn btn-outline btn-sm gap-2" onClick={handleSendEmail} disabled={sendingEmail} title="Send to Client">
-            {sendingEmail ? <span className="loading loading-spinner loading-xs" /> : <EnvelopeIcon className="w-5 h-5" />} Send
-          </button>
-          <button className="btn btn-error btn-sm gap-2" onClick={handleDelete} title="Delete"><TrashIcon className="w-5 h-5" /> Delete</button>
-        </div>
-      </div>
       {/* Info section (PDF target) */}
-      <div ref={invoiceRef} id="invoice-print-area" className="bg-white max-w-[1100px] w-full mx-auto p-8 rounded-2xl shadow border overflow-hidden">
+      <div ref={invoiceRef} id="invoice-print-area" className="relative bg-white max-w-[1100px] w-full mx-auto p-8 overflow-hidden">
         {/* Logo and Title for print and PDF */}
-        <div className="flex items-center gap-4 mb-14">
-          <div className="w-16 h-16 rounded-lg flex items-center justify-center overflow-hidden">
-            <img src="/dpl_logo2.jpg" alt="DPL Logo" className="w-full h-full object-contain" />
-          </div>
+        <div className="flex items-start justify-between gap-4 mb-14">
           <div>
-            <div className="text-3xl font-extrabold text-gray-900 tracking-tight leading-tight">Proforma Invoice</div>
+            <div className="text-2xl font-extrabold tracking-tight leading-tight text-gray-900 md:text-3xl">Invoice</div>
             <div className="text-base text-gray-500 font-semibold mt-1">{proforma.proformaName}</div>
+          </div>
+          <div className="flex flex-shrink-0 items-center justify-center">
+            <img
+              src="/DPL-LOGO1.png"
+              alt="DPL Logo"
+              className="h-12 w-auto max-w-[7rem] object-contain md:h-16 md:max-w-[9rem]"
+            />
           </div>
         </div>
         {/* End Logo and Title */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
+        <div className="proforma-from-bill-grid grid grid-cols-1 md:grid-cols-2 print:grid-cols-2 gap-8 mb-8">
           {/* Company Info and Proforma Number/Date Row */}
           <div className="mb-4">
-            <div className="font-semibold text-gray-700 mb-1">Decker Pex Levi Law office</div>
-            <div className="text-sm text-gray-500">Yad Haruzim 10, Jerusalem;</div>
-            <div className="text-sm text-gray-500">150 Begin Rd. Tel-Aviv, Israel</div>
-            <div className="text-sm text-gray-500">+972737895444, +972262914009</div>
-            <div className="text-sm text-gray-500">PaymentReport3@lawoffice.org.il</div>
-            <div className="flex flex-row justify-between items-center mt-6 w-full">
-              <div><span className="font-semibold text-gray-700">Proforma #:</span> <span className="text-gray-900">{proforma.proformaName}</span></div>
-              <div className="text-right"><span className="font-semibold text-gray-700">Date:</span> <span className="text-gray-900">{new Date(proforma.createdAt).toLocaleDateString()}</span></div>
-            </div>
+            <ProformaFromCompanyInfo />
             <div className="mb-12"></div>
           </div>
           <div>
@@ -566,7 +433,7 @@ const ProformaViewPage: React.FC = () => {
         {/* Table */}
         <div className="mb-8">
           <table className="min-w-full border rounded-xl overflow-hidden">
-            <thead className="bg-gray-50 border-b">
+            <thead className="bg-white border-b">
               <tr>
                 <th className="px-4 py-3 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">Description</th>
                 <th className="px-4 py-3 text-right text-xs font-bold text-gray-700 uppercase tracking-wider">Qty</th>
@@ -588,7 +455,7 @@ const ProformaViewPage: React.FC = () => {
         </div>
         {/* Totals summary */}
         <div className="flex flex-col md:flex-row md:justify-end gap-4 mb-6">
-          <div className="w-full md:w-1/2 bg-gray-50 rounded-xl p-6 border border-gray-200">
+          <div className="w-full md:w-1/2 bg-white rounded-xl p-6 border border-gray-200">
             <div className="flex justify-between text-lg mb-2">
               <span className="font-semibold text-gray-700">Subtotal</span>
               <span className="font-bold text-gray-900">{proforma.currency} {proforma.total}</span>
@@ -603,27 +470,18 @@ const ProformaViewPage: React.FC = () => {
               <span>Total</span>
               <span className="text-primary">{proforma.currency} {proforma.totalWithVat}</span>
             </div>
+            <ProformaTotalInNis info={exchangeInfo} loading={exchangeLoading} variant="card" />
           </div>
         </div>
+        <ProformaBankDetails details={resolveBankAccountFromProforma(proforma)} variant="card" />
+        <ProformaExchangeRateFooter info={exchangeInfo} loading={exchangeLoading} variant="card" />
         {/* Issued by and timestamp at bottom */}
-        {(proforma.createdBy || proforma.createdAt) && (
-          <div className="mt-8 pt-6 border-t border-gray-200 text-xs text-gray-500">
-            {proforma.createdBy && (
-              <div className="mb-1">
-                <span className="font-semibold">Issued by:</span> <span>{proforma.createdBy}</span>
-              </div>
-            )}
-            {proforma.createdAt && (
-              <div>
-                <span className="font-semibold">Date:</span> <span>{new Date(proforma.createdAt).toLocaleDateString()}, {new Date(proforma.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-              </div>
-            )}
+        {proforma.createdBy && (
+          <div className="mt-8 text-xs text-gray-500">
+            <span className="font-semibold">Issued by:</span> <span>{proforma.createdBy}</span>
           </div>
         )}
-      </div>
-      {/* Hidden minimal invoice for PDF generation */}
-      <div style={{ position: 'absolute', left: -9999, top: 0, width: 0, height: 0, overflow: 'hidden' }} aria-hidden="true">
-        {proforma && <MinimalInvoice ref={minimalInvoiceRef} proforma={proforma} formatLeadNumber={formatLeadNumber} />}
+        <ProformaDocumentStamp variant="card" />
       </div>
       {/* Created by, visible on screen only, hidden in print */}
       {proforma.createdBy && (
@@ -642,6 +500,7 @@ const ProformaViewPage: React.FC = () => {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 };

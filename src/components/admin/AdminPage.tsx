@@ -44,6 +44,7 @@ import EmailTemplatesManager from './EmailTemplatesManager';
 import EmailTemplatesPlacementManager from './EmailTemplatesPlacementManager';
 import PublicMessagesManager from './PublicMessagesManager';
 import WebhookSettingsManager from './WebhookSettingsManager';
+import BoiExchangeRatesTestPage from '../../pages/BoiExchangeRatesTestPage';
 import EmployeeFieldAssignmentsManager from './EmployeeFieldAssignmentsManager';
 import { useAdminRole } from '../../hooks/useAdminRole';
 import { useNavigate } from 'react-router-dom';
@@ -1561,6 +1562,9 @@ const AdminPage: React.FC = () => {
                 ) : selectedTab?.label === 'Accounting' &&
                   selectedTab?.subcategories[selected.sub] === 'Currencies' ? (
                   <div className="w-full"><CurrenciesManager /></div>
+                ) : selectedTab?.label === 'Accounting' &&
+                  selectedTab?.subcategories[selected.sub] === 'Currency rates' ? (
+                  <div className="w-full"><BoiExchangeRatesTestPage /></div>
                 ) : selectedTab?.label === 'Tenants' &&
                   selectedTab?.subcategories[selected.sub] === 'Departements' ? (
                   <div className="w-full"><DepartmentsManager /></div>

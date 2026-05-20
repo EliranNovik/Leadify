@@ -2,40 +2,48 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
-import { DocumentTextIcon, Cog6ToothIcon, ChartPieIcon, PlusIcon, ChatBubbleLeftRightIcon, XMarkIcon, CheckIcon, PrinterIcon, EnvelopeIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline';
+import { DocumentTextIcon, Cog6ToothIcon, ChartPieIcon, ChatBubbleLeftRightIcon, XMarkIcon, CheckIcon, PrinterIcon, EnvelopeIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline';
 import { generateProformaName } from '../lib/proforma';
+import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
+import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
+import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
+import ProformaBankAccountSelect from '../components/proforma/ProformaBankAccountSelect';
+import ProformaBankDetails from '../components/proforma/ProformaBankDetails';
+import ProformaFromCompanyInfo from '../components/proforma/ProformaFromCompanyInfo';
+import {
+  embedLegacyBankInNotes,
+  fetchActiveBankAccounts,
+  fetchBankAccountById,
+  parseLegacyBankFromNotes,
+  resolveBankAccountFromProforma,
+  type BankAccountRecord,
+  type BankAccountSnapshot,
+} from '../lib/bankAccounts';
+import { getLegacyNotesPrefix, getPublicProformaDisplayNotes } from '../lib/proformaNotes';
+import {
+  currencyInputFromLegacyProforma,
+  fetchProformaExchangeRateInfo,
+  type ProformaExchangeRateInfo,
+} from '../lib/proformaExchangeRate';
 
-// Helper function to calculate VAT rate based on date for legacy leads
-// 17% VAT for dates before 2025-01-01, 18% VAT for dates on or after 2025-01-01
-const getVatRateForLegacyLead = (dateString: string | null | undefined): number => {
-  if (!dateString) {
-    // If no date provided, default to 18% (current rate)
-    return 0.18;
-  }
+import { computeProformaVatFromPayment, getVatRateForLegacyLead } from '../lib/proformaVat';
 
-  const paymentDate = new Date(dateString);
-  if (isNaN(paymentDate.getTime())) {
-    // If date is invalid, default to 18%
-    return 0.18;
-  }
-
-  // VAT rate change date: 2025-01-01
-  const vatChangeDate = new Date('2025-01-01T00:00:00');
-
-  // If payment date is before 2025-01-01, use 17% VAT
-  if (paymentDate < vatChangeDate) {
-    return 0.17;
-  }
-
-  // Otherwise, use 18% VAT (for dates on or after 2025-01-01)
-  return 0.18;
-};
+function getCurrencySymbolFromCode(code: string | undefined): string {
+  if (!code) return '₪';
+  if (code === 'ILS' || code === '₪') return '₪';
+  if (code === 'USD' || code === '$') return '$';
+  if (code === 'EUR' || code === '€') return '€';
+  if (code === 'GBP' || code === '£') return '£';
+  return code;
+}
 
 const ProformaLegacyCreatePage: React.FC = () => {
-  const { leadId } = useParams<{ leadId: string }>();
+  const { leadId, proformaId } = useParams<{ leadId?: string; proformaId?: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const isEditMode = Boolean(proformaId);
   const [loading, setLoading] = useState(true);
+  const [legacyNotesPrefix, setLegacyNotesPrefix] = useState<string | null>(null);
   const [lead, setLead] = useState<any>(null);
   const [proformaData, setProformaData] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -44,10 +52,179 @@ const ProformaLegacyCreatePage: React.FC = () => {
   const [employeeId, setEmployeeId] = useState<number | null>(null);
   const [subLeadsCount, setSubLeadsCount] = useState<number>(0);
   const [isMasterLead, setIsMasterLead] = useState<boolean>(false);
+  const [exchangeInfo, setExchangeInfo] = useState<ProformaExchangeRateInfo | null>(null);
+  const [exchangeLoading, setExchangeLoading] = useState(false);
+  const [bankAccounts, setBankAccounts] = useState<BankAccountRecord[]>([]);
+  const [bankAccountsLoading, setBankAccountsLoading] = useState(true);
 
   useEffect(() => {
+    const loadBankAccounts = async () => {
+      setBankAccountsLoading(true);
+      try {
+        const accounts = await fetchActiveBankAccounts();
+        setBankAccounts(accounts);
+      } catch (err) {
+        console.error('[ProformaLegacyCreatePage] bank accounts:', err);
+        toast.error('Failed to load bank accounts');
+      } finally {
+        setBankAccountsLoading(false);
+      }
+    };
+    void loadBankAccounts();
+  }, []);
+
+  useEffect(() => {
+    const loadExistingProforma = async (invoiceId: string) => {
+      setLoading(true);
+      setLegacyNotesPrefix(null);
+
+      const { data, error } = await supabase
+        .from('proforma_with_rows')
+        .select('*')
+        .eq('id', invoiceId)
+        .single();
+
+      if (error || !data) {
+        toast.error('Failed to load proforma');
+        setLoading(false);
+        return;
+      }
+
+      const { data: invoiceMeta } = await supabase
+        .from('proformainvoice')
+        .select('ppr_id, client_id')
+        .eq('id', invoiceId)
+        .single();
+
+      let paymentPlanDate: string | null = null;
+      let paymentPlanOrder: number | string | null = null;
+      let paymentPaid = false;
+      let paidAt: string | null = null;
+      if (invoiceMeta?.ppr_id) {
+        const { data: pprData } = await supabase
+          .from('finances_paymentplanrow')
+          .select('date, due_date, actual_date, order')
+          .eq('id', invoiceMeta.ppr_id)
+          .single();
+        if (pprData) {
+          paymentPlanDate = pprData.date || pprData.due_date || null;
+          paymentPlanOrder = pprData.order ?? null;
+          paymentPaid = Boolean(pprData.actual_date);
+          paidAt = pprData.actual_date || null;
+        }
+      }
+
+      const leadIdNum = data.lead_id;
+      if (!leadIdNum) {
+        toast.error('Proforma has no linked lead');
+        setLoading(false);
+        return;
+      }
+
+      const { data: leadData, error: leadError } = await supabase
+        .from('leads_lead')
+        .select(`
+          *,
+          accounting_currencies!leads_lead_currency_id_fkey (
+            name,
+            iso_code
+          )
+        `)
+        .eq('id', leadIdNum)
+        .single();
+
+      if (leadError || !leadData) {
+        toast.error('Failed to load lead details');
+        setLoading(false);
+        return;
+      }
+
+      setLead(leadData);
+      if (invoiceMeta?.client_id) {
+        setClientId(Number(invoiceMeta.client_id));
+      }
+
+      let clientName = data.client_name || leadData.name || 'Client';
+      let clientEmail = data.client_email || '';
+      let clientPhone = data.client_phone || '';
+
+      if (invoiceMeta?.client_id) {
+        const { data: contactData } = await supabase
+          .from('leads_contact')
+          .select('name, email, phone')
+          .eq('id', invoiceMeta.client_id)
+          .single();
+        if (contactData) {
+          clientName = contactData.name || clientName;
+          clientEmail = contactData.email || clientEmail;
+          clientPhone = contactData.phone || clientPhone;
+        }
+      }
+
+      let bankAccountDetails = parseLegacyBankFromNotes(data.notes) ?? null;
+      if (!bankAccountDetails && data.bank_account_id) {
+        const bankId = String(data.bank_account_id);
+        if (/^[0-9a-f-]{36}$/i.test(bankId)) {
+          bankAccountDetails = await fetchBankAccountById(bankId);
+        }
+      }
+
+      const currencyId = data.currency_id ?? leadData.currency_id;
+      const currencySymbol = data.currency_code
+        ? getCurrencySymbolFromCode(data.currency_code)
+        : getCurrencySymbol(currencyId);
+
+      const rows = Array.isArray(data.rows)
+        ? data.rows.map((row: { description?: string; qty?: number; rate?: number; total?: number }) => ({
+            description: row.description ?? '',
+            qty: Number(row.qty) || 1,
+            rate: Number(row.rate) || 0,
+            total: Number(row.total) || 0,
+          }))
+        : [{ description: 'Legal Services', qty: 1, rate: 0, total: 0 }];
+
+      setLegacyNotesPrefix(getLegacyNotesPrefix(data.notes));
+
+      const editSubtotal = rows.reduce((sum: number, r: { total: number }) => sum + Number(r.total), 0);
+      const editVatState = computeProformaVatFromPayment({
+        currency: currencySymbol,
+        valueVat: data.vat_value,
+        paymentOrder: paymentPlanOrder,
+        dueDate: paymentPlanDate,
+        subtotal: editSubtotal,
+      });
+
+      setProformaData({
+        client: clientName,
+        clientId: leadData.id,
+        leadId: leadData.id,
+        pprId: invoiceMeta?.ppr_id ? String(invoiceMeta.ppr_id) : null,
+        paymentPlanDate,
+        paymentOrder: paymentPlanOrder,
+        payment: Number(data.total) || 0,
+        base: Number(data.sub_total || data.total_base) || 0,
+        vat: editVatState.vat,
+        language: 'EN',
+        rows,
+        addVat: editVatState.addVat,
+        totalWithVat: editVatState.totalWithVat,
+        currency: currencySymbol,
+        currency_id: currencyId,
+        paymentPaid,
+        paid_at: paidAt,
+        bankAccount: bankAccountDetails?.name ?? '',
+        bankAccountId: bankAccountDetails?.id ?? '',
+        bankAccountDetails,
+        notes: getPublicProformaDisplayNotes(data.notes),
+        email: clientEmail,
+        phone: clientPhone,
+      });
+      setLoading(false);
+    };
+
     const fetchLead = async () => {
       setLoading(true);
+      setLegacyNotesPrefix(null);
 
       console.log('🔍 Full URL:', window.location.href);
       console.log('🔍 Location search:', location.search);
@@ -86,7 +263,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
 
         const { data: fetchedPprData, error: pprError } = await supabase
           .from('finances_paymentplanrow')
-          .select('"order", notes, value, value_base, vat_value, currency_id, date, due_date')
+          .select('"order", notes, value, value_base, vat_value, currency_id, date, due_date, actual_date')
           .eq('id', pprId)
           .single();
 
@@ -336,33 +513,101 @@ const ProformaLegacyCreatePage: React.FC = () => {
         finalVatAmount: vatAmount
       });
 
-      // Get payment plan row date for VAT calculation (use date or due_date)
       const paymentPlanDate = pprData?.date || pprData?.due_date || null;
+      const initialRows = [
+        {
+          description: paymentPlanOrder || paymentPlanDescription || data.description || 'Legal Services',
+          qty: 1,
+          rate: paymentAmount,
+          total: paymentAmount,
+        },
+      ];
+      const initialSubtotal = paymentAmount;
+      const createVatState = computeProformaVatFromPayment({
+        currency: currencySymbol,
+        valueVat: vatAmount,
+        paymentOrder: pprData?.order ?? null,
+        dueDate: paymentPlanDate,
+        subtotal: initialSubtotal,
+      });
 
       setProformaData({
         client: clientName,
         clientId: data.id,
         leadId: data.id,
-        pprId: pprId, // Store the payment plan row ID
-        paymentPlanDate: paymentPlanDate, // Store payment plan date for VAT calculation
+        pprId: pprId,
+        paymentPlanDate,
+        paymentOrder: pprData?.order ?? null,
         payment: paymentAmount,
         base: baseAmount,
-        vat: vatAmount,
+        vat: createVatState.vat,
         language: 'EN',
-        rows: [
-          { description: paymentPlanOrder || paymentPlanDescription || data.description || 'Legal Services', qty: 1, rate: paymentAmount, total: paymentAmount },
-        ],
-        addVat: vatAmount > 0, // Only add VAT if there's a VAT amount from the payment plan
+        rows: initialRows,
+        addVat: createVatState.addVat,
+        totalWithVat: createVatState.totalWithVat,
         currency: currencySymbol,
+        currency_id: currencyId,
+        paymentPaid: Boolean(pprData?.actual_date),
+        paid_at: pprData?.actual_date ?? null,
         bankAccount: '',
+        bankAccountId: '',
+        bankAccountDetails: null as BankAccountSnapshot | null,
         notes: '',
         email: clientEmail,
         phone: clientPhone,
       });
       setLoading(false);
     };
-    if (leadId) fetchLead();
-  }, [leadId]);
+    if (proformaId) {
+      void loadExistingProforma(proformaId);
+    } else if (leadId) {
+      void fetchLead();
+    }
+  }, [leadId, proformaId, location.search]);
+
+  useEffect(() => {
+    if (!proformaData) {
+      setExchangeInfo(null);
+      return;
+    }
+
+    let cancelled = false;
+    const loadExchange = async () => {
+      setExchangeLoading(true);
+      try {
+        const subtotal = proformaData.rows.reduce((sum: number, r: { total: number }) => sum + Number(r.total), 0);
+        const { vat, totalWithVat: total } = computeProformaVatFromPayment({
+          currency: proformaData.currency,
+          valueVat: proformaData.vat,
+          paymentOrder: proformaData.paymentOrder,
+          dueDate: proformaData.paymentPlanDate,
+          subtotal,
+        });
+        const info = await fetchProformaExchangeRateInfo({
+          currency: currencyInputFromLegacyProforma({
+            currency_id: proformaData.currency_id,
+            currency_code: proformaData.currency,
+          }),
+          paid: Boolean(proformaData.paymentPaid),
+          paidAt: proformaData.paid_at ?? null,
+          subtotal,
+          vat,
+          total,
+        });
+        if (!cancelled) setExchangeInfo(info);
+      } catch (err) {
+        console.error('[ProformaLegacyCreatePage] exchange rate:', err);
+        if (!cancelled) setExchangeInfo(null);
+      } finally {
+        if (!cancelled) setExchangeLoading(false);
+      }
+    };
+
+    void loadExchange();
+    return () => {
+      cancelled = true;
+    };
+  }, [proformaData]);
 
   useEffect(() => {
     const fetchUser = async () => {
@@ -428,46 +673,40 @@ const ProformaLegacyCreatePage: React.FC = () => {
   }, []);
 
   const handleProformaRowChange = (idx: number, field: string, value: any) => {
+    if (field !== 'description') return;
     setProformaData((prev: any) => {
       const rows = prev.rows.map((row: any, i: number) =>
-        i === idx ? { ...row, [field]: value, total: field === 'qty' || field === 'rate' ? value * (field === 'qty' ? row.rate : row.qty) : row.total } : row
+        i === idx ? { ...row, description: value } : row,
       );
       return { ...prev, rows };
     });
   };
 
-  const handleAddProformaRow = () => {
+  const handleBankAccountChange = (accountId: string, snapshot: BankAccountSnapshot | null) => {
     setProformaData((prev: any) => ({
       ...prev,
-      rows: [...prev.rows, { description: '', qty: 1, rate: 0, total: 0 }],
-    }));
-  };
-
-  const handleDeleteProformaRow = (idx: number) => {
-    setProformaData((prev: any) => ({
-      ...prev,
-      rows: prev.rows.filter((_: any, i: number) => i !== idx),
+      bankAccountId: accountId,
+      bankAccount: snapshot?.name ?? '',
+      bankAccountDetails: snapshot,
     }));
   };
 
   const handleSaveProforma = async () => {
     setIsSaving(true);
     try {
-      // Generate proforma name
-      const proformaName = await generateProformaName();
+      const proformaName = isEditMode ? null : await generateProformaName();
 
       // Calculate totals
       const total = proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
       const totalBase = total;
 
-      // Calculate VAT if needed - use date-based rate for legacy leads
-      let vat = 0;
-      if (proformaData.addVat) {
-        const paymentPlanDate = proformaData.paymentPlanDate;
-        const vatRate = getVatRateForLegacyLead(paymentPlanDate);
-        vat = Math.round(total * vatRate * 100) / 100;
-      }
-      const totalWithVat = total + vat;
+      const { addVat, vat, totalWithVat } = computeProformaVatFromPayment({
+        currency: proformaData.currency,
+        valueVat: proformaData.vat,
+        paymentOrder: proformaData.paymentOrder,
+        dueDate: proformaData.paymentPlanDate,
+        subtotal: total,
+      });
 
       // Prepare rows data - pass as array, Supabase will convert to jsonb
       const rowsData = proformaData.rows.map((row: any) => ({
@@ -510,10 +749,53 @@ const ProformaLegacyCreatePage: React.FC = () => {
         }
       }
 
-      // Include proforma name in notes if it exists
       let notes = proformaData.notes || '';
-      if (proformaName) {
+      if (isEditMode && legacyNotesPrefix) {
+        notes = notes ? `${legacyNotesPrefix}\n${notes}` : legacyNotesPrefix;
+      } else if (proformaName) {
         notes = notes ? `${proformaName}\n${notes}` : proformaName;
+      }
+      notes = embedLegacyBankInNotes(notes, proformaData.bankAccountDetails ?? null);
+
+      if (isEditMode && proformaId) {
+        const { error: updateError } = await supabase
+          .from('proformainvoice')
+          .update({
+            total: totalWithVat,
+            total_base: totalBase,
+            vat_value: vat,
+            notes,
+            sub_total: totalBase,
+            add_vat: addVat ? 't' : 'f',
+            currency_id: currencyId,
+            client_id: clientId,
+          })
+          .eq('id', proformaId);
+
+        if (updateError) throw updateError;
+
+        const { error: deleteRowsError } = await supabase
+          .from('proformainvoicerow')
+          .delete()
+          .eq('invoice_id', proformaId);
+
+        if (deleteRowsError) throw deleteRowsError;
+
+        const rowInserts = rowsData.map((row: { description: string; qty: number; rate: number; total: number }) => ({
+          description: row.description,
+          qty: row.qty,
+          rate: row.rate,
+          total: row.total,
+          invoice_id: Number(proformaId),
+        }));
+
+        const { error: insertRowsError } = await supabase.from('proformainvoicerow').insert(rowInserts);
+        if (insertRowsError) throw insertRowsError;
+
+        setIsSaving(false);
+        toast.success('Proforma updated successfully!');
+        navigate(`/proforma-legacy/${proformaId}`);
+        return;
       }
 
       // Warn if employeeId is not set
@@ -540,7 +822,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
         p_vat_value: vat,
         p_notes: notes,
         p_sub_total: totalBase,
-        p_add_vat: proformaData.addVat ? 't' : 'f',
+        p_add_vat: addVat ? 't' : 'f',
         p_currency_id: currencyId,
         p_client_id: clientId, // Use client_id from URL parameter (contact_id)
         p_bank_account_id: null,
@@ -578,7 +860,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
           p_vat_value: vat,
           p_notes: notes,
           p_sub_total: totalBase,
-          p_add_vat: proformaData.addVat ? 't' : 'f',
+          p_add_vat: addVat ? 't' : 'f',
           p_currency_id: currencyId,
           p_client_id: clientId, // Use client_id from URL parameter (contact_id)
           p_bank_account_id: null,
@@ -639,30 +921,56 @@ const ProformaLegacyCreatePage: React.FC = () => {
     );
   }
 
+  const previewSubtotal = proformaData.rows.reduce(
+    (sum: number, r: { total: number }) => sum + Number(r.total),
+    0,
+  );
+  const previewVat = computeProformaVatFromPayment({
+    currency: proformaData.currency,
+    valueVat: proformaData.vat,
+    paymentOrder: proformaData.paymentOrder,
+    dueDate: proformaData.paymentPlanDate,
+    subtotal: previewSubtotal,
+  });
+  const vatPercentLabel = Math.round(previewVat.vatRate * 100);
+
   return (
-    <div className="max-w-6xl mx-auto py-10 px-2 md:px-8">
-      {/* Top bar with close/back button */}
-      <div className="flex items-center mb-8">
-        <button className="btn btn-ghost btn-lg mr-4" onClick={() => navigate(-1)}>
-          <span className="sr-only">Back</span>X
-        </button>
-        <h2 className="text-3xl font-extrabold text-gray-900">Create Proforma</h2>
+    <div className="relative w-full max-w-none py-6 md:py-8 px-4 md:px-6 lg:px-8">
+      <button
+        type="button"
+        onClick={() => navigate(-1)}
+        className="absolute top-6 right-4 md:top-8 md:right-6 lg:right-8 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-600 shadow-sm transition-colors hover:bg-gray-50 hover:text-gray-900"
+        aria-label="Close"
+      >
+        <XMarkIcon className="h-5 w-5" />
+      </button>
+      <div className="mb-8 pr-12">
+        <h2 className="text-3xl font-extrabold text-gray-900">{isEditMode ? 'Edit Proforma' : 'Create Proforma'}</h2>
       </div>
       {/* Main two-column layout: left = editor, right = live preview */}
-      <div className="grid grid-cols-1 2xl:grid-cols-[1fr_28rem] gap-6 2xl:gap-8 items-start">
-        {/* Left: All editing tools in one card */}
-        <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-8 flex flex-col gap-8">
-          {/* Invoice Items */}
-          <h3 className="text-lg font-bold text-gray-800 mb-4">Invoice Items</h3>
+      <div className="rounded-xl border border-gray-200 overflow-hidden bg-white">
+        <div className="grid grid-cols-1 lg:grid-cols-2 lg:divide-x divide-gray-200 items-stretch">
+        {/* Left: editing tools */}
+        <div className="flex flex-col gap-8 p-6 lg:p-8 min-h-[700px] bg-white">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <h3 className="text-lg font-bold text-gray-900">Invoice</h3>
+            <div className="flex gap-3">
+              <button type="button" className="btn btn-outline" onClick={() => navigate(-1)}>
+                Cancel
+              </button>
+              <button type="button" className="btn btn-primary" onClick={handleSaveProforma} disabled={isSaving}>
+                {isSaving ? 'Saving...' : isEditMode ? 'Save Changes' : 'Save Proforma'}
+              </button>
+            </div>
+          </div>
           <div className="overflow-x-auto mb-4">
             <table className="table w-full min-w-[500px]">
               <thead>
-                <tr className="bg-gray-50">
+                <tr className="bg-white">
                   <th className="text-sm font-semibold text-gray-700">Description</th>
                   <th className="text-sm font-semibold text-gray-700">Qty</th>
                   <th className="text-sm font-semibold text-gray-700">Rate</th>
                   <th className="text-sm font-semibold text-gray-700">Total</th>
-                  <th className="text-sm font-semibold text-gray-700">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -678,10 +986,11 @@ const ProformaLegacyCreatePage: React.FC = () => {
                     </td>
                     <td>
                       <input
-                        className="input input-bordered w-16 text-base text-right py-3 px-4 no-arrows"
+                        className="input input-bordered w-16 cursor-not-allowed bg-gray-50 text-base text-right py-3 px-4 no-arrows"
                         type="number"
                         value={row.qty}
-                        onChange={e => handleProformaRowChange(idx, 'qty', Number(e.target.value))}
+                        readOnly
+                        tabIndex={-1}
                         inputMode="numeric"
                         pattern="[0-9]*"
                         style={{ MozAppearance: 'textfield' }}
@@ -689,73 +998,38 @@ const ProformaLegacyCreatePage: React.FC = () => {
                     </td>
                     <td>
                       <input
-                        className="input input-bordered w-32 text-base text-right py-3 px-4 no-arrows"
+                        className="input input-bordered w-32 cursor-not-allowed bg-gray-50 text-base text-right py-3 px-4 no-arrows"
                         type="number"
                         value={row.rate}
-                        onChange={e => handleProformaRowChange(idx, 'rate', Number(e.target.value))}
+                        readOnly
+                        tabIndex={-1}
                         inputMode="numeric"
                         pattern="[0-9]*"
                         style={{ MozAppearance: 'textfield' }}
                       />
                     </td>
                     <td>
-                      <input className="input input-bordered w-32 text-base text-right font-semibold py-3 px-4 no-arrows" type="number" value={row.total} readOnly
+                      <input className="input input-bordered w-32 cursor-not-allowed bg-gray-50 text-base text-right font-semibold py-3 px-4 no-arrows" type="number" value={row.total} readOnly
+                        tabIndex={-1}
                         inputMode="numeric"
                         pattern="[0-9]*"
                         style={{ MozAppearance: 'textfield' }}
                       />
-                    </td>
-                    <td>
-                      <button
-                        className="btn btn-ghost btn-xs text-red-500 hover:bg-red-50"
-                        onClick={() => handleDeleteProformaRow(idx)}
-                      >
-                        <XMarkIcon className="w-4 h-4" />
-                      </button>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            <button
-              className="btn btn-outline btn-sm mt-4 text-blue-600 border-blue-300 hover:bg-blue-50"
-              onClick={handleAddProformaRow}
-            >
-              Add Row
-            </button>
           </div>
           {/* Settings */}
           <h3 className="text-lg font-bold text-gray-800 mb-4">Settings</h3>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-            <div className="form-control">
-              <label className="label cursor-pointer justify-start gap-3">
-                <input
-                  type="checkbox"
-                  className="checkbox checkbox-primary"
-                  checked={proformaData.addVat}
-                  onChange={e => setProformaData((prev: any) => ({ ...prev, addVat: e.target.checked }))}
-                />
-                <span className="label-text font-medium">
-                  Add VAT ({proformaData?.paymentPlanDate
-                    ? `${Math.round(getVatRateForLegacyLead(proformaData.paymentPlanDate) * 100)}%`
-                    : '18%'})
-                </span>
-              </label>
-            </div>
-            <div className="form-control">
-              <label className="label">
-                <span className="label-text font-medium">Bank Account</span>
-              </label>
-              <select
-                className="select select-bordered w-full"
-                value={proformaData.bankAccount}
-                onChange={e => setProformaData((prev: any) => ({ ...prev, bankAccount: e.target.value }))}
-              >
-                <option value="">Select account...</option>
-                <option value="1">Account 1</option>
-                <option value="2">Account 2</option>
-              </select>
-            </div>
+          <div className="mb-4 max-w-md">
+            <ProformaBankAccountSelect
+              accounts={bankAccounts}
+              loading={bankAccountsLoading}
+              value={proformaData.bankAccountId || ''}
+              onChange={handleBankAccountChange}
+            />
           </div>
           {/* Notes */}
           <h3 className="text-lg font-bold text-gray-800 mb-4">Notes</h3>
@@ -765,39 +1039,29 @@ const ProformaLegacyCreatePage: React.FC = () => {
             onChange={e => setProformaData((prev: any) => ({ ...prev, notes: e.target.value }))}
             placeholder="Add any additional notes or terms..."
           />
-          {/* Action buttons */}
-          <div className="flex justify-end gap-4 mt-4">
-            <button className="btn btn-outline" onClick={() => navigate(-1)}>
-              Cancel
-            </button>
-            <button className="btn btn-primary" onClick={handleSaveProforma} disabled={isSaving}>
-              {isSaving ? 'Saving...' : 'Save Proforma'}
-            </button>
-          </div>
         </div>
-        {/* Right: Classic Invoice Preview */}
-        <div className="w-full bg-white border border-gray-200 rounded-2xl shadow-xl p-3 md:p-6 lg:p-8 flex flex-col gap-4 md:gap-6 min-h-[700px] overflow-hidden">
+        {/* Right: preview on grey canvas with white invoice sheet */}
+        <div className="bg-gray-100 p-4 md:p-6 lg:p-8 min-h-[700px]">
+          <h3 className="text-lg font-bold text-gray-900 mb-4">Preview</h3>
+          <div className="relative bg-white rounded-lg shadow-md border border-gray-200/80 p-4 md:p-6 lg:p-8 min-h-full flex flex-col gap-4 md:gap-6">
           {/* Header with logo and title */}
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6 md:mb-8 border-b pb-4 md:pb-6">
-            <div className="flex items-center gap-3 md:gap-4">
-              <div className="w-12 h-12 md:w-16 md:h-16 rounded-full flex items-center justify-center flex-shrink-0">
-                <img src="/dpl_logo2.jpg" alt="DPL Logo" className="w-full h-full object-contain rounded-full" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-xl md:text-2xl lg:text-3xl font-extrabold text-gray-900 tracking-tight leading-tight">Proforma Invoice</div>
-              </div>
+          <div className="flex items-start justify-between gap-4 mb-6 md:mb-8 border-b pb-4 md:pb-6">
+            <div className="min-w-0 flex-1">
+              <div className="text-xl font-extrabold tracking-tight leading-tight text-gray-900 md:text-3xl">Invoice</div>
+            </div>
+            <div className="flex flex-shrink-0 items-center justify-center">
+              <img
+                src="/DPL-LOGO1.png"
+                alt="DPL Logo"
+                className="h-12 w-auto max-w-[7rem] object-contain md:h-16 md:max-w-[9rem]"
+              />
             </div>
           </div>
           {/* Info section */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-6 lg:gap-8 mb-6 md:mb-8">
             {/* Company Info */}
             <div className="mb-4">
-              <div className="font-semibold text-gray-700 mb-1">From:</div>
-              <div className="font-bold text-gray-900">Decker Pex Levi Law office</div>
-              <div className="text-sm text-gray-500">Yad Haruzim 10, Jerusalem;</div>
-              <div className="text-sm text-gray-500">150 Begin Rd. Tel-Aviv, Israel</div>
-              <div className="text-sm text-gray-500">Phone: +972737895444, +972262914009</div>
-              <div className="text-sm text-gray-500">PaymentReport3@lawoffice.org.il</div>
+              <ProformaFromCompanyInfo showFromLabel showPhoneLabel />
             </div>
             <div>
               <div className="font-semibold text-gray-700 mb-1">Bill To:</div>
@@ -852,13 +1116,13 @@ const ProformaLegacyCreatePage: React.FC = () => {
           </div>
           {/* Proforma number and date row */}
           <div className="flex flex-col sm:flex-row sm:justify-between items-start sm:items-center gap-2 mb-6 md:mb-8">
-            <div><span className="font-semibold text-gray-700">Proforma #:</span> <span className="text-gray-900">{leadId}</span></div>
+            <div><span className="font-semibold text-gray-700">Proforma #:</span> <span className="text-gray-900">{isEditMode ? proformaId : leadId}</span></div>
             <div><span className="font-semibold text-gray-700">Date:</span> <span className="text-gray-900">{new Date().toLocaleDateString()}</span></div>
           </div>
           {/* Table */}
           <div className="mb-6 md:mb-8 overflow-x-auto">
             <table className="min-w-full border rounded-xl overflow-hidden">
-              <thead className="bg-gray-50 border-b">
+              <thead className="bg-white border-b">
                 <tr>
                   <th className="px-4 py-3 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">Description</th>
                   <th className="px-4 py-3 text-right text-xs font-bold text-gray-700 uppercase tracking-wider">Qty</th>
@@ -880,38 +1144,26 @@ const ProformaLegacyCreatePage: React.FC = () => {
           </div>
           {/* Totals summary */}
           <div className="flex flex-col sm:flex-row sm:justify-end gap-4 mb-6">
-            <div className="w-full sm:w-full md:w-4/5 lg:w-3/4 xl:w-2/3 bg-gray-50 rounded-xl p-4 md:p-6 border border-gray-200">
+            <div className="w-full sm:w-full md:w-4/5 lg:w-3/4 xl:w-2/3 bg-white rounded-xl p-4 md:p-6 border border-gray-200">
               <div className="flex justify-between text-lg mb-2">
                 <span className="font-semibold text-gray-700">Subtotal</span>
-                <span className="font-bold text-gray-900">{proformaData.currency} {proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)}</span>
+                <span className="font-bold text-gray-900">{proformaData.currency} {previewSubtotal}</span>
               </div>
-              {proformaData.addVat && (() => {
-                const subtotal = proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
-                const paymentPlanDate = proformaData.paymentPlanDate;
-                const vatRate = getVatRateForLegacyLead(paymentPlanDate);
-                const vatAmount = Math.round(subtotal * vatRate * 100) / 100;
-                const vatPercentage = Math.round(vatRate * 100);
-                return (
-                  <div className="flex justify-between text-lg mb-2">
-                    <span className="font-semibold text-gray-700">VAT ({vatPercentage}%)</span>
-                    <span className="font-bold text-gray-900">{proformaData.currency} {vatAmount.toFixed(2)}</span>
-                  </div>
-                );
-              })()}
+              {previewVat.addVat && (
+                <div className="flex justify-between text-lg mb-2">
+                  <span className="font-semibold text-gray-700">VAT ({vatPercentLabel}%)</span>
+                  <span className="font-bold text-gray-900">
+                    {proformaData.currency} {previewVat.vat.toFixed(2)}
+                  </span>
+                </div>
+              )}
               <div className="flex justify-between text-xl mt-4 border-t pt-4 font-extrabold">
                 <span>Total</span>
                 <span style={{ color: '#006BB1' }}>
-                  {proformaData.currency} {proformaData.addVat
-                    ? (() => {
-                      const subtotal = proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
-                      const paymentPlanDate = proformaData.paymentPlanDate;
-                      const vatRate = getVatRateForLegacyLead(paymentPlanDate);
-                      const totalWithVat = Math.round(subtotal * (1 + vatRate) * 100) / 100;
-                      return totalWithVat.toFixed(2);
-                    })()
-                    : proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)}
+                  {proformaData.currency} {previewVat.totalWithVat.toFixed(2)}
                 </span>
               </div>
+              <ProformaTotalInNis info={exchangeInfo} loading={exchangeLoading} variant="card" />
             </div>
           </div>
           {/* Notes */}
@@ -920,10 +1172,15 @@ const ProformaLegacyCreatePage: React.FC = () => {
               <span className="font-semibold">Notes:</span> {proformaData.notes}
             </div>
           )}
+          <ProformaBankDetails details={resolveBankAccountFromProforma(proformaData)} variant="card" />
+          <ProformaExchangeRateFooter info={exchangeInfo} loading={exchangeLoading} variant="card" />
           {/* Created by at bottom left inside the card */}
           <div className="mt-8 text-xs text-gray-400 text-left">
             Created by: {userFullName || ''}
           </div>
+          <ProformaDocumentStamp variant="card" />
+          </div>
+        </div>
         </div>
       </div>
     </div>

@@ -18,8 +18,10 @@ const authRoutes = require('./src/routes/authRoutes');
 const emailRoutes = require('./src/routes/emailRoutes');
 const syncRoutes = require('./src/routes/syncRoutes');
 const pushNotificationRoutes = require('./src/routes/pushNotificationRoutes');
+const currencyRatesRoutes = require('./src/routes/currencyRatesRoutes');
 const { startMailboxSyncScheduler } = require('./src/services/mailboxSyncScheduler');
 const { startMeetingNotificationScheduler } = require('./src/services/meetingNotificationScheduler');
+const { startBoiExchangeRatesScheduler } = require('./src/services/boiExchangeRatesScheduler');
 const accessLogger = require('./src/middleware/accessLogger');
 const { notifyConversationParticipants } = require('./src/services/rmqNotificationService');
 
@@ -403,6 +405,7 @@ app.use('/api', authRoutes);
 app.use('/api', emailRoutes);
 app.use('/api', syncRoutes);
 app.use('/api', pushNotificationRoutes);
+app.use('/api/currency-rates', currencyRatesRoutes);
 
 // Serve uploaded files
 app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -448,6 +451,7 @@ server.listen(PORT, () => {
   // Email fetching scheduler enabled - fetches emails every 5 minutes
   startMailboxSyncScheduler();
   startMeetingNotificationScheduler();
+  startBoiExchangeRatesScheduler();
 });
 
 // Graceful shutdown

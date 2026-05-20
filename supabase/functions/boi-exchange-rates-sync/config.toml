@@ -1,0 +1,2 @@
+# Cron invokes with x-cron-secret (BOI_RATES_SYNC_CRON_SECRET). Manual POST allowed with user JWT.
+verify_jwt = false

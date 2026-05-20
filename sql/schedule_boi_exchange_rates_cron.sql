@@ -1,0 +1,8 @@
+-- Optional: Supabase Dashboard → Edge Functions → boi-exchange-rates-sync → Schedules
+-- Cron (UTC): 6:00 Asia/Jerusalem is 03:00 UTC (summer) or 04:00 UTC (winter).
+-- Recommended: 0 3 * * *  and 0 4 * * * with idempotency (upsert) OR pick one and adjust seasonally.
+--
+-- HTTP POST body: {}
+-- Header: x-cron-secret: <BOI_RATES_SYNC_CRON_SECRET>
+--
+-- Alternatively use backend scheduler (ENABLE_BOI_RATES_SCHEDULER=true on Render).
