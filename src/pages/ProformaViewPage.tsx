@@ -2,9 +2,11 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import html2pdf from 'html2pdf.js';
-import { PencilSquareIcon, PrinterIcon, ShareIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { EnvelopeIcon, PencilSquareIcon, PrinterIcon, ShareIcon, TrashIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { shareProformaPublicLink } from '../lib/proformaPublicLink';
+import { sendProformaInvoiceEmail } from '../lib/proformaSendEmail';
+import { useMailboxReconnect } from '../contexts/MailboxReconnectContext';
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
 import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
 import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
@@ -27,6 +29,9 @@ const ProformaViewPage: React.FC = () => {
   const invoiceRef = useRef<HTMLDivElement>(null);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [contactIdForEmail, setContactIdForEmail] = useState<string | number | null>(null);
+  const { showReconnectModal } = useMailboxReconnect();
   const [leadData, setLeadData] = useState<any>(null);
   const [subLeadsCount, setSubLeadsCount] = useState<number>(0);
   const [isMasterLead, setIsMasterLead] = useState<boolean>(false);
@@ -187,6 +192,7 @@ const ProformaViewPage: React.FC = () => {
         if (!parsed.bankAccountDetails && parsed.bankAccountId) {
           parsed.bankAccountDetails = await fetchBankAccountById(String(parsed.bankAccountId));
         }
+        setContactIdForEmail(contactIdToUse ?? null);
         setProforma(parsed);
         setPaymentPlanMeta({
           paid: Boolean(data.paid),
@@ -303,6 +309,33 @@ const ProformaViewPage: React.FC = () => {
     }
   };
 
+  const handleSend = async () => {
+    if (!id || !proforma) return;
+    setSending(true);
+    try {
+      await sendProformaInvoiceEmail({
+        kind: 'new',
+        recordId: id,
+        contactId: contactIdForEmail ?? proforma.contactId,
+        contactEmail: proforma.email,
+        clientName: proforma.client || 'Client',
+        leadNumber: formatLeadNumber(),
+        leadId: proforma.clientId,
+        isLegacyLead: false,
+      });
+      toast.success('Invoice sent by email.');
+    } catch (e: unknown) {
+      const err = e as Error & { code?: string };
+      if (err.code === 'MAILBOX_NOT_CONNECTED') {
+        showReconnectModal('Connect Outlook to send invoices by email.');
+        return;
+      }
+      toast.error(err.message || 'Failed to send invoice.');
+    } finally {
+      setSending(false);
+    }
+  };
+
   if (loading) return <div className="p-8 text-center">Loading...</div>;
   if (error) return <div className="p-8 text-center text-red-600">{error}</div>;
   if (!proforma) return null;
@@ -327,6 +360,14 @@ const ProformaViewPage: React.FC = () => {
             <PencilSquareIcon className="w-5 h-5" /> Edit
           </button>
           <button className="btn btn-outline btn-sm gap-2" onClick={handlePrint} title="Print"><PrinterIcon className="w-5 h-5" /> Print</button>
+          <button
+            className="btn btn-outline btn-sm gap-2"
+            onClick={handleSend}
+            disabled={sending}
+            title="Email invoice to contact via Outlook"
+          >
+            {sending ? <span className="loading loading-spinner loading-xs" /> : <EnvelopeIcon className="w-5 h-5" />} Send
+          </button>
           <button className="btn btn-outline btn-sm gap-2" onClick={handleShare} disabled={sharing} title="Share link with client">
             {sharing ? <span className="loading loading-spinner loading-xs" /> : <ShareIcon className="w-5 h-5" />} Share
           </button>
