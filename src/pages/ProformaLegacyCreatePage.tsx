@@ -11,6 +11,8 @@ import ProformaIssuedByFooter from '../components/proforma/ProformaIssuedByFoote
 import ProformaBankAccountSelect from '../components/proforma/ProformaBankAccountSelect';
 import ProformaBankDetails from '../components/proforma/ProformaBankDetails';
 import ProformaFromCompanyInfo from '../components/proforma/ProformaFromCompanyInfo';
+import ProformaBackToLeadButton from '../components/proforma/ProformaBackToLeadButton';
+import { buildClientFinancesTabPath } from '../lib/proformaClientNavigation';
 import {
   embedLegacyBankInNotes,
   fetchActiveBankAccounts,
@@ -35,6 +37,10 @@ function parseContactId(value: string | number | null | undefined): number | nul
   const n = typeof value === 'number' ? value : parseInt(String(value), 10);
   return Number.isFinite(n) ? n : null;
 }
+
+/** Matches invoice sheet on ProformaLegacyViewPage */
+const PROFORMA_INVOICE_SHEET_CLASS =
+  'relative mx-auto w-full max-w-[1100px] overflow-hidden rounded-lg border border-gray-200/90 bg-white p-8 shadow-[0_4px_24px_rgba(0,0,0,0.08)] md:p-10';
 
 /** URL client_id, then payment-plan row client_id (contact), then main-contact fallback. */
 function resolveLegacyProformaContactId(
@@ -919,25 +925,57 @@ const ProformaLegacyCreatePage: React.FC = () => {
   });
   const vatPercentLabel = Math.round(previewVat.vatRate * 100);
 
+  const formatLeadNumberForNav = () => {
+    if (!lead) return '';
+    const masterId = lead.master_id;
+    const idStr = String(lead.id || proformaData?.clientId || leadId || '');
+    if (!masterId || String(masterId).trim() === '') {
+      const isSuccessStage = lead.stage === 100 || lead.stage === '100';
+      if (isSuccessStage && idStr && !idStr.startsWith('C')) return `C${idStr}`;
+      return idStr;
+    }
+    const suffix = subLeadsCount > 0 ? subLeadsCount : 2;
+    const formatted = `${masterId}/${suffix}`;
+    const isSuccessStage = lead.stage === 100 || lead.stage === '100';
+    if (isSuccessStage && !formatted.startsWith('C')) {
+      return formatted.replace(/^L/, 'C').replace(/^(\d+)/, 'C$1');
+    }
+    return formatted;
+  };
+
+  const isLegacySubLead = Boolean(lead?.master_id && String(lead.master_id).trim() !== '');
+  const financesTabPath = buildClientFinancesTabPath({
+    isLegacy: true,
+    leadId: lead?.id ?? proformaData?.leadId ?? leadId,
+    leadNumber: formatLeadNumberForNav(),
+    manualId: isLegacySubLead ? String(lead.master_id) : String(lead?.id ?? leadId ?? ''),
+  });
+
   return (
-    <div className="relative w-full max-w-none py-6 md:py-8 px-4 md:px-6 lg:px-8">
-      <button
-        type="button"
-        onClick={() => navigate(-1)}
-        className="absolute top-6 right-4 md:top-8 md:right-6 lg:right-8 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-600 shadow-sm transition-colors hover:bg-gray-50 hover:text-gray-900"
-        aria-label="Close"
-      >
-        <XMarkIcon className="h-5 w-5" />
-      </button>
-      <div className="mb-8 pr-12">
-        <h2 className="text-3xl font-extrabold text-gray-900">{isEditMode ? 'Edit Proforma' : 'Create Proforma'}</h2>
+    <div className="w-full min-h-0">
+      <div className="border-b border-gray-200 bg-white px-4 py-4 md:px-8 md:py-5">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <ProformaBackToLeadButton href={financesTabPath} />
+            <h2 className="min-w-0 truncate text-2xl font-extrabold text-gray-900 md:text-3xl">
+              {isEditMode ? 'Edit Proforma' : 'Create Proforma'}
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={() => navigate(-1)}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-600 shadow-sm transition-colors hover:bg-gray-50 hover:text-gray-900"
+            aria-label="Close"
+          >
+            <XMarkIcon className="h-5 w-5" />
+          </button>
+        </div>
       </div>
-      {/* Main two-column layout: left = editor, right = live preview */}
-      <div className="rounded-xl border border-gray-200 overflow-hidden bg-white">
-        <div className="grid grid-cols-1 lg:grid-cols-2 lg:divide-x divide-gray-200 items-stretch">
-        {/* Left: editing tools */}
-        <div className="flex flex-col gap-8 p-6 lg:p-8 min-h-[700px] bg-white">
-          <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="min-h-[calc(100dvh-10rem)] bg-gray-100 px-4 pb-12 pt-6 md:px-8">
+        <div className="mx-auto grid max-w-[2400px] grid-cols-1 gap-8 xl:grid-cols-2 xl:items-start">
+        {/* Editor column */}
+        <div className="flex flex-col gap-4">
+          <div className="mx-auto flex w-full max-w-[1100px] flex-wrap items-center justify-between gap-4 px-1">
             <h3 className="text-lg font-bold text-gray-900">Invoice</h3>
             <div className="flex gap-3">
               <button type="button" className="btn btn-outline" onClick={() => navigate(-1)}>
@@ -948,6 +986,8 @@ const ProformaLegacyCreatePage: React.FC = () => {
               </button>
             </div>
           </div>
+          <div className={PROFORMA_INVOICE_SHEET_CLASS}>
+          <div className="flex flex-col gap-8">
           <div className="overflow-x-auto mb-4">
             <table className="table w-full min-w-[500px]">
               <thead>
@@ -1024,13 +1064,16 @@ const ProformaLegacyCreatePage: React.FC = () => {
             onChange={e => setProformaData((prev: any) => ({ ...prev, notes: e.target.value }))}
             placeholder="Add any additional notes or terms..."
           />
+          </div>
+          </div>
         </div>
-        {/* Right: preview on grey canvas with white invoice sheet */}
-        <div className="bg-gray-100 p-4 md:p-6 lg:p-8 min-h-[700px]">
-          <h3 className="text-lg font-bold text-gray-900 mb-4">Preview</h3>
-          <div className="relative bg-white rounded-lg shadow-md border border-gray-200/80 p-4 md:p-6 lg:p-8 min-h-full flex flex-col gap-4 md:gap-6">
+        {/* Preview — same sheet size and style as invoice view */}
+        <div className="flex flex-col gap-4">
+          <h3 className="text-lg font-bold text-gray-900 px-1">Preview</h3>
+          <div className={PROFORMA_INVOICE_SHEET_CLASS}>
+          <div className="flex flex-col gap-4 md:gap-6">
           {/* Header with logo and title */}
-          <div className="flex items-start justify-between gap-4 mb-6 md:mb-8 border-b pb-4 md:pb-6">
+          <div className="flex items-start justify-between gap-4 mb-6 md:mb-14">
             <div className="min-w-0 flex-1">
               <div className="text-xl font-extrabold tracking-tight leading-tight text-gray-900 md:text-3xl">Invoice</div>
             </div>
@@ -1166,6 +1209,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
             className="mt-8 text-xs text-gray-400 text-left"
           />
           <ProformaDocumentStamp variant="card" />
+          </div>
           </div>
         </div>
         </div>

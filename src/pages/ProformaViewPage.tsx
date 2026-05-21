@@ -411,7 +411,7 @@ const ProformaViewPage: React.FC = () => {
     <div className="w-full min-h-0">
       <ProformaViewSideNotes notes={displayNotes || null} />
       {/* Fixed action bar — screen only, under header, clear of sidebar on md+ */}
-      <div className="print-hide fixed top-[calc(env(safe-area-inset-top,0px)+2.75rem+0.5rem+0.75rem)] md:top-[calc(3rem+0.75rem)] left-0 md:left-24 right-0 z-30 flex items-center justify-between gap-4 border-b border-gray-200 bg-base-100 px-6 py-3 shadow-sm">
+      <div className="print-hide fixed top-[calc(env(safe-area-inset-top,0px)+2.75rem+0.5rem+0.75rem)] md:top-[calc(3rem+0.75rem)] left-0 md:left-24 right-0 z-30 flex items-center justify-between gap-4 border-b border-gray-200 bg-white px-6 py-3 shadow-sm">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <ProformaBackToLeadButton href={financesTabPath} />
           <h1 className="min-w-0 truncate text-lg font-bold text-gray-900">
@@ -442,29 +442,43 @@ const ProformaViewPage: React.FC = () => {
           <button className="btn btn-error btn-sm gap-2" onClick={handleDelete} title="Delete"><TrashIcon className="w-5 h-5" /> Delete</button>
         </div>
       </div>
-      <div className="max-w-3xl mx-auto bg-white p-8 pt-16 print:bg-white print:pt-8 print:p-2">
+      <div className="min-h-[calc(100dvh-10rem)] bg-gray-100 px-4 pb-12 pt-20 md:px-8 print:bg-white print:p-0 print:min-h-0">
       {/* Inline style override for html2pdf/html2canvas color compatibility */}
       <style>{`
         @media print {
           body * {
             visibility: hidden !important;
           }
-          #invoice-print-area, #invoice-print-area * {
+          main,
+          main * {
             visibility: visible !important;
-            color: #222 !important;
-            background: transparent !important;
-            background-color: transparent !important;
-            box-shadow: none !important;
+          }
+          .print-hide {
+            display: none !important;
+          }
+          .app-main-scroll {
+            padding: 0 !important;
+            overflow: visible !important;
           }
           #invoice-print-area {
             position: absolute !important;
             left: 0 !important;
             top: 0 !important;
-            width: 100vw !important;
-            min-height: 100vh !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            min-height: auto !important;
             background: white !important;
             padding: 20px !important;
             margin: 0 !important;
+            box-shadow: none !important;
+            border: none !important;
+            border-radius: 0 !important;
+            overflow: visible !important;
+          }
+          #invoice-print-area,
+          #invoice-print-area * {
+            color: #222 !important;
+            box-shadow: none !important;
           }
           #invoice-print-area .text-primary, #invoice-print-area .text-purple-700, #invoice-print-area .text-primary-content {
             color: #006BB1 !important;
@@ -485,9 +499,6 @@ const ProformaViewPage: React.FC = () => {
             grid-template-columns: 1fr 1fr !important;
             gap: 2rem !important;
           }
-          .print-hide {
-            display: none !important;
-          }
         }
         @media screen {
           #invoice-print-area .text-primary, #invoice-print-area .text-purple-700, #invoice-print-area .text-primary-content {
@@ -500,7 +511,11 @@ const ProformaViewPage: React.FC = () => {
         }
       `}</style>
       {/* Info section (PDF target) */}
-      <div ref={invoiceRef} id="invoice-print-area" className="relative bg-white max-w-[1100px] w-full mx-auto p-8 overflow-hidden">
+      <div
+        ref={invoiceRef}
+        id="invoice-print-area"
+        className="relative mx-auto w-full max-w-[1100px] overflow-hidden rounded-lg border border-gray-200/90 bg-white p-8 shadow-[0_4px_24px_rgba(0,0,0,0.08)] md:p-10 print:rounded-none print:border-0 print:shadow-none"
+      >
         {/* Logo and Title for print and PDF */}
         <div className="flex items-start justify-between gap-4 mb-14">
           <div>
@@ -577,7 +592,7 @@ const ProformaViewPage: React.FC = () => {
         <ProformaDocumentStamp variant="card" />
       </div>
       {pdfLoading && (
-        <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center z-50">
+        <div className="print-hide fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center z-50">
           <div className="bg-white rounded-xl p-8 shadow-lg flex flex-col items-center">
             <span className="loading loading-spinner loading-lg text-primary mb-4"></span>
             <span className="text-lg font-medium text-gray-700">Generating PDF...</span>

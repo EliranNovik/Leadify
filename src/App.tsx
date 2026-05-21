@@ -122,6 +122,10 @@ const AppContentInner: React.FC = () => {
   const isSignedSalesPage = useMemo(() => location.pathname === '/sales/signed', [location.pathname]);
   const isCaseManagerPage = useMemo(() => location.pathname.startsWith('/case-manager'), [location.pathname]);
   const isContractPage = useMemo(() => location.pathname.includes('/contract') && !location.pathname.includes('/public-contract'), [location.pathname]);
+  const isCalendarPage = useMemo(
+    () => location.pathname === '/calendar' || location.pathname === '/outlook-calendar',
+    [location.pathname],
+  );
   const msalAccount = instance.getActiveAccount() || accounts[0];
   const userName = accounts.length > 0 ? accounts[0].name : undefined;
 
@@ -893,7 +897,11 @@ const AppContentInner: React.FC = () => {
                   onOpenMessaging={handleOpenMessaging}
                   isMenuOpen={isSidebarOpen}
                 />
-                <main className={`app-main-scroll min-h-0 w-full min-w-0 flex-1 overflow-y-auto overflow-x-auto ${showBottomNav ? 'main-with-bottom-nav-padding' : ''}`}>
+                <main
+                  className={`app-main-scroll min-h-0 w-full min-w-0 flex-1 overflow-y-auto ${
+                    isCalendarPage ? 'max-md:overflow-x-hidden' : 'overflow-x-auto'
+                  } ${showBottomNav ? 'main-with-bottom-nav-padding' : ''}`}
+                >
                   <Routes>
                     <Route path="/" element={<HomeEntryPage />} />
                     <Route path="/external-home" element={<RouteSuspense><LazyExternalUserHomePage /></RouteSuspense>} />

@@ -1606,6 +1606,19 @@ const CalendarPage: React.FC = () => {
     const main = Array.isArray(cat.misc_maincategory) ? cat.misc_maincategory[0] : cat.misc_maincategory;
     return main?.name ? `${cat.name} (${main.name})` : (cat.name || null);
   };
+
+  /** Meeting card category: subcategory + main on two lines when present. */
+  const formatCategoryCardDisplay = (
+    categoryId: string | number | null | undefined,
+    fallbackCategory?: string | number,
+  ) => {
+    const full = getCategoryName(categoryId, fallbackCategory) || 'N/A';
+    const parenMatch = full.match(/^(.+?)\s*\(([^)]+)\)\s*$/);
+    if (parenMatch) {
+      return { primary: parenMatch[1].trim(), secondary: `(${parenMatch[2].trim()})` };
+    }
+    return { primary: full, secondary: null };
+  };
   // Format source from joined misc_leadsource
   const getSourceDisplayFromJoin = (lead: any): string | null => {
     const src = lead?.misc_leadsource;
@@ -5252,7 +5265,7 @@ const CalendarPage: React.FC = () => {
     return (
       <div
         key={meeting.id}
-        className={`rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-base-300/45 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed bg-white overflow-hidden ${selectedRowId === meeting.id ? 'ring-2 ring-primary ring-offset-2' : ''}`}
+        className={`rounded-2xl p-6 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-base-300/45 group flex flex-col justify-between h-full min-h-[360px] relative pb-16 md:text-lg md:leading-relaxed bg-white overflow-hidden ${selectedRowId === meeting.id ? 'ring-2 ring-primary ring-offset-2' : ''}`}
       >
         {/* Bottom-right green corner with white check when meeting ended */}
         {hasPassedStage && (
@@ -5282,18 +5295,18 @@ const CalendarPage: React.FC = () => {
           {/* Header with Name, Badge */}
           <div className="mb-3 flex items-start justify-between gap-2 relative">
             <div className="flex items-center gap-2 flex-1 min-w-0">
-              <span className="text-xs md:text-base font-semibold text-gray-400 tracking-widest">
+              <span className="text-sm md:text-base font-semibold text-gray-400 tracking-widest">
                 {meeting.calendar_type === 'staff' ? 'STAFF' : (lead.lead_number || meeting.lead_number)}
               </span>
               <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-              <h3 className="text-xs md:text-sm font-extrabold text-gray-900 group-hover:text-primary transition-colors flex-1 break-words line-clamp-2">{lead.name || meeting.name}</h3>
+              <h3 className="text-sm md:text-base font-extrabold text-gray-900 group-hover:text-primary transition-colors flex-1 break-words line-clamp-2">{lead.name || meeting.name}</h3>
               {/* Calendar type badge - next to client name */}
               {(() => {
                 const badge = getCalendarTypeBadgeStyles(meeting.calendar_type);
                 if (!badge) return null;
                 return (
                   <span
-                    className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-extrabold border flex-shrink-0 shadow-sm"
+                    className="inline-flex items-center px-2.5 py-1 rounded-full text-sm font-extrabold border flex-shrink-0 shadow-sm"
                     style={{
                       background: badge.backgroundColor,
                       color: badge.textColor,
@@ -5336,10 +5349,10 @@ const CalendarPage: React.FC = () => {
             {/* Handler - only show for active_client meetings. Fixed w-16 so all employee avatars align across rows. */}
             {meeting.calendar_type === 'active_client' && (
               <div className="flex justify-between items-center py-1">
-                <span className="text-xs md:text-base font-semibold text-gray-500">Handler</span>
+                <span className="text-sm md:text-base font-semibold text-gray-500">Handler</span>
                 <div className="flex flex-col items-center gap-0.5 w-16 flex-shrink-0">
                   {renderEmployeeAvatar(lead.handler_id || lead.handler, 'lg', false)}
-                  <span className="text-xs font-bold text-gray-800 text-center leading-tight">
+                  <span className="text-sm font-bold text-gray-800 text-center leading-tight">
                     {getEmployeeDisplayName(lead.handler || meeting.handler) || '---'}
                   </span>
                 </div>
@@ -5351,10 +5364,10 @@ const CalendarPage: React.FC = () => {
               <>
                 {/* Manager */}
                 <div className="flex justify-between items-center py-1">
-                  <span className="text-xs md:text-base font-semibold text-gray-500">Manager</span>
+                  <span className="text-sm md:text-base font-semibold text-gray-500">Manager</span>
                   <div className="flex flex-col items-center gap-0.5 w-16 flex-shrink-0">
                     {renderEmployeeAvatar(lead.manager_id || lead.manager || meeting.meeting_manager_id || meeting.meeting_manager, 'lg', false)}
-                    <span className="text-xs font-bold text-gray-800 text-center leading-tight">
+                    <span className="text-sm font-bold text-gray-800 text-center leading-tight">
                       {getEmployeeDisplayName(lead.manager || meeting.meeting_manager) || '---'}
                     </span>
                   </div>
@@ -5362,10 +5375,10 @@ const CalendarPage: React.FC = () => {
 
                 {/* Helper */}
                 <div className="flex justify-between items-center py-1">
-                  <span className="text-xs md:text-base font-semibold text-gray-500">Helper</span>
+                  <span className="text-sm md:text-base font-semibold text-gray-500">Helper</span>
                   <div className="flex flex-col items-center gap-0.5 w-16 flex-shrink-0">
                     {renderEmployeeAvatar(lead.helper_id || lead.helper || meeting.helper, 'lg', false)}
-                    <span className="text-xs font-bold text-gray-800 text-center leading-tight">
+                    <span className="text-sm font-bold text-gray-800 text-center leading-tight">
                       {getEmployeeDisplayName(lead.helper || meeting.helper) || '---'}
                     </span>
                   </div>
@@ -5377,8 +5390,8 @@ const CalendarPage: React.FC = () => {
             {/* Staff Meeting Attendees */}
             {meeting.calendar_type === 'staff' && (
               <div className="flex items-center justify-between gap-2 py-1">
-                <span className="text-xs md:text-base font-semibold text-gray-500">Attendees</span>
-                <div className="text-sm md:text-lg font-bold text-gray-800 break-words text-right">
+                <span className="text-sm md:text-base font-semibold text-gray-500">Attendees</span>
+                <div className="text-base md:text-lg font-bold text-gray-800 break-words text-right">
                   {meeting.meeting_manager || 'No attendees'}
                 </div>
               </div>
@@ -5390,10 +5403,10 @@ const CalendarPage: React.FC = () => {
                 {/* Guest 1 */}
                 {meeting.extern1 && meeting.extern1 !== '--' && meeting.extern1 !== '' && (
                   <div className="flex justify-between items-center py-1">
-                    <span className="text-xs md:text-base font-semibold text-gray-500">Guest 1</span>
+                    <span className="text-sm md:text-base font-semibold text-gray-500">Guest 1</span>
                     <div className="flex flex-col items-center gap-0.5 w-16 flex-shrink-0">
                       {renderEmployeeAvatar(meeting.extern1, 'lg', false)}
-                      <span className="text-xs font-bold text-gray-800 text-center leading-tight">
+                      <span className="text-sm font-bold text-gray-800 text-center leading-tight">
                         {getEmployeeDisplayName(meeting.extern1) || '---'}
                       </span>
                     </div>
@@ -5402,10 +5415,10 @@ const CalendarPage: React.FC = () => {
                 {/* Guest 2 */}
                 {meeting.extern2 && meeting.extern2 !== '--' && meeting.extern2 !== '' && (
                   <div className="flex justify-between items-center py-1">
-                    <span className="text-xs md:text-base font-semibold text-gray-500">Guest 2</span>
+                    <span className="text-sm md:text-base font-semibold text-gray-500">Guest 2</span>
                     <div className="flex flex-col items-center gap-0.5 w-16 flex-shrink-0">
                       {renderEmployeeAvatar(meeting.extern2, 'lg', false)}
-                      <span className="text-xs font-bold text-gray-800 text-center leading-tight">
+                      <span className="text-sm font-bold text-gray-800 text-center leading-tight">
                         {getEmployeeDisplayName(meeting.extern2) || '---'}
                       </span>
                     </div>
@@ -5415,15 +5428,29 @@ const CalendarPage: React.FC = () => {
             )}
 
             {/* Category */}
-            <div className="flex justify-between items-center py-1">
-              <span className="text-xs md:text-base font-semibold text-gray-500">Category</span>
-              <span className="text-xs md:text-sm font-bold text-gray-800">{getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}</span>
-            </div>
+            {(() => {
+              const categoryLines = formatCategoryCardDisplay(lead.category_id, lead.category || meeting.category);
+              return (
+                <div className="flex justify-between items-start gap-2 py-1">
+                  <span className="text-sm md:text-base font-semibold text-gray-500 flex-shrink-0 pt-0.5">Category</span>
+                  <span className="flex flex-col items-end text-right max-w-[62%] min-w-0">
+                    <span className="text-sm md:text-base font-bold text-gray-800 leading-snug break-words line-clamp-2">
+                      {categoryLines.primary}
+                    </span>
+                    {categoryLines.secondary ? (
+                      <span className="text-xs md:text-sm font-semibold text-gray-600 leading-snug break-words line-clamp-1">
+                        {categoryLines.secondary}
+                      </span>
+                    ) : null}
+                  </span>
+                </div>
+              );
+            })()}
 
             {/* Amount */}
             <div className="flex justify-between items-center py-1">
-              <span className="text-xs md:text-base font-semibold text-gray-500">Value</span>
-              <span className="text-sm md:text-lg font-bold text-gray-800">
+              <span className="text-sm md:text-base font-semibold text-gray-500">Value</span>
+              <span className="text-base md:text-lg font-bold text-gray-800">
                 {(() => {
                   // Same logic as Clients.tsx balance badge
                   const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
@@ -5487,8 +5514,8 @@ const CalendarPage: React.FC = () => {
 
             {/* Location */}
             <div className="flex justify-between items-center py-1">
-              <span className="text-xs md:text-base font-semibold text-gray-500">Location</span>
-              <span className="text-sm md:text-lg font-bold text-gray-800">
+              <span className="text-sm md:text-base font-semibold text-gray-500">Location</span>
+              <span className="text-base md:text-lg font-bold text-gray-800">
                 {meeting.location || meeting.meeting_location ||
                   (meeting.meeting_location_id ? getLegacyMeetingLocation(meeting.meeting_location_id) : null) ||
                   'N/A'}
@@ -5497,12 +5524,12 @@ const CalendarPage: React.FC = () => {
 
             {/* Info Column - Probability, Complexity, Car, Flame, Paid marker */}
             <div className="flex justify-between items-center py-1">
-              <span className="text-xs md:text-base font-semibold text-gray-500">Info</span>
+              <span className="text-sm md:text-base font-semibold text-gray-500">Info</span>
               <div className="flex items-center gap-2 ml-2">
                 {/* Probability Display */}
                 {meeting.attendance_probability ? (
                   <div className="flex items-center gap-1">
-                    <span className="text-sm font-bold text-gray-800">
+                    <span className="text-base font-bold text-gray-800">
                       {meeting.attendance_probability === 'Low' ? 'L' :
                         meeting.attendance_probability === 'Medium' ? 'M' :
                           meeting.attendance_probability === 'High' ? 'H' :
@@ -5510,18 +5537,18 @@ const CalendarPage: React.FC = () => {
                               meeting.attendance_probability}
                     </span>
                     {typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) && (
-                      <span className="text-xs text-gray-500">({probabilityNumber}%)</span>
+                      <span className="text-sm text-gray-500">({probabilityNumber}%)</span>
                     )}
                   </div>
                 ) : typeof probabilityNumber === 'number' && !isNaN(probabilityNumber) ? (
                   <div className="flex items-center gap-1">
-                    <span className="text-sm font-bold text-gray-800">
+                    <span className="text-base font-bold text-gray-800">
                       {getLegacyProbabilityLetter(probabilityNumber)}
                     </span>
-                    <span className="text-xs text-gray-500">({probabilityNumber}%)</span>
+                    <span className="text-sm text-gray-500">({probabilityNumber}%)</span>
                   </div>
                 ) : (
-                  <span className="text-sm text-gray-500">N/A</span>
+                  <span className="text-base text-gray-500">N/A</span>
                 )}
 
                 {/* Complexity Icon */}
@@ -5560,7 +5587,7 @@ const CalendarPage: React.FC = () => {
 
           {/* Meeting Date (if available) */}
           {lead.meetings && lead.meetings.length > 0 && (
-            <div className="mt-3 flex items-center gap-2 text-xs md:text-base text-gray-500">
+            <div className="mt-3 flex items-center gap-2 text-sm md:text-base text-gray-500">
               <CalendarIcon className="w-4 h-4 md:w-5 md:h-5" />
               <span>Meeting: {lead.meetings[0].meeting_date}</span>
             </div>
@@ -6598,7 +6625,7 @@ const CalendarPage: React.FC = () => {
 
 
   return (
-    <div className="p-4 md:p-6 lg:p-8 text-base">
+    <div className="calendar-page-mobile-root text-base max-md:min-h-[calc(100dvh-5rem)] max-md:w-full max-md:max-w-full max-md:min-w-0 max-md:overflow-x-hidden max-md:bg-gray-100 max-md:px-0 max-md:pt-2 max-md:pb-0 px-4 pb-4 pt-2 md:bg-transparent md:p-6 lg:p-8">
       <style>
         {`
           .hide-scrollbar {
@@ -6609,174 +6636,26 @@ const CalendarPage: React.FC = () => {
             display: none;  /* Safari and Chrome */
           }
           @media (max-width: 767px) {
-            .calendar-action-fixed-mobile {
-              bottom: calc(1.5rem + env(safe-area-inset-bottom, 0px));
+            .calendar-page-mobile-root {
+              overflow-x: hidden;
+              max-width: 100%;
+              overscroll-behavior-x: none;
             }
-          }
-          @media (min-width: 768px) {
-            .calendar-action-fixed-mobile {
-              bottom: auto;
+            .calendar-page-mobile-root .calendar-meetings-cards-track {
+              width: 100%;
+              max-width: 100%;
+              overflow-x: hidden;
+            }
+            .calendar-page-mobile-root .calendar-meetings-cards-scroll {
+              width: 100%;
+              max-width: 100%;
+              overflow-x: auto;
+              overscroll-behavior-x: contain;
+              -webkit-overflow-scrolling: touch;
             }
           }
         `}
       </style>
-      {/* Date Navigation - count left, arrows center, actions dropdown right (no z-index so it doesn't overlay filters) */}
-      <div
-        className="flex items-center justify-between gap-2 md:gap-4 mb-6 md:mb-6 rounded-full bg-white/60 dark:bg-base-300/50 backdrop-blur-xl border border-white/30 dark:border-base-content/10 shadow-xl px-4 py-3 md:px-6 md:py-3.5 md:rounded-none md:bg-transparent md:backdrop-blur-none md:border-0 md:shadow-none fixed left-1/2 -translate-x-1/2 z-40 md:static md:left-auto md:translate-x-0 md:top-auto w-[calc(100%-2rem)] md:w-full max-w-4xl md:max-w-none mx-auto"
-        style={{
-          top: 'calc(env(safe-area-inset-top, 0px) + 2.75rem + 0.5rem)',
-        }}
-      >
-        <div className="flex-shrink-0 flex items-center">
-          <span className="md:hidden inline-flex items-center justify-center min-w-[1.75rem] h-7 px-2 rounded-full text-sm font-bold text-white" style={{ backgroundColor: '#3b28c7' }}>
-            {filteredMeetings.length}
-          </span>
-          <span className="hidden md:inline text-sm md:text-base font-bold" style={{ color: '#3b28c7' }}>
-            {filteredMeetings.length} meetings
-          </span>
-        </div>
-
-        <div className="flex items-center justify-center gap-2 md:gap-4 flex-1 min-w-0">
-          <button
-            onClick={goToPreviousDay}
-            className="btn btn-circle btn-outline btn-primary btn-md md:btn-md flex-shrink-0"
-            title="Previous Day"
-          >
-            <ChevronLeftIcon className="w-6 h-6 md:w-6 md:h-6" />
-          </button>
-          <div className="flex items-center gap-2 md:gap-3 min-w-0 flex-1 justify-center md:flex-initial">
-            <span className="text-sm font-semibold text-center sm:text-base md:text-lg md:text-left truncate max-w-[45vw] md:max-w-none">
-              {appliedFromDate === appliedToDate ? (
-                (() => {
-                  const d = new Date(appliedFromDate);
-                  const day = String(d.getDate()).padStart(2, '0');
-                  const monthNum = String(d.getMonth() + 1).padStart(2, '0');
-                  const weekdayLong = d.toLocaleDateString('en-US', { weekday: 'long' });
-                  const weekdayShort = d.toLocaleDateString('en-US', { weekday: 'short' });
-                  const monthLong = d.toLocaleDateString('en-US', { month: 'long' });
-                  const year = String(d.getFullYear()).slice(-2);
-                  return (
-                    <>
-                      <span className="md:hidden">{weekdayShort}, {day}.{monthNum}.{year}</span>
-                      <span className="hidden md:inline">{weekdayLong}, {day}. {monthLong} {year}</span>
-                    </>
-                  );
-                })()
-              ) : (
-                (() => {
-                  const fmt = (dateStr: string, short: boolean) => {
-                    const d = new Date(dateStr);
-                    const day = String(d.getDate()).padStart(2, '0');
-                    const monthNum = String(d.getMonth() + 1).padStart(2, '0');
-                    const year = String(d.getFullYear()).slice(-2);
-                    if (short) return `${day}/${monthNum}/${year}`;
-                    const month = d.toLocaleDateString('en-US', { month: 'long' });
-                    return `${day}. ${month} ${year}`;
-                  };
-                  return (
-                    <>
-                      <span className="md:hidden">{fmt(appliedFromDate, true)} – {fmt(appliedToDate, true)}</span>
-                      <span className="hidden md:inline">{fmt(appliedFromDate, false)} - {fmt(appliedToDate, false)}</span>
-                    </>
-                  );
-                })()
-              )}
-            </span>
-            <button
-              onClick={goToToday}
-              className="hidden md:inline-flex btn btn-sm btn-primary flex-shrink-0"
-              title="Go to Today"
-            >
-              Today
-            </button>
-          </div>
-          <button
-            onClick={goToNextDay}
-            className="btn btn-circle btn-outline btn-primary btn-md md:btn-md flex-shrink-0"
-            title="Next Day"
-          >
-            <ChevronRightIcon className="w-6 h-6 md:w-6 md:h-6" />
-          </button>
-        </div>
-
-        <div className="flex-shrink-0" ref={actionMenuDropdownRef}>
-          <button
-            className="btn btn-circle btn-md md:btn-lg bg-white border-2 hover:bg-gray-50 shadow-md hover:shadow-lg transition-all duration-200"
-            style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-            title="Actions"
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowActionMenuDropdown(!showActionMenuDropdown);
-            }}
-          >
-            <EllipsisVerticalIcon className="w-5 h-5 md:w-6 md:h-6" />
-          </button>
-        </div>
-      </div>
-
-      {/* Action dropdown portal - overlays filters/table without date bar covering filters */}
-      {showActionMenuDropdown && actionDropdownPosition && createPortal(
-        <div
-          data-action-dropdown
-          className="w-56 bg-white border border-gray-200 rounded-xl shadow-2xl overflow-hidden"
-          style={{
-            position: 'fixed',
-            top: actionDropdownPosition.top,
-            right: actionDropdownPosition.right,
-            zIndex: 9999,
-          }}
-        >
-          <div className="py-2">
-            <button
-              className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
-              onClick={() => {
-                openAssignStaffModal();
-                setShowActionMenuDropdown(false);
-              }}
-            >
-              <UserGroupIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
-              <span className="text-sm font-semibold text-gray-700">Assign Staff</span>
-            </button>
-            <button
-              className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
-              onClick={() => {
-                setSelectedDateForMeeting(new Date());
-                setSelectedTimeForMeeting('09:00');
-                setIsTeamsMeetingModalOpen(true);
-                setShowActionMenuDropdown(false);
-              }}
-            >
-              <VideoCameraIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
-              <span className="text-sm font-semibold text-gray-700">Create Internal Meeting</span>
-            </button>
-            <button
-              className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
-              onClick={() => {
-                setViewMode(viewMode === 'cards' ? 'list' : 'cards');
-                setShowActionMenuDropdown(false);
-              }}
-            >
-              {viewMode === 'cards' ? (
-                <Bars3Icon className="w-5 h-5" style={{ color: '#3b28c7' }} />
-              ) : (
-                <Squares2X2Icon className="w-5 h-5" style={{ color: '#3b28c7' }} />
-              )}
-              <span className="text-sm font-semibold text-gray-700">{viewMode === 'cards' ? 'Switch to List View' : 'Switch to Card View'}</span>
-            </button>
-            <button
-              className="md:hidden w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
-              onClick={() => {
-                setShowMobileFiltersModal(true);
-                setShowActionMenuDropdown(false);
-              }}
-            >
-              <FunnelIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
-              <span className="text-sm font-semibold text-gray-700">Filters</span>
-            </button>
-          </div>
-        </div>,
-        document.body
-      )}
 
       {isCustomAddressModalOpen && (
         <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
@@ -6810,9 +6689,6 @@ const CalendarPage: React.FC = () => {
           </div>
         </div>
       )}
-      {/* Spacer on mobile so content starts below the fixed date bar (under header) */}
-      <div className="h-32 flex-shrink-0 md:hidden" aria-hidden="true" />
-
       {/* Filters - desktop only; on mobile moved to modal */}
       <div className="mb-6 w-full hidden md:block">
         <div className="flex flex-wrap gap-4 w-full">
@@ -7074,8 +6950,170 @@ const CalendarPage: React.FC = () => {
       )}
 
 
+      {/* Date navigation: centered on mobile, sticky above meeting cards */}
+      <div className="max-md:sticky max-md:top-0 max-md:z-40 max-md:flex max-md:w-full max-md:justify-center max-md:px-4 max-md:mb-2 md:contents">
+      <div
+        className="calendar-date-bar-mobile flex items-center justify-between gap-2 md:gap-4 md:mb-6 rounded-full bg-white/90 dark:bg-base-300/90 backdrop-blur-xl border border-gray-200/80 dark:border-base-content/10 shadow-xl px-4 py-3 md:px-6 md:py-3.5 md:rounded-none md:bg-transparent md:backdrop-blur-none md:border-0 md:shadow-none md:static w-full max-md:max-w-lg md:max-w-4xl md:mx-auto"
+      >
+        <div className="flex-shrink-0 flex items-center">
+          <span className="md:hidden inline-flex items-center justify-center min-w-[1.75rem] h-7 px-2 rounded-full text-sm font-bold text-white" style={{ backgroundColor: '#3b28c7' }}>
+            {filteredMeetings.length}
+          </span>
+          <span className="hidden md:inline text-sm md:text-base font-bold" style={{ color: '#3b28c7' }}>
+            {filteredMeetings.length} meetings
+          </span>
+        </div>
+
+        <div className="flex items-center justify-center gap-2 md:gap-4 flex-1 min-w-0">
+          <button
+            onClick={goToPreviousDay}
+            className="btn btn-circle btn-outline btn-primary btn-md md:btn-md flex-shrink-0"
+            title="Previous Day"
+          >
+            <ChevronLeftIcon className="w-6 h-6 md:w-6 md:h-6" />
+          </button>
+          <div className="flex items-center gap-2 md:gap-3 min-w-0 flex-1 justify-center md:flex-initial">
+            <span className="text-sm font-semibold text-center sm:text-base md:text-lg md:text-left truncate max-w-[45vw] md:max-w-none">
+              {appliedFromDate === appliedToDate ? (
+                (() => {
+                  const d = new Date(appliedFromDate);
+                  const day = String(d.getDate()).padStart(2, '0');
+                  const monthNum = String(d.getMonth() + 1).padStart(2, '0');
+                  const weekdayLong = d.toLocaleDateString('en-US', { weekday: 'long' });
+                  const weekdayShort = d.toLocaleDateString('en-US', { weekday: 'short' });
+                  const monthLong = d.toLocaleDateString('en-US', { month: 'long' });
+                  const year = String(d.getFullYear()).slice(-2);
+                  return (
+                    <>
+                      <span className="md:hidden">{weekdayShort}, {day}.{monthNum}.{year}</span>
+                      <span className="hidden md:inline">{weekdayLong}, {day}. {monthLong} {year}</span>
+                    </>
+                  );
+                })()
+              ) : (
+                (() => {
+                  const fmt = (dateStr: string, short: boolean) => {
+                    const d = new Date(dateStr);
+                    const day = String(d.getDate()).padStart(2, '0');
+                    const monthNum = String(d.getMonth() + 1).padStart(2, '0');
+                    const year = String(d.getFullYear()).slice(-2);
+                    if (short) return `${day}/${monthNum}/${year}`;
+                    const month = d.toLocaleDateString('en-US', { month: 'long' });
+                    return `${day}. ${month} ${year}`;
+                  };
+                  return (
+                    <>
+                      <span className="md:hidden">{fmt(appliedFromDate, true)} – {fmt(appliedToDate, true)}</span>
+                      <span className="hidden md:inline">{fmt(appliedFromDate, false)} - {fmt(appliedToDate, false)}</span>
+                    </>
+                  );
+                })()
+              )}
+            </span>
+            <button
+              onClick={goToToday}
+              className="hidden md:inline-flex btn btn-sm btn-primary flex-shrink-0"
+              title="Go to Today"
+            >
+              Today
+            </button>
+          </div>
+          <button
+            onClick={goToNextDay}
+            className="btn btn-circle btn-outline btn-primary btn-md md:btn-md flex-shrink-0"
+            title="Next Day"
+          >
+            <ChevronRightIcon className="w-6 h-6 md:w-6 md:h-6" />
+          </button>
+        </div>
+
+        <div className="flex-shrink-0" ref={actionMenuDropdownRef}>
+          <button
+            className="btn btn-circle btn-md md:btn-lg bg-white border-2 hover:bg-gray-50 shadow-md hover:shadow-lg transition-all duration-200"
+            style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+            title="Actions"
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowActionMenuDropdown(!showActionMenuDropdown);
+            }}
+          >
+            <EllipsisVerticalIcon className="w-5 h-5 md:w-6 md:h-6" />
+          </button>
+        </div>
+      </div>
+      </div>
+
+      {showActionMenuDropdown && actionDropdownPosition && createPortal(
+        <div
+          data-action-dropdown
+          className="w-56 bg-white border border-gray-200 rounded-xl shadow-2xl overflow-hidden"
+          style={{
+            position: 'fixed',
+            top: actionDropdownPosition.top,
+            right: actionDropdownPosition.right,
+            zIndex: 9999,
+          }}
+        >
+          <div className="py-2">
+            <button
+              className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+              onClick={() => {
+                openAssignStaffModal();
+                setShowActionMenuDropdown(false);
+              }}
+            >
+              <UserGroupIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              <span className="text-sm font-semibold text-gray-700">Assign Staff</span>
+            </button>
+            <button
+              className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+              onClick={() => {
+                setSelectedDateForMeeting(new Date());
+                setSelectedTimeForMeeting('09:00');
+                setIsTeamsMeetingModalOpen(true);
+                setShowActionMenuDropdown(false);
+              }}
+            >
+              <VideoCameraIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              <span className="text-sm font-semibold text-gray-700">Create Internal Meeting</span>
+            </button>
+            <button
+              className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+              onClick={() => {
+                setViewMode(viewMode === 'cards' ? 'list' : 'cards');
+                setShowActionMenuDropdown(false);
+              }}
+            >
+              {viewMode === 'cards' ? (
+                <Bars3Icon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              ) : (
+                <Squares2X2Icon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              )}
+              <span className="text-sm font-semibold text-gray-700">{viewMode === 'cards' ? 'Switch to List View' : 'Switch to Card View'}</span>
+            </button>
+            <button
+              className="md:hidden w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+              onClick={() => {
+                setShowMobileFiltersModal(true);
+                setShowActionMenuDropdown(false);
+              }}
+            >
+              <FunnelIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              <span className="text-sm font-semibold text-gray-700">Filters</span>
+            </button>
+          </div>
+        </div>,
+        document.body
+      )}
+
       {/* Meetings list: card rows + 3D shadow via .calendar-page-meetings-wrap in index.css */}
-      <div className="mt-6 bg-base-200/60 rounded-xl overflow-x-auto calendar-page-meetings-wrap px-2 py-3 sm:px-3">
+      <div
+        className={
+          viewMode === 'cards'
+            ? 'max-md:mt-0 md:mt-6 calendar-page-meetings-wrap max-md:overflow-visible max-md:px-0 md:bg-base-200/60 md:rounded-xl md:overflow-x-auto md:px-2 md:py-3 sm:md:px-3'
+            : 'max-md:mt-0 md:mt-6 max-md:mx-4 bg-base-200/60 rounded-xl overflow-x-auto calendar-page-meetings-wrap px-2 py-3 sm:px-3'
+        }
+      >
         {/* Desktop Table - Show when viewMode is 'list' */}
         {viewMode === 'list' && (
           <table className="calendar-page-meetings-table table w-full text-sm sm:text-base md:text-lg">
@@ -7151,18 +7189,18 @@ const CalendarPage: React.FC = () => {
               </div>
             ) : filteredMeetings.length > 0 ? (
               <>
-                {/* Mobile: Horizontal Scrolling */}
-                <div className="md:hidden">
-                  <div className="flex gap-4 p-4 overflow-x-auto snap-x snap-mandatory hide-scrollbar">
+                {/* Mobile: full-width grey track; horizontal scroll only inside (no page pan) */}
+                <div className="md:hidden calendar-meetings-cards-track w-full min-w-0">
+                  <div className="calendar-meetings-cards-scroll flex gap-4 snap-x snap-mandatory hide-scrollbar scroll-px-5 pl-5 pr-4 py-2">
                     {filteredMeetings.map((meeting) => (
-                      <div key={meeting.id} className="flex-shrink-0 w-80 snap-start">
+                      <div key={meeting.id} className="flex-shrink-0 w-[22rem] snap-start">
                         {renderMeetingCard(meeting)}
                       </div>
                     ))}
                   </div>
                   {/* Scroll indicator */}
                   {filteredMeetings.length > 1 && (
-                    <div className="flex justify-center mt-2 gap-1">
+                    <div className="flex justify-center mt-2 gap-1 px-4">
                       <div className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
                         Swipe to see more cards ({filteredMeetings.length} total)
                       </div>
@@ -7200,8 +7238,8 @@ const CalendarPage: React.FC = () => {
         )}
       </div>
 
-      {/* Total Amount - move this up above department tables */}
-      <div className="mt-6 flex justify-end">
+      {/* Total Amount */}
+      <div className="mt-2 max-md:mt-2 md:mt-4 flex justify-end max-md:px-4">
         <div className="card bg-primary text-primary-content p-4 shadow-lg text-base">
           <div className="flex items-center gap-3">
             <CurrencyDollarIcon className="w-7 h-7" />
