@@ -60,6 +60,11 @@ const BLOCKED_SENDER_EMAILS = new Set([
   'khawaish@usareaimmigrationservices.com',
   'message@shidurit.com',
   'contact@legalimmigrationisrael.com',
+  'artalegal@googlegroups.com',
+  'noreply@business.facebook.com',
+  'newsletter@mag.genealogie.com',
+  'ancestry@email.ancestry.de',
+  'publicity@genealogy.org.il',
 ]);
 
 // Blocked domains to ignore (add domain names here, e.g., 'example.com')
