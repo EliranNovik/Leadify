@@ -120,6 +120,8 @@ serve(async (req) => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${serviceKey}`,
+          apikey: serviceKey,
           'x-cron-secret': cronSecret,
         },
         body: JSON.stringify({ limit, dryRun, debug }),

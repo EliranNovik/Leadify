@@ -16,6 +16,7 @@ CREATE EXTENSION IF NOT EXISTS pg_net WITH SCHEMA extensions;
 -- One-time Vault setup (run manually with your values; do NOT commit secrets):
 -- SELECT vault.create_secret('https://YOUR_PROJECT_REF.supabase.co', 'google_sheets_project_url');
 -- SELECT vault.create_secret('YOUR_GOOGLE_SHEETS_SYNC_CRON_SECRET', 'google_sheets_sync_cron_secret');
+-- SELECT vault.create_secret('YOUR_SUPABASE_SERVICE_ROLE_KEY', 'google_sheets_supabase_service_role_key');
 
 -- Remove previous job if re-applying
 SELECT cron.unschedule(jobid)
@@ -35,6 +36,16 @@ SELECT cron.schedule(
     ) || '/functions/v1/google-sheets-conversion-sync-all',
     headers := jsonb_build_object(
       'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (
+        SELECT decrypted_secret
+        FROM vault.decrypted_secrets
+        WHERE name = 'google_sheets_supabase_service_role_key'
+      ),
+      'apikey', (
+        SELECT decrypted_secret
+        FROM vault.decrypted_secrets
+        WHERE name = 'google_sheets_supabase_service_role_key'
+      ),
       'x-cron-secret', (
         SELECT decrypted_secret
         FROM vault.decrypted_secrets

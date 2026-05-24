@@ -16,6 +16,14 @@ function resolveCronSecret() {
   );
 }
 
+function resolveSupabaseInvokeKey() {
+  return (
+    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ||
+    process.env.SUPABASE_ANON_KEY?.trim() ||
+    null
+  );
+}
+
 async function runSyncCycle(trigger = 'scheduled') {
   if (isRunning) {
     console.log('⏸️  Google Sheets conversion sync already running, skipping...');
@@ -24,9 +32,16 @@ async function runSyncCycle(trigger = 'scheduled') {
 
   const supabaseUrl = process.env.SUPABASE_URL?.replace(/\/$/, '');
   const cronSecret = resolveCronSecret();
+  const invokeKey = resolveSupabaseInvokeKey();
 
   if (!supabaseUrl) {
     console.error('❌ Google Sheets conversion sync: SUPABASE_URL is not configured');
+    return;
+  }
+  if (!invokeKey) {
+    console.error(
+      '❌ Google Sheets conversion sync: set SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_ANON_KEY)',
+    );
     return;
   }
   if (!cronSecret) {
@@ -42,6 +57,8 @@ async function runSyncCycle(trigger = 'scheduled') {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        Authorization: `Bearer ${invokeKey}`,
+        apikey: invokeKey,
         'x-cron-secret': cronSecret,
       },
       body: JSON.stringify({ limit: 200 }),
