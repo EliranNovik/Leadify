@@ -33,15 +33,34 @@ export interface WhatsAppAPITemplate {
   }>;
 }
 
+let templatesCache: WhatsAppTemplate[] | null = null;
+let templatesLoadPromise: Promise<WhatsAppTemplate[]> | null = null;
+
 export async function fetchWhatsAppTemplates(): Promise<WhatsAppTemplate[]> {
-  try {
-    // Fetch templates directly from database - simpler and more reliable
-    console.log('🔍 Fetching WhatsApp templates from database...');
-    return await fetchTemplatesFromDatabase();
-  } catch (error) {
-    console.error('❌ Error fetching WhatsApp templates:', error);
-    return [];
+  if (templatesCache) {
+    return templatesCache;
   }
+  if (templatesLoadPromise) {
+    return templatesLoadPromise;
+  }
+  templatesLoadPromise = fetchTemplatesFromDatabase()
+    .then((templates) => {
+      templatesCache = templates;
+      return templates;
+    })
+    .catch((error) => {
+      console.error('❌ Error fetching WhatsApp templates:', error);
+      return [] as WhatsAppTemplate[];
+    })
+    .finally(() => {
+      templatesLoadPromise = null;
+    });
+  return templatesLoadPromise;
+}
+
+/** Clear in-memory template cache (e.g. after sync from API). */
+export function invalidateWhatsAppTemplatesCache(): void {
+  templatesCache = null;
 }
 
 // Function to fetch from database (prefer app view for zero client-side mapping)
@@ -217,6 +236,7 @@ export async function refreshTemplatesFromAPI(): Promise<{success: boolean, mess
     const data = await response.json();
     
     if (data.success) {
+      invalidateWhatsAppTemplatesCache();
       console.log('✅ Templates synced successfully');
       return { success: true, message: data.message || `Successfully synced ${data.new || 0} new, ${data.updated || 0} updated templates` };
     }
@@ -228,12 +248,32 @@ export async function refreshTemplatesFromAPI(): Promise<{success: boolean, mess
   }
 }
 
+/** True when template is approved/active (handles bool, 't'/'f', and legacy string values). */
+export function isWhatsAppTemplateActive(template: { active?: unknown }): boolean {
+  const value = template.active;
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0 || value == null) return false;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'f' || normalized === 'false' || normalized === '0' || normalized === 'no') {
+      return false;
+    }
+    return normalized === 't' || normalized === 'true' || normalized === '1' || normalized === 'yes';
+  }
+  return false;
+}
+
+export function filterActiveTemplates(templates: WhatsAppTemplate[]): WhatsAppTemplate[] {
+  return templates.filter(isWhatsAppTemplateActive);
+}
+
 export function filterTemplates(templates: WhatsAppTemplate[], searchTerm: string): WhatsAppTemplate[] {
-  if (!searchTerm.trim()) return templates;
-  
+  const activeTemplates = filterActiveTemplates(templates);
+  if (!searchTerm.trim()) return activeTemplates;
+
   const lowerSearchTerm = searchTerm.toLowerCase();
-  return templates.filter(template => 
-    template.title?.toLowerCase().includes(lowerSearchTerm)
+  return activeTemplates.filter((template) =>
+    template.title?.toLowerCase().includes(lowerSearchTerm),
   );
 }
 

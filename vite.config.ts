@@ -38,10 +38,12 @@ export default defineConfig({
     ],
     proxy: {
       '/api': {
-        target:  'https://leadify-crm-backend.onrender.com',
+        // Local backend (127.0.0.1 avoids IPv6 ::1 ECONNREFUSED). Default port 3001 matches backend/.env PORT.
+        // Override: VITE_API_PROXY_TARGET=http://127.0.0.1:3002 or https://leadify-crm-backend.onrender.com
+        target: process.env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:3001',
         changeOrigin: true,
-        secure: false
-      }
-    }
+        secure: false,
+      },
+    },
   }
 })

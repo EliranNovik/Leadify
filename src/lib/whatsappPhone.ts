@@ -12,16 +12,10 @@ export function pickWhatsAppPhoneFromContactFields(
   return (phoneOk ? p : mobileOk ? m : '') || '';
 }
 
-/** Map DB language codes to Meta template language codes. */
+/** Pass through Meta template language code as stored in whatsapp_templates_v2. */
 export function toWhatsAppApiLanguageCode(lang: string | null | undefined): string {
-  const code = (lang || 'en').trim();
-  if (!code) return 'en_US';
-  const lower = code.toLowerCase();
-  if (lower === 'en') return 'en_US';
-  if (lower.startsWith('en_')) return code;
-  if (lower === 'he') return 'he';
-  if (lower.startsWith('he_')) return code;
-  return code;
+  const code = lang != null ? String(lang).trim() : '';
+  return code || 'en';
 }
 
 /** Digits-only phone for WhatsApp Cloud API `to` field (Israel defaults to 972). */

@@ -3,6 +3,17 @@
  * Kept out of InteractionsTab.tsx to shrink the component.
  */
 
+import type { SupabaseClient } from '@supabase/supabase-js';
+
+/** Max wait for address-only ilike matching (recipient_list scans are slow at scale). */
+const EMAIL_ADDRESS_MATCH_TIMEOUT_MS = 3500;
+
+export const EMAIL_TIMELINE_SELECT =
+  'id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments, contact_id, client_id, legacy_id, contact:leads_contact!emails_contact_id_fkey(id, name)';
+
+export const EMAIL_MODAL_SELECT =
+  'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, contact_id, client_id, legacy_id, contact:leads_contact!emails_contact_id_fkey(id, name)';
+
 export const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
 
@@ -126,4 +137,101 @@ export function stableEmailRowId(row: { message_id?: string | null; id?: string 
     return String(row.id);
   }
   return '';
+}
+
+function emailAddressOnlyFilters(emailFilters: string[]): string[] {
+  return emailFilters.filter(
+    (f) => !f.startsWith('client_id.eq.') && !f.startsWith('legacy_id.eq.')
+  );
+}
+
+function mergeEmailRowsById(primary: any[], secondary: any[], limit: number): any[] {
+  const seen = new Set<string>();
+  const merged: any[] = [];
+  for (const row of [...primary, ...secondary]) {
+    const key = row?.id != null ? String(row.id) : '';
+    if (key && seen.has(key)) continue;
+    if (key) seen.add(key);
+    merged.push(row);
+  }
+  merged.sort((a, b) => {
+    const ta = a.sent_at ? new Date(a.sent_at).getTime() : 0;
+    const tb = b.sent_at ? new Date(b.sent_at).getTime() : 0;
+    return tb - ta;
+  });
+  return merged.slice(0, limit);
+}
+
+function withQueryTimeout<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error('email_query_timeout')), ms);
+    }),
+  ]);
+}
+
+/**
+ * Fetch emails for a lead timeline: indexed client_id/legacy_id first, then optional
+ * address matching with a short timeout so ilike on recipient_list cannot block the tab.
+ */
+export async function fetchLeadEmailsForTimeline(
+  supabaseClient: SupabaseClient,
+  options: {
+    isLegacyLead: boolean;
+    legacyId: number | null;
+    clientId: string | number | null | undefined;
+    emailFilters: string[];
+    limit: number;
+    select?: string;
+    /** When false (default), only indexed client_id/legacy_id — no slow recipient_list ilike. */
+    matchByAddress?: boolean;
+  }
+): Promise<{ data: any[]; error: unknown }> {
+  const {
+    isLegacyLead,
+    legacyId,
+    clientId,
+    emailFilters,
+    limit,
+    select = EMAIL_TIMELINE_SELECT,
+    matchByAddress = false,
+  } = options;
+
+  const buildBase = () =>
+    supabaseClient.from('emails').select(select).limit(limit).order('sent_at', { ascending: false });
+
+  let fastQuery = buildBase();
+  if (isLegacyLead && legacyId != null && !Number.isNaN(legacyId)) {
+    fastQuery = fastQuery.eq('legacy_id', legacyId);
+  } else if (clientId != null && clientId !== '') {
+    fastQuery = fastQuery.eq('client_id', clientId);
+  } else {
+    return { data: [], error: null };
+  }
+
+  const fastResult = await fastQuery;
+  const fastRows = fastResult.data || [];
+  let error = fastResult.error;
+
+  if (!matchByAddress) {
+    return { data: fastRows, error };
+  }
+
+  const addressFilters = emailAddressOnlyFilters(emailFilters);
+  if (addressFilters.length === 0) {
+    return { data: fastRows, error };
+  }
+
+  const addressQuery = buildBase().or(addressFilters.join(','));
+  try {
+    const addressResult = await withQueryTimeout(addressQuery, EMAIL_ADDRESS_MATCH_TIMEOUT_MS);
+    const addressRows = addressResult.data || [];
+    return {
+      data: mergeEmailRowsById(fastRows, addressRows, limit),
+      error,
+    };
+  } catch {
+    return { data: fastRows, error };
+  }
 }

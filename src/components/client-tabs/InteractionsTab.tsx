@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, Fragment, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useCallback, Fragment, useMemo, useRef } from 'react';
 import { ClientTabProps, ClientInteractionsCache } from '../../types/client';
 import EmojiPicker from 'emoji-picker-react';
 import {
@@ -74,7 +74,7 @@ import {
   collectClientEmails,
   buildEmailFilterClauses,
   normalizeEmailForFilter,
-  applyLeadEmailsOrFilterToQuery,
+  fetchLeadEmailsForTimeline,
   stableEmailRowId,
 } from '../../lib/interactions/emailFilters';
 import { processWhatsAppTemplateMessage } from '../../lib/interactions/whatsappTimeline';
@@ -564,7 +564,18 @@ const replaceTemplateTokens = async (content: string, client: any) => {
 };
 
 // Build email-to-display-name mapping using users + tenants_employee join (one query when FK exists)
+let cachedEmployeeEmailToNameMap: Map<string, string> | null = null;
+let employeeEmailToNameMapPromise: Promise<Map<string, string>> | null = null;
+
 const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
+  if (cachedEmployeeEmailToNameMap) {
+    return cachedEmployeeEmailToNameMap;
+  }
+  if (employeeEmailToNameMapPromise) {
+    return employeeEmailToNameMapPromise;
+  }
+
+  employeeEmailToNameMapPromise = (async () => {
   const emailToNameMap = new Map<string, string>();
   try {
     const { data: usersWithEmployee, error } = await supabase
@@ -582,6 +593,7 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
           emailToNameMap.set(patternEmail, displayName);
         }
       });
+      cachedEmployeeEmailToNameMap = emailToNameMap;
       return emailToNameMap;
     }
     // Fallback: two queries when join/FK not available
@@ -607,7 +619,13 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
   } catch (error) {
     console.error('Error building employee email-to-name map:', error);
   }
+  cachedEmployeeEmailToNameMap = emailToNameMap;
   return emailToNameMap;
+  })().finally(() => {
+    employeeEmailToNameMapPromise = null;
+  });
+
+  return employeeEmailToNameMapPromise;
 };
 
 const emailTemplates = [
@@ -745,6 +763,92 @@ async function fetchCurrentUserFullName() {
 const FETCH_BATCH_SIZE = 500;
 const EMAIL_MODAL_LIMIT = 200;
 
+/** Survives Strict Mode remounts — prevents duplicate full timeline fetches per lead. */
+const interactionsFetchInFlight = new Map<string, Promise<void>>();
+
+function runInteractionsFetchOnce(key: string, run: () => Promise<void>): Promise<void> {
+  const existing = interactionsFetchInFlight.get(key);
+  if (existing) return existing;
+  const promise = run().finally(() => {
+    interactionsFetchInFlight.delete(key);
+  });
+  interactionsFetchInFlight.set(key, promise);
+  return promise;
+}
+
+let cachedEmployeePhoneMap: Map<string, string> | null = null;
+let cachedEmployeePhotoMap: Map<string, string> | null = null;
+let employeeMapsLoadPromise: Promise<void> | null = null;
+
+function readInitialInteractionsFromStorage(
+  clientId: string | number | null | undefined,
+  interactionsCache: ClientInteractionsCache | null | undefined,
+  clientManualInteractions?: unknown
+): Interaction[] {
+  if (!clientId) return [];
+
+  let fromSession: Interaction[] = [];
+  try {
+    const persisted = sessionStorage.getItem(`interactions_${clientId}`);
+    if (persisted) {
+      const parsed = JSON.parse(persisted);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        fromSession = parsed;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const fromCache =
+    interactionsCache && interactionsCache.leadId === clientId
+      ? ((interactionsCache.interactions || []) as Interaction[])
+      : [];
+
+  const fromProp = Array.isArray(clientManualInteractions)
+    ? (clientManualInteractions as Interaction[])
+    : [];
+
+  let best: Interaction[] = [];
+  if (fromSession.length > 0 && fromCache.length > 0) {
+    best = fromSession.length >= fromCache.length ? fromSession : fromCache;
+  } else if (fromSession.length > 0) {
+    best = fromSession;
+  } else if (fromCache.length > 0) {
+    best = fromCache;
+  }
+
+  if (best.length > 0) return best;
+  return fromProp;
+}
+
+function sortInteractionsByDate(items: Interaction[]): Interaction[] {
+  return [...items].sort((a, b) => {
+    const ta = a.raw_date ? new Date(a.raw_date).getTime() : 0;
+    const tb = b.raw_date ? new Date(b.raw_date).getTime() : 0;
+    return tb - ta;
+  });
+}
+
+/** Lightweight map for instant paint from client.manual_interactions before network fetch completes. */
+function mapManualInteractionsQuick(
+  rows: any[],
+  clientName: string,
+  userFullName: string | null
+): Interaction[] {
+  return rows.map((i) => ({
+    ...i,
+    employee:
+      i.direction === 'out'
+        ? i.employee || userFullName || 'You'
+        : i.contact_name || clientName,
+    recipient_name:
+      i.recipient_name ||
+      (i.direction === 'out' ? i.contact_name || clientName : userFullName || 'You'),
+    raw_date: i.raw_date || new Date().toISOString(),
+  }));
+}
+
 // Helper component to handle employee avatar with image error fallback
 const EmployeeAvatar: React.FC<{ photo: string | null; name: string; initials: string; avatarBg: string }> = ({ photo, name, initials, avatarBg }) => {
   const [imageError, setImageError] = React.useState(false);
@@ -789,49 +893,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   // Use local state for interactions - initialize from sessionStorage, parent cache, or empty
   // sessionStorage is written on every timeline change (incl. manual adds); parent cache may lag
   // until fetchInteractions completes — prefer session when it is at least as complete as cache.
-  const [interactions, setInteractions] = useState<Interaction[]>(() => {
-    if (!client?.id) return [];
-
-    let fromSession: Interaction[] = [];
-    try {
-      const persistedKey = `interactions_${client.id}`;
-      const persisted = sessionStorage.getItem(persistedKey);
-      if (persisted) {
-        try {
-          const parsed = JSON.parse(persisted);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            fromSession = parsed;
-          }
-        } catch (e) {
-          interactionsDevWarn('Failed to parse persisted interactions on init:', e);
-        }
-      }
-    } catch (e) {
-      // sessionStorage might not be available
-    }
-
-    const fromCache =
-      interactionsCache && interactionsCache.leadId === client.id
-        ? (interactionsCache.interactions as Interaction[]) || []
-        : [];
-
-    if (fromSession.length > 0 && fromCache.length > 0) {
-      const chosen = fromSession.length >= fromCache.length ? fromSession : fromCache;
-      interactionsDevLog(
-        `✅ Initializing interactions for client ${client.id} from ${fromSession.length >= fromCache.length ? 'sessionStorage' : 'parent cache'} (${chosen.length} items)`
-      );
-      return chosen;
-    }
-    if (fromSession.length > 0) {
-      interactionsDevLog(`✅ Initializing interactions from sessionStorage for client ${client.id} (${fromSession.length} interactions)`);
-      return fromSession;
-    }
-    if (fromCache.length > 0) {
-      return fromCache;
-    }
-
-    return [];
-  });
+  const [interactions, setInteractions] = useState<Interaction[]>(() =>
+    readInitialInteractionsFromStorage(client?.id, interactionsCache, (client as any)?.manual_interactions)
+  );
   
   // Apply parent cache only when it is strictly more complete than local state (never downgrade
   // after a manual add that updated sessionStorage but not yet the parent's cache).
@@ -1179,7 +1243,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [emailsLoading, setEmailsLoading] = useState(false);
   const [emailSearchQuery, setEmailSearchQuery] = useState('');
   const [isSearchBarOpen, setIsSearchBarOpen] = useState(false);
-  const [interactionsLoading, setInteractionsLoading] = useState(true);
+  const [interactionsLoading, setInteractionsLoading] = useState(
+    () =>
+      readInitialInteractionsFromStorage(
+        client?.id,
+        interactionsCache,
+        (client as any)?.manual_interactions
+      ).length === 0
+  );
+  const [interactionsSyncing, setInteractionsSyncing] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
   const [composeSubject, setComposeSubject] = useState('');
   const [composeBody, setComposeBody] = useState('');
@@ -1260,6 +1332,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [whatsAppInput, setWhatsAppInput] = useState("");
   const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
   const userFullNameLoadedRef = useRef(false);
+
+  // Paint manual interactions from client prop before first paint when nothing else is cached yet
+  useLayoutEffect(() => {
+    if (!client?.id) return;
+    const manual = (client as any)?.manual_interactions;
+    if (!Array.isArray(manual) || manual.length === 0) return;
+    if (interactions.length > 0) return;
+    const quick = mapManualInteractionsQuick(manual, client.name, currentUserFullName);
+    if (quick.length > 0) {
+      setInteractions(quick);
+      setInteractionsLoading(false);
+    }
+  }, [client?.id, client?.name, (client as any)?.manual_interactions, interactions.length, currentUserFullName]);
   
   // Track optimistic updates for manual interactions to prevent overwrites
   const optimisticUpdatesRef = useRef<Map<string | number, {
@@ -3116,77 +3201,149 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
       const startTime = performance.now();
       interactionsDevLog('🚀 Starting InteractionsTab fetch...');
-      if (isMountedRef.current && !skipLoadingSpinner) {
+      const hasLocalTimeline =
+        interactionsRef.current.length > 0 ||
+        (Array.isArray((client as any)?.manual_interactions) &&
+          (client as any).manual_interactions.length > 0);
+      if (isMountedRef.current && !skipLoadingSpinner && !hasLocalTimeline) {
         setInteractionsLoading(true);
       }
+      if (isMountedRef.current && (skipLoadingSpinner || hasLocalTimeline)) {
+        setInteractionsSyncing(true);
+      }
       try {
-        // Ensure currentUserFullName is set before mapping emails
-        let userFullName = currentUserFullName;
-        if (!userFullName && !userFullNameLoadedRef.current) {
-          const { data: { user } } = await supabase.auth.getUser();
-          if (user && user.id) {
-            const { data, error } = await supabase
-              .from('users')
-              .select(`
-                full_name,
-                employee_id,
-                tenants_employee!employee_id(
-                  display_name
-                )
-              `)
-              .eq('auth_id', user.id)
-              .single();
-            if (!error && data) {
-              // Use display_name from tenants_employee if available, otherwise full_name
-              const employee = Array.isArray(data.tenants_employee) ? data.tenants_employee[0] : data.tenants_employee;
-              userFullName = employee?.display_name || data.full_name;
-              if (isMountedRef.current) {
-                setCurrentUserFullName(userFullName);
-                userFullNameLoadedRef.current = true;
-              }
-            }
-          }
-        }
-
-        // Prepare parallel queries for better performance
         const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
         const legacyId = isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null;
 
-        // Execute all database queries in parallel with aggressive limits
-        const [whatsAppResult, callLogsResult, legacyResult, emailsResult] = await Promise.all([
-          // WhatsApp messages query - only fetch essential fields
-          client?.id ? (async () => {
-            try {
-              let query = supabase
-                .from('whatsapp_messages')
-                .select('id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, phone_number, template_id')
-                .limit(FETCH_BATCH_SIZE);
-              
-              if (isLegacyLead) {
-                if (legacyId !== null) {
-                  query = query.eq('legacy_id', legacyId);
-                } else {
-                  interactionsDevWarn('⚠️ Legacy lead ID is null, skipping WhatsApp query');
-                  return { data: [], error: null };
-                }
-              } else {
-                query = query.eq('lead_id', client.id);
-              }
-              
-              const { data, error } = await query.order('sent_at', { ascending: false });
-              
-              if (error) {
-                console.error('❌ WhatsApp query error:', error);
-              }
-              
-              return { data: data || [], error };
-            } catch (err) {
-              console.error('❌ WhatsApp query exception:', err);
-              return { data: [], error: err };
-            }
-          })() : Promise.resolve({ data: [], error: null }),
+        const resolveUserFullName = async (): Promise<string | null> => {
+          if (currentUserFullName) return currentUserFullName;
+          if (userFullNameLoadedRef.current) return currentUserFullName;
+          const { data: { user } } = await supabase.auth.getUser();
+          if (!user?.id) return null;
+          const { data, error } = await supabase
+            .from('users')
+            .select(`
+              full_name,
+              employee_id,
+              tenants_employee!employee_id(
+                display_name
+              )
+            `)
+            .eq('auth_id', user.id)
+            .single();
+          if (error || !data) return null;
+          const employee = Array.isArray(data.tenants_employee)
+            ? data.tenants_employee[0]
+            : data.tenants_employee;
+          const name = employee?.display_name || data.full_name;
+          if (isMountedRef.current && name) {
+            setCurrentUserFullName(name);
+            userFullNameLoadedRef.current = true;
+          }
+          return name || null;
+        };
 
-          // Call logs: legacy → lead_id; new leads → client_id (1com sync)
+        const fetchManualInteractionsSource = async (): Promise<any[]> => {
+          let manualInteractionsSource = client.manual_interactions || [];
+          if (!isLegacyLead && client.id) {
+            try {
+              const { data: latestClientData, error: fetchError } = await supabase
+                .from('leads')
+                .select('manual_interactions')
+                .eq('id', client.id)
+                .single();
+              if (!fetchError && latestClientData?.manual_interactions) {
+                manualInteractionsSource = latestClientData.manual_interactions;
+              }
+            } catch {
+              /* use client prop */
+            }
+          }
+          return manualInteractionsSource;
+        };
+
+        // Phase 1: fastest sources — paint timeline before slow call logs / legacy / emails
+        const [userFullName, manualInteractionsSource, whatsAppResult] = await Promise.all([
+          resolveUserFullName(),
+          fetchManualInteractionsSource(),
+          client?.id
+            ? (async () => {
+                try {
+                  let query = supabase
+                    .from('whatsapp_messages')
+                    .select(
+                      'id, sent_at, sender_name, direction, message, whatsapp_status, error_message, contact_id, phone_number, template_id'
+                    )
+                    .limit(FETCH_BATCH_SIZE);
+                  if (isLegacyLead) {
+                    if (legacyId !== null) {
+                      query = query.eq('legacy_id', legacyId);
+                    } else {
+                      return { data: [], error: null };
+                    }
+                  } else {
+                    query = query.eq('lead_id', client.id);
+                  }
+                  const { data, error } = await query.order('sent_at', { ascending: false });
+                  return { data: data || [], error };
+                } catch (err) {
+                  return { data: [], error: err };
+                }
+              })()
+            : Promise.resolve({ data: [], error: null }),
+        ]);
+
+        if (
+          fetchGenerationAtStart === interactionsFetchGenerationRef.current &&
+          (manualInteractionsSource.length > 0 || (whatsAppResult.data?.length ?? 0) > 0)
+        ) {
+          const quickManual = mapManualInteractionsQuick(
+            manualInteractionsSource,
+            client.name,
+            userFullName
+          );
+          const quickWhatsApp = (whatsAppResult.data || [])
+            .map((msg: any) => {
+              const sentAt = msg.sent_at || msg.created_at || new Date().toISOString();
+              const sentAtDate = new Date(sentAt);
+              if (isNaN(sentAtDate.getTime())) return null;
+              const processedContent = processWhatsAppTemplateMessage(msg, whatsAppTemplates);
+              return {
+                id: msg.id,
+                date: sentAtDate.toLocaleDateString('en-GB', {
+                  day: '2-digit',
+                  month: '2-digit',
+                  year: '2-digit',
+                }),
+                time: sentAtDate.toLocaleTimeString('en-GB', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                }),
+                raw_date: sentAt,
+                employee: msg.sender_name || 'You',
+                direction: msg.direction || 'in',
+                kind: 'whatsapp',
+                length: '',
+                content: processedContent,
+                observation: msg.error_message || '',
+                editable: false,
+                status: msg.whatsapp_status || 'sent',
+                error_message: msg.error_message,
+                contact_id: msg.contact_id || null,
+                phone_number: msg.phone_number || null,
+                template_id: msg.template_id || null,
+              };
+            })
+            .filter(Boolean) as Interaction[];
+          const quickTimeline = sortInteractionsByDate([...quickManual, ...quickWhatsApp]);
+          if (quickTimeline.length > 0) {
+            setInteractions(quickTimeline);
+            setInteractionsLoading(false);
+            interactionsClientIdRef.current = client?.id?.toString() || null;
+          }
+        }
+
+        const [callLogsResult, legacyResult, emailsResult] = await Promise.all([
           client?.id ? (async () => {
             try {
               let query = supabase
@@ -3259,22 +3416,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   emails: allEmails,
                 });
 
-                const emailsQueryBase: any = supabase
-                  .from('emails')
-                  .select(
-                    `id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments, contact_id, client_id, legacy_id,
-                    contact:leads_contact!emails_contact_id_fkey(id, name)`
-                  )
-                  .limit(EMAIL_MODAL_LIMIT)
-                  .order('sent_at', { ascending: false });
-                let emailQuery = applyLeadEmailsOrFilterToQuery(emailsQueryBase, {
-                  isLegacyLead,
-                  legacyId,
-                  clientId: client.id,
-                  emailFilters,
-                });
-
-                // Debug: Log the query to see what we're searching for
                 interactionsDevLog('📧 InteractionsTab email query:', {
                   isLegacyLead,
                   clientId: !isLegacyLead ? client.id : null,
@@ -3283,24 +3424,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   emailFilters,
                 });
 
-                let { data, error } = await emailQuery;
-                if (error) {
-                  const fallbackQuery: any = supabase
-                    .from('emails')
-                    .select(
-                      'id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments, contact_id, client_id, legacy_id, contact:leads_contact!emails_contact_id_fkey(id, name)'
-                    )
-                    .limit(EMAIL_MODAL_LIMIT)
-                    .order('sent_at', { ascending: false });
-                  const fallback = await applyLeadEmailsOrFilterToQuery(fallbackQuery, {
-                    isLegacyLead,
-                    legacyId,
-                    clientId: client.id,
-                    emailFilters,
-                  });
-                  data = fallback.data;
-                  error = fallback.error;
-                }
+                const { data, error } = await fetchLeadEmailsForTimeline(supabase, {
+                  isLegacyLead,
+                  legacyId,
+                  clientId: client.id,
+                  emailFilters,
+                  limit: EMAIL_MODAL_LIMIT,
+                  matchByAddress: false,
+                });
                 
                 // Debug: Log results
                 interactionsDevLog('📧 InteractionsTab email query results:', {
@@ -3710,31 +3841,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           })()
         ];
 
-        // 1. Manual interactions - CRITICAL: For new leads, fetch from database to ensure we have latest data
-        // For legacy leads, manual interactions come from leads_leadinteractions table (already fetched above)
-        let manualInteractionsSource = client.manual_interactions || [];
-        
-        if (!isLegacyLead && client.id) {
-          // For new leads, fetch the latest manual_interactions from the database
-          // This ensures we have all interactions, including ones saved in previous sessions
-          try {
-            const { data: latestClientData, error: fetchError } = await supabase
-              .from('leads')
-              .select('manual_interactions')
-              .eq('id', client.id)
-              .single();
-            
-            if (!fetchError && latestClientData?.manual_interactions) {
-              manualInteractionsSource = latestClientData.manual_interactions;
-              interactionsDevLog(`✅ [InteractionsTab] Fetched ${manualInteractionsSource.length} manual interactions from DB for new lead ${client.id}`);
-            } else if (fetchError) {
-              interactionsDevWarn('⚠️ [InteractionsTab] Error fetching manual interactions from DB, using client prop:', fetchError);
-            }
-          } catch (error) {
-            interactionsDevWarn('⚠️ [InteractionsTab] Exception fetching manual interactions from DB, using client prop:', error);
-          }
-        }
-        
+        // Manual interactions — already fetched in phase 1 (manualInteractionsSource)
         const manualInteractions = manualInteractionsSource.map((i: any) => {
           // CRITICAL: Check if we have an optimistic update for this interaction
           // If so, use the optimistic values (from editData) instead of database values
@@ -4535,8 +4642,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         }
       } finally {
         isFetchingInteractionsRef.current = false;
-        if (isMountedRef.current && !skipLoadingSpinner) {
-          setInteractionsLoading(false);
+        if (isMountedRef.current) {
+          setInteractionsSyncing(false);
+          if (!skipLoadingSpinner) {
+            setInteractionsLoading(false);
+          }
         }
       }
     },
@@ -4620,7 +4730,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       // Session snapshots can omit emails (older saves, partial state) — without this, emails only
       // appeared after unrelated actions like saving a manual interaction (which triggered a full fetch).
       if (hasPersistedData) {
-        fetchInteractions({ bypassCache: true, quiet: true }).catch((err) =>
+        runInteractionsFetchOnce(`${currentClientId}:quiet`, () =>
+          fetchInteractions({ bypassCache: true, quiet: true })
+        ).catch((err) =>
           console.error('Background revalidation after sessionStorage restore failed:', err)
         );
         return;
@@ -4637,7 +4749,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         }
         lastClientIdRef.current = currentClientId;
         // Same as sessionStorage: cache can be stale vs emails table / manual_interactions — refresh in background
-        fetchInteractions({ bypassCache: true, quiet: true }).catch((err) =>
+        runInteractionsFetchOnce(`${currentClientId}:quiet`, () =>
+          fetchInteractions({ bypassCache: true, quiet: true })
+        ).catch((err) =>
           console.error('Background revalidation after interactions cache hit failed:', err)
         );
         return;
@@ -4649,13 +4763,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         current: currentClientId,
         isFetching: isFetchingRef.current
       });
-      // Do not set lastClientIdRef here — wait until fetchInteractions applies data. Otherwise a second
-      // effect run (Strict Mode or layout) sees "same client" and skips starting fetch while the first
-      // async request may still be discarded as stale, leaving an empty timeline.
       isFetchingRef.current = true;
+
+      const hasInitialTimeline =
+        readInitialInteractionsFromStorage(
+          currentClientId,
+          interactionsCache,
+          (client as any)?.manual_interactions
+        ).length > 0;
       
-      // Call fetchInteractions - it will check cache internally
-      fetchInteractions({ bypassCache: false }).finally(() => {
+      runInteractionsFetchOnce(currentClientId, () =>
+        fetchInteractions({ bypassCache: false, quiet: hasInitialTimeline })
+      ).finally(() => {
         isFetchingRef.current = false;
       });
     } else if (!currentClientId) {
@@ -4698,6 +4817,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
   // Fetch employee phone/extension mapping - use allEmployees prop if available
   useEffect(() => {
+    if (cachedEmployeePhoneMap && cachedEmployeePhotoMap) {
+      setEmployeePhoneMap(cachedEmployeePhoneMap);
+      setEmployeePhotoMap(cachedEmployeePhotoMap);
+      return;
+    }
+
     const loadEmployeePhoneMap = async () => {
       try {
         // Use employees from prop if available, otherwise fetch
@@ -4842,6 +4967,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
         interactionsDevLog(`✅ Loaded employee phone map with ${phoneMap.size} entries`);
         interactionsDevLog(`✅ Loaded employee photo map with ${photoMap.size} entries`);
+        cachedEmployeePhoneMap = phoneMap;
+        cachedEmployeePhotoMap = photoMap;
         setEmployeePhoneMap(phoneMap);
         setEmployeePhotoMap(photoMap);
       } catch (error) {
@@ -4849,7 +4976,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       }
     };
 
-    loadEmployeePhoneMap();
+    if (employeeMapsLoadPromise) {
+      employeeMapsLoadPromise.then(() => {
+        if (cachedEmployeePhoneMap) setEmployeePhoneMap(cachedEmployeePhoneMap);
+        if (cachedEmployeePhotoMap) setEmployeePhotoMap(cachedEmployeePhotoMap);
+      });
+      return;
+    }
+
+    employeeMapsLoadPromise = loadEmployeePhoneMap().finally(() => {
+      employeeMapsLoadPromise = null;
+    });
   }, [allEmployees]); // Depend on allEmployees so it rebuilds when employees are loaded
 
   // Re-process interactions when employeePhoneMap becomes available
@@ -4999,16 +5136,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     return null;
   };
 
-  // Fetch WhatsApp templates on component mount
+  // Fetch WhatsApp templates on component mount (module cache avoids duplicate DB hits)
   useEffect(() => {
     const loadTemplates = async () => {
       try {
         const templates = await fetchWhatsAppTemplates();
         setWhatsAppTemplates(templates);
-        interactionsDevLog(`✅ Loaded ${templates.length} WhatsApp templates for interactions tab:`, templates.map(t => ({ id: t.id, name: t.title || t.name360, language: t.language })));
-        
-        // Process templates in place instead of re-fetching
-        // This will be handled by the useEffect below
+        interactionsDevLog(`✅ Loaded ${templates.length} WhatsApp templates for interactions tab`);
       } catch (error) {
         console.error('Error fetching WhatsApp templates:', error);
         setWhatsAppTemplates([]);
@@ -5018,93 +5152,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     loadTemplates();
   }, []);
 
-  // Removed fetchInteractionsRef - calling fetchInteractions directly now
-
-  // Reprocess interactions when templates become available
-  // Update interactions in place instead of re-fetching to avoid performance issues
-  useEffect(() => {
-    if (whatsAppTemplates.length > 0 && interactions.length > 0) {
-      // Check if any WhatsApp interactions need template processing
-      const whatsappInteractions = interactions.filter((i: any) => i.kind === 'whatsapp' && i.direction === 'out');
-      const needsProcessing = whatsappInteractions.some((interaction: any) => 
-        interaction.content?.includes('[Template:') || 
-        interaction.content?.includes('Template:') || 
-        interaction.content?.includes('TEMPLATE_MARKER:')
-      );
-      
-      if (needsProcessing) {
-        interactionsDevLog('🔄 Templates are available, updating WhatsApp interactions in place to apply template content...');
-        
-        // Update interactions in place
-        const updatedInteractions = interactions.map((interaction: any) => {
-          if (interaction.kind === 'whatsapp' && interaction.direction === 'out') {
-            const templateId = interaction.template_id;
-            let updatedContent = interaction.content;
-            
-            // Try to match by template_id first
-            if (templateId) {
-              const templateIdNum = Number(templateId);
-              const template = whatsAppTemplates.find(t => Number(t.id) === templateIdNum);
-              if (template && template.content) {
-                if (template.params === '0') {
-                  updatedContent = template.content;
-                } else if (template.params === '1') {
-                  const paramMatch = interaction.content?.match(/\[Template:.*?\]\s*(.+)/);
-                  if (paramMatch && paramMatch[1].trim()) {
-                    updatedContent = paramMatch[1].trim();
-                  } else {
-                    updatedContent = template.content;
-                  }
-                }
-              }
-            }
-            
-            // Fallback to name matching
-            if (updatedContent === interaction.content) {
-              const templateMatch = interaction.content?.match(/\[Template:\s*([^\]]+)\]/) || 
-                                    interaction.content?.match(/Template:\s*(.+)/) ||
-                                    interaction.content?.match(/TEMPLATE_MARKER:(.+)/);
-              
-              if (templateMatch) {
-                const templateTitle = templateMatch[1].trim().replace(/\]$/, '');
-                const template = whatsAppTemplates.find(t => 
-                  t.title.toLowerCase() === templateTitle.toLowerCase() ||
-                  (t.name360 && t.name360.toLowerCase() === templateTitle.toLowerCase())
-                );
-                if (template && template.content) {
-                  if (template.params === '0') {
-                    updatedContent = template.content;
-                  } else if (template.params === '1') {
-                    const paramMatch = interaction.content?.match(/\[Template:.*?\]\s*(.+)/);
-                    if (paramMatch && paramMatch[1].trim()) {
-                      updatedContent = paramMatch[1].trim();
-                    } else {
-                      updatedContent = template.content;
-                    }
-                  }
-                }
-              }
-            }
-            
-            if (updatedContent !== interaction.content) {
-              return { ...interaction, content: updatedContent };
-            }
-          }
-          return interaction;
-        });
-        
-        // Only update if we actually changed something
-        const hasChanges = updatedInteractions.some((updated: any, idx: number) => 
-          updated.content !== interactions[idx]?.content
-        );
-        
-        if (hasChanges) {
-          setInteractions(updatedInteractions);
-        }
-      }
-    }
-  }, [whatsAppTemplates.length]); // Only depend on templates length, not interactions to avoid loops
-
+  // Template text is applied in renderedInteractions useMemo via processWhatsAppTemplateMessage
 
   const hydrateEmailBodies = useCallback(async (messages: { id: string; subject: string; bodyPreview?: string; body_html?: string | null; body_preview?: string | null }[]) => {
     if (!messages || messages.length === 0) return;
@@ -5308,46 +5356,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         emails: allEmails,
       });
 
-      const modalEmailsQueryBase: any = supabase
-        .from('emails')
-        .select(
-          `id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, contact_id, client_id, legacy_id,
-          contact:leads_contact!emails_contact_id_fkey(id, name)`
-        )
-        .limit(EMAIL_MODAL_LIMIT)
-        .order('sent_at', { ascending: false });
-      let emailQuery = applyLeadEmailsOrFilterToQuery(modalEmailsQueryBase, {
+      const { data: emailData, error: emailError } = await fetchLeadEmailsForTimeline(supabase, {
         isLegacyLead,
         legacyId,
         clientId: client.id,
         emailFilters,
+        limit: EMAIL_MODAL_LIMIT,
+        select:
+          'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, contact_id, client_id, legacy_id, contact:leads_contact!emails_contact_id_fkey(id, name)',
       });
       
       // Note: We'll filter by contact client-side to handle both contact_id and email matching
       // This ensures we catch emails that might not have contact_id set yet
-      
-      let emailData: any[] | null = null;
-      let emailError: any = null;
-      const emailResult = await emailQuery;
-      emailData = emailResult.data;
-      emailError = emailResult.error;
-      if (emailError) {
-        const fallbackQuery: any = supabase
-          .from('emails')
-          .select(
-            'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, contact_id, client_id, legacy_id, contact:leads_contact!emails_contact_id_fkey(id, name)'
-          )
-          .limit(EMAIL_MODAL_LIMIT)
-          .order('sent_at', { ascending: false });
-        const fallback = await applyLeadEmailsOrFilterToQuery(fallbackQuery, {
-          isLegacyLead,
-          legacyId,
-          clientId: client.id,
-          emailFilters,
-        });
-        emailData = fallback.data;
-        emailError = fallback.error;
-      }
       
       if (emailError) {
         console.error('❌ Error fetching emails for InteractionsTab:', emailError);
@@ -7210,14 +7230,20 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   return (
     <div className="p-4 md:p-6 lg:p-8 flex flex-col xl:flex-row gap-6 md:gap-8 lg:gap-12 items-start min-h-screen max-w-7xl mx-auto">
       <div className="relative w-full flex-1 min-w-0">
-        {/* Loading indicator */}
-        {interactionsLoading ? (
+        {/* Loading indicator — only block UI when timeline is completely empty */}
+        {interactionsLoading && sortedInteractions.length === 0 ? (
           <div className="flex items-center justify-center py-12">
             <div className="loading loading-spinner loading-lg text-primary"></div>
             <span className="ml-3 text-lg">Loading interactions...</span>
           </div>
         ) : (
           <>
+            {interactionsSyncing && sortedInteractions.length > 0 && (
+              <div className="flex items-center gap-2 text-sm text-base-content/60 mb-4">
+                <span className="loading loading-spinner loading-xs text-primary"></span>
+                Syncing latest interactions…
+              </div>
+            )}
             {/* Header with Action Buttons */}
             <div className="w-full flex flex-col sm:flex-row items-stretch sm:items-center gap-4 mb-8 md:mb-12">
               {/* Mobile: Contact Client Dropdown */}

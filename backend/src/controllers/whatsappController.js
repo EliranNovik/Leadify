@@ -1072,8 +1072,10 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
         baseMessageData.media_mime_type = image.mime_type;
         baseMessageData.media_size = image.file_size;
         baseMessageData.caption = image.caption;
-        // Download and store image (use phone number as fallback for unknown leads)
-        await downloadAndStoreMedia(image.id, 'image', mediaOwnerIdentifier);
+        {
+          const storedFileName = await downloadAndStoreMedia(image.id, 'image', mediaOwnerIdentifier);
+          if (storedFileName) baseMessageData.media_url = storedFileName;
+        }
         break;
       
       case 'document':
@@ -1083,8 +1085,10 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
         baseMessageData.media_filename = document.filename;
         baseMessageData.media_mime_type = document.mime_type;
         baseMessageData.media_size = document.file_size;
-        // Download and store document (use phone number as fallback for unknown leads)
-        await downloadAndStoreMedia(document.id, 'document', mediaOwnerIdentifier);
+        {
+          const storedFileName = await downloadAndStoreMedia(document.id, 'document', mediaOwnerIdentifier);
+          if (storedFileName) baseMessageData.media_url = storedFileName;
+        }
         break;
       
       case 'audio':
@@ -1101,7 +1105,10 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
         baseMessageData.media_mime_type = audio.mime_type;
         baseMessageData.media_size = audio.file_size;
         baseMessageData.voice_note = isVoiceNote; // Mark as voice note
-        await downloadAndStoreMedia(audio.id, 'audio', mediaOwnerIdentifier);
+        {
+          const storedFileName = await downloadAndStoreMedia(audio.id, 'audio', mediaOwnerIdentifier);
+          if (storedFileName) baseMessageData.media_url = storedFileName;
+        }
         break;
       
       case 'video':
@@ -1111,7 +1118,10 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
         baseMessageData.media_mime_type = video.mime_type;
         baseMessageData.media_size = video.file_size;
         baseMessageData.caption = video.caption;
-        await downloadAndStoreMedia(video.id, 'video', mediaOwnerIdentifier);
+        {
+          const storedFileName = await downloadAndStoreMedia(video.id, 'video', mediaOwnerIdentifier);
+          if (storedFileName) baseMessageData.media_url = storedFileName;
+        }
         break;
       
       case 'location':
@@ -1516,61 +1526,70 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
   }
 };
 
-// Download and store media file
-const downloadAndStoreMedia = async (mediaId, type, leadId) => {
+const getUploadsDir = () => path.join(__dirname, '../../uploads');
+
+/** Resolve a persisted upload on disk (filename or WhatsApp media id embedded in name). */
+const findStoredMediaFilePath = (mediaId) => {
+  if (!mediaId) return null;
+
+  const uploadsDir = getUploadsDir();
+  if (!fs.existsSync(uploadsDir)) return null;
+
+  const exactPath = path.join(uploadsDir, mediaId);
+  if (fs.existsSync(exactPath)) return exactPath;
+
   try {
+    const files = fs.readdirSync(uploadsDir);
+    const matchingFile = files.find((file) => file.includes(mediaId));
+    return matchingFile ? path.join(uploadsDir, matchingFile) : null;
+  } catch (error) {
+    console.error('Error reading uploads directory:', error);
+    return null;
+  }
+};
 
-    
-    // In production mode, we don't need to download and store locally
-    // Just store the WhatsApp media ID for later retrieval
-    if (!isDevelopmentMode) {
-  
-      return;
+// Download and store media file (always persist so WhatsApp temporary IDs remain viewable later)
+const downloadAndStoreMedia = async (mediaId, type, leadId) => {
+  if (!mediaId || !ACCESS_TOKEN) return null;
+
+  try {
+    const existingPath = findStoredMediaFilePath(mediaId);
+    if (existingPath) {
+      return path.basename(existingPath);
     }
-    
-    // Get media URL from WhatsApp
-    const mediaResponse = await axios.get(
-      `${WHATSAPP_API_URL}/${mediaId}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${ACCESS_TOKEN}`
-        }
-      }
-    );
 
-    const mediaUrl = mediaResponse.data.url;
-    
-    // Download media file
-    const fileResponse = await axios.get(mediaUrl, {
-      headers: {
-        'Authorization': `Bearer ${ACCESS_TOKEN}`
-      },
-      responseType: 'stream'
+    const mediaResponse = await axios.get(`${WHATSAPP_API_URL}/${mediaId}`, {
+      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
     });
 
-    // Create uploads directory if it doesn't exist
-    const uploadsDir = path.join(__dirname, '../../uploads');
+    const mediaUrl = mediaResponse.data.url;
+
+    const fileResponse = await axios.get(mediaUrl, {
+      headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
+      responseType: 'stream',
+    });
+
+    const uploadsDir = getUploadsDir();
     if (!fs.existsSync(uploadsDir)) {
       fs.mkdirSync(uploadsDir, { recursive: true });
     }
 
-    // Save file with unique name
     const fileName = `${leadId}_${Date.now()}_${mediaId}.${getFileExtension(fileResponse.headers['content-type'])}`;
     const filePath = path.join(uploadsDir, fileName);
-    
+
     const writer = fs.createWriteStream(filePath);
     fileResponse.data.pipe(writer);
 
-    return new Promise((resolve, reject) => {
-      writer.on('finish', () => {
-    
-        resolve();
-      });
+    await new Promise((resolve, reject) => {
+      writer.on('finish', resolve);
       writer.on('error', reject);
     });
 
+    console.log(`✅ Stored WhatsApp ${type} media: ${fileName}`);
+    return fileName;
   } catch (error) {
-    console.error('Error downloading media:', error);
+    console.error(`Error downloading ${type} media ${mediaId}:`, error.response?.data || error.message);
+    return null;
   }
 };
 
@@ -1622,16 +1641,108 @@ const updateMessageStatus = async (status) => {
   }
 };
 
-/** Map DB language codes to Meta template language codes (e.g. en → en_US). */
+/** Pass through Meta template language code as stored in whatsapp_templates_v2. */
 function toWhatsAppApiLanguageCode(lang) {
-  const code = (lang || 'en_US').trim();
-  if (!code) return 'en_US';
-  const lower = code.toLowerCase();
-  if (lower === 'en') return 'en_US';
-  if (lower.startsWith('en_')) return code;
-  if (lower === 'he') return 'he';
-  if (lower.startsWith('he_')) return code;
-  return code;
+  const code = lang != null ? String(lang).trim() : '';
+  return code || 'en';
+}
+
+/** Alternate Meta language codes to try when the primary returns #132001. */
+function getWhatsAppLanguageVariants(lang) {
+  const primary = toWhatsAppApiLanguageCode(lang);
+  const variants = [primary];
+  const lower = primary.toLowerCase();
+  if (lower === 'en') variants.push('en_US');
+  else if (lower === 'en_us') variants.push('en');
+  else if (lower === 'he') variants.push('he_IL');
+  else if (lower === 'he_il') variants.push('he');
+  else if (lower === 'fr') variants.push('fr_FR');
+  else if (lower === 'fr_fr') variants.push('fr');
+  return [...new Set(variants)];
+}
+
+async function postWhatsAppMessage(messagePayload) {
+  const url = `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`;
+  const headers = {
+    Authorization: `Bearer ${ACCESS_TOKEN}`,
+    'Content-Type': 'application/json',
+  };
+
+  if (messagePayload?.type !== 'template') {
+    return axios.post(url, messagePayload, { headers });
+  }
+
+  const baseLang = messagePayload.template?.language?.code;
+  const variants = getWhatsAppLanguageVariants(baseLang);
+  let lastError;
+
+  for (let i = 0; i < variants.length; i += 1) {
+    const payload = {
+      ...messagePayload,
+      template: {
+        ...messagePayload.template,
+        language: { code: variants[i] },
+      },
+    };
+
+    try {
+      const response = await axios.post(url, payload, { headers });
+      if (i > 0) {
+        console.log(
+          `✅ Template sent with fallback language "${variants[i]}" (primary "${baseLang}" was rejected by Meta)`,
+        );
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      const whatsappCode = error.response?.data?.error?.code;
+      if (whatsappCode === 132001 && i < variants.length - 1) {
+        console.warn(
+          `⚠️ Template "${payload.template?.name}" not found for language "${variants[i]}", trying "${variants[i + 1]}"...`,
+        );
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw lastError;
+}
+
+async function resolveWhatsAppTemplateForSend(templateId) {
+  const templateIdNum = Number(templateId);
+  if (!Number.isFinite(templateIdNum) || templateIdNum <= 0) {
+    return { error: 'Invalid template ID', code: 'INVALID_TEMPLATE_ID' };
+  }
+
+  const { data: template, error: templateError } = await supabase
+    .from('whatsapp_templates_v2')
+    .select('id, name, language, whatsapp_template_id, active, params')
+    .eq('id', templateIdNum)
+    .single();
+
+  if (templateError || !template) {
+    return {
+      error: `Template ID ${templateIdNum} not found. Sync templates from Meta in Admin.`,
+      code: 'TEMPLATE_NOT_FOUND',
+    };
+  }
+
+  if (template.active === false) {
+    return {
+      error: `Template "${template.name}" (${template.language || 'unknown'}) is not active. Pick an approved template or sync from Meta.`,
+      code: 'TEMPLATE_INACTIVE',
+    };
+  }
+
+  if (!template.name) {
+    return {
+      error: `Template ID ${templateIdNum} has no name in the database. Sync templates from Meta.`,
+      code: 'TEMPLATE_NAME_MISSING',
+    };
+  }
+
+  return { template: template };
 }
 
 // Send WhatsApp message
@@ -1758,71 +1869,46 @@ const sendMessage = async (req, res) => {
       let messagePayload;
       
       if (isTemplate) {
-        // Fetch template details from database using the template_id (database id)
-        let finalTemplateName = templateName;
-        let finalTemplateLanguage = templateLanguage;
-        
-        if (templateId) {
-          // Try new table first (whatsapp_templates_v2)
-          let { data: template, error: templateError } = await supabase
-            .from('whatsapp_templates_v2')
-            .select('id, name, language, whatsapp_template_id')
-            .eq('id', templateId)
-            .eq('active', true)
-            .single();
-          
-          // Template lookup completed (no fallback needed - using new table only)
-          
-          if (!templateError && template) {
-            finalTemplateName = template.name || templateName;
-            finalTemplateLanguage = toWhatsAppApiLanguageCode(
-              template.language || templateLanguage || 'en_US',
-            );
-            console.log(`✅ Found template by database ID ${templateId}: ${finalTemplateName} (${finalTemplateLanguage}), WhatsApp ID: ${template.whatsapp_template_id || template.number_id}`);
-          } else {
-            console.warn(`⚠️ Template with database ID ${templateId} not found, using provided templateName: ${templateName}`);
-          }
+        if (!templateId) {
+          return res.status(400).json({
+            error: 'templateId is required for template messages.',
+            code: 'TEMPLATE_ID_REQUIRED',
+          });
         }
-        
+
+        const resolved = await resolveWhatsAppTemplateForSend(templateId);
+        if (resolved.error) {
+          return res.status(400).json({
+            error: resolved.error,
+            code: resolved.code,
+          });
+        }
+
+        const dbTemplate = resolved.template;
+        const finalTemplateName = dbTemplate.name;
+        const finalTemplateLanguage = toWhatsAppApiLanguageCode(dbTemplate.language);
+
         console.log('📱 Sending TEMPLATE message');
         console.log('📱 Template ID:', templateId);
-        console.log('📱 Template Name:', finalTemplateName);
-        console.log('📱 Template Language:', finalTemplateLanguage);
+        console.log('📱 Template Name (from DB):', finalTemplateName);
+        console.log('📱 Template Language (from DB):', finalTemplateLanguage);
         console.log('📱 Template Parameters:', templateParameters);
-        
-        // Send template message
+
         messagePayload = {
           messaging_product: 'whatsapp',
           to: phoneNumber,
           type: 'template',
           template: {
-            name: finalTemplateName || 'second_test',
+            name: finalTemplateName,
             language: {
-              code: toWhatsAppApiLanguageCode(finalTemplateLanguage || 'en_US'),
+              code: finalTemplateLanguage,
             },
-          }
+          },
         };
-        
-        // Always add components section if template parameters are expected
-        // If no parameters provided, use default values
+
+        const requiredParamCount = Number(dbTemplate.params) || 0;
+
         if (templateParameters && templateParameters.length > 0) {
-          // First, get required param count from template
-          let requiredParamCount = 0;
-          try {
-            const { data: templateInfo } = await supabase
-              .from('whatsapp_templates_v2')
-              .select('params')
-              .eq('id', templateId)
-              .single();
-            
-            if (templateInfo) {
-              requiredParamCount = Number(templateInfo.params) || 0;
-            }
-          } catch (err) {
-            console.warn('Could not fetch template param count:', err);
-          }
-          
-          // Process parameters: replace empty strings with placeholders, then filter/validate
           const processedParameters = templateParameters.map((param, index) => {
             const trimmed = param && param.text != null ? String(param.text).trim() : '';
             const sanitized = sanitizeWhatsAppTemplateVariableText(trimmed);
@@ -1830,68 +1916,52 @@ const sendMessage = async (req, res) => {
               console.warn(`⚠️ Parameter ${index + 1} is empty, using placeholder`);
               return {
                 type: 'text',
-                text: 'N/A'
+                text: 'N/A',
               };
             }
             return {
               type: param.type || 'text',
-              text: sanitized
+              text: sanitized,
             };
           });
-          
-          // Ensure we have the correct number of parameters
+
           while (processedParameters.length < requiredParamCount) {
             console.warn(`⚠️ Missing parameter ${processedParameters.length + 1}, adding placeholder`);
             processedParameters.push({
               type: 'text',
-              text: 'N/A'
+              text: 'N/A',
             });
           }
-          
-          // Use only the required number of parameters (in case we have extras)
-          const finalParameters = processedParameters.slice(0, requiredParamCount > 0 ? requiredParamCount : processedParameters.length);
-          
+
+          const finalParameters = processedParameters.slice(
+            0,
+            requiredParamCount > 0 ? requiredParamCount : processedParameters.length,
+          );
+
           if (finalParameters.length > 0) {
             console.log('📱 Template has valid parameters, using them:', finalParameters);
             messagePayload.template.components = [
               {
                 type: 'body',
-                parameters: finalParameters
-              }
+                parameters: finalParameters,
+              },
             ];
           } else {
             console.warn('⚠️ All template parameters are empty, cannot send template message');
-            return res.status(400).json({ 
-              error: 'Template parameters are required but were not provided or are empty. Please ensure client name and meeting information are available.' 
+            return res.status(400).json({
+              error: 'Template parameters are required but were not provided or are empty. Please ensure client name and meeting information are available.',
             });
           }
-        } else {
-          // No parameters provided - check template params count from database
-          // Fetch template info to get param count
-          try {
-            const { data: templateInfo, error: templateError } = await supabase
-              .from('whatsapp_templates_v2')
-              .select('params')
-              .eq('id', templateId)
-              .single();
-            
-            if (!templateError && templateInfo) {
-              const paramCount = Number(templateInfo.params) || 0;
-              if (paramCount > 0) {
-                console.warn(`⚠️ Template requires ${paramCount} parameter(s) but none were provided. Sending with empty parameters.`);
-                messagePayload.template.components = [
-                  {
-                    type: 'body',
-                    parameters: Array(paramCount).fill(null).map(() => ({ type: 'text', text: '' }))
-                  }
-                ];
-              }
-            }
-          } catch (error) {
-            console.error('❌ Error checking template params:', error);
-          }
+        } else if (requiredParamCount > 0) {
+          console.warn(`⚠️ Template requires ${requiredParamCount} parameter(s) but none were provided. Sending with empty parameters.`);
+          messagePayload.template.components = [
+            {
+              type: 'body',
+              parameters: Array(requiredParamCount).fill(null).map(() => ({ type: 'text', text: '' })),
+            },
+          ];
         }
-        
+
         console.log('📱 Template payload:', JSON.stringify(messagePayload, null, 2));
       } else {
         // Send regular text message
@@ -1903,16 +1973,7 @@ const sendMessage = async (req, res) => {
         };
       }
       
-      const response = await axios.post(
-        `${WHATSAPP_API_URL}/${PHONE_NUMBER_ID}/messages`,
-        messagePayload,
-        {
-          headers: {
-            'Authorization': `Bearer ${ACCESS_TOKEN}`,
-            'Content-Type': 'application/json'
-          }
-        }
-      );
+      const response = await postWhatsAppMessage(messagePayload);
 
       whatsappMessageId = response.data.messages[0].id;
       responseData = {
@@ -1922,96 +1983,12 @@ const sendMessage = async (req, res) => {
       };
     }
 
-    // Resolve template_id: Use the database ID directly from frontend
-    // Since we're now fetching templates directly from database, the templateId should be the database id
+    // Resolve template_id for DB storage (already validated before send when isTemplate)
     let finalTemplateId = null;
-    if (isTemplate && templateName) {
-      // The templateId from frontend should be the database primary key (id column)
-      if (templateId !== undefined && templateId !== null) {
-        const templateIdNum = Number(templateId);
-        if (!isNaN(templateIdNum) && templateIdNum > 0) {
-          // Verify the template exists in database (try new table first)
-          let { data: templateById, error: errorById } = await supabase
-            .from('whatsapp_templates_v2')
-            .select('id, name, language, whatsapp_template_id')
-            .eq('id', templateIdNum)
-            .eq('active', true)
-            .single();
-          
-          if (!errorById && templateById) {
-            finalTemplateId = templateIdNum;
-            const templateName = templateById.name;
-            console.log(`✅ Template ID ${finalTemplateId} verified in database (name: ${templateName}, language: ${templateById.language})`);
-          } else {
-            console.warn(`⚠️ Template ID ${templateIdNum} not found in database, will try to find by name+language as fallback`);
-          }
-        } else {
-          console.warn(`⚠️ Invalid template ID provided: ${templateId}, will try to find by name+language`);
-        }
-      }
-      
-      // If templateId lookup failed (or wasn't provided), try multiple lookup strategies
-      if (finalTemplateId === null) {
-        console.log(`🔍 Looking up template by name: "${templateName}", language: "${templateLanguage || 'en_US'}"`);
-        
-        // PRIORITY 2: Look up by name + language (exact match first)
-        let { data: templateByName, error: errorByName } = await supabase
-          .from('whatsapp_templates_v2')
-          .select('id, name, language')
-          .eq('name', templateName)
-          .eq('language', templateLanguage || 'en_US')
-          .maybeSingle();
-        
-        if (!templateByName) {
-          // 2. Try case-insensitive match: name + language
-          const { data: templateByNameCI } = await supabase
-            .from('whatsapp_templates_v2')
-            .select('id, name, language')
-            .ilike('name', templateName)
-            .ilike('language', templateLanguage || 'en_US')
-            .maybeSingle();
-          templateByName = templateByNameCI;
-        }
-        
-        if (!templateByName) {
-          // 3. Try by name only (ignore language)
-          const { data: templateByNameOnly } = await supabase
-            .from('whatsapp_templates_v2')
-            .select('id, name, language')
-            .eq('name', templateName)
-            .maybeSingle();
-          templateByName = templateByNameOnly;
-        }
-        
-        if (!templateByName) {
-          // 4. Try case-insensitive by name only
-          const { data: templateByNameCIONly } = await supabase
-            .from('whatsapp_templates_v2')
-            .select('id, name, language')
-            .ilike('name', templateName)
-            .maybeSingle();
-          templateByName = templateByNameCIONly;
-        }
-        
-        if (templateByName && templateByName.id) {
-          finalTemplateId = Number(templateByName.id);
-          console.log(`✅ Found template by name/language: ID ${finalTemplateId} (name: ${templateByName.name}, language: ${templateByName.language})`);
-        } else {
-          // Last resort: List all templates with similar names for debugging
-          const { data: similarTemplates } = await supabase
-            .from('whatsapp_templates_v2')
-            .select('id, name, language, whatsapp_template_id')
-            .ilike('name', `%${templateName}%`)
-            .limit(5);
-          
-          if (similarTemplates && similarTemplates.length > 0) {
-            console.log(`🔍 Found ${similarTemplates.length} similar templates:`, similarTemplates);
-            console.warn(`⚠️ Template "${templateName}" (${templateLanguage || 'en_US'}) not found with exact match. Similar templates found but not matched. Saving template_id as NULL`);
-          } else {
-            console.warn(`⚠️ Template "${templateName}" (${templateLanguage || 'en_US'}) not found in database at all. Saving template_id as NULL`);
-          }
-          finalTemplateId = null;
-        }
+    if (isTemplate && templateId != null) {
+      const templateIdNum = Number(templateId);
+      if (Number.isFinite(templateIdNum) && templateIdNum > 0) {
+        finalTemplateId = templateIdNum;
       }
     }
 
@@ -2097,10 +2074,15 @@ const sendMessage = async (req, res) => {
           error: 'Message failed: More than 24 hours have passed since the customer last replied. You can only send template messages after 24 hours.',
           code: 'RE_ENGAGEMENT_REQUIRED'
         });
+      } else if (whatsappError.code === 132001) {
+        res.status(400).json({
+          error: `WhatsApp API Error: ${whatsappError.message}. The template name/language in the database may not match Meta. Sync templates in Admin → WhatsApp Templates, and deactivate duplicate rows (e.g. referral_poland vs refferal_poland).`,
+          code: whatsappError.code,
+        });
       } else {
-        res.status(400).json({ 
+        res.status(400).json({
           error: `WhatsApp API Error: ${whatsappError.message}`,
-          code: whatsappError.code
+          code: whatsappError.code,
         });
       }
     } else {
@@ -2409,35 +2391,17 @@ const getMedia = async (req, res) => {
       return res.status(404).json({ error: 'Mock media not available in production' });
     }
 
-    if (isDevelopmentMode) {
-      // In development mode, serve from local uploads
-      const uploadsDir = path.join(__dirname, '../../uploads');
+    const storedPath = findStoredMediaFilePath(mediaId);
+    if (storedPath) {
+      return res.sendFile(storedPath);
+    }
 
-      
-      // First try exact match
-      let filePath = path.join(uploadsDir, mediaId);
-      if (fs.existsSync(filePath)) {
-        return res.sendFile(filePath);
-      }
-      
-      // If not found, search for files containing the media ID
-      try {
-        const files = fs.readdirSync(uploadsDir);
-        const matchingFile = files.find(file => file.includes(mediaId));
-        
-        if (matchingFile) {
-          filePath = path.join(uploadsDir, matchingFile);
-          return res.sendFile(filePath);
-        } else {
-          return res.status(404).json({ error: 'Media not found' });
-        }
-      } catch (error) {
-        console.error('❌ Error reading uploads directory:', error);
-        return res.status(500).json({ error: 'Failed to read uploads directory' });
-      }
-    } else {
-      // Get media URL from WhatsApp
-      try {
+    if (isDevelopmentMode) {
+      return res.status(404).json({ error: 'Media not found' });
+    }
+
+    // Fallback: fetch from WhatsApp (temporary IDs expire after ~30 days)
+    try {
         const mediaResponse = await axios.get(
           `${WHATSAPP_API_URL}/${mediaId}`,
           {
@@ -2495,7 +2459,6 @@ const getMedia = async (req, res) => {
           message: errorData?.error?.message || error.message
         });
       }
-    }
 
   } catch (error) {
     console.error('Error getting media:', error);

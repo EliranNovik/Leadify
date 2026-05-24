@@ -7,10 +7,21 @@ import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { buildApiUrl } from '../lib/api';
 import { normalizeMessageUrlsForLinkify } from '../lib/normalizeMessageUrlsForLinkify';
-import { fetchWhatsAppTemplates, filterTemplates, type WhatsAppTemplate } from '../lib/whatsappTemplates';
+import {
+  fetchWhatsAppTemplates,
+  filterActiveTemplates,
+  filterTemplates,
+  type WhatsAppTemplate,
+} from '../lib/whatsappTemplates';
 import TemplateOptionCard from './whatsapp/TemplateOptionCard';
 import { generateTemplateParameters } from '../lib/whatsappTemplateParams';
 import { getTemplateParamDefinitions, generateParamsFromDefinitions } from '../lib/whatsappTemplateParamMapping';
+import {
+  applyWhatsAppFetchedMessages,
+  createOptimisticOutgoingWhatsAppMessage,
+  resolveOutgoingTemplateDisplayMessage,
+  sortWhatsAppMessagesBySentAt,
+} from '../lib/whatsappOptimisticMessage';
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
 import { format } from 'date-fns';
@@ -41,6 +52,9 @@ interface WhatsAppMessage {
   error_message?: string;
   profile_picture_url?: string | null; // WhatsApp profile picture URL
   voice_note?: boolean; // True if this is a voice note (not regular audio)
+  template_id?: number;
+  contact_id?: number | null;
+  phone_number?: string | null;
 }
 
 interface SchedulerWhatsAppModalProps {
@@ -520,7 +534,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   };
 
   // Helper function to convert URLs, email addresses, and bold formatting in text
-  const renderTextWithLinks = (text: string): React.ReactNode => {
+  const renderTextWithLinks = (text: string, neonGreenLinks: boolean = true): React.ReactNode => {
     if (!text) return text;
 
     // Process links (URLs and emails)
@@ -581,14 +595,14 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             rel={href.startsWith('mailto:') ? undefined : 'noopener noreferrer'}
             className="hover:underline break-all"
             style={{
-              color: '#39ff14',
+              color: neonGreenLinks ? '#39ff14' : '#2563eb',
               wordBreak: 'break-all',
               overflowWrap: 'anywhere',
               hyphens: 'auto',
               maxWidth: '100%',
               whiteSpace: 'normal',
               display: 'inline',
-              fontWeight: 600,
+              fontWeight: neonGreenLinks ? 600 : 400,
               lineBreak: 'anywhere'
             }}
           >
@@ -1042,25 +1056,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               console.log(`📱 Filtered ${filteredMessages.length} messages from ${allMessages.length} total for contact ${selectedContact.name} (phone: ${contactPhone})`);
 
               const processedMessages = filteredMessages.map(processTemplateMessage);
-              if (!isPolling) {
-                setMessages(processedMessages);
-              } else {
-                setMessages(prevMessages => {
-                  const hasChanges = processedMessages.length !== prevMessages.length ||
-                    processedMessages.some((newMsg, index) => {
-                      const prevMsg = prevMessages[index];
-                      return !prevMsg ||
-                        newMsg.id !== prevMsg.id ||
-                        newMsg.message !== prevMsg.message ||
-                        newMsg.whatsapp_status !== prevMsg.whatsapp_status;
-                    });
-
-                  if (hasChanges) {
-                    return processedMessages;
-                  }
-                  return prevMessages;
-                });
-              }
+              setMessages((prevMessages) =>
+                applyWhatsAppFetchedMessages(processedMessages, prevMessages, isPolling),
+              );
               return;
             }
           } else {
@@ -1107,8 +1105,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 return;
               }
               const processedMessages = (data || []).map(processTemplateMessage);
-              if (!isPolling) setMessages(processedMessages);
-              else setMessages(prev => (processedMessages.length !== prev.length || processedMessages.some((m, i) => prev[i]?.id !== m.id)) ? processedMessages : prev);
+              setMessages((prevMessages) =>
+                applyWhatsAppFetchedMessages(processedMessages, prevMessages, isPolling),
+              );
               return;
             }
           }
@@ -1197,25 +1196,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
           const processedMessages = transformedMessages.map(processTemplateMessage);
 
-          if (!isPolling) {
-            setMessages(processedMessages);
-          } else {
-            setMessages(prevMessages => {
-              const hasChanges = processedMessages.length !== prevMessages.length ||
-                processedMessages.some((newMsg, index) => {
-                  const prevMsg = prevMessages[index];
-                  return !prevMsg ||
-                    newMsg.id !== prevMsg.id ||
-                    newMsg.message !== prevMsg.message ||
-                    newMsg.whatsapp_status !== prevMsg.whatsapp_status;
-                });
-
-              if (hasChanges) {
-                return processedMessages;
-              }
-              return prevMessages;
-            });
-          }
+          setMessages((prevMessages) =>
+            applyWhatsAppFetchedMessages(processedMessages, prevMessages, isPolling),
+          );
           return;
         } else {
           query = query.eq('lead_id', client.id);
@@ -1230,25 +1213,9 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
         const processedMessages = (data || []).map(processTemplateMessage);
 
-        if (!isPolling) {
-          setMessages(processedMessages);
-        } else {
-          setMessages(prevMessages => {
-            const hasChanges = processedMessages.length !== prevMessages.length ||
-              processedMessages.some((newMsg, index) => {
-                const prevMsg = prevMessages[index];
-                return !prevMsg ||
-                  newMsg.id !== prevMsg.id ||
-                  newMsg.message !== prevMsg.message ||
-                  newMsg.whatsapp_status !== prevMsg.whatsapp_status;
-              });
-
-            if (hasChanges) {
-              return processedMessages;
-            }
-            return prevMessages;
-          });
-        }
+        setMessages((prevMessages) =>
+          applyWhatsAppFetchedMessages(processedMessages, prevMessages, isPolling),
+        );
 
         // Mark incoming messages as read
         if (currentUser && data && data.length > 0 && !isPolling) {
@@ -1474,7 +1441,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         // Ensure templateId is sent as a number (not string) for proper database storage
         messagePayload.templateId = typeof selectedTemplate.id === 'string' ? parseInt(selectedTemplate.id, 10) : selectedTemplate.id;
         messagePayload.templateName = selectedTemplate.name360;
-        messagePayload.templateLanguage = selectedTemplate.language || 'en_US';
+        messagePayload.templateLanguage = selectedTemplate.language;
 
         // Debug log to verify templateId is being sent
         console.log('📤 Template ID being sent:', messagePayload.templateId, '(type:', typeof messagePayload.templateId, ')');
@@ -1543,6 +1510,42 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         messagePayload.message = newMessage.trim();
       }
 
+      const templateSnapshot = selectedTemplate;
+      const outgoingText = templateSnapshot
+        ? resolveOutgoingTemplateDisplayMessage(templateSnapshot, messagePayload.message, newMessage)
+        : (messagePayload.message || newMessage.trim());
+
+      const optimisticId = -Date.now();
+      const optimisticMsg = createOptimisticOutgoingWhatsAppMessage({
+        lead_id: client.id,
+        sender_id: currentUser.id,
+        sender_name: senderName,
+        message: outgoingText,
+        sent_at: new Date().toISOString(),
+        template_id: templateSnapshot?.id,
+      });
+      optimisticMsg.id = optimisticId;
+
+      setMessages((prev) => sortWhatsAppMessagesBySentAt([...prev, optimisticMsg as WhatsAppMessage]));
+      setShouldAutoScroll(true);
+      setNewMessage('');
+      setSelectedTemplate(null);
+
+      if (textareaRef.current) {
+        setTimeout(() => {
+          if (textareaRef.current) {
+            textareaRef.current.style.height = 'auto';
+            const regularHeight = isMobile ? 200 : 200;
+            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, regularHeight)}px`;
+          }
+        }, 0);
+      }
+
+      if (isMobile) {
+        setIsInputFocused(false);
+        textareaRef.current?.blur();
+      }
+
       const response = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
         method: 'POST',
         headers: {
@@ -1554,60 +1557,29 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       const result = await response.json();
 
       if (!response.ok) {
+        setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
         if (result.code === 'RE_ENGAGEMENT_REQUIRED') {
           throw new Error('⚠️ WhatsApp 24-Hour Rule: You can only send template messages after 24 hours of customer inactivity.');
         }
         throw new Error(result.error || 'Failed to send message');
       }
 
-      let displayMessage = newMessage.trim();
-      if (selectedTemplate) {
-        if (selectedTemplate.params === '0' && selectedTemplate.content) {
-          displayMessage = selectedTemplate.content;
-        } else if (selectedTemplate.params === '1' && newMessage.trim()) {
-          displayMessage = newMessage.trim();
-        } else if (selectedTemplate.params === '1' && !newMessage.trim()) {
-          displayMessage = `Template: ${selectedTemplate.title}`;
-        }
-      }
-
-      const newMsg: WhatsAppMessage = {
-        id: Date.now(),
-        lead_id: client.id,
-        sender_id: currentUser.id,
-        sender_name: senderName,
-        direction: 'out',
-        message: displayMessage,
-        sent_at: new Date().toISOString(),
-        status: 'sent',
-        message_type: 'text',
-        whatsapp_status: 'sent',
-        whatsapp_message_id: result.messageId
-      };
-
-      setMessages(prev => [...prev, newMsg]);
-      setShouldAutoScroll(true);
-      setNewMessage('');
-      setSelectedTemplate(null);
-
-      // Reset textarea height to regular size after sending
-      if (textareaRef.current) {
-        setTimeout(() => {
-          if (textareaRef.current) {
-            textareaRef.current.style.height = 'auto';
-            const regularHeight = isMobile ? 200 : 200;
-            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, regularHeight)}px`;
-          }
-        }, 0);
-      }
-
-      // Reset mobile input focus state
-      if (isMobile) {
-        setIsInputFocused(false);
-        textareaRef.current?.blur();
-      }
-
-      // Stage evaluation is handled automatically by database triggers
+      setMessages((prev) =>
+        sortWhatsAppMessagesBySentAt(
+          prev.map((m) =>
+            m.id === optimisticId
+              ? {
+                  ...m,
+                  id: Date.now(),
+                  whatsapp_message_id: result.messageId,
+                  whatsapp_status: 'sent' as const,
+                  template_id: templateSnapshot?.id,
+                  message: outgoingText,
+                }
+              : m,
+          ),
+        ),
+      );
 
       if (onClientUpdate) {
         await onClientUpdate();
@@ -1859,7 +1831,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const clientLocked = lastIncomingMessage ? isClientLocked(lastIncomingMessage.sent_at) : false;
 
   return createPortal(
-    <div className="fixed inset-0 bg-white z-[9999] overflow-hidden">
+    <div className="fixed inset-0 bg-gray-100 z-[9999] overflow-hidden">
       <div className="h-full flex flex-col relative">
         {/* Header */}
         <div className="flex-none flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
@@ -1939,14 +1911,6 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                         />
                       </div>
                     )}
-                    {message.direction === 'in' && (
-                      <div className="flex items-center gap-2 mb-1 ml-2">
-                        <WhatsAppAvatar
-                          name={displayName}
-                          size="sm"
-                        />
-                      </div>
-                    )}
 
                     {/* Image or Emoji-only messages - render outside bubble */}
                     {(message.message_type === 'image' || (message.message_type === 'text' && isEmojiOnly(message.message))) ? (
@@ -1986,7 +1950,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                               color: message.direction === 'out' ? 'white' : undefined
                             }}
                           >
-                            {renderTextWithLinks(message.caption)}
+                            {renderTextWithLinks(message.caption, message.direction === 'out')}
                           </p>
                         )}
 
@@ -2039,7 +2003,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                               color: message.direction === 'out' ? 'white' : undefined
                             }}
                           >
-                            {renderTextWithLinks(message.message)}
+                            {renderTextWithLinks(message.message, message.direction === 'out')}
                           </p>
                         )}
 
@@ -2101,7 +2065,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                                   color: message.direction === 'out' ? 'white' : undefined
                                 }}
                               >
-                                {renderTextWithLinks(message.caption)}
+                                {renderTextWithLinks(message.caption, message.direction === 'out')}
                               </p>
                             )}
                             {!message.caption && message.message && (
@@ -2117,7 +2081,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                                   color: message.direction === 'out' ? 'white' : undefined
                                 }}
                               >
-                                {renderTextWithLinks(message.message)}
+                                {renderTextWithLinks(message.message, message.direction === 'out')}
                               </p>
                             )}
                           </div>
@@ -2139,6 +2103,14 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                             )}
                           </div>
                         </div>
+                      </div>
+                    )}
+                    {message.direction === 'in' && (
+                      <div className="flex items-center gap-2 mt-1 ml-2">
+                        <WhatsAppAvatar
+                          name={displayName}
+                          size="sm"
+                        />
                       </div>
                     )}
                   </div>
@@ -2272,7 +2244,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                         className="px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[120px]"
                       >
                         <option value="">All</option>
-                        {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
+                        {Array.from(new Set(filterActiveTemplates(templates).map(t => normalizeLanguage(t.language))))
                           .sort()
                           .map(lang => (
                             <option key={lang} value={lang}>
@@ -2389,7 +2361,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       className="px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[140px]"
                     >
                       <option value="">All Languages</option>
-                      {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
+                      {Array.from(new Set(filterActiveTemplates(templates).map(t => normalizeLanguage(t.language))))
                         .sort()
                         .map(lang => (
                           <option key={lang} value={lang}>

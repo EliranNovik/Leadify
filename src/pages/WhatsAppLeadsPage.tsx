@@ -5,7 +5,18 @@ import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { buildApiUrl } from '../lib/api';
 import { normalizeMessageUrlsForLinkify } from '../lib/normalizeMessageUrlsForLinkify';
-import { fetchWhatsAppTemplates, filterTemplates, type WhatsAppTemplate } from '../lib/whatsappTemplates';
+import {
+  fetchWhatsAppTemplates,
+  filterActiveTemplates,
+  filterTemplates,
+  type WhatsAppTemplate,
+} from '../lib/whatsappTemplates';
+import {
+  applyWhatsAppFetchedMessages,
+  createOptimisticOutgoingWhatsAppMessage,
+  resolveOutgoingTemplateDisplayMessage,
+  sortWhatsAppMessagesBySentAt,
+} from '../lib/whatsappOptimisticMessage';
 import TemplateOptionCard from '../components/whatsapp/TemplateOptionCard';
 import { generateTemplateParameters } from '../lib/whatsappTemplateParams';
 import { getTemplateParamDefinitions, generateParamsFromDefinitions } from '../lib/whatsappTemplateParamMapping';
@@ -50,6 +61,7 @@ interface WhatsAppLead {
   status: string;
   message_type: 'text' | 'image' | 'document' | 'audio' | 'video' | 'location' | 'contact' | 'button_response' | 'list_response';
   media_url?: string;
+  media_id?: string;
   media_filename?: string;
   media_mime_type?: string;
   media_size?: number;
@@ -66,6 +78,29 @@ interface WhatsAppLead {
   profile_picture_url?: string | null; // WhatsApp profile picture URL
   voice_note?: boolean; // True if this is a voice note (not regular audio)
 }
+
+const WHATSAPP_MEDIA_UNAVAILABLE_PLACEHOLDER =
+  'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
+
+const getMessageMediaRef = (message: { media_url?: string | null; media_id?: string | null }) =>
+  message.media_url || message.media_id || null;
+
+const resolveWhatsAppMediaUrl = (mediaRef?: string | null) => {
+  if (!mediaRef) return null;
+  if (mediaRef.startsWith('http')) return mediaRef;
+  return buildApiUrl(`/api/whatsapp/media/${mediaRef}`);
+};
+
+/** Chat bubble width — capped so long messages don't span the full panel */
+const getMessageBubbleWidthClass = (direction: 'in' | 'out') =>
+  direction === 'out'
+    ? 'w-fit max-w-[min(85%,28rem)] self-end'
+    : 'w-fit max-w-[min(85%,28rem)] self-start';
+
+const getMessageMediaWidthClass = (direction: 'in' | 'out') =>
+  direction === 'out'
+    ? 'w-fit max-w-xs sm:max-w-sm md:max-w-md self-end ml-auto'
+    : 'w-fit max-w-xs sm:max-w-sm md:max-w-md self-start';
 
 const WhatsAppLeadsPage: React.FC = () => {
   const navigate = useNavigate();
@@ -924,7 +959,7 @@ const WhatsAppLeadsPage: React.FC = () => {
         // Ensure templateId is sent as a number (not string) for proper database storage
         messagePayload.templateId = typeof selectedTemplate.id === 'string' ? parseInt(selectedTemplate.id, 10) : selectedTemplate.id;
         messagePayload.templateName = selectedTemplate.name360;
-        messagePayload.templateLanguage = selectedTemplate.language || 'en_US'; // Use template's language
+        messagePayload.templateLanguage = selectedTemplate.language;
 
         // Debug log to verify templateId is being sent
         console.log('📤 Template ID being sent:', messagePayload.templateId, '(type:', typeof messagePayload.templateId, ')');
@@ -999,6 +1034,33 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       // Send message via WhatsApp API
+      const templateSnapshot = selectedTemplate;
+      const outgoingText = templateSnapshot
+        ? resolveOutgoingTemplateDisplayMessage(
+            templateSnapshot,
+            filledTemplateContent || messagePayload.message,
+            newMessage,
+          )
+        : newMessage.trim();
+
+      const optimisticId = -Date.now();
+      const optimisticMsg = createOptimisticOutgoingWhatsAppMessage({
+        phone_number: selectedLead.phone_number,
+        sender_name: currentUser.full_name || currentUser.email,
+        message: outgoingText,
+        sent_at: new Date().toISOString(),
+        template_id: templateSnapshot?.id,
+      });
+      optimisticMsg.id = optimisticId;
+
+      setMessages((prev) => sortWhatsAppMessagesBySentAt([...prev, optimisticMsg]));
+      setNewMessage('');
+      setSelectedTemplate(null);
+      if (isMobile) {
+        setIsInputFocused(false);
+        textareaRef.current?.blur();
+      }
+
       const response = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
         method: 'POST',
         headers: {
@@ -1010,42 +1072,26 @@ const WhatsAppLeadsPage: React.FC = () => {
       const result = await response.json();
 
       if (!response.ok) {
+        setMessages((prev) => prev.filter((m) => m.id !== optimisticId));
         throw new Error(result.error || 'Failed to send message');
       }
 
-      // Add message to local state
-      // Determine the message text to display - use the filled content that was sent
-      let displayMessage: string;
-      if (selectedTemplate) {
-        // For templates, use the filledTemplateContent that was created above
-        displayMessage = filledTemplateContent || selectedTemplate.content || `Template: ${selectedTemplate.title}`;
-      } else {
-        // For regular messages, use newMessage
-        displayMessage = newMessage.trim();
-      }
-
-      const newMsg = {
-        id: Date.now(), // Temporary ID
-        phone_number: selectedLead.phone_number,
-        sender_name: currentUser.full_name || currentUser.email,
-        direction: 'out',
-        message: displayMessage,
-        sent_at: new Date().toISOString(),
-        status: 'sent',
-        message_type: 'text',
-        whatsapp_status: 'sent',
-        whatsapp_message_id: result.messageId,
-        template_id: selectedTemplate?.id || undefined // Include template_id for proper matching
-      };
-
-      setMessages(prev => [...prev, newMsg]);
-      setNewMessage('');
-      setSelectedTemplate(null); // Clear template after sending
-      // Reset mobile input focus state
-      if (isMobile) {
-        setIsInputFocused(false);
-        textareaRef.current?.blur();
-      }
+      setMessages((prev) =>
+        sortWhatsAppMessagesBySentAt(
+          prev.map((m) =>
+            m.id === optimisticId
+              ? {
+                  ...m,
+                  id: Date.now(),
+                  whatsapp_message_id: result.messageId,
+                  whatsapp_status: 'sent',
+                  template_id: templateSnapshot?.id,
+                  message: outgoingText,
+                }
+              : m,
+          ),
+        ),
+      );
 
       // Refresh messages to get updated data (including any new incoming messages)
       // This will update the timer based on the latest message
@@ -1063,25 +1109,9 @@ const WhatsAppLeadsPage: React.FC = () => {
           // Process template messages for display
           const processedMessages = (uniqueMessages || []).map(processTemplateMessage);
 
-          // Only update if there are actual changes
-          setMessages(prevMessages => {
-            const hasChanges = processedMessages.length !== prevMessages.length ||
-              processedMessages.some((newMsg, index) => {
-                const prevMsg = prevMessages[index];
-                return !prevMsg ||
-                  newMsg.id !== prevMsg.id ||
-                  newMsg.message !== prevMsg.message ||
-                  newMsg.whatsapp_status !== prevMsg.whatsapp_status;
-              });
-
-            if (hasChanges) {
-              console.log('🔄 Refresh detected changes, updating messages (Leads)');
-              return processedMessages;
-            } else {
-              console.log('🔄 Refresh - no changes detected, keeping current messages (Leads)');
-              return prevMessages;
-            }
-          });
+          setMessages((prevMessages) =>
+            applyWhatsAppFetchedMessages(processedMessages, prevMessages, true),
+          );
         } catch (error) {
           console.error('Error refreshing messages:', error);
         }
@@ -2198,7 +2228,8 @@ const WhatsAppLeadsPage: React.FC = () => {
   };
 
   // Render text with links and bold formatting
-  const renderTextWithLinks = (text: string): React.ReactNode => {
+  // neonGreenLinks: true = outgoing messages; false = incoming (blue links)
+  const renderTextWithLinks = (text: string, neonGreenLinks: boolean = true): React.ReactNode => {
     if (!text) return text;
 
     // Process links (URLs and emails)
@@ -2259,14 +2290,14 @@ const WhatsAppLeadsPage: React.FC = () => {
             rel={href.startsWith('mailto:') ? undefined : 'noopener noreferrer'}
             className="hover:underline break-all"
             style={{
-              color: '#39ff14',
+              color: neonGreenLinks ? '#39ff14' : '#2563eb',
               wordBreak: 'break-all',
               overflowWrap: 'anywhere',
               hyphens: 'auto',
               maxWidth: '100%',
               whiteSpace: 'normal',
               display: 'inline',
-              fontWeight: 600,
+              fontWeight: neonGreenLinks ? 600 : 400,
               lineBreak: 'anywhere'
             }}
           >
@@ -2575,7 +2606,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
   // Helper function to download media
   const handleDownloadMedia = (mediaUrl: string, fileName: string) => {
-    const url = mediaUrl.startsWith('http') ? mediaUrl : buildApiUrl(`/api/whatsapp/media/${mediaUrl}`);
+    const url = resolveWhatsAppMediaUrl(mediaUrl) || mediaUrl;
     const link = document.createElement('a');
     link.href = url;
     link.download = fileName;
@@ -2716,22 +2747,232 @@ const WhatsAppLeadsPage: React.FC = () => {
   }, [isMobile, isInputFocused]);
 
   return (
-    <div className="fixed inset-0 bg-white z-[9999] overflow-hidden">
+    <div className="fixed inset-0 bg-gray-100 z-[9999] overflow-hidden">
       <div className="h-full flex flex-col overflow-hidden" style={{ height: '100vh', maxHeight: '100vh' }}>
-        {/* Header */}
-        <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200 bg-white">
-          <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
-            <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
-            <h2 className="text-lg md:text-2xl font-bold text-gray-900 flex-shrink-0">WhatsApp Leads</h2>
-            <div className="flex items-center gap-2">
-              <span className="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-0.5 rounded-full">
-                {leads.length} Leads
-              </span>
-            </div>
+        {/* Page header — on desktop, active chat contact + actions live here (not in chat panel) */}
+        <div className="relative flex items-center gap-3 md:gap-4 p-4 md:px-6 md:py-3 border-b border-gray-200 bg-white min-h-0">
+          <div className={`flex items-center gap-2 md:gap-3 min-w-0 flex-shrink-0 ${!isMobile && selectedLead ? 'md:border-r md:border-gray-200 md:pr-4' : ''}`}>
+            <FaWhatsapp className="w-6 h-6 md:w-7 md:h-7 text-green-600 flex-shrink-0" />
+            <h2 className="text-lg md:text-xl font-bold text-gray-900 flex-shrink-0">WhatsApp Leads</h2>
+            <span className="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-0.5 rounded-full whitespace-nowrap">
+              {leads.length} Leads
+            </span>
           </div>
+
+          {!isMobile && selectedLead && (
+            <>
+              <div className="flex items-center gap-3 min-w-0 flex-1">
+                <div className="w-9 h-9 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
+                  {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
+                    <span className="text-green-600 font-semibold text-base">
+                      {selectedLead.sender_name.charAt(0).toUpperCase()}
+                    </span>
+                  ) : (
+                    <PhoneIcon className="w-4 h-4 text-green-600" />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="font-semibold text-gray-900 truncate text-sm md:text-base">
+                    {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/)
+                      ? selectedLead.sender_name
+                      : selectedLead.phone_number || 'Unknown Number'}
+                  </h3>
+                  <p className="text-xs text-gray-500 truncate">
+                    {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/)
+                      ? `${selectedLead.phone_number} · `
+                      : ''}
+                    {selectedLead.message_count} messages · Last {formatTime(selectedLead.last_message_at)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {timeLeft && (
+                  <div
+                    className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium whitespace-nowrap ${isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                      }`}
+                  >
+                    {isLocked ? (
+                      <>
+                        <LockClosedIcon className="w-4 h-4" />
+                        <span>Locked</span>
+                      </>
+                    ) : (
+                      <>
+                        <ClockIcon className="w-4 h-4" />
+                        <span>{timeLeft}</span>
+                      </>
+                    )}
+                  </div>
+                )}
+                {(connectedLeads.length > 0 || connectedContacts.length > 0 || isLoadingConnections) && (
+                  <div className="relative">
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-primary btn-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowConnectedLeadsDropdown(!showConnectedLeadsDropdown);
+                        setShowActionDropdown(false);
+                      }}
+                    >
+                      <LinkIcon className="w-4 h-4 mr-1" />
+                      Connected
+                      <ChevronDownIcon className="w-4 h-4 ml-1" />
+                    </button>
+                    {showConnectedLeadsDropdown && (
+                      <>
+                        <div
+                          className="fixed inset-0 z-40"
+                          onClick={() => setShowConnectedLeadsDropdown(false)}
+                        />
+                        <ul
+                          className="absolute right-0 top-full mt-2 menu p-2 shadow-lg bg-base-100 rounded-box w-80 max-h-[70vh] overflow-y-auto z-50 border border-gray-200"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {isLoadingConnections ? (
+                            <li>
+                              <div className="flex items-center gap-2 text-sm text-gray-500 py-2">
+                                <span className="loading loading-spinner loading-xs"></span>
+                                <span>Loading connections...</span>
+                              </div>
+                            </li>
+                          ) : (
+                            <>
+                              {connectedLeads.map((lead) => (
+                                <li key={`lead-${lead.id}`}>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setShowConnectedLeadsDropdown(false);
+                                      handleNavigateToClient(lead.lead_number, e);
+                                    }}
+                                    className="flex items-center gap-2 w-full text-left hover:bg-gray-100 rounded px-2 py-2"
+                                  >
+                                    <UserGroupIcon className="w-4 h-4 text-blue-600 flex-shrink-0" />
+                                    <div className="flex-1 min-w-0">
+                                      <div className="text-sm font-medium text-gray-900 truncate">{lead.name}</div>
+                                      <div className="text-xs text-gray-500 truncate">{lead.lead_number}</div>
+                                    </div>
+                                  </button>
+                                </li>
+                              ))}
+                              {connectedContacts.map((contact) => (
+                                <li key={`contact-${contact.id}`}>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setShowConnectedLeadsDropdown(false);
+                                      handleNavigateToClient(contact.lead_number, e);
+                                    }}
+                                    className="flex items-center gap-2 w-full text-left hover:bg-gray-100 rounded px-2 py-2"
+                                  >
+                                    <LinkIcon className="w-4 h-4 text-purple-600 flex-shrink-0" />
+                                    <div className="flex-1 min-w-0">
+                                      <div className="text-sm font-medium text-gray-900 truncate">{contact.name}</div>
+                                      <div className="text-xs text-gray-500 truncate">Lead: {contact.lead_number}</div>
+                                    </div>
+                                  </button>
+                                </li>
+                              ))}
+                              {connectedLeads.length === 0 && connectedContacts.length === 0 && !isLoadingConnections && (
+                                <li>
+                                  <div className="text-sm text-gray-500 py-2 text-center">No connected leads or contacts</div>
+                                </li>
+                              )}
+                            </>
+                          )}
+                        </ul>
+                      </>
+                    )}
+                  </div>
+                )}
+                <div className="relative">
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowActionDropdown(!showActionDropdown);
+                      setShowConnectedLeadsDropdown(false);
+                    }}
+                    style={{ background: '#000000', borderColor: 'transparent' }}
+                  >
+                    <UserPlusIcon className="w-4 h-4 mr-1" />
+                    Actions
+                    <ChevronDownIcon className="w-4 h-4 ml-1" />
+                  </button>
+                  {showActionDropdown && (
+                    <>
+                      <div
+                        className="fixed inset-0 z-40"
+                        onClick={() => setShowActionDropdown(false)}
+                      />
+                      <ul
+                        className="absolute right-0 top-full mt-2 menu p-2 shadow-lg bg-base-100 rounded-box w-64 z-50 border border-gray-200"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <li>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowActionDropdown(false);
+                              handleConvertToLead(selectedLead);
+                            }}
+                            className="flex items-center gap-2 w-full text-left"
+                          >
+                            <UserPlusIcon className="w-4 h-4" />
+                            <span>Convert to Lead</span>
+                          </button>
+                        </li>
+                        <li>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowActionDropdown(false);
+                              setActionType('sublead');
+                              setShowLeadSearchModal(true);
+                              setLeadSearchQuery('');
+                              setLeadSearchResults([]);
+                            }}
+                            className="flex items-center gap-2 w-full text-left"
+                          >
+                            <UserGroupIcon className="w-4 h-4" />
+                            <span>Create a Sublead</span>
+                          </button>
+                        </li>
+                        <li>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowActionDropdown(false);
+                              setActionType('contact');
+                              setShowLeadSearchModal(true);
+                              setLeadSearchQuery('');
+                              setLeadSearchResults([]);
+                            }}
+                            className="flex items-center gap-2 w-full text-left"
+                          >
+                            <LinkIcon className="w-4 h-4" />
+                            <span>Add as Contact to Lead</span>
+                          </button>
+                        </li>
+                      </ul>
+                    </>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+
           <button
+            type="button"
             onClick={() => window.history.back()}
-            className="btn btn-ghost btn-circle flex-shrink-0"
+            className="btn btn-ghost btn-circle flex-shrink-0 ml-auto"
           >
             <svg className="w-5 h-5 md:w-6 md:h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -2741,7 +2982,7 @@ const WhatsAppLeadsPage: React.FC = () => {
 
         <div className="flex-1 flex overflow-hidden">
           {/* Left Panel - Leads List */}
-          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col ${isMobile && showChat ? 'hidden' : ''}`}>
+          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col bg-white ${isMobile && showChat ? 'hidden' : ''}`}>
             {/* Search Bar */}
             <div className="p-3 border-b border-gray-200">
               <div className="relative">
@@ -2858,7 +3099,7 @@ const WhatsAppLeadsPage: React.FC = () => {
           </div>
 
           {/* Right Panel - Chat */}
-          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white relative ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : {}}>
+          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-gray-100 relative ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : {}}>
             {selectedLead ? (
               <>
                 {/* Loading overlay when switching between chats */}
@@ -2987,216 +3228,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                   </div>
                 )}
 
-                {/* Desktop Header */}
-                {!isMobile && (
-                  <div className="sticky top-0 z-10 flex items-center justify-between p-4 border-b border-gray-200 bg-white">
-                    <div className="flex items-center gap-3 min-w-0 flex-1">
-                      <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
-                        {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
-                          <span className="text-green-600 font-semibold text-lg">
-                            {selectedLead.sender_name.charAt(0).toUpperCase()}
-                          </span>
-                        ) : (
-                          <PhoneIcon className="w-5 h-5 text-green-600" />
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <h3 className="font-semibold text-gray-900 truncate">
-                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/)
-                            ? selectedLead.sender_name
-                            : selectedLead.phone_number || 'Unknown Number'}
-                        </h3>
-                        {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) && (
-                          <p className="text-sm text-gray-500 truncate">
-                            {selectedLead.phone_number}
-                          </p>
-                        )}
-                        <p className="text-sm text-gray-500 truncate">
-                          {selectedLead.message_count} messages • Last message {formatTime(selectedLead.last_message_at)}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {/* Timer/Lock Icon */}
-                      {timeLeft && (
-                        <div className={`flex items-center gap-1 px-3 py-1.5 rounded text-sm font-medium ${isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
-                          }`}>
-                          {isLocked ? (
-                            <>
-                              <LockClosedIcon className="w-5 h-5" />
-                              <span>Locked</span>
-                            </>
-                          ) : (
-                            <>
-                              <ClockIcon className="w-5 h-5" />
-                              <span>{timeLeft}</span>
-                            </>
-                          )}
-                        </div>
-                      )}
-                      {/* Connected Leads Dropdown */}
-                      {(connectedLeads.length > 0 || connectedContacts.length > 0 || isLoadingConnections) && (
-                        <div className="relative">
-                          <button
-                            className="btn btn-outline btn-primary"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setShowConnectedLeadsDropdown(!showConnectedLeadsDropdown);
-                              setShowActionDropdown(false);
-                            }}
-                          >
-                            <LinkIcon className="w-4 h-4 mr-2" />
-                            Connected Leads
-                            <ChevronDownIcon className="w-4 h-4 ml-2" />
-                          </button>
-                          {showConnectedLeadsDropdown && (
-                            <>
-                              <div
-                                className="fixed inset-0 z-40"
-                                onClick={() => setShowConnectedLeadsDropdown(false)}
-                              />
-                              <ul
-                                className="absolute right-0 top-full mt-2 menu p-2 shadow-lg bg-base-100 rounded-box w-80 max-h-[70vh] overflow-y-auto z-50 border border-gray-200"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                {isLoadingConnections ? (
-                                  <li>
-                                    <div className="flex items-center gap-2 text-sm text-gray-500 py-2">
-                                      <span className="loading loading-spinner loading-xs"></span>
-                                      <span>Loading connections...</span>
-                                    </div>
-                                  </li>
-                                ) : (
-                                  <>
-                                    {connectedLeads.map((lead) => (
-                                      <li key={`lead-${lead.id}`}>
-                                        <button
-                                          onClick={(e) => {
-                                            e.preventDefault();
-                                            e.stopPropagation();
-                                            setShowConnectedLeadsDropdown(false);
-                                            handleNavigateToClient(lead.lead_number, e);
-                                          }}
-                                          className="flex items-center gap-2 w-full text-left hover:bg-gray-100 rounded px-2 py-2"
-                                        >
-                                          <UserGroupIcon className="w-4 h-4 text-blue-600 flex-shrink-0" />
-                                          <div className="flex-1 min-w-0">
-                                            <div className="text-sm font-medium text-gray-900 truncate">{lead.name}</div>
-                                            <div className="text-xs text-gray-500 truncate">
-                                              {lead.lead_number}
-                                            </div>
-                                          </div>
-                                        </button>
-                                      </li>
-                                    ))}
-                                    {connectedContacts.map((contact) => (
-                                      <li key={`contact-${contact.id}`}>
-                                        <button
-                                          onClick={(e) => {
-                                            e.preventDefault();
-                                            e.stopPropagation();
-                                            setShowConnectedLeadsDropdown(false);
-                                            handleNavigateToClient(contact.lead_number, e);
-                                          }}
-                                          className="flex items-center gap-2 w-full text-left hover:bg-gray-100 rounded px-2 py-2"
-                                        >
-                                          <LinkIcon className="w-4 h-4 text-purple-600 flex-shrink-0" />
-                                          <div className="flex-1 min-w-0">
-                                            <div className="text-sm font-medium text-gray-900 truncate">{contact.name}</div>
-                                            <div className="text-xs text-gray-500 truncate">
-                                              Lead: {contact.lead_number}
-                                            </div>
-                                          </div>
-                                        </button>
-                                      </li>
-                                    ))}
-                                    {connectedLeads.length === 0 && connectedContacts.length === 0 && !isLoadingConnections && (
-                                      <li>
-                                        <div className="text-sm text-gray-500 py-2 text-center">No connected leads or contacts</div>
-                                      </li>
-                                    )}
-                                  </>
-                                )}
-                              </ul>
-                            </>
-                          )}
-                        </div>
-                      )}
-                      {/* Action Dropdown */}
-                      <div className="relative">
-                        <button
-                          className="btn btn-primary"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setShowActionDropdown(!showActionDropdown);
-                          }}
-                          style={{ background: '#000000', borderColor: 'transparent' }}
-                        >
-                          <UserPlusIcon className="w-4 h-4 mr-2" />
-                          Actions
-                          <ChevronDownIcon className="w-4 h-4 ml-2" />
-                        </button>
-                        {showActionDropdown && (
-                          <>
-                            {/* Backdrop to close on outside click */}
-                            <div
-                              className="fixed inset-0 z-40"
-                              onClick={() => setShowActionDropdown(false)}
-                            />
-                            <ul
-                              className="absolute right-0 top-full mt-2 menu p-2 shadow-lg bg-base-100 rounded-box w-64 z-50 border border-gray-200"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              <li>
-                                <button
-                                  onClick={() => {
-                                    setShowActionDropdown(false);
-                                    handleConvertToLead(selectedLead);
-                                  }}
-                                  className="flex items-center gap-2 w-full text-left"
-                                >
-                                  <UserPlusIcon className="w-4 h-4" />
-                                  <span>Convert to Lead</span>
-                                </button>
-                              </li>
-                              <li>
-                                <button
-                                  onClick={() => {
-                                    setShowActionDropdown(false);
-                                    setActionType('sublead');
-                                    setShowLeadSearchModal(true);
-                                    setLeadSearchQuery('');
-                                    setLeadSearchResults([]);
-                                  }}
-                                  className="flex items-center gap-2 w-full text-left"
-                                >
-                                  <UserGroupIcon className="w-4 h-4" />
-                                  <span>Create a Sublead</span>
-                                </button>
-                              </li>
-                              <li>
-                                <button
-                                  onClick={() => {
-                                    setShowActionDropdown(false);
-                                    setActionType('contact');
-                                    setShowLeadSearchModal(true);
-                                    setLeadSearchQuery('');
-                                    setLeadSearchResults([]);
-                                  }}
-                                  className="flex items-center gap-2 w-full text-left"
-                                >
-                                  <LinkIcon className="w-4 h-4" />
-                                  <span>Add as Contact to Lead</span>
-                                </button>
-                              </li>
-                            </ul>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
                 {/* Messages */}
                 <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain" style={isMobile ? { flex: '1 1 auto', paddingBottom: showTemplateSelector ? '240px' : '120px', WebkitOverflowScrolling: 'touch', overflowX: 'hidden', maxWidth: '100%' } : { overflowX: 'hidden', maxWidth: '100%' }}>
                   {messages.length === 0 ? (
@@ -3222,12 +3253,9 @@ const WhatsAppLeadsPage: React.FC = () => {
                             </div>
                           )}
 
-                          <div className={`flex ${message.direction === 'out' ? 'flex-col items-end' : 'flex-row items-end gap-2'}`}>
-                            {message.direction === 'in' && (
-                              <div className="flex-shrink-0 w-6 h-6 rounded-full bg-green-100 border border-green-200 flex items-center justify-center text-green-700 text-xs font-semibold">
-                                {(message.sender_name || '?').charAt(0).toUpperCase()}
-                              </div>
-                            )}
+                          <div
+                            className={`flex flex-col mb-3 w-full ${message.direction === 'out' ? 'items-end' : 'items-start'}`}
+                          >
                             {message.direction === 'out' && (
                               <div className="flex items-center gap-2 mb-1 mr-2">
                                 <span className="text-sm text-gray-600 font-medium">
@@ -3250,15 +3278,16 @@ const WhatsAppLeadsPage: React.FC = () => {
                               const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]/u;
                               return emojiRegex.test(cleanText);
                             })())) ? (
-                              <div className={`flex flex-col ${message.direction === 'out' ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
+                              <div className={`flex flex-col ${getMessageMediaWidthClass(message.direction)}`}>
                                 {/* Image content */}
-                                {message.message_type === 'image' && message.media_url && (
+                                {message.message_type === 'image' && getMessageMediaRef(message) && (
                                   <div
                                     className="relative cursor-pointer group"
                                     onClick={() => {
-                                      if (message.media_url) {
+                                      const mediaUrl = resolveWhatsAppMediaUrl(getMessageMediaRef(message));
+                                      if (mediaUrl) {
                                         setSelectedMedia({
-                                          url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
+                                          url: mediaUrl,
                                           type: 'image',
                                           caption: message.caption
                                         });
@@ -3266,11 +3295,13 @@ const WhatsAppLeadsPage: React.FC = () => {
                                     }}
                                   >
                                     <img
-                                      src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
+                                      src={resolveWhatsAppMediaUrl(getMessageMediaRef(message)) || ''}
                                       alt="Image"
                                       className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
                                       onError={(e) => {
-                                        e.currentTarget.style.display = 'none';
+                                        e.currentTarget.onerror = null;
+                                        e.currentTarget.src = WHATSAPP_MEDIA_UNAVAILABLE_PLACEHOLDER;
+                                        e.currentTarget.classList.add('border', 'border-gray-200');
                                       }}
                                     />
                                     <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
@@ -3312,7 +3343,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                       color: message.direction === 'out' ? 'white' : undefined
                                     }}
                                   >
-                                    {renderTextWithLinks(message.caption)}
+                                    {renderTextWithLinks(message.caption, message.direction === 'out')}
                                   </p>
                                 )}
 
@@ -3333,7 +3364,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                               </div>
                             ) : (
                               <div
-                                className={`group ${message.direction === 'out' ? 'max-w-[75%] md:max-w-[55%]' : 'max-w-[75%] md:max-w-[70%]'} rounded-2xl px-3 py-2 shadow-sm relative ${message.direction === 'out'
+                                className={`group ${getMessageBubbleWidthClass(message.direction)} rounded-2xl px-4 py-2.5 shadow-sm relative ${message.direction === 'out'
                                   ? 'text-white'
                                   : 'bg-white text-gray-900 border border-gray-200'
                                   }`}
@@ -3341,10 +3372,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                                   background: message.direction === 'out' ? 'linear-gradient(to bottom right, #047857, #0f766e)' : undefined,
                                   wordBreak: 'break-word',
                                   overflowWrap: 'break-word',
-                                  overflow: 'visible',
-                                  minWidth: 0,
-                                  maxWidth: '100%',
-                                  height: 'auto'
                                 }}
                               >
                                 {/* Edit input or message content */}
@@ -3385,17 +3412,10 @@ const WhatsAppLeadsPage: React.FC = () => {
                                         dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
                                         style={{
                                           textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
-                                          wordBreak: 'break-word',
-                                          overflowWrap: 'break-word',
-                                          hyphens: 'auto',
-                                          overflow: 'visible',
-                                          maxWidth: '100%',
-                                          minWidth: 0,
-                                          height: 'auto',
-                                          color: message.direction === 'out' ? 'white' : undefined
+                                          color: message.direction === 'out' ? 'white' : undefined,
                                         }}
                                       >
-                                        {renderTextWithLinks(message.message)}
+                                        {renderTextWithLinks(message.message, message.direction === 'out')}
                                       </p>
                                     )}
 
@@ -3425,9 +3445,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                 {(message.message_type === 'audio' || message.voice_note) && (message.media_url || message.media_id) && (
                                   <div className="mt-2">
                                     <VoiceMessagePlayer
-                                      audioUrl={(message.media_url || message.media_id || '').startsWith('http')
-                                        ? (message.media_url || message.media_id || '')
-                                        : buildApiUrl(`/api/whatsapp/media/${message.media_url || message.media_id}`)}
+                                      audioUrl={resolveWhatsAppMediaUrl(getMessageMediaRef(message)) || ''}
                                       className={message.direction === 'out' ? 'bg-green-50' : 'bg-gray-50'}
                                       senderName={message.sender_name || 'Unknown'}
                                       profilePictureUrl={message.profile_picture_url}
@@ -3448,7 +3466,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                           color: message.direction === 'out' ? 'white' : undefined
                                         }}
                                       >
-                                        {renderTextWithLinks(message.caption)}
+                                        {renderTextWithLinks(message.caption, message.direction === 'out')}
                                       </p>
                                     )}
                                     {!message.caption && message.message && (
@@ -3466,14 +3484,14 @@ const WhatsAppLeadsPage: React.FC = () => {
                                           color: message.direction === 'out' ? 'white' : undefined
                                         }}
                                       >
-                                        {renderTextWithLinks(message.message)}
+                                        {renderTextWithLinks(message.message, message.direction === 'out')}
                                       </p>
                                     )}
                                   </div>
                                 )}
 
                                 {/* Document message with WhatsApp-style design */}
-                                {(message.message_type === 'document' || (message.message && message.message.includes('.pdf'))) && message.media_url && (
+                                {(message.message_type === 'document' || (message.message && message.message.includes('.pdf'))) && getMessageMediaRef(message) && (
                                   <div className="mb-2">
                                     {/* WhatsApp-style document card */}
                                     <div className="bg-white rounded-lg border border-gray-300 overflow-hidden shadow-sm">
@@ -3493,7 +3511,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                           )}
                                         </div>
                                         <button
-                                          onClick={() => handleDownloadMedia(message.media_url!, message.media_filename || message.message || 'document')}
+                                          onClick={() => handleDownloadMedia(getMessageMediaRef(message)!, message.media_filename || message.message || 'document')}
                                           className="btn btn-ghost btn-sm p-2 hover:bg-gray-200"
                                           title="Download"
                                         >
@@ -3507,7 +3525,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                       {(message.media_mime_type === 'application/pdf' || message.message?.includes('.pdf')) && (
                                         <div className="p-2 bg-gray-100">
                                           <iframe
-                                            src={`${message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}#toolbar=0&navpanes=0&scrollbar=0`}
+                                            src={`${resolveWhatsAppMediaUrl(getMessageMediaRef(message))}#toolbar=0&navpanes=0&scrollbar=0`}
                                             className="w-full h-80 md:h-96 border-0 rounded"
                                             title="PDF Preview"
                                           />
@@ -3540,6 +3558,11 @@ const WhatsAppLeadsPage: React.FC = () => {
                                     </span>
                                   )}
                                 </div>
+                              </div>
+                            )}
+                            {message.direction === 'in' && (
+                              <div className="flex-shrink-0 w-6 h-6 rounded-full bg-green-100 border border-green-200 flex items-center justify-center text-green-700 text-xs font-semibold mt-1 ml-2">
+                                {(message.sender_name || '?').charAt(0).toUpperCase()}
                               </div>
                             )}
                           </div>
@@ -3605,7 +3628,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                 className="px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[120px]"
                               >
                                 <option value="">All</option>
-                                {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
+                                {Array.from(new Set(filterActiveTemplates(templates).map(t => normalizeLanguage(t.language))))
                                   .sort()
                                   .map(lang => (
                                     <option key={lang} value={lang}>
@@ -3714,7 +3737,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                               className="px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[140px]"
                             >
                               <option value="">All Languages</option>
-                              {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
+                              {Array.from(new Set(filterActiveTemplates(templates).map(t => normalizeLanguage(t.language))))
                                 .sort()
                                 .map(lang => (
                                   <option key={lang} value={lang}>
@@ -3779,15 +3802,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                     </div>
                     </>,
                     document.body
-                  )}
-
-                  {/* Lock Message - Desktop only */}
-                  {!isMobile && isLocked && (
-                    <div className="px-4 pb-2">
-                      <div className="text-xs text-red-600 text-center py-1">
-                        Messaging window expired
-                      </div>
-                    </div>
                   )}
 
                   {/* AI Suggestions Dropdown */}
@@ -3856,20 +3870,28 @@ const WhatsAppLeadsPage: React.FC = () => {
                   )}
 
                   {/* Input Form */}
-                  <form onSubmit={handleSendMessage} className={`flex items-center gap-2 ${isMobile ? 'p-3' : 'p-4'}`}>
+                  <form onSubmit={handleSendMessage} className={`flex items-center gap-2 ${isMobile ? 'p-3' : 'px-3 py-2'}`}>
                     <div className="relative space-y-2 pointer-events-auto" style={{ overflow: 'visible', flex: 1, minWidth: 0 }}>
                       <div className="flex items-center gap-2" style={{ width: '100%' }}>
                         {/* Dropdown Button - Always visible */}
-                        <div className="relative" ref={mobileToolsRef} style={{ overflow: 'visible' }}>
+                        <div className="relative flex-shrink-0" ref={mobileToolsRef} style={{ overflow: 'visible' }}>
                           <button
                             type="button"
                             onClick={() => setShowMobileDropdown(!showMobileDropdown)}
-                            className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow flex-shrink-0"
+                            className={`btn btn-circle text-white shadow-md hover:shadow-lg transition-shadow flex-shrink-0 ${isMobile ? 'w-12 h-12' : 'w-10 h-10'}`}
                             style={{ background: '#000000', borderColor: 'transparent' }}
-                            title="Message tools"
+                            title={isLocked ? 'Messaging window expired — use templates' : 'Message tools'}
                           >
-                            <Squares2X2Icon className="w-6 h-6" />
+                            <Squares2X2Icon className={isMobile ? 'w-6 h-6' : 'w-5 h-5'} />
                           </button>
+                          {isLocked && (
+                            <div
+                              className="absolute -top-1 -right-1 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 pointer-events-none"
+                              title="Messaging window expired"
+                            >
+                              <LockClosedIcon className="h-3 w-3 text-white" />
+                            </div>
+                          )}
                           {showMobileDropdown && (
                             <div className="absolute left-0 z-[9999] bg-white border border-gray-200 rounded-xl shadow-xl w-64 divide-y divide-gray-100 pointer-events-auto" style={{ top: 'auto', bottom: 'calc(100% + 8px)' }}>
                               <button
@@ -3982,17 +4004,20 @@ const WhatsAppLeadsPage: React.FC = () => {
                                 // Reset to normal height when blurred
                               }
                             }}
-                            placeholder={isLocked ? "Window expired - use templates" : "Type a message..."}
-                            className="textarea w-full resize-none border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
+                            placeholder={isLocked ? 'Window expired - use templates' : 'Type a message...'}
+                            className={`textarea w-full resize-none border rounded-2xl focus:outline-none ${isMobile
+                              ? 'border-white/30 focus:border-white/50'
+                              : 'border-gray-200 focus:border-green-400 py-2 min-h-0 text-sm'
+                              }`}
                             rows={1}
                             disabled={isLocked || sending}
                             style={{
-                              backgroundColor: selectedTemplate ? 'rgba(240, 240, 240, 0.9)' : 'rgba(255, 255, 255, 0.8)',
-                              backdropFilter: 'blur(10px)',
-                              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                              maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px',
-                              cursor: selectedTemplate ? 'not-allowed' : 'text',
-                              minHeight: isMobile ? '48px' : '44px',
+                              backgroundColor: selectedTemplate ? 'rgba(240, 240, 240, 0.9)' : isMobile ? 'rgba(255, 255, 255, 0.8)' : '#fff',
+                              backdropFilter: isMobile ? 'blur(10px)' : undefined,
+                              boxShadow: isMobile ? '0 2px 8px rgba(0, 0, 0, 0.1)' : 'none',
+                              maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : isMobile ? '128px' : '96px',
+                              cursor: isLocked || selectedTemplate ? 'not-allowed' : 'text',
+                              minHeight: isMobile ? '48px' : '40px',
                             }}
                           />
                         </div>
@@ -4015,14 +4040,14 @@ const WhatsAppLeadsPage: React.FC = () => {
                             }
                           }}
                           disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
-                          className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50 flex-shrink-0"
+                          className={`btn btn-circle text-white shadow-md hover:shadow-lg transition-shadow disabled:opacity-50 flex-shrink-0 ${isMobile ? 'w-12 h-12' : 'w-10 h-10'}`}
                           style={{ background: '#000000', borderColor: 'transparent' }}
                           title={selectedFile ? 'Send media' : 'Send message'}
                         >
                           {sending || uploadingMedia ? (
                             <div className="loading loading-spinner loading-sm"></div>
                           ) : (
-                            <PaperAirplaneIcon className="w-5 h-5" />
+                            <PaperAirplaneIcon className={isMobile ? 'w-5 h-5' : 'w-4 h-4'} />
                           )}
                         </button>
                       </div>
@@ -4132,8 +4157,8 @@ const WhatsAppLeadsPage: React.FC = () => {
             {selectedMedia.type === 'image' && (
               <div className="absolute bottom-0 left-0 right-0 px-4 pb-4 flex items-center justify-center">
                 <div className="bg-black bg-opacity-60 rounded-lg p-2 flex gap-2 overflow-x-auto max-w-[90vw] scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent">
-                  {messages.filter(m => m.message_type === 'image' && m.media_url).map((img) => {
-                    const url = img.media_url!.startsWith('http') ? img.media_url! : buildApiUrl(`/api/whatsapp/media/${img.media_url}`);
+                  {messages.filter(m => m.message_type === 'image' && getMessageMediaRef(m)).map((img) => {
+                    const url = resolveWhatsAppMediaUrl(getMessageMediaRef(img))!;
                     const isActive = selectedMedia.url === url;
                     return (
                       <img

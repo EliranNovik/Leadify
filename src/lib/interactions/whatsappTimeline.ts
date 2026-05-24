@@ -1,5 +1,5 @@
 import type { WhatsAppTemplate } from '../whatsappTemplates';
-import { interactionsDevLog, interactionsDevWarn } from './devLog';
+import { interactionsDevWarn } from './devLog';
 
 type TemplateMsg = {
   id?: unknown;
@@ -18,7 +18,6 @@ export function processWhatsAppTemplateMessage(
   let processedMessage = msg.message != null && msg.message !== '' ? String(msg.message) : '';
 
   if (whatsAppTemplates.length === 0) {
-    interactionsDevLog('⚠️ Templates not loaded yet, skipping template processing for message:', msg.id);
     return processedMessage;
   }
 
@@ -26,9 +25,6 @@ export function processWhatsAppTemplateMessage(
     const templateId = Number(msg.template_id);
     const template = whatsAppTemplates.find((t) => Number(t.id) === templateId);
     if (template) {
-      interactionsDevLog(
-        `✅ Matched template by ID ${templateId}: ${template.title} (${template.language || 'N/A'})`
-      );
       if (template.params === '0' && template.content) {
         processedMessage = template.content;
       } else if (template.params === '1') {
@@ -63,7 +59,6 @@ export function processWhatsAppTemplateMessage(
 
     if (templateMatch) {
       const templateTitle = templateMatch[1].trim().replace(/\]$/, '');
-      interactionsDevLog(`🔍 Looking for template by name: "${templateTitle}"`);
 
       const template = whatsAppTemplates.find(
         (t) =>
@@ -72,9 +67,6 @@ export function processWhatsAppTemplateMessage(
       );
 
       if (template) {
-        interactionsDevLog(
-          `✅ Matched template by name "${templateTitle}": ${template.title} (${template.language || 'N/A'})`
-        );
         if (template.params === '0' && template.content) {
           processedMessage = template.content;
         } else if (template.params === '1') {

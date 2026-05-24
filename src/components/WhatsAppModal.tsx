@@ -14,7 +14,7 @@ const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ isOpen, onClose, selected
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-[9999] bg-white">
+    <div className="fixed inset-0 z-[9999] bg-gray-100">
       {/* Custom close button overlay */}
       <div className="absolute top-4 right-4 z-[10000]">
         <button

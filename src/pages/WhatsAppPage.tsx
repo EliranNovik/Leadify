@@ -6105,7 +6105,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   };
 
   return (
-    <div className="fixed inset-0 bg-white z-[9999]" style={{ overflow: 'visible' }}>
+    <div className="fixed inset-0 bg-gray-100 z-[9999]" style={{ overflow: 'visible' }}>
       <div className="h-full flex flex-col" style={{ height: '100vh', maxHeight: '100vh', overflow: 'visible' }}>
         {/* Header */}
         <div className={`flex items-center justify-between p-4 md:p-6 border-b border-gray-200 ${isMobile && isContactsHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'} ${isMobile && showChat ? 'hidden' : ''}`}>
@@ -6329,7 +6329,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
         <div className="flex-1 flex min-h-0 overflow-hidden">
           {/* Left Panel - Client List */}
-          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col min-h-0 ${isMobile && showChat ? 'hidden' : ''}`}>
+          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col min-h-0 bg-white ${isMobile && showChat ? 'hidden' : ''}`}>
             {/* Filter Toggle and Search Bar - Fixed on mobile */}
             <div className={`${isMobile
               ? 'sticky top-0 z-10 bg-white border-b border-gray-200 p-3'
@@ -6622,7 +6622,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           </div>
 
           {/* Right Panel - Chat */}
-          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white min-h-0 relative ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : { overflow: 'hidden' }}>
+          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-gray-100 min-h-0 relative ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : { overflow: 'hidden' }}>
             {selectedClient ? (
               <>
                 {/* Mobile Chat Header - Only visible on mobile when in chat */}
@@ -6747,14 +6747,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                   <EmployeeAvatar
                                     employeeId={getEmployeeById(message.sender_name)?.id || null}
                                     size="md"
-                                  />
-                                </div>
-                              )}
-                              {message.direction === 'in' && (
-                                <div className="flex items-center gap-2 mb-1 ml-2">
-                                  <WhatsAppAvatar
-                                    name={selectedClient?.name || message.sender_name || 'Client'}
-                                    size="sm"
                                   />
                                 </div>
                               )}
@@ -7195,6 +7187,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
                                     {/* Edit/Delete buttons removed - WhatsApp API does not support these features */}
                                   </div>
+                                </div>
+                              )}
+                              {message.direction === 'in' && (
+                                <div className="flex items-center gap-2 mt-1 ml-2">
+                                  <WhatsAppAvatar
+                                    name={selectedClient?.name || message.sender_name || 'Client'}
+                                    size="sm"
+                                  />
                                 </div>
                               )}
                             </div>
