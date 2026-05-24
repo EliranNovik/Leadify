@@ -6,6 +6,8 @@ import { toast } from 'react-hot-toast';
 import FullSearchReport from './FullSearchReport';
 import MarketingDashboardReport from './MarketingDashboardReport';
 import BadLeadsGoogleSheetExportReport from './BadLeadsGoogleSheetExportReport';
+import QLeadsGoogleSheetExportReport from './QLeadsGoogleSheetExportReport';
+import HQLeadsGoogleSheetExportReport from './HQLeadsGoogleSheetExportReport';
 import { supabase } from '../lib/supabase';
 import EmployeeLeadDrawer, {
   EmployeeLeadDrawerItem,
@@ -8185,6 +8187,8 @@ type ReportItem = {
   route?: string;
   /** When set, replaces the default title heading in the report shell (same row as search / back). */
   shellTitle?: React.FC;
+  /** Visible only when users.is_superuser is true */
+  superuserOnly?: boolean;
 };
 
 type ReportSection = {
@@ -8206,7 +8210,9 @@ const reports: ReportSection[] = [
     category: 'Marketing',
     items: [
       { label: 'Marketing dashboard', icon: MegaphoneIcon, component: MarketingDashboardReport },
-      { label: 'Bad leads → Google Sheet', icon: CloudArrowUpIcon, component: BadLeadsGoogleSheetExportReport },
+      { label: 'Bad leads → Google Sheet', icon: CloudArrowUpIcon, component: BadLeadsGoogleSheetExportReport, superuserOnly: true },
+      { label: 'QLeads → Google Sheet', icon: CloudArrowUpIcon, component: QLeadsGoogleSheetExportReport, superuserOnly: true },
+      { label: 'HQLeads → Google Sheet', icon: CloudArrowUpIcon, component: HQLeadsGoogleSheetExportReport, superuserOnly: true },
       { label: 'Sources pie', icon: ChartPieIcon, component: SourcesPieReport },
       { label: 'Category & source', icon: AdjustmentsHorizontalIcon, component: CategorySourceReport },
       { label: 'Convertion', icon: FunnelIcon, component: ConvertionReport },
@@ -8325,6 +8331,7 @@ export default function ReportsPage() {
   const [showSearchDropdown, setShowSearchDropdown] = useState<boolean>(false);
   const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
   const [hasCollectionAccess, setHasCollectionAccess] = useState<boolean>(false);
+  const [permissionsLoaded, setPermissionsLoaded] = useState<boolean>(false);
 
   // Fetch superuser status and collection access
   useEffect(() => {
@@ -8378,11 +8385,20 @@ export default function ReportsPage() {
         }
       } catch (error) {
         console.error('Error fetching user permissions:', error);
+      } finally {
+        setPermissionsLoaded(true);
       }
     };
 
     fetchUserPermissions();
   }, []);
+
+  useEffect(() => {
+    if (!permissionsLoaded) return;
+    if (selectedReport?.superuserOnly && !isSuperUser) {
+      setSelectedReport(null);
+    }
+  }, [permissionsLoaded, isSuperUser, selectedReport?.label, selectedReport?.superuserOnly]);
 
   // Close dropdown when report is selected
   useEffect(() => {
@@ -8400,6 +8416,8 @@ export default function ReportsPage() {
 
   // Allow deep-linking to in-page reports via /reports?report=<label>
   useEffect(() => {
+    if (!permissionsLoaded) return;
+
     const requested = new URLSearchParams(location.search).get('report');
     if (!requested) return;
 
@@ -8410,6 +8428,8 @@ export default function ReportsPage() {
     const matched = allItems.find((item) => normalize(item.label) === target);
     if (!matched) return;
 
+    if (matched.superuserOnly && !isSuperUser) return;
+
     if (matched.route) {
       navigate(matched.route, { replace: true });
       return;
@@ -8417,7 +8437,7 @@ export default function ReportsPage() {
     if (!matched.component) return;
 
     setSelectedReport((prev) => (prev?.label === matched.label ? prev : matched));
-  }, [location.search, navigate]);
+  }, [location.search, navigate, permissionsLoaded, isSuperUser]);
 
   // Filter reports based on search query, superuser status, and collection access
   const filteredReports = useMemo(() => {
@@ -8435,18 +8455,20 @@ export default function ReportsPage() {
           return true;
         })
         .map((section) => {
+          const itemsWithoutSuperuserReports = section.items.filter((item) => !item.superuserOnly);
+
           // Filter out M&M Contribution profitability from Contribution category if not superuser
           if (section.category === 'Contribution') {
             return {
               ...section,
-              items: section.items.filter(item => item.label !== 'M&M Contribution profitability'),
+              items: itemsWithoutSuperuserReports.filter(item => item.label !== 'M&M Contribution profitability'),
             };
           }
           // Filter Tools items based on permissions
           if (section.category === 'Tools' && canAccessTools) {
             return {
               ...section,
-              items: section.items.filter(item => {
+              items: itemsWithoutSuperuserReports.filter(item => {
                 // Re-assign leads requires collection access
                 if (item.label === 'Re-assign leads') {
                   return hasCollectionAccess || isSuperUser;
@@ -8456,7 +8478,10 @@ export default function ReportsPage() {
               }),
             };
           }
-          return section;
+          return {
+            ...section,
+            items: itemsWithoutSuperuserReports,
+          };
         })
         .filter((section) => section.items.length > 0); // Remove empty sections
     }
@@ -8812,16 +8837,18 @@ export default function ReportsPage() {
                                 </span>
                                 <div className="flex items-center gap-2">
                                   {/* Under Construction Badge */}
-                                  {(section.category === 'Marketing' ||
-                                    (section.category === 'Contribution' && item.label === 'All') ||
-                                    item.label === 'Bonuses (v4)') && (
+                                  {!item.superuserOnly &&
+                                    ((section.category === 'Marketing' ||
+                                      (section.category === 'Contribution' && item.label === 'All') ||
+                                      item.label === 'Bonuses (v4)')) && (
                                       <span className="inline-flex items-center gap-1 px-2 py-1 bg-yellow-500/90 backdrop-blur-sm rounded-full text-[10px] font-semibold uppercase tracking-wide text-white">
                                         <WrenchScrewdriverIcon className="w-3 h-3 text-white" />
                                         Under Construction
                                       </span>
                                     )}
                                   {/* Admin Access Only Badge */}
-                                  {(item.label === 'M&M Contribution profitability' ||
+                                  {(item.superuserOnly ||
+                                    item.label === 'M&M Contribution profitability' ||
                                     item.label === 'Edit Contracts' ||
                                     item.label === 'Employee Unavailabilities' ||
                                     item.label === 'Employee Salaries') && (
@@ -8990,7 +9017,17 @@ export default function ReportsPage() {
             )}
 
             <div className="min-h-[400px]">
-              {selectedReport.component ? (
+              {!permissionsLoaded ? (
+                <div className="flex h-full min-h-[400px] items-center justify-center gap-3 text-base-content/60">
+                  <span className="loading loading-spinner loading-md text-primary" />
+                  Checking access…
+                </div>
+              ) : selectedReport?.superuserOnly && !isSuperUser ? (
+                <div className="flex h-full min-h-[400px] flex-col items-center justify-center gap-2 text-center text-base-content/60">
+                  <p className="text-lg font-medium text-base-content">Access denied</p>
+                  <p className="text-sm">This report is only available to superusers.</p>
+                </div>
+              ) : selectedReport.component ? (
                 selectedReport.label === 'Marketing dashboard' ? (
                   <MarketingDashboardReport
                     docsOpen={marketingReportDocsOpen}
