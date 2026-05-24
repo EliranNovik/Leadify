@@ -91,7 +91,7 @@ BEGIN
   ELSE
     -- No source code provided, use defaults
     v_source_id := NULL;
-    v_source_name := p_lead_source;
+    v_source_name := COALESCE(NULLIF(TRIM(p_lead_source), ''), 'Import');
     v_final_topic := p_lead_topic;
     v_final_category_id := NULL;
   END IF;
@@ -183,7 +183,7 @@ BEGIN
     
     -- If still no language found, use the passed language value or default to 'English'
     IF v_language_name IS NULL THEN
-      v_language_name := COALESCE(p_lead_language, 'English');
+      v_language_name := COALESCE(NULLIF(TRIM(p_lead_language), ''), 'English');
     END IF;
   END IF;
   

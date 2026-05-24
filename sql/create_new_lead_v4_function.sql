@@ -112,8 +112,8 @@ BEGIN
     p_lead_email,
     p_lead_phone,
     p_lead_topic,
-    p_lead_language,
-    p_lead_source,
+    COALESCE(NULLIF(TRIM(p_lead_language), ''), 'HE'),
+    COALESCE(NULLIF(TRIM(p_lead_source), ''), 'Import'),
     0::BIGINT, -- Stage 0 = Created
     'active',
     NOW(),

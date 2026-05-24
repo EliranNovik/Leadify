@@ -29,6 +29,22 @@ const EXPORT_COLUMNS = [
   'description',
 ] as const;
 
+/** Columns for the downloadable Excel import template — only name is required. */
+const IMPORT_COLUMNS = [
+  'name',
+  'email',
+  'phone',
+  'mobile',
+  'language',
+  'topic',
+  'source_id',
+  'file_id',
+  'facts',
+] as const;
+
+const DEFAULT_IMPORT_LANGUAGE = 'HE';
+const DEFAULT_IMPORT_SOURCE = 'Import';
+
 type ExportRow = Record<(typeof EXPORT_COLUMNS)[number], string>;
 
 const today = () => new Date().toISOString().slice(0, 10);
@@ -539,51 +555,143 @@ export default function LeadsReportPage() {
 
       let created = 0;
       let failed = 0;
+      let skipped = 0;
+
+      const optionalString = (value: string): string | null => (value.trim() !== '' ? value.trim() : null);
+
+      const { data: leadSources, error: leadSourcesError } = await supabase
+        .from('misc_leadsource')
+        .select('id, name, active')
+        .eq('active', true)
+        .order('name');
+      if (leadSourcesError) throw leadSourcesError;
+
+      const sourceByNameLower = new Map<string, { id: number; name: string }>();
+      const sourceById = new Map<number, { id: number; name: string }>();
+      (leadSources || []).forEach((s: { id: number; name: string }) => {
+        if (s.name) sourceByNameLower.set(s.name.trim().toLowerCase(), { id: s.id, name: s.name });
+        sourceById.set(s.id, { id: s.id, name: s.name });
+      });
+
+      /** Column is named source_id in Excel, but users enter the source name text — resolved to misc_leadsource.id */
+      const resolveSourceFromCell = (
+        cellValue: string
+      ): { id: number; name: string } | null | 'misspelled' => {
+        const trimmed = cellValue.trim();
+        if (!trimmed) return null;
+
+        if (/^\d+$/.test(trimmed)) {
+          const byId = sourceById.get(Number(trimmed));
+          if (byId) return byId;
+        }
+
+        const byName = sourceByNameLower.get(trimmed.toLowerCase());
+        if (byName) return byName;
+
+        return 'misspelled';
+      };
+
       for (let i = 0; i < json.length; i++) {
         const row = json[i] as Record<string, unknown>;
+        const rowNum = i + 2; // Excel row (1-based header + data offset)
         const name = getVal(row, 'name', 'Name');
         const email = getVal(row, 'email', 'Email');
         const phone = getVal(row, 'phone', 'Phone');
+        const mobile = getVal(row, 'mobile', 'Mobile');
         const topic = getVal(row, 'topic', 'Topic');
-        const language = getVal(row, 'language', 'Language');
-        const source = getVal(row, 'source', 'Source');
-
-        if (!name && !email) {
+        const language = getVal(row, 'language', 'Language') || DEFAULT_IMPORT_LANGUAGE;
+        const sourceCell = getVal(row, 'source_id', 'source_id', 'Source ID', 'Source_ID');
+        const resolvedSource = resolveSourceFromCell(sourceCell);
+        if (resolvedSource === 'misspelled') {
+          toast.error(`Row ${rowNum}: source "${sourceCell}" not found — check spelling (use exact lead source name).`);
           failed++;
           continue;
         }
+        const sourceId = resolvedSource?.id ?? null;
+        const sourceName = resolvedSource?.name ?? DEFAULT_IMPORT_SOURCE;
+        const fileId = getVal(row, 'file_id', 'file_id', 'File ID', 'File_ID');
+        const facts = getVal(row, 'facts', 'Facts');
+
+        if (!name) {
+          skipped++;
+          continue;
+        }
+
+        const rpcBase = {
+          p_lead_name: name,
+          p_lead_email: optionalString(email),
+          p_lead_phone: optionalString(phone || mobile),
+          p_lead_topic: optionalString(topic),
+          p_lead_language: language,
+          p_lead_source: sourceName,
+          p_created_by: currentUserEmail,
+          p_balance_currency: 'NIS',
+          p_proposal_currency: 'NIS',
+        };
 
         try {
-          let error: { message?: string } | null = null;
-          const result = await supabase.rpc('create_new_lead_v4', {
-            p_lead_name: name || 'Imported',
-            p_lead_email: email || '',
-            p_lead_phone: phone || '',
-            p_lead_topic: topic,
-            p_lead_language: language || undefined,
-            p_lead_source: source || undefined,
-            p_created_by: currentUserEmail,
-            p_balance_currency: 'NIS',
-            p_proposal_currency: 'NIS',
-          });
-          error = result.error;
+          let lastError: { message?: string } | null = null;
+          let createdLeadId: string | null = null;
+          let usedValidatedRpc = false;
 
-          if (error?.message?.includes('does not exist')) {
-            const fallback = await supabase.rpc('create_new_lead_v3', {
-              p_lead_name: name || 'Imported',
-              p_lead_email: email || '',
-              p_lead_phone: phone || '',
-              p_lead_topic: topic,
-              p_lead_language: language || undefined,
-              p_lead_source: source || undefined,
-              p_created_by: currentUserEmail,
-              p_balance_currency: 'NIS',
-              p_proposal_currency: 'NIS',
-            });
-            if (fallback.error) throw fallback.error;
-          } else if (error) {
-            throw error;
+          const validated = await supabase.rpc('create_lead_with_source_validation', {
+            ...rpcBase,
+            p_source_code: sourceId,
+            p_language_id: null,
+            p_country_id: null,
+            p_source_url: null,
+          });
+          lastError = validated.error;
+          if (!lastError && validated.data?.[0]?.id) {
+            createdLeadId = String(validated.data[0].id);
+            usedValidatedRpc = true;
           }
+
+          if (lastError?.message?.includes('does not exist')) {
+            const v4 = await supabase.rpc('create_new_lead_v4', rpcBase);
+            lastError = v4.error;
+            if (!lastError && v4.data?.[0]?.id) {
+              createdLeadId = String(v4.data[0].id);
+            }
+
+            if (lastError?.message?.includes('does not exist')) {
+              const v3 = await supabase.rpc('create_new_lead_v3', {
+                p_lead_name: rpcBase.p_lead_name,
+                p_lead_email: rpcBase.p_lead_email,
+                p_lead_phone: rpcBase.p_lead_phone,
+                p_lead_topic: rpcBase.p_lead_topic,
+                p_lead_language: rpcBase.p_lead_language,
+                p_lead_source: rpcBase.p_lead_source,
+                p_created_by: rpcBase.p_created_by,
+              });
+              lastError = v3.error;
+              if (!lastError && v3.data?.[0]?.id) {
+                createdLeadId = String(v3.data[0].id);
+              }
+            }
+          }
+
+          if (lastError) throw lastError;
+
+          const extraFields: Record<string, string | number> = {};
+          if (phone) extraFields.phone = phone;
+          if (mobile) extraFields.mobile = mobile;
+          if (fileId) extraFields.file_id = fileId;
+          if (facts) extraFields.facts = facts;
+
+          if (sourceId && !usedValidatedRpc) {
+            extraFields.source_id = sourceId;
+            extraFields.source = sourceName;
+          }
+
+          if (createdLeadId && Object.keys(extraFields).length > 0) {
+            const { error: updateError } = await supabase
+              .from('leads')
+              .update(extraFields)
+              .eq('id', createdLeadId);
+            if (updateError) throw updateError;
+          }
+
           created++;
         } catch (e) {
           console.error('Row import error:', e);
@@ -591,7 +699,10 @@ export default function LeadsReportPage() {
         }
       }
 
-      toast.success(`Import complete: ${created} created, ${failed} failed or skipped.`);
+      const parts = [`${created} created`];
+      if (failed > 0) parts.push(`${failed} failed`);
+      if (skipped > 0) parts.push(`${skipped} skipped (missing name)`);
+      toast.success(`Import complete: ${parts.join(', ')}.`);
       setImportFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (err) {
@@ -603,12 +714,24 @@ export default function LeadsReportPage() {
   };
 
   const downloadImportTemplate = () => {
-    const headers = [...EXPORT_COLUMNS];
-    const ws = XLSX.utils.aoa_to_sheet([headers]);
+    const ws = XLSX.utils.aoa_to_sheet([
+      [...IMPORT_COLUMNS],
+      [
+        'Example Lead',
+        'client@example.com',
+        '0501234567',
+        '0527654321',
+        'HE',
+        'German Citizenship',
+        'Teams',
+        'FILE-123',
+        'Brief case facts for this lead',
+      ],
+    ]);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Leads');
     XLSX.writeFile(wb, 'leads_import_template.xlsx');
-    toast.success('Template downloaded. Fill in the rows and upload to import leads.');
+    toast.success('Template downloaded. Only name is required; source_id column accepts lead source name text.');
   };
 
   return (
@@ -755,7 +878,11 @@ export default function LeadsReportPage() {
             Import leads from Excel
           </h2>
           <p className="text-sm text-base-content/70 mb-4">
-            Upload an Excel file to create new leads. The file may include the same columns as the export.
+            Upload an Excel file to create new leads. Only <strong>name</strong> is required per row.
+            Template columns: name, email, phone, mobile, language, topic, source_id, file_id, facts.
+            In <strong>source_id</strong>, enter the lead source <em>name</em> (e.g. Teams) — it is matched to <code>source_id</code> automatically.
+            If the name is misspelled, that row fails with a toast error.
+            Lead number and create date are assigned automatically; language defaults to Hebrew (HE) if omitted.
           </p>
           <div className="form-control max-w-md">
             <label className="label"><span className="label-text">Select Excel file</span></label>
