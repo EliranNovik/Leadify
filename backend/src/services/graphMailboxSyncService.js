@@ -1293,89 +1293,28 @@ class GraphMailboxSyncService {
     /** message_ids that already had at least one row before this sync (used for lead push dedupe) */
     const existingMessageIds = new Set();
 
+    const MESSAGE_ID_CHUNK = 200;
     if (messageIds.length > 0) {
-      const { data: existingEmails, error: checkError } = await supabase
-        .from(EMAIL_HEADERS_TABLE)
-        .select('message_id, client_id, legacy_id, contact_id')
-        .in('message_id', messageIds);
+      for (let i = 0; i < messageIds.length; i += MESSAGE_ID_CHUNK) {
+        const chunk = messageIds.slice(i, i + MESSAGE_ID_CHUNK);
+        const { data: existingEmails, error: checkError } = await supabase
+          .from(EMAIL_HEADERS_TABLE)
+          .select('message_id, client_id, legacy_id, contact_id')
+          .in('message_id', chunk);
 
-      if (!checkError && existingEmails) {
-        existingEmails.forEach((e) => {
-          const key = `${e.message_id}_${e.client_id || 'null'}_${e.legacy_id || 'null'}_${e.contact_id || 'null'}`;
-          existingEmailKeys.add(key);
-          if (e.message_id) {
-            existingMessageIds.add(e.message_id);
-          }
-        });
-      }
-    }
-
-    // Secondary dedupe: same Graph message_id + same preview + same lead/contact (must include message_id).
-    // Without message_id, identical truncated previews across *different* messages blocked inserts for valid new mail.
-    const bodyPreviewKeys = new Set();
-    const rowsWithBodyPreview = filteredRows.filter(
-      (row) => row.message_id && row.body_preview && (row.legacy_id || row.contact_id)
-    );
-
-    if (rowsWithBodyPreview.length > 0) {
-      const legacyIds = [...new Set(rowsWithBodyPreview.map((row) => row.legacy_id).filter(Boolean))];
-      const contactIds = [...new Set(rowsWithBodyPreview.map((row) => row.contact_id).filter(Boolean))];
-
-      if (legacyIds.length > 0) {
-        const bodyPreviews = [
-          ...new Set(
-            rowsWithBodyPreview.filter((row) => row.legacy_id && row.body_preview).map((row) => row.body_preview)
-          ),
-        ];
-        if (bodyPreviews.length > 0) {
-          for (const bodyPreview of bodyPreviews) {
-            const { data: existingByBodyPreview, error: bodyPreviewError } = await supabase
-              .from(EMAIL_HEADERS_TABLE)
-              .select('message_id, body_preview, legacy_id, contact_id')
-              .eq('body_preview', bodyPreview)
-              .in('legacy_id', legacyIds)
-              .not('body_preview', 'is', null);
-
-            if (!bodyPreviewError && existingByBodyPreview) {
-              existingByBodyPreview.forEach((e) => {
-                if (e.message_id && e.legacy_id && e.body_preview) {
-                  bodyPreviewKeys.add(`${e.message_id}_${e.body_preview}_legacy_${e.legacy_id}`);
-                }
-              });
+        if (!checkError && existingEmails) {
+          existingEmails.forEach((e) => {
+            const key = `${e.message_id}_${e.client_id || 'null'}_${e.legacy_id || 'null'}_${e.contact_id || 'null'}`;
+            existingEmailKeys.add(key);
+            if (e.message_id) {
+              existingMessageIds.add(e.message_id);
             }
-          }
-        }
-      }
-
-      if (contactIds.length > 0) {
-        const bodyPreviews = [
-          ...new Set(
-            rowsWithBodyPreview.filter((row) => row.contact_id && row.body_preview).map((row) => row.body_preview)
-          ),
-        ];
-        if (bodyPreviews.length > 0) {
-          for (const bodyPreview of bodyPreviews) {
-            const { data: existingByBodyPreview, error: bodyPreviewError } = await supabase
-              .from(EMAIL_HEADERS_TABLE)
-              .select('message_id, body_preview, legacy_id, contact_id')
-              .eq('body_preview', bodyPreview)
-              .in('contact_id', contactIds)
-              .not('body_preview', 'is', null);
-
-            if (!bodyPreviewError && existingByBodyPreview) {
-              existingByBodyPreview.forEach((e) => {
-                if (e.message_id && e.contact_id && e.body_preview) {
-                  bodyPreviewKeys.add(`${e.message_id}_${e.body_preview}_contact_${e.contact_id}`);
-                }
-              });
-            }
-          }
+          });
         }
       }
     }
 
     // Filter out emails that already exist (exact duplicates: same message_id + client_id + legacy_id + contact_id)
-    // Also filter out duplicates based on body_preview + legacy_id or body_preview + contact_id
     const newEmailsToSave = filteredRows.filter((row) => {
       if (!row.message_id) {
         console.warn(`⚠️  Skipping email without message_id: ${JSON.stringify(row).substring(0, 100)}`);
@@ -1389,27 +1328,7 @@ class GraphMailboxSyncService {
         console.log(`🔄 Skipping duplicate email record ${row.message_id.substring(0, 20)}... (client_id=${row.client_id || 'null'}, legacy_id=${row.legacy_id || 'null'}, contact_id=${row.contact_id || 'null'}) already exists`);
         return false;
       }
-      
-      if (row.message_id && row.body_preview && row.legacy_id) {
-        const bodyPreviewKey = `${row.message_id}_${row.body_preview}_legacy_${row.legacy_id}`;
-        if (bodyPreviewKeys.has(bodyPreviewKey)) {
-          console.log(
-            `🔄 Skipping duplicate email record ${row.message_id.substring(0, 20)}... (same message_id + body_preview + legacy_id=${row.legacy_id})`
-          );
-          return false;
-        }
-      }
 
-      if (row.message_id && row.body_preview && row.contact_id) {
-        const bodyPreviewKey = `${row.message_id}_${row.body_preview}_contact_${row.contact_id}`;
-        if (bodyPreviewKeys.has(bodyPreviewKey)) {
-          console.log(
-            `🔄 Skipping duplicate email record ${row.message_id.substring(0, 20)}... (same message_id + body_preview + contact_id=${row.contact_id})`
-          );
-          return false;
-        }
-      }
-      
       return true;
     });
 
@@ -1558,16 +1477,6 @@ class GraphMailboxSyncService {
       `📧 Fetching full bodies + attachment metadata: ${uniqueMessageIds.length} unique Graph message(s) for ${emailRows.length} DB row(s) (serial + 429 backoff; avoids MailboxConcurrency)`
     );
 
-    const applyLeadKeysToEmailUpdate = (query, row) => {
-      if (row.client_id == null) query = query.is('client_id', null);
-      else query = query.eq('client_id', row.client_id);
-      if (row.legacy_id == null) query = query.is('legacy_id', null);
-      else query = query.eq('legacy_id', row.legacy_id);
-      if (row.contact_id == null) query = query.is('contact_id', null);
-      else query = query.eq('contact_id', row.contact_id);
-      return query;
-    };
-
     const graphHeaders = {
       Authorization: `Bearer ${accessToken}`,
       Prefer: `outlook.body-preview="text"`,
@@ -1575,7 +1484,6 @@ class GraphMailboxSyncService {
 
     for (let u = 0; u < uniqueMessageIds.length; u++) {
       const messageId = uniqueMessageIds[u];
-      const rowsForMessage = emailRows.filter((r) => r.message_id === messageId);
       const encodedUser = encodeURIComponent(mailboxAddress);
       const encodedMsg = encodeURIComponent(messageId);
 
@@ -1616,13 +1524,15 @@ class GraphMailboxSyncService {
       }
 
       if (Object.keys(patch).length > 0) {
-        for (const row of rowsForMessage) {
-          let q = supabase.from(EMAIL_HEADERS_TABLE).update(patch).eq('message_id', messageId);
-          q = applyLeadKeysToEmailUpdate(q, row);
-          const { error: updateError } = await q;
-          if (updateError) {
-            console.error(`⚠️  Failed to update email row for ${messageId.substring(0, 24)}...:`, updateError.message);
-          }
+        // One Graph message → identical body for all lead/contact rows; update in a single query.
+        const { error: updateError } = await supabase
+          .from(EMAIL_HEADERS_TABLE)
+          .update(patch)
+          .eq('message_id', messageId)
+          .or('body_cached.is.null,body_cached.eq.false');
+
+        if (updateError) {
+          console.error(`⚠️  Failed to update email rows for ${messageId.substring(0, 24)}...:`, updateError.message);
         }
       }
 
@@ -2481,85 +2391,37 @@ class GraphMailboxSyncService {
         });
       }
 
-      // Check for duplicates based on body_preview + legacy_id or body_preview + contact_id
-      // This prevents saving the same email content multiple times for the same lead/contact
-      const bodyPreviewKeys = new Set();
-      const recordsWithBodyPreview = emailRecords.filter(record => record.body_preview && (record.legacy_id || record.contact_id));
-      
-      if (recordsWithBodyPreview.length > 0) {
-        const legacyIds = [...new Set(recordsWithBodyPreview.map(record => record.legacy_id).filter(Boolean))];
-        const contactIds = [...new Set(recordsWithBodyPreview.map(record => record.contact_id).filter(Boolean))];
-        
-        // Query for existing emails with same body_preview and legacy_id
-        if (legacyIds.length > 0) {
-          const bodyPreviews = [...new Set(recordsWithBodyPreview.filter(record => record.legacy_id && record.body_preview).map(record => record.body_preview))];
-          for (const bodyPreview of bodyPreviews) {
-            const { data: existingByBodyPreview, error: bodyPreviewError } = await supabase
-              .from(EMAIL_HEADERS_TABLE)
-              .select('body_preview, legacy_id, contact_id')
-              .eq('body_preview', bodyPreview)
-              .in('legacy_id', legacyIds)
-              .not('body_preview', 'is', null);
-            
-            if (!bodyPreviewError && existingByBodyPreview) {
-              existingByBodyPreview.forEach((e) => {
-                if (e.legacy_id) {
-                  const key = `${e.body_preview}_legacy_${e.legacy_id}`;
-                  bodyPreviewKeys.add(key);
-                }
-              });
-            }
-          }
-        }
-        
-        // Query for existing emails with same body_preview and contact_id
-        if (contactIds.length > 0) {
-          const bodyPreviews = [...new Set(recordsWithBodyPreview.filter(record => record.contact_id && record.body_preview).map(record => record.body_preview))];
-          for (const bodyPreview of bodyPreviews) {
-            const { data: existingByBodyPreview, error: bodyPreviewError } = await supabase
-              .from(EMAIL_HEADERS_TABLE)
-              .select('body_preview, legacy_id, contact_id')
-              .eq('body_preview', bodyPreview)
-              .in('contact_id', contactIds)
-              .not('body_preview', 'is', null);
-            
-            if (!bodyPreviewError && existingByBodyPreview) {
-              existingByBodyPreview.forEach((e) => {
-                if (e.contact_id) {
-                  const key = `${e.body_preview}_contact_${e.contact_id}`;
-                  bodyPreviewKeys.add(key);
-                }
-              });
-            }
-          }
+      // Check for duplicates before insert (message_id + client_id + legacy_id + contact_id)
+      let existingOutgoingKeys = new Set();
+      const outgoingMessageIds = [...new Set(emailRecords.map((r) => r.message_id).filter(Boolean))];
+      if (outgoingMessageIds.length > 0) {
+        const { data: existingOutgoing, error: outgoingCheckError } = await supabase
+          .from(EMAIL_HEADERS_TABLE)
+          .select('message_id, client_id, legacy_id, contact_id')
+          .in('message_id', outgoingMessageIds);
+
+        if (!outgoingCheckError && existingOutgoing) {
+          existingOutgoing.forEach((e) => {
+            existingOutgoingKeys.add(
+              `${e.message_id}_${e.client_id || 'null'}_${e.legacy_id || 'null'}_${e.contact_id || 'null'}`
+            );
+          });
         }
       }
-      
-      // Filter out duplicates based on body_preview + legacy_id or body_preview + contact_id
+
       const uniqueEmailRecords = emailRecords.filter((record) => {
-        // Check for body_preview duplicates with legacy_id
-        if (record.body_preview && record.legacy_id) {
-          const bodyPreviewKey = `${record.body_preview}_legacy_${record.legacy_id}`;
-          if (bodyPreviewKeys.has(bodyPreviewKey)) {
-            console.log(`🔄 Skipping duplicate outgoing email record ${result.id?.substring(0, 20) || 'unknown'}... (same body_preview + legacy_id=${record.legacy_id}) already exists`);
-            return false;
-          }
+        const key = `${record.message_id}_${record.client_id || 'null'}_${record.legacy_id || 'null'}_${record.contact_id || 'null'}`;
+        if (existingOutgoingKeys.has(key)) {
+          console.log(
+            `🔄 Skipping duplicate outgoing email record ${result.id?.substring(0, 20) || 'unknown'}... (client_id=${record.client_id || 'null'}, legacy_id=${record.legacy_id || 'null'}, contact_id=${record.contact_id || 'null'}) already exists`
+          );
+          return false;
         }
-        
-        // Check for body_preview duplicates with contact_id
-        if (record.body_preview && record.contact_id) {
-          const bodyPreviewKey = `${record.body_preview}_contact_${record.contact_id}`;
-          if (bodyPreviewKeys.has(bodyPreviewKey)) {
-            console.log(`🔄 Skipping duplicate outgoing email record ${result.id?.substring(0, 20) || 'unknown'}... (same body_preview + contact_id=${record.contact_id}) already exists`);
-            return false;
-          }
-        }
-        
         return true;
       });
 
       if (uniqueEmailRecords.length === 0) {
-        console.log(`📭 No new outgoing email records to save (all ${emailRecords.length} records are duplicates based on body_preview)`);
+        console.log(`📭 No new outgoing email records to save (all ${emailRecords.length} records already exist)`);
         return;
       }
 
