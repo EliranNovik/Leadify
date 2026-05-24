@@ -1,0 +1,2 @@
+# Cron / backend scheduler invoke with x-cron-secret (GOOGLE_SHEETS_SYNC_CRON_SECRET). Superuser JWT also allowed.
+verify_jwt = false

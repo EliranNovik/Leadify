@@ -6,6 +6,7 @@ import { ArrowPathIcon, CloudArrowUpIcon, TableCellsIcon, XMarkIcon } from '@her
 import { Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
+import GoogleSheetAutoSyncNotice from '../components/reports/GoogleSheetAutoSyncNotice';
 
 const EXPORT_DESTINATION = 'bad_leads_capital_firm';
 
@@ -182,7 +183,7 @@ const BadLeadsGoogleSheetExportReport: React.FC = () => {
               onClick={() => void runSync(false)}
             >
               {syncing ? <span className="loading loading-spinner loading-sm" /> : <CloudArrowUpIcon className="h-4 w-4" />}
-              Sync to sheet
+              Sync now
             </button>
             <button
               type="button"
@@ -195,6 +196,8 @@ const BadLeadsGoogleSheetExportReport: React.FC = () => {
           </div>
         </div>
       </div>
+
+      <GoogleSheetAutoSyncNotice reportLabel="Bad leads" />
 
       {responseModalOpen && (
         <div className="modal modal-open z-[200]">

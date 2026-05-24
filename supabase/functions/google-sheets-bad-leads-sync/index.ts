@@ -2,6 +2,7 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { GoogleAuth } from 'npm:google-auth-library@9.15.1';
 import { corsHeaders } from '../_shared/cors.ts';
+import { googleSheetsCronAuthorized } from '../_shared/googleSheetsCronAuth.ts';
 
 const DESTINATION = 'bad_leads_capital_firm';
 const DEFAULT_SPREADSHEET_ID = '1hPgtAhMJ_GNAQJkh46U9xL5rDD6LMBCDw9NXYOAddWs';
@@ -127,9 +128,7 @@ serve(async (req) => {
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const authHeader = req.headers.get('Authorization') ?? '';
 
-  const cronSecret = Deno.env.get('BAD_LEADS_SYNC_CRON_SECRET');
-  const cronHeader = req.headers.get('x-cron-secret');
-  const cronOk = !!cronSecret && cronHeader === cronSecret;
+  const cronOk = googleSheetsCronAuthorized(req, 'BAD_LEADS_SYNC_CRON_SECRET');
 
   let authorized = cronOk;
   if (!authorized && authHeader.startsWith('Bearer ')) {
