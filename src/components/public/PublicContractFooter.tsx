@@ -12,7 +12,7 @@ const PublicContractFooter: React.FC<Props> = ({ variant = 'default' }) => {
     <footer
       className={`border-t print-hide ${
         isPayment
-          ? 'bg-transparent border-gray-100/80 mt-8 pt-8 pb-6'
+          ? 'bg-transparent border-gray-100/80 mt-4 pt-6 pb-6'
           : 'bg-gray-50 border-gray-200 mt-8 md:mt-24'
       }`}
     >

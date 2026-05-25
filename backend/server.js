@@ -410,6 +410,12 @@ app.use('/api', pushNotificationRoutes);
 app.use('/api/currency-rates', currencyRatesRoutes);
 app.use('/api/payments/pelecard', pelecardPaymentRoutes);
 
+// Pelecard hosted checkout theme (must be publicly reachable HTTPS for CssURL)
+app.get('/pelecard-checkout.css', (req, res) => {
+  res.type('text/css');
+  res.sendFile(path.join(__dirname, '../public/pelecard-checkout.css'));
+});
+
 // Serve uploaded files
 app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')));
 

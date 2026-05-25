@@ -27,11 +27,35 @@ function assertCredentials(config) {
   }
 }
 
+function isLocalUrl(url) {
+  return /localhost|127\.0\.0\.1/i.test(url || '');
+}
+
+function appendCssVersion(url, version) {
+  return url.includes('?') ? url : `${url}?v=${version}`;
+}
+
+/** Pelecard fetches CssURL from their servers — localhost URLs never work. */
+function resolvePelecardCssUrl(config) {
+  const cssVersion = (process.env.PELECARD_CSS_VERSION || '7').trim();
+  const explicit = (process.env.PELECARD_CSS_URL || '').trim();
+  if (explicit) return appendCssVersion(explicit, cssVersion);
+
+  const fallback =
+    (process.env.PELECARD_CSS_FALLBACK_URL || '').trim() ||
+    'https://leadify-crm-backend.onrender.com/pelecard-checkout.css';
+
+  if (!isLocalUrl(config.appPublicUrl)) {
+    return appendCssVersion(`${config.appPublicUrl}/pelecard-checkout.css`, cssVersion);
+  }
+  if (!isLocalUrl(config.backendPublicUrl)) {
+    return appendCssVersion(`${config.backendPublicUrl}/pelecard-checkout.css`, cssVersion);
+  }
+  return appendCssVersion(fallback, cssVersion);
+}
+
 function buildCheckoutDisplayOptions(config, payment) {
-  const cssVersion = (process.env.PELECARD_CSS_VERSION || '5').trim();
-  const cssBase =
-    process.env.PELECARD_CSS_URL || `${config.appPublicUrl}/pelecard-checkout.css`;
-  const cssUrl = cssBase.includes('?') ? cssBase : `${cssBase}?v=${cssVersion}`;
+  const cssUrl = resolvePelecardCssUrl(config);
   const logoUrl = (process.env.PELECARD_LOGO_URL || '').trim();
 
   const topText = (process.env.PELECARD_TOP_TEXT || '').trim().slice(0, 200);

@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowPathIcon, ExclamationCircleIcon } from '@heroicons/react/24/outline';
 import { paymentFormErrorCopy } from '../lib/paymentPageUtils';
 
@@ -27,6 +27,30 @@ function CheckoutSkeleton() {
   );
 }
 
+/** Fits typical Pelecard form; postMessage may adjust further. */
+const DEFAULT_IFRAME_HEIGHT = 620;
+const MIN_IFRAME_HEIGHT = 480;
+const MAX_IFRAME_HEIGHT = 1200;
+
+function parseIframeHeightMessage(data: unknown): number | null {
+  if (typeof data === 'number' && data > MIN_IFRAME_HEIGHT) return data;
+  if (typeof data === 'string') {
+    const parsed = Number(data);
+    if (parsed > MIN_IFRAME_HEIGHT) return parsed;
+    return null;
+  }
+  if (!data || typeof data !== 'object') return null;
+  const record = data as Record<string, unknown>;
+  const candidate =
+    record.height ??
+    record.frameHeight ??
+    record.iframeHeight ??
+    record.scrollHeight ??
+    (record.data as Record<string, unknown> | undefined)?.height;
+  const n = typeof candidate === 'number' ? candidate : Number(candidate);
+  return Number.isFinite(n) && n > MIN_IFRAME_HEIGHT ? n : null;
+}
+
 const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
   paymentUrl,
   loading = false,
@@ -38,6 +62,22 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
 }) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
+  const [iframeHeight, setIframeHeight] = useState(DEFAULT_IFRAME_HEIGHT);
+
+  useEffect(() => {
+    setIframeHeight(DEFAULT_IFRAME_HEIGHT);
+    setIframeLoaded(false);
+  }, [paymentUrl]);
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      const next = parseIframeHeightMessage(event.data);
+      if (next == null) return;
+      setIframeHeight(Math.min(MAX_IFRAME_HEIGHT, Math.max(MIN_IFRAME_HEIGHT, Math.ceil(next + 4))));
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
 
   const handleLoad = useCallback(() => {
     setIframeLoaded(true);
@@ -65,17 +105,12 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
     console.error('[Pelecard] Payment form error:', error);
   }
 
-  const tallShell = !error || loading;
-  const tallMinHeight = tallShell
-    ? 'min-h-[calc(100dvh-200px)] sm:min-h-[520px]'
-    : 'min-h-0';
-
   return (
     <div
-      className={`iframe-shell flex flex-col overflow-hidden border border-gray-200 rounded-[20px] bg-white max-md:border-0 max-md:rounded-none max-md:bg-transparent max-md:shadow-none ${tallMinHeight} ${shellClassName}`.trim()}
+      className={`iframe-shell flex flex-col w-full border-0 bg-transparent ${shellClassName}`.trim()}
     >
       {loading && (
-        <div className="flex flex-col items-center justify-center text-center py-14 px-6 flex-1 min-h-[calc(100dvh-200px)] sm:min-h-[520px]">
+        <div className="flex flex-col items-center justify-center text-center py-14 px-6 w-full min-h-[480px]">
           <CheckoutSkeleton />
           <p className="text-sm font-medium text-gray-700 mt-6">Loading secure payment form…</p>
           <p className="text-xs text-gray-500 mt-1">This may take a few seconds.</p>
@@ -103,9 +138,9 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
       )}
 
       {paymentUrl && !loading && !error && (
-        <div className="relative flex-1 min-h-[calc(100dvh-200px)] sm:min-h-[520px] w-full">
+        <div className="relative w-full" style={{ height: iframeHeight }}>
           {showIframeLoading && (
-            <div className="absolute inset-0 z-10 bg-white flex flex-col items-center justify-center px-4 sm:px-6 min-h-[calc(100dvh-200px)] sm:min-h-[520px]">
+            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center px-4 sm:px-6 min-h-[480px]">
               <CheckoutSkeleton />
               <p className="text-xs text-gray-500 mt-4">Connecting to Pelecard…</p>
             </div>
@@ -114,7 +149,9 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
             ref={iframeRef}
             title={title}
             src={paymentUrl}
-            className="w-full h-full min-h-[calc(100dvh-200px)] sm:min-h-[520px] border-0 bg-white block"
+            className="w-full border-0 bg-transparent block"
+            style={{ height: iframeHeight }}
+            scrolling="no"
             allow="payment; publickey-credentials-get *"
             referrerPolicy="strict-origin-when-cross-origin"
             onLoad={handleLoad}

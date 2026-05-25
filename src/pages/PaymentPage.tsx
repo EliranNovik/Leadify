@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { createPelecardPaymentSession, fetchPaymentStatus } from '../lib/pelecardPaymentApi';
 import PelecardCheckoutFrame from '../components/PelecardCheckoutFrame';
 import PaymentSummaryCard from '../components/payment/PaymentSummaryCard';
+import PaymentSummaryGradientDecor from '../components/payment/PaymentSummaryGradientDecor';
 import PublicContractFooter from '../components/public/PublicContractFooter';
 import PublicPageContactButtons from '../components/public/PublicPageContactButtons';
 import {
@@ -15,13 +16,18 @@ import toast from 'react-hot-toast';
 import {
   CheckCircleIcon,
   ExclamationCircleIcon,
-  ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
 
 const PAGE_BG_STYLE: React.CSSProperties = {
-  background:
-    'radial-gradient(circle at top right, rgba(79, 70, 229, 0.08), transparent 35%), linear-gradient(180deg, #f8fafc 0%, #ffffff 55%)',
+  background: '#f3f4f6',
 };
+
+const SUMMARY_GRADIENT_STYLE: React.CSSProperties = {
+  background:
+    'linear-gradient(145deg, #312e81 0%, #5b21b6 22%, #7e22ce 48%, #a21caf 72%, #e11d48 100%)',
+};
+
+const CHECKOUT_LAW_OFFICE_TITLE = 'Decker, Pex & Co. Law Office';
 
 interface PaymentLink {
   id: string;
@@ -261,30 +267,9 @@ const PaymentPage: React.FC = () => {
     };
   }, [paymentLink]);
 
-  const paymentHeader = (
-    <header className="bg-white/90 backdrop-blur-sm border-b border-gray-100">
-      <div className="max-w-[1160px] mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
-        <div>
-          <p
-            className="text-xl font-bold tracking-tight leading-none"
-            style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}
-          >
-            RMQ 2.0
-          </p>
-          <p className="text-[11px] text-gray-500 mt-0.5 font-normal">Payment Portal</p>
-        </div>
-        <div className="flex items-center gap-1.5 rounded-full border border-emerald-200/80 bg-emerald-50 px-2.5 py-1 text-emerald-800">
-          <ShieldCheckIcon className="w-3.5 h-3.5 shrink-0" />
-          <span className="text-[11px] font-medium whitespace-nowrap">Secure Payment</span>
-        </div>
-      </div>
-    </header>
-  );
-
   if (loading) {
     return (
-      <div className="min-h-screen flex flex-col" style={PAGE_BG_STYLE}>
-        {paymentHeader}
+      <div className="h-screen flex flex-col overflow-hidden" style={PAGE_BG_STYLE}>
         <div className="flex-1 flex items-center justify-center px-6">
           <div className="bg-white rounded-2xl shadow-lg border border-gray-200 px-8 py-10 text-center">
             <span className="loading loading-spinner loading-lg text-primary" />
@@ -298,7 +283,6 @@ const PaymentPage: React.FC = () => {
   if (!paymentLink && pageError) {
     return (
       <div className="min-h-screen flex flex-col" style={PAGE_BG_STYLE}>
-        {paymentHeader}
         <div className="flex-1 flex items-center justify-center px-6">
           <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-8 max-w-md w-full text-center">
             <ExclamationCircleIcon className="w-14 h-14 text-amber-500 mx-auto mb-4" />
@@ -314,7 +298,6 @@ const PaymentPage: React.FC = () => {
   if (!paymentLink) {
     return (
       <div className="min-h-screen flex flex-col" style={PAGE_BG_STYLE}>
-        {paymentHeader}
         <div className="flex-1 flex items-center justify-center px-6">
           <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-8 max-w-md w-full text-center">
             <ExclamationCircleIcon className="w-14 h-14 text-amber-500 mx-auto mb-4" />
@@ -332,7 +315,6 @@ const PaymentPage: React.FC = () => {
   if (showThankYou) {
     return (
       <div className="min-h-screen flex flex-col" style={PAGE_BG_STYLE}>
-        {paymentHeader}
         <div className="flex-1 flex items-center justify-center px-6 py-12">
           <div className="bg-white rounded-[20px] shadow-[0_12px_35px_rgba(15,23,42,0.08)] border border-gray-200 p-8 max-w-md w-full text-center">
             <CheckCircleIcon className="w-16 h-16 mx-auto mb-6 text-[#3b28c7]" />
@@ -353,60 +335,70 @@ const PaymentPage: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen flex flex-col" style={PAGE_BG_STYLE}>
-      {paymentHeader}
-
-      <main className="flex-1 w-full max-w-[1240px] mx-auto px-0 md:px-6 pt-4 md:pt-5 lg:pt-6 pb-0 md:pb-6 flex flex-col">
-        <div className="payment-intro mx-auto w-full max-w-[1180px] mb-4 px-4 md:px-0 lg:mb-[18px]">
-          <h1 className="text-xl sm:text-2xl font-semibold text-gray-900 mb-1">
-            Hi, {clientDisplayName(paymentLink)}.
-          </h1>
-          <p className="text-sm text-gray-600 font-normal">
-            When you&apos;re ready, complete your secure payment below.
-          </p>
-        </div>
-
-        <div
-          className="checkout-shell mx-auto w-full max-w-[1180px] flex flex-col lg:grid lg:grid-cols-[340px_minmax(680px,1fr)] lg:bg-white lg:border lg:border-gray-200 lg:rounded-[28px] lg:shadow-[0_24px_70px_rgba(15,23,42,0.08)] lg:overflow-hidden"
-        >
-          {summaryData && (
-            <div className="checkout-summary bg-white md:bg-[#fbfcff] border-b border-gray-200 px-4 py-5 md:p-6 lg:p-8 lg:border-r">
+    <div className="h-screen flex flex-col lg:flex-row overflow-hidden bg-white">
+      <aside
+        className="hidden lg:flex lg:w-[42%] lg:max-w-[520px] lg:shrink-0 flex-col text-white relative overflow-y-auto"
+        style={SUMMARY_GRADIENT_STYLE}
+      >
+        <PaymentSummaryGradientDecor />
+        <div className="relative flex flex-col justify-between min-h-full p-10 xl:p-12 z-[1]">
+          <div>
+            <h1 className="text-lg xl:text-xl font-semibold text-white leading-snug tracking-tight mb-8 max-w-sm">
+              {CHECKOUT_LAW_OFFICE_TITLE}
+            </h1>
+            {summaryData && (
               <PaymentSummaryCard
                 summary={summaryData}
                 exchangeInfo={exchangeInfo}
                 exchangeLoading={exchangeLoading}
+                variant="gradient"
               />
-            </div>
-          )}
+            )}
+          </div>
+          <p className="text-[11px] text-white/50 leading-relaxed mt-10 max-w-xs">
+            Processed securely by Pelecard. Card details are not stored on our servers.
+          </p>
+        </div>
+      </aside>
 
-          <div className="checkout-payment min-w-0 flex flex-col flex-1 lg:p-8">
-            <div className="hidden md:flex flex-wrap items-center justify-between gap-x-4 gap-y-2 mb-2 px-0">
-              <h2 className="text-lg font-semibold text-gray-900">
-                Complete your secure payment
-              </h2>
-              <span className="inline-flex shrink-0 items-center rounded-full border border-gray-200 bg-gray-50 px-2.5 py-0.5 text-[11px] text-gray-600 font-normal">
-                Pelecard · PCI DSS
-              </span>
-            </div>
-            <p className="hidden md:block text-sm text-gray-500 font-normal mb-4 max-w-lg">
-              Card details are processed by Pelecard. We do not store card information.
-            </p>
-
-            <div className="flex-1 w-full">
-              <PelecardCheckoutFrame
-                paymentUrl={paymentUrl}
-                loading={sessionLoading}
-                error={sessionError}
-                onRetry={loadPelecardSession}
-                onCheckoutNavigate={(path) => navigate(path)}
-                title="Secure payment"
+      <main className="flex-1 min-h-0 overflow-y-auto bg-white">
+        <div
+          className="lg:hidden relative overflow-hidden text-white px-5 pt-8 pb-7"
+          style={SUMMARY_GRADIENT_STYLE}
+        >
+          <PaymentSummaryGradientDecor />
+          <div className="relative z-[1]">
+            <h1 className="text-lg font-semibold text-white leading-snug tracking-tight mb-6">
+              {CHECKOUT_LAW_OFFICE_TITLE}
+            </h1>
+            {summaryData && (
+              <PaymentSummaryCard
+                summary={summaryData}
+                exchangeInfo={exchangeInfo}
+                exchangeLoading={exchangeLoading}
+                variant="gradient"
               />
-            </div>
+            )}
           </div>
         </div>
+
+        <div className="checkout-payment w-full max-w-xl mx-auto px-6 sm:px-10 py-8 lg:py-12">
+          <h2 className="hidden lg:block text-xl font-semibold text-gray-900 mb-6 tracking-tight">
+            Payment information
+          </h2>
+          <PelecardCheckoutFrame
+            paymentUrl={paymentUrl}
+            loading={sessionLoading}
+            error={sessionError}
+            onRetry={loadPelecardSession}
+            onCheckoutNavigate={(path) => navigate(path)}
+            title="Secure payment"
+          />
+        </div>
+
+        <PublicContractFooter variant="payment" />
       </main>
 
-      <PublicContractFooter variant="payment" />
       <PublicPageContactButtons />
     </div>
   );

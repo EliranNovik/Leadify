@@ -1,23 +1,39 @@
-/* RMQ 2.0 — Pelecard hosted checkout theme (CssURL on PaymentGW/init) */
+/* RMQ 2.0 — Pelecard checkout (split-screen / Dribbble-style form) */
 
 html {
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-text-size-adjust: 100%;
+  overflow: hidden;
 }
 
 body {
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 15px;
-  color: #1e293b;
-  background: #f8fafc !important;
+  color: #111827;
+  background: #ffffff !important;
   margin: 0;
-  padding: 12px 14px 20px;
+  padding: 0;
   direction: ltr;
+  overflow: hidden;
+}
+
+.main,
+.main-content,
+.container,
+.container-fluid,
+.panel,
+.card,
+.well,
+form > .row:first-child {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  border-radius: 0 !important;
 }
 
 form {
   max-width: 100%;
-  margin: 0 auto;
+  margin: 0;
 }
 
 .container {
@@ -25,7 +41,6 @@ form {
   padding: 0 !important;
 }
 
-/* Remove grey header chrome; keep SSL line if it lives inside this block */
 .credit-title {
   background: transparent !important;
   border: none !important;
@@ -38,64 +53,61 @@ form {
 .credit-title .logo,
 .credit-title .title {
   display: none !important;
+}
+
+.main-title,
+.page-title {
+  display: none !important;
+}
+
+.main {
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+/* Hide PCI grey banner — not in reference design */
+.topRef,
+.top-ref,
+[class*='topRef'],
+[class*='TopRef'] {
+  display: none !important;
   height: 0 !important;
   margin: 0 !important;
   padding: 0 !important;
   overflow: hidden !important;
 }
 
-/* TopText / extra headings (e.g. "RMQ Secure Checkout") */
-.main-title,
-.page-title,
-.main-content > h1,
-.main-content > h2 {
-  display: none !important;
-}
-
-/* Stack: SSL line first, then payment methods directly under it */
-.main {
-  display: flex !important;
-  flex-direction: column !important;
-}
-
-.topRef {
-  order: 1 !important;
-  margin: 0 0 12px !important;
-  padding: 0 !important;
-  font-size: 11px !important;
-  line-height: 1.45 !important;
-  color: #64748b !important;
-  background: transparent !important;
-  border: none !important;
-  text-align: center !important;
-}
-
 .main-content {
-  order: 2 !important;
   padding: 0 !important;
   margin: 0 !important;
   display: flex !important;
   flex-direction: column !important;
 }
 
-/* Payment method selector — card-style tabs, tight under SSL text */
+/* Form section title */
+.main-content > h1,
+.main-content > h2,
+.main-content > h3,
+h1,
+h2,
+h3 {
+  color: #111827 !important;
+  font-weight: 600 !important;
+  font-size: 1.125rem !important;
+  letter-spacing: -0.02em !important;
+  margin: 0 0 20px !important;
+  text-align: left !important;
+}
+
+/* Payment method tabs */
 .main-content .row:has(.tab-button),
 form .row:has(.tab-button) {
   display: flex !important;
   flex-wrap: wrap !important;
   gap: 10px !important;
-  justify-content: center !important;
-  align-items: stretch !important;
-  order: 1 !important;
-  margin: 0 0 16px !important;
+  justify-content: flex-start !important;
+  margin: 0 0 20px !important;
   padding: 0 !important;
-}
-
-.main-content .row:has(.tab-button)::before,
-.main-content .row:has(.tab-button)::after,
-form .row:has(.tab-button)::before,
-form .row:has(.tab-button)::after {
-  display: none !important;
 }
 
 .main-content .row:has(.tab-button) > [class*='col-sm'],
@@ -109,98 +121,109 @@ form .row:has(.tab-button) > [class*='col-sm'] {
 }
 
 .tab-button {
-  position: relative !important;
   width: 100% !important;
-  min-height: 92px !important;
-  border: 2px solid #e2e8f0 !important;
-  border-radius: 16px !important;
+  min-height: 84px !important;
+  border: 1.5px solid #e5e7eb !important;
+  border-radius: 8px !important;
   background: #ffffff !important;
-  padding: 10px 8px 8px !important;
+  padding: 10px 8px !important;
   margin: 0 !important;
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.06) !important;
+  box-shadow: none !important;
   cursor: pointer !important;
-  transition:
-    border-color 0.2s ease,
-    box-shadow 0.2s ease,
-    transform 0.15s ease,
-    background 0.2s ease !important;
-}
-
-.tab-button:hover {
-  border-color: #c4b5fd !important;
-  box-shadow: 0 8px 20px rgba(59, 40, 199, 0.1) !important;
-  transform: translateY(-1px);
+  transition: border-color 0.15s ease !important;
 }
 
 .tab-button.highlighted,
 .tab-button:focus,
 .tab-button:active {
-  border-color: #3b28c7 !important;
-  background: linear-gradient(180deg, #f6f4ff 0%, #ffffff 100%) !important;
-  box-shadow:
-    0 0 0 3px rgba(59, 40, 199, 0.14),
-    0 10px 24px rgba(59, 40, 199, 0.12) !important;
+  border-color: #2563eb !important;
+  background: #ffffff !important;
+  box-shadow: 0 0 0 1px #2563eb !important;
   outline: none !important;
 }
 
-.pay-logo-col {
-  display: flex !important;
-  flex-direction: column !important;
-  align-items: center !important;
-  justify-content: center !important;
-  gap: 6px !important;
-  margin-top: 4px !important;
-  width: 100% !important;
-}
-
 .pay-logo-col img {
-  max-height: 32px !important;
-  max-width: 72px !important;
-  width: auto !important;
-  object-fit: contain !important;
-}
-
-/* Bit / bank transfer tab frame overlay */
-button#openFinanceTabBtn::before {
-  border-radius: 12px !important;
-  opacity: 0.95;
+  max-height: 28px !important;
+  max-width: 64px !important;
 }
 
 .highlighted {
   background-color: transparent !important;
 }
 
-h1,
-h2,
-h3,
-.page-title {
-  color: #3b28c7 !important;
-  font-weight: 700 !important;
-  letter-spacing: -0.02em;
+.form-group {
+  margin-bottom: 18px !important;
 }
 
-input,
+.control-label,
+label {
+  display: block !important;
+  font-weight: 500 !important;
+  font-size: 13px !important;
+  color: #374151 !important;
+  margin-bottom: 6px !important;
+}
+
+/* Inputs — light border, rounded, reference style */
+input[type='text'],
+input[type='email'],
+input[type='tel'],
+input[type='number'],
+input[type='password'],
+input:not([type]),
 select,
 textarea {
-  border: 1px solid #e2e8f0 !important;
-  border-radius: 10px !important;
-  padding: 10px 12px !important;
-  background: #fff !important;
+  width: 100% !important;
+  border: 1px solid #e5e7eb !important;
+  border-radius: 6px !important;
+  padding: 11px 12px !important;
+  min-height: 44px !important;
+  background: #ffffff !important;
   box-shadow: none !important;
+  font-size: 15px !important;
+  color: #111827 !important;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease !important;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #9ca3af !important;
 }
 
 input:focus,
 select:focus,
 textarea:focus {
-  border-color: #3b28c7 !important;
+  border-color: #2563eb !important;
   outline: none !important;
-  box-shadow: 0 0 0 3px rgba(59, 40, 199, 0.15) !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12) !important;
 }
 
-/* Pay Now / Cancel — match RMQ checkout (purple primary + soft outline) */
+.form-group .row {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 12px !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+.form-group .row > [class*='col-'] {
+  flex: 1 1 0 !important;
+  min-width: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+#credit_card_number_input,
+#date_month_input,
+#date_year_input,
+#cvv_input {
+  font-size: 15px !important;
+}
+
+/* Buttons — Cancel ghost + Pay Now full-width blue */
 .form-group-submit {
-  margin-top: 24px !important;
-  margin-bottom: 4px !important;
+  margin-top: 28px !important;
+  margin-bottom: 0 !important;
   padding: 0 !important;
   border: none !important;
 }
@@ -208,10 +231,9 @@ textarea:focus {
 .form-group-submit-in {
   display: flex !important;
   flex-direction: column !important;
-  gap: 10px !important;
+  gap: 12px !important;
   width: 100% !important;
-  max-width: 100% !important;
-  margin: 0 auto !important;
+  margin: 0 !important;
 }
 
 .form-group-submit-in .btn {
@@ -219,37 +241,27 @@ textarea:focus {
   align-items: center !important;
   justify-content: center !important;
   width: 100% !important;
-  min-height: 50px !important;
+  min-height: 52px !important;
   margin: 0 !important;
-  padding: 13px 20px !important;
+  padding: 14px 20px !important;
   font-size: 15px !important;
   font-weight: 600 !important;
-  line-height: 1.25 !important;
-  letter-spacing: 0.01em !important;
-  border-radius: 14px !important;
+  border-radius: 8px !important;
   text-decoration: none !important;
   text-shadow: none !important;
-  white-space: nowrap !important;
   cursor: pointer !important;
-  -webkit-user-select: none !important;
-  user-select: none !important;
-  transition:
-    transform 0.15s ease,
-    box-shadow 0.15s ease,
-    background 0.15s ease,
-    border-color 0.15s ease,
-    color 0.15s ease !important;
+  box-shadow: none !important;
   filter: none !important;
+  transition: background 0.15s ease, border-color 0.15s ease !important;
 }
 
 .btn-submit,
 button.btn-submit,
 input.btn-submit[type='submit'] {
-  order: 1 !important;
+  order: 2 !important;
   border: none !important;
   color: #ffffff !important;
-  background: linear-gradient(135deg, #3b28c7 0%, #5b4ae0 100%) !important;
-  box-shadow: 0 10px 26px rgba(59, 40, 199, 0.28) !important;
+  background: #2563eb !important;
 }
 
 .btn-submit:hover,
@@ -259,90 +271,39 @@ button.btn-submit:focus,
 input.btn-submit[type='submit']:hover,
 input.btn-submit[type='submit']:focus {
   color: #ffffff !important;
-  background: linear-gradient(135deg, #2f1fa8 0%, #4a3ad4 100%) !important;
-  border: none !important;
-  box-shadow: 0 12px 28px rgba(59, 40, 199, 0.38) !important;
-  transform: translateY(-1px);
+  background: #1d4ed8 !important;
   outline: none !important;
 }
 
-.btn-submit:active {
-  transform: translateY(0);
-  box-shadow: 0 6px 16px rgba(59, 40, 199, 0.25) !important;
-}
-
-/* Cancel (and any secondary action next to submit) */
 .form-group-submit-in .btn:not(.btn-submit):not(.btn-paypal):not(.btn-masterpass),
 .form-group-submit-in a.btn:not(.btn-submit) {
-  order: 2 !important;
-  border: 1px solid #e2e8f0 !important;
-  color: #475569 !important;
+  order: 1 !important;
+  border: 1px solid #e5e7eb !important;
+  color: #374151 !important;
   background: #ffffff !important;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05) !important;
 }
 
 .form-group-submit-in .btn:not(.btn-submit):not(.btn-paypal):not(.btn-masterpass):hover,
-.form-group-submit-in .btn:not(.btn-submit):not(.btn-paypal):not(.btn-masterpass):focus,
-.form-group-submit-in a.btn:not(.btn-submit):hover,
-.form-group-submit-in a.btn:not(.btn-submit):focus {
-  color: #334155 !important;
-  background: #f8fafc !important;
-  border-color: #cbd5e1 !important;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08) !important;
-  outline: none !important;
-}
-
-@media (min-width: 420px) {
-  .form-group-submit-in {
-    flex-direction: row !important;
-    align-items: stretch !important;
-    gap: 12px !important;
-  }
-
-  .form-group-submit-in .btn:not(.btn-submit):not(.btn-paypal):not(.btn-masterpass),
-  .form-group-submit-in a.btn:not(.btn-submit) {
-    order: 1 !important;
-    flex: 1 1 0 !important;
-    min-width: 0 !important;
-  }
-
-  .btn-submit,
-  button.btn-submit,
-  input.btn-submit[type='submit'] {
-    order: 2 !important;
-    flex: 1.35 1 0 !important;
-    min-width: 0 !important;
-  }
+.form-group-submit-in a.btn:not(.btn-submit):hover {
+  background: #f9fafb !important;
+  border-color: #d1d5db !important;
 }
 
 .apple-pay-button {
-  border-radius: 12px !important;
+  border-radius: 8px !important;
   min-height: 48px;
 }
 
-#credit_card_number_input,
-#date_month_input,
-#date_year_input,
-#cvv_input {
-  font-size: 16px !important;
-}
-
-.control-label {
-  font-weight: 600;
-  color: #475569;
-}
-
 .footer {
-  border-top: 1px solid #e2e8f0 !important;
+  border-top: 1px solid #f3f4f6 !important;
   background: transparent !important;
-  padding-top: 12px !important;
+  padding-top: 14px !important;
+  margin-top: 12px !important;
 }
 
 .footer-title {
   font-size: 11px !important;
-  font-weight: 500 !important;
-  color: #94a3b8 !important;
-  margin: 8px 0 !important;
+  color: #9ca3af !important;
 }
 
 @media (max-width: 520px) {
@@ -350,9 +311,5 @@ input.btn-submit[type='submit']:focus {
   form .row:has(.tab-button) > [class*='col-sm'] {
     flex: 1 1 calc(50% - 10px) !important;
     max-width: calc(50% - 5px) !important;
-  }
-
-  .tab-button {
-    min-height: 84px !important;
   }
 }
