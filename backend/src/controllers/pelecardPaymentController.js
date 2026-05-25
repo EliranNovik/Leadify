@@ -3,9 +3,45 @@ const pelecardService = require('../services/pelecardService');
 
 function appRedirect(path, query = {}) {
   const { appPublicUrl } = pelecardService.getConfig();
-  const params = new URLSearchParams(query);
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value != null && String(value).trim() !== '') {
+      params.set(key, String(value));
+    }
+  }
   const qs = params.toString();
   return `${appPublicUrl}${path}${qs ? `?${qs}` : ''}`;
+}
+
+/** Normalize Pelecard callback query/body fields. */
+function extractPelecardMeta(data = {}) {
+  const statusCode = String(
+    data.PelecardStatusCode ||
+      data.StatusCode ||
+      data.statusCode ||
+      ''
+  ).trim();
+  const statusDescription = String(
+    data.StatusDescription ||
+      data.statusDescription ||
+      ''
+  ).trim();
+  const transactionId =
+    data.PelecardTransactionId ||
+    data.pelecardTransactionId ||
+    data.TransactionId ||
+    null;
+  return { statusCode, statusDescription, transactionId };
+}
+
+function pelecardDescriptionFromRaw(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  return (
+    raw.StatusDescription ||
+    raw.statusDescription ||
+    raw.callback?.StatusDescription ||
+    null
+  );
 }
 
 async function fetchPaymentByToken(secureToken) {
@@ -139,6 +175,8 @@ async function getPaymentStatus(req, res) {
       paid_at: payment.paid_at || null,
       expires_at: payment.expires_at || null,
       pelecard_transaction_id: payment.pelecard_transaction_id || null,
+      pelecard_status_code: payment.pelecard_status_code || null,
+      pelecard_status_description: pelecardDescriptionFromRaw(payment.pelecard_raw_response),
     });
   } catch (error) {
     console.error('Get payment status error:', error);
@@ -152,6 +190,7 @@ async function getPaymentStatus(req, res) {
 async function handlePelecardReturn(req, res, outcome) {
   try {
     const data = { ...req.query, ...req.body };
+    const { statusCode, statusDescription, transactionId: metaTxId } = extractPelecardMeta(data);
     const secureToken =
       data.ParamX ||
       data.paramX ||
@@ -159,9 +198,18 @@ async function handlePelecardReturn(req, res, outcome) {
       req.query.paymentId;
 
     const transactionId =
+      metaTxId ||
       data.PelecardTransactionId ||
       data.pelecardTransactionId ||
       data.TransactionId;
+
+    console.info('[Pelecard] Return callback', {
+      outcome,
+      paymentId: secureToken,
+      statusCode,
+      statusDescription,
+      transactionId: transactionId || null,
+    });
 
     if (!secureToken) {
       return res.redirect(appRedirect('/payment/failed', { reason: 'missing_payment_id' }));
@@ -171,6 +219,12 @@ async function handlePelecardReturn(req, res, outcome) {
     if (!payment) {
       return res.redirect(appRedirect('/payment/failed', { paymentId: secureToken, reason: 'payment_not_found' }));
     }
+
+    const failedRedirectQuery = {
+      paymentId: secureToken,
+      ...(statusCode ? { pelecardStatus: statusCode } : {}),
+      ...(statusDescription ? { pelecardMessage: statusDescription.slice(0, 300) } : {}),
+    };
 
     if (outcome === 'cancel') {
       await supabase
@@ -184,11 +238,15 @@ async function handlePelecardReturn(req, res, outcome) {
     }
 
     if (outcome === 'error') {
+      const failMessage =
+        statusDescription ||
+        (statusCode ? `Pelecard declined (${statusCode})` : 'Payment not completed at Pelecard');
+
       await supabase
         .from('payment_links')
         .update({
           status: 'failed',
-          pelecard_status_code: String(data.StatusCode || data.statusCode || ''),
+          pelecard_status_code: statusCode || String(data.StatusCode || data.statusCode || ''),
           pelecard_raw_response: data,
           ...(transactionId ? { pelecard_transaction_id: String(transactionId) } : {}),
         })
@@ -196,30 +254,36 @@ async function handlePelecardReturn(req, res, outcome) {
 
       await recordTransaction(payment.id, 'failed', payment.total_amount, 'pelecard', {
         transactionReference: transactionId ? String(transactionId) : null,
-        errorMessage: 'Payment not completed at Pelecard',
+        errorMessage: failMessage.slice(0, 500),
       });
 
-      return res.redirect(appRedirect('/payment/failed', { paymentId: secureToken }));
+      console.warn('[Pelecard] Payment failed (error return)', {
+        paymentId: secureToken,
+        statusCode,
+        statusDescription,
+      });
+
+      return res.redirect(appRedirect('/payment/failed', failedRedirectQuery));
     }
 
     // success — verify server-side when we have a transaction id
     let verified = false;
     let verifyPayload = data;
-    let statusCode = String(data.StatusCode || data.statusCode || '');
+    let resolvedStatusCode = statusCode;
 
     if (transactionId) {
       try {
         const tx = await pelecardService.getTransaction(String(transactionId));
         verifyPayload = { callback: data, pelecard: tx.raw };
         const result = tx.result || {};
-        statusCode = String(result.StatusCode || statusCode || '');
-        verified = pelecardService.isSuccessfulStatus(statusCode, result);
+        resolvedStatusCode = String(result.StatusCode || resolvedStatusCode || '');
+        verified = pelecardService.isSuccessfulStatus(resolvedStatusCode, result);
       } catch (verifyErr) {
         console.error('Pelecard GetTransaction failed:', verifyErr);
-        verified = pelecardService.isSuccessfulStatus(statusCode, data);
+        verified = pelecardService.isSuccessfulStatus(resolvedStatusCode, data);
       }
     } else {
-      verified = pelecardService.isSuccessfulStatus(statusCode, data);
+      verified = pelecardService.isSuccessfulStatus(resolvedStatusCode, data);
     }
 
     if (verified) {
@@ -237,7 +301,7 @@ async function handlePelecardReturn(req, res, outcome) {
           pelecard_confirmation_key: data.ConfirmationKey || data.confirmationKey || payment.pelecard_confirmation_key,
           pelecard_voucher_id: data.VoucherId || data.voucherId || null,
           pelecard_auth_number: data.AuthorizationNumber || data.DebitApproveNumber || null,
-          pelecard_status_code: statusCode,
+          pelecard_status_code: resolvedStatusCode,
           pelecard_raw_response: verifyPayload,
         })
         .eq('id', payment.id);
@@ -247,14 +311,21 @@ async function handlePelecardReturn(req, res, outcome) {
         transactionReference: txRef,
       });
 
+      console.info('[Pelecard] Payment succeeded', { paymentId: secureToken, statusCode: resolvedStatusCode });
+
       return res.redirect(appRedirect('/payment/success', { paymentId: secureToken }));
     }
+
+    const failDesc =
+      pelecardDescriptionFromRaw(verifyPayload) ||
+      statusDescription ||
+      (resolvedStatusCode ? `Declined (${resolvedStatusCode})` : 'Verification failed');
 
     await supabase
       .from('payment_links')
       .update({
         status: 'failed',
-        pelecard_status_code: statusCode,
+        pelecard_status_code: resolvedStatusCode,
         pelecard_raw_response: verifyPayload,
         ...(transactionId ? { pelecard_transaction_id: String(transactionId) } : {}),
       })
@@ -262,10 +333,22 @@ async function handlePelecardReturn(req, res, outcome) {
 
     await recordTransaction(payment.id, 'failed', payment.total_amount, 'pelecard', {
       transactionReference: transactionId ? String(transactionId) : null,
-      errorMessage: `Pelecard status: ${statusCode || 'unknown'}`,
+      errorMessage: String(failDesc).slice(0, 500),
     });
 
-    return res.redirect(appRedirect('/payment/failed', { paymentId: secureToken }));
+    console.warn('[Pelecard] Payment failed (success return, not verified)', {
+      paymentId: secureToken,
+      statusCode: resolvedStatusCode,
+      statusDescription: failDesc,
+    });
+
+    return res.redirect(
+      appRedirect('/payment/failed', {
+        ...failedRedirectQuery,
+        pelecardStatus: resolvedStatusCode || failedRedirectQuery.pelecardStatus,
+        pelecardMessage: String(failDesc).slice(0, 300),
+      })
+    );
   } catch (error) {
     console.error('Pelecard return handler error:', error);
     return res.redirect(appRedirect('/payment/failed', { reason: 'server_error' }));

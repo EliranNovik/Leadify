@@ -19,6 +19,8 @@ export interface PaymentStatusResponse {
   paid_at?: string | null;
   expires_at?: string | null;
   pelecard_transaction_id?: string | null;
+  pelecard_status_code?: string | null;
+  pelecard_status_description?: string | null;
   error?: string;
 }
 

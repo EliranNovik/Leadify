@@ -1,0 +1,99 @@
+/* RMQ 2.0 — Pelecard hosted checkout theme (loaded via CssURL on PaymentGW/init) */
+html {
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: 15px;
+  color: #1e293b;
+  background: #f8fafc !important;
+  margin: 0;
+  padding: 16px 12px 24px;
+  direction: ltr;
+}
+
+form {
+  max-width: 520px;
+  margin: 0 auto;
+}
+
+h1, h2, .page-title {
+  color: #3b28c7 !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em;
+}
+
+input,
+select,
+textarea {
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 10px !important;
+  padding: 10px 12px !important;
+  background: #fff !important;
+  box-shadow: none !important;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: #3b28c7 !important;
+  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(59, 40, 199, 0.15) !important;
+}
+
+.btn,
+.btn-submit {
+  border-radius: 12px !important;
+  font-weight: 600 !important;
+  letter-spacing: 0.01em;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.btn-submit {
+  background: linear-gradient(135deg, #3b28c7 0%, #5b4ae0 100%) !important;
+  border: none !important;
+  color: #fff !important;
+  min-height: 48px;
+  font-size: 16px !important;
+}
+
+.btn-submit:hover,
+.btn-submit:focus {
+  background: linear-gradient(135deg, #2f1fa8 0%, #4a3ad4 100%) !important;
+  box-shadow: 0 8px 20px rgba(59, 40, 199, 0.35) !important;
+}
+
+.form-group-submit {
+  margin-top: 20px;
+}
+
+.apple-pay-button {
+  border-radius: 12px !important;
+  min-height: 48px;
+}
+
+.pay-logo-col img {
+  max-height: 48px;
+}
+
+#credit_card_number_input,
+#date_month_input,
+#date_year_input,
+#cvv_input {
+  font-size: 16px !important;
+}
+
+.control-label {
+  font-weight: 600;
+  color: #475569;
+}
+
+.tab-button {
+  border-radius: 10px 10px 0 0;
+}
+
+.highlighted {
+  background-color: #ede9fe !important;
+}

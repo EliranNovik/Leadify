@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   CheckCircleIcon,
@@ -6,6 +6,7 @@ import {
   XCircleIcon,
 } from '@heroicons/react/24/outline';
 import { fetchPaymentStatus, type PaymentStatusResponse } from '../lib/pelecardPaymentApi';
+import { describePelecardFailure, logPelecardResult } from '../lib/pelecardErrors';
 
 type ResultVariant = 'success' | 'failed' | 'cancelled';
 
@@ -16,8 +17,43 @@ interface PaymentResultPageProps {
 const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
   const [searchParams] = useSearchParams();
   const paymentId = searchParams.get('paymentId') || '';
+  const urlPelecardStatus = searchParams.get('pelecardStatus') || '';
+  const urlPelecardMessage = searchParams.get('pelecardMessage') || '';
+  const urlReason = searchParams.get('reason') || '';
+
   const [statusData, setStatusData] = useState<PaymentStatusResponse | null>(null);
   const [loading, setLoading] = useState(!!paymentId);
+
+  const redirectMeta = useMemo(
+    () => ({
+      paymentId: paymentId || null,
+      pelecardStatus: urlPelecardStatus || null,
+      pelecardMessage: urlPelecardMessage || null,
+      reason: urlReason || null,
+    }),
+    [paymentId, urlPelecardStatus, urlPelecardMessage, urlReason]
+  );
+
+  // After iframe checkout, Pelecard redirects inside the frame — break out to full page
+  useEffect(() => {
+    try {
+      if (window.self !== window.top) {
+        window.top!.location.replace(window.location.href);
+      }
+    } catch {
+      /* cross-origin — ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (variant === 'failed' || variant === 'cancelled') {
+      logPelecardResult('Result page opened (redirect)', {
+        variant,
+        ...redirectMeta,
+        url: typeof window !== 'undefined' ? window.location.href : null,
+      });
+    }
+  }, [variant, redirectMeta]);
 
   useEffect(() => {
     if (!paymentId) {
@@ -31,13 +67,58 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
       if (!cancelled) {
         setStatusData(data);
         setLoading(false);
+
+        logPelecardResult('Payment status from API', {
+          variant,
+          paymentId,
+          success: data.success,
+          status: data.status,
+          pelecard_status_code: data.pelecard_status_code,
+          pelecard_status_description: data.pelecard_status_description,
+          pelecard_transaction_id: data.pelecard_transaction_id,
+          error: data.error,
+          redirect: redirectMeta,
+        });
+
+        if (variant === 'failed' && data.status === 'failed') {
+          console.warn('[Pelecard] Payment failed', {
+            paymentId,
+            code:
+              data.pelecard_status_code ||
+              redirectMeta.pelecardStatus ||
+              null,
+            description:
+              data.pelecard_status_description ||
+              redirectMeta.pelecardMessage ||
+              null,
+          });
+        }
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [paymentId]);
+  }, [paymentId, variant, redirectMeta]);
+
+  const pelecardStatusCode =
+    statusData?.pelecard_status_code ||
+    urlPelecardStatus ||
+    null;
+  const pelecardStatusDescription =
+    statusData?.pelecard_status_description ||
+    urlPelecardMessage ||
+    null;
+
+  const failureMessage = useMemo(() => {
+    if (urlReason === 'server_error') {
+      return 'Something went wrong while confirming your payment. Please try again or contact the office.';
+    }
+    if (urlReason === 'missing_payment_id') {
+      return 'Payment reference was missing. Please use the original payment link.';
+    }
+    return describePelecardFailure(pelecardStatusCode, pelecardStatusDescription);
+  }, [pelecardStatusCode, pelecardStatusDescription, urlReason]);
 
   const backendPaid = statusData?.status === 'paid';
   const showSuccess = variant === 'success' && backendPaid;
@@ -107,8 +188,29 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
             <div className="text-center">
               <ExclamationCircleIcon className="w-16 h-16 text-red-500 mx-auto mb-4" />
               <h2 className="text-2xl font-bold text-gray-900 mb-2">Payment not completed</h2>
-              <p className="text-gray-600 mb-6">
-                The payment was not completed. You can try again or contact the office for help.
+              <p className="text-gray-600 mb-4">{failureMessage}</p>
+              {(pelecardStatusCode || pelecardStatusDescription) && (
+                <div className="rounded-lg bg-red-50 border border-red-100 px-4 py-3 mb-4 text-left text-sm text-red-900">
+                  {pelecardStatusCode && (
+                    <p>
+                      <span className="font-semibold">Pelecard code:</span>{' '}
+                      {pelecardStatusCode}
+                    </p>
+                  )}
+                  {pelecardStatusDescription &&
+                    pelecardStatusDescription !== failureMessage && (
+                      <p className="mt-1 text-red-800">{pelecardStatusDescription}</p>
+                    )}
+                  {import.meta.env.DEV && paymentId && (
+                    <p className="mt-2 text-xs text-red-700/80 font-mono break-all">
+                      paymentId: {paymentId}
+                    </p>
+                  )}
+                </div>
+              )}
+              <p className="text-xs text-gray-500 mb-6">
+                Details are also logged in the browser console (search for{' '}
+                <span className="font-mono">[Pelecard]</span>).
               </p>
               {paymentId && statusData?.status !== 'paid' && (
                 <Link to={`/payment/${paymentId}`} className="btn btn-primary w-full">

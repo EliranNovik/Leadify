@@ -26,6 +26,46 @@ function assertCredentials(config) {
   }
 }
 
+function buildCheckoutDisplayOptions(config, payment) {
+  const cssUrl =
+    process.env.PELECARD_CSS_URL || `${config.appPublicUrl}/pelecard-checkout.css`;
+  const logoUrl =
+    process.env.PELECARD_LOGO_URL || `${config.appPublicUrl}/RMQ_LOGO.png`;
+
+  const options = {
+    CssURL: cssUrl,
+    LogoURL: logoUrl,
+    HiddenPelecardLogo: 'True',
+    TopText: (process.env.PELECARD_TOP_TEXT || 'RMQ Secure Checkout').slice(0, 200),
+    BottomText: (
+      process.env.PELECARD_BOTTOM_TEXT ||
+      '256-bit encrypted payment · Powered by Pelecard'
+    ).slice(0, 200),
+    UseBuildInFeedbackPage: 'False',
+    FeedbackOnTop: 'True',
+    Language: process.env.PELECARD_CHECKOUT_LANGUAGE || 'en',
+    CustomerIdField: 'must',
+    Cvv2Field: 'must',
+    EmailField: 'optional',
+    TelField: 'hide',
+    ShowSubmitButton: 'True',
+  };
+
+  const clientName =
+    payment.description?.split(' - ')[1]?.split(' (#')[0]?.trim() || '';
+  if (clientName) {
+    options.CardHolderName = clientName.slice(0, 80);
+  }
+
+  const email = payment.leads?.email;
+  if (email) {
+    options.EmailField = 'must';
+    options.UserData = { UserData1: String(email).slice(0, 200) };
+  }
+
+  return options;
+}
+
 function totalToAgorot(totalAmount) {
   const n = Number(totalAmount);
   if (!Number.isFinite(n) || n <= 0) {
@@ -105,11 +145,7 @@ async function createPaymentSession(payment, secureToken) {
     payload.QAResultStatus = '000';
   }
 
-  const clientName =
-    payment.description?.split(' - ')[1]?.split(' (#')[0]?.trim() || '';
-  if (clientName) {
-    payload.CardHolderName = clientName.slice(0, 80);
-  }
+  Object.assign(payload, buildCheckoutDisplayOptions(config, payment));
 
   const { ok, data } = await pelecardPost(PELECARD_INIT_PATH, payload);
 

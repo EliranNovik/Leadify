@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { createPelecardPaymentSession } from '../lib/pelecardPaymentApi';
+import PelecardCheckoutFrame from '../components/PelecardCheckoutFrame';
 import toast from 'react-hot-toast';
 import { 
   CreditCardIcon, 
@@ -36,24 +37,17 @@ interface PaymentLink {
   };
 }
 
-interface PaymentContactForm {
-  email: string;
-  phone: string;
-}
-
 const PaymentPage: React.FC = () => {
   const { token } = useParams<{ token: string }>();
   const navigate = useNavigate();
   
   const [paymentLink, setPaymentLink] = useState<PaymentLink | null>(null);
   const [loading, setLoading] = useState(true);
-  const [processing, setProcessing] = useState(false);
   const [selectedMethod, setSelectedMethod] = useState<string>('credit_card');
+  const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
   const [showThankYou, setShowThankYou] = useState(false);
-  const [formData, setFormData] = useState<PaymentContactForm>({
-    email: '',
-    phone: ''
-  });
   const [pageError, setPageError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -104,10 +98,6 @@ const PaymentPage: React.FC = () => {
         }
 
         setPaymentLink(data);
-        setFormData({
-          email: data.leads?.email || '',
-          phone: data.leads?.phone || '',
-        });
       } catch (error) {
         console.error('Error:', error);
         toast.error('Failed to load payment information');
@@ -119,66 +109,50 @@ const PaymentPage: React.FC = () => {
     fetchPaymentLink();
   }, [token]);
 
-  const handleInputChange = (field: keyof PaymentContactForm, value: string) => {
-    setFormData(prev => ({ ...prev, [field]: value }));
-  };
-
   const canPay =
     paymentLink &&
     paymentLink.status !== 'paid' &&
     paymentLink.status !== 'expired' &&
     !(paymentLink.expires_at && new Date(paymentLink.expires_at) < new Date());
 
-  const startPelecardPayment = async () => {
-    if (!token || !paymentLink) return;
+  const isOnlinePayment =
+    selectedMethod === 'credit_card' ||
+    selectedMethod === 'apple_pay' ||
+    selectedMethod === 'google_pay';
 
-    if (paymentLink.status === 'paid') {
-      toast.error('This payment has already been completed.');
-      return;
-    }
+  const loadPelecardSession = async () => {
+    if (!token || !paymentLink || !isOnlinePayment) return;
 
-    if (selectedMethod === 'bank_transfer') {
-      toast('Please use the bank transfer details below. Online card payment uses Pelecard.', {
-        icon: 'ℹ️',
-      });
-      return;
-    }
-
-    if (selectedMethod === 'apple_pay' || selectedMethod === 'google_pay') {
-      const errors: string[] = [];
-      if (!formData.email.trim() || !formData.email.includes('@')) {
-        errors.push('Please enter a valid email address');
-      }
-      if (!formData.phone.trim()) {
-        errors.push('Please enter a phone number');
-      }
-      if (errors.length) {
-        errors.forEach(e => toast.error(e));
-        return;
-      }
-    }
-
-    setProcessing(true);
+    setSessionLoading(true);
+    setSessionError(null);
     setPageError(null);
 
     try {
       const result = await createPelecardPaymentSession(token);
-
       if (!result.success || !result.paymentUrl) {
         throw new Error(result.error || 'Failed to create payment session');
       }
-
-      window.location.href = result.paymentUrl;
+      setPaymentUrl(result.paymentUrl);
     } catch (error) {
-      console.error('Payment error:', error);
+      console.error('[Pelecard] Session error:', error);
       const message =
         error instanceof Error ? error.message : 'Could not start payment';
+      setSessionError(message);
       setPageError(message);
       toast.error(message);
     } finally {
-      setProcessing(false);
+      setSessionLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!canPay || !isOnlinePayment) {
+      setPaymentUrl(null);
+      return;
+    }
+    loadPelecardSession();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reload when token or method changes
+  }, [token, selectedMethod, canPay]);
 
   // Helper to get currency symbol
   const getCurrencySymbol = (currency: string | undefined) => {
@@ -445,56 +419,32 @@ const PaymentPage: React.FC = () => {
                   </button>
                 </div>
 
-                {/* Contact Information */}
-                {(selectedMethod === 'apple_pay' || selectedMethod === 'google_pay') && (
+                {isOnlinePayment && (
                   <div className="mb-6">
-                    <h4 className="text-lg font-semibold text-gray-900 mb-4">Contact Information</h4>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Email Address *
-                        </label>
-                        <input
-                          type="email"
-                          className="input input-bordered w-full"
-                          value={formData.email}
-                          onChange={(e) => handleInputChange('email', e.target.value)}
-                          placeholder="your@email.com"
-                          required
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Phone Number *
-                        </label>
-                        <input
-                          type="tel"
-                          className="input input-bordered w-full"
-                          value={formData.phone}
-                          onChange={(e) => handleInputChange('phone', e.target.value)}
-                          placeholder="+1 (555) 123-4567"
-                          required
-                        />
-                      </div>
+                    <div className="flex items-center justify-between mb-3">
+                      <h4 className="text-lg font-semibold text-gray-900">Secure checkout</h4>
+                      <span className="badge badge-ghost text-xs">Pelecard · PCI DSS</span>
                     </div>
-                  </div>
-                )}
-
-                {/* Secure Pelecard checkout — card data is not collected on this site */}
-                {(selectedMethod === 'credit_card' ||
-                  selectedMethod === 'apple_pay' ||
-                  selectedMethod === 'google_pay') && (
-                  <div className="mb-6 rounded-xl border border-violet-100 bg-violet-50/50 p-4">
-                    <h4 className="text-lg font-semibold text-gray-900 mb-2">Secure checkout</h4>
-                    <p className="text-sm text-gray-700 leading-relaxed">
-                      When you click Pay, you will be redirected to Pelecard&apos;s secure payment page
-                      to enter card details. Card numbers, expiry dates, and CVV are never sent to our
-                      servers.
+                    <p className="text-sm text-gray-600 mb-4">
+                      {selectedMethod === 'apple_pay'
+                        ? 'Use the Apple Pay button inside the checkout below (Safari / iOS).'
+                        : selectedMethod === 'google_pay'
+                          ? 'Use the Google Pay button inside the checkout below (Chrome / Android).'
+                          : 'Enter your card in the secure form below. Details never touch our servers.'}
                     </p>
-                    <p className="text-xs text-gray-500 mt-2">
-                      Apple Pay and Google Pay are available on the Pelecard page when supported by your
-                      device.
-                    </p>
+                    <PelecardCheckoutFrame
+                      paymentUrl={paymentUrl}
+                      loading={sessionLoading}
+                      error={sessionError}
+                      onRetry={loadPelecardSession}
+                      title={
+                        selectedMethod === 'apple_pay'
+                          ? 'Apple Pay · Card · Google Pay'
+                          : selectedMethod === 'google_pay'
+                            ? 'Google Pay · Card · Apple Pay'
+                            : 'Card · Apple Pay · Google Pay'
+                      }
+                    />
                   </div>
                 )}
 
@@ -513,31 +463,20 @@ const PaymentPage: React.FC = () => {
                   </div>
                 )}
 
-                {pageError && (
+                {pageError && !isOnlinePayment && (
                   <p className="mb-4 text-sm text-red-600 text-center">{pageError}</p>
                 )}
 
-                {/* Pay Button */}
-                <button
-                  onClick={startPelecardPayment}
-                  disabled={processing || !canPay || selectedMethod === 'bank_transfer'}
-                  className={`btn btn-primary btn-lg w-full ${processing ? 'loading' : ''}`}
-                >
-                  {processing ? (
-                    'Redirecting to secure payment…'
-                  ) : selectedMethod === 'bank_transfer' ? (
-                    <>Use bank transfer details above</>
-                  ) : (
-                    <>
-                      Pay {getCurrencySymbol(paymentLink.currency)}{paymentLink.total_amount.toLocaleString()}
-                    </>
-                  )}
-                </button>
+                {selectedMethod === 'bank_transfer' && (
+                  <p className="text-sm text-center text-gray-500 py-4">
+                    Complete the transfer using the details above, then contact the office to confirm.
+                  </p>
+                )}
 
                 <div className="mt-4 text-center">
                   <p className="text-xs text-gray-500">
-                    By clicking "Pay", you agree to our terms of service and privacy policy.
-                    Your payment is secured with 256-bit SSL encryption.
+                    Payments are processed by Pelecard with 256-bit SSL encryption.
+                    {isOnlinePayment && ' Complete payment in the secure form above.'}
                   </p>
                 </div>
               </div>
