@@ -13,7 +13,7 @@ export default function HomeEntryPage() {
 
   if (isLoading) {
     return (
-      <div className="flex min-h-[calc(100dvh-3.5rem)] w-full items-center justify-center bg-base-100">
+      <div className="flex min-h-[calc(100dvh-3.5rem)] w-full items-center justify-center bg-gray-100 dark:bg-base-300">
         <span className="loading loading-spinner loading-md text-primary" />
       </div>
     );
@@ -26,7 +26,7 @@ export default function HomeEntryPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex min-h-[calc(100dvh-3.5rem)] w-full items-center justify-center bg-base-100">
+        <div className="flex min-h-[calc(100dvh-3.5rem)] w-full items-center justify-center bg-gray-100 dark:bg-base-300">
           <span className="loading loading-spinner loading-md text-primary" />
         </div>
       }

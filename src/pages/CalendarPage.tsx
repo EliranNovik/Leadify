@@ -399,7 +399,7 @@ const EmployeeAvailability: React.FC = () => {
   ];
 
   return (
-    <div className="p-8">
+    <div className="min-h-full bg-gray-100 p-4 md:p-8">
       <div className="flex items-center justify-between mb-8">
         <div className="flex items-center gap-4">
           <div className="p-3 bg-primary/10 rounded-xl">

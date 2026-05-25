@@ -19,7 +19,7 @@ import {
   BanknotesIcon,
   ClipboardDocumentListIcon,
   ExclamationTriangleIcon,
-  StarIcon
+  StarIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 
@@ -28,13 +28,16 @@ interface DepartmentListProps {
   viewMode: 'list' | 'cards';
   renderMeetingCard: (meeting: any) => React.ReactNode;
   renderMeetingRow: (meeting: any) => React.ReactNode;
+  /** Shown as first card in the bottom strip, beside department category boxes */
+  totalBalance?: number;
 }
 
-const DepartmentList: React.FC<DepartmentListProps> = ({ 
-  meetings, 
-  viewMode, 
-  renderMeetingCard, 
-  renderMeetingRow 
+const DepartmentList: React.FC<DepartmentListProps> = ({
+  meetings,
+  viewMode,
+  renderMeetingCard,
+  renderMeetingRow,
+  totalBalance,
 }) => {
   const [departments, setDepartments] = useState<any[]>([]);
   const [allCategories, setAllCategories] = useState<any[]>([]);
@@ -278,21 +281,33 @@ const DepartmentList: React.FC<DepartmentListProps> = ({
     fetchDepartmentData();
   }, []);
 
-  if (isLoading) {
-    return (
-      <div className="mt-6 text-center p-8">
-        <div className="loading loading-spinner loading-lg"></div>
-        <p className="mt-4 text-base-content/60">Loading departments...</p>
-      </div>
-    );
-  }
-
   const departmentMeetings = groupMeetingsByDepartment(meetings, departments);
 
-  return (
-    <div className="mt-6">
-      {/* Department Overview - Compact Cards Style */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+  const totalBalanceCard =
+    totalBalance !== undefined ? (
+      <div className="card bg-primary text-primary-content flex h-full flex-shrink-0 shadow-lg min-w-[200px] self-stretch md:min-w-[220px]">
+        <div className="card-body flex flex-row items-center gap-3 p-4">
+          <CurrencyDollarIcon className="h-7 w-7 flex-shrink-0" />
+          <div className="min-w-0">
+            <div className="text-sm font-bold leading-tight">Total Balance</div>
+            <div className="text-xl font-extrabold leading-tight tabular-nums">
+              ₪{totalBalance.toLocaleString()}
+            </div>
+          </div>
+        </div>
+      </div>
+    ) : null;
+
+  const footerStrip = isLoading ? (
+    <div className="calendar-footer-strip flex flex-nowrap gap-3 overflow-x-auto overflow-y-hidden pb-1 max-md:px-0 [-webkit-overflow-scrolling:touch]">
+      {totalBalanceCard}
+      <div className="flex min-w-[200px] flex-shrink-0 items-center justify-center rounded-xl border border-gray-200 bg-white p-6 shadow-lg">
+        <span className="loading loading-spinner loading-md" />
+      </div>
+    </div>
+  ) : (
+    <div className="calendar-footer-strip flex flex-nowrap items-stretch gap-3 overflow-x-auto overflow-y-hidden pb-1 max-md:px-0 [-webkit-overflow-scrolling:touch]">
+        {totalBalanceCard}
         {Object.keys(departmentMeetings).map((deptName) => {
           const deptMeetings = departmentMeetings[deptName] || [];
           
@@ -397,7 +412,10 @@ const DepartmentList: React.FC<DepartmentListProps> = ({
           if (deptMeetings.length === 0) return null;
           
           return (
-            <div key={deptName} className="bg-white rounded-xl shadow-lg border border-gray-200 p-6 hover:shadow-xl transition-shadow duration-200">
+            <div
+              key={deptName}
+              className="flex-shrink-0 min-w-[220px] max-w-[280px] rounded-xl border border-gray-200 bg-white p-5 shadow-lg transition-shadow duration-200 hover:shadow-xl md:min-w-[240px]"
+            >
               {/* Department Header */}
               <div className="flex items-center gap-3 mb-4">
                 <div className="p-2 rounded-lg" style={{ backgroundColor: '#4418C4' }}>
@@ -442,7 +460,12 @@ const DepartmentList: React.FC<DepartmentListProps> = ({
             </div>
           );
         })}
-      </div>
+    </div>
+  );
+
+  return (
+    <div id="calendar-department-footer-panel" className="w-full min-w-0">
+      {footerStrip}
     </div>
   );
 };

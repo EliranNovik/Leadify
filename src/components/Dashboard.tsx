@@ -6366,7 +6366,7 @@ const Dashboard: React.FC = () => {
   );
 
   return (
-    <div className="min-h-screen bg-base-100 p-0 md:p-6 space-y-8 animate-fade-in">
+    <div className="min-h-screen bg-gray-100 p-0 md:p-6 space-y-8 animate-fade-in dark:bg-base-300">
       {/* 1. Summary Boxes: 4 columns */}
       <div className="flex md:grid md:grid-cols-4 gap-3 md:gap-6 mb-8 w-full mt-6 md:mt-0 overflow-x-auto scrollbar-hide pb-2 md:pb-0 overflow-y-visible">
         {/* Meetings Today */}

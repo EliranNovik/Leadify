@@ -214,6 +214,8 @@ const PublicProformaLegacyViewPage: React.FC = () => {
       />
       <ProformaPublicToolbar
         title={`Invoice — ${proforma.client_name || 'Client'}`}
+        paid={proforma.paymentPaid}
+        paidAt={proforma.paid_at}
         onPrint={handlePrint}
         onShare={handleShare}
         sharing={sharing}

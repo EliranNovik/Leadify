@@ -11492,35 +11492,11 @@ const Clients: React.FC<ClientsProps> = ({
   useEffect(() => {
     if (!selectedClient?.id) return;
 
-    // Skip if we already have cached interactions for this client
+    // InteractionsTab loads the timeline from the DB when the tab mounts.
+    // Do not preload sessionStorage into parent cache — stale snapshots caused remount
+    // loops and dropped WhatsApp rows after a successful server merge.
     if (interactionsCache && interactionsCache.leadId === selectedClient.id) {
       return;
-    }
-
-    // Check if interactions are already persisted in sessionStorage
-    try {
-      const persistedKey = `interactions_${selectedClient.id}`;
-      const persisted = sessionStorage.getItem(persistedKey);
-      if (persisted) {
-        try {
-          const parsed = JSON.parse(persisted);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            console.log(`✅ Found persisted interactions for client ${selectedClient.id} (${parsed.length} interactions), using cached data`);
-            handleInteractionsCacheUpdate({
-              leadId: selectedClient.id,
-              interactions: parsed,
-              emails: [],
-              count: parsed.length,
-              fetchedAt: new Date().toISOString(),
-            });
-            return;
-          }
-        } catch (e) {
-          console.warn('Failed to parse persisted interactions:', e);
-        }
-      }
-    } catch (e) {
-      // sessionStorage might not be available
     }
 
     // If no persisted data, InteractionsTab will fetch when it mounts
@@ -13102,7 +13078,7 @@ const Clients: React.FC<ClientsProps> = ({
     const hasLeadInUrl = Boolean(lead_number || fullLeadNumber || requestedLeadNumber);
     const loadingMessage = hasLeadInUrl ? 'Loading client…' : 'Opening latest client…';
     return (
-      <div className="min-h-screen bg-base-100 flex items-center justify-center">
+      <div className="min-h-screen bg-gray-100 flex items-center justify-center dark:bg-base-300">
         <div className="text-center">
           <div className="loading loading-spinner loading-lg text-primary"></div>
           <p className="mt-4 text-base-content/70">{loadingMessage}</p>
@@ -14907,7 +14883,7 @@ const Clients: React.FC<ClientsProps> = ({
   if (selectedClient && isUnactivated && !userManuallyExpanded) {
     console.log('🔍 RENDERING UNACTIVATED VIEW (TOP PRIORITY) for client:', selectedClient.id);
     return (
-      <div className="min-h-screen p-4">
+      <div className="min-h-screen bg-gray-100 p-4 dark:bg-base-300">
         <div className="max-w-2xl mx-auto">
           {/* Unactivated Lead Compact Card */}
           <div
@@ -15317,7 +15293,7 @@ const Clients: React.FC<ClientsProps> = ({
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-base-200/50 via-base-100 to-base-100">
+    <div className="min-h-screen bg-gray-100 dark:bg-base-300">
       {!selectedClient && !localLoading && (
         <div className="p-6">
           <h1 className="text-2xl font-bold mb-4">Clients</h1>
@@ -15556,8 +15532,8 @@ const Clients: React.FC<ClientsProps> = ({
 
 
           {/* Client record shell — single SaaS-style surface */}
-          <div className="mx-auto w-full max-w-[1680px] px-3 sm:px-5 lg:px-8">
-            <div className="bg-base-100 dark:bg-base-100">
+          <div className="w-full min-w-0 px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8">
+            <div className="bg-transparent">
           {/* Desktop Header - Using new ClientHeader component */}
           <ClientHeader
             selectedClient={selectedClient}
@@ -16165,11 +16141,11 @@ const Clients: React.FC<ClientsProps> = ({
           {/* Tab Content */}
           <div
             ref={tabContentRef}
-            className="w-full bg-base-100/80 min-h-[50vh] dark:bg-base-100/90"
+            className="w-full min-h-[50vh] bg-gray-100 dark:bg-base-300"
           >
             <div
               key={`${activeTab}-${interactionCount}`}
-              className="p-4 sm:p-5 md:p-7 pb-8 md:pb-10 mb-4 md:mb-0 space-y-5 md:space-y-6"
+              className="pt-4 sm:pt-5 md:pt-6 pb-8 md:pb-10 mb-4 md:mb-0 space-y-5 md:space-y-6"
             >
               {ActiveComponent && selectedClient && (
                 <div className="md:pb-0 pb-32">

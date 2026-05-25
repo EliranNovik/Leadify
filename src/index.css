@@ -627,6 +627,35 @@ html.dark .table tbody tr:hover {
   padding-bottom: 0.5rem !important;
 }
 
+@media (min-width: 768px) {
+  .calendar-page-meetings-wrap table > thead.calendar-page-meetings-thead {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+
+  .calendar-page-meetings-wrap table > thead > tr.calendar-page-meetings-head-row > th {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background-color: #e5e7eb !important;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.25) !important;
+    box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+  }
+
+  /* Keep meeting cards below the sticky column headers while scrolling */
+  .calendar-page-meetings-wrap table > tbody > tr.calendar-page-meeting-row {
+    position: relative;
+    z-index: 0;
+  }
+
+  html.dark .calendar-page-meetings-wrap table > thead > tr.calendar-page-meetings-head-row > th {
+    background-color: #1e293b !important;
+    border-bottom-color: rgba(148, 163, 184, 0.2) !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  }
+}
+
 .calendar-page-meetings-wrap table > tbody > tr.calendar-page-meeting-row > td {
   background-color: #ffffff !important;
   /* Only draw the OUTER border of the row (avoid vertical column separators) */
@@ -1700,6 +1729,10 @@ html.dark.theme-dark2 .calendar-meetings-table thead,
 html.dark.theme-dark2 .calendar-meetings-table thead tr,
 html.dark.theme-dark2 .calendar-meetings-table thead th {
   background-color: transparent !important;
+}
+
+html.dark.theme-dark2 .calendar-page-meetings-wrap table > thead > tr.calendar-page-meetings-head-row > th {
+  background-color: #18181b !important;
 }
 
 /* Dashboard department tables use <table class="min-w-full"> without Daisy .table */

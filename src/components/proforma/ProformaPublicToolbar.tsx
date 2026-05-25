@@ -1,12 +1,15 @@
 import React from 'react';
 import { PrinterIcon, ShareIcon } from '@heroicons/react/24/outline';
 import ProformaBackToLeadButton from './ProformaBackToLeadButton';
+import ProformaPaidBadge from './ProformaPaidBadge';
 
 type Props = {
   title: string;
   onPrint: () => void;
   onShare: () => void;
   sharing?: boolean;
+  paid?: boolean | null;
+  paidAt?: string | null;
   /** Shown only when set (e.g. signed-in staff on public invoice link). */
   backToLeadHref?: string | null;
 };
@@ -16,6 +19,8 @@ const ProformaPublicToolbar: React.FC<Props> = ({
   onPrint,
   onShare,
   sharing,
+  paid,
+  paidAt,
   backToLeadHref,
 }) => (
   <div className="print-hide fixed inset-x-0 top-0 z-40 border-b border-gray-200 bg-white/95 backdrop-blur-sm md:sticky">
@@ -23,7 +28,10 @@ const ProformaPublicToolbar: React.FC<Props> = ({
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <ProformaBackToLeadButton href={backToLeadHref ?? null} />
         <div className="min-w-0">
-          <div className="truncate text-lg font-bold text-gray-900">{title}</div>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <div className="truncate text-lg font-bold text-gray-900">{title}</div>
+            <ProformaPaidBadge paid={paid} paidAt={paidAt} />
+          </div>
           <div className="text-xs text-gray-500">Decker Pex Levi Law Offices</div>
         </div>
       </div>

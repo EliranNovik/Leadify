@@ -963,14 +963,14 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
         </div>
       </div>
 
-      <div className="flex justify-center">
-        <div className="w-full max-w-5xl space-y-10">
+      <div className="w-full min-w-0">
+        <div className="w-full space-y-10">
           {ROLE_SECTIONS.map((section) => (
             <div key={section.title}>
               <h3 className="text-lg font-semibold text-gray-900 mb-3">
                 {section.title}
               </h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                 {section.roleIds.map((roleId) => {
                   const role = roles.find((r) => r.id === roleId);
                   if (!role) return null;
@@ -981,10 +981,10 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
                   return (
                     <div
                       key={role.id}
-                      className={`rounded-xl px-2 py-3 transition-colors ${
+                      className={`rounded-xl border border-base-200/80 bg-white px-4 py-4 shadow-sm transition-shadow dark:border-base-300/55 dark:bg-base-100 ${
                         roleUiDisabled
                           ? 'opacity-45 pointer-events-none select-none'
-                          : 'hover:bg-base-200/60'
+                          : 'hover:shadow-md'
                       }`}
                       aria-disabled={roleUiDisabled}
                       title={roleUiDisabled ? 'This role is temporarily unavailable' : undefined}

@@ -5,9 +5,11 @@ import html2pdf from 'html2pdf.js';
 import { PaperAirplaneIcon, PencilSquareIcon, PrinterIcon, ShareIcon, TrashIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { shareProformaPublicLink } from '../lib/proformaPublicLink';
-import { sendProformaInvoiceEmail } from '../lib/proformaSendEmail';
-import { sendProformaInvoiceWhatsApp } from '../lib/proformaSendWhatsApp';
+import { sendProformaInvoiceBundle } from '../lib/proformaSendInvoice';
+import type { ProformaSendLanguage } from '../lib/proformaSendLanguage';
+import { proformaSendLanguageLabel } from '../lib/proformaSendLanguage';
 import { useMailboxReconnect } from '../contexts/MailboxReconnectContext';
+import ProformaSendLanguageModal from '../components/proforma/ProformaSendLanguageModal';
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
 import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
 import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
@@ -16,6 +18,7 @@ import ProformaBankDetails from '../components/proforma/ProformaBankDetails';
 import ProformaFromCompanyInfo from '../components/proforma/ProformaFromCompanyInfo';
 import ProformaViewSideNotes from '../components/proforma/ProformaViewSideNotes';
 import ProformaBackToLeadButton from '../components/proforma/ProformaBackToLeadButton';
+import ProformaPaidBadge from '../components/proforma/ProformaPaidBadge';
 import { buildClientFinancesTabPath } from '../lib/proformaClientNavigation';
 import ProformaVatTotalsBlock from '../components/proforma/ProformaVatTotalsBlock';
 import {
@@ -41,6 +44,7 @@ const ProformaViewPage: React.FC = () => {
   const [pdfLoading, setPdfLoading] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [sending, setSending] = useState(false);
+  const [sendLanguageModalOpen, setSendLanguageModalOpen] = useState(false);
   const [contactIdForEmail, setContactIdForEmail] = useState<string | number | null>(null);
   const { showReconnectModal } = useMailboxReconnect();
   const [leadData, setLeadData] = useState<any>(null);
@@ -51,6 +55,7 @@ const ProformaViewPage: React.FC = () => {
   const [paymentPlanMeta, setPaymentPlanMeta] = useState<{
     paid: boolean;
     paid_at: string | null;
+    lead_id?: string | null;
     currency?: string | null;
     currency_id?: number | string | null;
   } | null>(null);
@@ -238,6 +243,7 @@ const ProformaViewPage: React.FC = () => {
         setPaymentPlanMeta({
           paid: Boolean(data.paid),
           paid_at: data.paid_at ?? null,
+          lead_id: data.lead_id ?? null,
           currency: resolvedCurrency,
           currency_id: data.currency_id ?? resolvedCurrencyId ?? null,
         });
@@ -350,40 +356,37 @@ const ProformaViewPage: React.FC = () => {
     }
   };
 
-  const handleSend = async () => {
+  const buildSendInput = (language: ProformaSendLanguage) => ({
+    kind: 'new' as const,
+    recordId: id!,
+    paymentPlanId: id!,
+    contactId: contactIdForEmail ?? proforma.contactId,
+    contactEmail: proforma.email,
+    contactPhone: proforma.phone,
+    clientName: proforma.client || 'Client',
+    leadNumber: formatLeadNumber(),
+    leadId: proforma.clientId ?? paymentPlanMeta?.lead_id ?? null,
+    isLegacyLead: false,
+    language,
+  });
+
+  const handleSendConfirm = async (language: ProformaSendLanguage) => {
     if (!id || !proforma) return;
     setSending(true);
     try {
-      const sendInput = {
-        kind: 'new' as const,
-        recordId: id,
-        paymentPlanId: id,
-        contactId: contactIdForEmail ?? proforma.contactId,
-        contactEmail: proforma.email,
-        contactPhone: proforma.phone,
-        clientName: proforma.client || 'Client',
-        leadNumber: formatLeadNumber(),
-        leadId: proforma.clientId,
-        isLegacyLead: false,
-      };
-      await sendProformaInvoiceEmail(sendInput);
-      let whatsAppSent = false;
-      let whatsAppPhone = '';
-      try {
-        const wa = await sendProformaInvoiceWhatsApp(sendInput);
-        whatsAppSent = true;
-        whatsAppPhone = wa.phoneNumber;
-      } catch (whatsAppErr) {
-        console.warn('[ProformaViewPage] WhatsApp send:', whatsAppErr);
-        toast.error(
-          whatsAppErr instanceof Error ? whatsAppErr.message : 'WhatsApp invoice was not sent.',
-        );
+      const { whatsAppSent, whatsAppPhone, whatsAppError } = await sendProformaInvoiceBundle(
+        buildSendInput(language),
+      );
+      if (whatsAppError) {
+        toast.error(whatsAppError.message || 'WhatsApp invoice was not sent.');
       }
+      const langLabel = proformaSendLanguageLabel(language);
       toast.success(
         whatsAppSent
-          ? `Invoice sent by email and WhatsApp (${whatsAppPhone}).`
-          : 'Invoice sent by email.',
+          ? `Invoice sent in ${langLabel} by email and WhatsApp (${whatsAppPhone}).`
+          : `Invoice sent in ${langLabel} by email.`,
       );
+      setSendLanguageModalOpen(false);
     } catch (e: unknown) {
       const err = e as Error & { code?: string };
       if (err.code === 'MAILBOX_NOT_CONNECTED') {
@@ -410,6 +413,13 @@ const ProformaViewPage: React.FC = () => {
 
   return (
     <div className="w-full min-h-0">
+      <ProformaSendLanguageModal
+        open={sendLanguageModalOpen}
+        onClose={() => !sending && setSendLanguageModalOpen(false)}
+        onConfirm={handleSendConfirm}
+        sending={sending}
+        contactLabel={proforma.client || undefined}
+      />
       <ProformaViewSideNotes notes={displayNotes || null} />
       {/* Fixed action bar — screen only, under header, clear of sidebar on md+ */}
       <div className="print-hide fixed top-[calc(env(safe-area-inset-top,0px)+2.75rem+0.5rem+0.75rem)] md:top-[calc(3rem+0.75rem)] left-0 md:left-24 right-0 z-30 flex items-center justify-between gap-4 border-b border-gray-200 bg-white px-6 py-3 shadow-sm">
@@ -419,6 +429,7 @@ const ProformaViewPage: React.FC = () => {
             Invoice - {formatLeadNumber()}
             {proforma.client ? ` - ${proforma.client}` : ''}
           </h1>
+          <ProformaPaidBadge paid={paymentPlanMeta?.paid} paidAt={paymentPlanMeta?.paid_at} />
         </div>
         <div className="flex shrink-0 gap-2">
           <button
@@ -431,7 +442,7 @@ const ProformaViewPage: React.FC = () => {
           <button className="btn btn-outline btn-sm gap-2" onClick={handlePrint} title="Print"><PrinterIcon className="w-5 h-5" /> Print</button>
           <button
             className="btn btn-outline btn-sm gap-2"
-            onClick={handleSend}
+            onClick={() => setSendLanguageModalOpen(true)}
             disabled={sending}
             title="Send invoice to the linked contact by email (Outlook) and WhatsApp"
           >

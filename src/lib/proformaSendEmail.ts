@@ -11,8 +11,14 @@ import {
 } from './proformaPublicLink';
 import { resolveProformaPaymentLinkUrl } from './proformaPaymentLink';
 import { getMailboxStatus, sendEmailViaBackend } from './mailboxApi';
+import {
+  getProformaEmailTemplateId,
+  PROFORMA_EMAIL_TEMPLATE_ID_EN,
+  type ProformaSendLanguage,
+} from './proformaSendLanguage';
 
-export const PROFORMA_EMAIL_TEMPLATE_ID = 180;
+/** @deprecated Use PROFORMA_EMAIL_TEMPLATE_ID_EN */
+export const PROFORMA_EMAIL_TEMPLATE_ID = PROFORMA_EMAIL_TEMPLATE_ID_EN;
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -29,6 +35,8 @@ export type ProformaSendEmailInput = {
   leadNumber: string;
   leadId?: string | number | null;
   isLegacyLead?: boolean;
+  /** English: template 180. Hebrew: template 179. */
+  language?: ProformaSendLanguage;
 };
 
 const parseTemplateContent = (rawContent: string | null | undefined): string => {
@@ -237,15 +245,17 @@ async function resolveContactEmail(
   throw new Error('No valid email address found for the proforma contact.');
 }
 
-async function fetchProformaEmailTemplate(): Promise<{ name: string; content: string }> {
+async function fetchProformaEmailTemplate(
+  templateId: number,
+): Promise<{ name: string; content: string }> {
   const { data, error } = await supabase
     .from('misc_emailtemplate')
     .select('name, content')
-    .eq('id', PROFORMA_EMAIL_TEMPLATE_ID)
+    .eq('id', templateId)
     .single();
 
   if (error || !data) {
-    throw new Error('Invoice email template (180) was not found.');
+    throw new Error(`Invoice email template (${templateId}) was not found.`);
   }
 
   return {
@@ -287,7 +297,8 @@ export async function sendProformaInvoiceEmail(input: ProformaSendEmailInput): P
       leadClientId: input.leadId,
     })) || '';
 
-  const template = await fetchProformaEmailTemplate();
+  const emailTemplateId = getProformaEmailTemplateId(input.language ?? 'en');
+  const template = await fetchProformaEmailTemplate(emailTemplateId);
   const vars = {
     publicUrl,
     paymentLinkUrl,

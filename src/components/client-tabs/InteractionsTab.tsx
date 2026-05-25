@@ -76,6 +76,8 @@ import {
   normalizeEmailForFilter,
   fetchLeadEmailsForTimeline,
   stableEmailRowId,
+  emailInteractionVisibleOnTimeline,
+  EMAIL_MODAL_SELECT,
 } from '../../lib/interactions/emailFilters';
 import { processWhatsAppTemplateMessage } from '../../lib/interactions/whatsappTimeline';
 import { replaceEmailTemplateParams } from '../../lib/emailTemplateParams';
@@ -766,6 +768,36 @@ const EMAIL_MODAL_LIMIT = 200;
 /** Survives Strict Mode remounts — prevents duplicate full timeline fetches per lead. */
 const interactionsFetchInFlight = new Map<string, Promise<void>>();
 
+/** Full DB timeline merge completed for this lead in the current browser session (survives tab remount). */
+const serverTimelineHydratedClients = new Set<string>();
+
+/** Last lead id that finished (or started) a timeline fetch — avoids remount refetch loops. */
+let moduleLastInteractionsLeadId: string | null = null;
+
+function countTimelineChannelRows(interactions: Interaction[], kind: 'whatsapp' | 'email'): number {
+  return interactions.filter((row) => {
+    if (row.kind !== kind) return false;
+    const id = row.id != null ? String(row.id) : '';
+    if (kind === 'email' && id.startsWith('manual_')) return false;
+    return true;
+  }).length;
+}
+
+/** Prefer the snapshot with more DB-sourced emails/WhatsApp, then total rows. */
+function shouldKeepExistingTimeline(prev: Interaction[], next: Interaction[]): boolean {
+  const prevWa = countTimelineChannelRows(prev, 'whatsapp');
+  const nextWa = countTimelineChannelRows(next, 'whatsapp');
+  if (prevWa > nextWa) return true;
+  if (nextWa > prevWa) return false;
+
+  const prevEmail = countTimelineChannelRows(prev, 'email');
+  const nextEmail = countTimelineChannelRows(next, 'email');
+  if (prevEmail > nextEmail) return true;
+  if (nextEmail > prevEmail) return false;
+
+  return prev.length > next.length;
+}
+
 function runInteractionsFetchOnce(key: string, run: () => Promise<void>): Promise<void> {
   const existing = interactionsFetchInFlight.get(key);
   if (existing) return existing;
@@ -901,6 +933,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   // after a manual add that updated sessionStorage but not yet the parent's cache).
   useEffect(() => {
     if (!interactionsCache || interactionsCache.leadId !== client?.id) return;
+    if (interactionsCache.hydratedFromServer === false) return;
     const cachedInteractions = (interactionsCache.interactions || []) as Interaction[];
 
     setInteractions((prev) => {
@@ -913,11 +946,23 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   
   // Track if we've updated the count on initial load for the current client
   const hasUpdatedInitialCountRef = useRef<string | null>(null);
+  /** True after a full DB merge — gates sessionStorage persist and incomplete cache use */
+  const timelineHydratedFromServerRef = useRef(false);
   
-  // Reset the flag when client changes
+  const previousHydrationClientIdRef = useRef<string | null>(null);
+
+  // Reset hydration only when switching to a different lead (not on tab remount).
   useEffect(() => {
+    const id = client?.id?.toString() ?? null;
     if (client?.id && hasUpdatedInitialCountRef.current !== client.id) {
       hasUpdatedInitialCountRef.current = null;
+    }
+    if (id !== previousHydrationClientIdRef.current) {
+      if (previousHydrationClientIdRef.current) {
+        serverTimelineHydratedClients.delete(previousHydrationClientIdRef.current);
+      }
+      timelineHydratedFromServerRef.current = false;
+      previousHydrationClientIdRef.current = id;
     }
   }, [client?.id]);
   
@@ -969,21 +1014,26 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
   }, [interactions.length, client?.id, onInteractionCountUpdate, interactionsCache]);
   
-  // Persist interactions to sessionStorage whenever they change (for tab switching)
-  // Also update the client ID ref to track which client these interactions belong to
+  // Persist interactions to sessionStorage only after a full server merge (avoids saving
+  // phase-1 quick timelines that omit emails/WhatsApp and block later refetches).
   useEffect(() => {
-    if (interactions.length > 0 && client?.id) {
-      interactionsClientIdRef.current = client.id.toString();
-      try {
-        const persistedKey = `interactions_${client.id}`;
-        sessionStorage.setItem(persistedKey, JSON.stringify(interactions));
-      } catch (e) {
-        const isQuota = e instanceof DOMException && e.name === 'QuotaExceededError';
-        if (isQuota) interactionsDevWarn('SessionStorage full; skipping persist of interactions for this client.');
-        else interactionsDevWarn('Failed to persist interactions to sessionStorage:', e);
-      }
-    } else if (!client?.id || interactions.length === 0) {
+    if (!client?.id) {
       interactionsClientIdRef.current = null;
+      return;
+    }
+    if (interactions.length > 0) {
+      interactionsClientIdRef.current = client.id.toString();
+    }
+    if (!timelineHydratedFromServerRef.current || interactions.length === 0) {
+      return;
+    }
+    try {
+      const persistedKey = `interactions_${client.id}`;
+      sessionStorage.setItem(persistedKey, JSON.stringify(interactions));
+    } catch (e) {
+      const isQuota = e instanceof DOMException && e.name === 'QuotaExceededError';
+      if (isQuota) interactionsDevWarn('SessionStorage full; skipping persist of interactions for this client.');
+      else interactionsDevWarn('Failed to persist interactions to sessionStorage:', e);
     }
   }, [interactions, client?.id]);
 
@@ -1273,6 +1323,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   
   // State for lead contacts (all contacts associated with the client)
   const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
+  const leadContactsRef = useRef<ContactInfo[]>([]);
+  useEffect(() => {
+    leadContactsRef.current = leadContacts;
+  }, [leadContacts]);
   const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
   const [showComposeLinkForm, setShowComposeLinkForm] = useState(false);
   const [composeLinkLabel, setComposeLinkLabel] = useState('');
@@ -2025,62 +2079,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [visibleInteractionsCount, setVisibleInteractionsCount] = useState(INITIAL_VISIBLE_INTERACTIONS);
 
   const sortedInteractions = useMemo(() => {
-    // Final safety filter: Remove any email interactions with no meaningful body content
-    const filtered = interactions.filter((interaction: any) => {
-      if (interaction.kind === 'email') {
-        // Check if this is a manual interaction (by ID prefix) - always include manual interactions
-        const isManualInteraction = interaction.id?.toString().startsWith('manual_');
-        if (isManualInteraction) {
-          return true; // Always include manual interactions regardless of content
-        }
-        
-        const content = interaction.content || '';
-        const subject = interaction.subject || '';
-        
-        // Remove HTML tags to check actual text content
-        const textContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-        
-        // Check if this is a legacy email (from leads_leadinteractions)
-        const isLegacyEmail = interaction.id?.toString().startsWith('legacy_');
-        
-        // email_manual interactions are manual interactions, always include them
-        if (interaction.kind === 'email_manual') {
-          return true;
-        }
-        
-        let hasContent = false;
-        
-        if (isLegacyEmail) {
-          // For legacy emails, check content field directly (they don't have body_html/body_preview)
-          hasContent = textContent && 
-                      textContent.length >= 20 && 
-                      textContent.toLowerCase() !== subject.toLowerCase();
-        } else {
-          // For new emails (from emails table), check body_html/body_preview
-          const hasBodyContent = (interaction.body_html && interaction.body_html.trim() !== '') ||
-                                (interaction.body_preview && interaction.body_preview.trim() !== '');
-          
-          hasContent = hasBodyContent && 
-                      textContent && 
-                      textContent.length >= 20 && 
-                      textContent.toLowerCase() !== subject.toLowerCase();
-        }
-        
-        // Filter out if no meaningful content
-        if (!hasContent) {
-          interactionsDevLog('🚫 Final filter: Removing email interaction with no meaningful body:', {
-            id: interaction.id,
-            isLegacy: isLegacyEmail,
-            subject: subject.substring(0, 50),
-            contentLength: textContent.length,
-            hasBodyHtml: !!(interaction.body_html && interaction.body_html.trim()),
-            hasBodyPreview: !!(interaction.body_preview && interaction.body_preview.trim())
-          });
-          return false;
-        }
-      }
-      return true;
-    });
+    const filtered = interactions.filter((interaction: any) =>
+      emailInteractionVisibleOnTimeline(interaction),
+    );
     
     // Helper function to get timestamp from interaction date/time (same logic as display)
     const getInteractionTimestamp = (interaction: Interaction): number => {
@@ -2608,6 +2609,82 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
   }, [client.id, interactions.length, emails.length, lastEmailIdx, sortedInteractions]); // Include necessary dependencies
 
+  // Modal fetch can succeed while timeline interactions were restored from stale cache/session
+  // (cache.emails populated but no kind === 'email' rows). Merge modal emails into the timeline.
+  useEffect(() => {
+    if (!client?.id || emails.length === 0) return;
+
+    setInteractions((prev) => {
+      const existingKeys = new Set<string>();
+      for (const row of prev) {
+        if (row.kind !== 'email') continue;
+        if (row.id != null && String(row.id) !== '') existingKeys.add(String(row.id));
+        const mid = (row as any).message_id;
+        if (mid != null && String(mid).trim() !== '') existingKeys.add(String(mid));
+      }
+
+      const additions: Interaction[] = [];
+      for (const e of emails) {
+        const stableId = e.id != null ? String(e.id) : '';
+        if (!stableId || existingKeys.has(stableId)) continue;
+        if (e.message_id && existingKeys.has(String(e.message_id))) continue;
+
+        const sentAt = e.date || e.sent_at;
+        if (!sentAt) continue;
+        const emailDate = new Date(sentAt);
+        if (Number.isNaN(emailDate.getTime())) continue;
+
+        const dir =
+          e.direction === 'outgoing' || e.direction === 'out' ? 'out' : 'in';
+        const content =
+          e.bodyPreview || e.body_html || e.body_preview || e.subject || '';
+
+        if (
+          !emailInteractionVisibleOnTimeline({
+            kind: 'email',
+            subject: e.subject,
+            content,
+          })
+        ) {
+          continue;
+        }
+
+        additions.push({
+          id: stableId,
+          message_id: e.message_id ?? null,
+          date: emailDate.toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: '2-digit',
+            year: '2-digit',
+          }),
+          time: emailDate.toLocaleTimeString('en-GB', {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+          raw_date: sentAt,
+          employee:
+            dir === 'out'
+              ? e.sender_display_name || currentUserFullName || 'Team'
+              : client.name || 'Client',
+          direction: dir,
+          kind: 'email',
+          length: '',
+          content,
+          subject: e.subject || '',
+          observation: '',
+          editable: false,
+          body_html: e.body_html || null,
+          body_preview: e.body_preview || e.bodyPreview || null,
+        } as Interaction);
+        existingKeys.add(stableId);
+        if (e.message_id) existingKeys.add(String(e.message_id));
+      }
+
+      if (additions.length === 0) return prev;
+      return sortInteractionsByDate([...prev, ...additions]);
+    });
+  }, [emails, client?.id, client?.name, currentUserFullName]);
+
   // Handle WhatsApp modal opening from localStorage flag
   useEffect(() => {
     if (localStorage.getItem('openWhatsAppModal') === 'true') {
@@ -3103,100 +3180,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       const skipLoadingSpinner = Boolean(options?.quiet);
       const fetchGenerationAtStart = interactionsFetchGenerationRef.current;
 
-      const cacheForLead: ClientInteractionsCache | null =
-        interactionsCache && interactionsCache.leadId === client.id ? interactionsCache : null;
-
-      if (!options?.bypassCache && cacheForLead) {
-        interactionsDevLog('✅ InteractionsTab using cached interactions for lead:', cacheForLead.leadId);
-        let cachedInteractions = cacheForLead.interactions || [];
-        const cachedWhatsAppCount = cachedInteractions.filter((i: any) => i.kind === 'whatsapp').length;
-        interactionsDevLog(`📊 Cached interactions: ${cachedInteractions.length} total, ${cachedWhatsAppCount} WhatsApp messages`);
-
-        // CRITICAL: Filter out email interactions with no meaningful body content from cache
-        cachedInteractions = cachedInteractions.filter((interaction: any) => {
-          if (interaction.kind === 'email') {
-            // Check if this is a manual interaction (by ID prefix) - always include manual interactions
-            const isManualInteraction = interaction.id?.toString().startsWith('manual_');
-            if (isManualInteraction) {
-              return true; // Always include manual interactions regardless of content
-            }
-            
-            const content = interaction.content || '';
-            const subject = interaction.subject || '';
-            
-            // Remove HTML tags to check actual text content
-            const textContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-            
-            // Filter out if:
-            // 1. Content is empty or just whitespace
-            // 2. Content is the same as subject (case-insensitive)
-            // 3. Content is too short (less than 20 characters)
-            // 4. No body_html or body_preview exists
-            const hasBodyContent = (interaction.body_html && interaction.body_html.trim() !== '') ||
-                                  (interaction.body_preview && interaction.body_preview.trim() !== '');
-            
-            if (!hasBodyContent || 
-                !textContent || 
-                textContent.length < 20 || 
-                textContent.toLowerCase() === subject.toLowerCase()) {
-              interactionsDevLog('🚫 Filtering out cached email interaction with no meaningful body:', {
-                id: interaction.id,
-                subject: subject.substring(0, 50),
-                contentLength: textContent.length,
-                hasBodyContent
-              });
-              return false;
-            }
-          }
-          return true;
-        });
-        
-        // Process cached WhatsApp messages with templates (shared logic in lib/interactions)
-        if (whatsAppTemplates.length > 0 && cachedWhatsAppCount > 0) {
-          interactionsDevLog('🔄 Processing cached WhatsApp messages with templates...');
-          cachedInteractions = cachedInteractions.map((interaction: any) => {
-            if (interaction.kind === 'whatsapp' && interaction.direction === 'out') {
-              const next = processWhatsAppTemplateMessage(
-                {
-                  id: interaction.id,
-                  message: interaction.content,
-                  direction: interaction.direction,
-                  template_id: interaction.template_id,
-                },
-                whatsAppTemplates
-              );
-              if (next !== interaction.content) {
-                return { ...interaction, content: next };
-              }
-            }
-            return interaction;
-          });
-          interactionsDevLog('✅ Processed cached WhatsApp messages with templates');
-        }
-        
-        if (!isMountedRef.current) return;
-        if (fetchGenerationAtStart !== interactionsFetchGenerationRef.current) {
-          isFetchingInteractionsRef.current = false;
-          return;
-        }
-        setInteractions(cachedInteractions);
-        interactionsClientIdRef.current = client?.id?.toString() || null; // Track that these interactions belong to this client
-        // Persist cached interactions to sessionStorage for tab switching
-        if (client?.id && cachedInteractions.length > 0) {
-          try {
-            sessionStorage.setItem(`interactions_${client.id}`, JSON.stringify(cachedInteractions));
-          } catch (e) {
-            interactionsDevWarn('Failed to persist cached interactions to sessionStorage:', e);
-          }
-        }
-        setEmails(cacheForLead.emails || []);
-        setInteractionsLoading(false);
-        const cachedCount =
-          cacheForLead.count ?? (cacheForLead.interactions ? cacheForLead.interactions.length : 0);
-        onInteractionCountUpdate?.(cachedCount);
-        isFetchingInteractionsRef.current = false;
-        lastClientIdRef.current = String(client.id);
-        return;
+      if (options?.bypassCache) {
+        serverTimelineHydratedClients.delete(String(client.id));
       }
 
       const startTime = performance.now();
@@ -3205,13 +3190,21 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         interactionsRef.current.length > 0 ||
         (Array.isArray((client as any)?.manual_interactions) &&
           (client as any).manual_interactions.length > 0);
+      const clientKey = String(client.id);
+      const alreadyHydratedThisSession = serverTimelineHydratedClients.has(clientKey);
+
       if (isMountedRef.current && !skipLoadingSpinner && !hasLocalTimeline) {
         setInteractionsLoading(true);
       }
-      if (isMountedRef.current && (skipLoadingSpinner || hasLocalTimeline)) {
+      if (
+        isMountedRef.current &&
+        !alreadyHydratedThisSession &&
+        (skipLoadingSpinner || hasLocalTimeline)
+      ) {
         setInteractionsSyncing(true);
       }
       try {
+        const contactsForFetch = leadContactsRef.current;
         const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
         const legacyId = isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null;
 
@@ -3396,8 +3389,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 const clientEmails = collectClientEmails(client);
                 // Also add emails from contacts if available
                 const allEmails = [...clientEmails];
-                if (leadContacts && leadContacts.length > 0) {
-                  leadContacts.forEach((contact) => {
+                if (contactsForFetch.length > 0) {
+                  contactsForFetch.forEach((contact) => {
                     if (contact.email) {
                       const normalized = normalizeEmailForFilter(contact.email);
                       if (normalized && !allEmails.includes(normalized)) {
@@ -3430,7 +3423,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   clientId: client.id,
                   emailFilters,
                   limit: EMAIL_MODAL_LIMIT,
-                  matchByAddress: false,
+                  matchByAddress: true,
                 });
                 
                 // Debug: Log results
@@ -3623,7 +3616,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             
             // Helper to match phone number to contact by last 4 digits
             const matchPhoneNumberToContact = (phone: string): string | null => {
-              if (!phone || !leadContacts || leadContacts.length === 0) return null;
+              if (!phone || contactsForFetch.length === 0) return null;
               
               const normalized = normalizePhone(phone);
               if (!normalized || normalized.length < 4) return null; // Need at least 4 digits
@@ -3631,7 +3624,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               const last4 = normalized.slice(-4);
               
               // Try to match against all contacts' phone and mobile numbers
-              for (const contact of leadContacts) {
+              for (const contact of contactsForFetch) {
                 if (contact.phone) {
                   const contactPhoneNormalized = normalizePhone(contact.phone);
                   if (contactPhoneNormalized && contactPhoneNormalized.slice(-4) === last4) {
@@ -3976,117 +3969,41 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           return bDate - aDate;
         });
         
-        // Helper function to check if email has meaningful body content
-        const hasMeaningfulBody = (email: any): boolean => {
-          const subject = email.subject?.trim() || '';
-          
-          // Check body_html
-          if (email.body_html && email.body_html.trim() !== '') {
-            // Remove HTML tags and normalize whitespace
-            const textContent = email.body_html
-              .replace(/<[^>]*>/g, ' ')
-              .replace(/\s+/g, ' ')
-              .trim();
-            
-            // Check if there's actual text content that's different from subject
-            if (textContent && 
-                textContent.toLowerCase() !== subject.toLowerCase() && 
-                textContent.length > 20) { // At least 20 characters of actual content
-              return true;
-            }
-          }
-          
-          // Check body_preview
-          if (email.body_preview && email.body_preview.trim() !== '') {
-            // Remove HTML tags and normalize whitespace
-            const textContent = email.body_preview
-              .replace(/<[^>]*>/g, ' ')
-              .replace(/\s+/g, ' ')
-              .trim();
-            
-            // Check if preview is meaningful:
-            // - Not just subject
-            // - Not just whitespace
-            // - Has meaningful length (at least 20 characters)
-            // - Not just common email prefixes like "RE:", "FW:", etc.
-            if (textContent && 
-                textContent.toLowerCase() !== subject.toLowerCase() &&
-                !textContent.match(/^(re|fw|fwd):\s*$/i) && // Not just "RE:" or "FW:"
-                textContent.length > 20) { // At least 20 characters of actual content
-              return true;
-            }
-          }
-          
-          return false;
-        };
+        const emailPlainText = (htmlOrText: string) =>
+          htmlOrText.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
 
-        // Separate emails into those with meaningful body and those without
-        const emailsWithBody: any[] = [];
-        const emailsWithoutBody: any[] = [];
-        
-        sortedEmails.forEach((e: any) => {
-          const hasMeaningful = hasMeaningfulBody(e);
+        const emailsNeedingHydration: any[] = [];
 
-          if (hasMeaningful) {
-            emailsWithBody.push(e);
-          } else {
-            emailsWithoutBody.push(e);
-          }
-        });
-
-        // Try to fetch bodies for emails that don't have meaningful content
-        // This will happen asynchronously, so we'll filter them out for now
-        // but they might appear after hydration
-        if (emailsWithoutBody.length > 0 && userId) {
-          // Fetch bodies for emails without content (limit to avoid too many requests)
-          const emailsToHydrate = emailsWithoutBody.slice(0, 10).map((e: any) => ({
-            id: e.message_id,
-            subject: e.subject || '',
-            bodyPreview: e.body_preview || '',
-            body_html: e.body_html || null,
-            body_preview: e.body_preview || null,
-          }));
-          
-          // Hydrate in background (don't wait for it, and don't trigger refetch to avoid infinite loops)
-          // The state updates from hydrateEmailBodies will cause a re-render if needed
-          setTimeout(() => {
-            hydrateEmailBodies(emailsToHydrate).catch(err => {
-              console.error('Error hydrating email bodies in interactions list:', err);
-            });
-          }, 100);
-        }
-
-        // Only show emails with meaningful body content
-        const emailInteractions = emailsWithBody
+        const emailInteractions = sortedEmails
           .map((e: any) => {
             const emailDate = new Date(e.sent_at);
+            if (Number.isNaN(emailDate.getTime())) return null;
 
-            // Use formatEmailHtmlForDisplay to preserve line breaks and apply RTL
             const bodyHtml = e.body_html ? formatEmailHtmlForDisplay(e.body_html) : null;
             const bodyPreview = e.body_preview ? formatEmailHtmlForDisplay(e.body_preview) : '';
+            const subject = (e.subject || '').trim();
 
-            // Only use body content, never fall back to subject (we've already filtered out emails without body)
-            // If body is empty after formatting, use empty string (shouldn't happen due to filtering)
             let body = '';
-            if (bodyHtml && bodyHtml.trim() !== '') {
-              // Remove HTML tags to check actual text content
-              const textContent = bodyHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-              if (textContent && textContent.length > 20 && textContent.toLowerCase() !== e.subject?.trim().toLowerCase()) {
-                body = bodyHtml;
-              }
+            if (bodyHtml && emailPlainText(bodyHtml).length > 0) {
+              body = bodyHtml;
+            } else if (bodyPreview && emailPlainText(bodyPreview).length > 0) {
+              body = bodyPreview;
+            } else if (subject) {
+              body = sanitizeEmailHtml(convertBodyToHtml(subject));
+            } else {
+              body = sanitizeEmailHtml(convertBodyToHtml('(No preview)'));
             }
 
-            if (!body && bodyPreview && bodyPreview.trim() !== '') {
-              // Remove HTML tags to check actual text content
-              const textContent = bodyPreview.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-              if (textContent && textContent.length > 20 && textContent.toLowerCase() !== e.subject?.trim().toLowerCase()) {
-                body = bodyPreview;
-              }
+            const timelineId = stableEmailRowId(e) || (e.id != null ? String(e.id) : '');
+            if (!timelineId) {
+              return null;
             }
 
-            // If somehow body is still empty after all checks, skip this email
-            if (!body || body.trim() === '') {
-              return null; // This will be filtered out
+            const hasLoadedBody =
+              (e.body_html && String(e.body_html).trim() !== '') ||
+              (e.body_preview && String(e.body_preview).trim() !== '');
+            if (!hasLoadedBody && userId) {
+              emailsNeedingHydration.push(e);
             }
 
           // CRITICAL: Determine direction based on sender email
@@ -4127,11 +4044,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               || senderEmail 
               || 'Team';
           } else {
-            // For client emails - use contact name from join or fallback to leadContacts lookup
-            const contactFromJoin = Array.isArray((e as any).contact) ? (e as any).contact[0] : (e as any).contact;
-            let contactName = contactFromJoin?.name ?? null;
-            if (!contactName && e.contact_id && leadContacts && leadContacts.length > 0) {
-              const contact = leadContacts.find((c: any) => c.id === Number(e.contact_id));
+            let contactName: string | null = null;
+            if (e.contact_id && contactsForFetch.length > 0) {
+              const contact = contactsForFetch.find((c: any) => c.id === Number(e.contact_id));
               if (contact) contactName = contact.name;
             }
             employeeName = contactName || client.name || senderEmail || 'Client';
@@ -4156,7 +4071,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           }
           
           return {
-            id: e.message_id ?? e.id,
+            id: timelineId,
             message_id: e.message_id ?? null,
             date: emailDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
             time: emailDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
@@ -4178,7 +4093,22 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             employee_recipient_name: employeeRecipientName, // Store employee recipient for incoming emails
           };
           })
-          .filter((interaction: any) => interaction !== null); // Filter out null entries
+          .filter((interaction: any) => interaction !== null);
+
+        if (emailsNeedingHydration.length > 0 && userId) {
+          const emailsToHydrate = emailsNeedingHydration.slice(0, 10).map((e: any) => ({
+            id: stableEmailRowId(e),
+            subject: e.subject || '',
+            bodyPreview: e.body_preview || '',
+            body_html: e.body_html || null,
+            body_preview: e.body_preview || null,
+          }));
+          setTimeout(() => {
+            hydrateEmailBodies(emailsToHydrate).catch((err) => {
+              console.error('Error hydrating email bodies in interactions list:', err);
+            });
+          }, 100);
+        }
       
         // Helper function to normalize line breaks for manual email interactions
         const normalizeManualContent = (content: string): string => {
@@ -4304,41 +4234,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             return false;
           }
           
-          // CRITICAL: Filter out email interactions that have no meaningful body content
-          // This is a safety check in case emails slipped through the earlier filtering
-          if (interaction.kind === 'email') {
-            // Check if this is a manual interaction (by ID prefix) - always include manual interactions
-            const isManualInteraction = interaction.id?.toString().startsWith('manual_');
-            if (isManualInteraction) {
-              // Always include manual interactions regardless of content length
-              return true;
-            }
-            
-            const content = interaction.content || '';
-            const subject = interaction.subject || '';
-            
-            // Remove HTML tags to check actual text content
-            const textContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-            
-            // Filter out if:
-            // 1. Content is empty or just whitespace
-            // 2. Content is the same as subject (case-insensitive)
-            // 3. Content is too short (less than 20 characters)
-            if (!textContent || 
-                textContent.length < 20 || 
-                textContent.toLowerCase() === subject.toLowerCase()) {
-              filteredOutByReason['email_no_meaningful_body'] = (filteredOutByReason['email_no_meaningful_body'] || 0) + 1;
-              filteredOutDetails.push({ 
-                id: interaction.id, 
-                kind: interaction.kind, 
-                reason: 'email_no_meaningful_body',
-                subject: subject.substring(0, 50),
-                contentLength: textContent.length
-              });
-              return false;
-            }
+          if (!emailInteractionVisibleOnTimeline(interaction)) {
+            filteredOutByReason['email_empty'] = (filteredOutByReason['email_empty'] || 0) + 1;
+            filteredOutDetails.push({
+              id: interaction.id,
+              kind: interaction.kind,
+              reason: 'email_empty',
+            });
+            return false;
           }
-          
+
           return true;
         });
         
@@ -4392,32 +4297,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             // Legacy emails have content field, not body_html/body_preview
             const isLegacyEmail = interaction.id?.toString().startsWith('legacy_');
             
-            let hasContent = false;
-            
-            if (isLegacyEmail) {
-              // For legacy emails, check content field directly
-              const contentText = (interaction.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-              const subjectText = (interaction.subject || '').trim();
-              
-              hasContent = contentText && 
-                          contentText.length >= 20 && // At least 20 characters
-                          contentText.toLowerCase() !== subjectText.toLowerCase();
-            } else {
-              // For new emails (from emails table), check body_html/body_preview
-              const hasBodyContent = (interaction.body_html && interaction.body_html.trim() !== '') ||
-                                    (interaction.body_preview && interaction.body_preview.trim() !== '');
-              
-              // Remove HTML tags to check actual text content
-              const contentText = (interaction.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-              const subjectText = (interaction.subject || '').trim();
-              
-              // Must have body content AND meaningful text content that's different from subject
-              hasContent = hasBodyContent && 
-                          contentText && 
-                          contentText.length >= 20 && // At least 20 characters
-                          contentText.toLowerCase() !== subjectText.toLowerCase();
-            }
-            
+            const contentText = (interaction.content || '')
+              .replace(/<[^>]*>/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim();
+            const subjectText = (interaction.subject || '').trim();
+            const hasContent = Boolean(subjectText || contentText);
+
             if (!hasContent) {
               // Skip this email - it only has a subject or no meaningful content
               const contentText = (interaction.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
@@ -4445,17 +4331,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             } else {
               // Compare content - keep the one with more content (not just subject)
               // Use same strict checking as above
-              const existingContentText = (existing.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+              const existingContentText = (existing.content || '')
+                .replace(/<[^>]*>/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
               const existingSubjectText = (existing.subject || '').trim();
-              const existingHasContent = existingContentText && 
-                                        existingContentText.length >= 20 &&
-                                        existingContentText.toLowerCase() !== existingSubjectText.toLowerCase();
-              
-              const currentContentText = (interaction.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+              const existingHasContent = Boolean(existingSubjectText || existingContentText);
+
+              const currentContentText = (interaction.content || '')
+                .replace(/<[^>]*>/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
               const currentSubjectText = (interaction.subject || '').trim();
-              const currentHasContent = currentContentText && 
-                                       currentContentText.length >= 20 &&
-                                       currentContentText.toLowerCase() !== currentSubjectText.toLowerCase();
+              const currentHasContent = Boolean(currentSubjectText || currentContentText);
               
               if (currentHasContent && !existingHasContent) {
                 // Current has content, existing doesn't - replace
@@ -4546,17 +4434,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           interactionsDevLog(`✅ Processed ${whatsappCount} WhatsApp messages in interactions timeline`);
         }
         
-        // Persist interactions to sessionStorage for tab switching
-        if (client?.id && merged.length > 0) {
-          try {
-            sessionStorage.setItem(`interactions_${client.id}`, JSON.stringify(merged));
-          } catch (e) {
-            const isQuota = e instanceof DOMException && e.name === 'QuotaExceededError';
-            if (isQuota) interactionsDevWarn('SessionStorage full; skipping persist of interactions for this client.');
-            else interactionsDevWarn('Failed to persist interactions to sessionStorage:', e);
-          }
-        }
-        
         const formattedEmailsForModal = sortedEmails.slice(0, EMAIL_MODAL_LIMIT).map((e: any) => {
           const previewSource = e.body_html || e.body_preview || e.subject || '';
           // Use formatEmailHtmlForDisplay to preserve line breaks and apply RTL
@@ -4595,20 +4472,30 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           return;
         }
 
-        setInteractions(merged as Interaction[]);
+        setInteractions((prev) =>
+          shouldKeepExistingTimeline(prev, merged as Interaction[])
+            ? prev
+            : (merged as Interaction[]),
+        );
         interactionsClientIdRef.current = client?.id?.toString() || null; // Track that these interactions belong to this client
         lastClientIdRef.current = String(client.id);
-        // Persist interactions to sessionStorage for tab switching
+        moduleLastInteractionsLeadId = String(client.id);
+        timelineHydratedFromServerRef.current = true;
+        serverTimelineHydratedClients.add(clientKey);
+
         if (client?.id && merged.length > 0) {
           try {
             sessionStorage.setItem(`interactions_${client.id}`, JSON.stringify(merged));
           } catch (e) {
             const isQuota = e instanceof DOMException && e.name === 'QuotaExceededError';
-            if (isQuota) interactionsDevWarn('SessionStorage full; skipping persist of interactions for this client.');
-            else interactionsDevWarn('Failed to persist interactions to sessionStorage:', e);
+            if (isQuota) {
+              interactionsDevWarn('SessionStorage full; skipping persist of interactions for this client.');
+            } else {
+              interactionsDevWarn('Failed to persist interactions to sessionStorage:', e);
+            }
           }
         }
-        
+
         const endTime = performance.now();
         const duration = Math.round(endTime - startTime);
         interactionsDevLog(`✅ InteractionsTab loaded in ${duration}ms with ${merged.length} interactions`);
@@ -4621,6 +4508,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           emails: formattedEmailsForModal,
           count: merged.length,
           fetchedAt: new Date().toISOString(),
+          hydratedFromServer: true,
         });
       } catch (error) {
         console.error('Error in fetchAndCombineInteractions:', error);
@@ -4642,17 +4530,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         }
       } finally {
         isFetchingInteractionsRef.current = false;
-        if (isMountedRef.current) {
-          setInteractionsSyncing(false);
-          if (!skipLoadingSpinner) {
-            setInteractionsLoading(false);
-          }
+        setInteractionsSyncing(false);
+        if (isMountedRef.current && !skipLoadingSpinner) {
+          setInteractionsLoading(false);
         }
       }
     },
     [
       client?.id, // Only depend on client.id, not the whole client object
-      leadContacts, // Include contacts so we can match emails by contact email addresses
       interactionsCache,
       currentUserFullName,
       onInteractionCountUpdate,
@@ -4667,128 +4552,78 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const isFetchingRef = useRef<boolean>(false);
   const interactionsClientIdRef = useRef<string | null>(null); // Track which client ID the current interactions belong to
 
+  // Clear in-flight dedup when lead changes or tab unmounts so remounts always refetch.
+  useEffect(() => {
+    const id = client?.id?.toString();
+    return () => {
+      if (id) {
+        interactionsFetchInFlight.delete(id);
+        interactionsFetchInFlight.delete(`${id}:quiet`);
+      }
+    };
+  }, [client?.id]);
+
   useEffect(() => {
     const currentClientId = client?.id?.toString() || null;
-    
-    // If we already have interactions for this client, don't fetch again (tab switching scenario)
-    if (currentClientId && interactionsClientIdRef.current === currentClientId && interactions.length > 0) {
-      interactionsDevLog(`✅ Already have ${interactions.length} interactions for client ${currentClientId}, skipping fetch (tab switch)`);
 
-      setInteractionsLoading(false);
-      lastClientIdRef.current = currentClientId;
-      return;
-    }
-    
-    // Only fetch if client ID actually changed and we're not already fetching
-    if (currentClientId && currentClientId !== lastClientIdRef.current && !isFetchingRef.current) {
-      // Invalidate in-flight fetches only when switching from one lead to another — not on first open
-      // (null → lead). Bumping on every mount caused Strict Mode / double-effect runs to discard the
-      // only in-flight fetch while lastClientIdRef was set early, so the tab stayed empty until remount.
-      const prevLead = lastClientIdRef.current;
-      if (prevLead !== null && prevLead !== currentClientId) {
-        interactionsFetchGenerationRef.current += 1;
-      }
-
-      // Check for persisted state in sessionStorage first
-      let hasPersistedData = false;
-      try {
-        const persistedKey = `interactions_${currentClientId}`;
-        const persisted = sessionStorage.getItem(persistedKey);
-        if (persisted) {
-          try {
-            const parsed = JSON.parse(persisted);
-            if (Array.isArray(parsed) && parsed.length > 0) {
-              interactionsDevLog(`✅ Found persisted interactions for client ${currentClientId} (${parsed.length} interactions), loading from sessionStorage`);
-              setInteractions(parsed);
-              setInteractionsLoading(false);
-              interactionsClientIdRef.current = currentClientId; // Track that these interactions belong to this client
-              // Update cache with persisted data
-              if (onInteractionsCacheUpdate) {
-                onInteractionsCacheUpdate({
-                  leadId: currentClientId,
-                  interactions: parsed,
-                  emails: [],
-                  count: parsed.length,
-                  fetchedAt: new Date().toISOString(),
-                });
-              }
-              if (onInteractionCountUpdate) {
-                onInteractionCountUpdate(parsed.length);
-              }
-              lastClientIdRef.current = currentClientId;
-              hasPersistedData = true;
-            }
-          } catch (e) {
-            interactionsDevWarn('Failed to parse persisted interactions:', e);
-          }
-        }
-      } catch (e) {
-        // sessionStorage might not be available
-      }
-      
-      // If we have persisted data, show it immediately but still revalidate from the server.
-      // Session snapshots can omit emails (older saves, partial state) — without this, emails only
-      // appeared after unrelated actions like saving a manual interaction (which triggered a full fetch).
-      if (hasPersistedData) {
-        runInteractionsFetchOnce(`${currentClientId}:quiet`, () =>
-          fetchInteractions({ bypassCache: true, quiet: true })
-        ).catch((err) =>
-          console.error('Background revalidation after sessionStorage restore failed:', err)
-        );
-        return;
-      }
-      
-      // Check if we have cache for this client
-      if (interactionsCache && interactionsCache.leadId === currentClientId && interactionsCache.interactions && interactionsCache.interactions.length > 0) {
-        interactionsDevLog(`✅ Using cached interactions for client ${currentClientId} (${interactionsCache.interactions.length} interactions)`);
-        setInteractions(interactionsCache.interactions);
-        setInteractionsLoading(false);
-        interactionsClientIdRef.current = currentClientId; // Track that these interactions belong to this client
-        if (onInteractionCountUpdate) {
-          onInteractionCountUpdate(interactionsCache.count || interactionsCache.interactions.length);
-        }
-        lastClientIdRef.current = currentClientId;
-        // Same as sessionStorage: cache can be stale vs emails table / manual_interactions — refresh in background
-        runInteractionsFetchOnce(`${currentClientId}:quiet`, () =>
-          fetchInteractions({ bypassCache: true, quiet: true })
-        ).catch((err) =>
-          console.error('Background revalidation after interactions cache hit failed:', err)
-        );
-        return;
-      }
-      
-      // No persisted data or cache, fetch fresh
-      interactionsDevLog('🔄 Client changed, fetching fresh interactions...', {
-        previous: lastClientIdRef.current,
-        current: currentClientId,
-        isFetching: isFetchingRef.current
-      });
-      isFetchingRef.current = true;
-
-      const hasInitialTimeline =
-        readInitialInteractionsFromStorage(
-          currentClientId,
-          interactionsCache,
-          (client as any)?.manual_interactions
-        ).length > 0;
-      
-      runInteractionsFetchOnce(currentClientId, () =>
-        fetchInteractions({ bypassCache: false, quiet: hasInitialTimeline })
-      ).finally(() => {
-        isFetchingRef.current = false;
-      });
-    } else if (!currentClientId) {
-      // Clear if no client
+    if (!currentClientId) {
       if (lastClientIdRef.current !== null) {
         lastClientIdRef.current = null;
+        moduleLastInteractionsLeadId = null;
         isFetchingRef.current = false;
         setInteractions([]);
         setEmails([]);
         setInteractionsLoading(false);
       }
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client?.id]); // Only depend on client.id - interactions are managed separately
+
+    // Tab remount for same lead — timeline already merged from DB this session; avoid refetch loop.
+    if (
+      serverTimelineHydratedClients.has(currentClientId) &&
+      moduleLastInteractionsLeadId === currentClientId
+    ) {
+      lastClientIdRef.current = currentClientId;
+      interactionsClientIdRef.current = currentClientId;
+      setInteractionsLoading(false);
+      setInteractionsSyncing(false);
+      return;
+    }
+
+    if (isFetchingRef.current) {
+      return;
+    }
+
+    const prevLead = moduleLastInteractionsLeadId;
+    if (prevLead !== null && prevLead !== currentClientId) {
+      interactionsFetchGenerationRef.current += 1;
+    }
+
+    interactionsDevLog('🔄 Loading interactions timeline from server...', {
+      previous: prevLead,
+      current: currentClientId,
+    });
+    isFetchingRef.current = true;
+    interactionsClientIdRef.current = currentClientId;
+
+    const hasInitialTimeline =
+      readInitialInteractionsFromStorage(
+        currentClientId,
+        interactionsCache,
+        (client as any)?.manual_interactions,
+      ).length > 0;
+
+    interactionsFetchInFlight.delete(currentClientId);
+    interactionsFetchInFlight.delete(`${currentClientId}:quiet`);
+    runInteractionsFetchOnce(currentClientId, () =>
+      fetchInteractions({ bypassCache: true, quiet: hasInitialTimeline }),
+    )
+      .catch((err) => console.error('Interactions timeline fetch failed:', err))
+      .finally(() => {
+        isFetchingRef.current = false;
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch once per lead per session; avoid loop when cache updates
+  }, [client?.id]);
 
   // Fetch contacts when client changes
   useEffect(() => {
@@ -5362,8 +5197,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         clientId: client.id,
         emailFilters,
         limit: EMAIL_MODAL_LIMIT,
-        select:
-          'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, contact_id, client_id, legacy_id, contact:leads_contact!emails_contact_id_fkey(id, name)',
+        select: EMAIL_MODAL_SELECT,
+        matchByAddress: true,
       });
       
       // Note: We'll filter by contact client-side to handle both contact_id and email matching
@@ -7228,7 +7063,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   }, [composeTemplateDropdownOpen]);
 
   return (
-    <div className="p-4 md:p-6 lg:p-8 flex flex-col xl:flex-row gap-6 md:gap-8 lg:gap-12 items-start min-h-screen max-w-7xl mx-auto">
+    <div className="p-4 md:p-6 lg:p-8 flex flex-col xl:flex-row gap-6 md:gap-8 lg:gap-12 items-start min-h-screen w-full max-w-7xl mx-auto">
       <div className="relative w-full flex-1 min-w-0">
         {/* Loading indicator — only block UI when timeline is completely empty */}
         {interactionsLoading && sortedInteractions.length === 0 ? (
@@ -7335,7 +7170,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             </div>
             
             {/* Timeline container with improved spacing */}
-            <div className="relative max-w-5xl">
+            <div className="relative max-w-5xl w-full">
               {/* Timeline line */}
               <div className="absolute left-8 sm:left-12 md:left-16 top-0 bottom-0 w-1 bg-gradient-to-b from-primary via-accent to-secondary shadow-lg" style={{ zIndex: 0 }} />
               

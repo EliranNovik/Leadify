@@ -1,6 +1,6 @@
 /**
  * Send proforma invoice to the linked contact via WhatsApp template (whatsapp_templates_v2).
- * Default template: id 38 — map params in Admin (invoice_link, lead_number, name, …).
+ * Default template: id 38 — map params in Admin (invoice_link, payment_link, lead_number, name, …).
  * Override: VITE_PROFORMA_WHATSAPP_TEMPLATE_ID
  */
 import { supabase } from './supabase';
@@ -11,6 +11,7 @@ import {
   ensureNewProformaPublicToken,
   type ProformaLinkKind,
 } from './proformaPublicLink';
+import { resolveProformaPaymentLinkUrl } from './proformaPaymentLink';
 import {
   generateParamsFromDefinitions,
   getTemplateParamDefinitions,
@@ -24,15 +25,19 @@ import {
   toWhatsAppApiLanguageCode,
 } from './whatsappPhone';
 import type { ProformaSendEmailInput } from './proformaSendEmail';
+import {
+  getProformaWhatsAppTemplateId,
+  PROFORMA_WHATSAPP_TEMPLATE_ID_EN_DEFAULT,
+  PROFORMA_WHATSAPP_TEMPLATE_ID_HE,
+} from './proformaSendLanguage';
 
-/** Row id in whatsapp_templates_v2 (same id sent to /api/whatsapp/send-message as templateId). */
-export const PROFORMA_WHATSAPP_TEMPLATE_ID_DEFAULT = 38;
+/** @deprecated Use getProformaWhatsAppTemplateId('en') */
+export const PROFORMA_WHATSAPP_TEMPLATE_ID_DEFAULT = PROFORMA_WHATSAPP_TEMPLATE_ID_EN_DEFAULT;
 
-const templateIdFromEnv = Number(import.meta.env.VITE_PROFORMA_WHATSAPP_TEMPLATE_ID || '');
-export const PROFORMA_WHATSAPP_TEMPLATE_ID =
-  Number.isFinite(templateIdFromEnv) && templateIdFromEnv > 0
-    ? templateIdFromEnv
-    : PROFORMA_WHATSAPP_TEMPLATE_ID_DEFAULT;
+/** English default; env may override. Hebrew uses 40. */
+export const PROFORMA_WHATSAPP_TEMPLATE_ID = getProformaWhatsAppTemplateId('en');
+
+export { PROFORMA_WHATSAPP_TEMPLATE_ID_HE };
 
 export type ProformaSendWhatsAppInput = ProformaSendEmailInput;
 
@@ -44,26 +49,26 @@ type WhatsAppTemplateRow = {
   params: number | string | null;
 };
 
-async function fetchProformaWhatsAppTemplate(): Promise<WhatsAppTemplateRow> {
+async function fetchProformaWhatsAppTemplate(templateId: number): Promise<WhatsAppTemplateRow> {
   const { data, error } = await supabase
     .from('whatsapp_templates_v2')
     .select('id, name, language, content, params, active, whatsapp_template_id')
-    .eq('id', PROFORMA_WHATSAPP_TEMPLATE_ID)
+    .eq('id', templateId)
     .maybeSingle();
 
   if (error) {
-    throw new Error(`Failed to load WhatsApp template ${PROFORMA_WHATSAPP_TEMPLATE_ID}: ${error.message}`);
+    throw new Error(`Failed to load WhatsApp template ${templateId}: ${error.message}`);
   }
 
   if (!data) {
     throw new Error(
-      `WhatsApp template id ${PROFORMA_WHATSAPP_TEMPLATE_ID} was not found in whatsapp_templates_v2.`,
+      `WhatsApp template id ${templateId} was not found in whatsapp_templates_v2.`,
     );
   }
 
   if (!data.active) {
     throw new Error(
-      `WhatsApp template id ${PROFORMA_WHATSAPP_TEMPLATE_ID} ("${data.name}") is not active.`,
+      `WhatsApp template id ${templateId} ("${data.name}") is not active.`,
     );
   }
 
@@ -169,9 +174,15 @@ async function resolveSenderName(): Promise<string> {
   return displayName || user.email || 'Staff';
 }
 
-function buildClientForWhatsAppParams(input: ProformaSendWhatsAppInput, publicUrl: string) {
+function buildClientForWhatsAppParams(
+  input: ProformaSendWhatsAppInput,
+  publicUrl: string,
+  paymentLinkUrl: string,
+) {
   const isLegacy = Boolean(input.isLegacyLead);
   const leadId = input.leadId;
+  const paymentPlanId =
+    input.paymentPlanId ?? (input.kind === 'new' ? input.recordId : null);
   return {
     id: isLegacy && leadId != null ? `legacy_${leadId}` : leadId,
     lead_type: isLegacy ? 'legacy' : 'new',
@@ -180,6 +191,8 @@ function buildClientForWhatsAppParams(input: ProformaSendWhatsAppInput, publicUr
     lead_number: input.leadNumber,
     proformaPublicUrl: publicUrl,
     proformaLeadNumber: input.leadNumber,
+    paymentLinkUrl,
+    paymentPlanId,
   };
 }
 
@@ -194,7 +207,8 @@ function normalizeLeadIdForApi(input: ProformaSendWhatsAppInput): string | numbe
 export async function sendProformaInvoiceWhatsApp(
   input: ProformaSendWhatsAppInput,
 ): Promise<{ phoneNumber: string }> {
-  const template = await fetchProformaWhatsAppTemplate();
+  const whatsAppTemplateId = getProformaWhatsAppTemplateId(input.language ?? 'en');
+  const template = await fetchProformaWhatsAppTemplate(whatsAppTemplateId);
   const phoneNumber = await resolveContactPhone(input);
   const senderName = await resolveSenderName();
 
@@ -204,12 +218,22 @@ export async function sendProformaInvoiceWhatsApp(
       : await ensureNewProformaPublicToken(input.recordId);
   const publicUrl = buildPublicProformaUrl(input.kind, input.recordId, token);
 
+  const paymentPlanId =
+    input.paymentPlanId ?? (input.kind === 'new' ? input.recordId : null);
+  const paymentLinkUrl =
+    (await resolveProformaPaymentLinkUrl({
+      paymentPlanId,
+      leadClientId: input.leadId,
+    })) || '';
+
   const proformaContext: ProformaWhatsAppParamContext = {
     invoiceLink: publicUrl,
+    paymentLink: paymentLinkUrl,
     leadNumber: input.leadNumber,
+    paymentPlanId,
   };
 
-  const clientForParams = buildClientForWhatsAppParams(input, publicUrl);
+  const clientForParams = buildClientForWhatsAppParams(input, publicUrl, paymentLinkUrl);
   const contactIdNum = await resolveContactIdForWhatsApp(input);
 
   const paramCount = Number(template.params) || 0;
@@ -221,7 +245,7 @@ export async function sendProformaInvoiceWhatsApp(
     if (paramDefinitions.length === 0) {
       throw new Error(
         `WhatsApp template "${template.name}" (id ${template.id}) has no saved param_mapping. ` +
-          `Edit template 38 in Admin, map all ${paramCount} parameters (Name → Lead # → Invoice Link → …), then Save.`,
+          `Edit template ${template.id} in Admin, map all ${paramCount} parameters (Name → Lead # → Invoice Link → …), then Save.`,
       );
     }
 

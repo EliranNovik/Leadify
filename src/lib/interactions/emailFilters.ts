@@ -8,11 +8,14 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 /** Max wait for address-only ilike matching (recipient_list scans are slow at scale). */
 const EMAIL_ADDRESS_MATCH_TIMEOUT_MS = 3500;
 
-export const EMAIL_TIMELINE_SELECT =
-  'id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments, contact_id, client_id, legacy_id, contact:leads_contact!emails_contact_id_fkey(id, name)';
+/** Core columns only — no contact embed (contact_id may point at leads_contact or contacts). */
+export const EMAIL_SELECT_CORE =
+  'id, message_id, subject, sent_at, direction, sender_email, recipient_list, body_html, body_preview, attachments, contact_id, client_id, legacy_id';
+
+export const EMAIL_TIMELINE_SELECT = EMAIL_SELECT_CORE;
 
 export const EMAIL_MODAL_SELECT =
-  'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, contact_id, client_id, legacy_id, contact:leads_contact!emails_contact_id_fkey(id, name)';
+  'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, contact_id, client_id, legacy_id';
 
 export const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
@@ -96,23 +99,17 @@ export function applyLeadEmailsOrFilterToQuery(
   const { isLegacyLead, legacyId, clientId, emailFilters } = options;
 
   if (isLegacyLead && legacyId !== null) {
-    if (emailFilters.length > 1) {
-      const emailOnlyFilters = emailFilters.filter((f) => !f.startsWith('legacy_id.eq.'));
-      if (emailOnlyFilters.length > 0) {
-        return emailQuery.or(`legacy_id.eq.${legacyId},${emailOnlyFilters.join(',')}`);
-      }
-      return emailQuery.eq('legacy_id', legacyId);
+    const emailOnlyFilters = emailFilters.filter((f) => !f.startsWith('legacy_id.eq.'));
+    if (emailOnlyFilters.length > 0) {
+      return emailQuery.or(`legacy_id.eq.${legacyId},${emailOnlyFilters.join(',')}`);
     }
     return emailQuery.eq('legacy_id', legacyId);
   }
 
   if (!isLegacyLead && clientId) {
-    if (emailFilters.length > 1) {
-      const emailOnlyFilters = emailFilters.filter((f) => !f.startsWith('client_id.eq.'));
-      if (emailOnlyFilters.length > 0) {
-        return emailQuery.or(`client_id.eq.${clientId},${emailOnlyFilters.join(',')}`);
-      }
-      return emailQuery.eq('client_id', clientId);
+    const emailOnlyFilters = emailFilters.filter((f) => !f.startsWith('client_id.eq.'));
+    if (emailOnlyFilters.length > 0) {
+      return emailQuery.or(`client_id.eq.${clientId},${emailOnlyFilters.join(',')}`);
     }
     return emailQuery.eq('client_id', clientId);
   }
@@ -128,6 +125,24 @@ export function applyLeadEmailsOrFilterToQuery(
  * Stable id for UI + hydration: Graph message id when present, otherwise DB row id (string).
  * Meeting/calendar rows are often saved before message_id exists; timeline already uses this fallback.
  */
+/** Whether an email row should appear on the interactions timeline (modal uses raw fetch; timeline must not over-filter). */
+export function emailInteractionVisibleOnTimeline(interaction: {
+  kind?: string;
+  id?: unknown;
+  subject?: string | null;
+  content?: string | null;
+}): boolean {
+  if (interaction.kind !== 'email') return true;
+  const id = interaction.id != null ? String(interaction.id) : '';
+  if (id.startsWith('manual_')) return true;
+  const subject = (interaction.subject || '').trim();
+  const text = (interaction.content || '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return Boolean(subject || text);
+}
+
 export function stableEmailRowId(row: { message_id?: string | null; id?: string | number | null }): string {
   const mid = row.message_id;
   if (mid != null && String(mid).trim() !== '') {
@@ -137,12 +152,6 @@ export function stableEmailRowId(row: { message_id?: string | null; id?: string 
     return String(row.id);
   }
   return '';
-}
-
-function emailAddressOnlyFilters(emailFilters: string[]): string[] {
-  return emailFilters.filter(
-    (f) => !f.startsWith('client_id.eq.') && !f.startsWith('legacy_id.eq.')
-  );
 }
 
 function mergeEmailRowsById(primary: any[], secondary: any[], limit: number): any[] {
@@ -172,8 +181,8 @@ function withQueryTimeout<T>(promise: PromiseLike<T>, ms: number): Promise<T> {
 }
 
 /**
- * Fetch emails for a lead timeline: indexed client_id/legacy_id first, then optional
- * address matching with a short timeout so ilike on recipient_list cannot block the tab.
+ * Fetch emails for a lead: indexed client_id/legacy_id first, then merge address matches
+ * (sender/recipient ilike) with a short timeout so slow scans do not block the tab.
  */
 export async function fetchLeadEmailsForTimeline(
   supabaseClient: SupabaseClient,
@@ -184,7 +193,7 @@ export async function fetchLeadEmailsForTimeline(
     emailFilters: string[];
     limit: number;
     select?: string;
-    /** When false (default), only indexed client_id/legacy_id — no slow recipient_list ilike. */
+    /** When true (default), also match contact/lead email addresses on sender/recipient. */
     matchByAddress?: boolean;
   }
 ): Promise<{ data: any[]; error: unknown }> {
@@ -195,38 +204,57 @@ export async function fetchLeadEmailsForTimeline(
     emailFilters,
     limit,
     select = EMAIL_TIMELINE_SELECT,
-    matchByAddress = false,
+    matchByAddress = true,
   } = options;
+
+  const hasLeadScope =
+    (isLegacyLead && legacyId != null && !Number.isNaN(legacyId)) ||
+    (!isLegacyLead && clientId != null && clientId !== '');
+
+  if (!hasLeadScope && emailFilters.length === 0) {
+    return { data: [], error: null };
+  }
 
   const buildBase = () =>
     supabaseClient.from('emails').select(select).limit(limit).order('sent_at', { ascending: false });
 
-  let fastQuery = buildBase();
-  if (isLegacyLead && legacyId != null && !Number.isNaN(legacyId)) {
-    fastQuery = fastQuery.eq('legacy_id', legacyId);
-  } else if (clientId != null && clientId !== '') {
-    fastQuery = fastQuery.eq('client_id', clientId);
-  } else {
-    return { data: [], error: null };
-  }
+  let fastRows: any[] = [];
+  let error: unknown = null;
 
-  const fastResult = await fastQuery;
-  const fastRows = fastResult.data || [];
-  let error = fastResult.error;
+  if (hasLeadScope) {
+    let fastQuery = buildBase();
+    if (isLegacyLead && legacyId != null && !Number.isNaN(legacyId)) {
+      fastQuery = fastQuery.eq('legacy_id', legacyId);
+    } else {
+      fastQuery = fastQuery.eq('client_id', clientId as string);
+    }
+    const fastResult = await fastQuery;
+    fastRows = fastResult.data || [];
+    error = fastResult.error;
+  }
 
   if (!matchByAddress) {
     return { data: fastRows, error };
   }
 
-  const addressFilters = emailAddressOnlyFilters(emailFilters);
-  if (addressFilters.length === 0) {
+  if (emailFilters.length === 0) {
     return { data: fastRows, error };
   }
 
-  const addressQuery = buildBase().or(addressFilters.join(','));
+  let addressQuery = buildBase();
+  addressQuery = applyLeadEmailsOrFilterToQuery(addressQuery, {
+    isLegacyLead,
+    legacyId,
+    clientId,
+    emailFilters,
+  });
+
   try {
     const addressResult = await withQueryTimeout(addressQuery, EMAIL_ADDRESS_MATCH_TIMEOUT_MS);
     const addressRows = addressResult.data || [];
+    if (!error && addressResult.error) {
+      error = addressResult.error;
+    }
     return {
       data: mergeEmailRowsById(fastRows, addressRows, limit),
       error,

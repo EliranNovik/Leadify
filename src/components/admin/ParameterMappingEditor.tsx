@@ -12,6 +12,7 @@ export type ParamType =
   | 'meeting_location'
   | 'meeting_link'
   | 'invoice_link'
+  | 'payment_link'
   | 'lead_number'
   | 'custom';
 
@@ -41,6 +42,12 @@ const PARAM_TYPE_OPTIONS: Array<{ value: ParamType; label: string; description: 
     value: 'invoice_link',
     label: 'Invoice Link',
     description: 'Public proforma invoice URL (used when sending invoice via WhatsApp from proforma view)',
+  },
+  {
+    value: 'payment_link',
+    label: 'Payment Link',
+    description:
+      'Public Pelecard payment URL for this lead (from payment_links by payment plan and client/lead id)',
   },
   {
     value: 'lead_number',

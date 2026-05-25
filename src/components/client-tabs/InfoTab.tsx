@@ -1726,6 +1726,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
                 ) : null}
               </div>
 
+              <div className="rounded-xl border border-base-200/80 bg-white px-4 py-4 shadow-sm dark:border-base-300/55 dark:bg-base-100">
               {isFollowupLoading ? (
                 <div className="flex items-center justify-center py-6 gap-2">
                   <span className="loading loading-spinner loading-sm text-primary"></span>
@@ -1859,6 +1860,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
                   </div>
                 </div>
               )}
+              </div>
             </div>
           </div>
           </div>
@@ -1940,33 +1942,31 @@ const InfoTab: React.FC<ClientTabProps> = ({
 
           {/* File ID — same row as Eligibility */}
           <div className="flex min-h-0 min-w-0 flex-1 flex-col self-stretch overflow-hidden">
-            <div className="flex min-h-0 flex-1 flex-col px-0 pb-8 pt-2 sm:px-1 lg:pb-6 lg:pl-6 lg:pr-0 lg:pt-2">
-              <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-xl p-0">
-                <div className="flex min-h-0 flex-1 flex-col gap-5">
-                  <div className="flex shrink-0 items-center justify-between gap-1">
-                    <h4 className="text-base font-semibold text-gray-900 dark:text-gray-100">File ID</h4>
-                    {useMobileEditModal && isEditingFileId ? (
-                      <span className="text-xs text-gray-500 dark:text-gray-400 shrink-0">Editing...</span>
-                    ) : (
-                      <EditButtons
-                        isEditing={isEditingFileId && !useMobileEditModal}
-                        onEdit={() => {
-                          setIsEditingFileId(true);
-                          setEditedFileId(fileId);
-                        }}
-                        onSave={saveFileIdEdits}
-                        onCancel={() => setIsEditingFileId(false)}
-                        editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-base-200/70 active:scale-95 transition-transform"
-                        editIconClassName="w-4 h-4 text-gray-500 dark:text-gray-400"
-                      />
-                    )}
-                  </div>
+            <div className="flex min-h-0 flex-1 flex-col gap-3 px-0 pb-8 pt-2 sm:px-1 lg:pb-6 lg:pl-6 lg:pr-0 lg:pt-2">
+              <div className="flex shrink-0 items-center justify-between gap-1">
+                <h4 className="text-base font-semibold text-gray-900 dark:text-gray-100">File ID</h4>
+                {useMobileEditModal && isEditingFileId ? (
+                  <span className="text-xs text-gray-500 dark:text-gray-400 shrink-0">Editing...</span>
+                ) : (
+                  <EditButtons
+                    isEditing={isEditingFileId && !useMobileEditModal}
+                    onEdit={() => {
+                      setIsEditingFileId(true);
+                      setEditedFileId(fileId);
+                    }}
+                    onSave={saveFileIdEdits}
+                    onCancel={() => setIsEditingFileId(false)}
+                    editButtonClassName="btn btn-ghost btn-sm rounded-md hover:bg-base-200/70 active:scale-95 transition-transform"
+                    editIconClassName="w-4 h-4 text-gray-500 dark:text-gray-400"
+                  />
+                )}
+              </div>
 
-                  <div className="flex min-h-0 flex-1 flex-col">
+              <div className="rounded-xl border border-base-200/80 bg-white px-4 py-4 shadow-sm dark:border-base-300/55 dark:bg-base-100 flex min-h-0 flex-1 flex-col">
                     {isEditingFileId && !useMobileEditModal ? (
                       <input
                         type="text"
-                        className="input input-bordered input-sm w-full max-w-full border-gray-200 bg-white text-gray-900 placeholder:text-gray-500 dark:border-gray-600 dark:bg-gray-900/50"
+                        className="input input-bordered input-sm w-full max-w-full border-base-200 bg-transparent text-gray-900 placeholder:text-gray-500 dark:border-gray-600 dark:bg-transparent"
                         value={editedFileId}
                         onChange={(e) => setEditedFileId(e.target.value)}
                         placeholder="Enter file ID..."
@@ -2011,8 +2011,6 @@ const InfoTab: React.FC<ClientTabProps> = ({
                         </div>
                       </div>
                     )}
-                  </div>
-                </div>
               </div>
             </div>
           </div>
@@ -2046,11 +2044,11 @@ const InfoTab: React.FC<ClientTabProps> = ({
                   />
                 )}
             </div>
-            <div>
+            <div className="rounded-xl border border-base-200/80 bg-white px-4 py-4 shadow-sm dark:border-base-300/55 dark:bg-base-100">
               {isEditingSpecialNotes && !useMobileEditModal ? (
                 <textarea
                   dir="auto"
-                  className="textarea textarea-bordered w-full h-32 text-start"
+                  className="textarea textarea-bordered w-full h-32 text-start bg-transparent border-base-200"
                   value={editedSpecialNotes}
                   onChange={(e) => setEditedSpecialNotes(e.target.value)}
                   placeholder="Add special notes here..."
@@ -2124,11 +2122,11 @@ const InfoTab: React.FC<ClientTabProps> = ({
                   />
                 )}
             </div>
-            <div>
+            <div className="rounded-xl border border-base-200/80 bg-white px-4 py-4 shadow-sm dark:border-base-300/55 dark:bg-base-100">
               {isEditingGeneralNotes && !useMobileEditModal ? (
                 <textarea
                   dir="auto"
-                  className="textarea textarea-bordered w-full h-32 text-start"
+                  className="textarea textarea-bordered w-full h-32 text-start bg-transparent border-base-200"
                   value={editedGeneralNotes}
                   onChange={(e) => setEditedGeneralNotes(e.target.value)}
                   placeholder="Add general notes here..."
@@ -2188,7 +2186,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
         {/* Row 4: Facts of Case and Tags */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           {/* Facts of Case */}
-          <div className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm hover:shadow-md transition-all duration-200">
+          <div className="p-0">
             <div className="flex items-center justify-between mb-3">
               <h4 className="text-base font-semibold text-gray-900">Facts of Case</h4>
                 {useMobileEditModal && isEditingFacts ? (
@@ -2207,11 +2205,11 @@ const InfoTab: React.FC<ClientTabProps> = ({
                   />
                 )}
             </div>
-            <div>
+            <div className="rounded-xl border border-base-200/80 bg-white px-4 py-4 shadow-sm dark:border-base-300/55 dark:bg-base-100">
               {isEditingFacts && !useMobileEditModal ? (
                 <textarea
                   dir="auto"
-                  className="textarea textarea-bordered w-full h-32 text-start"
+                  className="textarea textarea-bordered w-full h-32 text-start bg-transparent border-base-200"
                   value={editedFacts}
                   onChange={(e) => setEditedFacts(e.target.value)}
                   placeholder="Add case facts here..."

@@ -63,6 +63,8 @@ export interface ClientInteractionsCache {
   emails?: any[];
   count: number;
   fetchedAt: string;
+  /** False when loaded from sessionStorage snapshot only — timeline must refetch from DB. */
+  hydratedFromServer?: boolean;
 }
 
 export interface ClientTabProps {

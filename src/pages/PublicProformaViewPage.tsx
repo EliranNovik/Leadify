@@ -228,6 +228,8 @@ const PublicProformaViewPage: React.FC = () => {
       />
       <ProformaPublicToolbar
         title={`Invoice — ${proforma.client || 'Client'}`}
+        paid={paymentPlanMeta?.paid}
+        paidAt={paymentPlanMeta?.paid_at}
         onPrint={handlePrint}
         onShare={handleShare}
         sharing={sharing}

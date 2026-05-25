@@ -29,6 +29,7 @@ export interface TemplateParamDefinition {
     | 'meeting_location'
     | 'meeting_link'
     | 'invoice_link'
+    | 'payment_link'
     | 'lead_number'
     | 'custom';
   value?: string; // For custom params, specify the value
@@ -124,6 +125,7 @@ export async function generateParamsFromDefinitions(
     getEmailAddress,
     getMeetingLocation,
     getMeetingLink,
+    getPaymentLinkForClient,
     sanitizeWhatsAppTemplateVariableText,
   } = await import('./whatsappTemplateParams');
 
@@ -133,11 +135,14 @@ export async function generateParamsFromDefinitions(
       client?.proformaPublicUrl ??
       client?.invoiceLink ??
       '',
+    paymentLink: proformaContext?.paymentLink ?? client?.paymentLinkUrl ?? '',
     leadNumber:
       proformaContext?.leadNumber ??
       client?.proformaLeadNumber ??
       client?.lead_number ??
       '',
+    paymentPlanId:
+      proformaContext?.paymentPlanId ?? client?.paymentPlanId ?? null,
   };
   
   const parameters: Array<{ type: string; text: string }> = [];
@@ -214,6 +219,13 @@ export async function generateParamsFromDefinitions(
       }
       case 'invoice_link':
         value = sanitizeWhatsAppTemplateVariableText(ctx.invoiceLink || '');
+        break;
+      case 'payment_link':
+        value = await getPaymentLinkForClient(
+          client,
+          ctx.paymentPlanId,
+          ctx.paymentLink || undefined,
+        );
         break;
       case 'lead_number':
         value = sanitizeWhatsAppTemplateVariableText(ctx.leadNumber || '');

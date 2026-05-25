@@ -13,44 +13,70 @@ import { DocumentTextIcon, Cog6ToothIcon, ChartPieIcon, PlusIcon, ChatBubbleLeft
 import EditPaymentModal from '../modals/EditPaymentModal';
 import AddPaymentModal from '../modals/AddPaymentModal';
 import NotesModal from '../modals/NotesModal';
+import {
+  PaymentPlanSummaryCards,
+  PaymentStatusPill,
+  ContactPlanHeader,
+  computePlanSummary,
+} from './paymentPlanUi';
 
-// Portal dropdown component for admin actions
-const AdminDropdownPortal: React.FC<{
-  anchorRef: React.RefObject<HTMLButtonElement>;
+// Portal dropdown — avoids overflow:hidden / table clipping on DaisyUI dropdowns
+const AnchorDropdownPortal: React.FC<{
+  anchorId: string | number | null;
+  buttonRefs: React.MutableRefObject<Record<string | number, HTMLButtonElement | null>>;
   open: boolean;
   onClose: () => void;
   children: React.ReactNode;
-}> = ({ anchorRef, open, onClose, children }) => {
-  const [style, setStyle] = useState<React.CSSProperties>({});
+}> = ({ anchorId, buttonRefs, open, onClose, children }) => {
+  const [style, setStyle] = useState<React.CSSProperties>({ visibility: 'hidden' });
 
   useEffect(() => {
-    if (open && anchorRef.current) {
-      const rect = anchorRef.current.getBoundingClientRect();
+    if (!open || anchorId == null) return;
+
+    const updatePosition = () => {
+      const anchorEl = buttonRefs.current[anchorId];
+      if (!anchorEl) return;
+      const rect = anchorEl.getBoundingClientRect();
       setStyle({
         position: 'fixed',
         top: rect.bottom + 4,
         right: window.innerWidth - rect.right,
         zIndex: 99999,
+        visibility: 'visible',
       });
-    }
-  }, [open, anchorRef]);
+    };
+
+    updatePosition();
+    const raf = requestAnimationFrame(updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    window.addEventListener('resize', updatePosition);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener('scroll', updatePosition, true);
+      window.removeEventListener('resize', updatePosition);
+    };
+  }, [open, anchorId, buttonRefs]);
 
   useEffect(() => {
     if (!open) return;
     const handle = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
-      if (anchorRef.current && !anchorRef.current.contains(target) && !target.closest('.admin-dropdown-menu')) {
-        onClose();
+      if (
+        target.closest('.anchor-dropdown-portal') ||
+        target.closest('[data-payment-menu-trigger]')
+      ) {
+        return;
       }
+      onClose();
     };
     document.addEventListener('mousedown', handle);
     return () => document.removeEventListener('mousedown', handle);
-  }, [open, anchorRef, onClose]);
+  }, [open, onClose]);
 
   if (!open) return null;
 
   return ReactDOM.createPortal(
-    <div style={style} className="admin-dropdown-menu">
+    <div style={style} className="anchor-dropdown-portal">
       {children}
     </div>,
     document.body
@@ -1239,7 +1265,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
-      if (!target.closest('.dropdown')) {
+      if (!target.closest('.dropdown') && !target.closest('.anchor-dropdown-portal')) {
         setOpenDropdownPaymentId(null);
       }
     };
@@ -5285,6 +5311,160 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     return order.includes('first payment') || order.includes('archival') || p.duePercent === '100';
   });
   const dueDatePaymentId = dueDatePayment ? dueDatePayment.id : financePlan.payments[0]?.id;
+  const planSummary = computePlanSummary(financePlan.payments);
+
+  const paymentRowIconBtn =
+    'btn btn-sm btn-circle flex items-center justify-center border-2 shadow-sm p-0';
+
+  const createProformaBtnClass =
+    'rounded-lg border-0 bg-gray-900 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-gray-800';
+
+  const renderPaymentRowActions = (p: PaymentPlan, isPaid: boolean) => {
+    if (!p.id) return <span className="text-slate-400">—</span>;
+
+    return (
+      <div
+        className="flex items-center justify-end gap-2"
+        style={{ overflow: 'visible', position: 'relative' }}
+      >
+        {p.proforma && !isPaid && !p.isLegacy && (
+          <button
+            type="button"
+            className={`${paymentRowIconBtn} border-blue-300 bg-blue-100 text-blue-700 hover:bg-blue-200`}
+            title="Generate Payment Link"
+            onClick={() => handleGeneratePaymentLink(p)}
+          >
+            <LinkIcon className="h-5 w-5" />
+          </button>
+        )}
+        {!isPaid && !p.ready_to_pay && (
+          <button
+            type="button"
+            className={`${paymentRowIconBtn} border-yellow-300 bg-yellow-100 text-yellow-700 hover:bg-yellow-200`}
+            title="Mark as Ready to Pay"
+            onClick={() => handleMarkAsReadyToPay(p)}
+          >
+            <PaperAirplaneIcon className="h-5 w-5" />
+          </button>
+        )}
+        {!isPaid && p.ready_to_pay && (
+          <div
+            className="tooltip tooltip-top z-[9999]"
+            data-tip={
+              p.ready_to_pay_by_display_name
+                ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert`
+                : 'Ready to pay - Click to revert'
+            }
+          >
+            <button
+              type="button"
+              className={`${paymentRowIconBtn} border-red-300 bg-red-100 text-red-700 hover:bg-red-200`}
+              title={
+                p.ready_to_pay_by_display_name
+                  ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert`
+                  : 'Revert Ready to Pay'
+              }
+              onClick={() => handleRevertReadyToPay(p)}
+            >
+              <XMarkIcon className="h-5 w-5" />
+            </button>
+          </div>
+        )}
+        {!isPaid && (isSuperuser || isCollection) && (
+          <button
+            type="button"
+            className={`${paymentRowIconBtn} border-green-300 bg-green-100 text-green-700 hover:bg-green-200`}
+            title={p.isLegacy ? 'Mark Legacy Payment as Paid' : 'Mark as Paid'}
+            onClick={() => handleOpenPaidDateModal(p.id)}
+          >
+            <CurrencyDollarIcon className="h-5 w-5" />
+          </button>
+        )}
+        {showPaymentAdminMenu(p, isPaid) && (
+          <>
+            <button
+              type="button"
+              ref={(el) => {
+                dropdownButtonRefs.current[p.id] = el;
+              }}
+              className={`${paymentRowIconBtn} border-purple-300 bg-purple-100 text-purple-700 hover:bg-purple-200`}
+              title="Admin Actions"
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpenDropdownPaymentId(openDropdownPaymentId === p.id ? null : p.id);
+              }}
+            >
+              <Cog6ToothIcon className="h-5 w-5" />
+            </button>
+            <AnchorDropdownPortal
+              anchorId={openDropdownPaymentId === p.id ? p.id : null}
+              buttonRefs={dropdownButtonRefs}
+              open={openDropdownPaymentId === p.id}
+              onClose={() => setOpenDropdownPaymentId(null)}
+            >
+              <ul className="menu w-52 rounded-box border border-gray-200 bg-base-100 p-2 shadow-lg">
+                {(() => {
+                  const shouldShowSentToFinance = p.isLegacy
+                    ? !(p as any).original_due_date
+                    : !p.ready_to_pay;
+                  return shouldShowSentToFinance ? (
+                    <li>
+                      <button
+                        type="button"
+                        className="text-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSentToFinance(p);
+                          setOpenDropdownPaymentId(null);
+                        }}
+                      >
+                        Sent to Finance
+                      </button>
+                    </li>
+                  ) : null;
+                })()}
+                <li>
+                  <button
+                    type="button"
+                    className="text-sm text-red-600"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (window.confirm('Are you sure you want to revert this payment from paid status?')) {
+                        handleRevertMarkedAsPaid(p);
+                        setOpenDropdownPaymentId(null);
+                      }
+                    }}
+                  >
+                    Revert Marked as Paid
+                  </button>
+                </li>
+              </ul>
+            </AnchorDropdownPortal>
+          </>
+        )}
+        {showPaymentEditButton(p, isPaid) && (
+          <button
+            type="button"
+            className={`${paymentRowIconBtn} border-none bg-gray-100 text-primary hover:bg-gray-200`}
+            title={isPaidViaPaymentLink(p) && !isSuperuser ? 'Edit notes' : 'Edit'}
+            onClick={() => handleEditPayment(p)}
+          >
+            <PencilIcon className="h-5 w-5" />
+          </button>
+        )}
+        {showPaymentDeleteButton(p, isPaid) && (
+          <button
+            type="button"
+            className={`${paymentRowIconBtn} border-none bg-red-100 text-red-500 hover:bg-red-200`}
+            title="Delete"
+            onClick={() => handleDeletePayment(p)}
+          >
+            <TrashIcon className="h-5 w-5" />
+          </button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -5459,118 +5639,54 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         */}
 
         {/* Payments Plan Section */}
-        <div className="mb-8">
-          <div className="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden">
-            {/* Header */}
-            <div className="px-6 py-4 border-b border-gray-200">
-              <div className="flex items-center justify-between">
+        <div className="mb-8 space-y-6">
+          {/* Overview: title, toolbar, summary cards */}
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+            <div className="border-b border-slate-200 px-6 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
-                  <BanknotesIconSolid className="w-6 h-6 text-green-600" />
+                  <BanknotesIconSolid className="h-6 w-6 text-slate-800" />
                   <div>
-                    <h3 className="text-xl font-bold text-gray-900">Payments Plan</h3>
-                    <p className="text-gray-500 text-sm">Payment schedule and financial overview</p>
+                    <h3 className="text-xl font-bold text-slate-900">Payments Plan</h3>
+                    <p className="text-sm text-slate-500">Financial schedule and payment tracking</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-4">
-                  {/* Total Amount Display */}
-                  <div className="text-right">
-                    <div className="text-lg font-bold text-gray-900">
-                      {Object.keys(paymentsByCurrency).length === 1 ? (
-                        // Single currency
-                        <>
-                          {Object.entries(paymentsByCurrency).map(([currency, amount]) => {
-                            const currencyPayments = financePlan.payments.filter(p => p.currency === currency);
-                            const totalValue = currencyPayments.reduce((sum, p) => sum + Number(p.value), 0);
-                            const totalVat = currencyPayments.reduce((sum, p) => sum + Number(p.valueVat), 0);
-                            return (
-                              <span key={currency}>
-                                {getCurrencySymbol(currency)}{totalValue.toLocaleString()}
-                                {totalVat > 0 && (
-                                  <span className="text-gray-600"> + {getCurrencySymbol(currency)}{totalVat.toLocaleString()}</span>
-                                )}
-                              </span>
-                            );
-                          })}
-                        </>
-                      ) : (
-                        // Multiple currencies
-                        <>
-                          {Object.entries(paymentsByCurrency).map(([currency, amount], idx) => {
-                            const currencyPayments = financePlan.payments.filter(p => p.currency === currency);
-                            const totalValue = currencyPayments.reduce((sum, p) => sum + Number(p.value), 0);
-                            const totalVat = currencyPayments.reduce((sum, p) => sum + Number(p.valueVat), 0);
-                            return (
-                              <span key={currency}>
-                                {getCurrencySymbol(currency)}{totalValue.toLocaleString()}
-                                {totalVat > 0 && (
-                                  <span className="text-gray-600"> + {getCurrencySymbol(currency)}{totalVat.toLocaleString()}</span>
-                                )}
-                                {idx < Object.entries(paymentsByCurrency).length - 1 ? ' | ' : ''}
-                              </span>
-                            );
-                          })}
-                        </>
-                      )}
-                    </div>
-                    <div className="text-xs text-gray-500">Total Amount</div>
-                    {Object.keys(unpaidByCurrency).length > 0 &&
-                      Object.values(unpaidByCurrency).some((n) => n.base + n.vat > 0) && (
-                        <div className="mt-2 text-right border-t border-gray-100 pt-2 space-y-1">
-                          <div className="text-xs text-amber-700/90">Outstanding (unpaid rows)</div>
-                          <div className="flex flex-col items-end gap-1">
-                            {Object.entries(unpaidByCurrency).map(([cur, { base, vat }]) => {
-                              if (base + vat <= 0) return null;
-                              return (
-                                <div key={cur} className="flex items-end justify-end gap-2">
-                                  <span className="text-sm font-bold text-amber-900">
-                                    {getCurrencySymbol(cur)}
-                                    {base.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
-                                  </span>
-                                  {vat > 0 && (
-                                    <span className="text-xs text-amber-700/90 pb-0.5">
-                                      +{vat.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
-                                    </span>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-                  </div>
-                  {/* Sync Balance Button */}
+                <div className="flex flex-wrap items-center gap-2">
                   {financePlan && client?.balance !== total && (
                     <button
-                      className="btn btn-sm btn-primary"
+                      type="button"
+                      className="btn btn-sm rounded-xl border border-slate-200 bg-white hover:bg-slate-50"
                       onClick={() => updateClientBalance(total)}
                       title="Sync client balance with finance plan total"
                     >
-                      <ArrowPathIcon className="w-4 h-4" />
-                      <span className="hidden md:inline ml-1">Sync Balance</span>
+                      <ArrowPathIcon className="h-4 w-4" />
+                      <span className="ml-1 hidden md:inline">Sync balance</span>
                     </button>
                   )}
-                  {/* View Toggle Button */}
                   <button
-                    className="btn btn-sm btn-outline"
+                    type="button"
+                    className="btn btn-sm rounded-xl border border-slate-200 bg-white hover:bg-slate-50"
                     onClick={() => setViewMode(viewMode === 'table' ? 'boxes' : 'table')}
                     title={viewMode === 'table' ? 'Switch to Box View' : 'Switch to Table View'}
                   >
                     {viewMode === 'table' ? (
-                      <Squares2X2Icon className="w-4 h-4" />
+                      <Squares2X2Icon className="h-4 w-4" />
                     ) : (
-                      <Bars3Icon className="w-4 h-4" />
+                      <Bars3Icon className="h-4 w-4" />
                     )}
-                    <span className="hidden md:inline ml-1">{viewMode === 'table' ? 'Box View' : 'Table View'}</span>
+                    <span className="ml-1 hidden md:inline">{viewMode === 'table' ? 'Box view' : 'Table view'}</span>
                   </button>
-
                 </div>
               </div>
             </div>
 
-            {/* Content */}
             <div className="p-6">
-              {/* Group payments by contact */}
-              {(() => {
+              <PaymentPlanSummaryCards summary={planSummary} getCurrencySymbol={getCurrencySymbol} />
+            </div>
+          </div>
+
+          {/* One white card per contact payment plan */}
+          {(() => {
                 // Group payments by client name
                 const paymentsByContact = financePlan.payments.reduce((acc: { [key: string]: PaymentPlan[] }, payment: PaymentPlan) => {
                   const contactName = payment.client;
@@ -5602,7 +5718,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                   });
                   const dueDatePaymentId = dueDatePayment ? dueDatePayment.id : sortedContactPayments[0]?.id;
                   return (
-                    <div key={contactName} className="mb-8">
+                    <div
+                      key={contactName}
+                      className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
+                    >
+                      <div className="p-6">
                       {/* Contact Header */}
                       <div className="mb-4">
                         <div className="mb-2 flex justify-end">
@@ -5647,153 +5767,70 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             )}
                           </div>
                         )}
-                        <div
-                          className="flex items-center gap-3 bg-white rounded-lg p-4 cursor-pointer hover:from-purple-100 hover:to-blue-100 transition-all duration-200"
-                          onClick={() => setCollapsedContacts(prev => ({ ...prev, [contactName]: !prev[contactName] }))}
-                          title={collapsedContacts[contactName] ? "Expand payments" : "Collapse payments"}
-                        >
-                          <div className="w-10 h-10 bg-gradient-to-br from-purple-500 to-blue-600 rounded-full flex items-center justify-center">
-                            <UserIcon className="w-5 h-5 text-white" />
-                          </div>
-                          <div className="flex-1">
-                            <h3 className="text-lg font-bold text-gray-900">{contactName}</h3>
-                            <p className="text-sm text-gray-600">Finance Plan</p>
-                          </div>
-                          <div className="text-right mr-4">
-                            <div className="text-lg font-bold text-gray-900">
-                              {/* Calculate total for this contact's payments (amount + VAT) - same format as top total */}
-                              {(() => {
-                                // Filter payments for this contact from financePlan (same as top total calculation)
-                                const contactPayments = financePlan.payments.filter(p => p.client === contactName);
-                                
-                                // Group payments by currency for this contact (same logic as top total)
-                                const contactPaymentsByCurrency = contactPayments.reduce((acc: { [currency: string]: { value: number; valueVat: number } }, p) => {
-                                  const currency = p.currency || '₪';
-                                  if (!acc[currency]) {
-                                    acc[currency] = { value: 0, valueVat: 0 };
-                                  }
-                                  // Use the same calculation as top total
-                                  acc[currency].value += Number(p.value || 0);
-                                  acc[currency].valueVat += Number(p.valueVat || 0);
-                                  return acc;
-                                }, {});
-
-                                // Display totals grouped by currency (same format as top total)
-                                const currencyEntries = Object.entries(contactPaymentsByCurrency);
-                                if (currencyEntries.length === 1) {
-                                  // Single currency - show as amount + VAT (same as top total)
-                                  const [currency, totals] = currencyEntries[0];
-                                  const totalValue = totals.value;
-                                  const totalVat = totals.valueVat;
-                                  return (
-                                    <>
-                                      {getCurrencySymbol(currency)}{totalValue.toLocaleString()}
-                                      <span className="text-gray-600"> + {getCurrencySymbol(currency)}{totalVat.toLocaleString()}</span>
-                                    </>
-                                  );
-                                } else {
-                                  // Multiple currencies - show each with amount + VAT format
-                                  return (
-                                    <>
-                                      {currencyEntries.map(([currency, totals], idx) => {
-                                        const totalValue = totals.value;
-                                        const totalVat = totals.valueVat;
-                                        return (
-                                          <span key={currency}>
-                                            {getCurrencySymbol(currency)}{totalValue.toLocaleString()}
-                                            <span className="text-gray-600"> + {getCurrencySymbol(currency)}{totalVat.toLocaleString()}</span>
-                                            {idx < currencyEntries.length - 1 ? ' | ' : ''}
-                                          </span>
-                                        );
-                                      })}
-                                    </>
-                                  );
-                                }
-                              })()}
-                            </div>
-                            <div className="text-xs text-gray-500">Total for {contactName}</div>
-                          </div>
-                          {/* Collapse/Expand Arrow */}
-                          <div className="flex items-center justify-center w-8 h-8">
-                            {collapsedContacts[contactName] ? (
-                              <svg className="w-5 h-5 text-purple-600 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                              </svg>
-                            ) : (
-                              <svg className="w-5 h-5 text-purple-600 transition-transform duration-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
-                              </svg>
-                            )}
-                          </div>
-                        </div>
+                        <ContactPlanHeader
+                          contactName={contactName}
+                          payments={sortedContactPayments}
+                          collapsed={!!collapsedContacts[contactName]}
+                          onToggle={() =>
+                            setCollapsedContacts((prev) => ({ ...prev, [contactName]: !prev[contactName] }))
+                          }
+                        />
                       </div>
 
                       {/* Table or Box view for this contact */}
                       {!collapsedContacts[contactName] && (
                         <>
                           {viewMode === 'table' ? (
-                            <div className="bg-white rounded-xl p-4 overflow-x-auto">
-                              <table className="min-w-full rounded-xl overflow-hidden">
-                                <thead className="sticky top-0 z-10">
-                                  <tr>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Due %</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Due Date</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Value</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Total</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Payment Date</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Order</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Proforma</th>
-                                    <th className="px-4 py-3 text-center text-xs font-bold text-gray-500 uppercase tracking-wider">Notes</th>
-                                    <th className="px-4 py-3 text-center"></th>
+                            <div className="overflow-x-auto border-t border-slate-200">
+                              <table className="w-full min-w-[960px] text-sm">
+                                <thead className="border-b border-slate-200 bg-white">
+                                  <tr className="text-xs uppercase tracking-wide text-slate-500">
+                                    <th className="px-4 py-3 text-left">Status</th>
+                                    <th className="px-4 py-3 text-left">Due date</th>
+                                    <th className="px-4 py-3 text-right">Value</th>
+                                    <th className="px-4 py-3 text-right">VAT</th>
+                                    <th className="px-4 py-3 text-right">Total</th>
+                                    <th className="px-4 py-3 text-left">Payment date</th>
+                                    <th className="px-4 py-3 text-left">Type</th>
+                                    <th className="px-4 py-3 text-left">Proforma</th>
+                                    <th className="px-4 py-3 text-left">Notes</th>
+                                    <th className="px-4 py-3 text-right">Actions</th>
                                   </tr>
                                 </thead>
-                                <tbody>
+                                <tbody className="divide-y divide-slate-100">
                                   {sortedContactPayments.map((p: PaymentPlan, idx: number) => {
-                                    const isPaid = p.paid;
+                                    const isPaid = !!p.paid;
                                     return (
                                       <tr
                                         key={p.id || idx}
-                                        className={`transition-all duration-200 ${isPaid
-                                          ? 'bg-green-50 border-l-4 border-green-400'
-                                          : idx % 2 === 0
-                                            ? 'bg-white border-l-4 border-transparent'
-                                            : 'bg-base-100 border-l-4 border-transparent'
-                                          } hover:bg-gray-100 rounded-xl shadow-sm`}
-                                        style={{
-                                          verticalAlign: 'middle',
-                                          position: 'relative',
-                                          ...(isPaid && {
-                                            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='100' viewBox='0 0 200 100'%3E%3Ctext x='100' y='50' font-family='Arial, sans-serif' font-size='24' font-weight='bold' fill='rgba(34,197,94,0.13)' text-anchor='middle' dominant-baseline='middle' transform='rotate(-20 100 50)'%3EPAID%3C/text%3E%3C/svg%3E")`,
-                                            backgroundRepeat: 'no-repeat',
-                                            backgroundPosition: 'center',
-                                            backgroundSize: 'contain'
-                                          }),
-                                        }}
+                                        className={`transition-colors hover:bg-slate-50 ${isPaid ? 'bg-emerald-50/40' : 'bg-white'}`}
                                       >
-                                        {/* Each column in correct order: */}
-                                        <td className="font-bold text-lg align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          {p.duePercent}
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap">
+                                          <PaymentStatusPill paid={isPaid} readyToPay={p.ready_to_pay} />
+                                          <span className="ml-2 text-xs text-slate-400">{p.duePercent}</span>
                                         </td>
-                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap font-medium text-slate-800">
+                                          {formatDateDDMMYYYY(p.dueDate) || '—'}
                                         </td>
-                                        <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          <span className="text-sm font-bold text-gray-900">
-                                            {getCurrencySymbol(p.currency)}
-                                            {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                            + {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                          </span>
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap text-right font-semibold text-slate-900">
+                                          {getCurrencySymbol(p.currency)}
+                                          {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                         </td>
-                                        <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          <span className="text-sm font-bold text-gray-900">{getCurrencySymbol(p.currency)}{(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap text-right text-slate-500">
+                                          {getCurrencySymbol(p.currency)}
+                                          {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                         </td>
-                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          {p.paid_at ? new Date(p.paid_at).toLocaleDateString() : '---'}
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap text-right font-bold text-slate-900">
+                                          {getCurrencySymbol(p.currency)}
+                                          {(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                         </td>
-                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap text-slate-600">
+                                          {p.paid_at ? formatDateDDMMYYYY(p.paid_at) : '---'}
+                                        </td>
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap font-medium text-slate-700">
                                           {p.order}
                                         </td>
-                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap">
                                           {p.isLegacy ? (
                                             // For legacy leads, show proforma if available
                                             (() => {
@@ -5809,11 +5846,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                     {paymentProformas.slice(0, 2).map((proforma, idx) => (
                                                       <button
                                                         key={proforma.id}
-                                                        className="btn btn-sm btn-outline btn-success border-success/40 text-xs font-medium"
+                                                        className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
                                                         title={`View Proforma ${proforma.id}`}
                                                         onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/${proforma.id}`); }}
                                                       >
-                                                        Proforma {proforma.id}
+                                                        {proforma.id}
                                                       </button>
                                                     ))}
                                                     {paymentProformas.length > 2 && (
@@ -5824,23 +5861,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               } else {
                                                 return (
                                                   <button
-                                                    className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
+                                                    className={createProformaBtnClass}
                                                     title="Create Proforma"
                                                     onClick={e => {
                                                       e.preventDefault();
                                                       const clientId = p.client_id ? `&client_id=${p.client_id}` : '';
                                                       navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}${clientId}`);
                                                     }}
-                                                    style={{ padding: 0 }}
                                                   >
-                                                    <PlusIcon className="w-5 h-5" />
+                                                    + Create
                                                   </button>
                                                 );
                                               }
                                             })()
                                           ) : p.proforma && p.proforma.trim() !== '' ? (
                                             <button
-                                              className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40"
+                                              type="button"
+                                              className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
                                               title="View Proforma"
                                               onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
                                             >
@@ -5848,19 +5885,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             </button>
                                           ) : (
                                             <button
-                                              className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
+                                              type="button"
+                                              className={createProformaBtnClass}
                                               title="Create Proforma"
                                               onClick={e => { e.preventDefault(); navigate(`/proforma/create/${p.id}`); }}
-                                              style={{ padding: 0 }}
                                             >
-                                              <PlusIcon className="w-5 h-5" />
+                                              + Create
                                             </button>
                                           )}
                                         </td>
-                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap max-w-[180px]">
                                           <button
+                                            type="button"
                                             onClick={() => handleOpenNotesModal(p)}
-                                            className="text-sm text-gray-700 hover:text-indigo-600 transition-colors cursor-pointer max-w-[200px] truncate block mx-auto"
+                                            className="block w-full truncate text-left text-sm text-slate-700 hover:text-indigo-600"
                                             title={p.notes || 'Click to add notes'}
                                             dir={getNotesTextDirection(p.notes)}
                                             style={{ textAlign: getNotesTextDirection(p.notes) === 'rtl' ? 'right' : 'left' }}
@@ -5870,158 +5908,29 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               : p.notes || '---'}
                                           </button>
                                         </td>
-                                        <td className="flex gap-2 justify-end align-middle min-w-[80px] px-4 py-3" style={{ overflow: 'visible', position: 'relative' }}>
-                                          {p.id ? (
-                                            <>
-                                              {/* Payment Link icon - disabled for legacy */}
-                                              {p.proforma && !isPaid && !p.isLegacy && (
-                                                <button
-                                                  className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
-                                                  title="Generate Payment Link"
-                                                  onClick={() => handleGeneratePaymentLink(p)}
-                                                  style={{ padding: 0 }}
-                                                >
-                                                  <LinkIcon className="w-5 h-5" />
-                                                </button>
-                                              )}
-                                              {/* Ready to Pay button - available for all */}
-                                              {!isPaid && !p.ready_to_pay && (
-                                                <button
-                                                  className="btn btn-sm btn-circle bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border-yellow-300 border-2 shadow-sm flex items-center justify-center"
-                                                  title="Mark as Ready to Pay"
-                                                  onClick={() => handleMarkAsReadyToPay(p)}
-                                                  style={{ padding: 0 }}
-                                                >
-                                                  <PaperAirplaneIcon className="w-5 h-5" />
-                                                </button>
-                                              )}
-                                              {/* Sent to Finances indicator with revert button */}
-                                              {!isPaid && p.ready_to_pay && (
-                                                <div className="tooltip tooltip-top z-[9999]" data-tip={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Ready to pay - Click to revert'}>
-                                                  <button
-                                                    className="btn btn-sm btn-circle bg-red-100 hover:bg-red-200 text-red-700 border-red-300 border-2 shadow-sm flex items-center justify-center"
-                                                    title={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Revert Ready to Pay'}
-                                                    onClick={() => handleRevertReadyToPay(p)}
-                                                    style={{ padding: 0 }}
-                                                  >
-                                                    <XMarkIcon className="w-5 h-5" />
-                                                  </button>
-                                                </div>
-                                              )}
-                                              {/* Dollar icon (small) - only for superusers or collection users */}
-                                              {!isPaid && (isSuperuser || isCollection) && (
-                                                <button
-                                                  className="btn btn-sm btn-circle bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
-                                                  title={p.isLegacy ? "Mark Legacy Payment as Paid" : "Mark as Paid"}
-                                                  onClick={() => handleOpenPaidDateModal(p.id)}
-                                                  style={{ padding: 0 }}
-                                                >
-                                                  <CurrencyDollarIcon className="w-5 h-5" />
-                                                </button>
-                                              )}
-                                              {/* Admin dropdown — superuser only when paid via payment link */}
-                                              {showPaymentAdminMenu(p, isPaid) && (
-                                                <>
-                                                  <button
-                                                    ref={(el) => { dropdownButtonRefs.current[p.id] = el; }}
-                                                    className="btn btn-sm btn-circle bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-sm flex items-center justify-center"
-                                                    title="Admin Actions"
-                                                    onClick={(e) => {
-                                                      e.stopPropagation();
-                                                      setOpenDropdownPaymentId(openDropdownPaymentId === p.id ? null : p.id);
-                                                    }}
-                                                    style={{ padding: 0 }}
-                                                  >
-                                                    <Cog6ToothIcon className="w-5 h-5" />
-                                                  </button>
-                                                  <AdminDropdownPortal
-                                                    anchorRef={{ current: dropdownButtonRefs.current[p.id] }}
-                                                    open={openDropdownPaymentId === p.id}
-                                                    onClose={() => setOpenDropdownPaymentId(null)}
-                                                  >
-                                                    <ul className="menu bg-base-100 rounded-box w-52 p-2 shadow-lg border border-gray-200">
-                                                      {(() => {
-                                                        // For legacy leads: don't show if due_date exists
-                                                        // For new leads: don't show if ready_to_pay is TRUE
-                                                        const shouldShowSentToFinance = p.isLegacy
-                                                          ? !(p as any).original_due_date // Legacy: hide if due_date exists
-                                                          : !p.ready_to_pay; // New: hide if ready_to_pay is TRUE
-
-                                                        return shouldShowSentToFinance ? (
-                                                          <li>
-                                                            <button
-                                                              className="text-sm"
-                                                              onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                handleSentToFinance(p);
-                                                                setOpenDropdownPaymentId(null);
-                                                              }}
-                                                            >
-                                                              Sent to Finance
-                                                            </button>
-                                                          </li>
-                                                        ) : null;
-                                                      })()}
-                                                      <li>
-                                                        <button
-                                                          className="text-sm text-red-600"
-                                                          onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            if (window.confirm('Are you sure you want to revert this payment from paid status?')) {
-                                                              handleRevertMarkedAsPaid(p);
-                                                              setOpenDropdownPaymentId(null);
-                                                            }
-                                                          }}
-                                                        >
-                                                          Revert Marked as Paid
-                                                        </button>
-                                                      </li>
-                                                    </ul>
-                                                  </AdminDropdownPortal>
-                                                </>
-                                              )}
-                                              {showPaymentEditButton(p, isPaid) && (
-                                                <button
-                                                  className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                                  title={isPaidViaPaymentLink(p) && !isSuperuser ? 'Edit notes' : 'Edit'}
-                                                  onClick={() => handleEditPayment(p)}
-                                                  style={{ padding: 0 }}
-                                                >
-                                                  <PencilIcon className="w-5 h-5" />
-                                                </button>
-                                              )}
-                                              {showPaymentDeleteButton(p, isPaid) && (
-                                                <button
-                                                  className="btn btn-sm btn-circle bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
-                                                  title="Delete"
-                                                  onClick={() => handleDeletePayment(p)}
-                                                  style={{ padding: 0 }}
-                                                >
-                                                  <TrashIcon className="w-5 h-5" />
-                                                </button>
-                                              )}
-                                            </>
-                                          ) : (
-                                            <span className="text-gray-400">—</span>
-                                          )}
+                                        <td className="relative min-w-[200px] px-4 py-4 align-middle">
+                                          {renderPaymentRowActions(p, isPaid)}
                                         </td>
                                       </tr>
                                     );
                                   })}
                                   {addingPaymentContact === contactName && (
                                     viewMode === 'table' ? (
-                                      <tr key={`new-payment-${contactName}`}>
-                                        <td className="font-bold text-lg align-middle text-center px-4 py-3 whitespace-nowrap">
+                                      <tr key={`new-payment-${contactName}`} className="bg-indigo-50/30">
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap">
+                                          <span className="rounded-full border border-indigo-100 bg-indigo-50 px-3 py-1 text-xs font-semibold text-indigo-700">
+                                            New
+                                          </span>
                                           <input
                                             type="number"
-                                            className="input input-bordered w-20 text-center"
+                                            className="input input-bordered input-xs mt-2 w-16 text-center"
                                             value={newPaymentData.duePercent}
                                             onChange={e => setNewPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))}
                                             placeholder="%"
                                           />
                                         </td>
-                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          <input type="date" className="input input-bordered w-48 text-right" value={newPaymentData.dueDate} onChange={e => {
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap">
+                                          <input type="date" className="input input-bordered input-sm w-40" value={newPaymentData.dueDate} onChange={e => {
                                             const newDueDate = e.target.value;
                                             setNewPaymentData((d: any) => {
                                               const vatRate = getVatRateForLegacyLead(newDueDate);
@@ -6030,34 +5939,32 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             });
                                           }} />
                                         </td>
-                                        <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          <div className="flex items-center gap-2 justify-center">
-                                            <input type="number" className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows" value={newPaymentData.value} onChange={e => {
-                                              const value = e.target.value;
-                                              let vat = 0;
-                                              const currency = newPaymentData.currency || '₪';
-                                              const includeVat = newPaymentData.includeVat !== false;
-                                              if (currency === '₪' && includeVat) {
-                                                const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
-                                                vat = Math.round(Number(value) * vatRate * 100) / 100;
-                                              }
-                                              const totalAmount = getTotalAmount();
-                                              const duePercent = totalAmount > 0 ? Math.round((Number(value) / totalAmount) * 100) : 0;
-                                              setNewPaymentData((d: any) => ({ ...d, value, valueVat: vat, duePercent }));
-                                            }} />
-                                            <span className='text-gray-500 font-bold'>+</span>
-                                            <input type="number" className="input input-bordered input-lg w-20 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows bg-gray-100 text-gray-500 cursor-not-allowed" value={newPaymentData.valueVat || 0} readOnly />
-                                          </div>
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap text-right">
+                                          <input type="number" className="input input-bordered input-sm w-28 text-right no-arrows" value={newPaymentData.value} onChange={e => {
+                                            const value = e.target.value;
+                                            let vat = 0;
+                                            const currency = newPaymentData.currency || '₪';
+                                            const includeVat = newPaymentData.includeVat !== false;
+                                            if (currency === '₪' && includeVat) {
+                                              const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
+                                              vat = Math.round(Number(value) * vatRate * 100) / 100;
+                                            }
+                                            const totalAmount = getTotalAmount();
+                                            const duePercent = totalAmount > 0 ? Math.round((Number(value) / totalAmount) * 100) : 0;
+                                            setNewPaymentData((d: any) => ({ ...d, value, valueVat: vat, duePercent }));
+                                          }} />
                                         </td>
-                                        <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          <span className="text-sm font-bold text-gray-900">
-                                            {getCurrencySymbol(newPaymentData.currency || '₪')}
-                                            {(Number(newPaymentData.value || 0) + Number(newPaymentData.valueVat || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                          </span>
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap text-right">
+                                          <input type="number" className="input input-bordered input-sm w-24 cursor-not-allowed bg-slate-50 text-right text-slate-500 no-arrows" value={newPaymentData.valueVat || 0} readOnly />
                                         </td>
-                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap text-right font-bold text-slate-900">
+                                          {getCurrencySymbol(newPaymentData.currency || '₪')}
+                                          {(Number(newPaymentData.value || 0) + Number(newPaymentData.valueVat || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                        </td>
+                                        <td className="px-4 py-4 align-middle text-slate-400">—</td>
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap">
                                           <select
-                                            className="select select-bordered w-full max-w-[200px]"
+                                            className="select select-bordered select-sm w-full max-w-[180px]"
                                             value={newPaymentData.paymentOrder}
                                             onChange={e => setNewPaymentData((d: any) => ({ ...d, paymentOrder: e.target.value }))}
                                           >
@@ -6068,69 +5975,73 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <option value="Expense (no VAT)">Expense (no VAT)</option>
                                           </select>
                                         </td>
-                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap"></td>
-                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          <div className="flex flex-col gap-2 items-center">
-                                            <input className="input input-bordered w-full max-w-[200px] text-right" value={newPaymentData.notes} onChange={e => setNewPaymentData((d: any) => ({ ...d, notes: e.target.value }))} placeholder="Notes" />
-                                            <div className="flex gap-2 items-center">
-                                              <select
-                                                className="select select-bordered select-xs w-24"
-                                                value={newPaymentData.currency || '₪'}
+                                        <td className="px-4 py-4 align-middle text-slate-400">—</td>
+                                        <td className="px-4 py-4 align-middle">
+                                          <input className="input input-bordered input-sm mb-2 w-full max-w-[180px]" value={newPaymentData.notes} onChange={e => setNewPaymentData((d: any) => ({ ...d, notes: e.target.value }))} placeholder="Notes" />
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <select
+                                              className="select select-bordered select-xs w-20"
+                                              value={newPaymentData.currency || '₪'}
+                                              onChange={e => {
+                                                const selectedCurrency = e.target.value;
+                                                const selectedCurrencyData = availableCurrencies.find(c => c.name === selectedCurrency);
+                                                let vat = 0;
+                                                const includeVat = newPaymentData.includeVat !== false && selectedCurrency === '₪';
+                                                if (selectedCurrency === '₪' && includeVat) {
+                                                  const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
+                                                  vat = Math.round(Number(newPaymentData.value || 0) * vatRate * 100) / 100;
+                                                }
+                                                setNewPaymentData((d: any) => ({
+                                                  ...d,
+                                                  currency: selectedCurrency,
+                                                  currencyId: selectedCurrencyData?.id || 1,
+                                                  includeVat: selectedCurrency === '₪' ? (d.includeVat !== false) : false,
+                                                  valueVat: vat
+                                                }));
+                                              }}
+                                            >
+                                              {availableCurrencies.length === 0 ? (
+                                                <>
+                                                  <option value="₪">₪</option>
+                                                  <option value="€">€</option>
+                                                  <option value="$">$</option>
+                                                  <option value="£">£</option>
+                                                </>
+                                              ) : (
+                                                availableCurrencies.map((curr) => (
+                                                  <option key={curr.id} value={curr.name}>{curr.name}</option>
+                                                ))
+                                              )}
+                                            </select>
+                                            <label className="label cursor-pointer gap-1 p-0">
+                                              <input
+                                                type="checkbox"
+                                                className="checkbox checkbox-xs"
+                                                checked={newPaymentData.includeVat !== false && (newPaymentData.currency || '₪') === '₪'}
+                                                disabled={(newPaymentData.currency || '₪') !== '₪'}
                                                 onChange={e => {
-                                                  const selectedCurrency = e.target.value;
-                                                  const selectedCurrencyData = availableCurrencies.find(c => c.name === selectedCurrency);
+                                                  const includeVat = e.target.checked;
                                                   let vat = 0;
-                                                  const includeVat = newPaymentData.includeVat !== false && selectedCurrency === '₪';
-                                                  if (selectedCurrency === '₪' && includeVat) {
+                                                  if (includeVat && (newPaymentData.currency || '₪') === '₪') {
                                                     const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
                                                     vat = Math.round(Number(newPaymentData.value || 0) * vatRate * 100) / 100;
                                                   }
-                                                  setNewPaymentData((d: any) => ({
-                                                    ...d,
-                                                    currency: selectedCurrency,
-                                                    currencyId: selectedCurrencyData?.id || 1,
-                                                    includeVat: selectedCurrency === '₪' ? (d.includeVat !== false) : false,
-                                                    valueVat: vat
-                                                  }));
+                                                  setNewPaymentData((d: any) => ({ ...d, includeVat, valueVat: vat }));
                                                 }}
-                                              >
-                                                {availableCurrencies.length === 0 ? (
-                                                  <>
-                                                    <option value="₪">₪</option>
-                                                    <option value="€">€</option>
-                                                    <option value="$">$</option>
-                                                    <option value="£">£</option>
-                                                  </>
-                                                ) : (
-                                                  availableCurrencies.map((curr) => (
-                                                    <option key={curr.id} value={curr.name}>{curr.name}</option>
-                                                  ))
-                                                )}
-                                              </select>
-                                              <label className="label cursor-pointer gap-1">
-                                                <input
-                                                  type="checkbox"
-                                                  className="checkbox checkbox-xs"
-                                                  checked={newPaymentData.includeVat !== false && (newPaymentData.currency || '₪') === '₪'}
-                                                  disabled={(newPaymentData.currency || '₪') !== '₪'}
-                                                  onChange={e => {
-                                                    const includeVat = e.target.checked;
-                                                    let vat = 0;
-                                                    if (includeVat && (newPaymentData.currency || '₪') === '₪') {
-                                                      const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
-                                                      vat = Math.round(Number(newPaymentData.value || 0) * vatRate * 100) / 100;
-                                                    }
-                                                    setNewPaymentData((d: any) => ({ ...d, includeVat, valueVat: vat }));
-                                                  }}
-                                                />
-                                                <span className="label-text text-xs">VAT</span>
-                                              </label>
-                                            </div>
+                                              />
+                                              <span className="label-text text-xs">VAT</span>
+                                            </label>
                                           </div>
                                         </td>
-                                        <td className="flex gap-2 justify-end align-middle min-w-[80px] px-4 py-3">
-                                          <button className="btn btn-sm btn-success" onClick={handleSaveNewPayment} disabled={isSavingPaymentRow || !newPaymentData.value || !newPaymentData.duePercent}><CheckIcon className="w-4 h-4" /></button>
-                                          <button className="btn btn-sm btn-ghost" onClick={handleCancelNewPayment}><XMarkIcon className="w-4 h-4 text-red-500" /></button>
+                                        <td className="px-4 py-4 align-middle">
+                                          <div className="flex justify-end gap-2">
+                                            <button type="button" className="btn btn-sm rounded-xl bg-emerald-600 text-white hover:bg-emerald-700" onClick={handleSaveNewPayment} disabled={isSavingPaymentRow || !newPaymentData.value || !newPaymentData.duePercent}>
+                                              <CheckIcon className="h-4 w-4" />
+                                            </button>
+                                            <button type="button" className="btn btn-sm btn-ghost rounded-xl" onClick={handleCancelNewPayment}>
+                                              <XMarkIcon className="h-4 w-4 text-red-500" />
+                                            </button>
+                                          </div>
                                         </td>
                                       </tr>
                                     ) : (
@@ -6279,24 +6190,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 </tbody>
                               </table>
 
-                              {/* Add new payment and Delete payment plan buttons for this contact (table view) */}
+                              {/* Add payment / delete plan (table view) */}
                               {!addingPaymentContact && (
-                                <div className="mt-4 flex justify-start gap-2">
+                                <div className="mt-4 flex items-center justify-between gap-3">
                                   <button
                                     type="button"
-                                    className="btn btn-sm btn-outline btn-primary text-xs font-medium flex items-center gap-2"
+                                    className="btn btn-sm rounded-xl border border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50"
                                     onClick={() => handleAddNewPayment(contactName)}
                                   >
-                                    <PlusIcon className="w-4 h-4" />
-                                    Add new payment
+                                    <PlusIcon className="h-4 w-4" />
+                                    Add Payment
                                   </button>
                                   <button
                                     type="button"
-                                    className="btn btn-sm btn-outline btn-error text-xs font-medium flex items-center gap-2"
+                                    className="btn btn-sm btn-ghost rounded-xl text-red-500 hover:bg-red-50 hover:text-red-600"
                                     onClick={() => handleDeletePaymentPlan(contactName)}
                                   >
-                                    <TrashIcon className="w-4 h-4" />
-                                    Delete payment plan
+                                    Delete Plan
                                   </button>
                                 </div>
                               )}
@@ -6364,70 +6274,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   return (
                                     <div
                                       key={p.id || idx}
-                                      className={`bg-white rounded-2xl p-6 shadow-2xl hover:shadow-3xl transition-all duration-200 flex flex-col gap-0 relative group min-h-[480px] ${isPaid ? 'ring-2 ring-green-400' : ''}`}
-                                      style={{ position: 'relative', overflow: 'hidden' }}
+                                      className={`flex min-h-[420px] flex-col gap-0 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition-all duration-200 hover:shadow-md ${isPaid ? 'bg-emerald-50/40 border-emerald-100' : ''}`}
                                     >
-
-                                      {/* Paid Watermark */}
-                                      {isPaid && (
-                                        <div style={{
-                                          position: 'absolute',
-                                          top: '50%',
-                                          left: '50%',
-                                          transform: 'translate(-50%, -50%) rotate(-20deg)',
-                                          fontSize: '3rem',
-                                          color: 'rgba(34,197,94,0.15)',
-                                          fontWeight: 900,
-                                          letterSpacing: 2,
-                                          pointerEvents: 'none',
-                                          zIndex: 10,
-                                          textShadow: '0 2px 8px rgba(34,197,94,0.2)'
-                                        }}>PAID</div>
-                                      )}
-                                      {/* Due Badge */}
-                                      {p.proforma && !isPaid && (
-                                        <span className="absolute top-4 right-4 bg-yellow-400 text-white font-bold px-4 py-1 rounded-full shadow-lg text-xs z-20 animate-pulse">Due</span>
-                                      )}
-                                      {/* Card content */}
-                                      <div className="flex flex-col gap-0 divide-y divide-base-200">
-                                        {/* Improved purple row: order left, percent center, actions right (icons black on white circle) */}
-                                        <div className="flex items-center bg-white text-primary rounded-t-2xl px-5 py-3" style={{ minHeight: '64px' }}>
-                                          {/* Order (left) */}
-                                          <span className="text-xs font-bold uppercase tracking-wider text-left truncate" style={{ minWidth: '120px' }}>{p.order}</span>
-                                          {/* Percent (center) */}
-                                          <span className="font-extrabold text-3xl tracking-tight text-center w-24 flex-shrink-0 flex-grow-0">
-                                            {p.duePercent && p.duePercent.includes('%') ? p.duePercent : `${p.duePercent || '0'}%`}
-                                          </span>
-                                          {/* Actions (right) */}
-                                          <div className="flex gap-2 items-center ml-4">
-                                            {p.id ? (
-                                              <>
-                                                {!p.isLegacy && showPaymentDeleteButton(p, isPaid) && (
-                                                  <button
-                                                    className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                                    title="Delete"
-                                                    onClick={() => handleDeletePayment(p)}
-                                                    style={{ padding: 0 }}
-                                                  >
-                                                    <TrashIcon className="w-5 h-5" />
-                                                  </button>
-                                                )}
-                                                {!p.isLegacy && showPaymentEditButton(p, isPaid) && (
-                                                  <button
-                                                    className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                                    title={isPaidViaPaymentLink(p) && !isSuperuser ? 'Edit notes' : 'Edit'}
-                                                    onClick={() => handleEditPayment(p)}
-                                                    style={{ padding: 0 }}
-                                                  >
-                                                    <PencilIcon className="w-5 h-5" />
-                                                  </button>
-                                                )}
-                                              </>
-                                            ) : (
-                                              <span className="text-gray-400">—</span>
-                                            )}
-                                          </div>
+                                      <div className="mb-4 flex items-start justify-between gap-3">
+                                        <div>
+                                          <PaymentStatusPill paid={!!isPaid} readyToPay={p.ready_to_pay} />
+                                          <p className="mt-2 text-sm font-medium text-slate-700">{p.order}</p>
+                                          <p className="text-xs text-slate-400">{p.duePercent}</p>
                                         </div>
+                                        {p.proforma && !isPaid && (
+                                          <span className="rounded-full border border-amber-100 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-700">
+                                            Due
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="flex flex-col gap-0 divide-y divide-slate-100">
 
                                         {/* Payment details */}
                                         <div className="flex flex-col gap-0 divide-y divide-base-200">
@@ -6480,11 +6341,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                         {paymentProformas.slice(0, 1).map((proforma, idx) => (
                                                           <button
                                                             key={proforma.id}
-                                                            className="btn btn-sm btn-outline btn-success border-success/40 text-xs font-medium"
+                                                            className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
                                                             title={`View Proforma ${proforma.id}`}
                                                             onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/${proforma.id}`); }}
                                                           >
-                                                            Proforma {proforma.id}
+                                                            {proforma.id}
                                                           </button>
                                                         ))}
                                                         {paymentProformas.length > 1 && (
@@ -6495,23 +6356,24 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                   } else {
                                                     return (
                                                       <button
-                                                        className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
+                                                        type="button"
+                                                        className={createProformaBtnClass}
                                                         title="Create Proforma"
                                                         onClick={e => {
                                                           e.preventDefault();
                                                           const clientId = p.client_id ? `&client_id=${p.client_id}` : '';
                                                           navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}${clientId}`);
                                                         }}
-                                                        style={{ padding: 0 }}
                                                       >
-                                                        <PlusIcon className="w-5 h-5" />
+                                                        + Create
                                                       </button>
                                                     );
                                                   }
                                                 })()
                                               ) : p.proforma && p.proforma.trim() !== '' ? (
                                                 <button
-                                                  className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40"
+                                                  type="button"
+                                                  className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
                                                   title="View Proforma"
                                                   onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
                                                 >
@@ -6519,12 +6381,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                 </button>
                                               ) : (
                                                 <button
-                                                  className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
+                                                  type="button"
+                                                  className={createProformaBtnClass}
                                                   title="Create Proforma"
                                                   onClick={e => { e.preventDefault(); navigate(`/proforma/create/${p.id}`); }}
-                                                  style={{ padding: 0 }}
                                                 >
-                                                  <PlusIcon className="w-5 h-5" />
+                                                  + Create
                                                 </button>
                                               )}
                                             </div>
@@ -6545,158 +6407,30 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           </div>
                                         </div>
 
-                                        {/* Payment status indicator */}
-                                        <div className="absolute bottom-4 right-4 flex gap-2" style={{ overflow: 'visible', zIndex: 9999 }}>
-                                          {/* Payment Link icon - disabled for legacy */}
-                                          {p.proforma && !isPaid && !p.isLegacy && (
-                                            <button
-                                              className="btn btn-circle btn-md bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
-                                              title="Generate Payment Link"
-                                              onClick={() => handleGeneratePaymentLink(p)}
-                                              style={{ padding: 0 }}
-                                            >
-                                              <LinkIcon className="w-5 h-5" />
-                                            </button>
-                                          )}
-                                          {/* Ready to Pay button - available for all */}
-                                          {!isPaid && !p.ready_to_pay && (
-                                            <button
-                                              className="btn btn-circle btn-md bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border-yellow-300 border-2 shadow-sm flex items-center justify-center"
-                                              title="Mark as Ready to Pay"
-                                              onClick={() => handleMarkAsReadyToPay(p)}
-                                              style={{ padding: 0 }}
-                                            >
-                                              <PaperAirplaneIcon className="w-5 h-5" />
-                                            </button>
-                                          )}
-                                          {/* Sent to Finances indicator with revert button */}
-                                          {!isPaid && p.ready_to_pay && (
-                                            <div className="tooltip tooltip-top z-[9999]" data-tip={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Ready to pay - Click to revert'}>
-                                              <button
-                                                className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-700 border-red-300 border-2 shadow-sm flex items-center justify-center"
-                                                title={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Revert Ready to Pay'}
-                                                onClick={() => handleRevertReadyToPay(p)}
-                                                style={{ padding: 0 }}
-                                              >
-                                                <XMarkIcon className="w-5 h-5" />
-                                              </button>
-                                            </div>
-                                          )}
-                                          {/* Dollar icon (small) - only for superusers or collection users */}
-                                          {!isPaid && (isSuperuser || isCollection) && (
-                                            <button
-                                              className="btn btn-circle btn-md bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
-                                              title={p.isLegacy ? "Mark Legacy Payment as Paid" : "Mark as Paid"}
-                                              onClick={() => handleOpenPaidDateModal(p.id)}
-                                              style={{ padding: 0 }}
-                                            >
-                                              <CurrencyDollarIcon className="w-5 h-5" />
-                                            </button>
-                                          )}
-                                          {showPaymentAdminMenu(p, isPaid) && (
-                                            <>
-                                              <button
-                                                ref={(el) => { dropdownButtonRefs.current[p.id] = el; }}
-                                                className="btn btn-circle btn-md bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-sm flex items-center justify-center"
-                                                title="Admin Actions"
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  setOpenDropdownPaymentId(openDropdownPaymentId === p.id ? null : p.id);
-                                                }}
-                                                style={{ padding: 0 }}
-                                              >
-                                                <Cog6ToothIcon className="w-5 h-5" />
-                                              </button>
-                                              <AdminDropdownPortal
-                                                anchorRef={{ current: dropdownButtonRefs.current[p.id] }}
-                                                open={openDropdownPaymentId === p.id}
-                                                onClose={() => setOpenDropdownPaymentId(null)}
-                                              >
-                                                <ul className="menu bg-base-100 rounded-box w-52 p-2 shadow-lg border border-gray-200">
-                                                  {(() => {
-                                                    // For legacy leads: don't show if due_date exists
-                                                    // For new leads: don't show if ready_to_pay is TRUE
-                                                    const shouldShowSentToFinance = p.isLegacy
-                                                      ? !(p as any).original_due_date // Legacy: hide if due_date exists
-                                                      : !p.ready_to_pay; // New: hide if ready_to_pay is TRUE
-
-                                                    return shouldShowSentToFinance ? (
-                                                      <li>
-                                                        <button
-                                                          className="text-sm"
-                                                          onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            handleSentToFinance(p);
-                                                            setOpenDropdownPaymentId(null);
-                                                          }}
-                                                        >
-                                                          Sent to Finance
-                                                        </button>
-                                                      </li>
-                                                    ) : null;
-                                                  })()}
-                                                  <li>
-                                                    <button
-                                                      className="text-sm text-red-600"
-                                                      onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        if (window.confirm('Are you sure you want to revert this payment from paid status?')) {
-                                                          handleRevertMarkedAsPaid(p);
-                                                          setOpenDropdownPaymentId(null);
-                                                        }
-                                                      }}
-                                                    >
-                                                      Revert Marked as Paid
-                                                    </button>
-                                                  </li>
-                                                </ul>
-                                              </AdminDropdownPortal>
-                                            </>
-                                          )}
-                                          {showPaymentEditButton(p, isPaid) && (
-                                            <button
-                                              className="btn btn-circle btn-md bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                              title={isPaidViaPaymentLink(p) && !isSuperuser ? 'Edit notes' : 'Edit'}
-                                              onClick={() => handleEditPayment(p)}
-                                              style={{ padding: 0 }}
-                                            >
-                                              <PencilIcon className="w-5 h-5" />
-                                            </button>
-                                          )}
-                                          {showPaymentDeleteButton(p, isPaid) && (
-                                            <button
-                                              className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
-                                              title="Delete"
-                                              onClick={() => handleDeletePayment(p)}
-                                              style={{ padding: 0 }}
-                                            >
-                                              <TrashIcon className="w-5 h-5" />
-                                            </button>
-                                          )}
+                                        <div className="mt-4 border-t border-slate-100 pt-4">
+                                          {renderPaymentRowActions(p, !!isPaid)}
                                         </div>
                                       </div>
                                     </div>
                                   );
                                 })}
                               </div>
-                              {/* Add new payment and Delete payment plan buttons for this contact (box view) */}
                               {!addingPaymentContact && (
-                                <div className="mt-4 flex justify-start gap-2">
+                                <div className="mt-4 flex items-center justify-between gap-3">
                                   <button
                                     type="button"
-                                    className="btn btn-sm btn-outline btn-primary text-xs font-medium flex items-center gap-2"
+                                    className="btn btn-sm rounded-xl border border-indigo-200 bg-white text-indigo-700 hover:bg-indigo-50"
                                     onClick={() => handleAddNewPayment(contactName)}
                                   >
-                                    <PlusIcon className="w-4 h-4" />
-                                    Add new payment
+                                    <PlusIcon className="h-4 w-4" />
+                                    Add Payment
                                   </button>
                                   <button
                                     type="button"
-                                    className="btn btn-sm btn-outline btn-error text-xs font-medium flex items-center gap-2"
+                                    className="btn btn-sm btn-ghost rounded-xl text-red-500 hover:bg-red-50 hover:text-red-600"
                                     onClick={() => handleDeletePaymentPlan(contactName)}
                                   >
-                                    <TrashIcon className="w-4 h-4" />
-                                    Delete payment plan
+                                    Delete Plan
                                   </button>
                                 </div>
                               )}
@@ -6704,28 +6438,29 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           )}
                         </>
                       )}
+                      </div>
                     </div>
                   );
                 });
               })()}
 
-              {/* Buttons for creating payment plans */}
-              <div className="mt-10 flex justify-start gap-4">
-                <button
-                  type="button"
-                  className="btn btn-sm btn-outline btn-primary text-xs font-medium flex items-center gap-2"
-                  onClick={() => {
-                    handleOpenStagesDrawer();
-                  }}
-                >
-                  <PlusIcon className="w-4 h-4" />
-                  New Payment Plan
-                </button>
-              </div>
+          {/* Buttons for creating payment plans */}
+          <div className="flex justify-start gap-4">
+            <button
+              type="button"
+              className="btn btn-sm btn-outline btn-primary text-xs font-medium flex items-center gap-2"
+              onClick={() => {
+                handleOpenStagesDrawer();
+              }}
+            >
+              <PlusIcon className="w-4 h-4" />
+              New Payment Plan
+            </button>
+          </div>
 
-              {/* Deleted Payments Section */}
-              <div className="mt-8">
-                <div className="flex items-center gap-3 bg-white rounded-xl p-4 cursor-pointer hover:bg-gray-50 transition-all duration-200" onClick={() => {
+          {/* Deleted Payments Section */}
+          <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <div className="flex cursor-pointer items-center gap-3 p-4 transition-all duration-200 hover:bg-slate-50" onClick={() => {
                   setShowDeletedPayments(!showDeletedPayments);
                   if (!showDeletedPayments) {
                     fetchDeletedPayments();
@@ -6744,7 +6479,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 </div>
 
                 {showDeletedPayments && (
-                  <div className="mt-4 p-6 bg-white rounded-xl">
+                  <div className="border-t border-slate-200 p-6">
 
                     {deletedPayments.length > 0 ? (
                       <div className="bg-white rounded-xl overflow-x-auto">
@@ -6907,8 +6642,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                   </div>
                 )}
               </div>
-            </div>
-          </div>
         </div>
       </div>
 
@@ -7152,8 +6885,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                     </>
                   ) : (
                     <>
-                      <button className="btn btn-primary w-full shadow-lg hover:shadow-xl transition-shadow" onClick={handleCreateProforma}>
-                        <DocumentCheckIcon className="w-5 h-5 mr-2" />
+                      <button
+                        type="button"
+                        className="btn btn-md w-full rounded-xl border-0 bg-gray-900 text-white shadow-lg hover:bg-gray-800 hover:shadow-xl transition-shadow"
+                        onClick={handleCreateProforma}
+                      >
+                        <DocumentCheckIcon className="mr-2 h-5 w-5" />
                         Create Proforma
                       </button>
                       <div className="text-xs text-gray-500 text-center bg-yellow-50 p-3 rounded-lg border border-yellow-200">

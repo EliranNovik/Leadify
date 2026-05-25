@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { Link, useNavigate, useNavigationType, useLocation } from 'react-router-dom';
 import { useCachedFetch } from '../hooks/useCachedFetch';
 import { usePersistedState } from '../hooks/usePersistedState';
-import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, MapPinIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, UserPlusIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon, PlusIcon, MagnifyingGlassIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, MapPinIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, UserPlusIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon, PlusIcon, MagnifyingGlassIcon, DocumentTextIcon, BuildingOfficeIcon } from '@heroicons/react/24/outline';
 import DocumentModal from './DocumentModal';
 import { FaFileExcel, FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
@@ -278,6 +278,31 @@ const formatLocalDateYmd = (d: Date) => {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+};
+
+const parseLocalYmd = (ymd: string): Date | null => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(ymd).trim());
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return Number.isNaN(d.getTime()) ? null : d;
+};
+
+const addDaysToYmd = (ymd: string, delta: number): string => {
+  const d = parseLocalYmd(ymd);
+  if (!d) return ymd;
+  d.setDate(d.getDate() + delta);
+  return formatLocalDateYmd(d);
+};
+
+const getCalendarRangeKey = (from: string, to: string) => `${from}|${to}`;
+
+/** True if any meeting row falls in the applied range (guards stale persisted cache). */
+const meetingsOverlapRange = (list: any[], from: string, to: string): boolean => {
+  if (!from || !to || !Array.isArray(list) || list.length === 0) return false;
+  return list.some((m) => {
+    const d = m?.meeting_date;
+    return typeof d === 'string' && d >= from && d <= to;
+  });
 };
 
 // Department mapping is now loaded dynamically from database
@@ -565,6 +590,47 @@ const CalendarPage: React.FC = () => {
   const staffDropdownRef = useRef<HTMLDivElement | null>(null);
   const staffDropdownModalRef = useRef<HTMLDivElement | null>(null);
   const actionMenuDropdownRef = useRef<HTMLDivElement | null>(null);
+  const meetingsScrollRef = useRef<HTMLDivElement | null>(null);
+
+  const scrollToCurrentTimeLine = () => {
+    if (viewMode !== 'list') {
+      toast.error('Switch to list view to jump to the current time.');
+      return;
+    }
+    const todayStr = new Date().toISOString().split('T')[0];
+    const showNowLine =
+      appliedFromDate &&
+      appliedToDate &&
+      appliedFromDate <= todayStr &&
+      todayStr <= appliedToDate;
+    if (!showNowLine) {
+      toast.error("Current time line is only shown when today's date is in the selected range.");
+      return;
+    }
+    const line = document.getElementById('calendar-current-time-line');
+    const container = meetingsScrollRef.current;
+    if (!line) {
+      toast.error('Current time line not found. Try again after meetings load.');
+      return;
+    }
+    const overflowY = container ? getComputedStyle(container).overflowY : 'visible';
+    const scrollsInContainer =
+      container &&
+      container.scrollHeight > container.clientHeight &&
+      (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay');
+    if (scrollsInContainer) {
+      const lineRect = line.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const scrollTop =
+        container.scrollTop +
+        (lineRect.top - containerRect.top) -
+        container.clientHeight / 2 +
+        lineRect.height / 2;
+      container.scrollTo({ top: Math.max(0, scrollTop), behavior: 'smooth' });
+    } else {
+      line.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  };
 
   // Assign Staff Modal State
   const [isAssignStaffModalOpen, setIsAssignStaffModalOpen] = useState(false);
@@ -875,6 +941,17 @@ const CalendarPage: React.FC = () => {
     });
   }, [staffParticipants, staffParticipantSegment, staffParticipantSearch]);
 
+  const { clientMeetingCount, staffMeetingCount } = useMemo(() => {
+    let staff = 0;
+    for (const m of filteredMeetings) {
+      if (m.calendar_type === 'staff') staff += 1;
+    }
+    return {
+      clientMeetingCount: filteredMeetings.length - staff,
+      staffMeetingCount: staff,
+    };
+  }, [filteredMeetings]);
+
   const staffParticipantAggregatedNotes = useMemo(() => {
     const lines: string[] = [];
     for (const p of staffParticipants || []) {
@@ -917,6 +994,7 @@ const CalendarPage: React.FC = () => {
 
   // Action menu dropdown state
   const [showActionMenuDropdown, setShowActionMenuDropdown] = useState(false);
+  const [showDepartmentFooter, setShowDepartmentFooter] = useState(false);
   const [actionDropdownPosition, setActionDropdownPosition] = useState<{ top: number; right: number } | null>(null);
 
   // Mobile filters modal (date, staff, meeting type)
@@ -1070,6 +1148,40 @@ const CalendarPage: React.FC = () => {
 
   /** Ignore stale responses when date range changes quickly (staff meetings are a separate query). */
   const staffMeetingsFetchSeqRef = useRef(0);
+  const meetingsFetchSeqRef = useRef(0);
+  const meetingsByDateRangeRef = useRef<
+    Map<string, { meetings: any[]; staffMeetings: any[]; fetchedAt: number }>
+  >(new Map());
+  const legacyFetchRangeKeyRef = useRef<string | null>(null);
+
+  const saveMeetingsRangeCache = (
+    from: string,
+    to: string,
+    nextMeetings: any[],
+    nextStaffMeetings: any[]
+  ) => {
+    meetingsByDateRangeRef.current.set(getCalendarRangeKey(from, to), {
+      meetings: nextMeetings,
+      staffMeetings: nextStaffMeetings,
+      fetchedAt: Date.now(),
+    });
+  };
+
+  const applyCalendarDateRange = (newFrom: string, newTo: string) => {
+    setFromDate(newFrom);
+    setToDate(newTo);
+    setAppliedFromDate(newFrom);
+    setAppliedToDate(newTo);
+    setDatesManuallySet(true);
+    const cached = meetingsByDateRangeRef.current.get(getCalendarRangeKey(newFrom, newTo));
+    if (cached) {
+      setMeetings(cached.meetings);
+      setStaffMeetings(cached.staffMeetings);
+      setIsLoading(false);
+    } else {
+      setIsLoading(true);
+    }
+  };
 
   // Helper component for employee avatar with image error fallback (like CallsLedgerPage)
   const EmployeeAvatar: React.FC<{
@@ -1633,46 +1745,26 @@ const CalendarPage: React.FC = () => {
     return record?.name && typeof record.name === 'string' ? record.name.trim() || null : null;
   };
 
-  // Navigation functions for date range switching
+  // Navigation functions for date range switching (local dates — avoids UTC day shift)
   const goToPreviousDay = () => {
-    const fromDateObj = new Date(appliedFromDate);
-    const toDateObj = new Date(appliedToDate);
-    if (!isNaN(fromDateObj.getTime()) && !isNaN(toDateObj.getTime())) {
-      fromDateObj.setDate(fromDateObj.getDate() - 1);
-      toDateObj.setDate(toDateObj.getDate() - 1);
-      const newFromDate = fromDateObj.toISOString().split('T')[0];
-      const newToDate = toDateObj.toISOString().split('T')[0];
-      setFromDate(newFromDate);
-      setToDate(newToDate);
-      setAppliedFromDate(newFromDate);
-      setAppliedToDate(newToDate);
-      setDatesManuallySet(true);
-    }
+    if (!appliedFromDate || !appliedToDate) return;
+    applyCalendarDateRange(
+      addDaysToYmd(appliedFromDate, -1),
+      addDaysToYmd(appliedToDate, -1)
+    );
   };
 
   const goToNextDay = () => {
-    const fromDateObj = new Date(appliedFromDate);
-    const toDateObj = new Date(appliedToDate);
-    if (!isNaN(fromDateObj.getTime()) && !isNaN(toDateObj.getTime())) {
-      fromDateObj.setDate(fromDateObj.getDate() + 1);
-      toDateObj.setDate(toDateObj.getDate() + 1);
-      const newFromDate = fromDateObj.toISOString().split('T')[0];
-      const newToDate = toDateObj.toISOString().split('T')[0];
-      setFromDate(newFromDate);
-      setToDate(newToDate);
-      setAppliedFromDate(newFromDate);
-      setAppliedToDate(newToDate);
-      setDatesManuallySet(true);
-    }
+    if (!appliedFromDate || !appliedToDate) return;
+    applyCalendarDateRange(
+      addDaysToYmd(appliedFromDate, 1),
+      addDaysToYmd(appliedToDate, 1)
+    );
   };
 
   const goToToday = () => {
-    const today = new Date().toISOString().split('T')[0];
-    setFromDate(today);
-    setToDate(today);
-    setAppliedFromDate(today);
-    setAppliedToDate(today);
-    setDatesManuallySet(true);
+    const today = formatLocalDateYmd(new Date());
+    applyCalendarDateRange(today, today);
   };
 
   const handleShowButton = () => {
@@ -1682,7 +1774,9 @@ const CalendarPage: React.FC = () => {
     // Trigger legacy meeting fetch when Show button is clicked
     if (fromDate && toDate) {
       setIsLegacyLoading(true);
-      loadLegacyForDateRange(fromDate, toDate);
+      const rangeKey = getCalendarRangeKey(fromDate, toDate);
+      legacyFetchRangeKeyRef.current = rangeKey;
+      loadLegacyForDateRange(fromDate, toDate, rangeKey);
     }
   };
 
@@ -1987,7 +2081,7 @@ const CalendarPage: React.FC = () => {
 
   // Function to load legacy meetings for a specific date
   // Fetch staff meetings from shared-staffcalendar@lawoffice.org.il
-  const fetchStaffMeetings = async (fromDate: string, toDate: string) => {
+  const fetchStaffMeetings = async (fromDate: string, toDate: string): Promise<any[]> => {
     const seq = ++staffMeetingsFetchSeqRef.current;
     setIsStaffMeetingsLoading(true);
 
@@ -2005,12 +2099,12 @@ const CalendarPage: React.FC = () => {
       if (allMeetingsError) {
         console.error('Error fetching staff meetings from database:', allMeetingsError);
         if (seq === staffMeetingsFetchSeqRef.current) setStaffMeetings([]);
-        return;
+        return [];
       }
 
       if (!staffMeetingsData || staffMeetingsData.length === 0) {
         if (seq === staffMeetingsFetchSeqRef.current) setStaffMeetings([]);
-        return;
+        return [];
       }
 
       // Cache email->displayName mapping (used to label staff attendees).
@@ -2154,15 +2248,18 @@ const CalendarPage: React.FC = () => {
         if (seq === staffMeetingsFetchSeqRef.current) {
           setStaffMeetings(formattedStaffMeetings);
         }
+        return formattedStaffMeetings;
     } catch (error) {
       console.error('Error fetching staff meetings:', error);
       if (seq === staffMeetingsFetchSeqRef.current) setStaffMeetings([]);
+      return [];
     } finally {
       if (seq === staffMeetingsFetchSeqRef.current) setIsStaffMeetingsLoading(false);
     }
+    return [];
   };
 
-  const loadLegacyForDateRange = async (fromDate: string, toDate: string) => {
+  const loadLegacyForDateRange = async (fromDate: string, toDate: string, rangeKey: string) => {
     if (!fromDate || !toDate || legacyLoadingDisabled) return;
 
     setIsLegacyLoading(true);
@@ -2174,7 +2271,13 @@ const CalendarPage: React.FC = () => {
       if (legacyMeetings.length > 0) {
         // Add legacy meetings to the current meetings (without duplicates)
         setMeetings(prevMeetings => {
-          return combineMeetingsWithoutDuplicates(prevMeetings, legacyMeetings);
+          if (legacyFetchRangeKeyRef.current !== rangeKey) return prevMeetings;
+          const next = combineMeetingsWithoutDuplicates(prevMeetings, legacyMeetings);
+          const cached = meetingsByDateRangeRef.current.get(rangeKey);
+          if (cached) {
+            meetingsByDateRangeRef.current.set(rangeKey, { ...cached, meetings: next });
+          }
+          return next;
         });
       }
     } catch (error: any) {
@@ -2383,26 +2486,56 @@ const CalendarPage: React.FC = () => {
       prev.meetingsRefreshTrigger === meetingsRefreshTrigger &&
       prev.pathname === pathname;
 
-    // If we have cached meetings and no fetch-relevant dep changed, skip refetch (preserve state when navigating back).
-    // Staff meetings are NOT persisted (only `meetings` is), so always reload them or they stay empty after navigation.
+    const today = formatLocalDateYmd(new Date());
+    const dateRangeFrom = appliedFromDate || today;
+    const dateRangeTo = appliedToDate || today;
+    const rangeKey = getCalendarRangeKey(dateRangeFrom, dateRangeTo);
+
     const nowMs = Date.now();
     const lastMs = lastMeetingsFetchedAtMsRef.current;
     const isStale = typeof lastMs === 'number' ? nowMs - lastMs > 5000 : true;
-    if (meetings.length > 0 && depsUnchanged && !isStale) {
+    const rangeCache = meetingsByDateRangeRef.current.get(rangeKey);
+    const meetingsMatchAppliedRange = meetingsOverlapRange(meetings, dateRangeFrom, dateRangeTo);
+
+    if (!depsUnchanged) {
+      if (rangeCache) {
+        setMeetings(rangeCache.meetings);
+        setStaffMeetings(rangeCache.staffMeetings);
+        setIsLoading(false);
+      } else if (!meetingsMatchAppliedRange) {
+        setIsLoading(true);
+      }
+    }
+
+    const canSkipFullFetch =
+      depsUnchanged &&
+      !isStale &&
+      meetings.length > 0 &&
+      meetingsMatchAppliedRange;
+
+    if (canSkipFullFetch) {
       setIsLoading(false);
-      const todaySkip = new Date().toISOString().split('T')[0];
-      void fetchStaffMeetings(appliedFromDate || todaySkip, appliedToDate || todaySkip);
+      void fetchStaffMeetings(dateRangeFrom, dateRangeTo).then((staffRows) => {
+        saveMeetingsRangeCache(dateRangeFrom, dateRangeTo, meetings, staffRows);
+      });
       return;
     }
-    // If this is a back/forward navigation (POP) and we have cached meetings, skip the fetch
-    if (navType === 'POP' && meetings.length > 0 && !isStale) {
+
+    if (
+      navType === 'POP' &&
+      meetings.length > 0 &&
+      !isStale &&
+      meetingsMatchAppliedRange
+    ) {
       setIsLoading(false);
-      const todayPop = new Date().toISOString().split('T')[0];
-      void fetchStaffMeetings(appliedFromDate || todayPop, appliedToDate || todayPop);
+      void fetchStaffMeetings(dateRangeFrom, dateRangeTo);
       return;
     }
 
     prevFetchDepsRef.current = { pathname, appliedFromDate, appliedToDate, datesManuallySet, meetingsRefreshTrigger };
+
+    const fetchSeq = ++meetingsFetchSeqRef.current;
+    legacyFetchRangeKeyRef.current = rangeKey;
 
     const fetchMeetingsAndStaff = async () => {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
@@ -2411,12 +2544,9 @@ const CalendarPage: React.FC = () => {
         setIsLoading(false);
         return;
       }
-      setIsLoading(true);
+      if (!rangeCache || isStale) setIsLoading(true);
 
       try {
-        const today = new Date().toISOString().split('T')[0];
-        const dateRangeFrom = appliedFromDate || today;
-        const dateRangeTo = appliedToDate || today;
 
         // Helper to get category name from allCategories (from useCachedFetch)
         const getCategoryNameFromData = (categoryId: string | number | null | undefined) => {
@@ -2742,17 +2872,29 @@ const CalendarPage: React.FC = () => {
             });
         }
 
-        // Set meetings immediately so the calendar renders without waiting for legacy
-        setMeetings(dedupeMeetingsByLeadAndDate(allProcessedMeetings));
+        if (fetchSeq !== meetingsFetchSeqRef.current) return;
+
+        const dedupedMeetings = dedupeMeetingsByLeadAndDate(allProcessedMeetings);
+        setMeetings(dedupedMeetings);
         setIsLoading(false);
         setIsBackgroundLoading(false);
 
         // Load legacy meetings in background and merge when ready (don't block initial paint)
         const employeesForLegacy = allEmployees.length > 0 ? allEmployees : (employeesAndCategoriesData?.employees || []);
+        const legacyRangeKey = rangeKey;
         fetchLegacyMeetingsForDateRange(dateRangeFrom, dateRangeTo, employeesForLegacy)
           .then(legacyMeetings => {
+            if (fetchSeq !== meetingsFetchSeqRef.current) return;
+            if (legacyFetchRangeKeyRef.current !== legacyRangeKey) return;
             if (legacyMeetings.length > 0) {
-              setMeetings(prev => combineMeetingsWithoutDuplicates(prev, legacyMeetings));
+              setMeetings((prev) => {
+                const next = combineMeetingsWithoutDuplicates(prev, legacyMeetings);
+                const cached = meetingsByDateRangeRef.current.get(legacyRangeKey);
+                if (cached) {
+                  meetingsByDateRangeRef.current.set(legacyRangeKey, { ...cached, meetings: next });
+                }
+                return next;
+              });
             }
           })
           .catch(err => {
@@ -2762,7 +2904,9 @@ const CalendarPage: React.FC = () => {
           });
 
         // Staff meetings: same window as applied dates (was today-only and raced the range effect).
-        await fetchStaffMeetings(dateRangeFrom, dateRangeTo);
+        const staffRows = await fetchStaffMeetings(dateRangeFrom, dateRangeTo);
+        if (fetchSeq !== meetingsFetchSeqRef.current) return;
+        saveMeetingsRangeCache(dateRangeFrom, dateRangeTo, dedupedMeetings, staffRows);
 
         // Fetch all staff from tenants_employee table for the main calendar filter
         const { data: allStaffData, error: allStaffError } = await supabase
@@ -2783,11 +2927,15 @@ const CalendarPage: React.FC = () => {
         // This ensures it's available before meetings are displayed
       } catch (error) {
         console.error('Error in fetchMeetingsAndStaff:', error);
-        setMeetings([]);
-        setStaff([]);
+        if (fetchSeq === meetingsFetchSeqRef.current) {
+          setMeetings([]);
+          setStaff([]);
+        }
       } finally {
-        lastMeetingsFetchedAtMsRef.current = Date.now();
-        setIsLoading(false);
+        if (fetchSeq === meetingsFetchSeqRef.current) {
+          lastMeetingsFetchedAtMsRef.current = Date.now();
+          setIsLoading(false);
+        }
       }
     };
 
@@ -2915,7 +3063,9 @@ const CalendarPage: React.FC = () => {
   // Legacy meetings when applied date range changes (staff meetings load inside fetchMeetingsAndStaff with the same range)
   useEffect(() => {
     if (appliedFromDate && appliedToDate && appliedFromDate.trim() !== '' && appliedToDate.trim() !== '' && datesManuallySet) {
-      loadLegacyForDateRange(appliedFromDate, appliedToDate);
+      const rangeKey = getCalendarRangeKey(appliedFromDate, appliedToDate);
+      legacyFetchRangeKeyRef.current = rangeKey;
+      loadLegacyForDateRange(appliedFromDate, appliedToDate, rangeKey);
     }
   }, [appliedFromDate, appliedToDate, datesManuallySet]);
 
@@ -5948,7 +6098,7 @@ const CalendarPage: React.FC = () => {
     return (
       <React.Fragment key={meeting.id}>
         <tr
-          className={`calendar-page-meeting-row relative z-10 ${selectedRowId === meeting.id ? 'calendar-page-meeting-row--selected' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}
+          className={`calendar-page-meeting-row relative z-0 ${selectedRowId === meeting.id ? 'calendar-page-meeting-row--selected' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}
           onClick={() => {
             if (meeting.calendar_type === 'staff') {
               openStaffParticipantsModal(meeting);
@@ -6625,7 +6775,7 @@ const CalendarPage: React.FC = () => {
 
 
   return (
-    <div className="calendar-page-mobile-root text-base max-md:min-h-[calc(100dvh-5rem)] max-md:w-full max-md:max-w-full max-md:min-w-0 max-md:overflow-x-hidden max-md:bg-gray-100 max-md:px-0 max-md:pt-2 max-md:pb-0 px-4 pb-4 pt-2 md:bg-transparent md:p-6 lg:p-8">
+    <div className="calendar-page-mobile-root text-base max-md:min-h-[calc(100dvh-5rem)] max-md:w-full max-md:max-w-full max-md:min-w-0 max-md:overflow-x-hidden bg-gray-100 max-md:px-0 max-md:pt-2 max-md:pb-0 px-4 pb-4 pt-2 md:flex md:h-full md:min-h-0 md:flex-col md:overflow-hidden md:p-6 md:pb-0 lg:p-8 lg:pb-0">
       <style>
         {`
           .hide-scrollbar {
@@ -6689,8 +6839,10 @@ const CalendarPage: React.FC = () => {
           </div>
         </div>
       )}
+      {/* Fixed top: filters + date navigation (desktop) */}
+      <div className="calendar-page-chrome-top z-30 w-full flex-shrink-0 bg-gray-100 md:sticky md:top-0 md:flex md:flex-col md:gap-2">
       {/* Filters - desktop only; on mobile moved to modal */}
-      <div className="mb-6 w-full hidden md:block">
+      <div className="mb-6 w-full hidden md:block md:mb-0">
         <div className="flex flex-wrap gap-4 w-full">
           <div className="flex flex-1 min-w-[260px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
             <FunnelIcon className="w-5 h-5 text-gray-500" />
@@ -6793,17 +6945,6 @@ const CalendarPage: React.FC = () => {
               <option value="physical">Physical meetings</option>
               <option value="online">Online meetings</option>
             </select>
-          </div>
-          <div className="flex items-center justify-end">
-            <button
-              type="button"
-              className="btn btn-ghost btn-circle"
-              onClick={exportMeetingsToExcel}
-              title="Export meetings to Excel"
-              aria-label="Export meetings to Excel"
-            >
-              <FaFileExcel className="w-6 h-6 text-green-600" />
-            </button>
           </div>
         </div>
       </div>
@@ -6953,15 +7094,46 @@ const CalendarPage: React.FC = () => {
       {/* Date navigation: centered on mobile, sticky above meeting cards */}
       <div className="max-md:sticky max-md:top-0 max-md:z-40 max-md:flex max-md:w-full max-md:justify-center max-md:px-4 max-md:mb-2 md:contents">
       <div
-        className="calendar-date-bar-mobile flex items-center justify-between gap-2 md:gap-4 md:mb-6 rounded-full bg-white/90 dark:bg-base-300/90 backdrop-blur-xl border border-gray-200/80 dark:border-base-content/10 shadow-xl px-4 py-3 md:px-6 md:py-3.5 md:rounded-none md:bg-transparent md:backdrop-blur-none md:border-0 md:shadow-none md:static w-full max-md:max-w-lg md:max-w-4xl md:mx-auto"
+        className="calendar-date-bar-mobile flex items-center justify-between gap-2 md:gap-4 md:mb-0 rounded-full bg-white/90 dark:bg-base-300/90 backdrop-blur-xl border border-gray-200/80 dark:border-base-content/10 shadow-xl px-4 py-3 md:px-6 md:py-3.5 md:rounded-xl md:bg-white md:backdrop-blur-none md:border md:border-base-200 md:shadow-sm md:static w-full max-md:max-w-lg md:max-w-none md:mx-0"
       >
-        <div className="flex-shrink-0 flex items-center">
-          <span className="md:hidden inline-flex items-center justify-center min-w-[1.75rem] h-7 px-2 rounded-full text-sm font-bold text-white" style={{ backgroundColor: '#3b28c7' }}>
-            {filteredMeetings.length}
-          </span>
-          <span className="hidden md:inline text-sm md:text-base font-bold" style={{ color: '#3b28c7' }}>
-            {filteredMeetings.length} meetings
-          </span>
+        <div className="flex-shrink-0 flex items-center min-w-0">
+          <div className="flex flex-col gap-1 leading-tight md:hidden">
+            <div className="flex items-center gap-1.5">
+              <span
+                className="inline-flex min-w-[1.75rem] h-7 items-center justify-center rounded-full px-2 text-sm font-bold text-white"
+                style={{ backgroundColor: '#3b28c7' }}
+              >
+                {clientMeetingCount}
+              </span>
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">client</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="inline-flex min-w-[1.75rem] h-7 items-center justify-center rounded-full bg-gray-500 px-2 text-sm font-bold text-white">
+                {staffMeetingCount}
+              </span>
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">IM</span>
+            </div>
+          </div>
+          <div className="hidden md:flex md:items-center md:gap-2.5 md:leading-tight">
+            <div className="flex items-center gap-1.5">
+              <span
+                className="inline-flex min-w-[1.75rem] h-7 items-center justify-center rounded-full px-2 text-sm font-bold text-white"
+                style={{ backgroundColor: '#3b28c7' }}
+              >
+                {clientMeetingCount}
+              </span>
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">client</span>
+            </div>
+            <span className="text-gray-300 font-light select-none" aria-hidden>
+              |
+            </span>
+            <div className="flex items-center gap-1.5">
+              <span className="inline-flex min-w-[1.75rem] h-7 items-center justify-center rounded-full bg-gray-500 px-2 text-sm font-bold text-white">
+                {staffMeetingCount}
+              </span>
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">IM</span>
+            </div>
+          </div>
         </div>
 
         <div className="flex items-center justify-center gap-2 md:gap-4 flex-1 min-w-0">
@@ -7027,19 +7199,71 @@ const CalendarPage: React.FC = () => {
           </button>
         </div>
 
-        <div className="flex-shrink-0" ref={actionMenuDropdownRef}>
+        <div className="flex flex-shrink-0 items-center gap-1" ref={actionMenuDropdownRef}>
           <button
-            className="btn btn-circle btn-md md:btn-lg bg-white border-2 hover:bg-gray-50 shadow-md hover:shadow-lg transition-all duration-200"
-            style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+            type="button"
+            className="hidden md:inline-flex btn btn-circle btn-ghost border-0 shadow-none btn-md md:btn-lg hover:bg-gray-100/80"
+            title="Scroll to current time"
+            aria-label="Scroll to current time"
+            onClick={(e) => {
+              e.stopPropagation();
+              scrollToCurrentTimeLine();
+            }}
+          >
+            <ClockIcon className="h-5 w-5 text-red-500 md:h-6 md:w-6" />
+          </button>
+          <button
+            type="button"
+            className="hidden md:inline-flex btn btn-circle btn-ghost border-0 shadow-none btn-md md:btn-lg hover:bg-gray-100/80"
+            title="Export meetings to Excel"
+            aria-label="Export meetings to Excel"
+            onClick={(e) => {
+              e.stopPropagation();
+              exportMeetingsToExcel();
+            }}
+          >
+            <FaFileExcel className="h-5 w-5 text-green-600 md:h-6 md:w-6" />
+          </button>
+          <button
+            type="button"
+            className={`hidden md:inline-flex btn btn-circle btn-ghost border-0 shadow-none btn-md md:btn-lg hover:bg-gray-100/80 ${selectedMeetingType === 'staff' ? 'bg-[#4418C4]/15' : ''}`}
+            title={selectedMeetingType === 'staff' ? 'Show all meeting types' : 'Internal meetings only (IM)'}
+            aria-label={selectedMeetingType === 'staff' ? 'Show all meeting types' : 'Internal meetings only (IM)'}
+            aria-pressed={selectedMeetingType === 'staff'}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSelectedMeetingType((prev) => (prev === 'staff' ? 'all' : 'staff'));
+            }}
+          >
+            <UserGroupIcon className="h-5 w-5 md:h-6 md:w-6" style={{ color: '#3b28c7' }} />
+          </button>
+          <button
+            type="button"
+            className={`hidden md:inline-flex btn btn-circle btn-ghost border-0 shadow-none btn-md md:btn-lg hover:bg-gray-100/80 ${showDepartmentFooter ? 'bg-[#4418C4]/15' : ''}`}
+            title={showDepartmentFooter ? 'Hide departments & totals' : 'Show departments & totals'}
+            aria-label={showDepartmentFooter ? 'Hide departments & totals' : 'Show departments & totals'}
+            aria-pressed={showDepartmentFooter}
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowDepartmentFooter((open) => !open);
+            }}
+          >
+            <BuildingOfficeIcon className="h-5 w-5 md:h-6 md:w-6" style={{ color: '#3b28c7' }} />
+          </button>
+          <button
+            type="button"
+            className="btn btn-circle btn-ghost border-0 shadow-none btn-md md:btn-lg hover:bg-gray-100/80"
             title="Actions"
+            aria-label="Actions"
             onClick={(e) => {
               e.stopPropagation();
               setShowActionMenuDropdown(!showActionMenuDropdown);
             }}
           >
-            <EllipsisVerticalIcon className="w-5 h-5 md:w-6 md:h-6" />
+            <EllipsisVerticalIcon className="h-5 w-5 md:w-6 md:h-6" style={{ color: '#3b28c7' }} />
           </button>
         </div>
+      </div>
       </div>
       </div>
 
@@ -7055,6 +7279,44 @@ const CalendarPage: React.FC = () => {
           }}
         >
           <div className="py-2">
+            <button
+              type="button"
+              className="md:hidden w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+              onClick={() => {
+                scrollToCurrentTimeLine();
+                setShowActionMenuDropdown(false);
+              }}
+            >
+              <ClockIcon className="w-5 h-5 text-red-500" />
+              <span className="text-sm font-semibold text-gray-700">Go to current time</span>
+            </button>
+            <button
+              type="button"
+              className={`md:hidden w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3 ${selectedMeetingType === 'staff' ? 'bg-[#4418C4]/10' : ''}`}
+              onClick={() => {
+                setSelectedMeetingType((prev) => (prev === 'staff' ? 'all' : 'staff'));
+                setShowActionMenuDropdown(false);
+              }}
+            >
+              <UserGroupIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              <span className="text-sm font-semibold text-gray-700">
+                {selectedMeetingType === 'staff' ? 'Show all meeting types' : 'Internal meetings only (IM)'}
+              </span>
+            </button>
+            <button
+              type="button"
+              className={`md:hidden w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3 ${showDepartmentFooter ? 'bg-[#4418C4]/10' : ''}`}
+              onClick={() => {
+                setShowDepartmentFooter((open) => !open);
+                setShowActionMenuDropdown(false);
+              }}
+            >
+              <BuildingOfficeIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+              <span className="text-sm font-semibold text-gray-700">
+                {showDepartmentFooter ? 'Hide departments & totals' : 'Show departments & totals'}
+              </span>
+            </button>
+            <div className="md:hidden border-t border-gray-100 my-1" aria-hidden />
             <button
               className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
               onClick={() => {
@@ -7106,19 +7368,23 @@ const CalendarPage: React.FC = () => {
         document.body
       )}
 
-      {/* Meetings list: card rows + 3D shadow via .calendar-page-meetings-wrap in index.css */}
+      {/* Scrollable meetings table / cards */}
+      <div
+        ref={meetingsScrollRef}
+        className="calendar-page-chrome-scroll min-h-0 w-full flex-1 max-md:overflow-visible md:overflow-y-auto md:overflow-x-auto"
+      >
       <div
         className={
           viewMode === 'cards'
-            ? 'max-md:mt-0 md:mt-6 calendar-page-meetings-wrap max-md:overflow-visible max-md:px-0 md:bg-base-200/60 md:rounded-xl md:overflow-x-auto md:px-2 md:py-3 sm:md:px-3'
-            : 'max-md:mt-0 md:mt-6 max-md:mx-4 bg-base-200/60 rounded-xl overflow-x-auto calendar-page-meetings-wrap px-2 py-3 sm:px-3'
+            ? 'max-md:mt-0 md:mt-0 calendar-page-meetings-wrap max-md:overflow-visible max-md:px-0 md:bg-base-200/60 md:rounded-xl md:px-2 md:py-3 sm:md:px-3'
+            : 'max-md:mt-0 md:mt-0 max-md:mx-4 bg-base-200/60 rounded-xl calendar-page-meetings-wrap px-2 py-3 sm:px-3'
         }
       >
         {/* Desktop Table - Show when viewMode is 'list' */}
         {viewMode === 'list' && (
           <table className="calendar-page-meetings-table table w-full text-sm sm:text-base md:text-lg">
-            <thead>
-              <tr className="bg-transparent text-sm sm:text-base calendar-page-meetings-head-row">
+            <thead className="calendar-page-meetings-thead md:sticky md:top-0 md:z-20">
+              <tr className="bg-gray-100 text-sm sm:text-base calendar-page-meetings-head-row md:shadow-sm">
                 <th className="text-gray-500">Type</th>
                 <th className="text-gray-500">Time</th>
                 <th className="text-gray-500">Lead</th>
@@ -7140,7 +7406,7 @@ const CalendarPage: React.FC = () => {
                   const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
                   const showNowLine = appliedFromDate && appliedToDate && appliedFromDate <= todayStr && todayStr <= appliedToDate;
                   const CurrentTimeRow = () => (
-                    <tr className="calendar-page-now-line relative z-0">
+                    <tr id="calendar-current-time-line" className="calendar-page-now-line relative z-0">
                       <td colSpan={10} className="p-0 align-middle relative">
                         <div className="relative flex items-center gap-3 py-1.5">
                           <span className="relative z-10 bg-white px-1.5 py-0.5 text-xs font-semibold text-red-600 whitespace-nowrap tabular-nums rounded" style={{ minWidth: '3.5rem' }}>
@@ -7237,27 +7503,19 @@ const CalendarPage: React.FC = () => {
           </div>
         )}
       </div>
-
-      {/* Total Amount */}
-      <div className="mt-2 max-md:mt-2 md:mt-4 flex justify-end max-md:px-4">
-        <div className="card bg-primary text-primary-content p-4 shadow-lg text-base">
-          <div className="flex items-center gap-3">
-            <CurrencyDollarIcon className="w-7 h-7" />
-            <div>
-              <div className="text-lg font-bold">Total Balance</div>
-              <div className="text-2xl font-extrabold">₪{totalAmount.toLocaleString()}</div>
-            </div>
-          </div>
-        </div>
       </div>
 
-      {/* Department List Component */}
-      <DepartmentList
-        meetings={filteredMeetings}
-        viewMode={viewMode}
-        renderMeetingCard={renderMeetingCard}
-        renderMeetingRow={renderMeetingRow}
-      />
+      {showDepartmentFooter && (
+        <div className="calendar-page-chrome-bottom z-20 w-full min-w-0 flex-shrink-0 border-t border-gray-200/80 bg-gray-100 py-2 max-md:mt-2 max-md:px-4 md:py-3 md:px-0">
+          <DepartmentList
+            meetings={filteredMeetings}
+            viewMode={viewMode}
+            renderMeetingCard={renderMeetingCard}
+            renderMeetingRow={renderMeetingRow}
+            totalBalance={totalAmount}
+          />
+        </div>
+      )}
 
       {/* WhatsApp Modal */}
       <SchedulerWhatsAppModal

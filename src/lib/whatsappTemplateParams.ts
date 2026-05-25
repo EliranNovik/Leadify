@@ -1,6 +1,7 @@
 import { supabase } from './supabase';
 import { fetchLeadContacts } from './contactHelpers';
 import type { ContactInfo } from './contactHelpers';
+import { resolveProformaPaymentLinkUrl } from './proformaPaymentLink';
 
 /** DevTools: filter by [getMeetingLocation]. Enable in prod with VITE_DEBUG_MEETING_LOCATION=true */
 const DEBUG_MEETING_LOCATION =
@@ -265,6 +266,50 @@ async function fetchTenantMeetingLocationRow(
 
   dbgMeetingLocation('fetch row: no tenants_meetinglocation row matched');
   return null;
+}
+
+/**
+ * Resolve public payment URL (payment_links) for WhatsApp template variables.
+ * Uses payment plan id when available, otherwise the lead/client id on the chat.
+ */
+export async function getPaymentLinkForClient(
+  client: any,
+  paymentPlanId?: string | number | null,
+  prefilledUrl?: string | null,
+): Promise<string> {
+  const preset = (prefilledUrl || '').trim();
+  if (preset) {
+    return sanitizeWhatsAppTemplateVariableText(preset);
+  }
+
+  try {
+    let leadClientId: string | number | null =
+      client?.isContact && client?.lead_id != null && client?.lead_id !== ''
+        ? client.lead_id
+        : client?.id ?? null;
+
+    if (leadClientId == null || leadClientId === '') {
+      return '';
+    }
+
+    const idStr = String(leadClientId);
+    if (idStr.startsWith('legacy_')) {
+      const legacyNum = idStr.replace(/^legacy_/, '');
+      if (/^\d+$/.test(legacyNum)) {
+        leadClientId = legacyNum;
+      }
+    }
+
+    const url = await resolveProformaPaymentLinkUrl({
+      paymentPlanId: paymentPlanId ?? null,
+      leadClientId,
+    });
+
+    return url ? sanitizeWhatsAppTemplateVariableText(url) : '';
+  } catch (error) {
+    console.error('Error resolving payment link for WhatsApp:', error);
+    return '';
+  }
 }
 
 /**
