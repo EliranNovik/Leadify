@@ -6,7 +6,7 @@ const multer = require('multer');
 const path = require('path');
 const http = require('http');
 const { Server } = require('socket.io');
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const userRoutes = require('./src/routes/userRoutes');
 const teamsCallingRoutes = require('./src/routes/teamsCallingRoutes');
@@ -19,6 +19,7 @@ const emailRoutes = require('./src/routes/emailRoutes');
 const syncRoutes = require('./src/routes/syncRoutes');
 const pushNotificationRoutes = require('./src/routes/pushNotificationRoutes');
 const currencyRatesRoutes = require('./src/routes/currencyRatesRoutes');
+const pelecardPaymentRoutes = require('./src/routes/pelecardPaymentRoutes');
 const { startMailboxSyncScheduler } = require('./src/services/mailboxSyncScheduler');
 const { startMeetingNotificationScheduler } = require('./src/services/meetingNotificationScheduler');
 const { startBoiExchangeRatesScheduler } = require('./src/services/boiExchangeRatesScheduler');
@@ -407,6 +408,7 @@ app.use('/api', emailRoutes);
 app.use('/api', syncRoutes);
 app.use('/api', pushNotificationRoutes);
 app.use('/api/currency-rates', currencyRatesRoutes);
+app.use('/api/payments/pelecard', pelecardPaymentRoutes);
 
 // Serve uploaded files
 app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -447,6 +449,17 @@ server.listen(PORT, () => {
   } else {
     console.warn(`⚠️  GRAPH_WEBHOOK_NOTIFICATION_URL not configured. Webhook subscriptions will not work.`);
     console.warn(`   Set GRAPH_WEBHOOK_NOTIFICATION_URL environment variable to enable webhook notifications.`);
+  }
+
+  const pelecardOk =
+    process.env.PELECARD_TERMINAL &&
+    process.env.PELECARD_USER &&
+    process.env.PELECARD_PASSWORD;
+  if (pelecardOk) {
+    console.log(`✅ Pelecard configured (terminal ${process.env.PELECARD_TERMINAL})`);
+    console.log(`   Callback base: ${process.env.BACKEND_PUBLIC_URL || process.env.BACKEND_URL || 'http://localhost:' + PORT}`);
+  } else {
+    console.warn(`⚠️  Pelecard not configured — set PELECARD_TERMINAL, PELECARD_USER, PELECARD_PASSWORD in backend/.env`);
   }
 
   // Email fetching scheduler enabled - fetches emails every 5 minutes

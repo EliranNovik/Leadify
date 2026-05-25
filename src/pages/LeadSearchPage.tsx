@@ -1,14 +1,26 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
-import { ArrowDownTrayIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
+import {
+  ArrowDownTrayIcon,
+  Squares2X2Icon,
+  TableCellsIcon,
+  CalendarIcon,
+  GlobeAltIcon,
+  BoltIcon,
+  DocumentTextIcon,
+  LanguageIcon,
+  FunnelIcon,
+  ChevronDownIcon,
+  XMarkIcon,
+} from '@heroicons/react/24/outline';
 import { Search, Loader2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { toast } from 'react-hot-toast';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import { useTheme } from '../hooks/useTheme';
-import { MOBILE_BOTTOM_NAV_Z_INDEX } from '../components/MobileBottomNav';
 
 // Static dropdown options - moved outside component to prevent re-creation on every render
 const REASON_OPTIONS = ["Inquiry", "Follow-up", "Complaint", "Consultation", "Other"];
@@ -20,6 +32,47 @@ const EXPERT_EXAMINATION_OPTIONS = [
   "Feasible (no check)",
   "Not checked",
 ];
+
+const MOBILE_FILTER_CHIPS = [
+  { key: 'mainCategory', label: 'Main Category' },
+  { key: 'category', label: 'Category' },
+  { key: 'reason', label: 'Reason' },
+  { key: 'fileId', label: 'File id' },
+  { key: 'language', label: 'Language' },
+  { key: 'tags', label: 'Tags' },
+  { key: 'status', label: 'Status' },
+  { key: 'expert_examination', label: 'Expert exam' },
+  { key: 'source', label: 'Source' },
+  { key: 'eligibilityDeterminedOnly', label: 'Eligible' },
+  { key: 'stage', label: 'Stage' },
+  { key: 'topic', label: 'Topic' },
+  { key: 'scheduler', label: 'Scheduler' },
+  { key: 'manager', label: 'Manager' },
+  { key: 'lawyer', label: 'Lawyer' },
+  { key: 'expert', label: 'Expert' },
+  { key: 'closer', label: 'Closer' },
+  { key: 'case_handler', label: 'Case Handler' },
+  { key: 'country', label: 'Country' },
+  { key: 'content', label: 'Content' },
+] as const;
+
+type MobileFilterKey = (typeof MOBILE_FILTER_CHIPS)[number]['key'];
+
+const getLeadCountryDisplay = (anyLead: Record<string, unknown>, displayCategory: string | null): string => {
+  const clientCountry = anyLead.client_country;
+  if (typeof clientCountry === 'string' && clientCountry.trim()) return clientCountry;
+
+  if (displayCategory) {
+    const parenMatch = displayCategory.match(/\(([^)]+)\)/);
+    if (parenMatch?.[1]) return parenMatch[1].trim();
+    if (displayCategory.includes(' - ')) {
+      const part = displayCategory.split(' - ').pop()?.trim();
+      if (part) return part;
+    }
+  }
+
+  return 'N/A';
+};
 
 // Column definitions for table view
 const AVAILABLE_COLUMNS = [
@@ -212,7 +265,9 @@ const MultiSelectInput = ({
   onRemove,
   onFilterChange,
   onShowDropdown,
-  onHideDropdown
+  onHideDropdown,
+  hideLabel = false,
+  sheetMode = false,
 }: {
   label: string;
   field: string;
@@ -225,6 +280,8 @@ const MultiSelectInput = ({
   onFilterChange: (field: string, value: string) => void;
   onShowDropdown: (field: string) => void;
   onHideDropdown: (field: string) => void;
+  hideLabel?: boolean;
+  sheetMode?: boolean;
 }) => {
   const [inputValue, setInputValue] = useState('');
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -311,15 +368,17 @@ const MultiSelectInput = ({
   );
 
   return (
-    <div ref={containerRef} className="form-control flex flex-col col-span-2 sm:col-span-1 relative">
-      <label className="label mb-2">
-        <span className="label-text">{label}</span>
-        {safeValues.length > 0 && (
-          <span className="label-text-alt text-purple-600 font-medium">
-            {safeValues.length} selected
-          </span>
-        )}
-      </label>
+    <div ref={containerRef} className={`form-control flex flex-col relative ${sheetMode ? '' : 'col-span-2 sm:col-span-1'}`}>
+      {!hideLabel && (
+        <label className="label mb-2">
+          <span className="label-text">{label}</span>
+          {safeValues.length > 0 && (
+            <span className="label-text-alt text-purple-600 font-medium">
+              {safeValues.length} selected
+            </span>
+          )}
+        </label>
+      )}
 
       {/* Selected items */}
       {safeValues.length > 0 && (
@@ -345,7 +404,7 @@ const MultiSelectInput = ({
       )}
 
       {/* Input field */}
-      <div className="relative">
+      <div className={sheetMode ? '' : 'relative'}>
         <input
           type="text"
           className="input w-full"
@@ -359,11 +418,21 @@ const MultiSelectInput = ({
           }}
         />
         {showDropdown && filteredOptions.length > 0 && (
-          <div className="absolute z-10 w-full mt-1 bg-white rounded-md shadow-lg max-h-60 overflow-y-auto">
+          <div
+            className={
+              sheetMode
+                ? 'mt-2 max-h-56 overflow-y-auto rounded-xl border border-base-200 bg-base-100'
+                : 'absolute z-10 w-full mt-1 bg-white rounded-md shadow-lg max-h-60 overflow-y-auto'
+            }
+          >
             {filteredOptions.map((option, index) => (
               <div
                 key={index}
-                className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                className={`cursor-pointer text-sm flex items-center gap-2 ${
+                  sheetMode
+                    ? 'px-4 py-3 hover:bg-base-200/60 active:bg-base-200 border-b border-base-200/60 last:border-0'
+                    : 'px-4 py-2 hover:bg-gray-100'
+                }`}
                 onMouseDown={(e) => {
                   // Prevent blur event from firing
                   e.preventDefault();
@@ -502,7 +571,9 @@ const MainCategoryInput = ({
   onFilterChange,
   onShowDropdown,
   onHideDropdown,
-  onMainCategorySelect
+  onMainCategorySelect,
+  hideLabel = false,
+  sheetMode = false,
 }: {
   label: string;
   field: string;
@@ -516,6 +587,8 @@ const MainCategoryInput = ({
   onShowDropdown: (field: string) => void;
   onHideDropdown: (field: string) => void;
   onMainCategorySelect: (mainCategoryName: string) => void;
+  hideLabel?: boolean;
+  sheetMode?: boolean;
 }) => {
   const [inputValue, setInputValue] = useState('');
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -570,15 +643,17 @@ const MainCategoryInput = ({
   );
 
   return (
-    <div ref={containerRef} className="form-control flex flex-col col-span-2 sm:col-span-1 relative">
-      <label className="label mb-2">
-        <span className="label-text">{label}</span>
-        {safeValues.length > 0 && (
-          <span className="label-text-alt text-purple-600 font-medium">
-            {safeValues.length} selected
-          </span>
-        )}
-      </label>
+    <div ref={containerRef} className={`form-control flex flex-col relative ${sheetMode ? '' : 'col-span-2 sm:col-span-1'}`}>
+      {!hideLabel && (
+        <label className="label mb-2">
+          <span className="label-text">{label}</span>
+          {safeValues.length > 0 && (
+            <span className="label-text-alt text-purple-600 font-medium">
+              {safeValues.length} selected
+            </span>
+          )}
+        </label>
+      )}
 
       {/* Selected items */}
       {safeValues.length > 0 && (
@@ -604,7 +679,7 @@ const MainCategoryInput = ({
       )}
 
       {/* Input field */}
-      <div className="relative">
+      <div className={sheetMode ? '' : 'relative'}>
         <input
           type="text"
           className="input w-full"
@@ -618,22 +693,34 @@ const MainCategoryInput = ({
           }}
         />
         {showDropdown && filteredOptions.length > 0 && (
-          <div className="absolute z-10 w-full mt-1 bg-white rounded-md shadow-lg max-h-60 overflow-y-auto">
+          <div
+            className={
+              sheetMode
+                ? 'mt-2 max-h-56 overflow-y-auto rounded-xl border border-base-200 bg-base-100'
+                : 'absolute z-10 w-full mt-1 bg-white rounded-md shadow-lg max-h-60 overflow-y-auto'
+            }
+          >
             {filteredOptions.map((option, index) => (
               <div
                 key={index}
-                className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
+                className={`cursor-pointer text-sm flex items-center gap-2 ${
+                  sheetMode
+                    ? 'px-4 py-3 hover:bg-base-200/60 active:bg-base-200 border-b border-base-200/60 last:border-0'
+                    : 'px-4 py-2 hover:bg-gray-100'
+                }`}
                 onMouseDown={(e) => {
                   // Prevent blur event from firing
                   e.preventDefault();
                   handleSelect(option);
                 }}
               >
-                <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-4 h-4 text-purple-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
                 </svg>
                 <span className="font-medium text-purple-700">{option}</span>
-                <span className="text-xs text-gray-500 ml-auto">Auto-selects all subcategories</span>
+                {!sheetMode && (
+                  <span className="text-xs text-gray-500 ml-auto">Auto-selects all subcategories</span>
+                )}
               </div>
             ))}
           </div>
@@ -660,6 +747,31 @@ const getContrastingTextColor = (hexColor?: string | null) => {
 
   const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
   return luminance > 0.6 ? '#111827' : '#ffffff';
+};
+
+const getSoftStageBadgeStyle = (hexColor?: string | null) => {
+  const fallback = '#3f28cd';
+  const color = hexColor || fallback;
+  let sanitized = color.trim();
+  if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+  if (sanitized.length === 3) {
+    sanitized = sanitized.split('').map(char => char + char).join('');
+  }
+  if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+    return {
+      backgroundColor: 'rgba(63, 40, 205, 0.12)',
+      borderColor: 'rgba(63, 40, 205, 0.28)',
+      color: fallback,
+    };
+  }
+  const r = parseInt(sanitized.slice(0, 2), 16);
+  const g = parseInt(sanitized.slice(2, 4), 16);
+  const b = parseInt(sanitized.slice(4, 6), 16);
+  return {
+    backgroundColor: `rgba(${r}, ${g}, ${b}, 0.14)`,
+    borderColor: `rgba(${r}, ${g}, ${b}, 0.32)`,
+    color: `#${sanitized}`,
+  };
 };
 
 /** Shared with table + Excel export */
@@ -916,8 +1028,6 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 const LeadSearchPage: React.FC = () => {
   const { isAltTheme } = useTheme();
   const [searchParams, setSearchParams] = useSearchParams();
-  // State for sticky search bar on mobile: full bar by default; circle only after clicking Search (click circle to open full bar again)
-  const [showStickySearchButton, setShowStickySearchButton] = useState(false);
 
   // Ref for results section to scroll to after search
   const resultsRef = useRef<HTMLDivElement>(null);
@@ -1019,7 +1129,30 @@ const LeadSearchPage: React.FC = () => {
     storage: 'sessionStorage',
   });
   const [showColumnSelector, setShowColumnSelector] = useState(false);
+  const [showFiltersPanel, setShowFiltersPanel] = useState(true);
+  const [activeMobileFilter, setActiveMobileFilter] = useState<MobileFilterKey | null>(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (searchPerformed) setShowFiltersPanel(false);
+  }, []);
+
+  const appliedAdvancedFilterCount = useMemo(() => {
+    let count = 0;
+    const arrayFields = [
+      'category', 'language', 'reason', 'tags', 'status', 'source', 'stage', 'topic',
+      'scheduler', 'manager', 'lawyer', 'expert', 'closer', 'case_handler', 'expert_examination', 'country',
+    ] as const;
+    for (const field of arrayFields) {
+      count += filters[field].length;
+    }
+    if (filters.fileId.trim()) count += 1;
+    if (filters.content.trim()) count += 1;
+    if (filters.eligibilityDeterminedOnly) count += 1;
+    return count;
+  }, [filters]);
+
+  const filtersPanelHidden = searchPerformed && !showFiltersPanel;
 
   // After search finishes and DOM updates, scroll to cards grid or table (premium UX)
   useEffect(() => {
@@ -1685,6 +1818,392 @@ const LeadSearchPage: React.FC = () => {
     }
   };
 
+  const isMobileFilterActive = (key: MobileFilterKey): boolean => {
+    if (key === 'fileId') return !!filters.fileId.trim();
+    if (key === 'content') return !!filters.content.trim();
+    if (key === 'eligibilityDeterminedOnly') return filters.eligibilityDeterminedOnly;
+    if (key === 'mainCategory') return filters.category.length > 0;
+    const value = filters[key as keyof typeof filters];
+    return Array.isArray(value) && value.length > 0;
+  };
+
+  const getMobileFilterCount = (key: MobileFilterKey): number => {
+    if (key === 'fileId') return filters.fileId.trim() ? 1 : 0;
+    if (key === 'content') return filters.content.trim() ? 1 : 0;
+    if (key === 'eligibilityDeterminedOnly') return filters.eligibilityDeterminedOnly ? 1 : 0;
+    if (key === 'mainCategory') return 0;
+    const value = filters[key as keyof typeof filters];
+    return Array.isArray(value) ? value.length : 0;
+  };
+
+  const closeMobileFilter = () => {
+    if (activeMobileFilter) {
+      const dropdownKey = activeMobileFilter;
+      if (dropdownKey !== 'fileId' && dropdownKey !== 'content' && dropdownKey !== 'eligibilityDeterminedOnly') {
+        handleHideDropdown(dropdownKey === 'mainCategory' ? 'mainCategory' : dropdownKey);
+      }
+    }
+    setActiveMobileFilter(null);
+  };
+
+  const openMobileFilter = (key: MobileFilterKey) => {
+    if (activeMobileFilter && activeMobileFilter !== key) {
+      const prev = activeMobileFilter;
+      if (prev !== 'fileId' && prev !== 'content' && prev !== 'eligibilityDeterminedOnly') {
+        handleHideDropdown(prev === 'mainCategory' ? 'mainCategory' : prev);
+      }
+    }
+    setActiveMobileFilter(key);
+    if (key !== 'fileId' && key !== 'content' && key !== 'eligibilityDeterminedOnly') {
+      handleShowDropdown(key === 'mainCategory' ? 'mainCategory' : key);
+    }
+  };
+
+  useEffect(() => {
+    if (!activeMobileFilter) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [activeMobileFilter]);
+
+  const mobileSheetProps = { hideLabel: true, sheetMode: true } as const;
+
+  const renderMobileFilterControl = (key: MobileFilterKey) => {
+    switch (key) {
+      case 'mainCategory':
+        return (
+          <MainCategoryInput
+            label="Main Category"
+            field="mainCategory"
+            values={[]}
+            placeholder="Select main category to auto-select all subcategories..."
+            options={filteredMainCategoryOptions}
+            showDropdown={showMainCategoryDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            onMainCategorySelect={handleMainCategorySelect}
+            {...mobileSheetProps}
+          />
+        );
+      case 'category':
+        return (
+          <MultiSelectInput
+            label="Category"
+            field="category"
+            values={filters.category}
+            placeholder="Type category or choose from suggestions..."
+            options={filteredCategoryOptions}
+            showDropdown={showCategoryDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'reason':
+        return (
+          <MultiSelectInput
+            label="Reason"
+            field="reason"
+            values={filters.reason}
+            placeholder="Type reason or choose from suggestions..."
+            options={filteredReasonOptions}
+            showDropdown={showReasonDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'fileId':
+        return (
+          <input
+            type="text"
+            className="input w-full"
+            placeholder="Enter file id..."
+            value={filters.fileId}
+            onChange={e => handleFilterChange('fileId', e.target.value)}
+            autoFocus
+          />
+        );
+      case 'language':
+        return (
+          <MultiSelectInput
+            label="Language"
+            field="language"
+            values={filters.language}
+            placeholder="Type language or choose from suggestions..."
+            options={filteredLanguageOptions}
+            showDropdown={showLanguageDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'tags':
+        return (
+          <MultiSelectInput
+            label="Tags"
+            field="tags"
+            values={filters.tags}
+            placeholder="Type tag or choose from suggestions..."
+            options={filteredTagOptions}
+            showDropdown={showTagDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'status':
+        return (
+          <MultiSelectInput
+            label="Status"
+            field="status"
+            values={filters.status}
+            placeholder="Select status..."
+            options={filteredStatusOptions}
+            showDropdown={showStatusDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'expert_examination':
+        return (
+          <MultiSelectInput
+            label="Expert examination"
+            field="expert_examination"
+            values={filters.expert_examination}
+            placeholder="Select expert examination result..."
+            options={filteredExpertExaminationOptions}
+            showDropdown={showExpertExaminationDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'source':
+        return (
+          <MultiSelectInput
+            label="Source"
+            field="source"
+            values={filters.source}
+            placeholder="Type source or choose from suggestions..."
+            options={filteredSourceOptions}
+            showDropdown={showSourceDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'eligibilityDeterminedOnly':
+        return (
+          <div className="flex items-center justify-between gap-4 rounded-xl border border-base-200 bg-base-100 px-4 py-4">
+            <div>
+              <p className="text-base font-medium">Eligible only</p>
+              <p className="text-sm text-base-content/60">Show leads where eligibility is determined</p>
+            </div>
+            <input
+              type="checkbox"
+              className="toggle toggle-primary"
+              checked={filters.eligibilityDeterminedOnly}
+              onChange={e => handleFilterChange('eligibilityDeterminedOnly', e.target.checked)}
+            />
+          </div>
+        );
+      case 'stage':
+        return (
+          <MultiSelectInput
+            label="Stage"
+            field="stage"
+            values={filters.stage}
+            placeholder="Type stage or choose from suggestions..."
+            options={filteredStageOptions}
+            showDropdown={showStageDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'topic':
+        return (
+          <MultiSelectInput
+            label="Topic"
+            field="topic"
+            values={filters.topic}
+            placeholder="Type topic or choose from suggestions..."
+            options={filteredTopicOptions}
+            showDropdown={showTopicDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'scheduler':
+        return (
+          <MultiSelectInput
+            label="Scheduler"
+            field="scheduler"
+            values={filters.scheduler}
+            placeholder="Type scheduler name or choose from suggestions..."
+            options={filteredRoleOptions}
+            showDropdown={showSchedulerDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'manager':
+        return (
+          <MultiSelectInput
+            label="Manager"
+            field="manager"
+            values={filters.manager}
+            placeholder="Type manager name or choose from suggestions..."
+            options={filteredRoleOptions}
+            showDropdown={showManagerDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'lawyer':
+        return (
+          <MultiSelectInput
+            label="Lawyer"
+            field="lawyer"
+            values={filters.lawyer}
+            placeholder="Type lawyer name or choose from suggestions..."
+            options={filteredRoleOptions}
+            showDropdown={showLawyerDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'expert':
+        return (
+          <MultiSelectInput
+            label="Expert"
+            field="expert"
+            values={filters.expert}
+            placeholder="Type expert name or choose from suggestions..."
+            options={filteredRoleOptions}
+            showDropdown={showExpertDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'closer':
+        return (
+          <MultiSelectInput
+            label="Closer"
+            field="closer"
+            values={filters.closer}
+            placeholder="Type closer name or choose from suggestions..."
+            options={filteredRoleOptions}
+            showDropdown={showCloserDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'case_handler':
+        return (
+          <MultiSelectInput
+            label="Case Handler"
+            field="case_handler"
+            values={filters.case_handler}
+            placeholder="Type case handler name or choose from suggestions..."
+            options={filteredRoleOptions}
+            showDropdown={showCaseHandlerDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'country':
+        return (
+          <MultiSelectInput
+            label="Country"
+            field="country"
+            values={filters.country}
+            placeholder="Type country name or choose from suggestions..."
+            options={filteredCountryOptions}
+            showDropdown={showCountryDropdown}
+            onSelect={handleMultiSelect}
+            onRemove={handleMultiRemove}
+            onFilterChange={handleFilterChange}
+            onShowDropdown={handleShowDropdown}
+            onHideDropdown={handleHideDropdown}
+            {...mobileSheetProps}
+          />
+        );
+      case 'content':
+        return (
+          <input
+            type="text"
+            className="input w-full"
+            placeholder="Search in lead content..."
+            value={filters.content}
+            onChange={e => handleFilterChange('content', e.target.value)}
+            autoFocus
+          />
+        );
+      default:
+        return null;
+    }
+  };
+
   // Old single-select handlers removed - now using MultiSelectInput with handleMultiSelect/handleMultiRemove
 
 
@@ -1697,6 +2216,8 @@ const LeadSearchPage: React.FC = () => {
   const handleSearch = async () => {
     setIsSearching(true);
     setSearchPerformed(true);
+    setShowFiltersPanel(false);
+    closeMobileFilter();
 
     console.log('🔍 Starting lead search with filters:', filters);
     console.log('📅 Current date info:', {
@@ -4188,30 +4709,29 @@ const LeadSearchPage: React.FC = () => {
   };
 
   const getStageBadge = (stage: string | number | null | undefined) => {
-    if (!stage && stage !== 0) return <span className="badge badge-outline">No Stage</span>;
+    if (!stage && stage !== 0) {
+      return (
+        <span className="badge stage-badge rounded-full shrink-0 text-xs px-2.5 py-0.5 max-w-full bg-gray-100 text-gray-600 border-gray-200">
+          No Stage
+        </span>
+      );
+    }
 
-    // Convert stage to string for getStageName/getStageColour (handles both numeric IDs and stage names)
     const stageStr = String(stage);
-
-    // Get stage name and color from stageUtils
     const stageName = getStageName(stageStr);
     const stageColour = getStageColour(stageStr);
-    const badgeTextColour = getContrastingTextColor(stageColour);
-
-    // Use dynamic color if available, otherwise fallback to default purple
-    const backgroundColor = stageColour || '#3f28cd';
-    const textColor = stageColour ? badgeTextColour : '#ffffff';
+    const softBadgeStyle = getSoftStageBadgeStyle(stageColour);
 
     return <span
-      className="badge stage-badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
+      className="badge stage-badge rounded-full shrink-0 hover:opacity-90 transition-opacity duration-200 text-xs px-2.5 py-0.5 max-w-full border"
       style={{
-        backgroundColor: backgroundColor,
-        borderColor: backgroundColor,
-        color: textColor,
+        backgroundColor: softBadgeStyle.backgroundColor,
+        borderColor: softBadgeStyle.borderColor,
+        color: softBadgeStyle.color,
         whiteSpace: 'nowrap',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
-        display: 'inline-block'
+        display: 'inline-block',
       }}
       title={stageName}
     >
@@ -4236,23 +4756,20 @@ const LeadSearchPage: React.FC = () => {
     const isInactive = isLegacyInactive || isNewInactive;
 
     const cardClasses = [
-      'card',
       'w-full',
       'max-w-full',
-      'rounded-xl',
-      'border-0',
-      'shadow-lg',
-      'hover:shadow-xl',
+      'rounded-2xl',
+      'border',
+      'border-gray-100',
+      'shadow-[0_2px_10px_rgba(0,0,0,0.06)]',
+      'hover:shadow-[0_4px_16px_rgba(0,0,0,0.1)]',
       'md:hover:-translate-y-0.5',
       'transition-all',
       'duration-300',
       'ease-out',
       'cursor-pointer',
       'group',
-      // Inactive card: light grey background, all text black; stage badges grey with black text
-      isInactive
-        ? 'bg-gray-200 [&_.card-title]:!text-black [&_p]:!text-black [&_span]:!text-black [&_svg]:!text-black [&_.divider]:!border-gray-400 [&_.stage-badge]:!bg-gray-300 [&_.stage-badge]:!border-gray-400 [&_.stage-badge]:![color:black]'
-        : 'bg-base-100',
+      isInactive ? 'bg-gray-200' : 'bg-white',
     ].join(' ');
 
     // Ensure category is always shown as "Subcategory (Main Category)" when possible
@@ -4274,123 +4791,119 @@ const LeadSearchPage: React.FC = () => {
       displayCategory = anyLead.category || null;
     }
 
+    const countryDisplay = getLeadCountryDisplay(anyLead, displayCategory);
+    const leadNumber = (lead as any).display_lead_number || lead.lead_number || lead.id;
+
     return (
       <div
         key={lead.id}
         className={cardClasses}
         onClick={(e) => {
-          // Pass the full lead object so we can access manual_id and other properties
           handleLeadClick(lead, e);
         }}
       >
-        <div className="card-body p-5 relative">
+        <div className="p-5">
           {isInactive && (
-            <p className="text-center text-black font-medium text-xs mb-2">Inactive</p>
+            <p className="text-center text-gray-600 font-medium text-xs mb-2">Inactive</p>
           )}
-          <div className="flex justify-between items-start mb-2">
-            <div className="flex items-center gap-2">
-              <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors">
-                {lead.name}
-              </h2>
+          <div className="flex items-start justify-between gap-3 mb-2.5">
+            <h2 className="text-base font-bold text-gray-900 leading-normal line-clamp-2 group-hover:text-[#6d28d9] transition-colors">
+              {lead.name}
+            </h2>
+            <div className={`shrink-0 max-w-[45%] ${isInactive ? '[&_.stage-badge]:!bg-gray-300 [&_.stage-badge]:!border-gray-400 [&_.stage-badge]:![color:black]' : ''}`}>
+              {getStageBadge(lead.stage)}
             </div>
-            {getStageBadge(lead.stage)}
           </div>
 
-          <p className="text-sm text-base-content/60 font-mono mb-4">
-            #{(lead as any).display_lead_number || lead.lead_number || lead.id}
+          <p className="text-sm text-gray-500 mb-4 font-mono font-medium">
+            #{leadNumber}
           </p>
 
-          <div className="divider my-0"></div>
-
-          <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
-            <div className="flex items-center gap-2" title="Date Created">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-              <span className="font-medium">{new Date(lead.created_at).toLocaleDateString()}</span>
-            </div>
-            <div className="flex items-center gap-2" title="Category">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
-              <span>{displayCategory || 'N/A'}</span>
-            </div>
-            <div className="flex items-center gap-2" title="Source">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-              <span>{lead.source || 'N/A'}</span>
-            </div>
-            <div className="flex items-center gap-2" title="Language">
-              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" /></svg>
-              <span>{lead.language || 'N/A'}</span>
-            </div>
+          <div className="flex items-center gap-2.5 rounded-lg bg-violet-50/40 border border-violet-100/50 px-3.5 py-2.5 mb-5 min-w-0">
+            <DocumentTextIcon className="h-4 w-4 text-violet-600/80 shrink-0" aria-hidden />
+            <span className="text-sm font-medium text-violet-700/90 truncate leading-relaxed">
+              {lead.topic || 'No topic specified'}
+            </span>
           </div>
 
-          <div className="mt-4 pt-4 border-t border-base-200/50">
-            <p className="text-sm font-semibold text-base-content/80">{lead.topic || 'No topic specified'}</p>
+          <div className="grid grid-cols-2 gap-x-5 gap-y-3.5 text-sm text-gray-700">
+            <div className="flex items-center gap-2.5 min-w-0" title="Date Created">
+              <CalendarIcon className="h-4 w-4 text-gray-500 shrink-0" aria-hidden />
+              <span className="truncate font-medium">{new Date(lead.created_at).toLocaleDateString()}</span>
+            </div>
+            <div className="flex items-center gap-2.5 min-w-0" title="Country">
+              <GlobeAltIcon className="h-4 w-4 text-gray-500 shrink-0" aria-hidden />
+              <span className="truncate">{countryDisplay}</span>
+            </div>
+            <div className="flex items-center gap-2.5 min-w-0" title="Source">
+              <BoltIcon className="h-4 w-4 text-gray-500 shrink-0" aria-hidden />
+              <span className="truncate">{lead.source || 'N/A'}</span>
+            </div>
+            <div className="flex items-center gap-2.5 min-w-0" title="Language">
+              <LanguageIcon className="h-4 w-4 text-gray-500 shrink-0" aria-hidden />
+              <span className="truncate">{lead.language || 'N/A'}</span>
+            </div>
           </div>
-
         </div>
       </div>
     );
   };
 
   return (
-    <div className="w-full max-w-full pt-6 pb-6 px-3 sm:px-4 md:p-10 min-w-0">
-      {/* Fixed Search Bar with Date Filters - Desktop: always visible, Mobile: appears when scrolled down */}
-      {/* Desktop Version - Always visible */}
-      <div className="hidden md:flex fixed top-16 left-0 right-0 z-[35] justify-center px-4 transition-all duration-300 ease-in-out">
-        <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl px-6 py-4 transition-all duration-300 ease-in-out flex items-center gap-4">
-          {/* From date */}
+    <div className="w-full max-w-full pt-6 pb-6 px-3 sm:px-4 md:px-8 md:py-8 min-w-0 bg-gray-100 dark:bg-base-300 min-h-full">
+      {/* Quick search + view toolbar — bottom-right */}
+      <div
+        className="fixed right-3 md:right-8 z-[35] bottom-[max(4.5rem,calc(3.75rem+env(safe-area-inset-bottom,0px)+0.5rem))] md:bottom-8"
+        role="toolbar"
+        aria-label="Lead search quick filters"
+      >
+        <div className="flex items-center gap-2 md:gap-3 rounded-2xl md:rounded-3xl border border-base-200/80 dark:border-base-content/12 bg-base-100/95 dark:bg-base-300/90 backdrop-blur-md shadow-lg md:shadow-xl px-2.5 py-2 md:px-4 md:py-3 pointer-events-auto">
           <input
             type="date"
-            className="input w-36"
+            className="input input-sm md:input-md input-bordered w-[6.75rem] md:w-36 h-9 md:h-11 min-h-[36px] md:min-h-[44px] text-xs md:text-sm shrink-0"
             value={filters.fromDate}
             onChange={e => handleFilterChange('fromDate', e.target.value)}
             title="From date"
           />
-          {/* To date */}
           <input
             type="date"
-            className="input w-36"
+            className="input input-sm md:input-md input-bordered w-[6.75rem] md:w-36 h-9 md:h-11 min-h-[36px] md:min-h-[44px] text-xs md:text-sm shrink-0"
             value={filters.toDate}
             onChange={e => handleFilterChange('toDate', e.target.value)}
             title="To date"
           />
-          {/* View Mode Toggle - Cards/Table */}
-          <div className="flex items-center gap-1 rounded-full p-1">
+          {searchPerformed && (
             <button
-              className={`btn btn-sm btn-circle transition-all duration-300 ${
-                viewMode === 'cards' 
-                  ? (isAltTheme ? 'bg-[#505d57] text-white shadow-md hover:bg-[#3d4743]' : 'btn-primary shadow-md')
-                  : 'btn-ghost'
+              type="button"
+              className={`relative flex h-9 w-9 md:h-11 md:w-11 shrink-0 items-center justify-center rounded-full border transition-colors ${
+                showFiltersPanel
+                  ? (isAltTheme ? 'border-[#505d57] bg-[#505d57] text-white' : 'border-primary bg-primary text-primary-content')
+                  : 'border-base-300/60 bg-base-100 text-base-content/70 hover:bg-base-200/80'
               }`}
-              onClick={() => setViewMode('cards')}
-              title="Cards View"
+              onClick={() => setShowFiltersPanel(v => !v)}
+              title={showFiltersPanel ? 'Hide filters' : 'Show filters'}
+              aria-pressed={showFiltersPanel}
+              aria-label={showFiltersPanel ? 'Hide filters' : `Show filters (${appliedAdvancedFilterCount} applied)`}
             >
-              <Squares2X2Icon className="w-4 h-4" />
+              <FunnelIcon className="h-4 w-4 md:h-5 md:w-5" aria-hidden />
+              {appliedAdvancedFilterCount > 0 && (
+                <span className="absolute -top-1 -right-1 flex h-4 min-w-[1rem] md:h-5 md:min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] md:text-xs font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
+                  {appliedAdvancedFilterCount > 9 ? '9+' : appliedAdvancedFilterCount}
+                </span>
+              )}
             </button>
-            <button
-              className={`btn btn-sm btn-circle transition-all duration-300 ${
-                viewMode === 'table' 
-                  ? (isAltTheme ? 'bg-[#505d57] text-white shadow-md hover:bg-[#3d4743]' : 'btn-primary shadow-md')
-                  : 'btn-ghost'
-              }`}
-              onClick={() => setViewMode('table')}
-              title="Table View"
-            >
-              <TableCellsIcon className="w-4 h-4" />
-            </button>
-          </div>
-          {/* Search: glass pill button (matches bar) + Loader2 while searching */}
+          )}
           <button
             type="button"
-            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-base-200/60 bg-white/90 shadow-inner backdrop-blur-md transition-colors dark:border-base-200/40 dark:bg-gray-800/90 ${
+            className={`flex h-9 w-9 md:h-11 md:w-11 shrink-0 items-center justify-center rounded-full border border-base-300/60 bg-base-100 shadow-sm transition-colors ${
               isAltTheme
                 ? 'text-white hover:bg-[#505d57]/95'
-                : 'text-primary hover:bg-white dark:hover:bg-gray-700/95'
-            } ${isSearching ? 'cursor-wait opacity-95' : 'hover:opacity-100'} disabled:opacity-70`}
+                : 'text-primary hover:bg-base-200/80'
+            } ${isSearching ? 'cursor-wait opacity-95' : ''} disabled:opacity-70`}
             style={
-              isAltTheme && !isSearching
-                ? { background: 'rgba(80, 93, 87, 0.92)' }
-                : isAltTheme && isSearching
-                  ? { background: 'rgba(80, 93, 87, 0.85)' }
-                  : undefined
+              isAltTheme
+                ? { background: isSearching ? 'rgba(80, 93, 87, 0.85)' : 'rgba(80, 93, 87, 0.92)' }
+                : undefined
             }
             onClick={handleSearch}
             disabled={isSearching}
@@ -4399,151 +4912,88 @@ const LeadSearchPage: React.FC = () => {
             aria-label={isSearching ? 'Searching…' : 'Search'}
           >
             {isSearching ? (
-              <Loader2 className={`h-5 w-5 animate-spin ${isAltTheme ? 'text-white' : 'text-primary'}`} aria-hidden />
+              <Loader2 className={`h-4 w-4 md:h-5 md:w-5 animate-spin ${isAltTheme ? 'text-white' : 'text-primary'}`} aria-hidden />
             ) : (
-              <Search className={`h-5 w-5 ${isAltTheme ? 'text-white' : ''}`} strokeWidth={2.25} />
+              <Search className={`h-4 w-4 md:h-5 md:w-5 ${isAltTheme ? 'text-white' : ''}`} strokeWidth={2.25} />
             )}
           </button>
+          <div className="w-px h-8 md:h-10 bg-base-300/60 shrink-0" aria-hidden />
+          <div className="flex items-center gap-1 md:gap-1.5 shrink-0">
+            <button
+              type="button"
+              className={`btn btn-circle btn-sm md:btn-md min-w-[36px] min-h-[36px] w-9 h-9 md:min-w-[44px] md:min-h-[44px] md:w-11 md:h-11 border-0 transition-all duration-300 ${
+                viewMode === 'cards'
+                  ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
+                  : 'btn-ghost'
+              }`}
+              onClick={() => setViewMode('cards')}
+              title="Cards view"
+              aria-pressed={viewMode === 'cards'}
+            >
+              <Squares2X2Icon className="w-4 h-4 md:w-5 md:h-5" />
+            </button>
+            <button
+              type="button"
+              className={`btn btn-circle btn-sm md:btn-md min-w-[36px] min-h-[36px] w-9 h-9 md:min-w-[44px] md:min-h-[44px] md:w-11 md:h-11 border-0 transition-all duration-300 ${
+                viewMode === 'table'
+                  ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
+                  : 'btn-ghost'
+              }`}
+              onClick={() => setViewMode('table')}
+              title="Table view"
+              aria-pressed={viewMode === 'table'}
+            >
+              <TableCellsIcon className="w-4 h-4 md:w-5 md:h-5" />
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Mobile: scrolled down = single circle opens full bar; scrolled up = full bar. Circle click does not search. */}
-      <div className="md:hidden fixed top-16 left-0 right-0 z-[35] flex justify-center px-4 transition-all duration-300 ease-in-out">
-        {showStickySearchButton ? (
-          /* Scrolled down: one frosted glass circle (no outer wrapper); grey icon */
-          <button
-            type="button"
-            className="min-w-[60px] min-h-[60px] w-[60px] h-[60px] rounded-full flex items-center justify-center border border-white/55 dark:border-white/12 bg-white/28 dark:bg-gray-900/28 backdrop-blur-xl shadow-[0_8px_32px_rgba(0,0,0,0.05)] ring-1 ring-black/[0.04] dark:ring-white/[0.07] transition-all duration-300 active:scale-95"
-            style={
-              isAltTheme
-                ? {
-                    background: 'rgba(80, 93, 87, 0.36)',
-                    backdropFilter: 'blur(20px)',
-                    WebkitBackdropFilter: 'blur(20px)',
-                  }
-                : undefined
-            }
-            onClick={() => setShowStickySearchButton(false)}
-            title={isSearching ? 'Search in progress — tap to open bar' : 'Open search bar'}
-            aria-label={isSearching ? 'Search in progress' : 'Open search bar'}
-            aria-busy={isSearching}
-          >
-            {isSearching ? (
-              <Loader2
-                className={`w-8 h-8 animate-spin ${isAltTheme ? 'text-zinc-200' : 'text-zinc-500 dark:text-zinc-400'}`}
-                aria-hidden
-              />
-            ) : (
-              <Search
-                className={`w-8 h-8 ${isAltTheme ? 'text-zinc-200' : 'text-zinc-500 dark:text-zinc-400'}`}
-                strokeWidth={2.25}
-              />
-            )}
-          </button>
-        ) : (
-          /* Scrolled up: full bar with From/To dates + search (cards/table toggle is fixed bottom-right on mobile) */
-          <div className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl px-4 py-3 transition-all duration-300 ease-in-out flex items-center gap-3 min-h-[56px]">
-            <input
-              type="date"
-              className="input input-sm w-24 text-sm min-h-[40px]"
-              value={filters.fromDate}
-              onChange={e => handleFilterChange('fromDate', e.target.value)}
-              title="From date"
-            />
-            <input
-              type="date"
-              className="input input-sm w-24 text-sm min-h-[40px]"
-              value={filters.toDate}
-              onChange={e => handleFilterChange('toDate', e.target.value)}
-              title="To date"
-            />
-            <button
-              type="button"
-              className={`flex min-h-[48px] min-w-[48px] h-12 w-12 shrink-0 items-center justify-center rounded-full border border-white/55 dark:border-white/12 bg-white/28 dark:bg-gray-900/28 backdrop-blur-xl shadow-[0_4px_24px_rgba(0,0,0,0.05)] ring-1 ring-black/[0.04] dark:ring-white/[0.07] transition-all duration-300 ${
-                isAltTheme ? 'hover:opacity-95' : 'active:scale-95'
-              } ${isSearching ? 'cursor-wait' : ''} disabled:opacity-70`}
-              style={
-                isAltTheme
-                  ? {
-                      background: 'rgba(80, 93, 87, 0.36)',
-                      backdropFilter: 'blur(20px)',
-                      WebkitBackdropFilter: 'blur(20px)',
-                    }
-                  : undefined
-              }
-              onClick={() => {
-                handleSearch();
-                setShowStickySearchButton(true);
-              }}
-              disabled={isSearching}
-              title="Search"
-              aria-busy={isSearching}
-              aria-label={isSearching ? 'Searching…' : 'Search'}
-            >
-              {isSearching ? (
-                <Loader2
-                  className={`h-7 w-7 animate-spin ${isAltTheme ? 'text-zinc-200' : 'text-zinc-500 dark:text-zinc-400'}`}
-                  aria-hidden
-                />
-              ) : (
-                <Search
-                  className={`h-7 w-7 ${isAltTheme ? 'text-zinc-200' : 'text-zinc-500 dark:text-zinc-400'}`}
-                  strokeWidth={2.25}
-                />
-              )}
-            </button>
-          </div>
-        )}
-      </div>
-
-      {/* Mobile only: cards / table toggle — floating box bottom-right, above fixed tab bar */}
-      <div
-        className="md:hidden fixed right-3 flex items-center gap-0.5 rounded-2xl border border-base-200/80 dark:border-base-content/12 bg-base-100/88 dark:bg-base-300/75 backdrop-blur-md shadow-lg px-1.5 py-1.5 pointer-events-auto"
-        style={{
-          zIndex: MOBILE_BOTTOM_NAV_Z_INDEX + 5,
-          bottom: 'max(4.5rem, calc(3.75rem + env(safe-area-inset-bottom, 0px) + 0.5rem))',
-        }}
-        role="toolbar"
-        aria-label="Result view mode"
-      >
-        <button
-          type="button"
-          className={`btn btn-circle btn-sm min-w-[40px] min-h-[40px] w-10 h-10 border-0 transition-all duration-300 ${
-            viewMode === 'cards'
-              ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
-              : 'btn-ghost'
-          }`}
-          onClick={() => setViewMode('cards')}
-          title="Cards view"
-          aria-pressed={viewMode === 'cards'}
-        >
-          <Squares2X2Icon className="w-5 h-5" />
-        </button>
-        <button
-          type="button"
-          className={`btn btn-circle btn-sm min-w-[40px] min-h-[40px] w-10 h-10 border-0 transition-all duration-300 ${
-            viewMode === 'table'
-              ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
-              : 'btn-ghost'
-          }`}
-          onClick={() => setViewMode('table')}
-          title="Table view"
-          aria-pressed={viewMode === 'table'}
-        >
-          <TableCellsIcon className="w-5 h-5" />
-        </button>
-      </div>
-
       <h1
-        className={`text-3xl font-bold mb-6 md:px-0 ${isSearching ? 'hidden md:block' : ''}`}
+        className={`text-3xl font-bold mb-6 md:px-0 ${filtersPanelHidden ? 'hidden' : ''}`}
       >
         Leads Search
       </h1>
 
-      {/* Search Form - on mobile: 2 columns; Main Category and Category full width; rest in two columns */}
-      {/* Mobile: hide entire filter grid while search runs — only spinner shows until results */}
-      <div className={`mb-8 md:px-0 ${isSearching ? 'hidden md:block' : ''}`}>
-        <div className="grid grid-cols-2 md:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+      {/* Search Form */}
+      <div className={`mb-8 md:px-0 ${filtersPanelHidden ? 'hidden' : ''} ${isSearching ? 'max-md:hidden' : ''}`}>
+        {/* Mobile: horizontal filter chips */}
+        <div className="md:hidden mb-4 -mx-1">
+          <div
+            className="flex gap-2 overflow-x-auto pb-1 px-1 snap-x snap-mandatory [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
+            role="toolbar"
+            aria-label="Lead search filters"
+          >
+            {MOBILE_FILTER_CHIPS.map(({ key, label }) => {
+              const active = isMobileFilterActive(key);
+              const count = getMobileFilterCount(key);
+              const isOpen = activeMobileFilter === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => (isOpen ? closeMobileFilter() : openMobileFilter(key))}
+                  className={`shrink-0 snap-start inline-flex items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium transition-colors active:scale-[0.98] ${
+                    isOpen || active
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-gray-200 bg-white text-gray-700'
+                  }`}
+                  aria-expanded={isOpen}
+                >
+                  <span className="whitespace-nowrap">{label}</span>
+                  {count > 0 && (
+                    <span className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-bold text-primary-content">
+                      {count > 9 ? '9+' : count}
+                    </span>
+                  )}
+                  <ChevronDownIcon className={`h-4 w-4 shrink-0 opacity-60 transition-transform ${isOpen ? 'rotate-180' : ''}`} aria-hidden />
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="hidden md:grid grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
           {/* Main Category and Category: full width on mobile */}
           <div className="col-span-2 lg:col-span-1">
             <MainCategoryInput
@@ -4864,6 +5314,52 @@ const LeadSearchPage: React.FC = () => {
         </div>
       </div>
 
+      {activeMobileFilter && createPortal(
+        <div className="fixed inset-0 z-[100] md:hidden" role="presentation">
+          <div
+            className="absolute inset-0 bg-black/50"
+            onClick={closeMobileFilter}
+            aria-hidden="true"
+          />
+          <div
+            className="absolute bottom-0 left-0 right-0 flex max-h-[min(88vh,640px)] flex-col rounded-t-3xl bg-base-100 shadow-2xl overflow-hidden"
+            role="dialog"
+            aria-modal="true"
+            aria-label={MOBILE_FILTER_CHIPS.find(f => f.key === activeMobileFilter)?.label}
+            onClick={(e) => e.stopPropagation()}
+            style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}
+          >
+            <div className="flex justify-center pt-3 pb-2 shrink-0">
+              <div className="h-1 w-10 rounded-full bg-base-300" aria-hidden />
+            </div>
+            <div className="flex items-center justify-between gap-3 px-5 pb-4 border-b border-base-200 shrink-0">
+              <h2 className="text-lg font-semibold text-base-content">
+                {MOBILE_FILTER_CHIPS.find(f => f.key === activeMobileFilter)?.label}
+              </h2>
+              <button
+                type="button"
+                className="btn btn-ghost btn-circle btn-sm"
+                onClick={closeMobileFilter}
+                aria-label="Close filter"
+              >
+                <XMarkIcon className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="overflow-y-auto min-h-0 flex-1 px-4 py-4">
+              {renderMobileFilterControl(activeMobileFilter)}
+            </div>
+            <button
+              type="button"
+              className="mx-4 mt-2 mb-1 flex h-12 w-[calc(100%-2rem)] items-center justify-center rounded-xl bg-primary text-base font-semibold text-primary-content active:opacity-90"
+              onClick={closeMobileFilter}
+            >
+              Done
+            </button>
+          </div>
+        </div>,
+        document.body
+      )}
+
       {/* Results */}
       {searchPerformed && (
         <div ref={resultsRef}>
@@ -4906,7 +5402,7 @@ const LeadSearchPage: React.FC = () => {
               </>
             ) : (
               !isSearching && (
-                <div className="text-center p-8 bg-base-200 rounded-lg md:mx-0">
+                <div className="text-center p-8 bg-white rounded-lg md:mx-0 shadow-sm">
                   No leads found matching your criteria.
                 </div>
               )
@@ -4914,6 +5410,7 @@ const LeadSearchPage: React.FC = () => {
           </div>
         </div>
       )}
+
     </div>
   );
 };

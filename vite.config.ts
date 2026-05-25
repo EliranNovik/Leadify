@@ -34,7 +34,8 @@ export default defineConfig({
       '2261-2a00-a041-f225-300-54a2-b839-f8b8-e558.ngrok-free.app',
       '69e5-2a00-a041-f225-300-7914-e12f-664-bbfe.ngrok-free.app',
       'fdbca99b1373.ngrok-free.app',
-      'backend-eligibility-checker.onrender.com'
+      'backend-eligibility-checker.onrender.com',
+      '97a7-212-199-32-162.ngrok-free.app'
     ],
     proxy: {
       '/api': {

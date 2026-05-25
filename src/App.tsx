@@ -75,6 +75,9 @@ import {
   LazyNewHandlerCasesPage,
   LazyOutlookCalendarPage,
   LazyPaymentPage,
+  LazyPaymentSuccessPage,
+  LazyPaymentFailedPage,
+  LazyPaymentCancelledPage,
   LazyPipelinePage,
   LazyProformaCreatePage,
   LazyProformaLegacyCreatePage,
@@ -126,6 +129,7 @@ const AppContentInner: React.FC = () => {
     () => location.pathname === '/calendar' || location.pathname === '/outlook-calendar',
     [location.pathname],
   );
+  const isLeadSearchPage = useMemo(() => location.pathname === '/lead-search', [location.pathname]);
   const msalAccount = instance.getActiveAccount() || accounts[0];
   const userName = accounts.length > 0 ? accounts[0].name : undefined;
 
@@ -598,6 +602,9 @@ const AppContentInner: React.FC = () => {
       <Route path="/public-proforma-legacy/:id/:token" element={<RouteSuspense><LazyPublicProformaLegacyViewPage /></RouteSuspense>} />
       <Route path="/public-contract/:contractId/:token" element={<RouteSuspense><LazyPublicContractView /></RouteSuspense>} />
       <Route path="/public-legacy-contract/:contractId/:token" element={<RouteSuspense><LazyPublicLegacyContractView /></RouteSuspense>} />
+      <Route path="/payment/success" element={<RouteSuspense><LazyPaymentSuccessPage /></RouteSuspense>} />
+      <Route path="/payment/failed" element={<RouteSuspense><LazyPaymentFailedPage /></RouteSuspense>} />
+      <Route path="/payment/cancelled" element={<RouteSuspense><LazyPaymentCancelledPage /></RouteSuspense>} />
       <Route path="/payment/:token" element={<RouteSuspense><LazyPaymentPage /></RouteSuspense>} />
       <Route path="/cti/pop" element={<RouteSuspense><LazyCTIPopupPage /></RouteSuspense>} />
       <Route path="/my-profile/:employeeId" element={<RouteSuspense><LazyPublicProfilePage /></RouteSuspense>} />
@@ -872,7 +879,7 @@ const AppContentInner: React.FC = () => {
         path="/*"
         element={
           < ProtectedRoute user={authUser} >
-            <div className={`flex h-[100dvh] max-h-[100dvh] min-h-0 bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
+            <div className={`flex h-[100dvh] max-h-[100dvh] min-h-0 ${isLeadSearchPage ? 'bg-gray-100 dark:bg-base-300' : 'bg-base-100'} ${appJustLoggedIn ? 'fade-in' : ''}`}>
               {/* Always mount Sidebar so it does not reload when navigating; hide on full-width pages */}
               <div className={isSignedSalesPage || isCaseManagerPage || isContractPage ? 'hidden' : undefined}>
                 <Sidebar
@@ -884,7 +891,7 @@ const AppContentInner: React.FC = () => {
                   mobileOnly={sidebarMobileOnly}
                 />
               </div>
-              <div className={`flex min-h-0 flex-1 flex-col overflow-hidden bg-base-100 ${!isAdminPage && !isReportsPage && !isSignedSalesPage && !isCaseManagerPage && !isContractPage ? 'md:pl-24' : ''}`}>
+              <div className={`flex min-h-0 flex-1 flex-col overflow-hidden ${isLeadSearchPage ? 'bg-gray-100 dark:bg-base-300' : 'bg-base-100'} ${!isAdminPage && !isReportsPage && !isSignedSalesPage && !isCaseManagerPage && !isContractPage ? 'md:pl-24' : ''}`}>
                 <Header
                   onMenuClick={handleMenuClick}
                   onSearchClick={handleSearchClick}
@@ -900,7 +907,7 @@ const AppContentInner: React.FC = () => {
                 <main
                   className={`app-main-scroll min-h-0 w-full min-w-0 flex-1 overflow-y-auto ${
                     isCalendarPage ? 'max-md:overflow-x-hidden' : 'overflow-x-auto'
-                  } ${showBottomNav ? 'main-with-bottom-nav-padding' : ''}`}
+                  } ${showBottomNav ? 'main-with-bottom-nav-padding' : ''} ${isLeadSearchPage ? 'bg-gray-100 dark:bg-base-300' : ''}`}
                 >
                   <Routes>
                     <Route path="/" element={<HomeEntryPage />} />

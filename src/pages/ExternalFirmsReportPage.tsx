@@ -273,7 +273,7 @@ function ProfileAvatar({
 /** Skeleton loading rows for the firms table */
 function TableSkeleton({ rows = 6 }: { rows?: number }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-base-300 bg-base-100">
+    <div className="-mx-4 overflow-x-auto rounded-xl border border-base-300 bg-base-100 md:mx-0">
       {/* Fake header */}
       <div className="grid grid-cols-5 gap-4 border-b border-base-300 bg-base-200/40 px-4 py-3">
         {['Firm', 'Type', 'VAT', 'Website', 'Contacts'].map((h) => (
@@ -1279,7 +1279,7 @@ export default function ExternalFirmsReportPage() {
 
         {/* ── Toolbar: search + stats (firms list only) ────────────────── */}
         {view === 'firms' && (
-          <div className="sticky top-0 z-30 -mx-4 px-4 py-3 md:-mx-10 md:px-10 bg-base-100/95 backdrop-blur flex flex-col gap-3 md:flex-row md:items-center md:justify-between border-b border-base-300/50 shadow-sm md:border-b-0 md:shadow-none">
+          <div className="-mx-4 px-4 py-3 md:-mx-10 md:px-10 md:sticky md:top-0 md:z-30 md:bg-base-100/95 md:backdrop-blur flex flex-col gap-3 md:flex-row md:items-center md:justify-between border-b border-base-300/50 md:border-b-0">
             {/* Search + Faceted Filters */}
             <div className="flex flex-wrap flex-1 items-center gap-2">
               <label className="flex items-center gap-2.5 rounded-lg border border-base-300 bg-base-100 px-3 py-2 w-full md:max-w-[20rem] focus-within:border-primary/60 focus-within:ring-1 focus-within:ring-primary/20 transition-all duration-150 cursor-text">
@@ -1417,12 +1417,12 @@ export default function ExternalFirmsReportPage() {
               />
             ) : (
               // ── Firms table ─────────────────────────────────────────────
-              <div className="overflow-hidden rounded-xl border border-base-300 bg-base-100">
-                <table className="w-full text-base">
+              <div className="-mx-4 overflow-x-auto rounded-xl border border-base-300 bg-base-100 md:mx-0">
+                <table className="w-full min-w-[36rem] text-base">
                   <thead>
-                    <tr className="border-b border-base-300 bg-base-200/95 backdrop-blur sticky top-0 z-20">
+                    <tr className="border-b border-base-300 bg-base-200/95 md:sticky md:top-0 z-20">
                       <th 
-                        className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider w-[38%] sticky left-0 z-30 bg-base-200/95 shadow-[1px_0_0_0_var(--fallback-b3,oklch(var(--b3)))] cursor-pointer hover:bg-base-300/50 transition-colors select-none group/th"
+                        className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider w-[38%] md:sticky md:left-0 z-30 bg-base-200/95 md:shadow-[1px_0_0_0_var(--fallback-b3,oklch(var(--b3)))] cursor-pointer hover:bg-base-300/50 transition-colors select-none group/th"
                         onClick={() => handleSort('name')}
                       >
                         <div className={`flex items-center gap-2.5 ${sortKey === 'name' ? 'text-primary' : 'text-base-content/40 group-hover/th:text-base-content/70'}`}>
@@ -1481,7 +1481,7 @@ export default function ExternalFirmsReportPage() {
                             }
                           }}
                         >
-                          <td className="px-5 py-3 sticky left-0 z-10 bg-base-100 group-hover:bg-base-200/50 transition-colors duration-150 shadow-[1px_0_0_0_var(--fallback-b3,oklch(var(--b3)))]">
+                          <td className="px-5 py-3 md:sticky md:left-0 z-10 bg-base-100 group-hover:bg-base-200/50 transition-colors duration-150 md:shadow-[1px_0_0_0_var(--fallback-b3,oklch(var(--b3)))]">
                             <div className="flex items-center gap-3">
                               <div className="flex pl-1 shrink-0" onClick={(e) => e.stopPropagation()}>
                                 <input 
@@ -1604,7 +1604,7 @@ export default function ExternalFirmsReportPage() {
                 </div>
 
                 {/* Contacts section */}
-                <div className="rounded-xl border border-base-300 bg-base-100 overflow-hidden">
+                <div className="rounded-xl border border-base-300 bg-base-100">
                   <div className="flex items-center justify-between border-b border-base-300 bg-base-200/30 px-5 py-3">
                     <div className="flex items-center gap-2">
                       <UsersIcon className="h-4 w-4 text-base-content/50" />
@@ -1625,7 +1625,8 @@ export default function ExternalFirmsReportPage() {
                       No contacts linked to this firm
                     </div>
                   ) : (
-                    <table className="w-full text-base">
+                    <div className="overflow-x-auto">
+                    <table className="w-full min-w-[32rem] text-base">
                       <thead>
                         <tr className="border-b border-base-300/50">
                           <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-base-content/35 w-[28%]">Contact</th>
@@ -1739,6 +1740,7 @@ export default function ExternalFirmsReportPage() {
                         })}
                       </tbody>
                     </table>
+                    </div>
                   )}
                 </div>
 
@@ -1775,7 +1777,8 @@ export default function ExternalFirmsReportPage() {
                       No management costs yet
                     </div>
                   ) : (
-                    <table className="w-full text-base">
+                    <div className="overflow-x-auto">
+                    <table className="w-full min-w-[28rem] text-base">
                       <thead>
                         <tr className="border-b border-base-300/50">
                           <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-base-content/35">
@@ -1843,6 +1846,7 @@ export default function ExternalFirmsReportPage() {
                         ))}
                       </tbody>
                     </table>
+                    </div>
                   )}
                 </div>
 
@@ -1879,7 +1883,8 @@ export default function ExternalFirmsReportPage() {
                       No invoices yet
                     </div>
                   ) : (
-                    <table className="w-full text-base">
+                    <div className="overflow-x-auto">
+                    <table className="w-full min-w-[32rem] text-base">
                       <thead>
                         <tr className="border-b border-base-300/50">
                           <th className="px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-base-content/35">
@@ -1964,6 +1969,7 @@ export default function ExternalFirmsReportPage() {
                         ))}
                       </tbody>
                     </table>
+                    </div>
                   )}
                 </div>
               </div>

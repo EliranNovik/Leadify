@@ -179,6 +179,7 @@ const UsersManager: React.FC = () => {
       description="Manage system users and their permissions"
       pageSize={50}
       sortColumn="created_at"
+      auditUserIdSource="crm"
     />
   );
 };

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import { createPelecardPaymentSession } from '../lib/pelecardPaymentApi';
 import toast from 'react-hot-toast';
 import { 
   CreditCardIcon, 
@@ -13,6 +14,7 @@ import {
 
 interface PaymentLink {
   id: string;
+  secure_token?: string;
   amount: number;
   vat_amount: number;
   total_amount: number;
@@ -34,11 +36,7 @@ interface PaymentLink {
   };
 }
 
-interface PaymentFormData {
-  cardNumber: string;
-  expiryDate: string;
-  cvv: string;
-  cardholderName: string;
+interface PaymentContactForm {
   email: string;
   phone: string;
 }
@@ -52,14 +50,11 @@ const PaymentPage: React.FC = () => {
   const [processing, setProcessing] = useState(false);
   const [selectedMethod, setSelectedMethod] = useState<string>('credit_card');
   const [showThankYou, setShowThankYou] = useState(false);
-  const [formData, setFormData] = useState<PaymentFormData>({
-    cardNumber: '',
-    expiryDate: '',
-    cvv: '',
-    cardholderName: '',
+  const [formData, setFormData] = useState<PaymentContactForm>({
     email: '',
     phone: ''
   });
+  const [pageError, setPageError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchPaymentLink = async () => {
@@ -77,22 +72,42 @@ const PaymentPage: React.FC = () => {
             payment_plans:payment_plan_id(payment_order)
           `)
           .eq('secure_token', token)
-          .eq('status', 'pending')
-          .single();
+          .maybeSingle();
 
-        if (error) {
+        if (error || !data) {
           console.error('Error fetching payment link:', error);
-          toast.error('Payment link not found or expired');
+          setPageError('Payment link not found or invalid');
           return;
         }
 
-        // Check if expired
+        if (data.status === 'paid') {
+          setPaymentLink(data);
+          setShowThankYou(true);
+          return;
+        }
+
         if (data.expires_at && new Date(data.expires_at) < new Date()) {
-          toast.error('This payment link has expired');
+          setPageError('This payment link has expired. Please contact the office for a new link.');
+          return;
+        }
+
+        if (data.status === 'expired' || data.status === 'cancelled') {
+          setPageError(
+            data.status === 'cancelled'
+              ? 'This payment was cancelled. You can open the link again to retry.'
+              : 'This payment link has expired.'
+          );
+          if (data.status === 'cancelled') {
+            setPaymentLink(data);
+          }
           return;
         }
 
         setPaymentLink(data);
+        setFormData({
+          email: data.leads?.email || '',
+          phone: data.leads?.phone || '',
+        });
       } catch (error) {
         console.error('Error:', error);
         toast.error('Failed to load payment information');
@@ -104,147 +119,62 @@ const PaymentPage: React.FC = () => {
     fetchPaymentLink();
   }, [token]);
 
-  const handleInputChange = (field: keyof PaymentFormData, value: string) => {
+  const handleInputChange = (field: keyof PaymentContactForm, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  const formatCardNumber = (value: string) => {
-    const v = value.replace(/\s+/g, '').replace(/[^0-9]/gi, '');
-    const matches = v.match(/\d{4,16}/g);
-    const match = matches && matches[0] || '';
-    const parts = [];
-    for (let i = 0, len = match.length; i < len; i += 4) {
-      parts.push(match.substring(i, i + 4));
-    }
-    if (parts.length) {
-      return parts.join(' ');
-    } else {
-      return v;
-    }
-  };
+  const canPay =
+    paymentLink &&
+    paymentLink.status !== 'paid' &&
+    paymentLink.status !== 'expired' &&
+    !(paymentLink.expires_at && new Date(paymentLink.expires_at) < new Date());
 
-  const formatExpiryDate = (value: string) => {
-    const v = value.replace(/\s+/g, '').replace(/[^0-9]/gi, '');
-    if (v.length >= 2) {
-      return v.substring(0, 2) + '/' + v.substring(2, 4);
-    }
-    return v;
-  };
+  const startPelecardPayment = async () => {
+    if (!token || !paymentLink) return;
 
-  const validateForm = () => {
-    const errors: string[] = [];
-
-    if (selectedMethod === 'credit_card') {
-      if (!formData.cardNumber.replace(/\s/g, '') || formData.cardNumber.replace(/\s/g, '').length < 13) {
-        errors.push('Please enter a valid card number');
-      }
-      if (!formData.expiryDate || formData.expiryDate.length !== 5) {
-        errors.push('Please enter a valid expiry date (MM/YY)');
-      }
-      if (!formData.cvv || formData.cvv.length < 3) {
-        errors.push('Please enter a valid CVV');
-      }
-      if (!formData.cardholderName.trim()) {
-        errors.push('Please enter the cardholder name');
-      }
+    if (paymentLink.status === 'paid') {
+      toast.error('This payment has already been completed.');
+      return;
     }
 
-    // Only require email and phone for Apple Pay and Google Pay
+    if (selectedMethod === 'bank_transfer') {
+      toast('Please use the bank transfer details below. Online card payment uses Pelecard.', {
+        icon: 'ℹ️',
+      });
+      return;
+    }
+
     if (selectedMethod === 'apple_pay' || selectedMethod === 'google_pay') {
+      const errors: string[] = [];
       if (!formData.email.trim() || !formData.email.includes('@')) {
         errors.push('Please enter a valid email address');
       }
       if (!formData.phone.trim()) {
         errors.push('Please enter a phone number');
       }
-    }
-
-    return errors;
-  };
-
-  const processPayment = async () => {
-    const validationErrors = validateForm();
-    if (validationErrors.length > 0) {
-      validationErrors.forEach(error => toast.error(error));
-      return;
+      if (errors.length) {
+        errors.forEach(e => toast.error(e));
+        return;
+      }
     }
 
     setProcessing(true);
+    setPageError(null);
 
     try {
-      // Create transaction record
-      const { data: transaction, error: transactionError } = await supabase
-        .from('payment_transactions')
-        .insert({
-          payment_link_id: paymentLink!.id,
-          status: 'pending',
-          payment_method: selectedMethod,
-          amount: paymentLink!.total_amount
-        })
-        .select()
-        .single();
+      const result = await createPelecardPaymentSession(token);
 
-      if (transactionError) throw transactionError;
-
-      // Simulate payment processing delay
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // For testing: simulate successful payment
-      const success = Math.random() > 0.1; // 90% success rate for testing
-
-      if (success) {
-        // Update transaction as successful
-        await supabase
-          .from('payment_transactions')
-          .update({
-            status: 'success',
-            completed_at: new Date().toISOString(),
-            transaction_reference: `TEST_${Date.now()}`
-          })
-          .eq('id', transaction.id);
-
-        // Update payment link as paid
-        await supabase
-          .from('payment_links')
-          .update({
-            status: 'paid',
-            paid_at: new Date().toISOString(),
-            payment_method: selectedMethod,
-            transaction_reference: `TEST_${Date.now()}`
-          })
-          .eq('id', paymentLink!.id);
-
-        // Update the original payment plan as paid
-        await supabase
-          .from('payment_plans')
-          .update({
-            paid: true,
-            paid_at: new Date().toISOString(),
-            paid_by: formData.email
-          })
-          .eq('id', paymentLink!.payment_plan_id);
-
-        // Dispatch event to notify FinancesTab to refresh
-        window.dispatchEvent(new CustomEvent('paymentMarkedPaid', { detail: { paymentPlanId: paymentLink!.payment_plan_id } }));
-
-        toast.success('Payment processed successfully!');
-        setShowThankYou(true);
-      } else {
-        // Update transaction as failed
-        await supabase
-          .from('payment_transactions')
-          .update({
-            status: 'failed',
-            completed_at: new Date().toISOString(),
-            error_message: 'Payment declined - please try again or use a different payment method'
-          })
-          .eq('id', transaction.id);
-
-        toast.error('Payment failed. Please try again or use a different payment method.');
+      if (!result.success || !result.paymentUrl) {
+        throw new Error(result.error || 'Failed to create payment session');
       }
+
+      window.location.href = result.paymentUrl;
     } catch (error) {
-      console.error('Payment processing error:', error);
-      toast.error('An error occurred while processing your payment. Please try again.');
+      console.error('Payment error:', error);
+      const message =
+        error instanceof Error ? error.message : 'Could not start payment';
+      setPageError(message);
+      toast.error(message);
     } finally {
       setProcessing(false);
     }
@@ -265,6 +195,26 @@ const PaymentPage: React.FC = () => {
           <div className="flex items-center justify-center">
             <div className="loading loading-spinner loading-lg text-primary"></div>
             <span className="ml-3 text-lg font-medium text-gray-700">Loading payment details...</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!paymentLink && pageError) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-red-50 to-orange-100 flex items-center justify-center">
+        <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4">
+          <div className="text-center">
+            <ExclamationCircleIcon className="w-16 h-16 text-red-500 mx-auto mb-4" />
+            <h2 className="text-2xl font-bold text-gray-900 mb-2">Unable to load payment</h2>
+            <p className="text-gray-600 mb-6">{pageError}</p>
+            <button 
+              onClick={() => navigate('/')}
+              className="btn btn-primary"
+            >
+              Go Home
+            </button>
           </div>
         </div>
       </div>
@@ -530,69 +480,21 @@ const PaymentPage: React.FC = () => {
                   </div>
                 )}
 
-                {/* Payment Details */}
-                {selectedMethod === 'credit_card' && (
-                  <div className="mb-6">
-                    <h4 className="text-lg font-semibold text-gray-900 mb-4">Card Details</h4>
-                    <div className="space-y-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Cardholder Name *
-                        </label>
-                        <input
-                          type="text"
-                          className="input input-bordered w-full"
-                          value={formData.cardholderName}
-                          onChange={(e) => handleInputChange('cardholderName', e.target.value)}
-                          placeholder="John Doe"
-                          required
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Card Number *
-                        </label>
-                        <input
-                          type="text"
-                          className="input input-bordered w-full"
-                          value={formData.cardNumber}
-                          onChange={(e) => handleInputChange('cardNumber', formatCardNumber(e.target.value))}
-                          placeholder="1234 5678 9012 3456"
-                          maxLength={19}
-                          required
-                        />
-                      </div>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">
-                            Expiry Date *
-                          </label>
-                          <input
-                            type="text"
-                            className="input input-bordered w-full"
-                            value={formData.expiryDate}
-                            onChange={(e) => handleInputChange('expiryDate', formatExpiryDate(e.target.value))}
-                            placeholder="MM/YY"
-                            maxLength={5}
-                            required
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-gray-700 mb-2">
-                            CVV *
-                          </label>
-                          <input
-                            type="text"
-                            className="input input-bordered w-full"
-                            value={formData.cvv}
-                            onChange={(e) => handleInputChange('cvv', e.target.value.replace(/\D/g, ''))}
-                            placeholder="123"
-                            maxLength={4}
-                            required
-                          />
-                        </div>
-                      </div>
-                    </div>
+                {/* Secure Pelecard checkout — card data is not collected on this site */}
+                {(selectedMethod === 'credit_card' ||
+                  selectedMethod === 'apple_pay' ||
+                  selectedMethod === 'google_pay') && (
+                  <div className="mb-6 rounded-xl border border-violet-100 bg-violet-50/50 p-4">
+                    <h4 className="text-lg font-semibold text-gray-900 mb-2">Secure checkout</h4>
+                    <p className="text-sm text-gray-700 leading-relaxed">
+                      When you click Pay, you will be redirected to Pelecard&apos;s secure payment page
+                      to enter card details. Card numbers, expiry dates, and CVV are never sent to our
+                      servers.
+                    </p>
+                    <p className="text-xs text-gray-500 mt-2">
+                      Apple Pay and Google Pay are available on the Pelecard page when supported by your
+                      device.
+                    </p>
                   </div>
                 )}
 
@@ -611,22 +513,20 @@ const PaymentPage: React.FC = () => {
                   </div>
                 )}
 
-                {(selectedMethod === 'apple_pay' || selectedMethod === 'google_pay') && (
-                  <div className="mb-6 p-4 bg-gray-50 rounded-lg">
-                    <p className="text-sm text-gray-700">
-                      You will be redirected to {selectedMethod === 'apple_pay' ? 'Apple Pay' : 'Google Pay'} to complete your payment securely.
-                    </p>
-                  </div>
+                {pageError && (
+                  <p className="mb-4 text-sm text-red-600 text-center">{pageError}</p>
                 )}
 
                 {/* Pay Button */}
                 <button
-                  onClick={processPayment}
-                  disabled={processing}
+                  onClick={startPelecardPayment}
+                  disabled={processing || !canPay || selectedMethod === 'bank_transfer'}
                   className={`btn btn-primary btn-lg w-full ${processing ? 'loading' : ''}`}
                 >
                   {processing ? (
-                    'Processing Payment...'
+                    'Redirecting to secure payment…'
+                  ) : selectedMethod === 'bank_transfer' ? (
+                    <>Use bank transfer details above</>
                   ) : (
                     <>
                       Pay {getCurrencySymbol(paymentLink.currency)}{paymentLink.total_amount.toLocaleString()}

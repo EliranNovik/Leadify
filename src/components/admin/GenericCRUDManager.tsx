@@ -54,6 +54,8 @@ interface GenericCRUDManagerProps {
   refreshKey?: number;
   skipIdAssignment?: boolean; // Skip manual ID assignment for UUID tables
   hideDeleteButton?: boolean; // Hide delete button for non-super users
+  /** Most admin tables FK audit columns to auth.users(id). The `users` table uses public.users(id). */
+  auditUserIdSource?: 'auth' | 'crm';
 }
 
 interface Record {
@@ -73,7 +75,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   hideTitle = false,
   refreshKey = 0,
   skipIdAssignment = false,
-  hideDeleteButton = false
+  hideDeleteButton = false,
+  auditUserIdSource = 'auth',
 }) => {
   const [records, setRecords] = useState<Record[]>([]);
   const [loading, setLoading] = useState(true);
@@ -817,6 +820,9 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         }
       }
 
+      const auditUserId =
+        auditUserIdSource === 'crm' ? updatedByUserId : authUserId;
+
       // Resolve firm_id via tenants_employee (users table may not have firm_id column).
       if (currentUserFirmId == null && currentUserEmployeeId != null) {
         const { data: employeeRow } = await supabase
@@ -900,8 +906,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           
           // Only set updated_by if the table has that column
           const hasUpdatedByColumn = existingRecord && 'updated_by' in existingRecord;
-          if (updatedByUserId && hasUpdatedByColumn) {
-            updateDataWithoutId.updated_by = updatedByUserId;
+          if (auditUserId && hasUpdatedByColumn) {
+            updateDataWithoutId.updated_by = auditUserId;
           } else {
             delete updateDataWithoutId.updated_by;
           }
@@ -997,6 +1003,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             id, 
             created_at, 
             updated_at, 
+            created_by,
             auth_id, 
             date_joined, 
             last_login, 
@@ -1028,8 +1035,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           
           // Only set updated_by if the table has that column
           const hasUpdatedByColumn = existingRecord && 'updated_by' in existingRecord;
-          if (updatedByUserId && hasUpdatedByColumn) {
-            updateData.updated_by = updatedByUserId;
+          if (auditUserId && hasUpdatedByColumn) {
+            updateData.updated_by = auditUserId;
           } else {
             delete updateData.updated_by;
           }
@@ -1215,6 +1222,11 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             delete finalInsertRecord.id;
             console.log(`✅ Skipping ID assignment for ${tableName} (UUID table)`);
           }
+
+          delete finalInsertRecord.created_at;
+          delete finalInsertRecord.updated_at;
+          delete finalInsertRecord.created_by;
+          delete finalInsertRecord.updated_by;
           
           // Validate and truncate field lengths before insert
           console.log(`🔍 Validating field lengths before insert...`);

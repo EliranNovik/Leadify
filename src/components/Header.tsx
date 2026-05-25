@@ -261,7 +261,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const profileDropdownRef = useRef<HTMLDivElement>(null);
   const profileButtonRefMobile = useRef<HTMLButtonElement>(null);
   const profileDropdownRefDesktop = useRef<HTMLDivElement>(null);
-  const [profileDropdownPosition, setProfileDropdownPosition] = useState({ top: 0, left: 0 });
   const notificationsButtonRef = useRef<HTMLButtonElement>(null);
   const [notificationsDropdownPosition, setNotificationsDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
   const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
@@ -844,7 +843,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       const target = event.target as HTMLElement;
 
       // Close notifications when clicking outside (dropdown may be portaled)
-      if (notificationsRef.current && !notificationsRef.current.contains(target as Node)) {
+      const insideNotificationsTrigger =
+        notificationsRef.current?.contains(target as Node) ||
+        profileDropdownRef.current?.contains(target as Node) ||
+        document.querySelector('[data-profile-dropdown-mobile]')?.contains(target as Node);
+      if (!insideNotificationsTrigger) {
         const notificationDropdownEl = document.querySelector('[data-notification-dropdown]');
         if (!notificationDropdownEl?.contains(target as Node)) {
           setShowNotifications(false);
@@ -893,19 +896,21 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     };
   }, [showFilterDropdown, showQuickActionsDropdown, showProfileDropdown]);
 
-  // Update mobile profile dropdown position when it opens
-  useEffect(() => {
-    if (showProfileDropdown && profileButtonRefMobile.current) {
-      const rect = profileButtonRefMobile.current.getBoundingClientRect();
-      setProfileDropdownPosition({ top: rect.bottom + 8, left: rect.left });
-    }
-  }, [showProfileDropdown]);
-
   // Close quick actions and profile dropdown when route changes
   useEffect(() => {
     setShowQuickActionsDropdown(false);
     setShowProfileDropdown(false);
   }, [location.pathname]);
+
+  // Lock body scroll while mobile profile sheet is open
+  useEffect(() => {
+    if (!showProfileDropdown || !isMobile) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [showProfileDropdown, isMobile]);
 
   useEffect(() => {
     if (!showQuickActionsDropdown) {
@@ -6396,7 +6401,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     setShowNotifications(newShowState);
 
     if (newShowState) {
-      const rect = notificationsButtonRef.current?.getBoundingClientRect();
+      const anchor =
+        (isMobile ? profileButtonRefMobile.current : notificationsButtonRef.current) ??
+        notificationsButtonRef.current;
+      const rect = anchor?.getBoundingClientRect();
       if (rect) {
         // Keep the dropdown within the viewport, opening below the bell.
         const width = isMobile ? 288 : 320; // w-72 / w-80
@@ -6428,7 +6436,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     if (!showNotifications) return;
 
     const updatePosition = () => {
-      const rect = notificationsButtonRef.current?.getBoundingClientRect();
+      const anchor =
+        (isMobile ? profileButtonRefMobile.current : notificationsButtonRef.current) ??
+        notificationsButtonRef.current;
+      const rect = anchor?.getBoundingClientRect();
       if (!rect) return;
       const width = isMobile ? 288 : 320;
       const gutter = 12;
@@ -7290,12 +7301,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       'inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-base-content/70 transition-all duration-200 ease-out ' +
       'hover:bg-base-200/70 hover:text-base-content hover:shadow-md dark:hover:bg-base-300/45 active:scale-[0.96] ' +
       'focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/35 focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 dark:focus-visible:ring-offset-base-100';
+    const mobileBackButtonClass =
+      'md:hidden inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#3b28c7] text-white shadow-md ring-2 ring-white/25 hover:bg-[#3224b0] active:scale-95 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3b28c7]/40 focus-visible:ring-offset-2';
 
     return (
       <>
         <div
           data-mobile-header={isMobile ? 'floating' : undefined}
-          className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b md:border-base-200 md:dark:border-base-300 pt-safe pb-1.5 md:pb-0 md:pt-0"
+          className="navbar navbar-safe-x relative md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b md:border-base-200 md:dark:border-base-300 pt-safe pb-1.5 md:pb-0 md:pt-0"
         >
           {/* Left: Logo */}
           <div className="flex-1 justify-start flex items-center">
@@ -7399,6 +7412,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             >
               <ArrowRightOnRectangleIcon className="w-5 h-5" />
             </button>
+
+            {location.pathname !== '/login' && (
+              <button
+                type="button"
+                onClick={() => navigate(-1)}
+                className={mobileBackButtonClass}
+                aria-label="Go back"
+              >
+                <ChevronLeftIcon className="h-5 w-5" aria-hidden />
+              </button>
+            )}
           </div>
 
         </div>
@@ -7406,14 +7430,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     );
   }
 
+  const mobileBackButtonClass =
+    'md:hidden inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#3b28c7] text-white shadow-md ring-2 ring-white/25 hover:bg-[#3224b0] active:scale-95 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-[#3b28c7]/40 focus-visible:ring-offset-2';
+
   return (
     <>
       <div
         data-mobile-header={isMobile ? 'floating' : undefined}
-        className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b-0 md:border-transparent pt-safe pb-1.5 md:pb-0 md:pt-0"
+        className="navbar navbar-safe-x flex-nowrap md:px-0 h-11 md:h-12 md:max-h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b-0 md:border-transparent pt-safe pb-1.5 md:pb-0 md:pt-0"
       >
         {/* Left section with menu and logo */}
-        <div className={`flex-1 justify-start flex items-center gap-2 md:gap-4 overflow-hidden md:overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+        <div className={`shrink-0 flex items-center gap-2 md:gap-4 overflow-hidden md:overflow-visible transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
           <button
             type="button"
             className="btn btn-ghost md:hidden min-h-0 h-10 w-10 p-0 border-0 text-base-content/90 hover:bg-base-200/60 dark:hover:bg-base-300/40 rounded-lg"
@@ -7429,17 +7456,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
           {/* Profile + dropdown: mobile only */}
           <div className="relative flex items-center flex-shrink-0 md:hidden" ref={profileDropdownRef}>
-            <button
-              ref={profileButtonRefMobile}
-              type="button"
-              className="btn btn-ghost min-h-0 h-10 w-10 p-0 rounded-full border-0 flex items-center justify-center overflow-hidden ring-0 hover:bg-base-200/50 dark:hover:bg-base-300/30"
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowProfileDropdown((v) => !v);
-              }}
-              aria-expanded={showProfileDropdown}
-              aria-haspopup="true"
-            >
+            <div className="relative">
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 z-30 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </span>
+              )}
+              <button
+                ref={profileButtonRefMobile}
+                type="button"
+                className="btn btn-ghost min-h-0 h-10 w-10 p-0 rounded-full border-0 flex items-center justify-center overflow-hidden ring-0 hover:bg-base-200/50 dark:hover:bg-base-300/30"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowProfileDropdown((v) => !v);
+                }}
+                aria-expanded={showProfileDropdown}
+                aria-haspopup="true"
+              >
               {resolvedHeaderPhotoUrl ? (
                 <>
                   <span
@@ -7470,116 +7503,180 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   <UserIcon className="w-5 h-5 text-base-content/70" />
                 )}
               </span>
-            </button>
+              </button>
+            </div>
             {showProfileDropdown && isMobile && createPortal(
               <div
+                className="fixed inset-0 z-[100] md:hidden flex items-end justify-center"
                 data-profile-dropdown-mobile
-                className="fixed w-52 py-1 rounded-xl shadow-xl border border-base-300 bg-base-100 z-[100]"
-                role="menu"
-                style={{ top: profileDropdownPosition.top, left: profileDropdownPosition.left }}
-                onClick={(e) => e.stopPropagation()}
+                role="presentation"
               >
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
-                  onClick={() => {
-                    setShowProfileDropdown(false);
-                    navigate('/my-profile');
-                  }}
+                <div
+                  className="absolute inset-0 bg-black/50"
+                  onClick={() => setShowProfileDropdown(false)}
+                  aria-hidden="true"
+                />
+                <div
+                  className="relative w-full max-h-[min(88vh,640px)] flex flex-col bg-base-100 rounded-t-3xl shadow-2xl overflow-hidden"
+                  role="menu"
+                  onClick={(e) => e.stopPropagation()}
+                  style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}
                 >
-                  <UserIcon className="w-5 h-5 text-base-content/70" />
-                  View profile
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
-                  onClick={() => {
-                    setShowProfileDropdown(false);
-                    setIsHighlightsPanelOpen(true);
-                  }}
-                >
-                  <StarIcon className="w-5 h-5 text-base-content/70" style={{ color: '#3E28CD' }} />
-                  Highlights
-                </button>
-                {typeof onOpenAIChat === 'function' && (
+                  <div className="flex justify-center pt-3 pb-2 shrink-0">
+                    <div className="h-1 w-10 rounded-full bg-base-300" aria-hidden />
+                  </div>
+
+                  <div className="flex items-center gap-3 px-5 pb-4 border-b border-base-200 shrink-0">
+                    <div className="relative shrink-0">
+                      {resolvedHeaderPhotoUrl ? (
+                        <span
+                          className="block h-12 w-12 rounded-full bg-base-300 bg-cover bg-center ring-2 ring-base-200"
+                          style={{ backgroundImage: `url(${resolvedHeaderPhotoUrl})` }}
+                        />
+                      ) : (
+                        <span className="flex h-12 w-12 items-center justify-center rounded-full bg-base-300 text-base font-semibold text-base-content/80 ring-2 ring-base-200">
+                          {(authUserInitials || (authUserFullName || userFullName || '').trim().split(/\s+/).map(n => n[0]).join('').toUpperCase().slice(0, 2)) || 'U'}
+                        </span>
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-base font-semibold text-base-content truncate">
+                        {currentUserEmployee?.official_name || currentUserEmployee?.display_name || userFullName || authUserFullName || 'User'}
+                      </p>
+                      <p className="text-sm text-base-content/60 truncate">Account menu</p>
+                    </div>
+                  </div>
+
+                  <div className="overflow-y-auto min-h-0">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
+                      onClick={() => {
+                        setShowProfileDropdown(false);
+                        navigate('/my-profile');
+                      }}
+                    >
+                      <UserIcon className="h-6 w-6 shrink-0 text-base-content/60" />
+                      <span className="text-base font-medium">View profile</span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
+                      onClick={() => {
+                        setShowProfileDropdown(false);
+                        handleNotificationClick();
+                      }}
+                    >
+                      <BellIcon className="h-6 w-6 shrink-0 text-base-content/60" />
+                      <span className="flex flex-1 items-center justify-between gap-3 min-w-0">
+                        <span className="text-base font-medium">Notifications</span>
+                        {unreadCount > 0 && (
+                          <span className="badge badge-primary badge-sm min-w-[1.25rem] px-1.5">
+                            {unreadCount > 9 ? '9+' : unreadCount}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
+                      onClick={() => {
+                        setShowProfileDropdown(false);
+                        setIsHighlightsPanelOpen(true);
+                      }}
+                    >
+                      <StarIcon className="h-6 w-6 shrink-0" style={{ color: '#3E28CD' }} />
+                      <span className="text-base font-medium">Highlights</span>
+                    </button>
+                    {typeof onOpenAIChat === 'function' && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
+                        onClick={() => {
+                          setShowProfileDropdown(false);
+                          onOpenAIChat();
+                        }}
+                      >
+                        <FaRobot className="h-6 w-6 shrink-0 text-base-content/60" />
+                        <span className="text-base font-medium">RMQ AI</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
+                      onClick={() => {
+                        setShowProfileDropdown(false);
+                        navigate('/settings');
+                      }}
+                    >
+                      <Cog6ToothIcon className="h-6 w-6 shrink-0 text-base-content/60" />
+                      <span className="text-base font-medium">Settings</span>
+                    </button>
+                    {currentUser?.extern && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
+                        onClick={() => {
+                          setShowProfileDropdown(false);
+                          navigate('/external-settings');
+                        }}
+                      >
+                        <Cog6ToothIcon className="h-6 w-6 shrink-0 text-base-content/60" />
+                        <span className="text-base font-medium">External settings</span>
+                      </button>
+                    )}
+                    {!userAccount && (
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70 disabled:opacity-60"
+                        onClick={() => {
+                          setShowProfileDropdown(false);
+                          handleMicrosoftSignIn();
+                        }}
+                        disabled={isMsalLoading || !isMsalInitialized}
+                      >
+                        <svg className="h-5 w-5 shrink-0" viewBox="0 0 24 24">
+                          <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
+                        </svg>
+                        <span className="text-base font-medium">Sign in with Microsoft</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-4 px-5 py-4 text-left transition-colors hover:bg-error/10 active:bg-error/15 text-error"
+                      onClick={() => {
+                        setShowProfileDropdown(false);
+                        handleSignOut();
+                      }}
+                    >
+                      <ArrowRightOnRectangleIcon className="h-6 w-6 shrink-0" />
+                      <span className="text-base font-medium">Log out</span>
+                    </button>
+                  </div>
+
                   <button
                     type="button"
-                    role="menuitem"
-                    className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
-                    onClick={() => {
-                      setShowProfileDropdown(false);
-                      onOpenAIChat();
-                    }}
+                    className="mx-4 mt-3 mb-1 flex h-12 w-[calc(100%-2rem)] items-center justify-center rounded-xl bg-base-200/80 text-base font-semibold text-base-content active:bg-base-300"
+                    onClick={() => setShowProfileDropdown(false)}
                   >
-                    <FaRobot className="w-5 h-5 text-base-content/70" />
-                    RMQ AI
+                    Cancel
                   </button>
-                )}
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
-                  onClick={() => {
-                    setShowProfileDropdown(false);
-                    navigate('/settings');
-                  }}
-                >
-                  <Cog6ToothIcon className="w-5 h-5 text-base-content/70" />
-                  Settings
-                </button>
-                {currentUser?.extern && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
-                    onClick={() => {
-                      setShowProfileDropdown(false);
-                      navigate('/external-settings');
-                    }}
-                  >
-                    <Cog6ToothIcon className="w-5 h-5 text-base-content/70" />
-                    External settings
-                  </button>
-                )}
-                {!userAccount && (
-                  <button
-                    type="button"
-                    role="menuitem"
-                    className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
-                    onClick={() => {
-                      setShowProfileDropdown(false);
-                      handleMicrosoftSignIn();
-                    }}
-                    disabled={isMsalLoading || !isMsalInitialized}
-                  >
-                    <svg className="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24">
-                      <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
-                    </svg>
-                    <span className="text-base-content/70">Sign in with Microsoft</span>
-                  </button>
-                )}
-                <div className="border-t border-base-300 my-1" />
-                <button
-                  type="button"
-                  role="menuitem"
-                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors text-error"
-                  onClick={() => {
-                    setShowProfileDropdown(false);
-                    handleSignOut();
-                  }}
-                >
-                  <ArrowRightOnRectangleIcon className="w-5 h-5" />
-                  Log out
-                </button>
+                </div>
               </div>,
               document.body
             )}
           </div>
 
           {/* Desktop: hamburger flush left, RMQ logo next to it */}
-          <div className="hidden md:flex items-center h-10 pl-2 md:pl-4">
+          <div className="hidden md:flex items-center h-10 pl-0 md:pl-1">
             <button
               ref={buttonRef}
               type="button"
@@ -7940,13 +8037,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
         {/* Search bar — centered; desktop: always visible; mobile: hidden until opened (icon next to bell) */}
         <div
-          className={`relative transition-all duration-300 flex-1 min-w-0 ${
+          className={`relative transition-all duration-300 flex-1 min-w-0 md:h-12 md:items-center ${
             isMobile && !isSearchActive ? 'hidden md:flex' : 'flex'
           }`}
         >
           <div
             ref={searchContainerRef}
-            className={`min-w-12 min-h-12 md:min-h-[56px] transition-all duration-[700ms] ease-in-out cursor-pointer px-2 md:px-0 ${isSearchActive
+            className={`min-w-12 min-h-12 md:min-h-0 md:h-12 transition-all duration-[700ms] ease-in-out cursor-pointer px-2 md:px-0 ${isSearchActive
               ? isMobile
                 ? 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100vw-120px)]'
                 : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-xl md:max-w-xl'
@@ -8466,7 +8563,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           , document.body)}
 
         {/* Right section with notifications and user */}
-        <div className={`flex-1 justify-end flex items-center gap-2 md:gap-4 transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
+        <div className={`ml-auto md:ml-0 shrink-0 flex items-center justify-end gap-1.5 md:gap-4 pr-1 md:pr-0 transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
           {/* Sign out button and Welcome message - desktop only */}
           {/* <button
             className="btn btn-ghost btn-circle btn-sm mr-2 hidden md:inline-flex"
@@ -8543,8 +8640,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             <MagnifyingGlassIcon className="w-7 h-7" />
           </button>
 
-          {/* Notifications */}
-          <div className="relative flex h-10 w-10 shrink-0 items-center justify-center md:h-auto md:w-auto" ref={notificationsRef}>
+          {/* Notifications — desktop only (mobile bell lives on profile avatar) */}
+          <div className="relative hidden md:flex h-10 w-10 shrink-0 items-center justify-center md:h-auto md:w-auto" ref={notificationsRef}>
             <button
               type="button"
               ref={notificationsButtonRef}
@@ -8861,15 +8958,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             ), document.body)}
           </div>
 
-          {/* Mobile back button - right corner inside header (hidden on login) */}
           {location.pathname !== '/login' && (
             <button
               type="button"
               onClick={() => navigate(-1)}
-              className="btn btn-ghost md:hidden min-h-0 h-10 w-10 p-0 border-0 text-base-content/90 hover:bg-base-200/60 dark:hover:bg-base-300/40 rounded-lg flex-shrink-0"
+              className={`${mobileBackButtonClass} z-[60]`}
               aria-label="Go back"
             >
-              <ChevronLeftIcon className="w-7 h-7" aria-hidden />
+              <ChevronLeftIcon className="h-5 w-5" aria-hidden />
             </button>
           )}
         </div>

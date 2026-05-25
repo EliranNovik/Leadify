@@ -335,7 +335,7 @@ html,
 }
 @media (min-width: 768px) {
   .app-main-scroll {
-    padding-top: calc(3rem + 0.75rem); /* md:h-12 + breathing room */
+    padding-top: 3rem; /* md:h-12 — match header height only */
     padding-bottom: 0;
   }
 }

@@ -56,6 +56,15 @@ export const LazyPublicProformaLegacyViewPage = lazy(() => import('../pages/Publ
 export const LazyPublicContractView = lazy(() => import('../pages/PublicContractView'));
 export const LazyPublicLegacyContractView = lazy(() => import('../pages/PublicLegacyContractView'));
 export const LazyPaymentPage = lazy(() => import('../pages/PaymentPage'));
+export const LazyPaymentSuccessPage = lazy(() =>
+  import('../pages/PaymentResultPage').then((m) => ({ default: m.PaymentSuccessPage }))
+);
+export const LazyPaymentFailedPage = lazy(() =>
+  import('../pages/PaymentResultPage').then((m) => ({ default: m.PaymentFailedPage }))
+);
+export const LazyPaymentCancelledPage = lazy(() =>
+  import('../pages/PaymentResultPage').then((m) => ({ default: m.PaymentCancelledPage }))
+);
 export const LazyCTIPopupPage = lazy(() => import('../pages/CTIPopupPage'));
 export const LazyCTIPopupModal = lazy(() => import('../components/CTIPopupModal'));
 export const LazyProformaCreatePage = lazy(() => import('../pages/ProformaCreatePage'));

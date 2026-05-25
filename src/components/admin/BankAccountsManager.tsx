@@ -95,6 +95,8 @@ const BankAccountsManager: React.FC = () => {
       title="Bank Account"
       description="Manage company bank accounts and their details"
       pageSize={10}
+      skipIdAssignment
+      auditUserIdSource="auth"
     />
   );
 };
