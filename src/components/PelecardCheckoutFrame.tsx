@@ -27,29 +27,9 @@ function CheckoutSkeleton() {
   );
 }
 
-/** Fits typical Pelecard form; postMessage may adjust further. */
-const DEFAULT_IFRAME_HEIGHT = 620;
-const MIN_IFRAME_HEIGHT = 480;
-const MAX_IFRAME_HEIGHT = 1200;
-
-function parseIframeHeightMessage(data: unknown): number | null {
-  if (typeof data === 'number' && data > MIN_IFRAME_HEIGHT) return data;
-  if (typeof data === 'string') {
-    const parsed = Number(data);
-    if (parsed > MIN_IFRAME_HEIGHT) return parsed;
-    return null;
-  }
-  if (!data || typeof data !== 'object') return null;
-  const record = data as Record<string, unknown>;
-  const candidate =
-    record.height ??
-    record.frameHeight ??
-    record.iframeHeight ??
-    record.scrollHeight ??
-    (record.data as Record<string, unknown> | undefined)?.height;
-  const n = typeof candidate === 'number' ? candidate : Number(candidate);
-  return Number.isFinite(n) && n > MIN_IFRAME_HEIGHT ? n : null;
-}
+/** Minimum iframe document height; outer shell scrolls when viewport is shorter. */
+const IFRAME_CONTENT_HEIGHT = 920;
+const IFRAME_SHELL_MAX_HEIGHT = 'max-h-[calc(100dvh-13rem)] lg:max-h-[calc(100dvh-10rem)]';
 
 const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
   paymentUrl,
@@ -62,18 +42,31 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
 }) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
-  const [iframeHeight, setIframeHeight] = useState(DEFAULT_IFRAME_HEIGHT);
+  const [iframeHeight, setIframeHeight] = useState(IFRAME_CONTENT_HEIGHT);
 
   useEffect(() => {
-    setIframeHeight(DEFAULT_IFRAME_HEIGHT);
+    setIframeHeight(IFRAME_CONTENT_HEIGHT);
     setIframeLoaded(false);
   }, [paymentUrl]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      const next = parseIframeHeightMessage(event.data);
-      if (next == null) return;
-      setIframeHeight(Math.min(MAX_IFRAME_HEIGHT, Math.max(MIN_IFRAME_HEIGHT, Math.ceil(next + 4))));
+      const data = event.data;
+      let next: number | null = null;
+      if (typeof data === 'number' && data > 400) next = data;
+      else if (data && typeof data === 'object') {
+        const record = data as Record<string, unknown>;
+        const candidate =
+          record.height ??
+          record.frameHeight ??
+          record.iframeHeight ??
+          record.scrollHeight;
+        const n = typeof candidate === 'number' ? candidate : Number(candidate);
+        if (Number.isFinite(n) && n > 400) next = n;
+      }
+      if (next != null) {
+        setIframeHeight(Math.min(1400, Math.max(IFRAME_CONTENT_HEIGHT, Math.ceil(next + 8))));
+      }
     };
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
@@ -107,7 +100,7 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
 
   return (
     <div
-      className={`iframe-shell flex flex-col w-full border-0 bg-transparent ${shellClassName}`.trim()}
+      className={`iframe-shell flex flex-col w-full min-h-0 border-0 bg-transparent ${shellClassName}`.trim()}
     >
       {loading && (
         <div className="flex flex-col items-center justify-center text-center py-14 px-6 w-full min-h-[480px]">
@@ -138,9 +131,11 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
       )}
 
       {paymentUrl && !loading && !error && (
-        <div className="relative w-full" style={{ height: iframeHeight }}>
+        <div
+          className={`relative w-full lg:flex-1 lg:min-h-0 overflow-y-auto overscroll-y-contain ${IFRAME_SHELL_MAX_HEIGHT}`}
+        >
           {showIframeLoading && (
-            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center px-4 sm:px-6 min-h-[480px]">
+            <div className="sticky top-0 z-10 flex flex-col items-center justify-center px-4 sm:px-6 min-h-[480px] bg-white">
               <CheckoutSkeleton />
               <p className="text-xs text-gray-500 mt-4">Connecting to Pelecard…</p>
             </div>
@@ -150,8 +145,8 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
             title={title}
             src={paymentUrl}
             className="w-full border-0 bg-transparent block"
-            style={{ height: iframeHeight }}
-            scrolling="no"
+            style={{ height: iframeHeight, minHeight: IFRAME_CONTENT_HEIGHT }}
+            scrolling="yes"
             allow="payment; publickey-credentials-get *"
             referrerPolicy="strict-origin-when-cross-origin"
             onLoad={handleLoad}

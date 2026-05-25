@@ -3,7 +3,8 @@
 html {
   font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   -webkit-text-size-adjust: 100%;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 body {
@@ -12,9 +13,10 @@ body {
   color: #111827;
   background: #ffffff !important;
   margin: 0;
-  padding: 0;
+  padding: 0 0 16px;
   direction: ltr;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .main,
@@ -99,38 +101,63 @@ h3 {
   text-align: left !important;
 }
 
-/* Payment method tabs */
+/* Payment method tabs — horizontal row */
 .main-content .row:has(.tab-button),
-form .row:has(.tab-button) {
+form .row:has(.tab-button),
+.row.tab-row,
+div.row:has(> .tab-button),
+div.row:has(> [class*='col-'] .tab-button) {
   display: flex !important;
-  flex-wrap: wrap !important;
-  gap: 10px !important;
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: stretch !important;
+  gap: 8px !important;
   justify-content: flex-start !important;
   margin: 0 0 20px !important;
   padding: 0 !important;
+  width: 100% !important;
+  overflow-x: auto !important;
+  -webkit-overflow-scrolling: touch;
 }
 
-.main-content .row:has(.tab-button) > [class*='col-sm'],
-form .row:has(.tab-button) > [class*='col-sm'] {
+.main-content .row:has(.tab-button)::before,
+.main-content .row:has(.tab-button)::after,
+form .row:has(.tab-button)::before,
+form .row:has(.tab-button)::after {
+  display: none !important;
+  content: none !important;
+}
+
+.main-content .row:has(.tab-button) > [class*='col-'],
+form .row:has(.tab-button) > [class*='col-'],
+form .row:has(.tab-button) > div,
+.main-content .row:has(.tab-button) > .col-sm-12,
+form .row:has(.tab-button) > .col-sm-12 {
   float: none !important;
+  display: block !important;
+  flex: 1 1 0 !important;
   width: auto !important;
-  flex: 1 1 108px !important;
-  max-width: 132px !important;
-  min-width: 96px !important;
+  max-width: none !important;
+  min-width: 72px !important;
   padding: 0 !important;
+  margin: 0 !important;
 }
 
 .tab-button {
   width: 100% !important;
-  min-height: 84px !important;
+  min-height: 72px !important;
   border: 1.5px solid #e5e7eb !important;
   border-radius: 8px !important;
   background: #ffffff !important;
-  padding: 10px 8px !important;
+  padding: 8px 6px !important;
   margin: 0 !important;
   box-shadow: none !important;
   cursor: pointer !important;
   transition: border-color 0.15s ease !important;
+}
+
+.tab-button:hover {
+  border-color: #93c5fd !important;
 }
 
 .tab-button.highlighted,
@@ -307,9 +334,13 @@ input.btn-submit[type='submit']:focus {
 }
 
 @media (max-width: 520px) {
-  .main-content .row:has(.tab-button) > [class*='col-sm'],
-  form .row:has(.tab-button) > [class*='col-sm'] {
-    flex: 1 1 calc(50% - 10px) !important;
-    max-width: calc(50% - 5px) !important;
+  .main-content .row:has(.tab-button) > [class*='col-'],
+  form .row:has(.tab-button) > [class*='col-'] {
+    flex: 0 0 22% !important;
+    min-width: 68px !important;
+  }
+
+  .tab-button {
+    min-height: 68px !important;
   }
 }

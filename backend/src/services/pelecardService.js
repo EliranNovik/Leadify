@@ -37,7 +37,7 @@ function appendCssVersion(url, version) {
 
 /** Pelecard fetches CssURL from their servers — localhost URLs never work. */
 function resolvePelecardCssUrl(config) {
-  const cssVersion = (process.env.PELECARD_CSS_VERSION || '7').trim();
+  const cssVersion = (process.env.PELECARD_CSS_VERSION || '8').trim();
   const explicit = (process.env.PELECARD_CSS_URL || '').trim();
   if (explicit) return appendCssVersion(explicit, cssVersion);
 

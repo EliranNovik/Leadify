@@ -361,7 +361,7 @@ const PaymentPage: React.FC = () => {
         </div>
       </aside>
 
-      <main className="flex-1 min-h-0 overflow-y-auto bg-white">
+      <main className="flex-1 min-h-0 flex flex-col overflow-y-auto lg:overflow-hidden bg-white">
         <div
           className="lg:hidden relative overflow-hidden text-white px-5 pt-8 pb-7"
           style={SUMMARY_GRADIENT_STYLE}
@@ -382,8 +382,8 @@ const PaymentPage: React.FC = () => {
           </div>
         </div>
 
-        <div className="checkout-payment w-full max-w-xl mx-auto px-6 sm:px-10 py-8 lg:py-12">
-          <h2 className="hidden lg:block text-xl font-semibold text-gray-900 mb-6 tracking-tight">
+        <div className="checkout-payment lg:flex-1 lg:min-h-0 flex flex-col w-full max-w-4xl mx-auto px-6 sm:px-10 lg:max-w-none lg:mx-0 lg:px-12 xl:px-16 py-8 lg:py-12">
+          <h2 className="hidden lg:block text-xl font-semibold text-gray-900 mb-6 tracking-tight shrink-0">
             Payment information
           </h2>
           <PelecardCheckoutFrame
@@ -393,10 +393,13 @@ const PaymentPage: React.FC = () => {
             onRetry={loadPelecardSession}
             onCheckoutNavigate={(path) => navigate(path)}
             title="Secure payment"
+            shellClassName="lg:flex-1 lg:min-h-0"
           />
         </div>
 
-        <PublicContractFooter variant="payment" />
+        <div className="shrink-0">
+          <PublicContractFooter variant="payment" />
+        </div>
       </main>
 
       <PublicPageContactButtons />
