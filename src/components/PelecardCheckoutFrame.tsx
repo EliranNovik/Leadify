@@ -1,5 +1,6 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { ArrowPathIcon, ExclamationCircleIcon } from '@heroicons/react/24/outline';
+import { paymentFormErrorCopy } from '../lib/paymentPageUtils';
 
 interface PelecardCheckoutFrameProps {
   paymentUrl: string | null;
@@ -7,6 +8,21 @@ interface PelecardCheckoutFrameProps {
   error?: string | null;
   onRetry?: () => void;
   title?: string;
+  onCheckoutNavigate?: (pathWithQuery: string) => void;
+}
+
+function CheckoutSkeleton() {
+  return (
+    <div className="space-y-3 py-2 animate-pulse w-full max-w-sm mx-auto" aria-hidden>
+      <div className="h-3 bg-gray-100 rounded w-1/3" />
+      <div className="h-10 bg-gray-100 rounded-xl w-full" />
+      <div className="grid grid-cols-2 gap-2">
+        <div className="h-10 bg-gray-100 rounded-xl" />
+        <div className="h-10 bg-gray-100 rounded-xl" />
+      </div>
+      <div className="h-10 bg-gray-100 rounded-xl w-2/5" />
+    </div>
+  );
 }
 
 const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
@@ -14,63 +30,93 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
   loading = false,
   error = null,
   onRetry,
-  title = 'Secure card checkout',
+  title = 'Payment',
+  onCheckoutNavigate,
 }) => {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
 
   const handleLoad = useCallback(() => {
     setIframeLoaded(true);
-  }, []);
+    if (!onCheckoutNavigate || !iframeRef.current) return;
+    try {
+      const href = iframeRef.current.contentWindow?.location.href;
+      if (!href) return;
+      const url = new URL(href);
+      if (
+        url.pathname.startsWith('/payment/success') ||
+        url.pathname.startsWith('/payment/failed') ||
+        url.pathname.startsWith('/payment/cancelled')
+      ) {
+        onCheckoutNavigate(`${url.pathname}${url.search}`);
+      }
+    } catch {
+      /* cross-origin */
+    }
+  }, [onCheckoutNavigate]);
 
-  if (loading) {
-    return (
-      <div className="flex flex-col items-center justify-center gap-4 py-16 rounded-2xl border border-violet-100 bg-violet-50/40">
-        <span className="loading loading-spinner loading-lg text-primary" />
-        <p className="text-sm text-gray-600">Preparing secure checkout…</p>
-      </div>
-    );
-  }
+  const showIframeLoading = paymentUrl && !iframeLoaded && !loading && !error;
+  const errCopy = paymentFormErrorCopy(error);
 
   if (error) {
-    return (
-      <div className="rounded-2xl border border-red-100 bg-red-50 p-6 text-center">
-        <ExclamationCircleIcon className="w-10 h-10 text-red-500 mx-auto mb-3" />
-        <p className="text-sm text-red-800 mb-4">{error}</p>
-        {onRetry && (
-          <button type="button" className="btn btn-primary btn-sm gap-2" onClick={onRetry}>
-            <ArrowPathIcon className="w-4 h-4" />
-            Try again
-          </button>
-        )}
-      </div>
-    );
+    console.error('[Pelecard] Payment form error:', error);
   }
 
-  if (!paymentUrl) {
-    return null;
-  }
+  const tallShell = !error || loading;
 
   return (
-    <div className="rounded-2xl border border-gray-200 overflow-hidden bg-white shadow-inner">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-slate-50">
-        <p className="text-sm font-semibold text-gray-800">{title}</p>
-        {!iframeLoaded && (
-          <span className="loading loading-spinner loading-sm text-primary" />
-        )}
-      </div>
-      <iframe
-        title={title}
-        src={paymentUrl}
-        className="w-full border-0 bg-white"
-        style={{ minHeight: 720, height: '72vh', maxHeight: 900 }}
-        allow="payment; publickey-credentials-get *"
-        referrerPolicy="strict-origin-when-cross-origin"
-        onLoad={handleLoad}
-      />
-      <p className="px-4 py-2 text-xs text-gray-500 border-t border-gray-100 bg-slate-50">
-        Card details are entered on Pelecard&apos;s PCI-certified page. Apple Pay and Google Pay
-        appear here when enabled on your device and merchant account.
-      </p>
+    <div
+      className={`iframe-shell border border-gray-200 rounded-[20px] bg-white flex flex-col overflow-hidden ${
+        tallShell ? 'min-h-[520px]' : 'min-h-0'
+      }`}
+    >
+      {loading && (
+        <div className="flex flex-col items-center justify-center text-center py-14 px-6 flex-1 min-h-[520px]">
+          <CheckoutSkeleton />
+          <p className="text-sm font-medium text-gray-700 mt-6">Loading secure payment form…</p>
+          <p className="text-xs text-gray-500 mt-1">This may take a few seconds.</p>
+        </div>
+      )}
+
+      {error && !loading && (
+        <div className="flex items-center justify-center py-10 px-6">
+          <div className="text-center max-w-sm bg-gray-50 border border-gray-100 rounded-2xl px-6 py-8">
+            <ExclamationCircleIcon className="w-10 h-10 text-amber-500 mx-auto mb-3" />
+            <p className="text-base font-semibold text-gray-800">{errCopy.title}</p>
+            <p className="text-sm text-gray-500 mt-2 font-normal">{errCopy.subtext}</p>
+            {onRetry && (
+              <button
+                type="button"
+                className="btn btn-primary btn-sm mt-5 gap-2 rounded-xl"
+                onClick={onRetry}
+              >
+                <ArrowPathIcon className="w-4 h-4" />
+                Try again
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {paymentUrl && !loading && !error && (
+        <div className="relative flex-1 min-h-[520px]">
+          {showIframeLoading && (
+            <div className="absolute inset-0 z-10 bg-white flex flex-col items-center justify-center px-6 min-h-[520px]">
+              <CheckoutSkeleton />
+              <p className="text-xs text-gray-500 mt-4">Connecting to Pelecard…</p>
+            </div>
+          )}
+          <iframe
+            ref={iframeRef}
+            title={title}
+            src={paymentUrl}
+            className="w-full h-full min-h-[520px] border-0 bg-white"
+            allow="payment; publickey-credentials-get *"
+            referrerPolicy="strict-origin-when-cross-origin"
+            onLoad={handleLoad}
+          />
+        </div>
+      )}
     </div>
   );
 };

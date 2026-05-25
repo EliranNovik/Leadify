@@ -1,5 +1,6 @@
 const supabase = require('../config/supabase');
 const pelecardService = require('../services/pelecardService');
+const { chargeAmountFromPayment } = require('../services/paymentChargeAmountService');
 
 function appRedirect(path, query = {}) {
   const { appPublicUrl } = pelecardService.getConfig();
@@ -50,7 +51,7 @@ async function fetchPaymentByToken(secureToken) {
     .select(`
       *,
       leads:client_id(lead_number, topic, name, email, phone),
-      payment_plans:payment_plan_id(payment_order)
+      payment_plans:payment_plan_id(payment_order, currency, currency_id)
     `)
     .eq('secure_token', secureToken)
     .maybeSingle();
@@ -120,7 +121,10 @@ async function createPaymentSession(req, res) {
         status: 'processing',
         pelecard_session_url: session.paymentUrl,
         pelecard_confirmation_key: session.confirmationKey,
-        pelecard_raw_response: session.rawResponse,
+        pelecard_raw_response: {
+          init: session.rawResponse,
+          pelecardCharge: session.charge,
+        },
       })
       .eq('id', payment.id);
 
@@ -137,6 +141,12 @@ async function createPaymentSession(req, res) {
     console.error('Create Pelecard payment session error:', error);
     if (error.code === 'PELECARD_NOT_CONFIGURED') {
       return res.status(503).json({ success: false, error: 'Payment gateway is not configured' });
+    }
+    if (error.code === 'EXCHANGE_RATE_UNAVAILABLE') {
+      return res.status(503).json({
+        success: false,
+        error: error.message || 'Exchange rate unavailable',
+      });
     }
     if (error.code === 'PELECARD_INIT_FAILED' || error.code === 'PELECARD_NO_URL') {
       return res.status(502).json({
@@ -252,7 +262,7 @@ async function handlePelecardReturn(req, res, outcome) {
         })
         .eq('id', payment.id);
 
-      await recordTransaction(payment.id, 'failed', payment.total_amount, 'pelecard', {
+      await recordTransaction(payment.id, 'failed', chargeAmountFromPayment(payment), 'pelecard', {
         transactionReference: transactionId ? String(transactionId) : null,
         errorMessage: failMessage.slice(0, 500),
       });
@@ -307,7 +317,7 @@ async function handlePelecardReturn(req, res, outcome) {
         .eq('id', payment.id);
 
       await markPaymentPlanPaid(payment);
-      await recordTransaction(payment.id, 'success', payment.total_amount, 'pelecard', {
+      await recordTransaction(payment.id, 'success', chargeAmountFromPayment(payment), 'pelecard', {
         transactionReference: txRef,
       });
 
@@ -331,7 +341,7 @@ async function handlePelecardReturn(req, res, outcome) {
       })
       .eq('id', payment.id);
 
-    await recordTransaction(payment.id, 'failed', payment.total_amount, 'pelecard', {
+    await recordTransaction(payment.id, 'failed', chargeAmountFromPayment(payment), 'pelecard', {
       transactionReference: transactionId ? String(transactionId) : null,
       errorMessage: String(failDesc).slice(0, 500),
     });

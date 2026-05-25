@@ -5,6 +5,7 @@
 
 const PELECARD_INIT_PATH = 'PaymentGW/init';
 const PELECARD_GET_TRANSACTION_PATH = 'PaymentGW/GetTransaction';
+const { resolvePelecardChargeAmount } = require('./paymentChargeAmountService');
 
 function getConfig() {
   const baseUrl = (process.env.PELECARD_BASE_URL || 'https://gateway20.pelecard.biz').replace(/\/$/, '');
@@ -42,7 +43,9 @@ function buildCheckoutDisplayOptions(config, payment) {
       '256-bit encrypted payment · Powered by Pelecard'
     ).slice(0, 200),
     UseBuildInFeedbackPage: 'False',
-    FeedbackOnTop: 'True',
+    // Must be False for embedded iframe — True makes Pelecard set Target=_top, which browsers block cross-origin
+    FeedbackOnTop: 'False',
+    Target: '_self',
     Language: process.env.PELECARD_CHECKOUT_LANGUAGE || 'en',
     CustomerIdField: 'must',
     Cvv2Field: 'must',
@@ -120,7 +123,8 @@ async function createPaymentSession(payment, secureToken) {
   const config = getConfig();
   assertCredentials(config);
 
-  const totalAgorot = totalToAgorot(payment.total_amount);
+  const charge = await resolvePelecardChargeAmount(payment);
+  const totalAgorot = totalToAgorot(charge.chargeTotalNis);
   const paymentRef = secureToken || payment.secure_token;
 
   const returnBase = `${config.backendPublicUrl}/api/payments/pelecard/return`;
@@ -135,10 +139,12 @@ async function createPaymentSession(payment, secureToken) {
     GoodURL: `${returnBase}/success`,
     ErrorURL: `${returnBase}/error`,
     CancelURL: `${returnBase}/cancel`,
+    ServerSideGoodFeedbackURL: `${returnBase}/success`,
+    ServerSideErrorFeedbackURL: `${returnBase}/error`,
     CreateToken: 'False',
     Language: 'en',
     FreeTotal: 'False',
-    Details: (payment.description || 'CRM Payment').slice(0, 250),
+    Details: buildPelecardDetails(payment, charge),
   };
 
   if (config.sandboxMode) {
@@ -168,7 +174,15 @@ async function createPaymentSession(payment, secureToken) {
     paymentUrl,
     confirmationKey: data.ConfirmationKey || data.confirmationKey || null,
     rawResponse: data,
+    charge,
   };
+}
+
+function buildPelecardDetails(payment, charge) {
+  const base = (payment.description || 'CRM Payment').slice(0, 200);
+  if (!charge.converted) return base.slice(0, 250);
+  const note = ` (${charge.originalCurrency} ${charge.originalTotal} @ BOI ${charge.rateToIls})`;
+  return `${base}${note}`.slice(0, 250);
 }
 
 async function getTransaction(transactionId) {
