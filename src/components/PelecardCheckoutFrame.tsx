@@ -9,6 +9,8 @@ interface PelecardCheckoutFrameProps {
   onRetry?: () => void;
   title?: string;
   onCheckoutNavigate?: (pathWithQuery: string) => void;
+  /** Extra classes on the iframe shell (e.g. full-bleed on mobile). */
+  shellClassName?: string;
 }
 
 function CheckoutSkeleton() {
@@ -32,6 +34,7 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
   onRetry,
   title = 'Payment',
   onCheckoutNavigate,
+  shellClassName = '',
 }) => {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
@@ -63,15 +66,16 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
   }
 
   const tallShell = !error || loading;
+  const tallMinHeight = tallShell
+    ? 'min-h-[calc(100dvh-200px)] sm:min-h-[520px]'
+    : 'min-h-0';
 
   return (
     <div
-      className={`iframe-shell border border-gray-200 rounded-[20px] bg-white flex flex-col overflow-hidden ${
-        tallShell ? 'min-h-[520px]' : 'min-h-0'
-      }`}
+      className={`iframe-shell flex flex-col overflow-hidden border border-gray-200 rounded-[20px] bg-white max-md:border-0 max-md:rounded-none max-md:bg-transparent max-md:shadow-none ${tallMinHeight} ${shellClassName}`.trim()}
     >
       {loading && (
-        <div className="flex flex-col items-center justify-center text-center py-14 px-6 flex-1 min-h-[520px]">
+        <div className="flex flex-col items-center justify-center text-center py-14 px-6 flex-1 min-h-[calc(100dvh-200px)] sm:min-h-[520px]">
           <CheckoutSkeleton />
           <p className="text-sm font-medium text-gray-700 mt-6">Loading secure payment form…</p>
           <p className="text-xs text-gray-500 mt-1">This may take a few seconds.</p>
@@ -79,7 +83,7 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
       )}
 
       {error && !loading && (
-        <div className="flex items-center justify-center py-10 px-6">
+        <div className="flex items-center justify-center py-10 px-4 sm:px-6">
           <div className="text-center max-w-sm bg-gray-50 border border-gray-100 rounded-2xl px-6 py-8">
             <ExclamationCircleIcon className="w-10 h-10 text-amber-500 mx-auto mb-3" />
             <p className="text-base font-semibold text-gray-800">{errCopy.title}</p>
@@ -99,9 +103,9 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
       )}
 
       {paymentUrl && !loading && !error && (
-        <div className="relative flex-1 min-h-[520px]">
+        <div className="relative flex-1 min-h-[calc(100dvh-200px)] sm:min-h-[520px] w-full">
           {showIframeLoading && (
-            <div className="absolute inset-0 z-10 bg-white flex flex-col items-center justify-center px-6 min-h-[520px]">
+            <div className="absolute inset-0 z-10 bg-white flex flex-col items-center justify-center px-4 sm:px-6 min-h-[calc(100dvh-200px)] sm:min-h-[520px]">
               <CheckoutSkeleton />
               <p className="text-xs text-gray-500 mt-4">Connecting to Pelecard…</p>
             </div>
@@ -110,7 +114,7 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
             ref={iframeRef}
             title={title}
             src={paymentUrl}
-            className="w-full h-full min-h-[520px] border-0 bg-white"
+            className="w-full h-full min-h-[calc(100dvh-200px)] sm:min-h-[520px] border-0 bg-white block"
             allow="payment; publickey-credentials-get *"
             referrerPolicy="strict-origin-when-cross-origin"
             onLoad={handleLoad}

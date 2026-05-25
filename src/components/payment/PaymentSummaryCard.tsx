@@ -93,7 +93,7 @@ const PaymentSummaryCard: React.FC<Props> = ({ summary, exchangeInfo, exchangeLo
       )}
 
       <p className="text-[11px] text-gray-500 leading-relaxed">
-        Processed securely by Pelecard. Card details are not stored by RMQ 2.0.
+        Processed securely by Pelecard. Card details are not stored on our servers.
       </p>
     </div>
   );

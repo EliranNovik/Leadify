@@ -6,7 +6,11 @@ import {
   XCircleIcon,
 } from '@heroicons/react/24/outline';
 import { fetchPaymentStatus, type PaymentStatusResponse } from '../lib/pelecardPaymentApi';
-import { describePelecardFailure, logPelecardResult } from '../lib/pelecardErrors';
+import {
+  describePelecardFailure,
+  isPelecardSessionExpiredCode,
+  logPelecardResult,
+} from '../lib/pelecardErrors';
 
 type ResultVariant = 'success' | 'failed' | 'cancelled';
 
@@ -110,6 +114,8 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
     urlPelecardMessage ||
     null;
 
+  const sessionExpired = isPelecardSessionExpiredCode(pelecardStatusCode);
+
   const failureMessage = useMemo(() => {
     if (urlReason === 'server_error') {
       return 'Something went wrong while confirming your payment. Please try again or contact the office.';
@@ -119,6 +125,8 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
     }
     return describePelecardFailure(pelecardStatusCode, pelecardStatusDescription);
   }, [pelecardStatusCode, pelecardStatusDescription, urlReason]);
+
+  const failureTitle = sessionExpired ? 'Time has passed' : 'Payment not completed';
 
   const backendPaid = statusData?.status === 'paid';
   const showSuccess = variant === 'success' && backendPaid;
@@ -186,34 +194,11 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
             </div>
           ) : showFailed ? (
             <div className="text-center">
-              <ExclamationCircleIcon className="w-16 h-16 text-red-500 mx-auto mb-4" />
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">Payment not completed</h2>
-              <p className="text-gray-600 mb-4">{failureMessage}</p>
-              {(pelecardStatusCode || pelecardStatusDescription) && (
-                <div className="rounded-lg bg-red-50 border border-red-100 px-4 py-3 mb-4 text-left text-sm text-red-900">
-                  {pelecardStatusCode && (
-                    <p>
-                      <span className="font-semibold">Pelecard code:</span>{' '}
-                      {pelecardStatusCode}
-                    </p>
-                  )}
-                  {pelecardStatusDescription &&
-                    pelecardStatusDescription !== failureMessage && (
-                      <p className="mt-1 text-red-800">{pelecardStatusDescription}</p>
-                    )}
-                  {import.meta.env.DEV && paymentId && (
-                    <p className="mt-2 text-xs text-red-700/80 font-mono break-all">
-                      paymentId: {paymentId}
-                    </p>
-                  )}
-                </div>
-              )}
-              <p className="text-xs text-gray-500 mb-6">
-                Details are also logged in the browser console (search for{' '}
-                <span className="font-mono">[Pelecard]</span>).
-              </p>
+              <ExclamationCircleIcon className="w-16 h-16 text-amber-500 mx-auto mb-4" />
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">{failureTitle}</h2>
+              <p className="text-gray-600 mb-6 leading-relaxed">{failureMessage}</p>
               {paymentId && statusData?.status !== 'paid' && (
-                <Link to={`/payment/${paymentId}`} className="btn btn-primary w-full">
+                <Link to={`/payment/${paymentId}`} className="btn btn-primary w-full rounded-xl">
                   Try again
                 </Link>
               )}

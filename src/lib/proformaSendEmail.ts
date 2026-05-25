@@ -1,6 +1,6 @@
 /**
  * Send proforma invoice to the linked contact via Outlook (Microsoft Graph backend).
- * Uses misc_emailtemplate id 180 with {{link}}, {{lead_number}}, {{client_name}}.
+ * Uses misc_emailtemplate id 180 with {{link}}, {{payment_link}}, {{lead_number}}, {{client_name}}.
  */
 import { supabase } from './supabase';
 import {
@@ -9,6 +9,7 @@ import {
   ensureNewProformaPublicToken,
   type ProformaLinkKind,
 } from './proformaPublicLink';
+import { resolveProformaPaymentLinkUrl } from './proformaPaymentLink';
 import { getMailboxStatus, sendEmailViaBackend } from './mailboxApi';
 
 export const PROFORMA_EMAIL_TEMPLATE_ID = 180;
@@ -18,6 +19,8 @@ const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export type ProformaSendEmailInput = {
   kind: ProformaLinkKind;
   recordId: string | number;
+  /** Payment plan row id (payment_plans.id or finances_paymentplanrow.id) for {{payment_link}} */
+  paymentPlanId?: string | number | null;
   contactId?: string | number | null;
   contactEmail?: string | null;
   /** Phone shown on the proforma (used for WhatsApp when contact DB lookup differs). */
@@ -153,7 +156,7 @@ function stripRemainingBraces(text: string): string {
 
 function applyProformaPlaceholders(
   content: string,
-  vars: { publicUrl: string; leadNumber: string; clientName: string },
+  vars: { publicUrl: string; paymentLinkUrl: string; leadNumber: string; clientName: string },
   options?: { includeLeadAndClient?: boolean },
 ): string {
   const linkLabel = 'Your invoice link';
@@ -162,11 +165,20 @@ function applyProformaPlaceholders(
     : '';
 
   const linkValue = linkHtml || linkLabel;
+
+  const paymentLinkLabel = 'Pay online';
+  const paymentLinkHtml = vars.paymentLinkUrl
+    ? `<a href="${escapeHtml(vars.paymentLinkUrl)}" target="_blank" rel="noopener noreferrer">${paymentLinkLabel}</a>`
+    : '';
+  const paymentLinkValue = paymentLinkHtml || paymentLinkLabel;
+
   const includeLeadAndClient = options?.includeLeadAndClient !== false;
 
   let result = content
     .replace(/\{\{\s*link\s*\}\}/gi, linkValue)
-    .replace(/\{\s*link\s*\}/gi, linkValue);
+    .replace(/\{\s*link\s*\}/gi, linkValue)
+    .replace(/\{\{\s*payment_link\s*\}\}/gi, paymentLinkValue)
+    .replace(/\{\s*payment_link\s*\}/gi, paymentLinkValue);
 
   if (includeLeadAndClient) {
     result = result
@@ -266,9 +278,19 @@ export async function sendProformaInvoiceEmail(input: ProformaSendEmailInput): P
       : await ensureNewProformaPublicToken(input.recordId);
   const publicUrl = buildPublicProformaUrl(input.kind, input.recordId, token);
 
+  const paymentPlanId =
+    input.paymentPlanId ??
+    (input.kind === 'new' ? input.recordId : null);
+  const paymentLinkUrl =
+    (await resolveProformaPaymentLinkUrl({
+      paymentPlanId,
+      leadClientId: input.leadId,
+    })) || '';
+
   const template = await fetchProformaEmailTemplate();
   const vars = {
     publicUrl,
+    paymentLinkUrl,
     leadNumber: input.leadNumber,
     clientName: input.clientName,
   };

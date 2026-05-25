@@ -336,6 +336,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [selectedPaymentForPaid, setSelectedPaymentForPaid] = useState<string | number | null>(null);
   const [paidDate, setPaidDate] = useState<string>('');
 
+  /** Payment plan IDs settled via payment_links (Pelecard / public link), not manual mark-as-paid */
+  const [linkPaidPlanIds, setLinkPaidPlanIds] = useState<Set<string | number>>(new Set());
+
+  const isPaidViaPaymentLink = (p: PaymentPlan) =>
+    Boolean(p.paid) && linkPaidPlanIds.has(p.id);
+
+  const showPaymentAdminMenu = (p: PaymentPlan, isPaid?: boolean) =>
+    Boolean(isPaid) && (isSuperuser || (isCollection && !isPaidViaPaymentLink(p)));
+
+  const showPaymentEditButton = (p: PaymentPlan, isPaid?: boolean) =>
+    !isPaid || isSuperuser || isCollection || isPaidViaPaymentLink(p);
+
+  const showPaymentDeleteButton = (p: PaymentPlan, isPaid?: boolean) =>
+    !isPaid || isSuperuser || !isPaidViaPaymentLink(p);
+
   // Add state for notes modal
   const [showNotesModal, setShowNotesModal] = useState(false);
   const [selectedPaymentForNotes, setSelectedPaymentForNotes] = useState<PaymentPlan | null>(null);
@@ -1400,11 +1415,29 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
     }
 
+    const loadLinkPaidPlanIds = async (clientId: string | number) => {
+      try {
+        const { data, error } = await supabase
+          .from('payment_links')
+          .select('payment_plan_id')
+          .eq('client_id', clientId)
+          .eq('status', 'paid')
+          .not('payment_plan_id', 'is', null);
+        if (error) throw error;
+        setLinkPaidPlanIds(new Set((data || []).map((row) => row.payment_plan_id)));
+      } catch (err) {
+        console.error('Error loading paid payment links:', err);
+        setLinkPaidPlanIds(new Set());
+      }
+    };
+
     const fetchPaymentPlans = async () => {
       if (!client?.id) {
         setIsLoadingFinancePlan(false);
         return;
       }
+
+      await loadLinkPaidPlanIds(client.id);
 
       // Prevent duplicate fetches
       if (isFetchingRef.current) {
@@ -2126,6 +2159,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   const refreshPaymentPlans = async () => {
     if (!client?.id) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('payment_links')
+        .select('payment_plan_id')
+        .eq('client_id', client.id)
+        .eq('status', 'paid')
+        .not('payment_plan_id', 'is', null);
+      if (error) throw error;
+      setLinkPaidPlanIds(new Set((data || []).map((row) => row.payment_plan_id)));
+    } catch (err) {
+      console.error('Error loading paid payment links:', err);
+      setLinkPaidPlanIds(new Set());
+    }
 
     // CRITICAL: Ensure contacts are loaded BEFORE fetching payment plans
     // This prevents payment plans from being incorrectly labeled with main client name
@@ -3063,7 +3110,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   };
 
   const handleEditPayment = (row: PaymentPlan) => {
-    // Open modal instead of inline editing
+    if (isPaidViaPaymentLink(row) && !isSuperuser) {
+      handleOpenNotesModal(row);
+      return;
+    }
     setEditingPaymentInModal(row);
   };
 
@@ -3124,6 +3174,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
       // Use override data if provided (from modal), otherwise use state
       const paymentDataToUse = paymentDataOverride || editPaymentData;
+
+      if (
+        paymentDataToUse?.id &&
+        isPaidViaPaymentLink({ ...paymentDataToUse, paid: true } as PaymentPlan) &&
+        !isSuperuser
+      ) {
+        toast.error('Only notes can be edited for payments completed via payment link.');
+        return;
+      }
       const includeVatToUse = includeVatOverride !== undefined ? includeVatOverride : editPaymentIncludeVat;
 
       // Validate that we have the required data
@@ -3503,6 +3562,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   };
 
   const handleDeletePayment = async (row: PaymentPlan) => {
+    if (isPaidViaPaymentLink(row) && !isSuperuser) {
+      toast.error('Only administrators can delete payments completed via payment link.');
+      return;
+    }
     if (!window.confirm('Are you sure you want to delete this payment row?')) return;
     try {
       const currentUserName = await getCurrentUserName();
@@ -3577,6 +3640,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Handler to delete all payments for a specific contact
   const handleDeletePaymentPlan = async (contactName: string) => {
+    const contactPayments =
+      financePlan?.payments?.filter((p) => p.client === contactName) ?? [];
+    const hasClientPaidViaLink = contactPayments.some((p) => isPaidViaPaymentLink(p));
+    if (hasClientPaidViaLink) {
+      toast.error(
+        'Cannot delete this payment plan — the client has completed payment via a payment link.',
+      );
+      return;
+    }
+
     if (!window.confirm(`Are you sure you want to delete all payment rows for "${contactName}"? This action cannot be undone.`)) return;
 
     try {
@@ -5846,8 +5919,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                   <CurrencyDollarIcon className="w-5 h-5" />
                                                 </button>
                                               )}
-                                              {/* Admin dropdown button - only for superusers/collection when paid */}
-                                              {isPaid && (isSuperuser || isCollection) && (
+                                              {/* Admin dropdown — superuser only when paid via payment link */}
+                                              {showPaymentAdminMenu(p, isPaid) && (
                                                 <>
                                                   <button
                                                     ref={(el) => { dropdownButtonRefs.current[p.id] = el; }}
@@ -5907,26 +5980,26 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                   </AdminDropdownPortal>
                                                 </>
                                               )}
-                                              {/* Edit icon (small) - only for superusers/collection if paid, available for all if not paid */}
-                                              {(!isPaid || isSuperuser || isCollection) && (
+                                              {showPaymentEditButton(p, isPaid) && (
                                                 <button
                                                   className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                                  title="Edit"
+                                                  title={isPaidViaPaymentLink(p) && !isSuperuser ? 'Edit notes' : 'Edit'}
                                                   onClick={() => handleEditPayment(p)}
                                                   style={{ padding: 0 }}
                                                 >
                                                   <PencilIcon className="w-5 h-5" />
                                                 </button>
                                               )}
-                                              {/* Delete icon (small) - available for all users */}
-                                              <button
-                                                className="btn btn-sm btn-circle bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
-                                                title="Delete"
-                                                onClick={() => handleDeletePayment(p)}
-                                                style={{ padding: 0 }}
-                                              >
-                                                <TrashIcon className="w-5 h-5" />
-                                              </button>
+                                              {showPaymentDeleteButton(p, isPaid) && (
+                                                <button
+                                                  className="btn btn-sm btn-circle bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
+                                                  title="Delete"
+                                                  onClick={() => handleDeletePayment(p)}
+                                                  style={{ padding: 0 }}
+                                                >
+                                                  <TrashIcon className="w-5 h-5" />
+                                                </button>
+                                              )}
                                             </>
                                           ) : (
                                             <span className="text-gray-400">—</span>
@@ -6329,7 +6402,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           <div className="flex gap-2 items-center ml-4">
                                             {p.id ? (
                                               <>
-                                                {!p.isLegacy && isSuperuser && (
+                                                {!p.isLegacy && showPaymentDeleteButton(p, isPaid) && (
                                                   <button
                                                     className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
                                                     title="Delete"
@@ -6339,10 +6412,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                     <TrashIcon className="w-5 h-5" />
                                                   </button>
                                                 )}
-                                                {!p.isLegacy && (!isPaid || isSuperuser || isCollection) && (
+                                                {!p.isLegacy && showPaymentEditButton(p, isPaid) && (
                                                   <button
                                                     className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                                    title="Edit"
+                                                    title={isPaidViaPaymentLink(p) && !isSuperuser ? 'Edit notes' : 'Edit'}
                                                     onClick={() => handleEditPayment(p)}
                                                     style={{ padding: 0 }}
                                                   >
@@ -6520,8 +6593,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               <CurrencyDollarIcon className="w-5 h-5" />
                                             </button>
                                           )}
-                                          {/* Admin dropdown button - only for superusers/collection when paid */}
-                                          {isPaid && (isSuperuser || isCollection) && (
+                                          {showPaymentAdminMenu(p, isPaid) && (
                                             <>
                                               <button
                                                 ref={(el) => { dropdownButtonRefs.current[p.id] = el; }}
@@ -6581,26 +6653,26 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               </AdminDropdownPortal>
                                             </>
                                           )}
-                                          {/* Edit icon (small) - only for superusers/collection if paid, available for all if not paid */}
-                                          {(!isPaid || isSuperuser || isCollection) && (
+                                          {showPaymentEditButton(p, isPaid) && (
                                             <button
                                               className="btn btn-circle btn-md bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                              title="Edit"
+                                              title={isPaidViaPaymentLink(p) && !isSuperuser ? 'Edit notes' : 'Edit'}
                                               onClick={() => handleEditPayment(p)}
                                               style={{ padding: 0 }}
                                             >
                                               <PencilIcon className="w-5 h-5" />
                                             </button>
                                           )}
-                                          {/* Delete icon (small) - available for all users */}
-                                          <button
-                                            className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
-                                            title="Delete"
-                                            onClick={() => handleDeletePayment(p)}
-                                            style={{ padding: 0 }}
-                                          >
-                                            <TrashIcon className="w-5 h-5" />
-                                          </button>
+                                          {showPaymentDeleteButton(p, isPaid) && (
+                                            <button
+                                              className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
+                                              title="Delete"
+                                              onClick={() => handleDeletePayment(p)}
+                                              style={{ padding: 0 }}
+                                            >
+                                              <TrashIcon className="w-5 h-5" />
+                                            </button>
+                                          )}
                                         </div>
                                       </div>
                                     </div>

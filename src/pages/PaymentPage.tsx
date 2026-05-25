@@ -356,9 +356,9 @@ const PaymentPage: React.FC = () => {
     <div className="min-h-screen flex flex-col" style={PAGE_BG_STYLE}>
       {paymentHeader}
 
-      <main className="flex-1 w-full max-w-[1240px] mx-auto px-4 sm:px-6 pt-5 lg:pt-6 pb-6">
-        <div className="payment-intro mx-auto max-w-[1180px] mb-[18px]">
-          <h1 className="text-2xl font-semibold text-gray-900 mb-1">
+      <main className="flex-1 w-full max-w-[1240px] mx-auto px-0 md:px-6 pt-4 md:pt-5 lg:pt-6 pb-0 md:pb-6 flex flex-col">
+        <div className="payment-intro mx-auto w-full max-w-[1180px] mb-4 px-4 md:px-0 lg:mb-[18px]">
+          <h1 className="text-xl sm:text-2xl font-semibold text-gray-900 mb-1">
             Hi, {clientDisplayName(paymentLink)}.
           </h1>
           <p className="text-sm text-gray-600 font-normal">
@@ -367,10 +367,10 @@ const PaymentPage: React.FC = () => {
         </div>
 
         <div
-          className="checkout-shell mx-auto w-full max-w-[1180px] grid grid-cols-1 lg:grid-cols-[340px_minmax(680px,1fr)] bg-white border border-gray-200 rounded-[28px] shadow-[0_24px_70px_rgba(15,23,42,0.08)] overflow-hidden"
+          className="checkout-shell mx-auto w-full max-w-[1180px] flex flex-col lg:grid lg:grid-cols-[340px_minmax(680px,1fr)] lg:bg-white lg:border lg:border-gray-200 lg:rounded-[28px] lg:shadow-[0_24px_70px_rgba(15,23,42,0.08)] lg:overflow-hidden"
         >
           {summaryData && (
-            <div className="checkout-summary bg-[#fbfcff] border-b lg:border-b-0 lg:border-r border-gray-200 p-6 lg:p-8">
+            <div className="checkout-summary bg-white md:bg-[#fbfcff] border-b border-gray-200 px-4 py-5 md:p-6 lg:p-8 lg:border-r">
               <PaymentSummaryCard
                 summary={summaryData}
                 exchangeInfo={exchangeInfo}
@@ -379,8 +379,8 @@ const PaymentPage: React.FC = () => {
             </div>
           )}
 
-          <div className="checkout-payment p-6 lg:p-8 min-w-0 flex flex-col">
-            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 mb-2">
+          <div className="checkout-payment min-w-0 flex flex-col flex-1 lg:p-8">
+            <div className="hidden md:flex flex-wrap items-center justify-between gap-x-4 gap-y-2 mb-2 px-0">
               <h2 className="text-lg font-semibold text-gray-900">
                 Complete your secure payment
               </h2>
@@ -388,18 +388,20 @@ const PaymentPage: React.FC = () => {
                 Pelecard · PCI DSS
               </span>
             </div>
-            <p className="text-sm text-gray-500 font-normal mb-4 max-w-lg">
+            <p className="hidden md:block text-sm text-gray-500 font-normal mb-4 max-w-lg">
               Card details are processed by Pelecard. We do not store card information.
             </p>
 
-            <PelecardCheckoutFrame
-              paymentUrl={paymentUrl}
-              loading={sessionLoading}
-              error={sessionError}
-              onRetry={loadPelecardSession}
-              onCheckoutNavigate={(path) => navigate(path)}
-              title="Secure payment"
-            />
+            <div className="flex-1 w-full">
+              <PelecardCheckoutFrame
+                paymentUrl={paymentUrl}
+                loading={sessionLoading}
+                error={sessionError}
+                onRetry={loadPelecardSession}
+                onCheckoutNavigate={(path) => navigate(path)}
+                title="Secure payment"
+              />
+            </div>
           </div>
         </div>
       </main>

@@ -544,6 +544,7 @@ const ProformaLegacyViewPage: React.FC = () => {
         paid_at: paymentPaidAt,
         paymentPlanDate,
         paymentOrder: paymentPlanOrder,
+        ppr_id: proformaData?.ppr_id ?? null,
         bankAccountDetails,
       };
       const { displaySymbol: resolvedCurrency } = await resolvePaymentPlanCurrency({
@@ -700,6 +701,7 @@ const ProformaLegacyViewPage: React.FC = () => {
       const sendInput = {
         kind: 'legacy' as const,
         recordId: id,
+        paymentPlanId: proforma.ppr_id ?? null,
         contactId: contactIdForEmail,
         contactEmail: proforma.client_email,
         contactPhone: proforma.client_phone,

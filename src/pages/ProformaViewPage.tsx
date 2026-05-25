@@ -357,6 +357,7 @@ const ProformaViewPage: React.FC = () => {
       const sendInput = {
         kind: 'new' as const,
         recordId: id,
+        paymentPlanId: id,
         contactId: contactIdForEmail ?? proforma.contactId,
         contactEmail: proforma.email,
         contactPhone: proforma.phone,

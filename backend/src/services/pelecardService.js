@@ -28,16 +28,17 @@ function assertCredentials(config) {
 }
 
 function buildCheckoutDisplayOptions(config, payment) {
-  const cssUrl =
+  const cssVersion = (process.env.PELECARD_CSS_VERSION || '5').trim();
+  const cssBase =
     process.env.PELECARD_CSS_URL || `${config.appPublicUrl}/pelecard-checkout.css`;
-  const logoUrl =
-    process.env.PELECARD_LOGO_URL || `${config.appPublicUrl}/RMQ_LOGO.png`;
+  const cssUrl = cssBase.includes('?') ? cssBase : `${cssBase}?v=${cssVersion}`;
+  const logoUrl = (process.env.PELECARD_LOGO_URL || '').trim();
+
+  const topText = (process.env.PELECARD_TOP_TEXT || '').trim().slice(0, 200);
 
   const options = {
     CssURL: cssUrl,
-    LogoURL: logoUrl,
     HiddenPelecardLogo: 'True',
-    TopText: (process.env.PELECARD_TOP_TEXT || 'RMQ Secure Checkout').slice(0, 200),
     BottomText: (
       process.env.PELECARD_BOTTOM_TEXT ||
       '256-bit encrypted payment · Powered by Pelecard'
@@ -53,6 +54,14 @@ function buildCheckoutDisplayOptions(config, payment) {
     TelField: 'hide',
     ShowSubmitButton: 'True',
   };
+
+  if (topText) {
+    options.TopText = topText;
+  }
+
+  if (logoUrl) {
+    options.LogoURL = logoUrl;
+  }
 
   const clientName =
     payment.description?.split(' - ')[1]?.split(' (#')[0]?.trim() || '';
