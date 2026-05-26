@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { parseLegacyLeadNumericId } from './paymentLinkLeadRef';
 
 type PaymentLinkRow = {
   secure_token?: string | null;
@@ -38,11 +39,11 @@ function pickBestPaymentLinkUrl(rows: PaymentLinkRow[] | null | undefined): stri
 
 /**
  * Resolve the public payment URL for a proforma’s payment plan row.
- * payment_links.client_id stores the CRM lead id; payment_plan_id is the plan row id.
+ * New leads: payment_links.client_id (UUID). Legacy: payment_links.legacy_id (leads_lead.id).
  */
 export async function resolveProformaPaymentLinkUrl(options: {
   paymentPlanId?: string | number | null;
-  /** Lead id (payment_links.client_id) — fallback when plan id is missing */
+  /** Lead id — UUID for new leads, numeric or legacy_123 for legacy */
   leadClientId?: string | number | null;
 }): Promise<string | null> {
   const { paymentPlanId, leadClientId } = options;
@@ -63,12 +64,18 @@ export async function resolveProformaPaymentLinkUrl(options: {
   }
 
   if (leadClientId != null && leadClientId !== '') {
+    const legacyId = parseLegacyLeadNumericId(leadClientId);
     let query = supabase
       .from('payment_links')
       .select('secure_token, status, expires_at, created_at, payment_plan_id')
-      .eq('client_id', String(leadClientId))
       .order('created_at', { ascending: false })
       .limit(30);
+
+    if (legacyId != null) {
+      query = query.eq('legacy_id', legacyId);
+    } else {
+      query = query.eq('client_id', String(leadClientId));
+    }
 
     if (paymentPlanId != null && paymentPlanId !== '') {
       query = query.eq('payment_plan_id', paymentPlanId);
@@ -76,7 +83,7 @@ export async function resolveProformaPaymentLinkUrl(options: {
 
     const { data, error } = await query;
     if (error) {
-      console.error('[proforma] payment_links by client_id:', error);
+      console.error('[proforma] payment_links by lead ref:', error);
       return null;
     }
     return pickBestPaymentLinkUrl(data);

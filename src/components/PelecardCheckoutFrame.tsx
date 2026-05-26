@@ -34,8 +34,17 @@ const IFRAME_SCROLL_SHELL_CLASS =
 
 /** Minimum iframe height before Pelecard reports content size. */
 const IFRAME_CONTENT_HEIGHT = 920;
-const IFRAME_HEIGHT_MAX_MOBILE = 2400;
+const IFRAME_CONTENT_HEIGHT_MOBILE = 1500;
+const IFRAME_HEIGHT_MAX_MOBILE = 5000;
 const IFRAME_HEIGHT_MAX_DESKTOP = 1400;
+const IFRAME_HEIGHT_BUFFER_DESKTOP = 8;
+const IFRAME_HEIGHT_BUFFER_MOBILE = 96;
+/** Progressive mobile expansion when Pelecard does not postMessage document height. */
+const MOBILE_HEIGHT_FALLBACK_STEPS = [1500, 1700, 1950] as const;
+
+function isLgViewportNow(): boolean {
+  return typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches;
+}
 
 function useIsLgViewport(): boolean {
   const [isLg, setIsLg] = useState(
@@ -65,19 +74,38 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
   const isLgViewport = useIsLgViewport();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
-  const [iframeHeight, setIframeHeight] = useState(IFRAME_CONTENT_HEIGHT);
+  const [iframeHeight, setIframeHeight] = useState(() =>
+    isLgViewportNow() ? IFRAME_CONTENT_HEIGHT : IFRAME_CONTENT_HEIGHT_MOBILE,
+  );
 
   useEffect(() => {
-    setIframeHeight(IFRAME_CONTENT_HEIGHT);
+    setIframeHeight(isLgViewportNow() ? IFRAME_CONTENT_HEIGHT : IFRAME_CONTENT_HEIGHT_MOBILE);
     setIframeLoaded(false);
   }, [paymentUrl]);
+
+  useEffect(() => {
+    if (!paymentUrl || isLgViewport || loading || error) return;
+
+    const timers = MOBILE_HEIGHT_FALLBACK_STEPS.map((height, index) =>
+      window.setTimeout(() => {
+        setIframeHeight((prev) => Math.max(prev, height));
+      }, 350 + index * 750),
+    );
+
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, [paymentUrl, isLgViewport, loading, error]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       const data = event.data;
       let next: number | null = null;
       if (typeof data === 'number' && data > 400) next = data;
-      else if (data && typeof data === 'object') {
+      else if (typeof data === 'string') {
+        const parsed = Number(data);
+        if (Number.isFinite(parsed) && parsed > 400) next = parsed;
+      } else if (data && typeof data === 'object') {
         const record = data as Record<string, unknown>;
         const candidate =
           record.height ??
@@ -88,10 +116,14 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
         if (Number.isFinite(n) && n > 400) next = n;
       }
       if (next != null) {
-        const cap = window.matchMedia('(min-width: 1024px)').matches
-          ? IFRAME_HEIGHT_MAX_DESKTOP
-          : IFRAME_HEIGHT_MAX_MOBILE;
-        setIframeHeight(Math.min(cap, Math.max(IFRAME_CONTENT_HEIGHT, Math.ceil(next + 8))));
+        const isLg = isLgViewportNow();
+        const cap = isLg ? IFRAME_HEIGHT_MAX_DESKTOP : IFRAME_HEIGHT_MAX_MOBILE;
+        const buffer = isLg ? IFRAME_HEIGHT_BUFFER_DESKTOP : IFRAME_HEIGHT_BUFFER_MOBILE;
+        const floor = isLg ? IFRAME_CONTENT_HEIGHT : IFRAME_CONTENT_HEIGHT_MOBILE;
+        setIframeHeight((prev) => {
+          const computed = Math.min(cap, Math.max(floor, Math.ceil(next + buffer)));
+          return isLg ? computed : Math.max(prev, computed);
+        });
       }
     };
     window.addEventListener('message', onMessage);
@@ -174,7 +206,7 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
             style={
               isLgViewport
                 ? { height: iframeHeight, minHeight: 0 }
-                : { height: iframeHeight, minHeight: iframeHeight }
+                : { height: iframeHeight, minHeight: iframeHeight, maxHeight: 'none' }
             }
             scrolling={isLgViewport ? 'yes' : 'no'}
             allow="payment; publickey-credentials-get *"

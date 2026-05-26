@@ -10,10 +10,12 @@ import PaymentSummaryGradientDecor from '../components/payment/PaymentSummaryGra
 import PublicContractFooter from '../components/public/PublicContractFooter';
 import PublicPageContactButtons from '../components/public/PublicPageContactButtons';
 import {
+  currencyInputFromLegacyProforma,
   currencyInputFromNewPayment,
   fetchProformaExchangeRateInfo,
   type ProformaExchangeRateInfo,
 } from '../lib/proformaExchangeRate';
+import { isLegacyPaymentLinkRow } from '../lib/paymentLinkLeadRef';
 import toast from 'react-hot-toast';
 import {
   CheckCircleIcon,
@@ -69,7 +71,9 @@ interface PaymentLink {
   status: string;
   expires_at: string;
   payment_plan_id: number;
-  client_id: string;
+  client_id: string | null;
+  legacy_id?: number | null;
+  is_legacy_payment_plan?: boolean;
   leads?: {
     lead_number?: string;
     topic?: string;
@@ -85,6 +89,56 @@ interface PaymentLink {
     paid?: boolean | null;
     paid_at?: string | null;
   };
+  legacy_payment_plan?: {
+    order?: number | string | null;
+    currency_id?: number | string | null;
+    actual_date?: string | null;
+    accounting_currencies?: { name?: string | null; iso_code?: string | null } | null;
+  } | null;
+}
+
+function isLegacyPaymentLink(link: PaymentLink): boolean {
+  return isLegacyPaymentLinkRow(link);
+}
+
+function isLegacyPlanPaid(plan: PaymentLink['legacy_payment_plan']): boolean {
+  return Boolean(plan?.actual_date);
+}
+
+function paymentOrderLabel(order: number | string | null | undefined): string {
+  if (order == null || order === '') return 'Payment';
+  if (typeof order === 'string') {
+    const lower = order.toLowerCase();
+    if (
+      lower.includes('first') ||
+      lower.includes('intermediate') ||
+      lower.includes('final') ||
+      lower.includes('single') ||
+      lower.includes('expense')
+    ) {
+      return order;
+    }
+    const num = parseInt(order, 10);
+    if (!Number.isNaN(num)) order = num;
+    else return order;
+  }
+  if (typeof order === 'number') {
+    switch (order) {
+      case 1:
+        return 'First Payment';
+      case 5:
+        return 'Intermediate Payment';
+      case 9:
+        return 'Final Payment';
+      case 90:
+        return 'Single Payment';
+      case 99:
+        return 'Expense (no VAT)';
+      default:
+        return 'Payment';
+    }
+  }
+  return 'Payment';
 }
 
 function getCurrencySymbol(currency: string | undefined) {
@@ -95,11 +149,19 @@ function getCurrencySymbol(currency: string | undefined) {
 }
 
 function isPaymentComplete(paymentLink: PaymentLink): boolean {
-  return paymentLink.status === 'paid' || paymentLink.payment_plans?.paid === true;
+  if (paymentLink.status === 'paid') return true;
+  if (isLegacyPaymentLink(paymentLink)) {
+    return isLegacyPlanPaid(paymentLink.legacy_payment_plan);
+  }
+  return paymentLink.payment_plans?.paid === true;
 }
 
 function getPaymentPaidAt(paymentLink: PaymentLink): string | null {
-  return paymentLink.paid_at ?? paymentLink.payment_plans?.paid_at ?? null;
+  if (paymentLink.paid_at) return paymentLink.paid_at;
+  if (isLegacyPaymentLink(paymentLink)) {
+    return paymentLink.legacy_payment_plan?.actual_date ?? null;
+  }
+  return paymentLink.payment_plans?.paid_at ?? null;
 }
 
 function formatPaidDate(iso: string | null | undefined): string | null {
@@ -144,15 +206,22 @@ function PaymentDoneStamp({ paidAt }: { paidAt: string | null }) {
   );
 }
 
-function CheckoutSecuredStamp() {
+function CheckoutSecuredStamp({ iconOnly = false }: { iconOnly?: boolean }) {
   return (
     <div
-      className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 shadow-sm ring-1 ring-emerald-700/10"
+      className={`inline-flex items-center justify-center rounded-md bg-emerald-600 shadow-sm ring-1 ring-emerald-700/10 ${
+        iconOnly ? 'p-2' : 'gap-1.5 px-3 py-1.5'
+      }`}
       role="img"
       aria-label="Secured checkout"
     >
-      <ShieldCheckIcon className="h-4 w-4 shrink-0 text-white" strokeWidth={2} />
-      <span className="text-xs font-semibold text-white tracking-wide">Secured</span>
+      <ShieldCheckIcon
+        className={`shrink-0 text-white ${iconOnly ? 'h-5 w-5' : 'h-4 w-4'}`}
+        strokeWidth={2}
+      />
+      {!iconOnly && (
+        <span className="text-xs font-semibold text-white tracking-wide">Secured</span>
+      )}
     </div>
   );
 }
@@ -180,11 +249,7 @@ const PaymentPage: React.FC = () => {
       try {
         const { data, error } = await supabase
           .from('payment_links')
-          .select(`
-            *,
-            leads!client_id(lead_number, topic, name, email, phone, currency_id, proposal_currency, balance_currency),
-            payment_plans:payment_plan_id(payment_order, currency, currency_id, paid, paid_at)
-          `)
+          .select('*')
           .eq('secure_token', token)
           .maybeSingle();
 
@@ -194,32 +259,105 @@ const PaymentPage: React.FC = () => {
           return;
         }
 
-        const paymentComplete =
-          data.status === 'paid' || data.payment_plans?.paid === true;
+        let enriched: PaymentLink = data as PaymentLink;
+
+        if (enriched.client_id) {
+          const { data: leadRow } = await supabase
+            .from('leads')
+            .select('lead_number, topic, name, email, phone, currency_id, proposal_currency, balance_currency')
+            .eq('id', enriched.client_id)
+            .maybeSingle();
+          if (leadRow) {
+            enriched = { ...enriched, leads: leadRow };
+          }
+        } else if (enriched.legacy_id) {
+          const { data: legacyLead } = await supabase
+            .from('leads_lead')
+            .select('id, name, email, phone, topic')
+            .eq('id', enriched.legacy_id)
+            .maybeSingle();
+          if (legacyLead) {
+            enriched = {
+              ...enriched,
+              leads: {
+                lead_number: String(legacyLead.id),
+                name: legacyLead.name,
+                email: legacyLead.email,
+                phone: legacyLead.phone,
+                topic: legacyLead.topic,
+              },
+            };
+          }
+        }
+
+        if (isLegacyPaymentLink(enriched) && enriched.payment_plan_id) {
+          const { data: legacyPlan, error: legacyPlanError } = await supabase
+            .from('finances_paymentplanrow')
+            .select(`
+              id,
+              order,
+              currency_id,
+              actual_date,
+              accounting_currencies!finances_paymentplanrow_currency_id_fkey (
+                name,
+                iso_code
+              )
+            `)
+            .eq('id', enriched.payment_plan_id)
+            .maybeSingle();
+
+          if (legacyPlanError) {
+            console.error('Error fetching legacy payment plan:', legacyPlanError);
+          } else if (legacyPlan) {
+            const currencies = legacyPlan.accounting_currencies;
+            const currencyRow = Array.isArray(currencies) ? currencies[0] : currencies;
+            enriched = {
+              ...enriched,
+              legacy_payment_plan: {
+                ...legacyPlan,
+                accounting_currencies: currencyRow ?? null,
+              },
+            };
+          }
+        } else if (enriched.payment_plan_id) {
+          const { data: planRow, error: planError } = await supabase
+            .from('payment_plans')
+            .select('payment_order, currency, currency_id, paid, paid_at')
+            .eq('id', enriched.payment_plan_id)
+            .maybeSingle();
+
+          if (planError) {
+            console.error('Error fetching payment plan:', planError);
+          } else if (planRow) {
+            enriched = { ...enriched, payment_plans: planRow };
+          }
+        }
+
+        const paymentComplete = isPaymentComplete(enriched);
 
         if (paymentComplete) {
-          setPaymentLink(data);
+          setPaymentLink(enriched);
           return;
         }
 
-        if (data.expires_at && new Date(data.expires_at) < new Date()) {
+        if (enriched.expires_at && new Date(enriched.expires_at) < new Date()) {
           setPageError('This payment link has expired. Please contact the office for a new link.');
           return;
         }
 
-        if (data.status === 'expired' || data.status === 'cancelled') {
+        if (enriched.status === 'expired' || enriched.status === 'cancelled') {
           setPageError(
-            data.status === 'cancelled'
+            enriched.status === 'cancelled'
               ? 'This payment was cancelled. You can open the link again to retry.'
               : 'This payment link has expired.'
           );
-          if (data.status === 'cancelled') {
-            setPaymentLink(data);
+          if (enriched.status === 'cancelled') {
+            setPaymentLink(enriched);
           }
           return;
         }
 
-        setPaymentLink(data);
+        setPaymentLink(enriched);
       } catch (error) {
         console.error('Error:', error);
         toast.error('Failed to load payment information');
@@ -242,13 +380,20 @@ const PaymentPage: React.FC = () => {
       setExchangeLoading(true);
       try {
         const info = await fetchProformaExchangeRateInfo({
-          currency: currencyInputFromNewPayment(
-            {
-              currency: paymentLink.currency,
-              currency_id: paymentLink.payment_plans?.currency_id ?? null,
-            },
-            paymentLink.payment_plans?.currency,
-          ),
+          currency: isLegacyPaymentLink(paymentLink)
+            ? currencyInputFromLegacyProforma({
+                currency_id: paymentLink.legacy_payment_plan?.currency_id ?? null,
+                currency_code:
+                  paymentLink.legacy_payment_plan?.accounting_currencies?.name ||
+                  paymentLink.currency,
+              })
+            : currencyInputFromNewPayment(
+                {
+                  currency: paymentLink.currency,
+                  currency_id: paymentLink.payment_plans?.currency_id ?? null,
+                },
+                paymentLink.payment_plans?.currency,
+              ),
           paid: isPaymentComplete(paymentLink),
           paidAt: getPaymentPaidAt(paymentLink),
           subtotal: Number(paymentLink.amount) || 0,
@@ -350,10 +495,17 @@ const PaymentPage: React.FC = () => {
 
   const summaryData = useMemo(() => {
     if (!paymentLink) return null;
+    const serviceLabel =
+      paymentLink.description?.split(' - ')[0]?.trim() ||
+      paymentOrderLabel(paymentLink.payment_plans?.payment_order) ||
+      paymentOrderLabel(paymentLink.legacy_payment_plan?.order) ||
+      'Payment';
     return {
-      service: paymentLink.payment_plans?.payment_order || 'Payment',
+      service: serviceLabel,
       clientName:
-        paymentLink.description?.split(' - ')[1]?.split(' (#')[0]?.trim() || 'Client',
+        paymentLink.leads?.name ||
+        paymentLink.description?.split(' - ')[1]?.split(' (#')[0]?.trim() ||
+        'Client',
       caseNumber: paymentLink.leads?.lead_number || '—',
       topic: paymentLink.leads?.topic?.trim() ? paymentLink.leads.topic : '--',
       currencySymbol: getCurrencySymbol(paymentLink.currency),
@@ -452,7 +604,10 @@ const PaymentPage: React.FC = () => {
           style={SUMMARY_GRADIENT_STYLE}
         >
           <PaymentSummaryGradientDecor />
-          <div className="relative z-[1]">
+          <div className="pointer-events-none absolute top-5 right-5 z-20">
+            <CheckoutSecuredStamp iconOnly />
+          </div>
+          <div className="relative z-[1] pr-14">
             <CheckoutSummaryHeading
               summary={summaryData}
               titleClassName="text-lg font-semibold text-white leading-snug tracking-tight mb-2"
@@ -469,10 +624,7 @@ const PaymentPage: React.FC = () => {
           </div>
         </div>
 
-        <div className="checkout-payment relative max-lg:shrink-0 max-lg:flex-none flex flex-col w-full max-w-4xl mx-auto px-6 sm:px-10 lg:flex-1 lg:min-h-0 lg:max-w-none lg:mx-0 lg:px-12 xl:px-16 py-6 lg:pt-6 lg:pb-2">
-          <div className="pointer-events-none absolute top-6 right-6 z-20 lg:hidden">
-            <CheckoutSecuredStamp />
-          </div>
+        <div className="checkout-payment relative max-lg:shrink-0 max-lg:flex-none flex flex-col w-full max-w-4xl mx-auto px-4 sm:px-6 lg:flex-1 lg:min-h-0 lg:max-w-none lg:mx-0 lg:px-12 xl:px-16 py-4 sm:py-6 lg:pt-6 lg:pb-2 max-lg:pb-8">
           <h2 className="hidden lg:block text-xl font-semibold text-gray-900 mb-4 tracking-tight shrink-0">
             Payment information
           </h2>

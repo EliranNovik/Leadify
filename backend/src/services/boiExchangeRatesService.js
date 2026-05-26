@@ -15,6 +15,13 @@ function parseBaseCurrenciesList(raw) {
   return list.length > 0 ? list : [...DEFAULT_BASE_CURRENCIES];
 }
 
+function maxRateDate(rows) {
+  return rows.reduce(
+    (max, row) => (row.rate_date && (!max || row.rate_date > max) ? row.rate_date : max),
+    null,
+  );
+}
+
 function parseBoiExrCsv(csvText) {
   const lines = csvText.trim().split(/\r?\n/).filter(Boolean);
   if (lines.length < 2) return [];
@@ -87,6 +94,69 @@ async function upsertRates(rows) {
   return data ?? [];
 }
 
+async function getLatestRateDateInDb() {
+  const { data, error } = await supabase
+    .from('boi_exchange_rates')
+    .select('rate_date')
+    .order('rate_date', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  return data?.rate_date ? String(data.rate_date).slice(0, 10) : null;
+}
+
+async function getLatestBoiPublicationDate(currencies) {
+  const baseCurrencies = currencies || parseBaseCurrenciesList(process.env.BOI_BASE_CURRENCIES);
+  const rows = await fetchBoiRepresentativeRates(baseCurrencies, 1);
+  return maxRateDate(rows);
+}
+
+/**
+ * True when DB is empty or BOI has a newer publication date than our latest saved row.
+ */
+async function needsSyncFromBoi(currencies) {
+  const dbLatestDate = await getLatestRateDateInDb();
+  const boiLatestDate = await getLatestBoiPublicationDate(currencies);
+  if (!dbLatestDate) return true;
+  if (!boiLatestDate) return false;
+  return boiLatestDate > dbLatestDate;
+}
+
+async function getSyncStatus(currencies) {
+  const baseCurrencies = Array.isArray(currencies) && currencies.length > 0
+    ? currencies
+    : parseBaseCurrenciesList(process.env.BOI_BASE_CURRENCIES);
+
+  let dbLatestDate = null;
+  let boiLatestDate = null;
+  let boiFetchError = null;
+
+  try {
+    dbLatestDate = await getLatestRateDateInDb();
+  } catch (err) {
+    boiFetchError = err.message || String(err);
+  }
+
+  try {
+    boiLatestDate = await getLatestBoiPublicationDate(baseCurrencies);
+  } catch (err) {
+    boiFetchError = err.message || String(err);
+  }
+
+  const needsSync = Boolean(
+    !boiFetchError && (!dbLatestDate || (boiLatestDate && boiLatestDate > dbLatestDate)),
+  );
+
+  return {
+    dbLatestDate,
+    boiLatestDate,
+    needsSync,
+    boiFetchError,
+    apiUrl: buildBoiExrUrl(baseCurrencies, 1),
+  };
+}
+
 /**
  * Fetch latest BOI representative rates and upsert into boi_exchange_rates.
  * @param {{ currencies?: string[], dryRun?: boolean }} [options]
@@ -97,13 +167,19 @@ async function syncBoiExchangeRates(options = {}) {
     : parseBaseCurrenciesList(process.env.BOI_BASE_CURRENCIES);
 
   const rows = await fetchBoiRepresentativeRates(baseCurrencies, 1);
+  const boiPublicationDate = maxRateDate(rows);
 
   if (options.dryRun) {
-    return { dryRun: true, fetched: rows.length, rates: rows };
+    return { dryRun: true, fetched: rows.length, rates: rows, boiPublicationDate };
   }
 
   const saved = await upsertRates(rows);
-  return { fetched: rows.length, saved: saved.length, rates: saved };
+  return {
+    fetched: rows.length,
+    saved: saved.length,
+    rates: saved,
+    boiPublicationDate,
+  };
 }
 
 async function getLatestRates(rateDate = null) {
@@ -127,7 +203,11 @@ async function getLatestRates(rateDate = null) {
 module.exports = {
   syncBoiExchangeRates,
   getLatestRates,
+  getSyncStatus,
+  needsSyncFromBoi,
+  getLatestRateDateInDb,
   fetchBoiRepresentativeRates,
+  buildBoiExrUrl,
   parseBaseCurrenciesList,
   DEFAULT_BASE_CURRENCIES,
 };

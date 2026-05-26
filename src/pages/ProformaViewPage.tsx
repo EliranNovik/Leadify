@@ -27,6 +27,7 @@ import {
   type ResolvedProformaVat,
 } from '../lib/proformaVat';
 import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
+import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 import { resolveBankAccountFromProforma, fetchBankAccountById } from '../lib/bankAccounts';
 import {
   currencyInputFromNewPayment,
@@ -78,88 +79,18 @@ const ProformaViewPage: React.FC = () => {
       }
       try {
         let parsed = JSON.parse(data.proforma);
-        // Patch: If email/phone/name missing, fetch from the specific contact (client_id or contactId) that the payment plan is based on
-        // Prefer contactId from parsed proforma data, then fallback to client_id from payment plan
-        const contactIdToUse = parsed.contactId || data.client_id;
-        if ((!parsed.email || !parsed.phone || !parsed.client) && contactIdToUse) {
-          try {
-            // Use contactId (from proforma data) or client_id (from payment plan) to get the correct contact
-            // First try new contacts table
-            const { data: newContactData } = await supabase
-              .from('contacts')
-              .select('name, email, phone')
-              .eq('id', contactIdToUse)
-              .single();
+        const resolvedContact = await resolvePaymentPlanContact({
+          leadId: data.lead_id ?? parsed.clientId,
+          clientId: data.client_id ?? parsed.contactId,
+          clientNameFallback: parsed.client,
+        });
 
-            if (newContactData) {
-              if (!parsed.client) parsed.client = newContactData.name || '';
-              if (!parsed.email) parsed.email = newContactData.email || '';
-              if (!parsed.phone) parsed.phone = newContactData.phone || '';
-            } else {
-              // If not found in new contacts, try legacy leads_contact table
-              const { data: legacyContactData } = await supabase
-                .from('leads_contact')
-                .select('name, email, phone')
-                .eq('id', contactIdToUse)
-                .single();
-
-              if (legacyContactData) {
-                if (!parsed.client) parsed.client = legacyContactData.name || '';
-                if (!parsed.email) parsed.email = legacyContactData.email || '';
-                if (!parsed.phone) parsed.phone = legacyContactData.phone || '';
-              }
-            }
-          } catch (contactError) {
-            console.error('Error fetching contact data:', contactError);
-            // Error handling - contact data will remain null
-          }
-        } else if ((!parsed.email || !parsed.phone || !parsed.client) && parsed.clientId) {
-          // Fallback: if no client_id, try to get main contact from lead (old behavior)
-          try {
-            // First, try to get the main contact
-            const { data: leadContacts, error: leadContactsError } = await supabase
-              .from('lead_leadcontact')
-              .select(`
-                main,
-                contact_id
-              `)
-              .eq('newlead_id', parsed.clientId)
-              .eq('main', 'true')
-              .limit(1);
-
-            let contactId = null;
-            if (!leadContactsError && leadContacts && leadContacts.length > 0) {
-              contactId = leadContacts[0].contact_id;
-            } else {
-              // Fallback: get any contact for this lead
-              const { data: allContacts } = await supabase
-                .from('lead_leadcontact')
-                .select('contact_id')
-                .eq('newlead_id', parsed.clientId)
-                .limit(1);
-
-              if (allContacts && allContacts.length > 0) {
-                contactId = allContacts[0].contact_id;
-              }
-            }
-
-            if (contactId) {
-              const { data: contactData } = await supabase
-                .from('contacts')
-                .select('name, email, phone')
-                .eq('id', contactId)
-                .single();
-
-              if (contactData) {
-                if (!parsed.client) parsed.client = contactData.name || '';
-                if (!parsed.email) parsed.email = contactData.email || '';
-                if (!parsed.phone) parsed.phone = contactData.phone || '';
-              }
-            }
-          } catch (contactError) {
-            // Error handling - contact data will remain null
-          }
+        if (data.client_id || parsed.contactId) {
+          parsed.client = resolvedContact.name;
         }
+        if (!parsed.email) parsed.email = resolvedContact.email;
+        if (!parsed.phone) parsed.phone = resolvedContact.phone;
+        if (!parsed.client) parsed.client = resolvedContact.name;
 
         // Fetch lead data for lead number formatting (including master_id, stage, subleads)
         if (parsed.clientId) {
@@ -238,7 +169,7 @@ const ProformaViewPage: React.FC = () => {
         if (!parsed.bankAccountDetails && parsed.bankAccountId) {
           parsed.bankAccountDetails = await fetchBankAccountById(String(parsed.bankAccountId));
         }
-        setContactIdForEmail(contactIdToUse ?? null);
+        setContactIdForEmail(data.client_id ?? parsed.contactId ?? null);
         setProforma(parsed);
         setPaymentPlanMeta({
           paid: Boolean(data.paid),

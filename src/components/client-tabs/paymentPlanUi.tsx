@@ -1,4 +1,10 @@
 import React from 'react';
+import {
+  BanknotesIcon,
+  CalendarDaysIcon,
+  CheckCircleIcon,
+  ClockIcon,
+} from '@heroicons/react/24/outline';
 
 export type PaymentPlanRowLike = {
   id: string | number;
@@ -6,8 +12,11 @@ export type PaymentPlanRowLike = {
   value: number;
   valueVat: number;
   paid?: boolean;
+  paid_at?: string | null;
   ready_to_pay?: boolean;
   currency?: string;
+  currency_id?: number | string | null;
+  isLegacy?: boolean;
   order?: string;
 };
 
@@ -138,15 +147,49 @@ export function PaymentStatusPill({
 type SummaryCardsProps = {
   summary: PlanSummaryStats;
   getCurrencySymbol: (currency: string | undefined) => string;
+  contractTotalNis?: { primary: string; secondary?: string; loading?: boolean };
+  outstandingNis?: { primary: string; loading?: boolean };
 };
 
-export function PaymentPlanSummaryCards({ summary, getCurrencySymbol }: SummaryCardsProps) {
-  const total = formatMultiCurrencyAmounts(summary.totalByCurrency, getCurrencySymbol, {
-    includeVatLine: true,
-  });
-  const outstanding = formatMultiCurrencyAmounts(summary.outstandingByCurrency, getCurrencySymbol, {
-    emphasizeGross: true,
-  });
+function SummaryMetricCard({
+  label,
+  primary,
+  secondary,
+  icon: Icon,
+}: {
+  label: string;
+  primary: string;
+  secondary?: string;
+  icon: React.ComponentType<{ className?: string }>;
+}) {
+  return (
+    <div className="relative rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <Icon className="absolute right-4 top-4 h-8 w-8 text-slate-300" aria-hidden />
+      <p className="pr-10 text-xs font-medium text-slate-500">{label}</p>
+      <p className="mt-1 text-xl font-bold text-slate-900">{primary}</p>
+      {secondary ? <p className="mt-0.5 truncate text-xs text-slate-400">{secondary}</p> : null}
+    </div>
+  );
+}
+
+export function PaymentPlanSummaryCards({
+  summary,
+  getCurrencySymbol,
+  contractTotalNis,
+  outstandingNis,
+}: SummaryCardsProps) {
+  const total =
+    contractTotalNis?.loading
+      ? { primary: '…' }
+      : contractTotalNis ?? formatMultiCurrencyAmounts(summary.totalByCurrency, getCurrencySymbol, {
+          includeVatLine: true,
+        });
+  const outstanding =
+    outstandingNis?.loading
+      ? { primary: '…' }
+      : outstandingNis ?? formatMultiCurrencyAmounts(summary.outstandingByCurrency, getCurrencySymbol, {
+          emphasizeGross: true,
+        });
   const paid = formatMultiCurrencyAmounts(summary.paidByCurrency, getCurrencySymbol, {
     emphasizeGross: true,
   });
@@ -163,35 +206,33 @@ export function PaymentPlanSummaryCards({ summary, getCurrencySymbol }: SummaryC
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-        <p className="text-xs font-medium text-slate-500">Total contract value</p>
-        <p className="mt-1 text-xl font-bold text-slate-900">{total.primary}</p>
-        {total.secondary ? <p className="mt-0.5 text-xs text-slate-400">{total.secondary}</p> : null}
-      </div>
+      <SummaryMetricCard
+        label="Total contract value"
+        primary={total.primary}
+        secondary={total.secondary}
+        icon={BanknotesIcon}
+      />
 
-      <div className="rounded-2xl border border-orange-100 bg-orange-50 p-4 shadow-sm">
-        <p className="text-xs font-medium text-orange-600">Outstanding</p>
-        <p className="mt-1 text-xl font-bold text-orange-700">{outstanding.primary}</p>
-        <p className="mt-0.5 text-xs text-orange-500">
-          {summary.unpaidCount} unpaid payment{summary.unpaidCount === 1 ? '' : 's'}
-        </p>
-      </div>
+      <SummaryMetricCard
+        label="Outstanding"
+        primary={outstanding.primary}
+        secondary={`${summary.unpaidCount} unpaid payment${summary.unpaidCount === 1 ? '' : 's'}`}
+        icon={ClockIcon}
+      />
 
-      <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 shadow-sm">
-        <p className="text-xs font-medium text-emerald-600">Paid</p>
-        <p className="mt-1 text-xl font-bold text-emerald-700">{paid.primary}</p>
-        <p className="mt-0.5 text-xs text-emerald-500">
-          {summary.paidCount} payment{summary.paidCount === 1 ? '' : 's'} completed
-        </p>
-      </div>
+      <SummaryMetricCard
+        label="Paid"
+        primary={paid.primary}
+        secondary={`${summary.paidCount} payment${summary.paidCount === 1 ? '' : 's'} completed`}
+        icon={CheckCircleIcon}
+      />
 
-      <div className="rounded-2xl border border-indigo-100 bg-indigo-50 p-4 shadow-sm">
-        <p className="text-xs font-medium text-indigo-600">Next due</p>
-        <p className="mt-1 text-xl font-bold text-indigo-700">{nextDueDate}</p>
-        <p className="mt-0.5 truncate text-xs text-indigo-500">
-          {nextDueLabel} · {nextDueAmount}
-        </p>
-      </div>
+      <SummaryMetricCard
+        label="Next due"
+        primary={nextDueDate}
+        secondary={`${nextDueLabel} · ${nextDueAmount}`}
+        icon={CalendarDaysIcon}
+      />
     </div>
   );
 }

@@ -1,4 +1,8 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import {
+  buildPaymentLinkLeadRef,
+  isLegacyLeadRef,
+} from './paymentLinkLeadRef';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -765,7 +769,9 @@ export async function createPaymentLink({
   currency, 
   order, 
   clientName, 
-  leadNumber 
+  leadNumber,
+  leadType,
+  isLegacyPaymentPlan,
 }: {
   paymentPlanId: string;
   clientId: string;
@@ -775,18 +781,27 @@ export async function createPaymentLink({
   order: string;
   clientName: string;
   leadNumber: string;
+  leadType?: string | null;
+  isLegacyPaymentPlan?: boolean;
 }) {
   // Generate secure token
   const secureToken = `payment_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
   // Set expiration date (30 days from now)
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + 30);
+
+  const leadRef = buildPaymentLinkLeadRef({
+    leadId: clientId,
+    leadType,
+    isLegacyPaymentPlan: isLegacyPaymentPlan ?? isLegacyLeadRef(leadType, clientId),
+  });
+
   // Create payment link in database
   const { data: paymentLink, error } = await supabase
     .from('payment_links')
     .insert({
       payment_plan_id: paymentPlanId,
-      client_id: clientId,
+      ...leadRef,
       secure_token: secureToken,
       amount: value,
       vat_amount: valueVat,
@@ -794,7 +809,7 @@ export async function createPaymentLink({
       currency: currency || '₪',
       description: `${order} - ${clientName} (#${leadNumber})`,
       status: 'pending',
-      expires_at: expiresAt.toISOString()
+      expires_at: expiresAt.toISOString(),
     })
     .select()
     .single();

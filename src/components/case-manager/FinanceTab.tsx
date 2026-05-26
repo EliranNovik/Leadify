@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import TimelineHistoryButtons from '../client-tabs/TimelineHistoryButtons';
 import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
+import { buildPaymentLinkLeadRef } from '../../lib/paymentLinkLeadRef';
 import toast from 'react-hot-toast';
 // HandlerTabProps interface
 interface HandlerLead {
@@ -477,11 +478,17 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
       expiresAt.setDate(expiresAt.getDate() + 30);
 
       // Create payment link in database
+      const leadRef = buildPaymentLinkLeadRef({
+        leadId: client.id,
+        leadType: client.lead_type,
+        isLegacyPaymentPlan: Boolean(payment.isLegacy),
+      });
+
       const { data: paymentLink, error } = await supabase
         .from('payment_links')
         .insert({
           payment_plan_id: payment.id,
-          client_id: client.id,
+          ...leadRef,
           secure_token: secureToken,
           amount: payment.value,
           vat_amount: payment.valueVat,
@@ -4990,15 +4997,15 @@ const FinanceTab: React.FC<FinanceTabProps> = ({ leads, onClientUpdate, onPaymen
                       <div className="mb-4">
                         <div className="mb-2 flex justify-end">
                           <button
-                            className="btn btn-circle btn-sm btn-outline btn-primary"
+                            type="button"
+                            className={`btn btn-sm btn-ghost rounded-xl normal-case ${
+                              openHistoryContact === contactName
+                                ? 'bg-indigo-50 text-indigo-700'
+                                : 'text-indigo-700 hover:bg-indigo-50'
+                            }`}
                             onClick={() => fetchPaymentHistory(contactName)}
-                            title={openHistoryContact === contactName ? 'Hide Payment History' : 'Show Payment History'}
                           >
-                            {openHistoryContact === contactName ? (
-                              <MinusIcon className="w-4 h-4" />
-                            ) : (
-                              <PlusIcon className="w-4 h-4" />
-                            )}
+                            Payment history
                           </button>
                         </div>
                         {openHistoryContact === contactName && (

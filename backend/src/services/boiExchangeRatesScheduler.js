@@ -3,13 +3,15 @@ const boiExchangeRatesService = require('./boiExchangeRatesService');
 const SCHEDULER_ENABLED =
   (process.env.ENABLE_BOI_RATES_SCHEDULER || 'true').toLowerCase() !== 'false';
 
-/** Hour in Asia/Jerusalem when the daily sync runs (default 6). */
+/** Hour in Asia/Jerusalem when the daily sync may run (default 6). */
 const RUN_HOUR = Number(process.env.BOI_RATES_SYNC_HOUR_JERUSALEM || '6');
-const RUN_MINUTE_WINDOW = 5;
+const TICK_MS = 60 * 1000;
+const STARTUP_DELAY_MS = 15 * 1000;
 
 let intervalHandle = null;
 let isRunning = false;
-let lastRunDateKey = null;
+/** Jerusalem calendar date (YYYY-MM-DD) when sync last succeeded. */
+let lastSuccessDateKey = null;
 
 function getJerusalemDateParts(date = new Date()) {
   const fmt = new Intl.DateTimeFormat('en-CA', {
@@ -31,27 +33,27 @@ function getJerusalemDateParts(date = new Date()) {
   };
 }
 
-function shouldRunNow() {
-  const { dateKey, hour, minute } = getJerusalemDateParts();
-  if (lastRunDateKey === dateKey) return false;
-  if (hour !== RUN_HOUR) return false;
-  if (minute >= RUN_MINUTE_WINDOW) return false;
+function shouldRunDailySync() {
+  const { dateKey, hour } = getJerusalemDateParts();
+  if (lastSuccessDateKey === dateKey) return false;
+  if (hour < RUN_HOUR) return false;
   return true;
 }
 
 const runSync = async (trigger = 'scheduled') => {
   if (isRunning) {
     console.log('⏸️  BOI exchange rates sync already running, skipping...');
-    return;
+    return null;
   }
 
   isRunning = true;
   try {
     const result = await boiExchangeRatesService.syncBoiExchangeRates();
     const { dateKey } = getJerusalemDateParts();
-    lastRunDateKey = dateKey;
+    lastSuccessDateKey = dateKey;
+    const pubDate = result.boiPublicationDate || 'unknown';
     console.log(
-      `💱 BOI rates sync (${trigger}) OK: fetched=${result.fetched} saved=${result.saved} date=${dateKey}`,
+      `💱 BOI rates sync (${trigger}) OK: fetched=${result.fetched} saved=${result.saved} boiDate=${pubDate}`,
     );
     return result;
   } catch (error) {
@@ -63,9 +65,29 @@ const runSync = async (trigger = 'scheduled') => {
 };
 
 const tick = async () => {
-  if (!shouldRunNow()) return;
+  if (!shouldRunDailySync()) return;
   try {
-    await runSync('daily-6am-jerusalem');
+    await runSync('daily-jerusalem');
+  } catch {
+    // logged in runSync; retry on next tick until success sets lastSuccessDateKey
+  }
+};
+
+const runStartupSync = async () => {
+  try {
+    const status = await boiExchangeRatesService.getSyncStatus();
+    if (status.needsSync) {
+      console.log(
+        `💱 BOI startup sync: DB=${status.dbLatestDate || 'empty'} BOI=${status.boiLatestDate || 'unknown'}`,
+      );
+      await runSync('startup-stale');
+      return;
+    }
+
+    const { dateKey, hour } = getJerusalemDateParts();
+    if (hour >= RUN_HOUR && lastSuccessDateKey !== dateKey) {
+      await runSync('startup-daily');
+    }
   } catch {
     // logged in runSync
   }
@@ -78,11 +100,16 @@ function startBoiExchangeRatesScheduler() {
   }
 
   console.log(
-    `⏰ BOI exchange rates scheduler: daily ~${RUN_HOUR}:00 Asia/Jerusalem (checks every 60s)`,
+    `⏰ BOI exchange rates scheduler: daily after ${RUN_HOUR}:00 Asia/Jerusalem + stale check on startup`,
   );
 
-  intervalHandle = setInterval(() => tick(), 60 * 1000);
-  setTimeout(() => tick(), 15 * 1000);
+  setTimeout(() => {
+    void runStartupSync();
+  }, STARTUP_DELAY_MS);
+
+  intervalHandle = setInterval(() => {
+    void tick();
+  }, TICK_MS);
 }
 
 function stopBoiExchangeRatesScheduler() {
@@ -96,5 +123,5 @@ function stopBoiExchangeRatesScheduler() {
 module.exports = {
   startBoiExchangeRatesScheduler,
   stopBoiExchangeRatesScheduler,
-  _internal: { runSync, shouldRunNow, getJerusalemDateParts },
+  _internal: { runSync, shouldRunDailySync, getJerusalemDateParts, runStartupSync },
 };

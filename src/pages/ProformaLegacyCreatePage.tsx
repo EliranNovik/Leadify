@@ -31,6 +31,7 @@ import {
 
 import { computeProformaVatFromPayment, getVatRateForLegacyLead } from '../lib/proformaVat';
 import { currencyIdFromSymbol, resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
+import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 
 function parseContactId(value: string | number | null | undefined): number | null {
   if (value == null || value === '') return null;
@@ -174,18 +175,15 @@ const ProformaLegacyCreatePage: React.FC = () => {
       let clientEmail = data.client_email || '';
       let clientPhone = data.client_phone || '';
 
-      if (invoiceMeta?.client_id) {
-        const { data: contactData } = await supabase
-          .from('leads_contact')
-          .select('name, email, phone')
-          .eq('id', invoiceMeta.client_id)
-          .single();
-        if (contactData) {
-          clientName = contactData.name || clientName;
-          clientEmail = contactData.email || clientEmail;
-          clientPhone = contactData.phone || clientPhone;
-        }
-      }
+      const resolvedContact = await resolvePaymentPlanContact({
+        leadId: leadIdNum,
+        clientId: invoiceMeta?.client_id,
+        clientNameFallback: data.client_name,
+        leadNameFallback: leadData.name,
+      });
+      clientName = resolvedContact.name || clientName;
+      clientEmail = resolvedContact.email || clientEmail;
+      clientPhone = resolvedContact.phone || clientPhone;
 
       let bankAccountDetails = parseLegacyBankFromNotes(data.notes) ?? null;
       if (!bankAccountDetails && data.bank_account_id) {
@@ -256,6 +254,8 @@ const ProformaLegacyCreatePage: React.FC = () => {
     const fetchLead = async () => {
       setLoading(true);
       setLegacyNotesPrefix(null);
+      setProformaData(null);
+      setLead(null);
 
       console.log('🔍 Full URL:', window.location.href);
       console.log('🔍 Location search:', location.search);
@@ -353,6 +353,15 @@ const ProformaLegacyCreatePage: React.FC = () => {
       }
       setLead(data);
 
+      const resolvedContact = await resolvePaymentPlanContact({
+        leadId: data.id,
+        clientId: resolvedContactId,
+        leadNameFallback: data.name,
+      });
+      const clientName = resolvedContact.name;
+      const clientEmail = resolvedContact.email;
+      const clientPhone = resolvedContact.phone;
+
       // Fetch subleads data for lead number formatting (for legacy leads)
       try {
         const masterId = data.master_id;
@@ -390,111 +399,6 @@ const ProformaLegacyCreatePage: React.FC = () => {
         }
       } catch (error) {
         console.error('Error fetching subleads data:', error);
-      }
-
-      // Fetch client contact info using client_id from URL parameter (if available) or fallback to main contact
-      let clientName = data.name || 'Client';
-      let clientEmail = '';
-      let clientPhone = '';
-
-      try {
-        if (resolvedContactId != null) {
-          const { data: contactData } = await supabase
-            .from('leads_contact')
-            .select('name, email, phone')
-            .eq('id', resolvedContactId)
-            .single();
-
-          if (contactData) {
-            clientName = contactData.name || clientName;
-            clientEmail = contactData.email || '';
-            clientPhone = contactData.phone || '';
-          }
-        } else {
-          // Fallback: get main contact from lead_leadcontact
-          const { data: allContacts } = await supabase
-            .from('lead_leadcontact')
-            .select(`
-              main,
-              contact_id
-            `)
-            .eq('lead_id', data.id);
-
-          if (allContacts && allContacts.length > 0) {
-            // Try different main field values
-            let leadContacts = null;
-
-            const { data: contactsTrue } = await supabase
-              .from('lead_leadcontact')
-              .select(`
-                main,
-                contact_id
-              `)
-              .eq('lead_id', data.id)
-              .eq('main', 'true')
-              .limit(1);
-
-            if (contactsTrue && contactsTrue.length > 0) {
-              leadContacts = contactsTrue;
-            } else {
-              const { data: contactsBool } = await supabase
-                .from('lead_leadcontact')
-                .select(`
-                  main,
-                  contact_id
-                `)
-                .eq('lead_id', data.id)
-                .eq('main', true)
-                .limit(1);
-
-              if (contactsBool && contactsBool.length > 0) {
-                leadContacts = contactsBool;
-              } else {
-                const { data: contactsNum } = await supabase
-                  .from('lead_leadcontact')
-                  .select(`
-                    main,
-                    contact_id
-                  `)
-                  .eq('lead_id', data.id)
-                  .eq('main', 1)
-                  .limit(1);
-
-                leadContacts = contactsNum;
-              }
-            }
-
-            if (leadContacts && leadContacts.length > 0) {
-              const { data: contactData } = await supabase
-                .from('leads_contact')
-                .select('name, email, phone')
-                .eq('id', leadContacts[0].contact_id)
-                .single();
-
-              if (contactData) {
-                clientName = contactData.name || clientName;
-                clientEmail = contactData.email || '';
-                clientPhone = contactData.phone || '';
-              }
-            } else if (allContacts && allContacts.length > 0) {
-              // Fallback: use first available contact
-              const { data: contactData } = await supabase
-                .from('leads_contact')
-                .select('name, email, phone')
-                .eq('id', allContacts[0].contact_id)
-                .single();
-
-              if (contactData) {
-                clientName = contactData.name || clientName;
-                clientEmail = contactData.email || '';
-                clientPhone = contactData.phone || '';
-              }
-            }
-          }
-        }
-      } catch (contactError) {
-        console.error('Error fetching contact data:', contactError);
-        // Error handling - contact data will remain empty
       }
 
       console.log('🔍 Final description values:', {

@@ -50,18 +50,99 @@ async function fetchPaymentByToken(secureToken) {
     .from('payment_links')
     .select(`
       *,
-      leads:client_id(lead_number, topic, name, email, phone),
-      payment_plans:payment_plan_id(payment_order, currency, currency_id)
+      leads:client_id(lead_number, topic, name, email, phone)
     `)
     .eq('secure_token', secureToken)
     .maybeSingle();
 
   if (error) throw error;
-  return data;
+  if (!data) return null;
+
+  let enriched = data;
+
+  if (!enriched.leads && enriched.legacy_id) {
+    const { data: legacyLead, error: legacyLeadError } = await supabase
+      .from('leads_lead')
+      .select('id, name, email, phone, topic')
+      .eq('id', enriched.legacy_id)
+      .maybeSingle();
+
+    if (legacyLeadError) {
+      console.error('Failed to fetch legacy lead for payment link:', legacyLeadError);
+    } else if (legacyLead) {
+      enriched = {
+        ...enriched,
+        leads: {
+          lead_number: String(legacyLead.id),
+          name: legacyLead.name,
+          email: legacyLead.email,
+          phone: legacyLead.phone,
+          topic: legacyLead.topic,
+        },
+      };
+    }
+  }
+
+  const isLegacy =
+    enriched.legacy_id != null ||
+    enriched.is_legacy_payment_plan === true ||
+    String(enriched.client_id || '').startsWith('legacy_');
+
+  if (isLegacy && enriched.payment_plan_id) {
+    const { data: legacyPlan, error: legacyError } = await supabase
+      .from('finances_paymentplanrow')
+      .select(`
+        id,
+        order,
+        currency_id,
+        actual_date,
+        accounting_currencies!finances_paymentplanrow_currency_id_fkey (
+          name,
+          iso_code
+        )
+      `)
+      .eq('id', enriched.payment_plan_id)
+      .maybeSingle();
+
+    if (legacyError) {
+      console.error('Failed to fetch legacy payment plan for payment link:', legacyError);
+    } else if (legacyPlan) {
+      enriched = { ...enriched, legacy_payment_plan: legacyPlan };
+    }
+  } else if (enriched.payment_plan_id) {
+    const { data: planRow, error: planError } = await supabase
+      .from('payment_plans')
+      .select('payment_order, currency, currency_id, paid, paid_at')
+      .eq('id', enriched.payment_plan_id)
+      .maybeSingle();
+
+    if (planError) {
+      console.error('Failed to fetch payment plan for payment link:', planError);
+    } else if (planRow) {
+      enriched = { ...enriched, payment_plans: planRow };
+    }
+  }
+
+  return enriched;
 }
 
 async function markPaymentPlanPaid(paymentLink) {
   if (!paymentLink?.payment_plan_id) return;
+
+  const isLegacy =
+    paymentLink.legacy_id != null ||
+    paymentLink.is_legacy_payment_plan === true ||
+    String(paymentLink.client_id || '').startsWith('legacy_');
+
+  if (isLegacy) {
+    const paidDate = new Date().toISOString().split('T')[0];
+    await supabase
+      .from('finances_paymentplanrow')
+      .update({ actual_date: paidDate })
+      .eq('id', paymentLink.payment_plan_id);
+    return;
+  }
+
   const email = paymentLink.leads?.email || null;
   await supabase
     .from('payment_plans')

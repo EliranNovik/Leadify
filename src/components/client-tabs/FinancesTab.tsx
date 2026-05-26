@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
+import { buildPaymentLinkLeadRef, parseLegacyLeadNumericId } from '../../lib/paymentLinkLeadRef';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
 import { useMsal } from '@azure/msal-react';
@@ -86,6 +87,11 @@ const AnchorDropdownPortal: React.FC<{
 import { generateProformaName } from '../../lib/proforma';
 import { currencyIdFromSymbol } from '../../lib/paymentPlanCurrency';
 import { sumUnpaidBaseAndVatByCurrencyFromPayments } from '../../lib/financeUnpaidTotal';
+import {
+  formatContractTotalNisDisplay,
+  formatOutstandingNisDisplay,
+  sumPaymentPlanTotalsInNis,
+} from '../../lib/paymentPlanTotalInNis';
 import { getClientContracts, getContractDetails } from '../../lib/contractAutomation';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
 
@@ -214,6 +220,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const { instance } = useMsal();
   const [financePlan, setFinancePlan] = useState<FinancePlan | null>(null);
   const [isLoadingFinancePlan, setIsLoadingFinancePlan] = useState<boolean>(true);
+  const [contractTotalNisDisplay, setContractTotalNisDisplay] = useState<{
+    primary: string;
+    secondary?: string;
+    loading: boolean;
+  }>({ primary: '—', loading: true });
+  const [outstandingNisDisplay, setOutstandingNisDisplay] = useState<{
+    primary: string;
+    loading: boolean;
+  }>({ primary: '—', loading: true });
   const [editingPaymentId, setEditingPaymentId] = useState<string | number | null>(null);
   const [editPaymentData, setEditPaymentData] = useState<any>({});
   const [isSavingPaymentRow, setIsSavingPaymentRow] = useState(false);
@@ -238,6 +253,47 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
     }
   }, [financePlan]);
+
+  useEffect(() => {
+    if (!financePlan?.payments?.length) {
+      setContractTotalNisDisplay({ primary: '—', loading: false });
+      setOutstandingNisDisplay({ primary: '—', loading: false });
+      return;
+    }
+
+    let cancelled = false;
+    setContractTotalNisDisplay((prev) => ({ ...prev, loading: true }));
+    setOutstandingNisDisplay((prev) => ({ ...prev, loading: true }));
+
+    void (async () => {
+      try {
+        const unpaidPayments = financePlan.payments.filter((p) => !p.paid);
+        const [contractTotals, outstandingTotals] = await Promise.all([
+          sumPaymentPlanTotalsInNis(financePlan.payments),
+          sumPaymentPlanTotalsInNis(unpaidPayments),
+        ]);
+        if (cancelled) return;
+        setContractTotalNisDisplay({
+          ...formatContractTotalNisDisplay(contractTotals),
+          loading: false,
+        });
+        setOutstandingNisDisplay({
+          ...formatOutstandingNisDisplay(outstandingTotals),
+          loading: false,
+        });
+      } catch (err) {
+        console.error('[FinancesTab] NIS summary totals:', err);
+        if (!cancelled) {
+          setContractTotalNisDisplay({ primary: '—', loading: false });
+          setOutstandingNisDisplay({ primary: '—', loading: false });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [financePlan?.payments]);
 
   // Proforma drawer state
   const [showProformaDrawer, setShowProformaDrawer] = useState(false);
@@ -664,11 +720,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       expiresAt.setDate(expiresAt.getDate() + 30);
 
       // Create payment link in database
+      const leadRef = buildPaymentLinkLeadRef({
+        leadId: client.id,
+        leadType: client.lead_type,
+        isLegacyPaymentPlan: Boolean(payment.isLegacy),
+      });
+
+      const planRowId = Number(payment.id);
+      if (!Number.isFinite(planRowId)) {
+        toast.error('Invalid payment row id. Refresh and try again.');
+        return;
+      }
+
       const { data: paymentLink, error } = await supabase
         .from('payment_links')
         .insert({
-          payment_plan_id: payment.id,
-          client_id: client.id,
+          payment_plan_id: planRowId,
+          ...leadRef,
           secure_token: secureToken,
           amount: payment.value,
           vat_amount: payment.valueVat,
@@ -676,7 +744,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           currency: payment.currency || '₪',
           description: `${payment.order} - ${client?.name} (#${client?.lead_number})`,
           status: 'pending',
-          expires_at: expiresAt.toISOString()
+          expires_at: expiresAt.toISOString(),
         })
         .select()
         .single();
@@ -690,9 +758,26 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       await navigator.clipboard.writeText(paymentUrl);
 
       toast.success('Payment link copied to clipboard!');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error generating payment link:', error);
-      toast.error('Failed to generate payment link');
+      const code = error?.code || '';
+      if (code === '23503' || code === 'PGRST204') {
+        toast.error(
+          'Legacy payment links need sql/2026-05-20_payment_links_legacy.sql run in Supabase.',
+        );
+      } else if (code === '22003') {
+        toast.error(
+          'Payment row id is too large for payment_links.payment_plan_id — run the BIGINT line in sql/2026-05-20_payment_links_legacy.sql.',
+        );
+      } else if (code === '42501') {
+        toast.error(
+          'Permission denied on payment_links. Run sql/2026-05-20_payment_links_rls.sql in Supabase.',
+        );
+      } else if (code === '22P02') {
+        toast.error('Invalid lead id for payment link. Refresh the page and try again.');
+      } else {
+        toast.error('Failed to generate payment link');
+      }
     }
   };
 
@@ -1817,7 +1902,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
             // Calculate total per contact and then calculate percentages
             payments = processedPayments.map(processed => {
-              const { plan, value, valueVat, currency, paymentTotal } = processed;
+              const { plan, value, valueVat, currency, currencyId, paymentTotal } = processed;
 
               // Get contact name from client_id
               const contactName = getContactNameFromClientId(plan.client_id, currentContacts);
@@ -1865,6 +1950,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 paid_at: plan.actual_date,
                 paid_by: undefined, // Legacy doesn't track who paid
                 currency,
+                currency_id: currencyId ?? plan.currency_id ?? null,
                 isLegacy: true, // Flag to identify legacy payments
                 ready_to_pay: isReadyToPay,
                 ready_to_pay_text: (plan as any).ready_to_pay_text || null,
@@ -1957,6 +2043,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 paid_at: plan.paid_at || null,
                 paid_by: plan.paid_by || null,
                 currency,
+                currency_id: plan.currency_id ?? currencyIdFromSymbol(currency) ?? null,
                 isLegacy: false,
                 ready_to_pay: plan.ready_to_pay || false, // Include ready_to_pay field
                 ready_to_pay_text: (plan as any).ready_to_pay_text || null,
@@ -2354,6 +2441,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               value,
               valueVat,
               currency,
+              currencyId,
               paymentTotal
             };
           });
@@ -2397,7 +2485,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
           // Calculate total per contact and then calculate percentages
           payments = processedPayments.map(processed => {
-            const { plan, value, valueVat, currency, paymentTotal } = processed;
+            const { plan, value, valueVat, currency, currencyId, paymentTotal } = processed;
 
             const contactName = getContactNameFromClientId(plan.client_id, currentContacts);
             const orderText = plan.order ? getOrderText(plan.order) : 'First Payment';
@@ -2433,6 +2521,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               paid_at: plan.actual_date,
               paid_by: null,
               currency,
+              currency_id: currencyId ?? plan.currency_id ?? null,
               isLegacy: true,
               ready_to_pay: isReadyToPay,
               ready_to_pay_by: readyToPayBy,
@@ -2521,6 +2610,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               paid_at: plan.paid_at || null,
               paid_by: plan.paid_by || null,
               currency,
+              currency_id: plan.currency_id ?? currencyIdFromSymbol(currency) ?? null,
               isLegacy: false,
               ready_to_pay: plan.ready_to_pay || false,
               ready_to_pay_by: plan.ready_to_pay_by || null,
@@ -4646,11 +4736,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       return;
     }
     try {
-      // 1. Get all payment links for this client
-      const { data: links, error: linksError } = await supabase
-        .from('payment_links')
-        .select('id')
-        .eq('client_id', client.id);
+      const isLegacyLead =
+        client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      const legacyId = parseLegacyLeadNumericId(client.id);
+
+      let linksQuery = supabase.from('payment_links').select('id');
+      if (isLegacyLead && legacyId != null) {
+        linksQuery = linksQuery.eq('legacy_id', legacyId);
+      } else {
+        linksQuery = linksQuery.eq('client_id', client.id);
+      }
+
+      const { data: links, error: linksError } = await linksQuery;
       if (linksError) throw linksError;
       const linkIds = links?.map(link => link.id) || [];
       if (linkIds.length === 0) {
@@ -5319,6 +5416,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const createProformaBtnClass =
     'rounded-lg border-0 bg-gray-900 px-3.5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-gray-800';
 
+  const legacyPaymentHasProforma = (paymentPlanId: string | number): boolean =>
+    legacyProformas.some((proforma) => Number(proforma.ppr_id) === Number(paymentPlanId));
+
+  /** New leads: proforma JSON on row. Legacy: proformainvoice linked via ppr_id. */
+  const paymentRowHasProforma = (payment: PaymentPlan): boolean => {
+    if (payment.isLegacy) {
+      return legacyPaymentHasProforma(payment.id);
+    }
+    return Boolean(payment.proforma && String(payment.proforma).trim() !== '');
+  };
+
   const renderPaymentRowActions = (p: PaymentPlan, isPaid: boolean) => {
     if (!p.id) return <span className="text-slate-400">—</span>;
 
@@ -5327,7 +5435,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         className="flex items-center justify-end gap-2"
         style={{ overflow: 'visible', position: 'relative' }}
       >
-        {p.proforma && !isPaid && !p.isLegacy && (
+        {paymentRowHasProforma(p) && !isPaid && (
           <button
             type="button"
             className={`${paymentRowIconBtn} border-blue-300 bg-blue-100 text-blue-700 hover:bg-blue-200`}
@@ -5640,16 +5748,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
         {/* Payments Plan Section */}
         <div className="mb-8 space-y-6">
-          {/* Overview: title, toolbar, summary cards */}
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-200 px-6 py-4">
+            <div className="px-6 py-4">
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
                   <BanknotesIconSolid className="h-6 w-6 text-slate-800" />
-                  <div>
-                    <h3 className="text-xl font-bold text-slate-900">Payments Plan</h3>
-                    <p className="text-sm text-slate-500">Financial schedule and payment tracking</p>
-                  </div>
+                  <h3 className="text-xl font-bold text-slate-900">Payments Plan</h3>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   {financePlan && client?.balance !== total && (
@@ -5679,11 +5783,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 </div>
               </div>
             </div>
-
-            <div className="p-6">
-              <PaymentPlanSummaryCards summary={planSummary} getCurrencySymbol={getCurrencySymbol} />
-            </div>
           </div>
+
+          <PaymentPlanSummaryCards
+            summary={planSummary}
+            getCurrencySymbol={getCurrencySymbol}
+            contractTotalNis={contractTotalNisDisplay}
+            outstandingNis={outstandingNisDisplay}
+          />
 
           {/* One white card per contact payment plan */}
           {(() => {
@@ -5727,15 +5834,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                       <div className="mb-4">
                         <div className="mb-2 flex justify-end">
                           <button
-                            className="btn btn-circle btn-sm btn-outline btn-primary"
+                            type="button"
+                            className={`btn btn-sm btn-ghost rounded-xl normal-case ${
+                              openHistoryContact === contactName
+                                ? 'bg-indigo-50 text-indigo-700'
+                                : 'text-indigo-700 hover:bg-indigo-50'
+                            }`}
                             onClick={() => fetchPaymentHistory(contactName)}
-                            title={openHistoryContact === contactName ? 'Hide Payment History' : 'Show Payment History'}
                           >
-                            {openHistoryContact === contactName ? (
-                              <MinusIcon className="w-4 h-4" />
-                            ) : (
-                              <PlusIcon className="w-4 h-4" />
-                            )}
+                            Payment history
                           </button>
                         </div>
                         {openHistoryContact === contactName && (

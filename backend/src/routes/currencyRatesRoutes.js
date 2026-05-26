@@ -21,6 +21,17 @@ router.get('/', async (req, res) => {
   }
 });
 
+/** GET /api/currency-rates/status — DB vs BOI publication dates (diagnostics). */
+router.get('/status', async (req, res) => {
+  try {
+    const status = await boiExchangeRatesService.getSyncStatus();
+    res.json({ success: true, ...status });
+  } catch (error) {
+    console.error('GET currency-rates/status failed:', error);
+    res.status(500).json({ success: false, error: error.message || 'Status check failed' });
+  }
+});
+
 /**
  * POST /api/currency-rates/sync
  * Triggers BOI fetch + DB upsert. Requires x-cron-secret or BOI_RATES_SYNC_CRON_SECRET.

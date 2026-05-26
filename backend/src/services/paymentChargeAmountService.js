@@ -32,14 +32,16 @@ function isLocalCurrency(iso) {
  * @param {object} payment - payment_links row with currency + optional payment_plans
  */
 function resolvePaymentIsoCode(payment) {
+  const legacyPlan = payment.legacy_payment_plan || {};
   const plan = payment.payment_plans || {};
-  const currencyId = plan.currency_id ?? payment.currency_id;
+  const currencyId = legacyPlan.currency_id ?? plan.currency_id ?? payment.currency_id;
   if (currencyId != null) {
     const id = typeof currencyId === 'number' ? currencyId : parseInt(String(currencyId), 10);
     if (CURRENCY_ID_TO_ISO[id]) return CURRENCY_ID_TO_ISO[id];
   }
 
-  const text = String(payment.currency || plan.currency || '').trim();
+  const legacyCurrencyName = legacyPlan.accounting_currencies?.name;
+  const text = String(legacyCurrencyName || payment.currency || plan.currency || '').trim();
   if (SYMBOL_TO_ISO[text]) return SYMBOL_TO_ISO[text];
   if (ILS_ALIASES.has(text.toUpperCase()) || text === '₪') return 'ILS';
   if (/^[A-Z]{3}$/.test(text.toUpperCase())) return text.toUpperCase();
