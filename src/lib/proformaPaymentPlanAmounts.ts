@@ -6,6 +6,7 @@ import {
   resolveNewProformaVat,
   type ResolvedProformaVat,
 } from './proformaVat';
+import { normalizeProformaCurrencyFields } from './paymentPlanCurrency';
 
 export type ProformaLineRow = {
   description?: string;
@@ -78,7 +79,10 @@ export function applyNewPaymentPlanAmountsToProforma<T extends Record<string, un
     due_date: payment.due_date ?? (synced as { dueDate?: string }).dueDate,
   });
   return {
-    proforma: applyResolvedVatToNewProforma(synced, vatTotals) as T,
+    proforma: normalizeProformaCurrencyFields(
+      applyResolvedVatToNewProforma(synced, vatTotals) as T,
+      payment,
+    ),
     vatTotals,
   };
 }
@@ -87,6 +91,7 @@ export type LegacyProformaPaymentPlanSnapshot = {
   value?: number | string | null;
   vat_value?: number | string | null;
   order?: string | number | null;
+  currency_id?: number | string | null;
 };
 
 /** Merge legacy proforma invoice rows with live finances_paymentplanrow amounts. */
@@ -100,5 +105,11 @@ export function applyLegacyPaymentPlanAmountsToProforma<T extends Record<string,
     vat_value: payment.vat_value,
     order: payment.order ?? (synced as { paymentOrder?: string | number }).paymentOrder,
   });
-  return { proforma: synced, vatTotals };
+  return {
+    proforma: normalizeProformaCurrencyFields(synced, {
+      currency_code: (synced as { currency_code?: string }).currency_code,
+      currency_id: payment.currency_id ?? (synced as { currency_id?: number | string }).currency_id,
+    }),
+    vatTotals,
+  };
 }

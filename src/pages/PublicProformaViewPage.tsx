@@ -15,7 +15,7 @@ import {
   applyNewPaymentPlanAmountsToProforma,
 } from '../lib/proformaPaymentPlanAmounts';
 import type { ResolvedProformaVat } from '../lib/proformaVat';
-import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
+import { proformaDisplayCurrency, resolveProformaCurrency } from '../lib/paymentPlanCurrency';
 import { getPublicProformaMainLayoutClass } from '../lib/publicProformaLayout';
 import { resolveBankAccountFromProforma } from '../lib/bankAccounts';
 import { shareCurrentPageUrl } from '../lib/proformaPublicLink';
@@ -78,12 +78,13 @@ const PublicProformaViewPage: React.FC = () => {
         }
 
         const { displaySymbol: resolvedCurrency, currencyId: resolvedCurrencyId } =
-          await resolvePaymentPlanCurrency({
-            currency: data.currency,
-            currency_id: data.currency_id,
+          await resolveProformaCurrency({
+            currency: parsed.currency ?? data.currency,
+            currency_id: parsed.currency_id ?? data.currency_id,
           });
 
         parsed.currency = resolvedCurrency;
+        parsed.currency_id = resolvedCurrencyId;
         parsed.paymentOrder = parsed.paymentOrder ?? data.payment_order;
         parsed.dueDate = parsed.dueDate ?? data.due_date;
 
@@ -91,7 +92,7 @@ const PublicProformaViewPage: React.FC = () => {
           value: data.value,
           value_vat: data.value_vat,
           currency: resolvedCurrency,
-          currency_id: data.currency_id ?? resolvedCurrencyId,
+          currency_id: resolvedCurrencyId,
           payment_order: data.payment_order ?? parsed.paymentOrder,
           due_date: data.due_date ?? parsed.dueDate,
         });
@@ -113,7 +114,7 @@ const PublicProformaViewPage: React.FC = () => {
           paid: Boolean(data.paid),
           paid_at: data.paid_at ?? null,
           currency: resolvedCurrency,
-          currency_id: data.currency_id ?? resolvedCurrencyId ?? null,
+          currency_id: resolvedCurrencyId ?? null,
         });
       } catch {
         setError('Failed to load invoice.');
@@ -223,6 +224,10 @@ const PublicProformaViewPage: React.FC = () => {
     );
   }
 
+  const currencyLabel = proformaDisplayCurrency({
+    currency: proforma.currency,
+    currency_id: proforma.currency_id ?? paymentPlanMeta?.currency_id,
+  });
   const leadLabel = publicLeadNumber || proforma.lead_number || '—';
   const displayNotes = (proforma.notes as string | undefined)?.trim() ?? '';
   const hasDesktopSidePanels = Boolean(
@@ -323,8 +328,8 @@ const PublicProformaViewPage: React.FC = () => {
                   <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
                     <td className="px-4 py-2 font-medium text-gray-900">{row.description}</td>
                     <td className="px-4 py-2 text-right">{row.qty}</td>
-                    <td className="px-4 py-2 text-right">{proforma.currency} {row.rate}</td>
-                    <td className="px-4 py-2 text-right font-bold">{proforma.currency} {row.total}</td>
+                    <td className="px-4 py-2 text-right">{currencyLabel} {row.rate}</td>
+                    <td className="px-4 py-2 text-right font-bold">{currencyLabel} {row.total}</td>
                   </tr>
                 ))}
               </tbody>
@@ -334,7 +339,7 @@ const PublicProformaViewPage: React.FC = () => {
           <div className="mb-6 flex flex-col gap-4 md:flex-row md:justify-end">
             <div className="w-full rounded-xl border border-gray-200 bg-white p-6 md:w-1/2">
               {vatTotals && (
-                <ProformaVatTotalsBlock currencyLabel={proforma.currency || '₪'} resolved={vatTotals} />
+                <ProformaVatTotalsBlock currencyLabel={currencyLabel} resolved={vatTotals} />
               )}
               <ProformaTotalInNis info={exchangeInfo} loading={exchangeLoading} variant="card" />
             </div>

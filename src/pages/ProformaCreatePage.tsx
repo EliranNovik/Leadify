@@ -26,7 +26,12 @@ import {
   fetchProformaExchangeRateInfo,
   type ProformaExchangeRateInfo,
 } from '../lib/proformaExchangeRate';
-import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
+import {
+  displaySymbolForPaymentSave,
+  mapLeadCurrencyToSymbol,
+  resolveCurrencyIdForSave,
+  resolveProformaCurrency,
+} from '../lib/paymentPlanCurrency';
 import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 import { ensureProformaPaymentLink } from '../lib/proformaPaymentLink';
 
@@ -94,7 +99,7 @@ const ProformaCreatePage: React.FC = () => {
       }
 
       const { displaySymbol: resolvedCurrency, currencyId: resolvedCurrencyId } =
-        await resolvePaymentPlanCurrency({
+        await resolveProformaCurrency({
           currency: data.currency,
           currency_id: data.currency_id,
           lead_currency_id: leadCurrencyId,
@@ -105,7 +110,7 @@ const ProformaCreatePage: React.FC = () => {
       const paymentWithCurrency = {
         ...data,
         currency: resolvedCurrency,
-        currency_id: data.currency_id ?? resolvedCurrencyId,
+        currency_id: resolvedCurrencyId,
       };
       setPayment(paymentWithCurrency);
 
@@ -209,13 +214,20 @@ const ProformaCreatePage: React.FC = () => {
         const subtotal = proformaData.rows.reduce((sum: number, r: { total: number }) => sum + Number(r.total), 0);
         const { vat, totalWithVat: total } = computeProformaVatFromPayment({
           currency: proformaData.currency,
+          currency_id: proformaData.currency_id ?? payment?.currency_id,
           valueVat: payment.value_vat,
           paymentOrder: proformaData.paymentOrder ?? payment.payment_order,
           dueDate: proformaData.dueDate ?? payment.due_date,
           subtotal,
         });
         const info = await fetchProformaExchangeRateInfo({
-          currency: currencyInputFromNewPayment(payment, proformaData.currency),
+          currency: currencyInputFromNewPayment(
+            {
+              currency_id: proformaData.currency_id ?? payment.currency_id,
+              currency: proformaData.currency,
+            },
+            proformaData.currency,
+          ),
           paid: Boolean(payment.paid),
           paidAt: payment.paid_at ?? null,
           subtotal,
@@ -334,9 +346,17 @@ const ProformaCreatePage: React.FC = () => {
         : await generateProformaName();
       // Calculate totals
       const total = proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
-      const currency = proformaData.currency || '₪';
+      const currencyId = resolveCurrencyIdForSave({
+        currency: proformaData.currency,
+        currency_id: proformaData.currency_id ?? payment?.currency_id,
+      });
+      const currency = displaySymbolForPaymentSave({
+        currency: proformaData.currency,
+        currency_id: currencyId,
+      });
       const { addVat, vat, totalWithVat } = computeProformaVatFromPayment({
         currency,
+        currency_id: currencyId,
         valueVat: payment?.value_vat,
         paymentOrder: proformaData.paymentOrder ?? payment?.payment_order,
         dueDate: proformaData.dueDate ?? payment?.due_date,
@@ -366,6 +386,7 @@ const ProformaCreatePage: React.FC = () => {
         phone,
         addVat,
         currency,
+        currency_id: currencyId,
       });
       const { error } = await supabase
         .from('payment_plans')
@@ -395,13 +416,7 @@ const ProformaCreatePage: React.FC = () => {
     }
   };
 
-  // Helper to get currency symbol
-  const getCurrencySymbol = (currency: string | undefined) => {
-    if (!currency) return '₪';
-    if (currency === 'USD' || currency === '$') return '$';
-    if (currency === '₪') return '₪';
-    return currency;
-  };
+  const getCurrencySymbol = (currency: string | undefined) => mapLeadCurrencyToSymbol(currency);
 
   if (loading || !proformaData) {
     return (

@@ -30,7 +30,7 @@ import {
 import ProformaVatTotalsBlock from '../components/proforma/ProformaVatTotalsBlock';
 import { applyLegacyPaymentPlanAmountsToProforma } from '../lib/proformaPaymentPlanAmounts';
 import type { ResolvedProformaVat } from '../lib/proformaVat';
-import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
+import { proformaDisplayCurrency, resolveProformaCurrency } from '../lib/paymentPlanCurrency';
 import { getPublicProformaDisplayNotes } from '../lib/proformaNotes';
 import ProformaViewSideNotes from '../components/proforma/ProformaViewSideNotes';
 import ProformaBackToLeadButton from '../components/proforma/ProformaBackToLeadButton';
@@ -59,37 +59,6 @@ const ProformaLegacyViewPage: React.FC = () => {
   const [exchangeInfo, setExchangeInfo] = useState<ProformaExchangeRateInfo | null>(null);
   const [exchangeLoading, setExchangeLoading] = useState(false);
   const [vatTotals, setVatTotals] = useState<ResolvedProformaVat | null>(null);
-
-  // Helper to get currency symbol
-  const getCurrencySymbol = (currency: string | undefined) => {
-    if (!currency) return '₪';
-    // Map currency codes to symbols
-    if (currency === 'ILS' || currency === '₪') return '₪';
-    if (currency === 'USD' || currency === '$') return '$';
-    if (currency === 'EUR' || currency === '€') return '€';
-    if (currency === 'GBP' || currency === '£') return '£';
-    if (currency === 'CAD' || currency === 'C$') return 'C$';
-    if (currency === 'AUD' || currency === 'A$') return 'A$';
-    if (currency === 'JPY' || currency === '¥') return '¥';
-    if (currency === 'CHF') return 'CHF';
-    if (currency === 'SEK') return 'SEK';
-    if (currency === 'NOK') return 'NOK';
-    if (currency === 'DKK') return 'DKK';
-    if (currency === 'PLN') return 'PLN';
-    if (currency === 'CZK') return 'CZK';
-    if (currency === 'HUF') return 'HUF';
-    if (currency === 'RON') return 'RON';
-    if (currency === 'BGN') return 'BGN';
-    if (currency === 'HRK') return 'HRK';
-    if (currency === 'RUB') return 'RUB';
-    if (currency === 'UAH') return 'UAH';
-    if (currency === 'TRY') return 'TRY';
-    if (currency === 'ILS') return '₪';
-    // If it's already a symbol, return it
-    if (currency.length <= 2 && !currency.match(/^[A-Z]{3}$/)) return currency;
-    // Default fallback
-    return currency;
-  };
 
   useEffect(() => {
     let cancelled = false;
@@ -412,7 +381,7 @@ const ProformaLegacyViewPage: React.FC = () => {
           client_email: clientEmail,
           client_phone: clientPhone,
           currency_name: 'Israeli Shekel',
-          currency_code: directData.currency_id ? getCurrencySymbol(directData.currency_id.toString()) : '₪',
+          currency_code: proformaDisplayCurrency({ currency_id: directData.currency_id }),
           lead_number: directData.lead_id?.toString() || '',
           issuedBy: issuedBy,
           issuedDate: issuedDate
@@ -551,7 +520,7 @@ const ProformaLegacyViewPage: React.FC = () => {
 
       const enriched = {
         ...data,
-        currency_id: data.currency_id ?? paymentCurrencyId,
+        currency_id: paymentCurrencyId ?? data.currency_id,
         paymentPaid,
         paid_at: paymentPaidAt,
         paymentPlanDate,
@@ -559,16 +528,19 @@ const ProformaLegacyViewPage: React.FC = () => {
         ppr_id: proformaData?.ppr_id ?? null,
         bankAccountDetails,
       };
-      const { displaySymbol: resolvedCurrency } = await resolvePaymentPlanCurrency({
-        currency_id: enriched.currency_id ?? paymentCurrencyId,
-        currency: enriched.currency_code,
-      });
+      const { displaySymbol: resolvedCurrency, currencyId: resolvedCurrencyId } =
+        await resolveProformaCurrency({
+          currency_id: enriched.currency_id ?? paymentCurrencyId,
+          currency: enriched.currency_code,
+        });
       enriched.currency_code = resolvedCurrency;
+      enriched.currency_id = resolvedCurrencyId;
 
       const { proforma: syncedProforma, vatTotals: resolvedVat } = applyLegacyPaymentPlanAmountsToProforma(enriched, {
         value: paymentPlanValue,
         vat_value: paymentPlanVatValue,
         order: paymentPlanOrder,
+        currency_id: resolvedCurrencyId,
       });
       setVatTotals(resolvedVat);
       let contactIdForSend: number | null = paymentPlanClientId;
@@ -789,6 +761,11 @@ const ProformaLegacyViewPage: React.FC = () => {
   if (error) return <div className="p-8 text-center text-red-600">Error: {error}</div>;
   if (!proforma) return <div className="p-8 text-center text-yellow-600">No proforma data found.</div>;
 
+  const currencyLabel = proformaDisplayCurrency({
+    currency_code: proforma.currency_code,
+    currency_id: proforma.currency_id,
+  });
+
   const displayNotes = getPublicProformaDisplayNotes(proforma.notes);
   const isLegacySubLead = Boolean(leadData?.master_id && String(leadData.master_id).trim() !== '');
   const financesTabPath = buildClientFinancesTabPath({
@@ -963,8 +940,8 @@ const ProformaLegacyViewPage: React.FC = () => {
                 <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
                   <td className="px-4 py-2 text-gray-900 font-medium">{row.description}</td>
                   <td className="px-4 py-2 text-right">{row.qty}</td>
-                  <td className="px-4 py-2 text-right">{getCurrencySymbol(proforma.currency_code)} {row.rate}</td>
-                  <td className="px-4 py-2 text-right font-bold">{getCurrencySymbol(proforma.currency_code)} {row.total}</td>
+                  <td className="px-4 py-2 text-right">{currencyLabel} {row.rate}</td>
+                  <td className="px-4 py-2 text-right font-bold">{currencyLabel} {row.total}</td>
                 </tr>
               ))}
             </tbody>
@@ -975,7 +952,7 @@ const ProformaLegacyViewPage: React.FC = () => {
           <div className="w-full md:w-1/2 bg-white rounded-xl p-6 border border-gray-200">
             {vatTotals && (
               <ProformaVatTotalsBlock
-                currencyLabel={getCurrencySymbol(proforma.currency_code)}
+                currencyLabel={currencyLabel}
                 resolved={vatTotals}
                 totalAmountClassName=""
                 totalAmountStyle={{ color: '#006BB1' }}

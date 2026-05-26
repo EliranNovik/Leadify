@@ -1,5 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { XMarkIcon, CheckIcon, PencilIcon } from '@heroicons/react/24/outline';
+import {
+  findAccountingCurrency,
+  isNisCurrency,
+  mapLeadCurrencyToSymbol,
+  resolveCurrencyIdForSave,
+} from '../../lib/paymentPlanCurrency';
 
 interface AddPaymentModalProps {
   isOpen: boolean;
@@ -34,17 +40,31 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
   onValueChange,
   getTotalAmount
 }) => {
-  const [newPaymentData, setNewPaymentData] = useState<any>({
-    dueDate: '',
-    value: defaultAmount ? String(defaultAmount) : '',
-    duePercent: defaultAmount > 0 ? '100' : '',
-    paymentOrder: 'Intermediate Payment',
-    client: contactName,
-    notes: '',
-    currency: defaultCurrency,
-    includeVat: true,
-    valueVat: 0,
-    currencyId: defaultCurrency === '₪' ? 1 : defaultCurrency === '€' ? 2 : defaultCurrency === '$' ? 3 : defaultCurrency === '£' ? 4 : 1,
+  const resolveCurrencyState = (token: string) => {
+    const match = findAccountingCurrency(token, null, availableCurrencies);
+    if (match) {
+      return { currency: match.name, currencyId: match.id };
+    }
+    return {
+      currency: mapLeadCurrencyToSymbol(token),
+      currencyId: resolveCurrencyIdForSave({ currency: token }, availableCurrencies),
+    };
+  };
+
+  const [newPaymentData, setNewPaymentData] = useState<any>(() => {
+    const resolved = resolveCurrencyState(defaultCurrency);
+    return {
+      dueDate: '',
+      value: defaultAmount ? String(defaultAmount) : '',
+      duePercent: defaultAmount > 0 ? '100' : '',
+      paymentOrder: 'Intermediate Payment',
+      client: contactName,
+      notes: '',
+      currency: resolved.currency,
+      includeVat: true,
+      valueVat: 0,
+      currencyId: resolved.currencyId,
+    };
   });
   const [editingValueVatId, setEditingValueVatId] = useState<string | number | null>(null);
   const [notesDirection, setNotesDirection] = useState<'rtl' | 'ltr'>('ltr');
@@ -52,6 +72,7 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
   // Reset form when modal closes
   useEffect(() => {
     if (!isOpen) {
+      const resolved = resolveCurrencyState(defaultCurrency);
       setNewPaymentData({
         dueDate: '',
         value: defaultAmount ? String(defaultAmount) : '',
@@ -59,15 +80,15 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
         paymentOrder: 'Intermediate Payment',
         client: contactName,
         notes: '',
-        currency: defaultCurrency,
-        includeVat: true,
+        currency: resolved.currency,
+        includeVat: isNisCurrency({ currency: resolved.currency, currencyId: resolved.currencyId }),
         valueVat: 0,
-        currencyId: defaultCurrency === '₪' ? 1 : defaultCurrency === '€' ? 2 : defaultCurrency === '$' ? 3 : defaultCurrency === '£' ? 4 : 1,
+        currencyId: resolved.currencyId,
       });
       setEditingValueVatId(null);
       setNotesDirection('ltr');
     }
-  }, [isOpen, contactName, defaultCurrency, defaultAmount]);
+  }, [isOpen, contactName, defaultCurrency, defaultAmount, availableCurrencies]);
 
   // Update notes direction when notes change
   useEffect(() => {
@@ -104,17 +125,20 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
   };
 
   const handleCurrencyChange = (selectedCurrency: string) => {
-    const selectedCurrencyData = availableCurrencies.find(c => c.name === selectedCurrency);
+    const selectedCurrencyData = findAccountingCurrency(selectedCurrency, null, availableCurrencies)
+      ?? availableCurrencies.find(c => c.name === selectedCurrency);
+    const currencyId = selectedCurrencyData?.id
+      ?? resolveCurrencyIdForSave({ currency: selectedCurrency }, availableCurrencies);
     let vat = 0;
     const includeVat = newPaymentData.includeVat !== false;
-    if (includeVat) {
+    if (includeVat && isNisCurrency({ currency: selectedCurrency, currencyId })) {
       vat = Math.round(Number(newPaymentData.value || 0) * 0.18 * 100) / 100;
     }
     setNewPaymentData((d: any) => ({
       ...d,
       currency: selectedCurrency,
-      currencyId: selectedCurrencyData?.id || 1,
-      includeVat: d.includeVat !== false,
+      currencyId,
+      includeVat: isNisCurrency({ currency: selectedCurrency, currencyId }) ? (d.includeVat !== false) : false,
       valueVat: vat
     }));
   };
@@ -139,19 +163,7 @@ const AddPaymentModal: React.FC<AddPaymentModalProps> = ({
     await onSave(paymentDataWithDuePercent, newPaymentData.includeVat !== false);
   };
 
-  const getCurrencySymbol = (currency?: string): string => {
-    if (!currency) return '₪';
-    const symbols: { [key: string]: string } = {
-      'ILS': '₪',
-      'NIS': '₪',
-      'USD': '$',
-      'EUR': '€',
-      'GBP': '£',
-      'CAD': 'C$',
-      'AUD': 'A$'
-    };
-    return symbols[currency.toUpperCase()] || currency;
-  };
+  const getCurrencySymbol = (currency?: string): string => mapLeadCurrencyToSymbol(currency);
 
   const totalAmount = (Number(newPaymentData.value || 0) + Number(newPaymentData.valueVat || 0));
 

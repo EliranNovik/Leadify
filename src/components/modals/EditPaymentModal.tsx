@@ -1,6 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { XMarkIcon, CheckIcon, PencilIcon } from '@heroicons/react/24/outline';
 import { calculatePaymentPlanVatAmount } from '../../lib/paymentPlanVat';
+import {
+  findAccountingCurrency,
+  mapLeadCurrencyToSymbol,
+  resolveCurrencyIdForSave,
+} from '../../lib/paymentPlanCurrency';
 
 interface PaymentPlan {
   id: string | number;
@@ -12,6 +17,7 @@ interface PaymentPlan {
   order: string;
   notes: string;
   currency?: string;
+  currency_id?: number | null;
   isLegacy?: boolean;
 }
 
@@ -177,18 +183,16 @@ const EditPaymentModal: React.FC<EditPaymentModalProps> = ({
     await onSave(formattedData, editPaymentIncludeVat);
   };
 
-  const getCurrencySymbol = (currency?: string): string => {
-    if (!currency) return '₪';
-    const symbols: { [key: string]: string } = {
-      'ILS': '₪',
-      'NIS': '₪',
-      'USD': '$',
-      'EUR': '€',
-      'GBP': '£',
-      'CAD': 'C$',
-      'AUD': 'A$'
-    };
-    return symbols[currency.toUpperCase()] || currency;
+  const getCurrencySymbol = (currency?: string): string => mapLeadCurrencyToSymbol(currency);
+
+  const getSelectCurrencyValue = (): string => {
+    const match = findAccountingCurrency(
+      editPaymentData.currency || payment.currency,
+      editPaymentData.currency_id ?? payment.currency_id,
+      availableCurrencies,
+    );
+    if (match?.name) return match.name;
+    return mapLeadCurrencyToSymbol(editPaymentData.currency || payment.currency || '₪');
   };
 
   const totalAmount = (editPaymentData.value || 0) + (editPaymentData.valueVat || 0);
@@ -286,11 +290,13 @@ const EditPaymentModal: React.FC<EditPaymentModalProps> = ({
             </label>
             <select
               className="select select-bordered w-full"
-              value={editPaymentData.currency || payment.currency || '₪'}
+              value={getSelectCurrencyValue()}
               onChange={e => {
                 const selectedCurrency = e.target.value;
-                const currency = selectedCurrency;
-                // Recalculate VAT based on checkbox state when currency changes
+                const selectedCurrencyData = findAccountingCurrency(selectedCurrency, null, availableCurrencies)
+                  ?? availableCurrencies.find(c => c.name === selectedCurrency);
+                const currencyId = selectedCurrencyData?.id
+                  ?? resolveCurrencyIdForSave({ currency: selectedCurrency }, availableCurrencies);
                 const newValueVat = calculatePaymentPlanVatAmount(
                   editPaymentData.value || 0,
                   editPaymentIncludeVat,
@@ -298,7 +304,9 @@ const EditPaymentModal: React.FC<EditPaymentModalProps> = ({
                 );
                 setEditPaymentData((d: any) => ({
                   ...d,
-                  currency: currency,
+                  currency: selectedCurrency,
+                  currencyId,
+                  currency_id: currencyId,
                   valueVat: newValueVat
                 }));
               }}

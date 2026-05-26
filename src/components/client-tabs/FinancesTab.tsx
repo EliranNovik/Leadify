@@ -85,7 +85,15 @@ const AnchorDropdownPortal: React.FC<{
 };
 
 import { generateProformaName } from '../../lib/proforma';
-import { currencyIdFromSymbol } from '../../lib/paymentPlanCurrency';
+import {
+  currencyIdFromSymbol,
+  displaySymbolForPaymentSave,
+  displaySymbolFromAccountingRow,
+  findAccountingCurrency,
+  isNisCurrency,
+  mapLeadCurrencyToSymbol as mapPaymentCurrencyToSymbol,
+  resolveCurrencyIdForSave,
+} from '../../lib/paymentPlanCurrency';
 import { calculatePaymentPlanVatAmount, readPaymentPlanVatFromRow } from '../../lib/paymentPlanVat';
 import { sumUnpaidBaseAndVatByCurrencyFromPayments } from '../../lib/financeUnpaidTotal';
 import {
@@ -1829,7 +1837,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               let currencyId = plan.currency_id;
 
               if (plan.accounting_currencies && plan.accounting_currencies.name) {
-                currency = plan.accounting_currencies.name;
+                currency = displaySymbolFromAccountingRow(plan.accounting_currencies);
                 currencyId = plan.accounting_currencies.id;
               } else if (plan.currency_id) {
                 // If we have currency_id but no joined data, use a simple mapping
@@ -1973,7 +1981,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const processedPayments = data.map(plan => {
               const value = Number(plan.value);
               const valueVat = readPaymentPlanVatFromRow(plan, false);
-              const currency = plan.currency || '₪';
+              const currency = mapPaymentCurrencyToSymbol(plan.currency || '₪');
 
               const paymentTotal = value + valueVat;
 
@@ -2412,7 +2420,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             let currencyId = plan.currency_id;
 
             if (plan.accounting_currencies && plan.accounting_currencies.name) {
-              currency = plan.accounting_currencies.name;
+              currency = displaySymbolFromAccountingRow(plan.accounting_currencies);
               currencyId = plan.accounting_currencies.id;
             } else if (plan.currency_id) {
               switch (plan.currency_id) {
@@ -2537,7 +2545,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           const processedPayments = data.map(plan => {
             const value = Number(plan.value);
             const valueVat = readPaymentPlanVatFromRow(plan, false);
-            const currency = plan.currency || '₪';
+            const currency = mapPaymentCurrencyToSymbol(plan.currency || '₪');
 
             const paymentTotal = value + valueVat;
 
@@ -2847,7 +2855,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
 
     // Only apply VAT for Israeli Shekels (₪), not for other currencies like USD ($)
-    const shouldApplyVat = currency === '₪';
+    const shouldApplyVat = isNisCurrency({ currency });
 
     const vatRate = getVatRateForLegacyLead(newPaymentData?.dueDate);
     setNewPaymentData((prev: any) => ({
@@ -2886,7 +2894,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
 
     // Only apply VAT for Israeli Shekels (₪), not for other currencies like USD ($); 17% before 2025-01-01, 18% on or after
-    const shouldApplyVat = currency === '₪';
+    const shouldApplyVat = isNisCurrency({ currency });
     const vatRate = getVatRateForLegacyLead(newPaymentData?.dueDate);
 
     // Set the values in the new payment form
@@ -3502,17 +3510,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       // Check currency changes
       if (isLegacyPayment) {
         // For legacy payments, compare currency_id
-        const getCurrencyId = (currency: string): number => {
-          switch (currency) {
-            case '₪': return 1;
-            case '€': return 2;
-            case '$': return 3;
-            case '£': return 4;
-            default: return 1;
-          }
-        };
         const originalCurrencyId = originalPayment.currency_id || 1;
-        const editCurrencyId = paymentDataToUse.currency ? getCurrencyId(paymentDataToUse.currency) : originalCurrencyId;
+        const editCurrencyId = paymentDataToUse.currency || paymentDataToUse.currencyId
+          ? resolveCurrencyIdForSave(paymentDataToUse, availableCurrencies)
+          : originalCurrencyId;
         if (originalCurrencyId !== editCurrencyId) {
           const getCurrencyName = (currencyId: number): string => {
             switch (currencyId) {
@@ -3534,8 +3535,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
       } else {
         // For new payments, compare currency string
-        const originalCurrency = originalPayment.currency || '₪';
-        const editCurrency = paymentDataToUse.currency || originalCurrency;
+        const originalCurrency = mapPaymentCurrencyToSymbol(originalPayment.currency || '₪');
+        const editCurrency = displaySymbolForPaymentSave(paymentDataToUse, availableCurrencies);
         if (originalCurrency !== editCurrency) {
           changes.push({
             payment_plan_id: paymentDataToUse.id,
@@ -3573,17 +3574,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // Parse due_percent to remove % sign if present
         const duePercentValue = parseDuePercent(paymentDataToUse.duePercent);
 
-        // Convert currency string to currency_id for legacy payments
-        let currencyId = originalPayment.currency_id; // Keep original if not changed
-        if (paymentDataToUse.currency) {
-          switch (paymentDataToUse.currency) {
-            case '₪': currencyId = 1; break;
-            case '€': currencyId = 2; break;
-            case '$': currencyId = 3; break;
-            case '£': currencyId = 4; break;
-            default: currencyId = originalPayment.currency_id || 1; break;
-          }
-        }
+        const currencyId = resolveCurrencyIdForSave(
+          { ...paymentDataToUse, currency_id: originalPayment.currency_id },
+          availableCurrencies,
+        );
 
         // Recalculate VAT for legacy on save (17% before 2025-01-01, 18% on or after; legacy uses date column)
         const legacyVatValue = calculatePaymentPlanVatAmount(
@@ -3626,6 +3620,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           paymentDataToUseValueVat: paymentDataToUse.valueVat
         });
 
+        const savedEditCurrency = displaySymbolForPaymentSave(
+          { ...paymentDataToUse, currency_id: originalPayment.currency_id },
+          availableCurrencies,
+        );
+        const savedEditCurrencyId = resolveCurrencyIdForSave(
+          { ...paymentDataToUse, currency_id: originalPayment.currency_id },
+          availableCurrencies,
+        );
+
         const { error: newError } = await supabase
           .from('payment_plans')
           .update({
@@ -3633,10 +3636,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             due_date: paymentDataToUse.dueDate || null, // Set to null if empty
             value: paymentDataToUse.value,
             value_vat: vatValue, // Save VAT: 0 if checkbox unchecked, otherwise use value from state
-            currency: paymentDataToUse.currency || originalPayment.currency || '₪', // Update currency if provided
-            currency_id: currencyIdFromSymbol(
-              paymentDataToUse.currency || originalPayment.currency || '₪',
-            ),
+            currency: savedEditCurrency,
+            currency_id: savedEditCurrencyId,
             client_name: paymentDataToUse.client,
             payment_order: paymentDataToUse.order,
             notes: paymentDataToUse.notes,
@@ -4078,17 +4079,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Shared initializer for new payment data
   const initNewPaymentData = (contactName: string) => {
-    // Determine the correct currency for this client
-    let currency = '₪'; // Default
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-
-    if (isLegacyLead) {
-      // For legacy leads, use balance_currency
-      currency = client?.balance_currency || '₪';
-    } else {
-      // For new leads, use proposal_currency
-      currency = client?.proposal_currency || '₪';
-    }
+    const rawCurrency = isLegacyLead
+      ? (client?.balance_currency || '₪')
+      : (client?.proposal_currency || '₪');
+    const currencyMatch = findAccountingCurrency(
+      rawCurrency,
+      (client as any)?.currency_id,
+      availableCurrencies,
+    );
+    const currency = currencyMatch?.name ?? mapPaymentCurrencyToSymbol(rawCurrency);
+    const currencyId = currencyMatch?.id
+      ?? resolveCurrencyIdForSave({ currency: rawCurrency, currency_id: (client as any)?.currency_id }, availableCurrencies);
 
     // Default amount: use balance/total where available
     let defaultAmount = 0;
@@ -4115,8 +4117,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       paid_at: null,
       paid_by: null,
       currency, // Set the correct currency
-      includeVat: currency === '₪', // Default to true for NIS, false for others
-      currencyId: currency === '₪' ? 1 : currency === '€' ? 2 : currency === '$' ? 3 : currency === '£' ? 4 : 1,
+      includeVat: isNisCurrency({ currency: rawCurrency, currency_id: currencyId }),
+      currencyId,
     });
   };
 
@@ -4208,17 +4210,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
 
         // Determine currency_id based on the payment currency
-        let currencyId = 1; // Default to NIS
-        const currency = dataToSave.currency || '₪';
-        if (currency) {
-          switch (currency) {
-            case '₪': currencyId = 1; break;
-            case '€': currencyId = 2; break;
-            case '$': currencyId = 3; break;
-            case '£': currencyId = 4; break;
-            default: currencyId = 1; break;
-          }
-        }
+        const { currency_id: currencyId, currency } = (() => {
+          const resolved = {
+            currency_id: resolveCurrencyIdForSave(dataToSave, availableCurrencies),
+            currency: displaySymbolForPaymentSave(dataToSave, availableCurrencies),
+          };
+          return resolved;
+        })();
 
         // Map payment order strings to numeric values for legacy payments
         const getOrderNumber = (orderString: string): number => {
@@ -4244,7 +4242,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           udate: new Date().toISOString().split('T')[0], // Current date
           date: dataToSave.dueDate || null, // Set to null if empty
           value: Number(dataToSave.value),
-          vat_value: (currency === '₪' && dataToSave.includeVat !== false) ? Math.round(Number(dataToSave.value) * getVatRateForLegacyLead(dataToSave.dueDate) * 100) / 100 : 0,
+          vat_value: (isNisCurrency({ currency, currency_id: currencyId }) && dataToSave.includeVat !== false) ? Math.round(Number(dataToSave.value) * getVatRateForLegacyLead(dataToSave.dueDate) * 100) / 100 : 0,
           lead_id: legacyId, // Use numeric lead_id to ensure correct matching for subleads
           notes: dataToSave.notes || '',
           due_date: null, // MUST be null for legacy leads - only set when marking as ready to pay
@@ -4280,6 +4278,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           throw new Error('Invalid lead ID');
         }
 
+        const savedCurrency = displaySymbolForPaymentSave(dataToSave, availableCurrencies);
+        const savedCurrencyId = resolveCurrencyIdForSave(dataToSave, availableCurrencies);
+
         const paymentData: any = {
           lead_id: leadIdForPayment, // Use the specific lead_id for this lead/sublead
           due_percent: Number(dataToSave.duePercent) || Number(100),
@@ -4290,8 +4291,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           client_name: contactForPayment,
           payment_order: dataToSave.paymentOrder || 'One-time Payment',
           notes: dataToSave.notes || '',
-          currency: dataToSave.currency || '₪',
-          currency_id: currencyIdFromSymbol(dataToSave.currency || '₪'),
+          currency: savedCurrency,
+          currency_id: savedCurrencyId,
           created_by: currentUserName,
         };
 
@@ -4394,17 +4395,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
 
         // Determine currency_id based on the payment currency
-        let currencyId = 1; // Default to NIS
-        const currency = autoPlanData.currency || '₪';
-        if (currency) {
-          switch (currency) {
-            case '₪': currencyId = 1; break;
-            case '€': currencyId = 2; break;
-            case '$': currencyId = 3; break;
-            case '£': currencyId = 4; break;
-            default: currencyId = 1; break;
-          }
-        }
+        const currencyId = resolveCurrencyIdForSave(
+          { currency: autoPlanData.currency },
+          availableCurrencies,
+        );
+        const currency = displaySymbolForPaymentSave(
+          { currency: autoPlanData.currency, currency_id: currencyId },
+          availableCurrencies,
+        );
 
         // Helper function to convert text order to numeric (same as new leads logic)
         const getOrderNumber = (orderString: string): number => {
@@ -4640,8 +4638,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             client_name: autoPlanData.contact || client?.name || 'Main Contact',
             payment_order: orderText,
             notes: '',
-            currency: autoPlanData.currency,
-            currency_id: currencyIdFromSymbol(autoPlanData.currency || '₪'),
+            currency: displaySymbolForPaymentSave(
+              { currency: autoPlanData.currency },
+              availableCurrencies,
+            ),
+            currency_id: resolveCurrencyIdForSave(
+              { currency: autoPlanData.currency },
+              availableCurrencies,
+            ),
             created_by: currentUserName,
           };
 
@@ -5397,15 +5401,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const totalBalanceWithVat = (client?.balance || 0) * 1.18;
 
   // Helper to get currency symbol
-  const getCurrencySymbol = (currency: string | undefined) => {
-    if (!currency) return '₪';
-    // Map currency codes to symbols
-    if (currency === 'ILS' || currency === '₪') return '₪';
-    if (currency === 'USD' || currency === '$') return '$';
-    if (currency === 'EUR' || currency === '€') return '€';
-    // If it's already a symbol, return as-is
-    return currency;
-  };
+  const getCurrencySymbol = (currency: string | undefined) => mapPaymentCurrencyToSymbol(currency);
 
   // Sort payments by due date (or fallback to original order if no due dates)
   const sortedPayments = [...financePlan.payments].sort((a, b) => {
@@ -6059,7 +6055,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             const newDueDate = e.target.value;
                                             setNewPaymentData((d: any) => {
                                               const vatRate = getVatRateForLegacyLead(newDueDate);
-                                              const vat = (d.currency === '₪' && d.includeVat !== false) ? Math.round(Number(d.value || 0) * vatRate * 100) / 100 : 0;
+                                              const vat = (isNisCurrency({ currency: d.currency, currencyId: d.currencyId }) && d.includeVat !== false) ? Math.round(Number(d.value || 0) * vatRate * 100) / 100 : 0;
                                               return { ...d, dueDate: newDueDate, valueVat: vat };
                                             });
                                           }} />
@@ -6070,7 +6066,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             let vat = 0;
                                             const currency = newPaymentData.currency || '₪';
                                             const includeVat = newPaymentData.includeVat !== false;
-                                            if (currency === '₪' && includeVat) {
+                                            if (isNisCurrency({ currency, currencyId: newPaymentData.currencyId }) && includeVat) {
                                               const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
                                               vat = Math.round(Number(value) * vatRate * 100) / 100;
                                             }
@@ -6109,10 +6105,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               value={newPaymentData.currency || '₪'}
                                               onChange={e => {
                                                 const selectedCurrency = e.target.value;
-                                                const selectedCurrencyData = availableCurrencies.find(c => c.name === selectedCurrency);
+                                                const selectedCurrencyData = findAccountingCurrency(selectedCurrency, null, availableCurrencies)
+                                                  ?? availableCurrencies.find(c => c.name === selectedCurrency);
                                                 let vat = 0;
-                                                const includeVat = newPaymentData.includeVat !== false && selectedCurrency === '₪';
-                                                if (selectedCurrency === '₪' && includeVat) {
+                                                const selectedIsNis = isNisCurrency({
+                                                  currency: selectedCurrency,
+                                                  currencyId: selectedCurrencyData?.id,
+                                                });
+                                                const includeVat = newPaymentData.includeVat !== false && selectedIsNis;
+                                                if (selectedIsNis && includeVat) {
                                                   const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
                                                   vat = Math.round(Number(newPaymentData.value || 0) * vatRate * 100) / 100;
                                                 }
@@ -6120,7 +6121,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                   ...d,
                                                   currency: selectedCurrency,
                                                   currencyId: selectedCurrencyData?.id || 1,
-                                                  includeVat: selectedCurrency === '₪' ? (d.includeVat !== false) : false,
+                                                  includeVat: selectedIsNis ? (d.includeVat !== false) : false,
                                                   valueVat: vat
                                                 }));
                                               }}
@@ -6142,12 +6143,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               <input
                                                 type="checkbox"
                                                 className="checkbox checkbox-xs"
-                                                checked={newPaymentData.includeVat !== false && (newPaymentData.currency || '₪') === '₪'}
-                                                disabled={(newPaymentData.currency || '₪') !== '₪'}
+                                                checked={newPaymentData.includeVat !== false && isNisCurrency({ currency: newPaymentData.currency, currencyId: newPaymentData.currencyId })}
+                                                disabled={!isNisCurrency({ currency: newPaymentData.currency, currencyId: newPaymentData.currencyId })}
                                                 onChange={e => {
                                                   const includeVat = e.target.checked;
                                                   let vat = 0;
-                                                  if (includeVat && (newPaymentData.currency || '₪') === '₪') {
+                                                  if (includeVat && isNisCurrency({ currency: newPaymentData.currency, currencyId: newPaymentData.currencyId })) {
                                                     const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
                                                     vat = Math.round(Number(newPaymentData.value || 0) * vatRate * 100) / 100;
                                                   }
@@ -6194,7 +6195,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                   const newDueDate = e.target.value;
                                                   setNewPaymentData((d: any) => {
                                                     const vatRate = getVatRateForLegacyLead(newDueDate);
-                                                    const vat = (d.currency === '₪' && d.includeVat !== false) ? Math.round(Number(d.value || 0) * vatRate * 100) / 100 : 0;
+                                                    const vat = (isNisCurrency({ currency: d.currency, currencyId: d.currencyId }) && d.includeVat !== false) ? Math.round(Number(d.value || 0) * vatRate * 100) / 100 : 0;
                                                     return { ...d, dueDate: newDueDate, valueVat: vat };
                                                   });
                                                 }}
@@ -6215,7 +6216,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               let vat = 0;
                                               const currency = newPaymentData.currency || '₪';
                                               const includeVat = newPaymentData.includeVat !== false;
-                                              if (currency === '₪' && includeVat) {
+                                              if (isNisCurrency({ currency, currencyId: newPaymentData.currencyId }) && includeVat) {
                                                 const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
                                                 vat = Math.round(Number(value) * vatRate * 100) / 100;
                                               }
@@ -6235,10 +6236,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               value={newPaymentData.currency || '₪'}
                                               onChange={e => {
                                                 const selectedCurrency = e.target.value;
-                                                const selectedCurrencyData = availableCurrencies.find(c => c.name === selectedCurrency);
+                                                const selectedCurrencyData = findAccountingCurrency(selectedCurrency, null, availableCurrencies)
+                                                  ?? availableCurrencies.find(c => c.name === selectedCurrency);
                                                 let vat = 0;
-                                                const includeVat = newPaymentData.includeVat !== false && selectedCurrency === '₪';
-                                                if (selectedCurrency === '₪' && includeVat) {
+                                                const selectedIsNis = isNisCurrency({
+                                                  currency: selectedCurrency,
+                                                  currencyId: selectedCurrencyData?.id,
+                                                });
+                                                const includeVat = newPaymentData.includeVat !== false && selectedIsNis;
+                                                if (selectedIsNis && includeVat) {
                                                   const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
                                                   vat = Math.round(Number(newPaymentData.value || 0) * vatRate * 100) / 100;
                                                 }
@@ -6246,7 +6252,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                   ...d,
                                                   currency: selectedCurrency,
                                                   currencyId: selectedCurrencyData?.id || 1,
-                                                  includeVat: selectedCurrency === '₪' ? (d.includeVat !== false) : false,
+                                                  includeVat: selectedIsNis ? (d.includeVat !== false) : false,
                                                   valueVat: vat
                                                 }));
                                               }}
@@ -6271,12 +6277,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               <input
                                                 type="checkbox"
                                                 className="checkbox checkbox-sm"
-                                                checked={newPaymentData.includeVat !== false && (newPaymentData.currency || '₪') === '₪'}
-                                                disabled={(newPaymentData.currency || '₪') !== '₪'}
+                                                checked={newPaymentData.includeVat !== false && isNisCurrency({ currency: newPaymentData.currency, currencyId: newPaymentData.currencyId })}
+                                                disabled={!isNisCurrency({ currency: newPaymentData.currency, currencyId: newPaymentData.currencyId })}
                                                 onChange={e => {
                                                   const includeVat = e.target.checked;
                                                   let vat = 0;
-                                                  if (includeVat && (newPaymentData.currency || '₪') === '₪') {
+                                                  if (includeVat && isNisCurrency({ currency: newPaymentData.currency, currencyId: newPaymentData.currencyId })) {
                                                     const vatRate = getVatRateForLegacyLead(newPaymentData.dueDate);
                                                     vat = Math.round(Number(newPaymentData.value || 0) * vatRate * 100) / 100;
                                                   }
@@ -6957,7 +6963,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         </span>
                       )}
                     </div>
-                    {proformaData.addVat && proformaData.currency === '₪' && (
+                    {proformaData.addVat && isNisCurrency({ currency: proformaData.currency }) && (
                       <div className="flex justify-between items-center">
                         <span className="text-sm font-medium text-gray-600">VAT (18%):</span>
                         <span className="font-semibold text-gray-800">
@@ -6969,7 +6975,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                       <div className="flex justify-between items-center">
                         <span className="text-lg font-bold text-gray-800">Total:</span>
                         <span className="text-xl font-bold text-purple-700">
-                          {proformaData.currency} {proformaData.addVat && proformaData.currency === '₪' ? Math.round(proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0) * 1.18 * 100) / 100 : proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)}
+                          {proformaData.currency} {proformaData.addVat && isNisCurrency({ currency: proformaData.currency }) ? Math.round(proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0) * 1.18 * 100) / 100 : proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)}
                         </span>
                       </div>
                     </div>

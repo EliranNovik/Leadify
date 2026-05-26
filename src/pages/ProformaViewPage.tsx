@@ -25,7 +25,7 @@ import {
   applyNewPaymentPlanAmountsToProforma,
 } from '../lib/proformaPaymentPlanAmounts';
 import type { ResolvedProformaVat } from '../lib/proformaVat';
-import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
+import { proformaDisplayCurrency, resolveProformaCurrency } from '../lib/paymentPlanCurrency';
 import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 import { resolveBankAccountFromProforma, fetchBankAccountById } from '../lib/bankAccounts';
 import {
@@ -145,15 +145,16 @@ const ProformaViewPage: React.FC = () => {
         }
 
         const { displaySymbol: resolvedCurrency, currencyId: resolvedCurrencyId } =
-          await resolvePaymentPlanCurrency({
-            currency: data.currency,
-            currency_id: data.currency_id,
+          await resolveProformaCurrency({
+            currency: parsed.currency ?? data.currency,
+            currency_id: parsed.currency_id ?? data.currency_id,
             lead_currency_id: leadCurrencyId,
             proposal_currency: proposalCurrency,
             balance_currency: balanceCurrency,
           });
 
         parsed.currency = resolvedCurrency;
+        parsed.currency_id = resolvedCurrencyId;
         parsed.paymentOrder = parsed.paymentOrder ?? data.payment_order;
         parsed.dueDate = parsed.dueDate ?? data.due_date;
 
@@ -161,7 +162,7 @@ const ProformaViewPage: React.FC = () => {
           value: data.value,
           value_vat: data.value_vat,
           currency: resolvedCurrency,
-          currency_id: data.currency_id ?? resolvedCurrencyId,
+          currency_id: resolvedCurrencyId,
           payment_order: data.payment_order,
           due_date: data.due_date,
         });
@@ -177,7 +178,7 @@ const ProformaViewPage: React.FC = () => {
           paid_at: data.paid_at ?? null,
           lead_id: data.lead_id ?? null,
           currency: resolvedCurrency,
-          currency_id: data.currency_id ?? resolvedCurrencyId ?? null,
+          currency_id: resolvedCurrencyId ?? null,
         });
       } catch (e) {
         setError('Failed to parse proforma data.');
@@ -351,6 +352,11 @@ const ProformaViewPage: React.FC = () => {
   if (loading) return <div className="p-8 text-center">Loading...</div>;
   if (error) return <div className="p-8 text-center text-red-600">{error}</div>;
   if (!proforma) return null;
+
+  const currencyLabel = proformaDisplayCurrency({
+    currency: proforma.currency,
+    currency_id: proforma.currency_id ?? paymentPlanMeta?.currency_id,
+  });
 
   const displayNotes = (proforma.notes as string | undefined)?.trim() ?? '';
   const financesTabPath = buildClientFinancesTabPath({
@@ -531,8 +537,8 @@ const ProformaViewPage: React.FC = () => {
                 <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
                   <td className="px-4 py-2 text-gray-900 font-medium">{row.description}</td>
                   <td className="px-4 py-2 text-right">{row.qty}</td>
-                  <td className="px-4 py-2 text-right">{proforma.currency} {row.rate}</td>
-                  <td className="px-4 py-2 text-right font-bold">{proforma.currency} {row.total}</td>
+                  <td className="px-4 py-2 text-right">{currencyLabel} {row.rate}</td>
+                  <td className="px-4 py-2 text-right font-bold">{currencyLabel} {row.total}</td>
                 </tr>
               ))}
             </tbody>
@@ -542,7 +548,7 @@ const ProformaViewPage: React.FC = () => {
         <div className="flex flex-col md:flex-row md:justify-end gap-4 mb-6">
           <div className="w-full md:w-1/2 bg-white rounded-xl p-6 border border-gray-200">
             {vatTotals && (
-              <ProformaVatTotalsBlock currencyLabel={proforma.currency || '₪'} resolved={vatTotals} />
+              <ProformaVatTotalsBlock currencyLabel={currencyLabel} resolved={vatTotals} />
             )}
             <ProformaTotalInNis info={exchangeInfo} loading={exchangeLoading} variant="card" />
           </div>

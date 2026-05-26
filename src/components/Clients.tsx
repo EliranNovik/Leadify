@@ -18862,11 +18862,11 @@ const Clients: React.FC<ClientsProps> = ({
             }}
           />
 
-          {/* Mobile Tabs — centered modal (2 columns); FAB opens picker */}
+          {/* Mobile Tabs — bottom sheet menu; FAB opens picker */}
           {!showEditLeadDrawer && !isBalanceModalOpen && !showScheduleMeetingPanel && !showRescheduleDrawer && !showUpdateDrawer && (
             <>
               {isMobileTabPanelOpen && (
-                <div className="md:hidden fixed inset-0 z-[320] flex items-center justify-center p-3 sm:p-5">
+                <div className="md:hidden fixed inset-0 z-[320] flex items-end justify-center">
                   <div
                     className="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
                     onClick={() => setIsMobileTabPanelOpen(false)}
@@ -18877,11 +18877,15 @@ const Clients: React.FC<ClientsProps> = ({
                     role="dialog"
                     aria-modal="true"
                     aria-label="Choose client tab"
-                    className="relative w-full max-w-xl max-h-[min(88vh,820px)] rounded-2xl bg-base-100 border border-base-300 shadow-2xl flex flex-col overflow-hidden"
+                    className="relative w-full max-h-[min(88vh,820px)] flex flex-col bg-base-100 rounded-t-3xl shadow-2xl overflow-hidden animate-slide-up"
                     onClick={(e) => e.stopPropagation()}
+                    style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}
                   >
-                    <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-base-200 bg-base-100/95 shrink-0">
-                      <span className="font-bold text-lg text-base-content">Tabs</span>
+                    <div className="flex justify-center pt-3 pb-2 shrink-0">
+                      <div className="h-1 w-10 rounded-full bg-base-300" aria-hidden />
+                    </div>
+                    <div className="flex items-center justify-between gap-3 px-5 pb-3 border-b border-base-200 shrink-0">
+                      <span className="font-semibold text-base text-base-content">Client tabs</span>
                       <button
                         type="button"
                         className="btn btn-sm btn-circle btn-ghost"
@@ -18891,51 +18895,52 @@ const Clients: React.FC<ClientsProps> = ({
                         <XMarkIcon className="w-5 h-5" />
                       </button>
                     </div>
-                    <div className="overflow-y-auto overscroll-contain flex-1 min-h-0 p-3 sm:p-4">
-                      <div className="grid grid-cols-2 gap-2.5 sm:gap-3 content-start">
-                        {tabs.map((tab) => {
-                          const isActive = activeTab === tab.id;
-                          return (
-                            <button
-                              key={tab.id}
-                              type="button"
-                              className={`relative flex flex-col items-center justify-center gap-1 min-h-0 py-3 px-2 sm:py-3.5 sm:px-2.5 rounded-lg border-2 transition-all duration-200 active:scale-[0.98] ${
-                                isActive
-                                  ? 'border-[#471CCA] bg-[#471CCA]/5 text-[#471CCA] font-bold shadow-md'
-                                  : 'border-base-200 bg-base-200/40 text-base-content/80 font-semibold hover:bg-base-200 hover:border-base-300'
-                              }`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleMobileTabSelect(tab.id);
-                              }}
-                              onMouseEnter={() => prefetchTabChunk(tab.id)}
-                              onTouchStart={() => prefetchTabChunk(tab.id)}
-                            >
-                              <div className="relative inline-flex items-center justify-center">
-                                <tab.icon className={`w-7 h-7 sm:w-8 sm:h-8 flex-shrink-0 ${isActive ? 'text-[#471CCA]' : 'text-base-content/70'}`} />
-                                {tab.id === 'interactions' && tab.badge && (
-                                  <div
-                                    className={`absolute -top-1 -right-2 min-w-[1.25rem] h-5 px-1 rounded-full text-[10px] font-bold flex items-center justify-center ${
-                                      isActive
-                                        ? 'bg-purple-200 text-[#471CCA]'
-                                        : 'bg-primary/15 text-primary'
-                                    }`}
-                                  >
-                                    {tab.badge}
-                                  </div>
-                                )}
-                              </div>
-                              <span className="saira-light text-xs sm:text-sm text-center leading-tight line-clamp-2">{tab.label}</span>
-                              {isActive && <span className="h-1.5 w-1.5 rounded-full bg-[#471CCA] shrink-0 mt-0.5" aria-hidden />}
-                            </button>
-                          );
-                        })}
-                      </div>
+                    <div className="overflow-y-auto overscroll-contain flex-1 min-h-0" role="menu">
+                      {tabs.map((tab) => {
+                        const isActive = activeTab === tab.id;
+                        return (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            role="menuitem"
+                            className={`flex w-full items-center gap-4 px-5 py-4 text-left transition-colors border-b border-base-200 last:border-b-0 ${
+                              isActive
+                                ? 'bg-[#471CCA]/5 text-[#471CCA] font-semibold'
+                                : 'text-base-content hover:bg-base-200/50 active:bg-base-200/70'
+                            }`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleMobileTabSelect(tab.id);
+                            }}
+                            onMouseEnter={() => prefetchTabChunk(tab.id)}
+                            onTouchStart={() => prefetchTabChunk(tab.id)}
+                          >
+                            <div className="relative shrink-0">
+                              <tab.icon className={`h-6 w-6 ${isActive ? 'text-[#471CCA]' : 'text-base-content/60'}`} />
+                              {tab.id === 'interactions' && tab.badge && (
+                                <span
+                                  className={`absolute -top-1.5 -right-2 min-w-[1.25rem] h-5 px-1 rounded-full text-[10px] font-bold flex items-center justify-center ${
+                                    isActive
+                                      ? 'bg-purple-200 text-[#471CCA]'
+                                      : 'bg-primary/15 text-primary'
+                                  }`}
+                                >
+                                  {tab.badge}
+                                </span>
+                              )}
+                            </div>
+                            <span className="flex flex-1 items-center justify-between gap-3 min-w-0">
+                              <span className="text-base font-medium truncate">{tab.label}</span>
+                              {isActive && <CheckIcon className="h-5 w-5 shrink-0 text-[#471CCA]" aria-hidden />}
+                            </span>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
               )}
-              {/* Floating button — opens tab picker (above bottom nav); hidden while modal open */}
+              {/* Floating button — opens tab picker (above bottom nav); hidden while sheet open */}
               {!isMobileTabPanelOpen && (
                 <button
                   type="button"

@@ -18,7 +18,7 @@ import { fetchIssuerEmployee, type EmployeeProfile } from '../lib/fetchEmployeeP
 import ProformaVatTotalsBlock from '../components/proforma/ProformaVatTotalsBlock';
 import { applyLegacyPaymentPlanAmountsToProforma } from '../lib/proformaPaymentPlanAmounts';
 import type { ResolvedProformaVat } from '../lib/proformaVat';
-import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
+import { proformaDisplayCurrency, resolveProformaCurrency } from '../lib/paymentPlanCurrency';
 import {
   currencyInputFromLegacyProforma,
   fetchProformaExchangeRateInfo,
@@ -27,14 +27,11 @@ import {
 import { useAuthContext } from '../contexts/AuthContext';
 import { buildClientFinancesTabPath } from '../lib/proformaClientNavigation';
 
-function getCurrencySymbol(currency: string | undefined): string {
-  if (!currency) return '₪';
-  if (currency === 'ILS' || currency === '₪') return '₪';
-  if (currency === 'USD' || currency === '$') return '$';
-  if (currency === 'EUR' || currency === '€') return '€';
-  if (currency === 'GBP' || currency === '£') return '£';
-  if (currency.length <= 2 && !/^[A-Z]{3}$/.test(currency)) return currency;
-  return currency;
+function getCurrencySymbol(
+  currency: string | undefined,
+  currencyId?: number | string | null,
+): string {
+  return proformaDisplayCurrency({ currency_code: currency, currency_id: currencyId });
 }
 
 const PublicProformaLegacyViewPage: React.FC = () => {
@@ -75,16 +72,18 @@ const PublicProformaLegacyViewPage: React.FC = () => {
 
       const bankAccountDetails = parseLegacyBankFromNotes(data.notes) ?? null;
 
-      const { displaySymbol: resolvedCurrency } = await resolvePaymentPlanCurrency({
-        currency_id: data.currency_id,
-        currency: data.currency_code,
-      });
+      const { displaySymbol: resolvedCurrency, currencyId: resolvedCurrencyId } =
+        await resolveProformaCurrency({
+          currency_id: data.currency_id,
+          currency: data.currency_code,
+        });
 
       const proformaPayload = {
         ...data,
         rows: data.rows || [],
         bankAccountDetails,
         currency_code: resolvedCurrency,
+        currency_id: resolvedCurrencyId,
       };
 
       const paymentPlanVat =
@@ -98,6 +97,7 @@ const PublicProformaLegacyViewPage: React.FC = () => {
           value: paymentPlanValue,
           vat_value: paymentPlanVat ?? data.vat_value,
           order: data.payment_order,
+          currency_id: resolvedCurrencyId ?? data.currency_id,
         },
       );
 
@@ -224,7 +224,7 @@ const PublicProformaLegacyViewPage: React.FC = () => {
     );
   }
 
-  const currencySymbol = getCurrencySymbol(proforma.currency_code);
+  const currencySymbol = getCurrencySymbol(proforma.currency_code, proforma.currency_id);
   const displayNotes = getPublicProformaDisplayNotes(proforma.notes);
   const hasDesktopSidePanels = Boolean(proforma.lead_number || displayNotes);
   const legacyLeadNumber = proforma.lead_number?.trim() || '';

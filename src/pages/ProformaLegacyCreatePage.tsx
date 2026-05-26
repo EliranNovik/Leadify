@@ -32,7 +32,12 @@ import {
 import { computeProformaVatFromPayment, getVatRateForLegacyLead } from '../lib/proformaVat';
 import { ensureProformaPaymentLink } from '../lib/proformaPaymentLink';
 import { formatLegacyLeadNumber } from '../lib/masterLeadApi';
-import { currencyIdFromSymbol, resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
+import {
+  displaySymbolForPaymentSave,
+  mapLeadCurrencyToSymbol,
+  resolveCurrencyIdForSave,
+  resolveProformaCurrency,
+} from '../lib/paymentPlanCurrency';
 import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 
 function parseContactId(value: string | number | null | undefined): number | null {
@@ -55,13 +60,19 @@ function resolveLegacyProformaContactId(
   return parseContactId(pprClientId ?? null);
 }
 
-function getCurrencySymbolFromCode(code: string | undefined): string {
-  if (!code) return '₪';
-  if (code === 'ILS' || code === '₪') return '₪';
-  if (code === 'USD' || code === '$') return '$';
-  if (code === 'EUR' || code === '€') return '€';
-  if (code === 'GBP' || code === '£') return '£';
-  return code;
+function resolveLegacyProformaCurrency(
+  input: {
+    currency_id?: number | string | null;
+    currency?: string | null;
+    currency_code?: string | null;
+    lead_currency_id?: number | string | null;
+  },
+) {
+  return resolveProformaCurrency({
+    currency_id: input.currency_id,
+    currency: input.currency ?? (input.currency_code ? mapLeadCurrencyToSymbol(input.currency_code) : null),
+    lead_currency_id: input.lead_currency_id,
+  });
 }
 
 const ProformaLegacyCreatePage: React.FC = () => {
@@ -197,11 +208,12 @@ const ProformaLegacyCreatePage: React.FC = () => {
 
       const resolvedCurrencyId =
         paymentPlanCurrencyId ?? data.currency_id ?? leadData.currency_id;
-      const { displaySymbol: currencySymbol } = await resolvePaymentPlanCurrency({
-        currency_id: resolvedCurrencyId,
-        currency: data.currency_code ? getCurrencySymbolFromCode(data.currency_code) : null,
-        lead_currency_id: leadData.currency_id,
-      });
+      const { displaySymbol: currencySymbol, currencyId: normalizedCurrencyId } =
+        await resolveLegacyProformaCurrency({
+          currency_id: resolvedCurrencyId,
+          currency_code: data.currency_code,
+          lead_currency_id: leadData.currency_id,
+        });
 
       const rows = Array.isArray(data.rows)
         ? data.rows.map((row: { description?: string; qty?: number; rate?: number; total?: number }) => ({
@@ -217,7 +229,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
       const editSubtotal = rows.reduce((sum: number, r: { total: number }) => sum + Number(r.total), 0);
       const editVatState = computeProformaVatFromPayment({
         currency: currencySymbol,
-        currency_id: resolvedCurrencyId,
+        currency_id: normalizedCurrencyId,
         valueVat: data.vat_value,
         paymentOrder: paymentPlanOrder,
         dueDate: paymentPlanDate,
@@ -239,7 +251,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
         addVat: editVatState.addVat,
         totalWithVat: editVatState.totalWithVat,
         currency: currencySymbol,
-        currency_id: resolvedCurrencyId,
+        currency_id: normalizedCurrencyId,
         paymentPaid,
         paid_at: paidAt,
         bankAccount: bankAccountDetails?.name ?? '',
@@ -413,19 +425,20 @@ const ProformaLegacyCreatePage: React.FC = () => {
 
       // Determine currency and amounts — payment plan row currency wins over lead
       const resolvedCurrencyId = pprData?.currency_id ?? data.currency_id;
+      const { displaySymbol: currencySymbol, currencyId: normalizedCurrencyId } =
+        await resolveLegacyProformaCurrency({
+          currency_id: resolvedCurrencyId,
+          lead_currency_id: data.currency_id,
+        });
+
       const paymentAmount = pprData?.value ? Number(pprData.value) : (data.total || 0);
       const baseAmount = pprData?.value_base ? Number(pprData.value_base) : (data.total || 0);
       const vatAmount = pprData?.vat_value ? Number(pprData.vat_value) : 0;
 
-      const { displaySymbol: currencySymbol } = await resolvePaymentPlanCurrency({
-        currency_id: resolvedCurrencyId,
-        lead_currency_id: data.currency_id,
-      });
-
       console.log('🔍 Currency info:', {
         leadCurrencyId: data.currency_id,
         paymentPlanCurrencyId: pprData?.currency_id,
-        finalCurrencyId: resolvedCurrencyId,
+        finalCurrencyId: normalizedCurrencyId,
         currencySymbol,
       });
 
@@ -451,7 +464,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
       const initialSubtotal = paymentAmount;
       const createVatState = computeProformaVatFromPayment({
         currency: currencySymbol,
-        currency_id: resolvedCurrencyId,
+        currency_id: normalizedCurrencyId,
         valueVat: vatAmount,
         paymentOrder: pprData?.order ?? null,
         dueDate: paymentPlanDate,
@@ -474,7 +487,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
         addVat: createVatState.addVat,
         totalWithVat: createVatState.totalWithVat,
         currency: currencySymbol,
-        currency_id: resolvedCurrencyId,
+        currency_id: normalizedCurrencyId,
         paymentPaid: Boolean(pprData?.actual_date),
         paid_at: pprData?.actual_date ?? null,
         bankAccount: '',
@@ -646,21 +659,27 @@ const ProformaLegacyCreatePage: React.FC = () => {
         total: Number(row.total)
       }));
 
-      let currencyId = proformaData.currency_id != null ? Number(proformaData.currency_id) : NaN;
-      if (!Number.isFinite(currencyId) || currencyId <= 0) {
-        if (proformaData.pprId) {
-          const { data: pprData } = await supabase
-            .from('finances_paymentplanrow')
-            .select('currency_id')
-            .eq('id', proformaData.pprId)
-            .single();
-          if (pprData?.currency_id) currencyId = Number(pprData.currency_id);
-        } else if (lead?.currency_id) {
-          currencyId = Number(lead.currency_id);
-        } else {
-          currencyId = currencyIdFromSymbol(proformaData.currency);
+      let currencyId = resolveCurrencyIdForSave({
+        currency: proformaData.currency,
+        currency_id: proformaData.currency_id,
+      });
+      if ((!currencyId || currencyId <= 0) && proformaData.pprId) {
+        const { data: pprData } = await supabase
+          .from('finances_paymentplanrow')
+          .select('currency_id')
+          .eq('id', proformaData.pprId)
+          .single();
+        if (pprData?.currency_id) {
+          currencyId = resolveCurrencyIdForSave({ currency_id: pprData.currency_id });
         }
+      } else if ((!currencyId || currencyId <= 0) && lead?.currency_id) {
+        currencyId = resolveCurrencyIdForSave({ currency_id: lead.currency_id });
       }
+
+      const currencySymbol = displaySymbolForPaymentSave({
+        currency: proformaData.currency,
+        currency_id: currencyId,
+      });
 
       let notes = proformaData.notes || '';
       if (isEditMode && legacyNotesPrefix) {
@@ -810,7 +829,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
           isLegacyPaymentPlan: true,
           value: totalBase,
           valueVat: vat,
-          currency: proformaData.currency || '₪',
+          currency: currencySymbol,
           order: orderLabel,
           clientName: proformaData.client || lead?.name || 'Client',
           leadNumber,
@@ -839,6 +858,8 @@ const ProformaLegacyCreatePage: React.FC = () => {
       </div>
     );
   }
+
+  const getCurrencySymbol = (currency: string | undefined) => mapLeadCurrencyToSymbol(currency);
 
   const previewSubtotal = proformaData.rows.reduce(
     (sum: number, r: { total: number }) => sum + Number(r.total),
@@ -1092,8 +1113,8 @@ const ProformaLegacyCreatePage: React.FC = () => {
                   <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
                     <td className="px-4 py-2 text-gray-900 font-medium">{row.description}</td>
                     <td className="px-4 py-2 text-right">{row.qty}</td>
-                    <td className="px-4 py-2 text-right">{proformaData.currency} {row.rate}</td>
-                    <td className="px-4 py-2 text-right font-bold">{proformaData.currency} {row.total}</td>
+                    <td className="px-4 py-2 text-right">{getCurrencySymbol(proformaData.currency)} {row.rate}</td>
+                    <td className="px-4 py-2 text-right font-bold">{getCurrencySymbol(proformaData.currency)} {row.total}</td>
                   </tr>
                 ))}
               </tbody>
@@ -1104,20 +1125,20 @@ const ProformaLegacyCreatePage: React.FC = () => {
             <div className="w-full sm:w-full md:w-4/5 lg:w-3/4 xl:w-2/3 bg-white rounded-xl p-4 md:p-6 border border-gray-200">
               <div className="flex justify-between text-lg mb-2">
                 <span className="font-semibold text-gray-700">Subtotal</span>
-                <span className="font-bold text-gray-900">{proformaData.currency} {previewSubtotal}</span>
+                <span className="font-bold text-gray-900">{getCurrencySymbol(proformaData.currency)} {previewSubtotal}</span>
               </div>
               {previewVat.addVat && (
                 <div className="flex justify-between text-lg mb-2">
                   <span className="font-semibold text-gray-700">VAT ({vatPercentLabel}%)</span>
                   <span className="font-bold text-gray-900">
-                    {proformaData.currency} {previewVat.vat.toFixed(2)}
+                    {getCurrencySymbol(proformaData.currency)} {previewVat.vat.toFixed(2)}
                   </span>
                 </div>
               )}
               <div className="flex justify-between text-xl mt-4 border-t pt-4 font-extrabold">
                 <span>Total</span>
                 <span style={{ color: '#006BB1' }}>
-                  {proformaData.currency} {previewVat.totalWithVat.toFixed(2)}
+                  {getCurrencySymbol(proformaData.currency)} {previewVat.totalWithVat.toFixed(2)}
                 </span>
               </div>
               <ProformaTotalInNis info={exchangeInfo} loading={exchangeLoading} variant="card" />
