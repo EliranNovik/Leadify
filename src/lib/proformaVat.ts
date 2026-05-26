@@ -1,4 +1,6 @@
 import { getVatRateForLegacyLead } from './legacyProformaVat';
+import { parsePaymentPlanAmount } from './proformaPaymentPlanAmounts';
+import { parseExplicitPaymentPlanVat } from './paymentPlanVat';
 
 export { getVatRateForLegacyLead };
 
@@ -91,6 +93,7 @@ export function getProformaSubtotal(proforma: {
 export type NewProformaPaymentVatSource = {
   currency?: string | null;
   currency_id?: number | string | null;
+  value?: number | string | null;
   value_vat?: number | string | null;
   payment_order?: string | number | null;
   due_date?: string | null;
@@ -137,6 +140,36 @@ function finalizeResolvedVat(
   };
 }
 
+function resolveVatFromExplicitPaymentPlan(
+  subtotal: number,
+  paymentOrder: string | number | null | undefined,
+  dueDate: string | null | undefined,
+  explicitVat: ReturnType<typeof parseExplicitPaymentPlanVat>,
+): ResolvedProformaVat | null {
+  if (!explicitVat.explicit) return null;
+
+  const vatRate = getVatRateForLegacyLead(dueDate);
+  if (isExpenseNoVatPayment(paymentOrder)) {
+    return {
+      subtotal,
+      addVat: false,
+      vat: 0,
+      totalWithVat: subtotal,
+      vatRate,
+      vatPercentLabel: Math.round(vatRate * 100),
+    };
+  }
+
+  return {
+    subtotal,
+    addVat: explicitVat.amount > 0,
+    vat: explicitVat.amount,
+    totalWithVat: Math.round((subtotal + explicitVat.amount) * 100) / 100,
+    vatRate,
+    vatPercentLabel: Math.round(vatRate * 100),
+  };
+}
+
 export function resolveNewProformaVat(
   proforma: {
     rows?: Array<{ total?: number | string }>;
@@ -149,9 +182,20 @@ export function resolveNewProformaVat(
   },
   payment: NewProformaPaymentVatSource,
 ): ResolvedProformaVat {
-  const subtotal = getProformaSubtotal(proforma);
+  const subtotalFromPlan = parsePaymentPlanAmount(payment.value);
+  const subtotal = subtotalFromPlan ?? getProformaSubtotal(proforma);
+  const paymentOrder = payment.payment_order ?? proforma.paymentOrder;
+  const dueDate = payment.due_date ?? proforma.dueDate;
+
+  const explicitResolved = resolveVatFromExplicitPaymentPlan(
+    subtotal,
+    paymentOrder,
+    dueDate,
+    parseExplicitPaymentPlanVat(payment.value_vat),
+  );
+  if (explicitResolved) return explicitResolved;
+
   const storedVat = pickPositiveAmount(
-    payment.value_vat,
     proforma.vat,
     vatFromTotalDelta(subtotal, Number(proforma.totalWithVat) || 0),
   );
@@ -159,8 +203,8 @@ export function resolveNewProformaVat(
     currency: payment.currency ?? proforma.currency ?? '₪',
     currency_id: payment.currency_id,
     valueVat: storedVat,
-    paymentOrder: payment.payment_order ?? proforma.paymentOrder,
-    dueDate: payment.due_date ?? proforma.dueDate,
+    paymentOrder,
+    dueDate,
     subtotal,
   });
   return finalizeResolvedVat(subtotal, computed, storedVat);
@@ -201,11 +245,26 @@ export function resolveLegacyProformaVat(
     cdate?: string | null;
     paymentOrder?: string | number | null;
   },
-  paymentRow?: { order?: string | number | null; vat_value?: number | string | null } | null,
+  paymentRow?: {
+    order?: string | number | null;
+    value?: number | string | null;
+    vat_value?: number | string | null;
+  } | null,
 ): ResolvedProformaVat {
-  const subtotal = getLegacyProformaSubtotal(proforma);
+  const subtotalFromPlan = parsePaymentPlanAmount(paymentRow?.value);
+  const subtotal = subtotalFromPlan ?? getLegacyProformaSubtotal(proforma);
+  const paymentOrder = paymentRow?.order ?? proforma.paymentOrder;
+  const dueDate = proforma.paymentPlanDate ?? proforma.cdate;
+
+  const explicitResolved = resolveVatFromExplicitPaymentPlan(
+    subtotal,
+    paymentOrder,
+    dueDate,
+    parseExplicitPaymentPlanVat(paymentRow?.vat_value),
+  );
+  if (explicitResolved) return explicitResolved;
+
   const storedVat = pickPositiveAmount(
-    paymentRow?.vat_value,
     proforma.vat_value,
     vatFromTotalDelta(subtotal, Number(proforma.total) || 0),
   );
@@ -213,8 +272,8 @@ export function resolveLegacyProformaVat(
     currency: legacyProformaCurrencyForVat(proforma.currency_code),
     currency_id: (proforma as { currency_id?: number | string | null }).currency_id,
     valueVat: storedVat,
-    paymentOrder: paymentRow?.order ?? proforma.paymentOrder,
-    dueDate: proforma.paymentPlanDate ?? proforma.cdate,
+    paymentOrder,
+    dueDate,
     subtotal,
   });
   return finalizeResolvedVat(subtotal, computed, storedVat);

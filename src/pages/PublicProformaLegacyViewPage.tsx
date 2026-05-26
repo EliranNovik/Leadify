@@ -16,7 +16,8 @@ import { getPublicProformaDisplayNotes } from '../lib/proformaNotes';
 import { shareCurrentPageUrl } from '../lib/proformaPublicLink';
 import { fetchIssuerEmployee, type EmployeeProfile } from '../lib/fetchEmployeeProfile';
 import ProformaVatTotalsBlock from '../components/proforma/ProformaVatTotalsBlock';
-import { resolveLegacyProformaVat, type ResolvedProformaVat } from '../lib/proformaVat';
+import { applyLegacyPaymentPlanAmountsToProforma } from '../lib/proformaPaymentPlanAmounts';
+import type { ResolvedProformaVat } from '../lib/proformaVat';
 import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
 import {
   currencyInputFromLegacyProforma,
@@ -49,15 +50,17 @@ const PublicProformaLegacyViewPage: React.FC = () => {
   const [vatTotals, setVatTotals] = useState<ResolvedProformaVat | null>(null);
 
   useEffect(() => {
-    const fetchProforma = async () => {
+    const fetchProforma = async (options?: { silent?: boolean }) => {
       if (!id || !token) {
         setError('Invalid link.');
         setLoading(false);
-        return;
+        return null;
       }
 
-      setLoading(true);
-      setError(null);
+      if (!options?.silent) {
+        setLoading(true);
+        setError(null);
+      }
 
       const { data, error: rpcError } = await supabase.rpc('get_public_legacy_proforma', {
         p_proforma_id: Number(id),
@@ -66,8 +69,8 @@ const PublicProformaLegacyViewPage: React.FC = () => {
 
       if (rpcError || !data) {
         setError('Invoice not found or link is invalid.');
-        setLoading(false);
-        return;
+        if (!options?.silent) setLoading(false);
+        return null;
       }
 
       const bankAccountDetails = parseLegacyBankFromNotes(data.notes) ?? null;
@@ -86,18 +89,48 @@ const PublicProformaLegacyViewPage: React.FC = () => {
 
       const paymentPlanVat =
         data.payment_plan_vat_value ?? data.paymentPlanVatValue ?? null;
+      const paymentPlanValue =
+        data.payment_plan_value ?? data.paymentPlanValue ?? null;
 
-      const resolvedVat = resolveLegacyProformaVat(proformaPayload, {
-        order: data.payment_order,
-        vat_value: paymentPlanVat ?? data.vat_value,
-      });
+      const { proforma: syncedProforma, vatTotals: resolvedVat } = applyLegacyPaymentPlanAmountsToProforma(
+        proformaPayload,
+        {
+          value: paymentPlanValue,
+          vat_value: paymentPlanVat ?? data.vat_value,
+          order: data.payment_order,
+        },
+      );
 
       setVatTotals(resolvedVat);
-      setProforma(proformaPayload);
-      setLoading(false);
+      setProforma(syncedProforma);
+      if (!options?.silent) setLoading(false);
+      return data.ppr_id ?? null;
     };
 
-    void fetchProforma();
+    let pprChannel: ReturnType<typeof supabase.channel> | null = null;
+
+    void fetchProforma().then((pprId) => {
+      if (!pprId) return;
+      pprChannel = supabase
+        .channel(`public-legacy-proforma-ppr-${pprId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'finances_paymentplanrow',
+            filter: `id=eq.${pprId}`,
+          },
+          () => {
+            void fetchProforma({ silent: true });
+          },
+        )
+        .subscribe();
+    });
+
+    return () => {
+      if (pprChannel) void supabase.removeChannel(pprChannel);
+    };
   }, [id, token]);
 
   useEffect(() => {
@@ -133,10 +166,11 @@ const PublicProformaLegacyViewPage: React.FC = () => {
       try {
         const resolved =
           vatTotals ??
-          resolveLegacyProformaVat(proforma, {
-            order: proforma.payment_order,
+          applyLegacyPaymentPlanAmountsToProforma(proforma, {
+            value: proforma.payment_plan_value,
             vat_value: proforma.payment_plan_vat_value ?? proforma.vat_value,
-          });
+            order: proforma.payment_order,
+          }).vatTotals;
         const subtotal = resolved.subtotal;
         const vat = resolved.vat;
         const total = resolved.totalWithVat;

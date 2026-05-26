@@ -86,6 +86,7 @@ const AnchorDropdownPortal: React.FC<{
 
 import { generateProformaName } from '../../lib/proforma';
 import { currencyIdFromSymbol } from '../../lib/paymentPlanCurrency';
+import { calculatePaymentPlanVatAmount, readPaymentPlanVatFromRow } from '../../lib/paymentPlanVat';
 import { sumUnpaidBaseAndVatByCurrencyFromPayments } from '../../lib/financeUnpaidTotal';
 import {
   formatContractTotalNisDisplay,
@@ -1822,7 +1823,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             // First, process all payments to calculate totals and get currency info
             const processedPayments = data.map(plan => {
               const value = Number(plan.value || 0);
-              let valueVat = Number(plan.vat_value || 0);
 
               // Get currency from the joined accounting_currencies table
               let currency = '₪'; // Default fallback
@@ -1842,14 +1842,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 }
               }
 
-              // For NIS (currency_id = 1), ensure VAT calculation is correct
-              // If vat_value is 0 or null, calculate it based on the value and date
-              // Use 17% VAT for dates before 2025-01-01, 18% VAT for dates on or after 2025-01-01
-              if (currencyId === 1 && (valueVat === 0 || !plan.vat_value)) {
-                const paymentDate = plan.date || plan.due_date;
-                const vatRate = getVatRateForLegacyLead(paymentDate);
-                valueVat = Math.round(value * vatRate * 100) / 100;
-              }
+              const valueVat = readPaymentPlanVatFromRow(
+                {
+                  value: plan.value,
+                  vat_value: plan.vat_value,
+                  currency,
+                  currency_id: currencyId,
+                  date: plan.date,
+                  due_date: plan.due_date,
+                  order: plan.order,
+                },
+                true,
+              );
 
               const paymentTotal = value + valueVat;
 
@@ -1968,12 +1972,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             // First, process all payments - use vat_value directly from database (no auto-calculation)
             const processedPayments = data.map(plan => {
               const value = Number(plan.value);
-              // Use the actual vat_value from the database (numeric column)
-              const valueVat = Number(plan.value_vat || 0);
+              const valueVat = readPaymentPlanVatFromRow(plan, false);
               const currency = plan.currency || '₪';
-
-              // Do NOT auto-calculate VAT - use the value from the database
-              // This allows VAT to be 0 when checkbox is unchecked
 
               const paymentTotal = value + valueVat;
 
@@ -2406,7 +2406,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // First, process all payments to calculate totals and get currency info
           const processedPayments = data.map(plan => {
             const value = Number(plan.value || 0);
-            let valueVat = Number(plan.vat_value || 0);
 
             // Get currency from the joined accounting_currencies table
             let currency = '₪'; // Default fallback
@@ -2416,23 +2415,27 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               currency = plan.accounting_currencies.name;
               currencyId = plan.accounting_currencies.id;
             } else if (plan.currency_id) {
-              // If we have currency_id but no joined data, use a simple mapping
               switch (plan.currency_id) {
-                case 1: currency = '₪'; break; // NIS
-                case 2: currency = '€'; break; // EUR
-                case 3: currency = '$'; break; // USD
-                case 4: currency = '£'; break; // GBP
+                case 1: currency = '₪'; break;
+                case 2: currency = '€'; break;
+                case 3: currency = '$'; break;
+                case 4: currency = '£'; break;
                 default: currency = '₪'; break;
               }
             }
 
-            // For NIS (currency_id = 1), ensure VAT calculation is correct
-            // Use 17% VAT for dates before 2025-01-01, 18% VAT for dates on or after 2025-01-01
-            if (currencyId === 1 && (valueVat === 0 || !plan.vat_value)) {
-              const paymentDate = plan.date || plan.due_date;
-              const vatRate = getVatRateForLegacyLead(paymentDate);
-              valueVat = Math.round(value * vatRate * 100) / 100;
-            }
+            const valueVat = readPaymentPlanVatFromRow(
+              {
+                value: plan.value,
+                vat_value: plan.vat_value,
+                currency,
+                currency_id: currencyId,
+                date: plan.date,
+                due_date: plan.due_date,
+                order: plan.order,
+              },
+              true,
+            );
 
             const paymentTotal = value + valueVat;
 
@@ -2533,14 +2536,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // First, process all payments to calculate totals with consistent VAT logic
           const processedPayments = data.map(plan => {
             const value = Number(plan.value);
-            let valueVat = Number(plan.value_vat || 0);
+            const valueVat = readPaymentPlanVatFromRow(plan, false);
             const currency = plan.currency || '₪';
-
-            // For NIS currency, calculate VAT if not set (17% before 2025-01-01, 18% on or after; new leads use due_date)
-            if (currency === '₪' && (!valueVat || valueVat === 0)) {
-              const vatRate = getVatRateForLegacyLead(plan.due_date);
-              valueVat = Math.round(value * vatRate * 100) / 100;
-            }
 
             const paymentTotal = value + valueVat;
 
@@ -3283,7 +3280,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
-  const handleSaveEditPayment = async (paymentDataOverride?: any, includeVatOverride?: boolean) => {
+  const handleSaveEditPayment = async (
+    paymentDataOverride?: any,
+    includeVatOverride?: boolean,
+    options?: { silent?: boolean },
+  ) => {
     setIsSavingPaymentRow(true);
     try {
       const currentUserName = await getCurrentUserName();
@@ -3585,9 +3586,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
 
         // Recalculate VAT for legacy on save (17% before 2025-01-01, 18% on or after; legacy uses date column)
-        const legacyVatValue = !includeVatToUse
-          ? 0
-          : Math.round(Number(paymentDataToUse.value || 0) * getVatRateForLegacyLead(paymentDataToUse.dueDate) * 100) / 100;
+        const legacyVatValue = calculatePaymentPlanVatAmount(
+          paymentDataToUse.value,
+          includeVatToUse,
+          paymentDataToUse.dueDate,
+        );
 
         const { error: legacyError } = await supabase
           .from('finances_paymentplanrow')
@@ -3609,9 +3612,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         const duePercentValue = parseDuePercent(paymentDataToUse.duePercent);
 
         // Calculate VAT based on checkbox state at save time (17% before 2025-01-01, 18% on or after; use due_date for new leads)
-        const vatValue = !includeVatToUse
-          ? 0
-          : Math.round(Number(paymentDataToUse.value || 0) * getVatRateForLegacyLead(paymentDataToUse.dueDate) * 100) / 100;
+        const vatValue = calculatePaymentPlanVatAmount(
+          paymentDataToUse.value,
+          includeVatToUse,
+          paymentDataToUse.dueDate,
+        );
 
         console.log('💾 Saving payment - VAT calculation:', {
           includeVatToUse,
@@ -3661,7 +3666,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // Legacy payment changes - skipping change logging
       }
 
-      toast.success('Payment row updated!');
+      if (!options?.silent) {
+        toast.success('Payment row updated!');
+      }
       setEditingPaymentId(null);
       setEditPaymentData({});
       await refreshPaymentPlans();
@@ -3675,6 +3682,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     } finally {
       setIsSavingPaymentRow(false);
     }
+  };
+
+  const handleVatTogglePersist = async (paymentData: any, includeVat: boolean) => {
+    if (!editingPaymentInModal) return;
+    const paymentToSave = {
+      ...editingPaymentInModal,
+      ...paymentData,
+      id: editingPaymentInModal.id,
+      isLegacy: editingPaymentInModal.isLegacy,
+    };
+    await handleSaveEditPayment(paymentToSave, includeVat, { silent: true });
   };
 
   const handleDeletePayment = async (row: PaymentPlan) => {
@@ -7614,6 +7632,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         isOpen={!!editingPaymentInModal}
         onClose={handleCloseEditModal}
         onSave={handleSaveEditPaymentModal}
+        onVatToggle={handleVatTogglePersist}
         payment={editingPaymentInModal}
         isSaving={isSavingPaymentRow}
         availableContacts={getAllAvailableContacts()}

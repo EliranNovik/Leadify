@@ -12,10 +12,9 @@ import ProformaPublicFooter from '../components/proforma/ProformaPublicFooter';
 import ProformaFromCompanyInfo from '../components/proforma/ProformaFromCompanyInfo';
 import ProformaVatTotalsBlock from '../components/proforma/ProformaVatTotalsBlock';
 import {
-  applyResolvedVatToNewProforma,
-  resolveNewProformaVat,
-  type ResolvedProformaVat,
-} from '../lib/proformaVat';
+  applyNewPaymentPlanAmountsToProforma,
+} from '../lib/proformaPaymentPlanAmounts';
+import type { ResolvedProformaVat } from '../lib/proformaVat';
 import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
 import { getPublicProformaMainLayoutClass } from '../lib/publicProformaLayout';
 import { resolveBankAccountFromProforma } from '../lib/bankAccounts';
@@ -49,15 +48,17 @@ const PublicProformaViewPage: React.FC = () => {
   const [vatTotals, setVatTotals] = useState<ResolvedProformaVat | null>(null);
 
   useEffect(() => {
-    const fetchProforma = async () => {
+    const fetchProforma = async (options?: { silent?: boolean }) => {
       if (!id || !token) {
         setError('Invalid link.');
         setLoading(false);
         return;
       }
 
-      setLoading(true);
-      setError(null);
+      if (!options?.silent) {
+        setLoading(true);
+        setError(null);
+      }
 
       const { data, error: rpcError } = await supabase.rpc('get_public_new_proforma', {
         p_payment_plan_id: Number(id),
@@ -86,15 +87,16 @@ const PublicProformaViewPage: React.FC = () => {
         parsed.paymentOrder = parsed.paymentOrder ?? data.payment_order;
         parsed.dueDate = parsed.dueDate ?? data.due_date;
 
-        const resolvedVat = resolveNewProformaVat(parsed, {
+        const { proforma: syncedProforma, vatTotals: resolvedVat } = applyNewPaymentPlanAmountsToProforma(parsed, {
+          value: data.value,
+          value_vat: data.value_vat,
           currency: resolvedCurrency,
           currency_id: data.currency_id ?? resolvedCurrencyId,
-          value_vat: data.value_vat ?? parsed.vat,
           payment_order: data.payment_order ?? parsed.paymentOrder,
           due_date: data.due_date ?? parsed.dueDate,
         });
+        parsed = syncedProforma;
         setVatTotals(resolvedVat);
-        parsed = applyResolvedVatToNewProforma(parsed, resolvedVat);
 
         const resolvedLeadNumber =
           (typeof data.lead_number === 'string' && data.lead_number.trim()) ||
@@ -116,11 +118,26 @@ const PublicProformaViewPage: React.FC = () => {
       } catch {
         setError('Failed to load invoice.');
       } finally {
-        setLoading(false);
+        if (!options?.silent) setLoading(false);
       }
     };
 
     void fetchProforma();
+
+    const channel = supabase
+      .channel(`public-proforma-payment-plan-${id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'payment_plans', filter: `id=eq.${id}` },
+        () => {
+          void fetchProforma({ silent: true });
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
   }, [id, token]);
 
   useEffect(() => {

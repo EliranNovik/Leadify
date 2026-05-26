@@ -28,7 +28,8 @@ import {
 } from '../lib/proformaExchangeRate';
 
 import ProformaVatTotalsBlock from '../components/proforma/ProformaVatTotalsBlock';
-import { resolveLegacyProformaVat, type ResolvedProformaVat } from '../lib/proformaVat';
+import { applyLegacyPaymentPlanAmountsToProforma } from '../lib/proformaPaymentPlanAmounts';
+import type { ResolvedProformaVat } from '../lib/proformaVat';
 import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
 import { getPublicProformaDisplayNotes } from '../lib/proformaNotes';
 import ProformaViewSideNotes from '../components/proforma/ProformaViewSideNotes';
@@ -45,6 +46,7 @@ const ProformaLegacyViewPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const invoiceRef = useRef<HTMLDivElement>(null);
+  const legacyPprChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [sending, setSending] = useState(false);
@@ -90,9 +92,13 @@ const ProformaLegacyViewPage: React.FC = () => {
   };
 
   useEffect(() => {
-    const fetchProforma = async () => {
-      setLoading(true);
-      setError(null);
+    let cancelled = false;
+
+    const fetchProforma = async (options?: { silent?: boolean }) => {
+      if (!options?.silent) {
+        setLoading(true);
+        setError(null);
+      }
 
       // Variables to store issued by information
       let issuedBy: string | null = null;
@@ -116,6 +122,7 @@ const ProformaLegacyViewPage: React.FC = () => {
       let paymentPlanDate: string | null = null;
       let paymentPlanClientId: number | null = null;
       let paymentPlanOrder: string | number | null = null;
+      let paymentPlanValue: number | string | null = null;
       let paymentPlanVatValue: number | string | null = null;
       let paymentPaid = false;
       let paymentPaidAt: string | null = null;
@@ -123,7 +130,7 @@ const ProformaLegacyViewPage: React.FC = () => {
       if (!proformaError && proformaData?.ppr_id) {
         const { data: pprData } = await supabase
           .from('finances_paymentplanrow')
-          .select('date, due_date, client_id, actual_date, currency_id, order, vat_value')
+          .select('date, due_date, client_id, actual_date, currency_id, order, value, vat_value')
           .eq('id', proformaData.ppr_id)
           .single();
 
@@ -131,6 +138,7 @@ const ProformaLegacyViewPage: React.FC = () => {
           paymentPlanDate = pprData.date || pprData.due_date || null;
           paymentPlanClientId = pprData.client_id ? Number(pprData.client_id) : null;
           paymentPlanOrder = pprData.order ?? null;
+          paymentPlanValue = pprData.value ?? null;
           paymentPlanVatValue = pprData.vat_value ?? null;
           paymentPaid = Boolean(pprData.actual_date);
           paymentPaidAt = pprData.actual_date || null;
@@ -288,14 +296,14 @@ const ProformaLegacyViewPage: React.FC = () => {
 
         if (directError) {
           setError(`Error fetching proforma: ${directError.message}`);
-          setLoading(false);
-          return;
+          if (!options?.silent) setLoading(false);
+          return null;
         }
 
         if (!directData) {
           setError('Proforma not found.');
-          setLoading(false);
-          return;
+          if (!options?.silent) setLoading(false);
+          return null;
         }
 
         // Fetch client information from contact (not lead)
@@ -522,14 +530,14 @@ const ProformaLegacyViewPage: React.FC = () => {
 
       if (error && !data) {
         setError(`Error fetching proforma: ${error.message}`);
-        setLoading(false);
-        return;
+        if (!options?.silent) setLoading(false);
+        return null;
       }
 
       if (!data) {
         setError('Proforma not found.');
-        setLoading(false);
-        return;
+        if (!options?.silent) setLoading(false);
+        return null;
       }
 
       let bankAccountDetails =
@@ -557,9 +565,10 @@ const ProformaLegacyViewPage: React.FC = () => {
       });
       enriched.currency_code = resolvedCurrency;
 
-      const resolvedVat = resolveLegacyProformaVat(enriched, {
-        order: paymentPlanOrder,
+      const { proforma: syncedProforma, vatTotals: resolvedVat } = applyLegacyPaymentPlanAmountsToProforma(enriched, {
+        value: paymentPlanValue,
         vat_value: paymentPlanVatValue,
+        order: paymentPlanOrder,
       });
       setVatTotals(resolvedVat);
       let contactIdForSend: number | null = paymentPlanClientId;
@@ -569,10 +578,45 @@ const ProformaLegacyViewPage: React.FC = () => {
         if (main?.id) contactIdForSend = main.id;
       }
       setContactIdForEmail(contactIdForSend);
-      setProforma(enriched);
-      setLoading(false);
+      if (!cancelled) setProforma(syncedProforma);
+      if (!options?.silent) setLoading(false);
+      return proformaData?.ppr_id ?? null;
     };
-    if (id) fetchProforma();
+
+    const setup = async () => {
+      const pprId = await fetchProforma();
+      if (cancelled || !pprId) return;
+
+      if (legacyPprChannelRef.current) {
+        void supabase.removeChannel(legacyPprChannelRef.current);
+      }
+
+      legacyPprChannelRef.current = supabase
+        .channel(`legacy-proforma-ppr-${pprId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'finances_paymentplanrow',
+            filter: `id=eq.${pprId}`,
+          },
+          () => {
+            void fetchProforma({ silent: true });
+          },
+        )
+        .subscribe();
+    };
+
+    if (id) void setup();
+
+    return () => {
+      cancelled = true;
+      if (legacyPprChannelRef.current) {
+        void supabase.removeChannel(legacyPprChannelRef.current);
+        legacyPprChannelRef.current = null;
+      }
+    };
   }, [id]);
 
   useEffect(() => {

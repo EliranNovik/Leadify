@@ -1,24 +1,5 @@
--- Public share links for proforma invoices (new payment_plans + legacy proformainvoice).
--- Clients open /public-proforma/:id/:token or /public-proforma-legacy/:id/:token without signing in.
+-- Public proforma RPCs: include payment plan row value so invoice totals match FinancesTab.
 
-ALTER TABLE public.payment_plans
-  ADD COLUMN IF NOT EXISTS public_token TEXT;
-
-ALTER TABLE public.proformainvoice
-  ADD COLUMN IF NOT EXISTS public_token TEXT;
-
-CREATE INDEX IF NOT EXISTS idx_payment_plans_public_token
-  ON public.payment_plans (public_token)
-  WHERE public_token IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_proformainvoice_public_token
-  ON public.proformainvoice (public_token)
-  WHERE public_token IS NOT NULL;
-
-COMMENT ON COLUMN public.payment_plans.public_token IS 'UUID token for anonymous read-only proforma share URL';
-COMMENT ON COLUMN public.proformainvoice.public_token IS 'UUID token for anonymous read-only proforma share URL';
-
--- New-lead proforma (payment_plans.proforma JSON)
 CREATE OR REPLACE FUNCTION public.get_public_new_proforma(
   p_payment_plan_id INTEGER,
   p_public_token TEXT
@@ -88,7 +69,6 @@ BEGIN
 END;
 $$;
 
--- Legacy proforma (proformainvoice + rows + payment row for paid date)
 CREATE OR REPLACE FUNCTION public.get_public_legacy_proforma(
   p_proforma_id BIGINT,
   p_public_token TEXT
@@ -215,10 +195,3 @@ BEGIN
   );
 END;
 $$;
-
-GRANT EXECUTE ON FUNCTION public.get_public_new_proforma(INTEGER, TEXT) TO anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.get_public_legacy_proforma(BIGINT, TEXT) TO anon, authenticated;
-
--- Exchange rates on public unpaid/paid proformas
-GRANT EXECUTE ON FUNCTION public.get_boi_exchange_rates_for_date(DATE) TO anon;
-GRANT SELECT ON public.currency_rates TO anon;

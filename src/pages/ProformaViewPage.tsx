@@ -22,10 +22,9 @@ import ProformaPaidBadge from '../components/proforma/ProformaPaidBadge';
 import { buildClientFinancesTabPath } from '../lib/proformaClientNavigation';
 import ProformaVatTotalsBlock from '../components/proforma/ProformaVatTotalsBlock';
 import {
-  applyResolvedVatToNewProforma,
-  resolveNewProformaVat,
-  type ResolvedProformaVat,
-} from '../lib/proformaVat';
+  applyNewPaymentPlanAmountsToProforma,
+} from '../lib/proformaPaymentPlanAmounts';
+import type { ResolvedProformaVat } from '../lib/proformaVat';
 import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
 import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 import { resolveBankAccountFromProforma, fetchBankAccountById } from '../lib/bankAccounts';
@@ -63,13 +62,14 @@ const ProformaViewPage: React.FC = () => {
   const [vatTotals, setVatTotals] = useState<ResolvedProformaVat | null>(null);
 
   useEffect(() => {
-    const fetchProforma = async () => {
-      setLoading(true);
-      setError(null);
-      // Fetch both proforma and client_id from payment plan
+    const fetchProforma = async (options?: { silent?: boolean }) => {
+      if (!options?.silent) {
+        setLoading(true);
+        setError(null);
+      }
       const { data, error } = await supabase
         .from('payment_plans')
-        .select('proforma, client_id, lead_id, paid, paid_at, currency, currency_id, value_vat, payment_order, due_date')
+        .select('proforma, client_id, lead_id, paid, paid_at, currency, currency_id, value, value_vat, payment_order, due_date')
         .eq('id', id)
         .single();
       if (error || !data || !data.proforma) {
@@ -157,15 +157,16 @@ const ProformaViewPage: React.FC = () => {
         parsed.paymentOrder = parsed.paymentOrder ?? data.payment_order;
         parsed.dueDate = parsed.dueDate ?? data.due_date;
 
-        const resolvedVat = resolveNewProformaVat(parsed, {
+        const { proforma: syncedProforma, vatTotals: resolvedVat } = applyNewPaymentPlanAmountsToProforma(parsed, {
+          value: data.value,
+          value_vat: data.value_vat,
           currency: resolvedCurrency,
           currency_id: data.currency_id ?? resolvedCurrencyId,
-          value_vat: data.value_vat,
           payment_order: data.payment_order,
           due_date: data.due_date,
         });
+        parsed = syncedProforma;
         setVatTotals(resolvedVat);
-        parsed = applyResolvedVatToNewProforma(parsed, resolvedVat);
         if (!parsed.bankAccountDetails && parsed.bankAccountId) {
           parsed.bankAccountDetails = await fetchBankAccountById(String(parsed.bankAccountId));
         }
@@ -181,9 +182,26 @@ const ProformaViewPage: React.FC = () => {
       } catch (e) {
         setError('Failed to parse proforma data.');
       }
-      setLoading(false);
+      if (!options?.silent) setLoading(false);
     };
     if (id) fetchProforma();
+
+    if (!id) return undefined;
+
+    const channel = supabase
+      .channel(`proforma-payment-plan-${id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'payment_plans', filter: `id=eq.${id}` },
+        () => {
+          void fetchProforma({ silent: true });
+        },
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
   }, [id]);
 
   useEffect(() => {

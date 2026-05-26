@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { XMarkIcon, CheckIcon, PencilIcon } from '@heroicons/react/24/outline';
+import { calculatePaymentPlanVatAmount } from '../../lib/paymentPlanVat';
 
 interface PaymentPlan {
   id: string | number;
@@ -18,6 +19,7 @@ interface EditPaymentModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (paymentData: any, includeVat: boolean) => Promise<void>;
+  onVatToggle?: (paymentData: any, includeVat: boolean) => Promise<void>;
   payment: PaymentPlan | null;
   isSaving?: boolean;
   availableContacts?: Array<{ name: string; isMain: boolean; id?: number }>;
@@ -36,6 +38,7 @@ const EditPaymentModal: React.FC<EditPaymentModalProps> = ({
   isOpen,
   onClose,
   onSave,
+  onVatToggle,
   payment,
   isSaving = false,
   availableContacts = [],
@@ -80,8 +83,11 @@ const EditPaymentModal: React.FC<EditPaymentModalProps> = ({
 
   const handleValueChange = (newValue: number) => {
     const currency = editPaymentData.currency || payment.currency || '₪';
-    // Recalculate VAT based on checkbox state: 18% if includeVat is checked, 0 otherwise
-    const newValueVat = editPaymentIncludeVat ? Math.round(newValue * 0.18 * 100) / 100 : 0;
+    const newValueVat = calculatePaymentPlanVatAmount(
+      newValue,
+      editPaymentIncludeVat,
+      editPaymentData.dueDate || payment.dueDate,
+    );
     setEditPaymentData((d: any) => ({
       ...d,
       value: newValue,
@@ -90,11 +96,22 @@ const EditPaymentModal: React.FC<EditPaymentModalProps> = ({
     }));
   };
 
-  const handleVatCheckboxChange = (includeVat: boolean) => {
+  const handleVatCheckboxChange = async (includeVat: boolean) => {
     setEditPaymentIncludeVat(includeVat);
-    // Apply VAT if checkbox is checked, regardless of currency
-    const newValueVat = includeVat ? Math.round(Number(editPaymentData.value || 0) * 0.18 * 100) / 100 : 0;
-    setEditPaymentData((d: any) => ({ ...d, valueVat: newValueVat }));
+    const newValueVat = calculatePaymentPlanVatAmount(
+      editPaymentData.value || 0,
+      includeVat,
+      editPaymentData.dueDate || payment.dueDate,
+    );
+    const updated = { ...editPaymentData, valueVat: newValueVat };
+    setEditPaymentData(updated);
+    if (onVatToggle) {
+      try {
+        await onVatToggle(updated, includeVat);
+      } catch (error) {
+        console.error('Failed to persist VAT toggle:', error);
+      }
+    }
   };
 
   // Helper function to convert date from dd/mm/yyyy or ISO format to YYYY-MM-DD for input
@@ -274,7 +291,11 @@ const EditPaymentModal: React.FC<EditPaymentModalProps> = ({
                 const selectedCurrency = e.target.value;
                 const currency = selectedCurrency;
                 // Recalculate VAT based on checkbox state when currency changes
-                const newValueVat = editPaymentIncludeVat ? Math.round(Number(editPaymentData.value || 0) * 0.18 * 100) / 100 : 0;
+                const newValueVat = calculatePaymentPlanVatAmount(
+                  editPaymentData.value || 0,
+                  editPaymentIncludeVat,
+                  editPaymentData.dueDate || payment.dueDate,
+                );
                 setEditPaymentData((d: any) => ({
                   ...d,
                   currency: currency,
