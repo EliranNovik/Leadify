@@ -30,6 +30,8 @@ export interface CreatePelecardSessionResponse {
   paymentId?: string;
   /** CssURL sent to Pelecard at init — verify this URL returns your CSS file. */
   cssUrl?: string;
+  /** False when Pelecard ignores CssURL and loads default variant CSS (terminal must be enabled by Pelecard). */
+  cssApplied?: boolean;
   error?: string;
 }
 

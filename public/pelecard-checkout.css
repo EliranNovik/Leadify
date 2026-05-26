@@ -1,4 +1,6 @@
 /* RMQ 2.0 — Pelecard checkout (split-screen / Dribbble-style form) */
+/* CssURL replaces Pelecard variant CSS entirely — import base, then override below. */
+@import url('https://gateway20.pelecard.biz/Content/Css/variant-en-1.css');
 
 html {
   font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;

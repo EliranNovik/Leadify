@@ -137,6 +137,7 @@ async function createPaymentSession(req, res) {
       paymentUrl: session.paymentUrl,
       paymentId,
       cssUrl: session.cssUrl,
+      cssApplied: session.cssApplied,
     });
   } catch (error) {
     console.error('Create Pelecard payment session error:', error);
@@ -378,11 +379,23 @@ function returnCancel(req, res) {
   return handlePelecardReturn(req, res, 'cancel');
 }
 
-function getCheckoutCssInfo(req, res) {
-  return res.json({
-    success: true,
-    ...pelecardService.getCheckoutCssDebugInfo(),
-  });
+async function getCheckoutCssInfo(req, res) {
+  try {
+    const info = pelecardService.getCheckoutCssDebugInfo();
+    const probe = await pelecardService.probeTerminalCssUrlSupport();
+    return res.json({
+      success: true,
+      ...info,
+      ...probe,
+    });
+  } catch (error) {
+    console.error('Pelecard CSS info error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to probe Pelecard CSS',
+      ...pelecardService.getCheckoutCssDebugInfo(),
+    });
+  }
 }
 
 module.exports = {
