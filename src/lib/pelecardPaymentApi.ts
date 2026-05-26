@@ -21,6 +21,7 @@ export interface PaymentStatusResponse {
   pelecard_transaction_id?: string | null;
   pelecard_status_code?: string | null;
   pelecard_status_description?: string | null;
+  confirmation_email_sent?: boolean;
   error?: string;
 }
 

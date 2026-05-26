@@ -27,6 +27,7 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
 
   const [statusData, setStatusData] = useState<PaymentStatusResponse | null>(null);
   const [loading, setLoading] = useState(!!paymentId);
+  const [confirmationEmailSent, setConfirmationEmailSent] = useState(false);
 
   const redirectMeta = useMemo(
     () => ({
@@ -71,6 +72,9 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
       if (!cancelled) {
         setStatusData(data);
         setLoading(false);
+        if (data.confirmation_email_sent) {
+          setConfirmationEmailSent(true);
+        }
 
         logPelecardResult('Payment status from API', {
           variant,
@@ -80,6 +84,7 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
           pelecard_status_code: data.pelecard_status_code,
           pelecard_status_description: data.pelecard_status_description,
           pelecard_transaction_id: data.pelecard_transaction_id,
+          confirmation_email_sent: data.confirmation_email_sent,
           error: data.error,
           redirect: redirectMeta,
         });
@@ -104,6 +109,46 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
       cancelled = true;
     };
   }, [paymentId, variant, redirectMeta]);
+
+  // Email is sent asynchronously after redirect — poll briefly for confirmation
+  useEffect(() => {
+    if (variant !== 'success' || !paymentId || loading || statusData?.status !== 'paid') {
+      return;
+    }
+    if (confirmationEmailSent || statusData?.confirmation_email_sent) {
+      return;
+    }
+
+    let cancelled = false;
+    let attempts = 0;
+    const maxAttempts = 12;
+    const intervalMs = 2000;
+
+    const timer = window.setInterval(async () => {
+      if (cancelled) return;
+      attempts += 1;
+      const data = await fetchPaymentStatus(paymentId);
+      if (cancelled) return;
+      if (data.confirmation_email_sent) {
+        setConfirmationEmailSent(true);
+        window.clearInterval(timer);
+      } else if (attempts >= maxAttempts) {
+        window.clearInterval(timer);
+      }
+    }, intervalMs);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    variant,
+    paymentId,
+    loading,
+    statusData?.status,
+    statusData?.confirmation_email_sent,
+    confirmationEmailSent,
+  ]);
 
   const pelecardStatusCode =
     statusData?.pelecard_status_code ||
@@ -175,6 +220,11 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
                 <p className="text-2xl font-bold text-green-600 mb-6">
                   {getCurrencySymbol(currency)}
                   {Number(total).toLocaleString()}
+                </p>
+              )}
+              {confirmationEmailSent && (
+                <p className="text-sm text-gray-600 mb-4 rounded-lg bg-violet-50 px-4 py-3 border border-violet-100">
+                  A confirmation email has been sent to your email address.
                 </p>
               )}
               <p className="text-xs text-gray-500">You can safely close this window.</p>

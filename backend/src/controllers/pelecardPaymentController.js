@@ -1,6 +1,7 @@
 const supabase = require('../config/supabase');
 const pelecardService = require('../services/pelecardService');
 const { chargeAmountFromPayment } = require('../services/paymentChargeAmountService');
+const { sendPaymentConfirmationEmail } = require('../services/paymentConfirmationEmailService');
 
 function appRedirect(path, query = {}) {
   const { appPublicUrl } = pelecardService.getConfig();
@@ -270,6 +271,7 @@ async function getPaymentStatus(req, res) {
       pelecard_transaction_id: payment.pelecard_transaction_id || null,
       pelecard_status_code: payment.pelecard_status_code || null,
       pelecard_status_description: pelecardDescriptionFromRaw(payment.pelecard_raw_response),
+      confirmation_email_sent: Boolean(payment.payment_confirmation_email_sent_at),
     });
   } catch (error) {
     console.error('Get payment status error:', error);
@@ -380,6 +382,7 @@ async function handlePelecardReturn(req, res, outcome) {
     }
 
     if (verified) {
+      const wasAlreadyPaid = payment.status === 'paid';
       const paidAt = new Date().toISOString();
       const txRef = transactionId ? String(transactionId) : `PELE_${Date.now()}`;
 
@@ -405,6 +408,13 @@ async function handlePelecardReturn(req, res, outcome) {
       });
 
       console.info('[Pelecard] Payment succeeded', { paymentId: secureToken, statusCode: resolvedStatusCode });
+
+      if (!wasAlreadyPaid) {
+        // Run after redirect — email failures must never affect the client payment flow
+        setImmediate(() => {
+          void sendPaymentConfirmationEmail(payment, { paidAt });
+        });
+      }
 
       return res.redirect(appRedirect('/payment/success', { paymentId: secureToken }));
     }
