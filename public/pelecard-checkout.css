@@ -333,6 +333,16 @@ input.btn-submit[type='submit']:focus {
   color: #9ca3af !important;
 }
 
+@media (max-width: 1023px) {
+  html,
+  body {
+    overflow-x: hidden !important;
+    overflow-y: visible !important;
+    height: auto !important;
+    min-height: 0 !important;
+  }
+}
+
 @media (max-width: 520px) {
   .main-content .row:has(.tab-button) > [class*='col-'],
   form .row:has(.tab-button) > [class*='col-'] {

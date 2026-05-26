@@ -136,6 +136,7 @@ async function createPaymentSession(req, res) {
       success: true,
       paymentUrl: session.paymentUrl,
       paymentId,
+      cssUrl: session.cssUrl,
     });
   } catch (error) {
     console.error('Create Pelecard payment session error:', error);
@@ -377,9 +378,17 @@ function returnCancel(req, res) {
   return handlePelecardReturn(req, res, 'cancel');
 }
 
+function getCheckoutCssInfo(req, res) {
+  return res.json({
+    success: true,
+    ...pelecardService.getCheckoutCssDebugInfo(),
+  });
+}
+
 module.exports = {
   createPaymentSession,
   getPaymentStatus,
+  getCheckoutCssInfo,
   returnSuccess,
   returnError,
   returnCancel,

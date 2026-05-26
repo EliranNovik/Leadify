@@ -27,9 +27,31 @@ function CheckoutSkeleton() {
   );
 }
 
-/** Minimum iframe document height; outer shell scrolls when viewport is shorter. */
+/** Desktop: scrollable shell filling column; mobile: natural height, page scrolls. */
+const IFRAME_SCROLL_SHELL_CLASS =
+  'relative w-full max-lg:overflow-visible max-lg:h-auto max-lg:flex-none ' +
+  'lg:flex-1 lg:min-h-0 lg:overflow-y-auto lg:overscroll-y-contain lg:h-full';
+
+/** Minimum iframe height before Pelecard reports content size. */
 const IFRAME_CONTENT_HEIGHT = 920;
-const IFRAME_SHELL_MAX_HEIGHT = 'max-h-[calc(100dvh-13rem)] lg:max-h-[calc(100dvh-10rem)]';
+const IFRAME_HEIGHT_MAX_MOBILE = 2400;
+const IFRAME_HEIGHT_MAX_DESKTOP = 1400;
+
+function useIsLgViewport(): boolean {
+  const [isLg, setIsLg] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(min-width: 1024px)').matches,
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const onChange = () => setIsLg(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  return isLg;
+}
 
 const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
   paymentUrl,
@@ -40,6 +62,7 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
   onCheckoutNavigate,
   shellClassName = '',
 }) => {
+  const isLgViewport = useIsLgViewport();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [iframeLoaded, setIframeLoaded] = useState(false);
   const [iframeHeight, setIframeHeight] = useState(IFRAME_CONTENT_HEIGHT);
@@ -65,7 +88,10 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
         if (Number.isFinite(n) && n > 400) next = n;
       }
       if (next != null) {
-        setIframeHeight(Math.min(1400, Math.max(IFRAME_CONTENT_HEIGHT, Math.ceil(next + 8))));
+        const cap = window.matchMedia('(min-width: 1024px)').matches
+          ? IFRAME_HEIGHT_MAX_DESKTOP
+          : IFRAME_HEIGHT_MAX_MOBILE;
+        setIframeHeight(Math.min(cap, Math.max(IFRAME_CONTENT_HEIGHT, Math.ceil(next + 8))));
       }
     };
     window.addEventListener('message', onMessage);
@@ -100,7 +126,7 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
 
   return (
     <div
-      className={`iframe-shell flex flex-col w-full min-h-0 border-0 bg-transparent ${shellClassName}`.trim()}
+      className={`iframe-shell flex flex-col w-full border-0 bg-transparent max-lg:h-auto lg:min-h-0 lg:h-full ${shellClassName}`.trim()}
     >
       {loading && (
         <div className="flex flex-col items-center justify-center text-center py-14 px-6 w-full min-h-[480px]">
@@ -131,11 +157,9 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
       )}
 
       {paymentUrl && !loading && !error && (
-        <div
-          className={`relative w-full lg:flex-1 lg:min-h-0 overflow-y-auto overscroll-y-contain ${IFRAME_SHELL_MAX_HEIGHT}`}
-        >
+        <div className={IFRAME_SCROLL_SHELL_CLASS}>
           {showIframeLoading && (
-            <div className="sticky top-0 z-10 flex flex-col items-center justify-center px-4 sm:px-6 min-h-[480px] bg-white">
+            <div className="flex flex-col items-center justify-center px-4 sm:px-6 min-h-[280px] max-lg:min-h-[320px] bg-white lg:sticky lg:top-0 lg:z-10 lg:min-h-full">
               <CheckoutSkeleton />
               <p className="text-xs text-gray-500 mt-4">Connecting to Pelecard…</p>
             </div>
@@ -144,9 +168,15 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
             ref={iframeRef}
             title={title}
             src={paymentUrl}
-            className="w-full border-0 bg-transparent block"
-            style={{ height: iframeHeight, minHeight: IFRAME_CONTENT_HEIGHT }}
-            scrolling="yes"
+            className={`w-full border-0 bg-transparent block ${
+              isLgViewport ? 'lg:!h-full lg:!min-h-0' : 'max-lg:!min-h-0'
+            }`}
+            style={
+              isLgViewport
+                ? { height: iframeHeight, minHeight: 0 }
+                : { height: iframeHeight, minHeight: iframeHeight }
+            }
+            scrolling={isLgViewport ? 'yes' : 'no'}
             allow="payment; publickey-credentials-get *"
             referrerPolicy="strict-origin-when-cross-origin"
             onLoad={handleLoad}

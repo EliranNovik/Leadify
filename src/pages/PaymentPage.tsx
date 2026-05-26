@@ -3,7 +3,9 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { createPelecardPaymentSession, fetchPaymentStatus } from '../lib/pelecardPaymentApi';
 import PelecardCheckoutFrame from '../components/PelecardCheckoutFrame';
-import PaymentSummaryCard from '../components/payment/PaymentSummaryCard';
+import PaymentSummaryCard, {
+  type PaymentSummaryData,
+} from '../components/payment/PaymentSummaryCard';
 import PaymentSummaryGradientDecor from '../components/payment/PaymentSummaryGradientDecor';
 import PublicContractFooter from '../components/public/PublicContractFooter';
 import PublicPageContactButtons from '../components/public/PublicPageContactButtons';
@@ -16,6 +18,7 @@ import toast from 'react-hot-toast';
 import {
   CheckCircleIcon,
   ExclamationCircleIcon,
+  ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
 
 const PAGE_BG_STYLE: React.CSSProperties = {
@@ -28,6 +31,32 @@ const SUMMARY_GRADIENT_STYLE: React.CSSProperties = {
 };
 
 const CHECKOUT_LAW_OFFICE_TITLE = 'Decker, Pex & Co. Law Office';
+
+/** Desktop gradient panel — served from /public */
+const CHECKOUT_DESKTOP_FOOTER_IMAGE = '/ChatGPT Image May 26, 2026, 09_41_00 AM.png';
+
+function CheckoutSummaryHeading({
+  summary,
+  titleClassName,
+}: {
+  summary?: PaymentSummaryData | null;
+  titleClassName: string;
+}) {
+  return (
+    <>
+      <h1 className={titleClassName}>{CHECKOUT_LAW_OFFICE_TITLE}</h1>
+      {summary && (
+        <p className="text-sm text-white/90 mb-6 flex flex-wrap items-center gap-x-2 gap-y-1">
+          <span className="font-mono text-[12px] text-white/75">Case #{summary.caseNumber}</span>
+          <span className="text-white/40" aria-hidden>
+            ·
+          </span>
+          <span>{summary.clientName}</span>
+        </p>
+      )}
+    </>
+  );
+}
 
 interface PaymentLink {
   id: string;
@@ -53,6 +82,8 @@ interface PaymentLink {
     payment_order?: string;
     currency?: string | null;
     currency_id?: number | string | null;
+    paid?: boolean | null;
+    paid_at?: string | null;
   };
 }
 
@@ -63,11 +94,66 @@ function getCurrencySymbol(currency: string | undefined) {
   return currency;
 }
 
-function clientDisplayName(paymentLink: PaymentLink): string {
+function isPaymentComplete(paymentLink: PaymentLink): boolean {
+  return paymentLink.status === 'paid' || paymentLink.payment_plans?.paid === true;
+}
+
+function getPaymentPaidAt(paymentLink: PaymentLink): string | null {
+  return paymentLink.paid_at ?? paymentLink.payment_plans?.paid_at ?? null;
+}
+
+function formatPaidDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+}
+
+function PaymentDoneStamp({ paidAt }: { paidAt: string | null }) {
+  const dateLabel = formatPaidDate(paidAt);
+
   return (
-    paymentLink.leads?.name?.trim() ||
-    paymentLink.description?.split(' - ')[1]?.split(' (#')[0]?.trim() ||
-    'there'
+    <div
+      className="mt-5 inline-flex max-w-[280px] -rotate-6 origin-left"
+      role="status"
+      aria-label={dateLabel ? `Payment done on ${dateLabel}` : 'Payment done'}
+    >
+      <div className="relative rounded-xl border-[3px] border-dashed border-emerald-200/90 bg-emerald-500/15 px-5 py-3.5 shadow-[0_10px_30px_-12px_rgba(16,185,129,0.55)] backdrop-blur-[2px]">
+        <div className="absolute inset-1 rounded-lg border border-emerald-100/30 pointer-events-none" />
+        <div className="relative flex items-center gap-3">
+          <CheckCircleIcon className="h-8 w-8 shrink-0 text-emerald-100" strokeWidth={1.75} />
+          <div className="text-left">
+            <p className="text-[13px] font-extrabold uppercase tracking-[0.28em] text-emerald-50 leading-none">
+              Payment done
+            </p>
+            {dateLabel ? (
+              <p className="mt-1.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-emerald-100/90">
+                {dateLabel}
+              </p>
+            ) : (
+              <p className="mt-1.5 text-[11px] font-medium text-emerald-100/80">Completed</p>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CheckoutSecuredStamp() {
+  return (
+    <div
+      className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 shadow-sm ring-1 ring-emerald-700/10"
+      role="img"
+      aria-label="Secured checkout"
+    >
+      <ShieldCheckIcon className="h-4 w-4 shrink-0 text-white" strokeWidth={2} />
+      <span className="text-xs font-semibold text-white tracking-wide">Secured</span>
+    </div>
   );
 }
 
@@ -80,7 +166,6 @@ const PaymentPage: React.FC = () => {
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
   const [sessionLoading, setSessionLoading] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
-  const [showThankYou, setShowThankYou] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
   const [exchangeInfo, setExchangeInfo] = useState<ProformaExchangeRateInfo | null>(null);
   const [exchangeLoading, setExchangeLoading] = useState(false);
@@ -98,7 +183,7 @@ const PaymentPage: React.FC = () => {
           .select(`
             *,
             leads!client_id(lead_number, topic, name, email, phone, currency_id, proposal_currency, balance_currency),
-            payment_plans:payment_plan_id(payment_order, currency, currency_id)
+            payment_plans:payment_plan_id(payment_order, currency, currency_id, paid, paid_at)
           `)
           .eq('secure_token', token)
           .maybeSingle();
@@ -109,9 +194,11 @@ const PaymentPage: React.FC = () => {
           return;
         }
 
-        if (data.status === 'paid') {
+        const paymentComplete =
+          data.status === 'paid' || data.payment_plans?.paid === true;
+
+        if (paymentComplete) {
           setPaymentLink(data);
-          setShowThankYou(true);
           return;
         }
 
@@ -162,8 +249,8 @@ const PaymentPage: React.FC = () => {
             },
             paymentLink.payment_plans?.currency,
           ),
-          paid: paymentLink.status === 'paid',
-          paidAt: paymentLink.paid_at ?? null,
+          paid: isPaymentComplete(paymentLink),
+          paidAt: getPaymentPaidAt(paymentLink),
           subtotal: Number(paymentLink.amount) || 0,
           vat: Number(paymentLink.vat_amount) || 0,
           total: Number(paymentLink.total_amount) || 0,
@@ -183,9 +270,12 @@ const PaymentPage: React.FC = () => {
     };
   }, [paymentLink]);
 
+  const isAlreadyPaid = paymentLink ? isPaymentComplete(paymentLink) : false;
+  const paidAt = paymentLink ? getPaymentPaidAt(paymentLink) : null;
+
   const canPay =
     paymentLink &&
-    paymentLink.status !== 'paid' &&
+    !isAlreadyPaid &&
     paymentLink.status !== 'expired' &&
     !(paymentLink.expires_at && new Date(paymentLink.expires_at) < new Date());
 
@@ -252,6 +342,12 @@ const PaymentPage: React.FC = () => {
     };
   }, [token, paymentUrl, sessionLoading, canPay, navigate]);
 
+  /** Mobile: start at summary; avoid restored scroll hiding it. */
+  useEffect(() => {
+    if (!paymentLink) return;
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
+  }, [paymentLink, paymentUrl]);
+
   const summaryData = useMemo(() => {
     if (!paymentLink) return null;
     return {
@@ -312,40 +408,19 @@ const PaymentPage: React.FC = () => {
     );
   }
 
-  if (showThankYou) {
-    return (
-      <div className="min-h-screen flex flex-col" style={PAGE_BG_STYLE}>
-        <div className="flex-1 flex items-center justify-center px-6 py-12">
-          <div className="bg-white rounded-[20px] shadow-[0_12px_35px_rgba(15,23,42,0.08)] border border-gray-200 p-8 max-w-md w-full text-center">
-            <CheckCircleIcon className="w-16 h-16 mx-auto mb-6 text-[#3b28c7]" />
-            <h2 className="text-2xl font-bold text-gray-900 mb-2">
-              Thank you, {clientDisplayName(paymentLink)}!
-            </h2>
-            <p className="text-lg text-gray-600 mb-4">Payment successful</p>
-            <p className="text-2xl font-bold text-emerald-600 mb-6">
-              {getCurrencySymbol(paymentLink.currency)}
-              {paymentLink.total_amount.toLocaleString()}
-            </p>
-            <p className="text-sm text-gray-500">You can safely close this window.</p>
-          </div>
-        </div>
-        <PublicContractFooter variant="payment" />
-      </div>
-    );
-  }
-
   return (
-    <div className="h-screen flex flex-col lg:flex-row overflow-hidden bg-white">
+    <div className="min-h-screen lg:h-screen flex flex-col lg:flex-row overflow-x-hidden lg:overflow-hidden bg-white">
       <aside
         className="hidden lg:flex lg:w-[42%] lg:max-w-[520px] lg:shrink-0 flex-col text-white relative overflow-y-auto"
         style={SUMMARY_GRADIENT_STYLE}
       >
         <PaymentSummaryGradientDecor />
-        <div className="relative flex flex-col justify-between min-h-full p-10 xl:p-12 z-[1]">
-          <div>
-            <h1 className="text-lg xl:text-xl font-semibold text-white leading-snug tracking-tight mb-8 max-w-sm">
-              {CHECKOUT_LAW_OFFICE_TITLE}
-            </h1>
+        <div className="relative flex flex-col min-h-full p-10 xl:p-12 z-[1]">
+          <div className="flex-1">
+            <CheckoutSummaryHeading
+              summary={summaryData}
+              titleClassName="text-lg xl:text-xl font-semibold text-white leading-snug tracking-tight mb-2 max-w-sm"
+            />
             {summaryData && (
               <PaymentSummaryCard
                 summary={summaryData}
@@ -354,23 +429,34 @@ const PaymentPage: React.FC = () => {
                 variant="gradient"
               />
             )}
+            <img
+              src={encodeURI(CHECKOUT_DESKTOP_FOOTER_IMAGE)}
+              alt=""
+              className="mt-8 mb-2 w-full max-w-[400px] xl:max-w-[420px] h-auto object-contain pointer-events-none select-none"
+              draggable={false}
+            />
+            {isAlreadyPaid && <PaymentDoneStamp paidAt={paidAt} />}
           </div>
-          <p className="text-[11px] text-white/50 leading-relaxed mt-10 max-w-xs">
+          <p className="text-[11px] text-white/50 leading-relaxed max-w-xs shrink-0">
             Processed securely by Pelecard. Card details are not stored on our servers.
           </p>
         </div>
       </aside>
 
-      <main className="flex-1 min-h-0 flex flex-col overflow-y-auto lg:overflow-hidden bg-white">
+      <main className="relative flex-1 flex flex-col w-full max-lg:overflow-visible lg:min-h-0 lg:overflow-y-auto lg:overflow-hidden bg-white">
+        <div className="pointer-events-none absolute top-8 right-12 xl:right-16 z-20 hidden lg:block">
+          <CheckoutSecuredStamp />
+        </div>
         <div
-          className="lg:hidden relative overflow-hidden text-white px-5 pt-8 pb-7"
+          className="lg:hidden shrink-0 relative overflow-x-hidden text-white px-5 pt-8 pb-8"
           style={SUMMARY_GRADIENT_STYLE}
         >
           <PaymentSummaryGradientDecor />
           <div className="relative z-[1]">
-            <h1 className="text-lg font-semibold text-white leading-snug tracking-tight mb-6">
-              {CHECKOUT_LAW_OFFICE_TITLE}
-            </h1>
+            <CheckoutSummaryHeading
+              summary={summaryData}
+              titleClassName="text-lg font-semibold text-white leading-snug tracking-tight mb-2"
+            />
             {summaryData && (
               <PaymentSummaryCard
                 summary={summaryData}
@@ -379,22 +465,36 @@ const PaymentPage: React.FC = () => {
                 variant="gradient"
               />
             )}
+            {isAlreadyPaid && <PaymentDoneStamp paidAt={paidAt} />}
           </div>
         </div>
 
-        <div className="checkout-payment lg:flex-1 lg:min-h-0 flex flex-col w-full max-w-4xl mx-auto px-6 sm:px-10 lg:max-w-none lg:mx-0 lg:px-12 xl:px-16 py-8 lg:py-12">
-          <h2 className="hidden lg:block text-xl font-semibold text-gray-900 mb-6 tracking-tight shrink-0">
+        <div className="checkout-payment relative max-lg:shrink-0 max-lg:flex-none flex flex-col w-full max-w-4xl mx-auto px-6 sm:px-10 lg:flex-1 lg:min-h-0 lg:max-w-none lg:mx-0 lg:px-12 xl:px-16 py-6 lg:pt-6 lg:pb-2">
+          <div className="pointer-events-none absolute top-6 right-6 z-20 lg:hidden">
+            <CheckoutSecuredStamp />
+          </div>
+          <h2 className="hidden lg:block text-xl font-semibold text-gray-900 mb-4 tracking-tight shrink-0">
             Payment information
           </h2>
-          <PelecardCheckoutFrame
-            paymentUrl={paymentUrl}
-            loading={sessionLoading}
-            error={sessionError}
-            onRetry={loadPelecardSession}
-            onCheckoutNavigate={(path) => navigate(path)}
-            title="Secure payment"
-            shellClassName="lg:flex-1 lg:min-h-0"
-          />
+          {isAlreadyPaid ? (
+            <div className="flex flex-1 items-center justify-center rounded-2xl border border-gray-100 bg-gray-50/60 px-6 py-16 text-center">
+              <div>
+                <CheckCircleIcon className="mx-auto mb-3 h-10 w-10 text-emerald-500" />
+                <p className="text-base font-semibold text-gray-900">Payment already completed</p>
+                <p className="mt-2 text-sm text-gray-500">No further action is required.</p>
+              </div>
+            </div>
+          ) : (
+            <PelecardCheckoutFrame
+              paymentUrl={paymentUrl}
+              loading={sessionLoading}
+              error={sessionError}
+              onRetry={loadPelecardSession}
+              onCheckoutNavigate={(path) => navigate(path)}
+              title="Secure payment"
+              shellClassName="max-lg:h-auto max-lg:flex-none lg:flex-1 lg:min-h-0 lg:h-full"
+            />
+          )}
         </div>
 
         <div className="shrink-0">

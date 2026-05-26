@@ -28,6 +28,8 @@ export interface CreatePelecardSessionResponse {
   success: boolean;
   paymentUrl?: string;
   paymentId?: string;
+  /** CssURL sent to Pelecard at init — verify this URL returns your CSS file. */
+  cssUrl?: string;
   error?: string;
 }
 

@@ -12,12 +12,12 @@ const PublicContractFooter: React.FC<Props> = ({ variant = 'default' }) => {
     <footer
       className={`border-t print-hide ${
         isPayment
-          ? 'bg-transparent border-gray-100/80 mt-4 pt-6 pb-6'
+          ? 'bg-transparent border-gray-100/80 mt-0 pt-4 pb-4'
           : 'bg-gray-50 border-gray-200 mt-8 md:mt-24'
       }`}
     >
       <div
-        className={`mx-auto px-6 text-center ${isPayment ? 'max-w-4xl' : 'max-w-5xl py-8 md:py-20 md:px-8'}`}
+        className={`mx-auto px-6 text-center ${isPayment ? 'max-w-none lg:px-12 xl:px-16' : 'max-w-5xl py-8 md:py-20 md:px-8'}`}
       >
         {!isPayment && (
           <div className="flex flex-col items-center justify-center gap-4 md:gap-8 mb-6">

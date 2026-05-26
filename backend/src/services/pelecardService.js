@@ -32,21 +32,58 @@ function isLocalUrl(url) {
 }
 
 function appendCssVersion(url, version) {
-  return url.includes('?') ? url : `${url}?v=${version}`;
+  if (!url) return url;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}v=${encodeURIComponent(version)}`;
+}
+
+/** rainmakerqueen.org does not serve /public static files; Render URL does. */
+function cssBaseFromAppPublicUrl(appPublicUrl) {
+  const base = (appPublicUrl || '').replace(/\/$/, '');
+  if (!base) return base;
+  try {
+    const host = new URL(base).hostname.toLowerCase();
+    if (host === 'rainmakerqueen.org' || host === 'www.rainmakerqueen.org') {
+      return 'https://rainmakerqueen.onrender.com';
+    }
+  } catch {
+    /* ignore */
+  }
+  return base;
+}
+
+function parseHttpsUrl(raw, label) {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'https:') {
+      console.warn(`[Pelecard] ${label} must be HTTPS, got: ${trimmed}`);
+      return null;
+    }
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    console.warn(`[Pelecard] Invalid ${label}: ${JSON.stringify(raw)}`);
+    return null;
+  }
 }
 
 /** Pelecard fetches CssURL from their servers — localhost URLs never work. */
 function resolvePelecardCssUrl(config) {
-  const cssVersion = (process.env.PELECARD_CSS_VERSION || '8').trim();
-  const explicit = (process.env.PELECARD_CSS_URL || '').trim();
-  if (explicit) return appendCssVersion(explicit, cssVersion);
+  const cssVersion = (process.env.PELECARD_CSS_VERSION || '9').trim();
+  const explicit = parseHttpsUrl(process.env.PELECARD_CSS_URL, 'PELECARD_CSS_URL');
+  if (explicit) {
+    const cssPath = explicit.endsWith('.css') ? explicit : `${explicit}/pelecard-checkout.css`;
+    return appendCssVersion(cssPath, cssVersion);
+  }
 
   const fallback =
-    (process.env.PELECARD_CSS_FALLBACK_URL || '').trim() ||
-    'https://leadify-crm-backend.onrender.com/pelecard-checkout.css';
+    parseHttpsUrl(process.env.PELECARD_CSS_FALLBACK_URL, 'PELECARD_CSS_FALLBACK_URL') ||
+    'https://rainmakerqueen.onrender.com/pelecard-checkout.css';
 
   if (!isLocalUrl(config.appPublicUrl)) {
-    return appendCssVersion(`${config.appPublicUrl}/pelecard-checkout.css`, cssVersion);
+    const publicBase = cssBaseFromAppPublicUrl(config.appPublicUrl);
+    return appendCssVersion(`${publicBase}/pelecard-checkout.css`, cssVersion);
   }
   if (!isLocalUrl(config.backendPublicUrl)) {
     return appendCssVersion(`${config.backendPublicUrl}/pelecard-checkout.css`, cssVersion);
@@ -54,8 +91,24 @@ function resolvePelecardCssUrl(config) {
   return appendCssVersion(fallback, cssVersion);
 }
 
+function getCheckoutCssDebugInfo() {
+  const config = getConfig();
+  const cssUrl = resolvePelecardCssUrl(config);
+  return {
+    cssUrl,
+    appPublicUrl: config.appPublicUrl,
+    backendPublicUrl: config.backendPublicUrl,
+    explicitCssUrl: (process.env.PELECARD_CSS_URL || '').trim() || null,
+    cssVersion: (process.env.PELECARD_CSS_VERSION || '9').trim(),
+    note:
+      'Pelecard loads CssURL once at payment init. Create a new payment session after CSS changes. ' +
+      'Use https://rainmakerqueen.onrender.com/pelecard-checkout.css in production (rainmakerqueen.org returns 404).',
+  };
+}
+
 function buildCheckoutDisplayOptions(config, payment) {
   const cssUrl = resolvePelecardCssUrl(config);
+  console.info('[Pelecard] Checkout CssURL:', cssUrl);
   const logoUrl = (process.env.PELECARD_LOGO_URL || '').trim();
 
   const topText = (process.env.PELECARD_TOP_TEXT || '').trim().slice(0, 200);
@@ -205,6 +258,7 @@ async function createPaymentSession(payment, secureToken) {
 
   return {
     paymentUrl,
+    cssUrl: resolvePelecardCssUrl(config),
     confirmationKey: data.ConfirmationKey || data.confirmationKey || null,
     rawResponse: data,
     charge,
@@ -255,4 +309,6 @@ module.exports = {
   getTransaction,
   isSuccessfulStatus,
   extractPaymentUrl,
+  resolvePelecardCssUrl,
+  getCheckoutCssDebugInfo,
 };

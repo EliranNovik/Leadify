@@ -53,28 +53,14 @@ const PaymentSummaryCard: React.FC<Props> = ({
               {secondaryForeign && (
                 <p className="text-sm mt-2 font-normal text-white/70">{secondaryForeign}</p>
               )}
+              <p className="text-sm font-semibold text-white mt-3">{summary.service}</p>
             </>
           )}
         </div>
 
-        <div
-          className="rounded-2xl p-5 bg-white/30 backdrop-blur-xl border border-white/50 shadow-[0_8px_32px_rgba(0,0,0,0.06)]"
-          style={{ WebkitBackdropFilter: 'blur(20px)' }}
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <p className="text-sm font-semibold text-white">{summary.service}</p>
-              <p className="text-xs text-white/90 mt-1.5">{summary.clientName}</p>
-              <p className="font-mono text-[11px] text-white/75 mt-1">Case # {summary.caseNumber}</p>
-            </div>
-            <p className="text-sm font-semibold text-white shrink-0">{primaryNis}</p>
-          </div>
-          {summary.topic !== '--' && (
-            <p className="text-xs text-white/80 mt-3 leading-relaxed border-t border-white/25 pt-3">
-              {summary.topic}
-            </p>
-          )}
-        </div>
+        {summary.topic !== '--' && (
+          <p className="text-xs text-white/80 leading-relaxed">{summary.topic}</p>
+        )}
 
         <div className="space-y-2.5 text-sm text-white/75">
           <div className="flex justify-between">
