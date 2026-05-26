@@ -22,3 +22,13 @@ export function getProformaWhatsAppTemplateId(language: ProformaSendLanguage = '
 export function proformaSendLanguageLabel(language: ProformaSendLanguage): string {
   return language === 'he' ? 'Hebrew' : 'English';
 }
+
+/** Anchor text for {{link}} in proforma invoice emails. */
+export function getProformaInvoiceLinkLabel(language: ProformaSendLanguage = 'en'): string {
+  return language === 'he' ? 'קישור לחשבונית' : 'Your invoice link';
+}
+
+/** Anchor text for {{payment_link}} in proforma invoice emails. */
+export function getProformaPaymentLinkLabel(language: ProformaSendLanguage = 'en'): string {
+  return language === 'he' ? 'לתשלום מקוון' : 'Pay online';
+}

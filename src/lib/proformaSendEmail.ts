@@ -13,6 +13,8 @@ import { resolveProformaPaymentLinkUrl } from './proformaPaymentLink';
 import { getMailboxStatus, sendEmailViaBackend } from './mailboxApi';
 import {
   getProformaEmailTemplateId,
+  getProformaInvoiceLinkLabel,
+  getProformaPaymentLinkLabel,
   PROFORMA_EMAIL_TEMPLATE_ID_EN,
   type ProformaSendLanguage,
 } from './proformaSendLanguage';
@@ -165,18 +167,19 @@ function stripRemainingBraces(text: string): string {
 function applyProformaPlaceholders(
   content: string,
   vars: { publicUrl: string; paymentLinkUrl: string; leadNumber: string; clientName: string },
-  options?: { includeLeadAndClient?: boolean },
+  options?: { includeLeadAndClient?: boolean; language?: ProformaSendLanguage },
 ): string {
-  const linkLabel = 'Your invoice link';
+  const language = options?.language ?? 'en';
+  const linkLabel = getProformaInvoiceLinkLabel(language);
   const linkHtml = vars.publicUrl
-    ? `<a href="${escapeHtml(vars.publicUrl)}" target="_blank" rel="noopener noreferrer">${linkLabel}</a>`
+    ? `<a href="${escapeHtml(vars.publicUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(linkLabel)}</a>`
     : '';
 
   const linkValue = linkHtml || linkLabel;
 
-  const paymentLinkLabel = 'Pay online';
+  const paymentLinkLabel = getProformaPaymentLinkLabel(language);
   const paymentLinkHtml = vars.paymentLinkUrl
-    ? `<a href="${escapeHtml(vars.paymentLinkUrl)}" target="_blank" rel="noopener noreferrer">${paymentLinkLabel}</a>`
+    ? `<a href="${escapeHtml(vars.paymentLinkUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(paymentLinkLabel)}</a>`
     : '';
   const paymentLinkValue = paymentLinkHtml || paymentLinkLabel;
 
@@ -208,8 +211,11 @@ function applyProformaPlaceholders(
 function buildProformaEmailSubject(
   templateName: string,
   vars: { publicUrl: string; leadNumber: string; clientName: string },
+  language: ProformaSendLanguage = 'en',
 ): string {
-  const base = applyProformaPlaceholders(templateName, vars, { includeLeadAndClient: false }).trim() || 'Invoice';
+  const base =
+    applyProformaPlaceholders(templateName, vars, { includeLeadAndClient: false, language }).trim() ||
+    'Invoice';
   return [base, vars.leadNumber, vars.clientName].filter((part) => part.length > 0).join(' — ');
 }
 
@@ -297,7 +303,8 @@ export async function sendProformaInvoiceEmail(input: ProformaSendEmailInput): P
       leadClientId: input.leadId,
     })) || '';
 
-  const emailTemplateId = getProformaEmailTemplateId(input.language ?? 'en');
+  const language = input.language ?? 'en';
+  const emailTemplateId = getProformaEmailTemplateId(language);
   const template = await fetchProformaEmailTemplate(emailTemplateId);
   const vars = {
     publicUrl,
@@ -306,9 +313,9 @@ export async function sendProformaInvoiceEmail(input: ProformaSendEmailInput): P
     clientName: input.clientName,
   };
 
-  const plainBody = applyProformaPlaceholders(template.content, vars);
+  const plainBody = applyProformaPlaceholders(template.content, vars, { language });
   const bodyHtml = formatProformaEmailHtml(plainBody);
-  const subject = buildProformaEmailSubject(template.name, vars);
+  const subject = buildProformaEmailSubject(template.name, vars, language);
 
   const contactIdNum =
     input.contactId != null && input.contactId !== '' && !Number.isNaN(Number(input.contactId))
