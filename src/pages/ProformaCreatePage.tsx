@@ -28,6 +28,7 @@ import {
 } from '../lib/proformaExchangeRate';
 import { resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
 import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
+import { ensureProformaPaymentLink } from '../lib/proformaPaymentLink';
 
 /** Matches invoice sheet on ProformaViewPage */
 const PROFORMA_INVOICE_SHEET_CLASS =
@@ -371,8 +372,22 @@ const ProformaCreatePage: React.FC = () => {
         .update({ proforma: proformaContent })
         .eq('id', paymentId);
       if (error) throw error;
+
+      if (!isEditMode) {
+        await ensureProformaPaymentLink({
+          paymentPlanId: paymentId!,
+          leadClientId: payment.lead_id || proformaData.clientId,
+          value: Number(payment.value) || 0,
+          valueVat: Number(payment.value_vat ?? vat) || 0,
+          currency,
+          order: String(proformaData.paymentOrder ?? payment.payment_order ?? 'Payment'),
+          clientName: proformaData.client || 'Client',
+          leadNumber: leadNumber || proformaData.lead_number || '',
+        });
+      }
+
       toast.success(isEditMode ? 'Proforma updated successfully!' : 'Proforma created and saved successfully!');
-      navigate(-1);
+      navigate(`/proforma/${paymentId}`);
     } catch (error) {
       toast.error('Failed to save proforma. Please try again.');
     } finally {

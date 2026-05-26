@@ -30,6 +30,8 @@ import {
 } from '../lib/proformaExchangeRate';
 
 import { computeProformaVatFromPayment, getVatRateForLegacyLead } from '../lib/proformaVat';
+import { ensureProformaPaymentLink } from '../lib/proformaPaymentLink';
+import { formatLegacyLeadNumber } from '../lib/masterLeadApi';
 import { currencyIdFromSymbol, resolvePaymentPlanCurrency } from '../lib/paymentPlanCurrency';
 import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 
@@ -792,13 +794,36 @@ const ProformaLegacyCreatePage: React.FC = () => {
         throw error;
       }
 
-      // Set saving to false BEFORE navigation to prevent hooks error
+      const newProformaId = data != null ? String(data) : null;
+      if (newProformaId && proformaData.pprId && leadId) {
+        const leadNumber = lead
+          ? formatLegacyLeadNumber(lead, subLeadsCount || undefined, isMasterLead)
+          : String(leadId);
+        const orderLabel =
+          proformaData.rows?.[0]?.description ||
+          (proformaData.paymentOrder != null ? String(proformaData.paymentOrder) : 'Payment');
+
+        await ensureProformaPaymentLink({
+          paymentPlanId: proformaData.pprId,
+          leadClientId: leadId,
+          leadType: 'legacy',
+          isLegacyPaymentPlan: true,
+          value: totalBase,
+          valueVat: vat,
+          currency: proformaData.currency || '₪',
+          order: orderLabel,
+          clientName: proformaData.client || lead?.name || 'Client',
+          leadNumber,
+        });
+      }
+
       setIsSaving(false);
       toast.success('Proforma created and saved successfully!');
-      // Use setTimeout to ensure state update completes before navigation
-      setTimeout(() => {
+      if (newProformaId) {
+        navigate(`/proforma-legacy/${newProformaId}`);
+      } else {
         navigate(-1);
-      }, 0);
+      }
     } catch (error) {
       console.error('Error saving proforma:', error);
       toast.error('Failed to save proforma. Please try again.');

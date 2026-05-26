@@ -1,5 +1,9 @@
 import { supabase } from './supabase';
-import { parseLegacyLeadNumericId } from './paymentLinkLeadRef';
+import {
+  buildPaymentLinkLeadRef,
+  isLegacyLeadRef,
+  parseLegacyLeadNumericId,
+} from './paymentLinkLeadRef';
 
 type PaymentLinkRow = {
   secure_token?: string | null;
@@ -90,4 +94,66 @@ export async function resolveProformaPaymentLinkUrl(options: {
   }
 
   return null;
+}
+
+export type EnsureProformaPaymentLinkInput = {
+  paymentPlanId: string | number;
+  /** Lead id — UUID for new leads, numeric or legacy_123 for legacy */
+  leadClientId: string | number;
+  leadType?: string | null;
+  isLegacyPaymentPlan?: boolean;
+  value: number;
+  valueVat: number;
+  currency: string;
+  order: string;
+  clientName: string;
+  leadNumber: string;
+};
+
+/** Create a pending payment link when none exists yet (e.g. right after proforma creation). */
+export async function ensureProformaPaymentLink(
+  options: EnsureProformaPaymentLinkInput,
+): Promise<{ url: string | null; created: boolean }> {
+  const existing = await resolveProformaPaymentLinkUrl({
+    paymentPlanId: options.paymentPlanId,
+    leadClientId: options.leadClientId,
+  });
+  if (existing) return { url: existing, created: false };
+
+  const planRowId = Number(options.paymentPlanId);
+  if (!Number.isFinite(planRowId)) {
+    console.error('[ensureProformaPaymentLink] invalid payment plan id:', options.paymentPlanId);
+    return { url: null, created: false };
+  }
+
+  const secureToken = `payment_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
+  const expiresAt = new Date();
+  expiresAt.setDate(expiresAt.getDate() + 30);
+
+  const leadRef = buildPaymentLinkLeadRef({
+    leadId: options.leadClientId,
+    leadType: options.leadType,
+    isLegacyPaymentPlan:
+      options.isLegacyPaymentPlan ?? isLegacyLeadRef(options.leadType, options.leadClientId),
+  });
+
+  const { error } = await supabase.from('payment_links').insert({
+    payment_plan_id: planRowId,
+    ...leadRef,
+    secure_token: secureToken,
+    amount: options.value,
+    vat_amount: options.valueVat,
+    total_amount: options.value + options.valueVat,
+    currency: options.currency || '₪',
+    description: `${options.order} - ${options.clientName} (#${options.leadNumber})`,
+    status: 'pending',
+    expires_at: expiresAt.toISOString(),
+  });
+
+  if (error) {
+    console.error('[ensureProformaPaymentLink] insert failed:', error);
+    return { url: null, created: false };
+  }
+
+  return { url: buildPaymentLinkPublicUrl(secureToken), created: true };
 }
