@@ -2354,11 +2354,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         ) : null;
 
     return (
-        <div className="bg-transparent">
-            <div className="w-full min-w-0 py-4 space-y-5 md:space-y-5 md:py-5">
-
-                {/* Top Row: Identity & Status — white card on grey page chrome */}
-                <div className="mb-0 flex flex-col gap-5 rounded-xl border border-base-200/80 bg-white px-4 py-4 shadow-sm dark:border-base-300/55 dark:bg-base-100 sm:px-5 sm:py-5 md:mb-0 md:gap-4 md:px-6 md:py-5">
+        <div className="w-full min-w-0">
+                {/* Full-width header card — flush under app chrome, extends left under the fixed sidebar (App wrapper md:pl-24 inset). Tailwind arbitrary values need underscores → spaces inside calc(). md:pl-[…] = 6rem sidebar inset + content gutter. */}
+                <div className="mb-0 flex w-full flex-col gap-5 border-b border-base-200/80 bg-white px-4 py-4 dark:border-base-300/55 dark:bg-base-100 sm:px-5 sm:py-5 md:mb-0 md:-ml-24 md:w-[calc(100%_+_6rem)] md:gap-4 md:py-5 md:pr-8 md:pl-[8.5rem] lg:pr-10 lg:pl-[9rem] xl:pr-12 xl:pl-[10rem]">
                     {/* Mobile: SaaS header — identity, contact card, stage + chips */}
                     <div className="flex w-full flex-col gap-5 md:hidden">
                         <header className="relative z-0 flex w-full min-w-0 flex-col gap-0">
@@ -3968,24 +3966,26 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                         return (
                             <div className="flex flex-wrap items-center justify-between w-full gap-6">
-                                {/* Assigned Team - inline, small avatars, text focus */}
-                                <div className="flex items-center gap-6 min-w-0 flex-wrap">
-                                    {Array.from(roleGroups.values()).map((group, index) => (
-                                        <div key={index} className="flex items-center gap-2">
-                                            <EmployeeAvatar employeeId={group.id} size="md" />
-                                            <div className="flex flex-col min-w-0">
-                                                <span className="text-[10px] text-gray-400 uppercase tracking-wide font-medium">
-                                                  {group.roles.join(', ')}
-                                                </span>
-                                                <span className="text-sm font-medium text-gray-700 truncate">{formatRoleDisplay(group.display)}</span>
+                                {/* Assigned Team — all roles grouped in one white rounded card (sub-roles on the left, handler/retainer + toggle on the right) */}
+                                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-6 gap-y-4 rounded-2xl border border-base-200/80 bg-white px-5 py-4 shadow-sm dark:border-base-300/55 dark:bg-base-100">
+                                    {/* Group 1: non-handler roles (Scheduler / Closer / Expert / …) */}
+                                    <div className="flex items-center gap-6 min-w-0 flex-wrap">
+                                        {Array.from(roleGroups.values()).map((group, index) => (
+                                            <div key={index} className="flex items-center gap-2">
+                                                <EmployeeAvatar employeeId={group.id} size="md" />
+                                                <div className="flex flex-col min-w-0">
+                                                    <span className="text-[10px] text-gray-400 uppercase tracking-wide font-medium">
+                                                      {group.roles.join(', ')}
+                                                    </span>
+                                                    <span className="text-sm font-medium text-gray-700 truncate">{formatRoleDisplay(group.display)}</span>
+                                                </div>
                                             </div>
-                                        </div>
-                                    ))}
-                                </div>
+                                        ))}
+                                    </div>
 
-                                {/* Handler and Retainer Handler - avatars + active role segmented control (same semantics as My Cases) */}
-                                {(hasHandlerRole || hasRetentionRole) && (
-                                    <div className="flex flex-wrap items-end justify-start gap-4 sm:gap-6">
+                                    {/* Group 2: Handler + Retainer Handler + active-role segmented toggle */}
+                                    {(hasHandlerRole || hasRetentionRole) && (
+                                        <div className="flex flex-wrap items-end justify-start gap-4 sm:gap-6">
                                         {hasHandlerRole && (
                                             <div className="flex items-center gap-2 min-w-0">
                                                 <div
@@ -4107,7 +4107,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             </div>
                                         )}
                                     </div>
-                                )}
+                                    )}
+                                </div>
 
                                 {/* Group 3: Quick Action Buttons (Right) */}
                                 <div className="hidden md:flex items-center gap-3 flex-wrap justify-end min-w-[200px]">
@@ -5090,7 +5091,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         </div>,
                         document.body
                     )}
-            </div>
         </div>
     );
 };

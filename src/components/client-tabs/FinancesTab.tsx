@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
-import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
+import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon, ClockIcon } from '@heroicons/react/24/outline';
 import { buildPaymentLinkLeadRef, parseLegacyLeadNumericId } from '../../lib/paymentLinkLeadRef';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
@@ -394,6 +394,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Add state for stages dropdown and drawer
   const [showStagesDrawer, setShowStagesDrawer] = useState(false);
+  /** Payment history modal — shows all paid payments across every contact for this lead. */
+  const [showPaymentHistoryModal, setShowPaymentHistoryModal] = useState(false);
   const [autoPlanData, setAutoPlanData] = useState({
     totalAmount: '',
     currency: '₪',
@@ -5794,6 +5796,26 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                     )}
                     <span className="ml-1 hidden md:inline">{viewMode === 'table' ? 'Box view' : 'Table view'}</span>
                   </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm rounded-xl border border-primary bg-white text-primary hover:bg-primary/5"
+                    onClick={() => {
+                      handleOpenStagesDrawer();
+                    }}
+                    title="Create a new payment plan"
+                  >
+                    <PlusIcon className="h-4 w-4" />
+                    <span className="ml-1 hidden md:inline">New Payment Plan</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm rounded-xl border border-slate-200 bg-white hover:bg-slate-50"
+                    onClick={() => setShowPaymentHistoryModal(true)}
+                    title="View payment history for all contacts of this lead"
+                  >
+                    <ClockIcon className="h-4 w-4" />
+                    <span className="ml-1 hidden md:inline">Payment History</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -6574,20 +6596,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                   );
                 });
               })()}
-
-          {/* Buttons for creating payment plans */}
-          <div className="flex justify-start gap-4">
-            <button
-              type="button"
-              className="btn btn-sm btn-outline btn-primary text-xs font-medium flex items-center gap-2"
-              onClick={() => {
-                handleOpenStagesDrawer();
-              }}
-            >
-              <PlusIcon className="w-4 h-4" />
-              New Payment Plan
-            </button>
-          </div>
 
           {/* Deleted Payments Section */}
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -7670,6 +7678,132 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         isSaving={isSavingNotes}
         paymentId={selectedPaymentForNotes?.id}
       />
+
+      {/* Payment History Modal — all paid payments across every contact for this lead */}
+      {showPaymentHistoryModal && ReactDOM.createPortal(
+        (() => {
+          const paidPayments = (financePlan?.payments || []).filter((p: PaymentPlan) => p.paid === true);
+          const sorted = [...paidPayments].sort((a, b) => {
+            const aTs = a.paid_at ? new Date(a.paid_at).getTime() : 0;
+            const bTs = b.paid_at ? new Date(b.paid_at).getTime() : 0;
+            return bTs - aTs;
+          });
+
+          const totalsByCurrency = sorted.reduce<Record<string, number>>((acc, p) => {
+            const sym = getCurrencySymbol(p.currency) || '';
+            const gross = (Number(p.value) || 0) + (Number(p.valueVat) || 0);
+            acc[sym] = (acc[sym] || 0) + gross;
+            return acc;
+          }, {});
+
+          return (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center">
+              <div className="fixed inset-0 bg-black/30" onClick={() => setShowPaymentHistoryModal(false)} />
+              <div className="relative mx-4 flex w-full max-w-5xl max-h-[90vh] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl z-[110]">
+                {/* Header */}
+                <div className="sticky top-0 z-10 flex items-center justify-between gap-4 border-b border-gray-200 bg-white p-6">
+                  <div className="flex items-center gap-3">
+                    <ClockIcon className="h-6 w-6 text-slate-800" />
+                    <div>
+                      <h2 className="text-xl font-bold text-gray-900">Payment History</h2>
+                      <p className="text-sm text-gray-500">All paid payments across every contact of this lead.</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-circle btn-ghost text-gray-600 hover:bg-gray-100"
+                    onClick={() => setShowPaymentHistoryModal(false)}
+                    aria-label="Close"
+                  >
+                    <XMarkIcon className="h-6 w-6" />
+                  </button>
+                </div>
+
+                {/* Body */}
+                <div className="flex-1 overflow-y-auto bg-white p-6">
+                  {sorted.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-16 text-center">
+                      <ClockIcon className="mb-3 h-10 w-10 text-gray-300" />
+                      <p className="text-base font-semibold text-gray-700">No paid payments yet</p>
+                      <p className="text-sm text-gray-500">Payments marked as paid will appear here.</p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto rounded-xl border border-slate-200">
+                      <table className="min-w-full divide-y divide-slate-200 text-sm">
+                        <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-600">
+                          <tr>
+                            <th className="px-3 py-2 text-left">#</th>
+                            <th className="px-3 py-2 text-left">Contact</th>
+                            <th className="px-3 py-2 text-left">Due date</th>
+                            <th className="px-3 py-2 text-left">Paid date</th>
+                            <th className="px-3 py-2 text-right">Amount</th>
+                            <th className="px-3 py-2 text-right">VAT</th>
+                            <th className="px-3 py-2 text-right">Total</th>
+                            <th className="px-3 py-2 text-left">Paid by</th>
+                            <th className="px-3 py-2 text-left">Notes</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 bg-white">
+                          {sorted.map((p) => {
+                            const sym = getCurrencySymbol(p.currency) || '';
+                            const baseAmt = Number(p.value) || 0;
+                            const vatAmt = Number(p.valueVat) || 0;
+                            const total = baseAmt + vatAmt;
+                            return (
+                              <tr key={String(p.id)} className="hover:bg-slate-50">
+                                <td className="px-3 py-2 text-slate-700">{p.order || '—'}</td>
+                                <td className="px-3 py-2 font-medium text-slate-900">{p.client || '—'}</td>
+                                <td className="px-3 py-2 text-slate-700">{formatDateDDMMYYYY(p.dueDate) || '—'}</td>
+                                <td className="px-3 py-2 text-slate-700">{formatDateDDMMYYYY(p.paid_at) || '—'}</td>
+                                <td className="px-3 py-2 text-right tabular-nums text-slate-900">
+                                  {sym}{baseAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                </td>
+                                <td className="px-3 py-2 text-right tabular-nums text-slate-600">
+                                  {vatAmt > 0 ? `${sym}${vatAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}
+                                </td>
+                                <td className="px-3 py-2 text-right tabular-nums font-semibold text-slate-900">
+                                  {sym}{total.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                </td>
+                                <td className="px-3 py-2 text-slate-700">{p.paid_by || '—'}</td>
+                                <td className="max-w-[16rem] truncate px-3 py-2 text-slate-600" title={p.notes || ''}>
+                                  {p.notes || '—'}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Footer */}
+                <div className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-gray-200 bg-white px-6 py-3">
+                  <div className="text-sm text-slate-600">
+                    {sorted.length} paid payment{sorted.length === 1 ? '' : 's'}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3 text-sm">
+                    {Object.entries(totalsByCurrency).map(([sym, sum]) => (
+                      <div key={sym || 'none'} className="rounded-lg bg-slate-100 px-3 py-1 tabular-nums text-slate-800">
+                        <span className="mr-1 text-xs uppercase tracking-wide text-slate-500">Total</span>
+                        <span className="font-semibold">{sym}{sum.toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-ghost"
+                      onClick={() => setShowPaymentHistoryModal(false)}
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })(),
+        document.body,
+      )}
     </>
   );
 };

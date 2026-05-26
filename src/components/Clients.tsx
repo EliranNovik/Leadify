@@ -15531,10 +15531,7 @@ const Clients: React.FC<ClientsProps> = ({
 
 
 
-          {/* Client record shell — single SaaS-style surface */}
-          <div className="w-full min-w-0 px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8">
-            <div className="bg-transparent">
-          {/* Desktop Header - Using new ClientHeader component */}
+          {/* Client header — full bleed under app chrome */}
           <ClientHeader
             selectedClient={selectedClient}
             flaggedConversationCount={headerFlaggedConversationCount}
@@ -15766,6 +15763,8 @@ const Clients: React.FC<ClientsProps> = ({
               </>
             }
           />
+          {/* Client record shell — tabs and tab content */}
+          <div className="w-full min-w-0 px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8">
           {/* Tabs Navigation */}
 
           {/* Tabs Navigation - Desktop Only (Hidden on Mobile) - Fixed at bottom with glassy blur effect */}
@@ -16201,7 +16200,6 @@ const Clients: React.FC<ClientsProps> = ({
               )}
             </div>
           </div>
-            </div>
           </div>
           {/* Schedule Meeting Right Panel */}
           {showScheduleMeetingPanel && (
