@@ -1,5 +1,5 @@
 import React from 'react';
-import { EllipsisHorizontalIcon } from '@heroicons/react/24/outline';
+import { EllipsisVerticalIcon, HashtagIcon } from '@heroicons/react/24/outline';
 import ProformaNotesBox from './ProformaNotesBox';
 
 type CaseBoxProps = {
@@ -8,13 +8,25 @@ type CaseBoxProps = {
 
 export const ProformaPublicCaseReferenceBox: React.FC<CaseBoxProps> = ({ leadNumber }) => (
   <div
-    className="w-full rounded-lg border-l-4 border-primary bg-blue-50 px-3 py-2 text-sm text-gray-700 md:max-w-xs md:px-4 md:py-3"
+    className="w-full overflow-hidden rounded-2xl border border-slate-200/80 bg-gradient-to-br from-slate-50 via-white to-slate-100/90 shadow-lg shadow-slate-900/5 ring-1 ring-slate-200/60 backdrop-blur-sm md:max-w-xs"
     role="note"
   >
-    <div className="text-xs font-semibold uppercase tracking-wide text-primary">Case {leadNumber}</div>
-    <p className="mt-1.5 text-xs leading-snug text-gray-600 md:text-sm">
-      Please use this number for payment reference.
-    </p>
+    <div className="flex items-center gap-2 border-b border-slate-200/60 bg-slate-100/50 px-4 py-2.5">
+      <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-slate-500/10 text-slate-700">
+        <HashtagIcon className="h-4 w-4" aria-hidden />
+      </span>
+      <span className="text-xs font-semibold uppercase tracking-wider text-slate-600">
+        Payment reference
+      </span>
+    </div>
+    <div className="px-4 py-3.5">
+      <p className="font-mono text-lg font-bold tracking-tight text-slate-900 tabular-nums">
+        Case {leadNumber}
+      </p>
+      <p className="mt-2 text-xs leading-relaxed text-slate-600 sm:text-sm">
+        Please use this number when making your payment.
+      </p>
+    </div>
   </div>
 );
 
@@ -43,34 +55,41 @@ export const ProformaPublicMobileMoreMenu: React.FC<MobileMoreMenuProps> = ({
       {open && (
         <button
           type="button"
-          className="print-hide fixed inset-0 z-40 bg-black/25 md:hidden"
+          className="print-hide fixed inset-0 z-40 bg-slate-900/30 backdrop-blur-[2px] md:hidden"
           aria-label="Close"
           onClick={onToggle}
         />
       )}
       {open && (
         <div
-          className="print-hide fixed inset-x-0 bottom-[calc(4.5rem+env(safe-area-inset-bottom,0px))] z-50 max-h-[50vh] overflow-y-auto px-4 pb-2 md:hidden"
+          className="print-hide fixed inset-x-0 bottom-[calc(4.5rem+env(safe-area-inset-bottom,0px))] z-50 max-h-[55vh] overflow-y-auto px-4 pb-2 md:hidden"
           role="dialog"
           aria-label="Case and notes"
         >
-          <div className="mx-auto flex max-w-lg flex-col gap-2 rounded-xl border border-gray-200 bg-white p-3 shadow-xl">
+          <div className="mx-auto flex max-w-lg flex-col gap-3 rounded-2xl border border-slate-200/80 bg-white/95 p-4 shadow-2xl shadow-slate-900/10 ring-1 ring-slate-100 backdrop-blur-md">
+            <p className="text-center text-xs font-semibold uppercase tracking-wider text-slate-500">
+              Invoice details
+            </p>
             {caseLeadNumber && <ProformaPublicCaseReferenceBox leadNumber={caseLeadNumber} />}
-            {displayNotes && <ProformaNotesBox notes={displayNotes} className="max-w-none shadow-none" />}
+            {displayNotes && (
+              <ProformaNotesBox notes={displayNotes} className="max-w-none shadow-none ring-0" />
+            )}
           </div>
         </div>
       )}
       <button
         type="button"
         onClick={onToggle}
-        className={`btn btn-circle h-12 w-12 min-h-12 min-w-12 border-none shadow-lg transition-transform hover:scale-105 ${
-          open ? 'bg-gray-700 text-white' : 'bg-amber-500 text-white hover:bg-amber-600'
+        className={`inline-flex h-11 w-11 min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full text-white shadow-lg transition-all active:scale-95 ${
+          open
+            ? 'bg-orange-700 ring-2 ring-orange-300'
+            : 'bg-orange-500 hover:bg-orange-600'
         }`}
         title={open ? 'Close case and notes' : 'Case and notes'}
         aria-expanded={open}
         aria-label="Case and notes"
       >
-        <EllipsisHorizontalIcon className="h-6 w-6" />
+        <EllipsisVerticalIcon className="h-5 w-5" aria-hidden />
       </button>
     </>
   );

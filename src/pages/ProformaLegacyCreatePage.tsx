@@ -1137,7 +1137,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
               )}
               <div className="flex justify-between text-xl mt-4 border-t pt-4 font-extrabold">
                 <span>Total</span>
-                <span style={{ color: '#006BB1' }}>
+                <span className="text-green-600">
                   {getCurrencySymbol(proformaData.currency)} {previewVat.totalWithVat.toFixed(2)}
                 </span>
               </div>

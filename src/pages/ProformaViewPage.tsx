@@ -2,13 +2,13 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import html2pdf from 'html2pdf.js';
-import { PaperAirplaneIcon, PencilSquareIcon, PrinterIcon, ShareIcon, TrashIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { shareProformaPublicLink } from '../lib/proformaPublicLink';
 import { sendProformaInvoiceBundle, buildProformaSendSuccessMessage, collectProformaSendPartialErrors } from '../lib/proformaSendInvoice';
 import type { ProformaSendLanguage } from '../lib/proformaSendLanguage';
 import { useMailboxReconnect } from '../contexts/MailboxReconnectContext';
 import ProformaSendLanguageModal from '../components/proforma/ProformaSendLanguageModal';
+import ProformaViewActionButtons from '../components/proforma/ProformaViewActionButtons';
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
 import ProformaTotalInNis from '../components/proforma/ProformaTotalInNis';
 import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
@@ -382,28 +382,15 @@ const ProformaViewPage: React.FC = () => {
           </h1>
           <ProformaPaidBadge paid={paymentPlanMeta?.paid} paidAt={paymentPlanMeta?.paid_at} />
         </div>
-        <div className="flex shrink-0 gap-2">
-          <button
-            className="btn btn-primary btn-sm gap-2"
-            onClick={() => navigate(`/proforma/create/${id}`)}
-            title="Edit proforma"
-          >
-            <PencilSquareIcon className="w-5 h-5" /> Edit
-          </button>
-          <button className="btn btn-outline btn-sm gap-2" onClick={handlePrint} title="Print"><PrinterIcon className="w-5 h-5" /> Print</button>
-          <button
-            className="btn btn-outline btn-sm gap-2"
-            onClick={() => setSendLanguageModalOpen(true)}
-            disabled={sending}
-            title="Send invoice to the linked contact by email (Outlook) and WhatsApp"
-          >
-            {sending ? <span className="loading loading-spinner loading-xs" /> : <PaperAirplaneIcon className="w-5 h-5" />} Send
-          </button>
-          <button className="btn btn-outline btn-sm gap-2" onClick={handleShare} disabled={sharing} title="Share link with client">
-            {sharing ? <span className="loading loading-spinner loading-xs" /> : <ShareIcon className="w-5 h-5" />} Share
-          </button>
-          <button className="btn btn-error btn-sm gap-2" onClick={handleDelete} title="Delete"><TrashIcon className="w-5 h-5" /> Delete</button>
-        </div>
+        <ProformaViewActionButtons
+          onEdit={() => navigate(`/proforma/create/${id}`)}
+          onPrint={handlePrint}
+          onSend={() => setSendLanguageModalOpen(true)}
+          onShare={handleShare}
+          onDelete={handleDelete}
+          sending={sending}
+          sharing={sharing}
+        />
       </div>
       <div className="min-h-[calc(100dvh-10rem)] bg-gray-100 px-4 pb-12 pt-20 md:px-8 print:bg-white print:p-0 print:min-h-0">
       {/* Inline style override for html2pdf/html2canvas color compatibility */}

@@ -682,7 +682,7 @@ const ProformaCreatePage: React.FC = () => {
               )}
               <div className="flex justify-between text-xl mt-4 border-t pt-4 font-extrabold">
                 <span>Total</span>
-                <span style={{ color: '#006BB1' }}>{getCurrencySymbol(proformaData.currency)} {previewVat.totalWithVat}</span>
+                <span className="text-green-600">{getCurrencySymbol(proformaData.currency)} {previewVat.totalWithVat}</span>
               </div>
               <ProformaTotalInNis info={exchangeInfo} loading={exchangeLoading} variant="card" />
             </div>

@@ -37,6 +37,7 @@ const PublicProformaViewPage: React.FC = () => {
     paid_at: string | null;
     currency?: string | null;
     currency_id?: number | string | null;
+    lead_id?: string | number | null;
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -115,6 +116,7 @@ const PublicProformaViewPage: React.FC = () => {
           paid_at: data.paid_at ?? null,
           currency: resolvedCurrency,
           currency_id: resolvedCurrencyId ?? null,
+          lead_id: data.lead_id ?? parsed.clientId ?? null,
         });
       } catch {
         setError('Failed to load invoice.');
@@ -247,6 +249,9 @@ const PublicProformaViewPage: React.FC = () => {
         issuerEmployee={issuerEmployee}
         leadNumber={leadLabel !== '—' ? leadLabel : null}
         notes={displayNotes || null}
+        paid={paymentPlanMeta?.paid}
+        paymentPlanId={id}
+        leadClientId={paymentPlanMeta?.lead_id ?? proforma?.clientId ?? null}
       />
       <ProformaPublicToolbar
         title={`Invoice — ${proforma.client || 'Client'}`}

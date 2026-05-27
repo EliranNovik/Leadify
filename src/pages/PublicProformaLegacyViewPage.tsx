@@ -245,6 +245,9 @@ const PublicProformaLegacyViewPage: React.FC = () => {
         issuerEmployee={issuerEmployee}
         leadNumber={proforma.lead_number || null}
         notes={displayNotes || null}
+        paid={proforma.paymentPaid}
+        paymentPlanId={proforma.ppr_id}
+        leadClientId={proforma.lead_id}
       />
       <ProformaPublicToolbar
         title={`Invoice — ${proforma.client_name || 'Client'}`}
@@ -336,12 +339,7 @@ const PublicProformaLegacyViewPage: React.FC = () => {
           <div className="mb-6 flex flex-col gap-4 md:flex-row md:justify-end">
             <div className="w-full rounded-xl border border-gray-200 bg-white p-6 md:w-1/2">
               {vatTotals && (
-                <ProformaVatTotalsBlock
-                  currencyLabel={currencySymbol}
-                  resolved={vatTotals}
-                  totalAmountClassName=""
-                  totalAmountStyle={{ color: '#006BB1' }}
-                />
+                <ProformaVatTotalsBlock currencyLabel={currencySymbol} resolved={vatTotals} />
               )}
               <ProformaTotalInNis info={exchangeInfo} loading={exchangeLoading} variant="card" />
             </div>

@@ -357,11 +357,11 @@ const MeetingSummaryNotesModal: React.FC<MeetingSummaryNotesModalProps> = ({
           </div>
 
           {voiceSupported && (
-            <div className="flex flex-wrap items-center gap-2 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2">
+            <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200/80 bg-gradient-to-r from-slate-50 to-white px-3 py-2.5 shadow-sm ring-1 ring-slate-100">
               {!isRecording ? (
                 <button
                   type="button"
-                  className="btn btn-sm gap-2 border-red-200 bg-white text-red-700 hover:bg-red-50"
+                  className="inline-flex h-9 items-center gap-2 rounded-xl border border-red-200 bg-white px-3 text-sm font-semibold text-red-700 shadow-sm transition hover:bg-red-50 active:scale-[0.98]"
                   onClick={handleStartRecording}
                   disabled={busy}
                 >
@@ -376,7 +376,7 @@ const MeetingSummaryNotesModal: React.FC<MeetingSummaryNotesModalProps> = ({
                 <>
                   <button
                     type="button"
-                    className="btn btn-sm gap-2 border-red-300 bg-red-600 text-white hover:bg-red-700"
+                    className="inline-flex h-9 items-center gap-2 rounded-xl bg-red-600 px-3 text-sm font-semibold text-white shadow-sm transition hover:bg-red-700 active:scale-[0.98]"
                     onClick={handleStopRecording}
                     disabled={transcribing}
                   >
@@ -388,23 +388,31 @@ const MeetingSummaryNotesModal: React.FC<MeetingSummaryNotesModalProps> = ({
                     Stop & transcribe
                   </button>
                   <VoiceSpeakingBars active={isRecording} level={audioLevel} />
-                  <span className="inline-flex items-center gap-1.5 text-sm font-medium text-red-700">
-                    <span className="relative flex h-2.5 w-2.5">
+                  <span className="inline-flex items-center gap-2 rounded-full border border-red-200/80 bg-red-50 px-3 py-1 shadow-sm">
+                    <span className="relative flex h-2 w-2">
                       <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
-                      <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-600" />
+                      <span className="relative inline-flex h-2 w-2 rounded-full bg-red-600" />
                     </span>
-                    {formatRecordingTime(seconds)} / {formatRecordingTime(maxSeconds)}
+                    <span className="font-mono text-sm font-semibold tabular-nums text-red-800">
+                      {formatRecordingTime(seconds)}
+                    </span>
+                    <span className="text-xs font-medium text-red-600/70">/</span>
+                    <span className="font-mono text-xs font-medium tabular-nums text-red-600/80">
+                      {formatRecordingTime(maxSeconds)}
+                    </span>
                   </span>
                   {isListening && (
-                    <span className="text-xs text-red-600/90">Listening — text appears below</span>
+                    <span className="rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 ring-1 ring-violet-100">
+                      Live caption
+                    </span>
                   )}
                 </>
               )}
 
-              <label className="ml-auto flex cursor-pointer items-center gap-2 text-xs text-gray-600">
+              <label className="ml-auto flex cursor-pointer items-center gap-2 text-xs text-slate-600">
                 <input
                   type="checkbox"
-                  className="checkbox checkbox-xs checkbox-primary"
+                  className="checkbox checkbox-xs rounded-md border-slate-300 [--chkbg:theme(colors.violet.600)] [--chkfg:white]"
                   checked={autoPolishAfterVoice}
                   onChange={(e) => setAutoPolishAfterVoice(e.target.checked)}
                   disabled={busy || isRecording}
@@ -421,21 +429,35 @@ const MeetingSummaryNotesModal: React.FC<MeetingSummaryNotesModalProps> = ({
               <span className="loading loading-spinner loading-md text-gray-400" />
             </div>
           ) : (
-            <textarea
-              ref={textareaRef}
-              className={`textarea textarea-bordered w-full min-h-[14rem] flex-1 resize-y text-base leading-relaxed text-gray-700 sm:min-h-[360px] ${
-                isRecording ? 'ring-2 ring-red-200 border-red-200 bg-red-50/20' : ''
-              }`}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              placeholder={
+            <div
+              className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border shadow-sm ring-1 transition-colors ${
                 isRecording
-                  ? 'Speak now — your words will appear here as you talk…'
-                  : 'Meeting summary notes…'
-              }
-              autoFocus
-              disabled={textareaDisabled}
-            />
+                  ? 'border-red-200/80 bg-gradient-to-b from-red-50/40 to-white ring-red-100'
+                  : 'border-slate-200/80 bg-white ring-slate-100'
+              }`}
+            >
+              <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-4 py-2.5">
+                <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Summary notes
+                </span>
+                {isRecording && (
+                  <span className="text-xs font-medium text-red-600">Recording…</span>
+                )}
+              </div>
+              <textarea
+                ref={textareaRef}
+                className="min-h-[14rem] w-full flex-1 resize-y border-0 bg-transparent px-4 py-3 text-base leading-relaxed text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-0 sm:min-h-[360px]"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder={
+                  isRecording
+                    ? 'Speak now — your words will appear here as you talk…'
+                    : 'Meeting summary notes…'
+                }
+                autoFocus
+                disabled={textareaDisabled}
+              />
+            </div>
           )}
         </div>
 

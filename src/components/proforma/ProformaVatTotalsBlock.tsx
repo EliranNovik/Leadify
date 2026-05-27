@@ -12,7 +12,7 @@ type Props = {
 const ProformaVatTotalsBlock: React.FC<Props> = ({
   currencyLabel,
   resolved,
-  totalAmountClassName = 'text-primary',
+  totalAmountClassName = 'text-green-600',
   totalAmountStyle,
 }) => (
   <>

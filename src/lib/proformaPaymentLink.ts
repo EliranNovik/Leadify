@@ -20,6 +20,24 @@ export function buildPaymentLinkPublicUrl(secureToken: string): string {
   return `/payment/${token}`;
 }
 
+/** Same route as PaymentPage (`/payment/:token`). */
+export function buildPaymentPagePath(secureToken: string): string {
+  const token = secureToken.trim();
+  if (!token) return '';
+  return `/payment/${encodeURIComponent(token)}`;
+}
+
+export function paymentPagePathFromPaymentUrl(url: string | null | undefined): string | null {
+  if (!url?.trim()) return null;
+  const match = url.trim().match(/\/payment\/([^/?#]+)/);
+  if (!match?.[1]) return null;
+  try {
+    return `/payment/${encodeURIComponent(decodeURIComponent(match[1]))}`;
+  } catch {
+    return `/payment/${match[1]}`;
+  }
+}
+
 function isLinkUsable(row: PaymentLinkRow): boolean {
   const token = row.secure_token?.trim();
   if (!token) return false;
@@ -94,6 +112,15 @@ export async function resolveProformaPaymentLinkUrl(options: {
   }
 
   return null;
+}
+
+/** Resolve `/payment/:token` for the invoice payment plan row (PaymentPage route). */
+export async function resolveProformaPaymentPagePath(options: {
+  paymentPlanId?: string | number | null;
+  leadClientId?: string | number | null;
+}): Promise<string | null> {
+  const url = await resolveProformaPaymentLinkUrl(options);
+  return paymentPagePathFromPaymentUrl(url);
 }
 
 export type EnsureProformaPaymentLinkInput = {
