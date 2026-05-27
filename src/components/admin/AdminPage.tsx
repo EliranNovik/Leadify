@@ -42,6 +42,7 @@ import WhatsAppNumbersManager from './WhatsAppNumbersManager';
 import WhatsAppTemplatesManager from './WhatsAppTemplatesManager';
 import EmailTemplatesManager from './EmailTemplatesManager';
 import EmailTemplatesPlacementManager from './EmailTemplatesPlacementManager';
+import EmailTemplatesAutomationManager from './EmailTemplatesAutomationManager';
 import PublicMessagesManager from './PublicMessagesManager';
 import WebhookSettingsManager from './WebhookSettingsManager';
 import BoiExchangeRatesTestPage from '../../pages/BoiExchangeRatesTestPage';
@@ -104,6 +105,7 @@ const ADMIN_TABS: AdminTab[] = [
       'Countries',
       'Email Templates',
       'Email Templates Placement',
+      'Email Templates Automation',
       'Flag Types',
       'Holidays',
       'Languages',
@@ -900,7 +902,9 @@ const AdminPage: React.FC = () => {
                 const selectedSub = selectedTab?.subcategories[selected.sub];
 
                 if (selectedSub === 'Email Templates') {
-                  return <div className="w-full"><EmailTemplatesManager isSuperUser={isSuperUser} /></div>;
+                  return <div className="w-full"><EmailTemplatesManager /></div>;
+                } else if (selectedSub === 'Email Templates Automation') {
+                  return <div className="w-full"><EmailTemplatesAutomationManager /></div>;
                 } else if (selectedSub === 'Public messages') {
                   return <div className="w-full"><PublicMessagesManager /></div>;
                 }
@@ -1622,10 +1626,13 @@ const AdminPage: React.FC = () => {
                   <div className="w-full"><LeadStageReasonsManager /></div>
                 ) : selectedTab?.label === 'Misc' &&
                   selectedTab?.subcategories[selected.sub] === 'Email Templates' ? (
-                  <div className="w-full"><EmailTemplatesManager isSuperUser={isSuperUser} /></div>
+                  <div className="w-full"><EmailTemplatesManager /></div>
                 ) : selectedTab?.label === 'Misc' &&
                   selectedTab?.subcategories[selected.sub] === 'Email Templates Placement' ? (
                   <div className="w-full"><EmailTemplatesPlacementManager /></div>
+                ) : selectedTab?.label === 'Misc' &&
+                  selectedTab?.subcategories[selected.sub] === 'Email Templates Automation' ? (
+                  <div className="w-full"><EmailTemplatesAutomationManager /></div>
                 ) : selectedTab?.label === 'Misc' &&
                   selectedTab?.subcategories[selected.sub] === 'Public messages' ? (
                   <div className="w-full"><PublicMessagesManager /></div>

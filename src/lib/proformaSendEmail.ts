@@ -219,15 +219,16 @@ function buildProformaEmailSubject(
   return [base, vars.leadNumber, vars.clientName].filter((part) => part.length > 0).join(' — ');
 }
 
-async function resolveContactEmail(
+/** Resolve a valid invoice email, or null when none is available. */
+export async function resolveProformaContactEmail(
   contactId: string | number | null | undefined,
   fallbackEmail?: string | null,
-): Promise<string> {
+): Promise<string | null> {
   const trimmed = fallbackEmail?.trim();
   if (trimmed && emailRegex.test(trimmed)) return trimmed;
 
   if (contactId == null || contactId === '') {
-    throw new Error('No contact email found for this proforma.');
+    return null;
   }
 
   const { data: newContact } = await supabase
@@ -248,6 +249,15 @@ async function resolveContactEmail(
   const legacyEmail = legacyContact?.email?.trim();
   if (legacyEmail && emailRegex.test(legacyEmail)) return legacyEmail;
 
+  return null;
+}
+
+async function resolveContactEmail(
+  contactId: string | number | null | undefined,
+  fallbackEmail?: string | null,
+): Promise<string> {
+  const email = await resolveProformaContactEmail(contactId, fallbackEmail);
+  if (email) return email;
   throw new Error('No valid email address found for the proforma contact.');
 }
 

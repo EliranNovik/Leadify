@@ -22,6 +22,8 @@ export interface EmailTemplateContext {
   meetingTime?: string | null;
   meetingLocation?: string | null;
   meetingLink?: string | null;
+  /** meetings.manual_address — replaces {{address}} / {address} in templates */
+  meetingAddress?: string | null;
 }
 
 /**
@@ -107,18 +109,30 @@ async function getMeetingLink(clientId: string | null, isLegacyLead: boolean): P
   }
 }
 
+async function getMeetingManualAddress(clientId: string | null, isLegacyLead: boolean): Promise<string> {
+  if (!clientId) return '';
+
+  try {
+    const { getMeetingManualAddress: fetchManualAddress } = await import('./whatsappTemplateParams');
+    return await fetchManualAddress(clientId, isLegacyLead);
+  } catch (error) {
+    console.error('Error fetching meeting manual_address:', error);
+    return '';
+  }
+}
+
 /**
- * Replace all template parameters in email content
  * 
  * Supported parameters:
  * - {name} or {client_name} - Client/contact name
  * - {lead_number} - Lead number
  * - {topic} - Topic/category
  * - {lead_type} - Lead type (legacy/new)
- * - {date} - Meeting date
- * - {time} - Meeting time
- * - {location} - Meeting location
- * - {link} - Meeting link
+ * - {date} or {{date}} - Meeting date
+ * - {time} or {{time}} - Meeting time
+ * - {location} or {{location}} or {{meeting_location}} - Meeting location
+ * - {link} or {{link}} - Meeting link
+ * - {address} or {{address}} - meetings.manual_address
  * 
  * @param content - The email template content
  * @param context - Context object with client/contact and meeting info
@@ -129,11 +143,70 @@ function normalizeTemplateBraces(s: string): string {
   return s.replace(/\uFF5B/g, '{').replace(/\uFF5D/g, '}');
 }
 
-function applyMeetingLinkReplacements(result: string, linkValue: string): string {
-  const v = linkValue || '';
+function applyTemplateParam(result: string, paramName: string, value: string): string {
+  const v = value || '';
+  const escaped = paramName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return result
-    .replace(/\{\{\s*link\s*\}\}/gi, v)
-    .replace(/\{\s*link\s*\}/gi, v);
+    .replace(new RegExp(`\\{\\{\\s*${escaped}\\s*\\}\\}`, 'gi'), v)
+    .replace(new RegExp(`\\{\\s*${escaped}\\s*\\}`, 'gi'), v);
+}
+
+function applyMeetingDateReplacements(result: string, value: string): string {
+  return applyTemplateParam(result, 'date', value);
+}
+
+function applyMeetingTimeReplacements(result: string, value: string): string {
+  return applyTemplateParam(result, 'time', value);
+}
+
+function applyMeetingLocationReplacements(result: string, value: string): string {
+  let out = applyTemplateParam(result, 'location', value);
+  out = applyTemplateParam(out, 'meeting_location', value);
+  return out;
+}
+
+function applyMeetingLinkReplacements(result: string, linkValue: string): string {
+  return applyTemplateParam(result, 'link', linkValue);
+}
+
+function applyMeetingAddressReplacements(result: string, addressValue: string): string {
+  return applyTemplateParam(result, 'address', addressValue);
+}
+
+function templateHasParam(result: string, paramName: string): boolean {
+  const escaped = paramName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return (
+    new RegExp(`\\{\\{\\s*${escaped}\\s*\\}\\}`, 'i').test(result) ||
+    new RegExp(`\\{\\s*${escaped}\\s*\\}`, 'i').test(result)
+  );
+}
+
+function resolveClientIdForMeetingFetch(context: EmailTemplateContext): {
+  clientIdForMeeting: string | null;
+  isLegacyLead: boolean;
+} {
+  const isLegacyLead =
+    context.leadType === 'legacy' ||
+    context.legacyId !== null ||
+    context.legacyId !== undefined ||
+    (context.clientId !== null &&
+      typeof context.clientId === 'string' &&
+      context.clientId.startsWith('legacy_'));
+
+  let clientIdForMeeting: string | null = null;
+
+  if (isLegacyLead) {
+    if (context.legacyId !== null && context.legacyId !== undefined) {
+      clientIdForMeeting = context.legacyId.toString();
+    } else if (context.clientId && typeof context.clientId === 'string') {
+      const numeric = parseInt(context.clientId.replace(/[^0-9]/g, ''), 10);
+      clientIdForMeeting = Number.isNaN(numeric) ? null : numeric.toString();
+    }
+  } else {
+    clientIdForMeeting = context.clientId || null;
+  }
+
+  return { clientIdForMeeting, isLegacyLead };
 }
 
 export async function replaceEmailTemplateParams(
@@ -146,54 +219,31 @@ export async function replaceEmailTemplateParams(
   
   // Basic synchronous replacements
   const name = getName(context);
-  result = result
-    .replace(/\{name\}/gi, name)
-    .replace(/\{client_name\}/gi, name)
-    .replace(/\{lead_number\}/gi, context.leadNumber || '')
-    // .replace(/\{topic\}/gi, context.topic || '') // Topic removed - not to be included in emails
-    .replace(/\{lead_type\}/gi, context.leadType || '');
+  result = applyTemplateParam(result, 'name', name);
+  result = applyTemplateParam(result, 'client_name', name);
+  result = applyTemplateParam(result, 'lead_number', context.leadNumber || '');
+  result = applyTemplateParam(result, 'lead_type', context.leadType || '');
   
   // Check if any meeting parameters need to be replaced
-  const hasDate = /\{date\}/i.test(result);
-  const hasTime = /\{time\}/i.test(result);
-  const hasLocation = /\{location\}/i.test(result);
-  const hasLink = /\{\s*link\s*\}/i.test(result) || /\{\{\s*link\s*\}\}/i.test(result);
+  const hasDate = templateHasParam(result, 'date');
+  const hasTime = templateHasParam(result, 'time');
+  const hasLocation =
+    templateHasParam(result, 'location') || templateHasParam(result, 'meeting_location');
+  const hasLink = templateHasParam(result, 'link');
+  const hasAddress = templateHasParam(result, 'address');
   
   // If meeting info is provided directly, use it
   if (context.meetingDate !== undefined || context.meetingTime !== undefined || 
       context.meetingLocation !== undefined || context.meetingLink !== undefined) {
-    result = result
-      .replace(/\{date\}/gi, context.meetingDate || '')
-      .replace(/\{time\}/gi, context.meetingTime || '')
-      .replace(/\{location\}/gi, context.meetingLocation || '');
+    result = applyMeetingDateReplacements(result, context.meetingDate || '');
+    result = applyMeetingTimeReplacements(result, context.meetingTime || '');
+    result = applyMeetingLocationReplacements(result, context.meetingLocation || '');
     result = applyMeetingLinkReplacements(result, context.meetingLink || '');
   } 
   // Otherwise, fetch from database if any meeting parameters are present
   else if ((hasDate || hasTime || hasLocation || hasLink) && (context.clientId || context.legacyId)) {
     try {
-      // Determine if it's a legacy lead and get the client ID
-      const isLegacyLead = context.leadType === 'legacy' || 
-                          context.legacyId !== null || 
-                          context.legacyId !== undefined ||
-                          (context.clientId !== null && 
-                           typeof context.clientId === 'string' && 
-                           context.clientId.startsWith('legacy_'));
-      
-      let clientIdForMeeting: string | null = null;
-      
-      if (isLegacyLead) {
-        // For legacy leads, use legacyId if available, or extract from clientId
-        if (context.legacyId !== null && context.legacyId !== undefined) {
-          clientIdForMeeting = context.legacyId.toString();
-        } else if (context.clientId && typeof context.clientId === 'string') {
-          // Extract numeric ID from clientId (might be "legacy_123" or just a number string)
-          const numeric = parseInt(context.clientId.replace(/[^0-9]/g, ''), 10);
-          clientIdForMeeting = isNaN(numeric) ? null : numeric.toString();
-        }
-      } else {
-        // For new leads, use clientId directly
-        clientIdForMeeting = context.clientId || null;
-      }
+      const { clientIdForMeeting, isLegacyLead } = resolveClientIdForMeetingFetch(context);
       
       if (clientIdForMeeting) {
         // Fetch meeting data in parallel (only fetch what's needed)
@@ -201,30 +251,44 @@ export async function replaceEmailTemplateParams(
           hasDate ? getMeetingDate(clientIdForMeeting, isLegacyLead) : Promise.resolve(''),
           hasTime ? getMeetingTime(clientIdForMeeting, isLegacyLead) : Promise.resolve(''),
           hasLocation ? getMeetingLocation(clientIdForMeeting, isLegacyLead) : Promise.resolve(''),
-          hasLink ? getMeetingLink(clientIdForMeeting, isLegacyLead) : Promise.resolve('')
+          hasLink ? getMeetingLink(clientIdForMeeting, isLegacyLead) : Promise.resolve(''),
         ]);
         
-        result = result
-          .replace(/\{date\}/gi, meetingDate || '')
-          .replace(/\{time\}/gi, meetingTime || '')
-          .replace(/\{location\}/gi, meetingLocation || '');
+        result = applyMeetingDateReplacements(result, meetingDate || '');
+        result = applyMeetingTimeReplacements(result, meetingTime || '');
+        result = applyMeetingLocationReplacements(result, meetingLocation || '');
         result = applyMeetingLinkReplacements(result, meetingLink || '');
       } else {
         // No valid client ID, replace with empty strings
-        result = result
-          .replace(/\{date\}/gi, '')
-          .replace(/\{time\}/gi, '')
-          .replace(/\{location\}/gi, '');
+        result = applyMeetingDateReplacements(result, '');
+        result = applyMeetingTimeReplacements(result, '');
+        result = applyMeetingLocationReplacements(result, '');
         result = applyMeetingLinkReplacements(result, '');
       }
     } catch (error) {
       console.error('Error fetching meeting data for template:', error);
       // On error, replace with empty strings
-      result = result
-        .replace(/\{date\}/gi, '')
-        .replace(/\{time\}/gi, '')
-        .replace(/\{location\}/gi, '');
+      result = applyMeetingDateReplacements(result, '');
+      result = applyMeetingTimeReplacements(result, '');
+      result = applyMeetingLocationReplacements(result, '');
       result = applyMeetingLinkReplacements(result, '');
+    }
+  }
+
+  if (context.meetingAddress !== undefined) {
+    result = applyMeetingAddressReplacements(result, context.meetingAddress || '');
+  } else if (hasAddress && (context.clientId || context.legacyId)) {
+    try {
+      const { clientIdForMeeting, isLegacyLead } = resolveClientIdForMeetingFetch(context);
+      if (clientIdForMeeting) {
+        const meetingAddress = await getMeetingManualAddress(clientIdForMeeting, isLegacyLead);
+        result = applyMeetingAddressReplacements(result, meetingAddress || '');
+      } else {
+        result = applyMeetingAddressReplacements(result, '');
+      }
+    } catch (error) {
+      console.error('Error fetching meeting manual_address for template:', error);
+      result = applyMeetingAddressReplacements(result, '');
     }
   }
   
@@ -242,16 +306,16 @@ export function replaceEmailTemplateParamsSync(
   if (!content) return '';
   
   const name = getName(context);
-  let result = normalizeTemplateBraces(content)
-    .replace(/\{name\}/gi, name)
-    .replace(/\{client_name\}/gi, name)
-    .replace(/\{lead_number\}/gi, context.leadNumber || '')
-    // .replace(/\{topic\}/gi, context.topic || '') // Topic removed - not to be included in emails
-    .replace(/\{lead_type\}/gi, context.leadType || '')
-    .replace(/\{date\}/gi, context.meetingDate || '')
-    .replace(/\{time\}/gi, context.meetingTime || '')
-    .replace(/\{location\}/gi, context.meetingLocation || '');
+  let result = normalizeTemplateBraces(content);
+  result = applyTemplateParam(result, 'name', name);
+  result = applyTemplateParam(result, 'client_name', name);
+  result = applyTemplateParam(result, 'lead_number', context.leadNumber || '');
+  result = applyTemplateParam(result, 'lead_type', context.leadType || '');
+  result = applyMeetingDateReplacements(result, context.meetingDate || '');
+  result = applyMeetingTimeReplacements(result, context.meetingTime || '');
+  result = applyMeetingLocationReplacements(result, context.meetingLocation || '');
   result = applyMeetingLinkReplacements(result, context.meetingLink || '');
+  result = applyMeetingAddressReplacements(result, context.meetingAddress || '');
   return result;
 }
 

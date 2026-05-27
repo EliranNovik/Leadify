@@ -223,12 +223,19 @@ async function searchNewLeads(intent: SearchIntent, opts: Required<SearchOptions
       const isFourOrFiveDigitQuery = searchDigits.length >= 4 && searchDigits.length <= 5 && /^\d+$/.test(searchDigits);
 
       if (isSixDigitQuery) {
-        // For 6-digit queries, use exact match only (no prefix matching)
-        // This prevents "212421" from matching when searching "21242"
+        // For 6-digit queries, match the lead itself exactly AND any sublead of that master
+        // (e.g. typing "209994" must also surface "L209994/2", "C209994/3", "209994/4" — these
+        // would have been visible while the user was still typing "20999" via the L20999% prefix
+        // pattern and would otherwise vanish on the final digit).
+        // We still avoid bare prefix matches like "209994%" so unrelated 7-digit lead numbers
+        // like "2099940" don't bleed in.
         const exactPatterns = [
           `lead_number.eq.L${searchDigits}`,
           `lead_number.eq.C${searchDigits}`,
           `lead_number.eq.${searchDigits}`, // Also try without prefix for legacy compatibility
+          `lead_number.ilike.L${searchDigits}/%`,
+          `lead_number.ilike.C${searchDigits}/%`,
+          `lead_number.ilike.${searchDigits}/%`,
         ];
 
         const baseOr = exactPatterns.join(",");
@@ -430,13 +437,22 @@ async function findContactsForLeadSearch(
         legacyLeads.push(...prefixData);
       }
     } else if (isSixDigitQuery) {
-      // For 6-digit queries, search by lead_number exact match (not prefix)
-      // This ensures "183221" finds "183221" but not "1832210"
+      // For 6-digit queries, match the exact master lead AND any of its subleads (e.g.
+      // "L209994/2"). Without the sublead patterns, typing the 6th digit can make a sublead
+      // that was visible during the 5-digit prefix search disappear entirely.
+      const exactOrSublead = [
+        `lead_number.eq.${searchDigits}`,
+        `lead_number.eq.L${searchDigits}`,
+        `lead_number.eq.C${searchDigits}`,
+        `lead_number.ilike.${searchDigits}/%`,
+        `lead_number.ilike.L${searchDigits}/%`,
+        `lead_number.ilike.C${searchDigits}/%`,
+      ].join(",");
       const { data: exactLeadNumberData } = await withTimeout(
         supabase
           .from("leads_lead")
-          .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number, linked_master_lead")
-          .or(`lead_number.eq.${searchDigits},lead_number.eq.L${searchDigits},lead_number.eq.C${searchDigits}`)
+          .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number, manual_id, linked_master_lead")
+          .or(exactOrSublead)
           .limit(20),
         opts.timeoutMs,
         "legacy 6-digit lead_number search timeout",
@@ -447,11 +463,13 @@ async function findContactsForLeadSearch(
       }
     }
 
-    // Also try exact ID match (for cases where ID matches the query)
+    // Also try exact ID match (for cases where ID matches the query).
+    // IMPORTANT: include lead_number in the select so the dropdown can show the actual lead number
+    // (the row's id and its lead_number column are NOT guaranteed to be the same value).
     const { data } = await withTimeout(
       supabase
         .from("leads_lead")
-        .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, linked_master_lead")
+        .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number, manual_id, linked_master_lead")
         .eq("id", legacyExactId)
         .limit(1),
       opts.timeoutMs,
@@ -558,9 +576,11 @@ async function fetchLegacyLeadsByIds(ids: number[], opts: Required<SearchOptions
 
   const fetchStartTime = performance.now();
   const { data, error } = await withTimeout(
+    // lead_number must be selected so the dropdown can display the real number (e.g. "209994")
+    // instead of falling back to the row's primary key id (e.g. "20999").
     supabase
       .from("leads_lead")
-      .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, linked_master_lead")
+      .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number, manual_id, linked_master_lead")
       .in("id", ids)
       .limit(opts.legacyLimit),
     opts.timeoutMs,
@@ -617,8 +637,16 @@ function mapNewLeadRow(row: any): CombinedLead {
 }
 
 function mapLegacyLeadRow(row: any, formattedLeadNumber?: string): CombinedLead {
-  // Use provided formatted lead_number if available, otherwise format it
-  const leadNumber = formattedLeadNumber || (row.master_id ? `${row.master_id}` : String(row.id));
+  // Use provided formatted lead_number if available, otherwise format it.
+  // For master leads we must prefer the real `lead_number` column over `String(row.id)`:
+  // those values can diverge (e.g. id=20999 with lead_number="209994") which caused the
+  // search dropdown to display the id while the user typed/matched on the lead_number.
+  const rawLeadNumberFromRow = (row.lead_number ?? row.manual_id ?? '').toString().trim();
+  const leadNumber =
+    formattedLeadNumber ||
+    (row.master_id
+      ? `${row.master_id}`
+      : (rawLeadNumberFromRow || String(row.id)));
   return {
     id: String(row.id),
     lead_number: leadNumber,
@@ -910,8 +938,13 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
           legacyMap.set(lead.id, { ...lead, formattedLeadNumber: `${masterId}/?` });
         }
       } else {
-        // Master lead: use ID
-        legacyMap.set(lead.id, { ...lead, formattedLeadNumber: String(lead.id) });
+        // Master lead: prefer the real lead_number column (e.g. "209994") over the row's primary key id.
+        // The two can diverge — using id caused the dropdown to show "#20999" while the user typed "209994".
+        const rawLeadNumber = (lead.lead_number ?? lead.manual_id ?? '').toString().trim();
+        legacyMap.set(lead.id, {
+          ...lead,
+          formattedLeadNumber: rawLeadNumber || String(lead.id),
+        });
       }
     });
 

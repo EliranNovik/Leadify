@@ -72,6 +72,13 @@ const MeetingLocationsManager: React.FC = () => {
       label: 'Physical Location',
       type: 'boolean' as const,
       required: false
+    },
+    {
+      name: 'is_active',
+      label: 'Active',
+      type: 'boolean' as const,
+      required: false,
+      defaultValue: true
     }
   ];
 
@@ -83,6 +90,7 @@ const MeetingLocationsManager: React.FC = () => {
       description="Manage meeting locations and their configurations"
       pageSize={10}
       sortColumn="id"
+      booleanStorage="native"
     />
   );
 };

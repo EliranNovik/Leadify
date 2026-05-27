@@ -1,6 +1,18 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
+import {
+  clearPendingMeetingRescheduleDrawer,
+  clearPendingMeetingScheduleDrawer,
+  consumePendingMeetingDrawers,
+  CUSTOM_ADDRESS_LOCATION_ID,
+  CUSTOM_LINK_LOCATION_ID,
+  isMeetingLocationActive,
+  isPhysicalMeetingLocation,
+  normalizeMeetingLocationRow,
+  shouldIncludeMeetingJoinLink,
+} from '../../lib/meetingLocationUtils';
 import {
   CalendarIcon,
   PencilSquareIcon,
@@ -25,15 +37,25 @@ import { FaWhatsapp } from 'react-icons/fa';
 import { SiZoom } from 'react-icons/si';
 import { supabase } from '../../lib/supabase';
 import { fetchLeadContacts, ContactInfo } from '../../lib/contactHelpers';
+import {
+  fetchEmailTemplatesAutomationCache,
+  fetchMiscEmailTemplatesByIds,
+  inferInvitationEmailTypeFromLocationName,
+  resolveMeetingEmailTemplateIds,
+  resolveMeetingLocationId,
+  type EmailAutomationCache,
+} from '../../lib/emailTemplatesAutomation';
 import { buildApiUrl } from '../../lib/api';
 import { useAuthContext } from '../../contexts/AuthContext';
 import { useMsal } from '@azure/msal-react';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { loginRequest } from '../../msalConfig';
-import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect } from '../../lib/graph';
+import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect, createStaffCalendarEvent, createStaffTeamsMeeting } from '../../lib/graph';
+import { saveOutlookTeamsMeeting, type OutlookTeamsMeeting } from '../../lib/outlookTeamsMeetingsApi';
 import { generateICSFromDateTime } from '../../lib/icsGenerator';
 import { meetingInvitationEmailTemplate } from '../Meetings';
 import MeetingSummaryComponent from '../MeetingSummary';
+import MeetingSummaryNotesModal from './MeetingSummaryNotesModal';
 import { replaceEmailTemplateParams, replaceEmailTemplateParamsSync } from '../../lib/emailTemplateParams';
 import TimePicker from '../TimePicker';
 
@@ -101,10 +123,239 @@ interface Meeting {
   car_number?: string;
   custom_link?: string;
   custom_address?: string;
+  /** Free-text address for notifications/templates; independent of location type. */
+  manual_address?: string | null;
+  /** Staff-written summary from Meeting summary modal. */
+  meeting_summary_notes?: string | null;
+  isLegacy?: boolean;
+  calendar_type?: string;
+  /** Subject line for staff / IM meetings (`meetings.meeting_subject`). */
+  meeting_subject?: string;
+  /** Guest participants stored as employee ids on `meetings.extern1` / `meetings.extern2`. */
+  extern1?: string | null;
+  extern2?: string | null;
   lastEdited: {
     timestamp: string;
     user: string;
   };
+}
+
+type MeetingParticipantRow = {
+  id: string;
+  type: 'staff' | 'firm' | 'extern';
+  badge: string;
+  name: string;
+  subtitle?: string | null;
+  imageUrl?: string | null;
+  employeeId?: number;
+};
+
+type NotifyRecipientSource = 'lead' | 'staff' | 'firm' | 'external';
+
+type NotifyRecipient = ContactInfo & {
+  recipientKey: string;
+  source: NotifyRecipientSource;
+  sourceLabel: string;
+  imageUrl?: string | null;
+  employeeId?: number;
+  subtitle?: string | null;
+};
+
+const normalizeContactInfoForDedup = (c: Partial<ContactInfo>) => {
+  const normalizePhone = (phone: string | null | undefined) =>
+    phone?.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '') || '';
+  return {
+    name: (c.name || '').toLowerCase().trim(),
+    email: (c.email || '').toLowerCase().trim(),
+    phone: normalizePhone(c.phone || c.mobile),
+  };
+};
+
+const contactsMatchForDedup = (c1: ContactInfo, c2: ContactInfo): boolean => {
+  const n1 = normalizeContactInfoForDedup(c1);
+  const n2 = normalizeContactInfoForDedup(c2);
+
+  if (n1.email && n2.email && n1.email === n2.email) return true;
+  if (n1.phone && n2.phone && n1.phone === n2.phone) return true;
+  if (n1.name && n2.name && n1.name === n2.name) {
+    if (
+      (n1.email && n2.email && n1.email === n2.email) ||
+      (n1.phone && n2.phone && n1.phone === n2.phone)
+    ) {
+      return true;
+    }
+  }
+  return false;
+};
+
+function mergeNotifyRecipients(leadContacts: NotifyRecipient[], participantContacts: NotifyRecipient[]): NotifyRecipient[] {
+  const result = [...leadContacts];
+  for (const contact of participantContacts) {
+    if (result.some((c) => c.recipientKey === contact.recipientKey)) continue;
+    const duplicateParticipant = result
+      .filter((c) => c.source !== 'lead')
+      .some((c) => contactsMatchForDedup(c, contact));
+    if (duplicateParticipant) continue;
+    result.push(contact);
+  }
+  return result;
+}
+
+function getNotifySourceBadgeClass(source: NotifyRecipientSource): string {
+  switch (source) {
+    case 'staff':
+      return 'bg-blue-100 text-blue-700';
+    case 'firm':
+      return 'bg-amber-100 text-amber-800';
+    case 'external':
+      return 'bg-gray-100 text-gray-700';
+    default:
+      return 'bg-purple-100 text-purple-700';
+  }
+}
+
+function getNotifyRecipientPhone(contact: NotifyRecipient): string | null {
+  const mobile = contact.mobile?.trim();
+  const phone = contact.phone?.trim();
+
+  // Staff WhatsApp must use mobile only — desk phone + extension breaks delivery.
+  if (contact.source === 'staff') {
+    if (mobile && mobile !== '' && mobile !== '---') return mobile;
+    return null;
+  }
+
+  if (phone && phone !== '' && phone !== '---') return phone;
+  if (mobile && mobile !== '' && mobile !== '---') return mobile;
+  return null;
+}
+
+function getMeetingDbId(meeting: { id: number | string }): number | null {
+  const id = typeof meeting.id === 'number' ? meeting.id : Number(meeting.id);
+  return Number.isFinite(id) && id > 0 ? id : null;
+}
+
+async function fetchMeetingParticipantContacts(meetingId: number): Promise<NotifyRecipient[]> {
+  const { data: partData, error: partErr } = await supabase
+    .from('meeting_participants')
+    .select('id, employee_id, firm_contact_id, free_name, free_email, free_phone')
+    .eq('meeting_id', meetingId);
+  if (partErr || !partData?.length) return [];
+
+  const employeeIds = Array.from(
+    new Set(
+      partData
+        .map((r: any) => (r.employee_id != null ? Number(r.employee_id) : null))
+        .filter((n: any) => Number.isFinite(n) && n > 0)
+    )
+  ) as number[];
+  const firmIds = Array.from(
+    new Set(
+      partData
+        .map((r: any) => (r.firm_contact_id ? String(r.firm_contact_id) : null))
+        .filter(Boolean)
+    )
+  ) as string[];
+
+  const fetchEmployeesWithPhones = async () => {
+    if (!employeeIds.length) return { data: [] as any[] };
+    const res = await supabase
+      .from('tenants_employee')
+      .select('id, display_name, photo_url, photo, phone, mobile, phone_ext')
+      .in('id', employeeIds);
+    if (!res.error) return res;
+    if ((res.error as any)?.code === '42703') {
+      return supabase.from('tenants_employee').select('id, display_name, photo_url, photo').in('id', employeeIds);
+    }
+    return res;
+  };
+
+  const [empsRes, usersRes, firmsRes] = await Promise.all([
+    fetchEmployeesWithPhones(),
+    employeeIds.length
+      ? supabase.from('users').select('employee_id, email').in('employee_id', employeeIds).not('email', 'is', null)
+      : Promise.resolve({ data: [] as any[] }),
+    firmIds.length
+      ? supabase
+          .from('firm_contacts')
+          .select('id, name, email, second_email, user_email, phone, profile_image_url, firm_id, firms!firm_contacts_firm_id_fkey(id, name)')
+          .in('id', firmIds)
+      : Promise.resolve({ data: [] as any[] }),
+  ]);
+
+  const empById = new Map<number, any>();
+  (empsRes as any).data?.forEach((e: any) => empById.set(Number(e.id), e));
+  const emailByEmployeeId = new Map<number, string>();
+  (usersRes as any).data?.forEach((u: any) => {
+    const eid = Number(u.employee_id);
+    if (Number.isFinite(eid) && eid > 0 && u.email) emailByEmployeeId.set(eid, String(u.email));
+  });
+  const firmById = new Map<string, any>();
+  (firmsRes as any).data?.forEach((f: any) => firmById.set(String(f.id), f));
+
+  let nextSyntheticId = -4000000;
+  const allocId = (rowId: unknown): number => {
+    if (rowId != null && /^\d+$/.test(String(rowId))) return -Number(rowId);
+    return nextSyntheticId--;
+  };
+
+  const recipients: NotifyRecipient[] = [];
+
+  for (const r of partData) {
+    const rowKey = r.id != null ? String(r.id) : `idx-${recipients.length}`;
+
+    if (r.employee_id != null) {
+      const empId = Number(r.employee_id);
+      const e = empById.get(empId);
+      recipients.push({
+        id: allocId(r.id),
+        recipientKey: `staff-${rowKey}`,
+        name: e?.display_name || `Staff #${empId}`,
+        email: emailByEmployeeId.get(empId) || null,
+        phone: e?.phone ? String(e.phone) : null,
+        mobile: e?.mobile ? String(e.mobile) : null,
+        country_id: null,
+        isMain: false,
+        source: 'staff',
+        sourceLabel: 'Staff',
+        imageUrl: e?.photo_url || e?.photo || null,
+        employeeId: empId,
+      });
+    } else if (r.firm_contact_id) {
+      const f = firmById.get(String(r.firm_contact_id));
+      const firmObj = Array.isArray(f?.firms) ? f.firms[0] : f?.firms;
+      const email = f?.email || f?.second_email || f?.user_email || null;
+      recipients.push({
+        id: allocId(r.id),
+        recipientKey: `firm-${rowKey}`,
+        name: f?.name || 'Firm contact',
+        email: email ? String(email) : null,
+        phone: f?.phone ? String(f.phone) : null,
+        mobile: null,
+        country_id: null,
+        isMain: false,
+        source: 'firm',
+        sourceLabel: 'Firm Contact',
+        imageUrl: f?.profile_image_url || null,
+        subtitle: firmObj?.name ? String(firmObj.name) : null,
+      });
+    } else {
+      const name = String(r.free_name || '').trim() || 'External participant';
+      recipients.push({
+        id: allocId(r.id),
+        recipientKey: `ext-${rowKey}`,
+        name,
+        email: r.free_email ? String(r.free_email) : null,
+        phone: r.free_phone ? String(r.free_phone) : null,
+        mobile: null,
+        country_id: null,
+        isMain: false,
+        source: 'external',
+        sourceLabel: 'External',
+      });
+    }
+  }
+
+  return recipients;
 }
 
 /**
@@ -143,17 +394,32 @@ function linkifyPlainUrlsInEmailHtml(html: string): string {
   return s;
 }
 
+function OutlookIcon({ className = 'w-5 h-5' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path fill="#0078D4" d="M22 6.5v11c0 .83-.67 1.5-1.5 1.5H17V5h3.5c.83 0 1.5.67 1.5 1.5z" />
+      <path fill="#0078D4" d="M16 5H4.5C3.67 5 3 5.67 3 6.5v11c0 .83.67 1.5 1.5 1.5H16V5z" />
+      <path fill="#28A8EA" d="M15 12.5 8.5 7.25v10.5L15 12.5z" />
+      <ellipse fill="#0078D4" cx="9.5" cy="12.5" rx="3.5" ry="4" />
+    </svg>
+  );
+}
+
 const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const { instance } = useMsal();
   const [showAuthRedirectOption, setShowAuthRedirectOption] = useState(false);
   const authRedirectParamsRef = useRef<{ request: any; account: any } | null>(null);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [meetingParticipantsById, setMeetingParticipantsById] = useState<
+    Record<number, { loading: boolean; participants: MeetingParticipantRow[] }>
+  >({});
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [isCreatingMeeting, setIsCreatingMeeting] = useState(false);
   const [showScheduleDrawer, setShowScheduleDrawer] = useState(false);
   const [sendingEmailMeetingId, setSendingEmailMeetingId] = useState<number | null>(null);
   const [editingBriefId, setEditingBriefId] = useState<number | null>(null);
   const [editedBrief, setEditedBrief] = useState<string>('');
+  const [summaryNotesMeeting, setSummaryNotesMeeting] = useState<Meeting | null>(null);
   const [expandedMeetingId, setExpandedMeetingId] = useState<number | null>(null);
   const [expandedMeetingData, setExpandedMeetingData] = useState<{
     [meetingId: number]: {
@@ -168,8 +434,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Edit meeting state
   const [editingMeetingId, setEditingMeetingId] = useState<number | null>(null);
   const [editedMeeting, setEditedMeeting] = useState<Partial<Meeting>>({});
-  const CUSTOM_LINK_LOCATION_ID = 31;
-  const CUSTOM_ADDRESS_LOCATION_ID = 32;
   const [showCustomLocationModal, setShowCustomLocationModal] = useState(false);
   const [customLocationMode, setCustomLocationMode] = useState<'link' | 'address'>('link');
   const [customLocationTarget, setCustomLocationTarget] = useState<'schedule' | 'reschedule' | 'edit'>('schedule');
@@ -216,13 +480,21 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   const [creatingTeamsMeetingId, setCreatingTeamsMeetingId] = useState<number | null>(null);
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
+  const [employeeEmailToDisplayName, setEmployeeEmailToDisplayName] = useState<Record<string, string>>({});
   const [allMeetingLocations, setAllMeetingLocations] = useState<any[]>([]);
+  const [emailAutomationCache, setEmailAutomationCache] = useState<EmailAutomationCache | null>(null);
+  const selectableMeetingLocations = useMemo(
+    () => allMeetingLocations.filter(isMeetingLocationActive),
+    [allMeetingLocations]
+  );
+  const scheduleDrawerInitializedRef = useRef(false);
 
   // Notify modal state
   const [showNotifyModal, setShowNotifyModal] = useState(false);
   const [selectedMeetingForNotify, setSelectedMeetingForNotify] = useState<Meeting | null>(null);
-  const [contacts, setContacts] = useState<ContactInfo[]>([]);
+  const [contacts, setContacts] = useState<NotifyRecipient[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
+  const [selectedEmailRecipientKeys, setSelectedEmailRecipientKeys] = useState<Set<string>>(new Set());
   const [selectedEmailLanguage, setSelectedEmailLanguage] = useState<'en' | 'he'>('en');
   const [emailTemplates, setEmailTemplates] = useState<{
     en: { content: string | null; name: string | null } | null;
@@ -243,8 +515,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // WhatsApp notify modal state
   const [showWhatsAppNotifyModal, setShowWhatsAppNotifyModal] = useState(false);
   const [selectedMeetingForWhatsAppNotify, setSelectedMeetingForWhatsAppNotify] = useState<Meeting | null>(null);
-  const [whatsAppContacts, setWhatsAppContacts] = useState<ContactInfo[]>([]);
+  const [whatsAppContacts, setWhatsAppContacts] = useState<NotifyRecipient[]>([]);
   const [loadingWhatsAppContacts, setLoadingWhatsAppContacts] = useState(false);
+  const [selectedWhatsAppRecipientKeys, setSelectedWhatsAppRecipientKeys] = useState<Set<string>>(new Set());
   const [selectedLanguage, setSelectedLanguage] = useState<'he' | 'en' | 'ru'>('he');
   const [reminderTemplates, setReminderTemplates] = useState<Array<{ id: number; language: string; content: string; name: string; params?: string; param_mapping?: any }>>([]);
   const [sendingWhatsAppMeetingId, setSendingWhatsAppMeetingId] = useState<number | null>(null);
@@ -271,9 +544,88 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [showManagerDropdown, setShowManagerDropdown] = useState(false);
   const managerDropdownRef = useRef<HTMLDivElement>(null);
   const [managerSearchTerm, setManagerSearchTerm] = useState('');
-  const [showHelperDropdown, setShowHelperDropdown] = useState(false);
-  const helperDropdownRef = useRef<HTMLDivElement>(null);
-  const [helperSearchTerm, setHelperSearchTerm] = useState('');
+
+  // External (Internal-Meeting-with-external-participants) state
+  // Mirrors CalendarPage's TeamsMeetingModal so users can convert this lead's
+  // scheduled/rescheduled meeting into an internal meeting with external attendees.
+  type FirmContactLite = { id: string; firm_id: string; name: string; email?: string | null; phone?: string | null };
+  type FreeParticipant = { name: string; email?: string; phone?: string; notes?: string };
+  type InternalMeetingTypeRow = { id: number; code: string; label: string; sort_order: number | null };
+  const [firmContacts, setFirmContacts] = useState<FirmContactLite[]>([]);
+  const [internalMeetingTypes, setInternalMeetingTypes] = useState<InternalMeetingTypeRow[]>([]);
+  // Schedule drawer external state
+  const [scheduleExternal, setScheduleExternal] = useState<{
+    subject: string;
+    internalMeetingTypeId: number | null;
+    selectedStaffEmployeeIds: number[];
+    selectedFirmContactIds: string[];
+    freeParticipants: FreeParticipant[];
+    freeDraft: FreeParticipant;
+  }>({
+    subject: '',
+    internalMeetingTypeId: null,
+    selectedStaffEmployeeIds: [],
+    selectedFirmContactIds: [],
+    freeParticipants: [],
+    freeDraft: { name: '', email: '', phone: '', notes: '' },
+  });
+  const [scheduleStaffSearch, setScheduleStaffSearch] = useState('');
+  const [showScheduleStaffDropdown, setShowScheduleStaffDropdown] = useState(false);
+  const scheduleStaffDropdownRef = useRef<HTMLDivElement>(null);
+  const [scheduleFirmContactSearch, setScheduleFirmContactSearch] = useState('');
+  const [showScheduleFirmContactDropdown, setShowScheduleFirmContactDropdown] = useState(false);
+  const scheduleFirmContactDropdownRef = useRef<HTMLDivElement>(null);
+  // Reschedule drawer external state
+  const [rescheduleExternal, setRescheduleExternal] = useState<{
+    subject: string;
+    internalMeetingTypeId: number | null;
+    selectedStaffEmployeeIds: number[];
+    selectedFirmContactIds: string[];
+    freeParticipants: FreeParticipant[];
+    freeDraft: FreeParticipant;
+  }>({
+    subject: '',
+    internalMeetingTypeId: null,
+    selectedStaffEmployeeIds: [],
+    selectedFirmContactIds: [],
+    freeParticipants: [],
+    freeDraft: { name: '', email: '', phone: '', notes: '' },
+  });
+  const [rescheduleStaffSearch, setRescheduleStaffSearch] = useState('');
+  const [showRescheduleStaffDropdown, setShowRescheduleStaffDropdown] = useState(false);
+  const rescheduleStaffDropdownRef = useRef<HTMLDivElement>(null);
+  const [rescheduleFirmContactSearch, setRescheduleFirmContactSearch] = useState('');
+  const [showRescheduleFirmContactDropdown, setShowRescheduleFirmContactDropdown] = useState(false);
+  const rescheduleFirmContactDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Inline edit: IM meeting participants + guest slots
+  const [editExternal, setEditExternal] = useState<{
+    subject: string;
+    internalMeetingTypeId: number | null;
+    selectedStaffEmployeeIds: number[];
+    selectedFirmContactIds: string[];
+    freeParticipants: FreeParticipant[];
+    freeDraft: FreeParticipant;
+  }>({
+    subject: '',
+    internalMeetingTypeId: null,
+    selectedStaffEmployeeIds: [],
+    selectedFirmContactIds: [],
+    freeParticipants: [],
+    freeDraft: { name: '', email: '', phone: '', notes: '' },
+  });
+  const [editStaffSearch, setEditStaffSearch] = useState('');
+  const [showEditStaffDropdown, setShowEditStaffDropdown] = useState(false);
+  const editStaffDropdownRef = useRef<HTMLDivElement>(null);
+  const [editFirmContactSearch, setEditFirmContactSearch] = useState('');
+  const [showEditFirmContactDropdown, setShowEditFirmContactDropdown] = useState(false);
+  const editFirmContactDropdownRef = useRef<HTMLDivElement>(null);
+  const [editGuest1SearchTerm, setEditGuest1SearchTerm] = useState('');
+  const [editGuest2SearchTerm, setEditGuest2SearchTerm] = useState('');
+  const [showEditGuest1Dropdown, setShowEditGuest1Dropdown] = useState(false);
+  const [showEditGuest2Dropdown, setShowEditGuest2Dropdown] = useState(false);
+  const editGuest1DropdownRef = useRef<HTMLDivElement>(null);
+  const editGuest2DropdownRef = useRef<HTMLDivElement>(null);
 
   // Reschedule drawer state
   const [showRescheduleDrawer, setShowRescheduleDrawer] = useState(false);
@@ -305,17 +657,99 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     return tomorrow.toISOString().split('T')[0];
   };
 
+  const isUnassignedEmployeeValue = (value: string | number | null | undefined): boolean => {
+    if (value === null || value === undefined) return true;
+    const s = String(value).trim();
+    if (!s || s === '---' || s === '--') return true;
+    const lower = s.toLowerCase();
+    return lower === 'not assigned' || lower === 'unassigned';
+  };
+
   // Helper function to get employee display name from ID
   const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
-    if (employeeId === null || employeeId === undefined || employeeId === '---') return '--';
-    const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
-    return employee ? employee.display_name : employeeId.toString();
+    if (isUnassignedEmployeeValue(employeeId)) return '--';
+    const value = String(employeeId);
+    const employee = allEmployees.find((emp: any) => emp.id.toString() === value);
+    return employee ? employee.display_name : value;
   };
 
   // Helper function to get employee by ID
   const getEmployeeById = (employeeId: string | number | null | undefined) => {
-    if (employeeId === null || employeeId === undefined || employeeId === '---') return null;
-    return allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString()) || null;
+    if (isUnassignedEmployeeValue(employeeId)) return null;
+    const value = String(employeeId).trim();
+    const byId = allEmployees.find((emp: any) => emp.id.toString() === value);
+    if (byId) return byId;
+    return (
+      allEmployees.find(
+        (emp: any) => emp.display_name === value || emp.full_name === value
+      ) || null
+    );
+  };
+
+  const getLastEditedByDisplayName = (stored: string | null | undefined): string => {
+    const raw = stored?.trim();
+    if (!raw) return '--';
+    if (raw.toLowerCase() === 'system') return 'System';
+
+    const byDisplayName = allEmployees.find(
+      (emp: any) => emp.display_name?.trim().toLowerCase() === raw.toLowerCase()
+    );
+    if (byDisplayName?.display_name) return byDisplayName.display_name;
+
+    if (raw.includes('@')) {
+      return employeeEmailToDisplayName[raw.toLowerCase()] || 'Staff';
+    }
+
+    return raw;
+  };
+
+  const resolveEditorDisplayName = async (): Promise<string> => {
+    const account = instance.getAllAccounts()[0];
+    try {
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (authUser?.id) {
+        const { data: userData } = await supabase
+          .from('users')
+          .select(`
+            full_name,
+            employee_id,
+            tenants_employee!employee_id(
+              display_name
+            )
+          `)
+          .eq('auth_id', authUser.id)
+          .maybeSingle();
+
+        if (userData) {
+          const employee = Array.isArray(userData.tenants_employee)
+            ? userData.tenants_employee[0]
+            : userData.tenants_employee;
+          const name = employee?.display_name || userData.full_name;
+          if (name?.trim()) return name.trim();
+        }
+      }
+
+      const email = account?.username?.trim().toLowerCase();
+      if (email && employeeEmailToDisplayName[email]) {
+        return employeeEmailToDisplayName[email];
+      }
+    } catch {
+      // fall through
+    }
+
+    return account?.name?.trim() || 'Staff';
+  };
+
+  // Pill badge label for the meeting type shown in the meeting card's top-right corner.
+  const getCalendarTypeBadgeStyles = (calendarType?: string) => {
+    if (!calendarType) return null;
+    if (calendarType === 'staff') {
+      return { label: 'IM' };
+    }
+    if (calendarType === 'active_client') {
+      return { label: 'A' };
+    }
+    return { label: 'P' };
   };
 
   // Helper function to get employee initials
@@ -335,7 +769,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   }> = ({ employeeId, size = 'md' }) => {
     const [imageError, setImageError] = useState(false);
     const employee = getEmployeeById(employeeId);
-    const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-10 h-10 text-sm';
+    const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-11 h-11 text-sm';
 
     if (!employee) {
       return (
@@ -365,6 +799,85 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         title={employee.display_name}
       />
     );
+  };
+
+  const getParticipantBadgeClass = (type: MeetingParticipantRow['type']) => {
+    if (type === 'staff') return 'border-sky-200/70 bg-sky-50 text-sky-950/70';
+    if (type === 'firm') return 'border-fuchsia-200/65 bg-fuchsia-50 text-fuchsia-950/70';
+    return 'border-amber-200/70 bg-amber-50 text-amber-950/70';
+  };
+
+  const renderMeetingParticipantAvatar = (participant: MeetingParticipantRow) => {
+    if (participant.type === 'staff' && participant.employeeId) {
+      return <EmployeeAvatar employeeId={participant.employeeId} size="md" />;
+    }
+
+    const initials = getEmployeeInitials(participant.name);
+    if (participant.imageUrl) {
+      return (
+        <img
+          src={participant.imageUrl}
+          alt={participant.name}
+          className="w-11 h-11 rounded-full object-cover flex-shrink-0 ring-1 ring-gray-200"
+          title={participant.name}
+        />
+      );
+    }
+
+    return (
+      <div className="w-11 h-11 rounded-full flex items-center justify-center bg-gray-100 text-gray-600 font-semibold flex-shrink-0 ring-1 ring-gray-200 text-sm">
+        {initials}
+      </div>
+    );
+  };
+
+  const NotifyRecipientAvatar: React.FC<{ contact: NotifyRecipient; size?: 'sm' | 'md' }> = ({ contact, size = 'sm' }) => {
+    const [imageError, setImageError] = useState(false);
+    const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-11 h-11 text-sm';
+
+    if (contact.source === 'staff' && contact.employeeId) {
+      return <EmployeeAvatar employeeId={contact.employeeId} size={size} />;
+    }
+
+    const initials = getEmployeeInitials(contact.name);
+    const avatarBgClass =
+      contact.source === 'firm'
+        ? 'bg-fuchsia-100 text-fuchsia-700'
+        : contact.source === 'external'
+          ? 'bg-amber-100 text-amber-700'
+          : 'bg-purple-100 text-purple-700';
+
+    if (contact.imageUrl && !imageError) {
+      return (
+        <img
+          src={contact.imageUrl}
+          alt={contact.name}
+          className={`${sizeClasses} rounded-full object-cover flex-shrink-0 ring-1 ring-gray-200`}
+          title={contact.name}
+          onError={() => setImageError(true)}
+        />
+      );
+    }
+
+    return (
+      <div className={`${sizeClasses} rounded-full flex items-center justify-center font-semibold flex-shrink-0 ring-1 ring-gray-200 ${avatarBgClass}`}>
+        {initials}
+      </div>
+    );
+  };
+
+  const sortNotifyRecipients = (items: NotifyRecipient[]) => {
+    const sourceOrder: Record<NotifyRecipientSource, number> = {
+      staff: 0,
+      firm: 1,
+      external: 2,
+      lead: 3,
+    };
+    return [...items].sort((a, b) => {
+      const orderDiff = sourceOrder[a.source] - sourceOrder[b.source];
+      if (orderDiff !== 0) return orderDiff;
+      return a.name.localeCompare(b.name);
+    });
   };
 
   // meetings.meeting_location is usually the location NAME (e.g. "TLV"), not the numeric id
@@ -606,6 +1119,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         meetingTime: context.meetingTime || null,
         meetingLocation: context.meetingLocation || null,
         meetingLink: context.meetingLink || null,
+        meetingAddress: context.meeting
+          ? (context.meeting.manual_address?.trim() || '')
+          : undefined,
       };
 
       htmlBody = await replaceEmailTemplateParams(template, templateContext);
@@ -660,18 +1176,34 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       if (!error && data) {
         setAllEmployees(data);
       }
+
+      const { data: userRows } = await supabase
+        .from('users')
+        .select('email, full_name, employee_id, tenants_employee!employee_id(display_name)')
+        .not('email', 'is', null);
+
+      const emailMap: Record<string, string> = {};
+      (userRows || []).forEach((row: any) => {
+        const email = row.email?.trim().toLowerCase();
+        if (!email) return;
+        const employee = Array.isArray(row.tenants_employee)
+          ? row.tenants_employee[0]
+          : row.tenants_employee;
+        emailMap[email] = employee?.display_name || row.full_name || email;
+      });
+      setEmployeeEmailToDisplayName(emailMap);
     };
 
     const fetchMeetingLocations = async () => {
       const { data, error } = await supabase
         .from('tenants_meetinglocation')
-        .select('id, name, default_link, address, order')
+        .select('id, name, default_link, address, order, is_active, is_physical_location')
         .order('order', { ascending: true });
 
       console.log('MeetingTab: Fetched meeting locations:', { data, error });
 
       if (!error && data) {
-        setAllMeetingLocations(data);
+        setAllMeetingLocations(data.map((loc: any) => normalizeMeetingLocationRow(loc)));
       }
     };
 
@@ -695,18 +1227,19 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     fetchEmployees();
     fetchMeetingLocations();
     fetchReminderTemplates();
+    void fetchEmailTemplatesAutomationCache().then(setEmailAutomationCache);
   }, []);
 
   // Set default location to Teams when meeting locations are loaded
   useEffect(() => {
-    if (allMeetingLocations.length > 0 && !scheduleMeetingFormData.location) {
-      const teamsLocation = allMeetingLocations.find(loc => loc.name === 'Teams') || allMeetingLocations[0];
+    if (selectableMeetingLocations.length > 0 && !scheduleMeetingFormData.location) {
+      const teamsLocation = selectableMeetingLocations.find(loc => loc.name === 'Teams') || selectableMeetingLocations[0];
       setScheduleMeetingFormData(prev => ({
         ...prev,
         location: teamsLocation.name,
       }));
     }
-  }, [allMeetingLocations]);
+  }, [selectableMeetingLocations, scheduleMeetingFormData.location]);
 
   // Fetch meeting counts by time for the selected date (for both schedule drawer and edit form)
   useEffect(() => {
@@ -760,9 +1293,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       if (managerDropdownRef.current && !managerDropdownRef.current.contains(event.target as Node)) {
         setShowManagerDropdown(false);
       }
-      if (helperDropdownRef.current && !helperDropdownRef.current.contains(event.target as Node)) {
-        setShowHelperDropdown(false);
-      }
       if (editLocationDropdownRef.current && !editLocationDropdownRef.current.contains(event.target as Node)) {
         setShowEditLocationDropdown(false);
       }
@@ -799,26 +1329,137 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     };
   }, [showNotifyDropdown, showWhatsAppDropdown]);
 
-  // Reset form and set default location to Teams when drawer opens
+  // Reset form once when the schedule drawer opens (not on every render / calendar change)
   useEffect(() => {
-    if (showScheduleDrawer && allMeetingLocations.length > 0) {
-      const teamsLocation = allMeetingLocations.find(loc => loc.name === 'Teams') || allMeetingLocations[0];
-      setScheduleMeetingFormData({
-        date: '',
-        time: '09:00',
-        location: teamsLocation.name,
-        manager: '',
-        helper: '',
-        brief: '',
-        attendance_probability: 'Medium',
-        complexity: 'Simple',
-        car_number: '',
-        calendar: 'active_client',
-        custom_link: '',
-        custom_address: '',
-      });
+    if (!showScheduleDrawer) {
+      scheduleDrawerInitializedRef.current = false;
+      return;
     }
-  }, [showScheduleDrawer, allMeetingLocations]);
+    if (scheduleDrawerInitializedRef.current) return;
+    if (selectableMeetingLocations.length === 0) return;
+
+    scheduleDrawerInitializedRef.current = true;
+    const teamsLocation = selectableMeetingLocations.find(loc => loc.name === 'Teams') || selectableMeetingLocations[0];
+    setScheduleMeetingFormData({
+      date: '',
+      time: '09:00',
+      location: teamsLocation.name,
+      manager: '',
+      helper: '',
+      brief: '',
+      attendance_probability: 'Medium',
+      complexity: 'Simple',
+      car_number: '',
+      calendar: 'active_client',
+      custom_link: '',
+      custom_address: '',
+    });
+  }, [showScheduleDrawer, selectableMeetingLocations]);
+
+  // Load firm_contacts + internal_meeting_types when schedule/reschedule drawers open
+  // or when editing an IM (staff) meeting inline.
+  useEffect(() => {
+    const editingStaffMeeting = editingMeetingId != null && meetings.some(
+      (m) => m.id === editingMeetingId && m.calendar_type === 'staff'
+    );
+    if (!showScheduleDrawer && !showRescheduleDrawer && !editingStaffMeeting) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const [{ data: contactsData, error: contactsError }, { data: typesData, error: typesError }] = await Promise.all([
+          supabase
+            .from('firm_contacts')
+            .select('id, firm_id, name, email, phone, is_active')
+            .eq('is_active', true)
+            .order('name', { ascending: true })
+            .limit(500),
+          supabase
+            .from('internal_meeting_types')
+            .select('id, code, label, sort_order')
+            .order('sort_order', { ascending: true }),
+        ]);
+        if (cancelled) return;
+        if (!contactsError && contactsData) {
+          setFirmContacts(contactsData.map((c: any) => ({
+            id: String(c.id),
+            firm_id: String(c.firm_id),
+            name: String(c.name),
+            email: c.email ?? null,
+            phone: c.phone ?? null,
+          })));
+        }
+        if (!typesError && typesData) {
+          const rows = (typesData || [])
+            .map((r: any) => ({
+              id: Number(r.id),
+              code: String(r.code),
+              label: String(r.label),
+              sort_order: r.sort_order != null ? Number(r.sort_order) : null,
+            }))
+            .filter((r) => Number.isFinite(r.id));
+          setInternalMeetingTypes(rows);
+          const defaultType = rows.find((t) => t.code === 'staff') || rows[0] || null;
+          setScheduleExternal((prev) => ({
+            ...prev,
+            internalMeetingTypeId: prev.internalMeetingTypeId ?? defaultType?.id ?? null,
+          }));
+          setRescheduleExternal((prev) => ({
+            ...prev,
+            internalMeetingTypeId: prev.internalMeetingTypeId ?? defaultType?.id ?? null,
+          }));
+        }
+      } catch (e) {
+        console.warn('MeetingTab: failed to load external-meeting lookups', e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [showScheduleDrawer, showRescheduleDrawer, editingMeetingId, meetings]);
+
+  // Allow the ClientHeader (top-left stage row) to open the Schedule / Reschedule
+  // drawers via window events. Keeps drawer state local to MeetingTab where all
+  // meeting-related state lives, including External Meeting support.
+  useEffect(() => {
+    const openSchedule = () => {
+      clearPendingMeetingScheduleDrawer();
+      setShowScheduleDrawer(true);
+    };
+    const openReschedule = () => {
+      clearPendingMeetingRescheduleDrawer();
+      setShowRescheduleDrawer(true);
+    };
+    window.addEventListener('meeting-tab:open-schedule-drawer', openSchedule);
+    window.addEventListener('meeting-tab:open-reschedule-drawer', openReschedule);
+
+    const pending = consumePendingMeetingDrawers();
+    if (pending.schedule) setShowScheduleDrawer(true);
+    if (pending.reschedule) setShowRescheduleDrawer(true);
+
+    return () => {
+      window.removeEventListener('meeting-tab:open-schedule-drawer', openSchedule);
+      window.removeEventListener('meeting-tab:open-reschedule-drawer', openReschedule);
+    };
+  }, []);
+
+  // Close staff/firm-contact dropdowns on outside click (Schedule + Reschedule).
+  useEffect(() => {
+    const onMouseDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (scheduleStaffDropdownRef.current && !scheduleStaffDropdownRef.current.contains(target)) {
+        setShowScheduleStaffDropdown(false);
+      }
+      if (scheduleFirmContactDropdownRef.current && !scheduleFirmContactDropdownRef.current.contains(target)) {
+        setShowScheduleFirmContactDropdown(false);
+      }
+      if (rescheduleStaffDropdownRef.current && !rescheduleStaffDropdownRef.current.contains(target)) {
+        setShowRescheduleStaffDropdown(false);
+      }
+      if (rescheduleFirmContactDropdownRef.current && !rescheduleFirmContactDropdownRef.current.contains(target)) {
+        setShowRescheduleFirmContactDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', onMouseDown);
+    return () => document.removeEventListener('mousedown', onMouseDown);
+  }, []);
 
   // Simplified employee unavailability check (can be enhanced later)
   const isEmployeeUnavailable = useCallback((employeeName: string, date: string, time: string): boolean => {
@@ -901,6 +1542,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               eligibility_status: '',
               feasibility_notes: '',
               documents_link: '',
+              calendar_type: 'active_client',
               lastEdited: {
                 timestamp: new Date().toISOString(),
                 user: 'Legacy System',
@@ -951,6 +1593,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             car_number: m.car_number,
             custom_link: m.custom_link,
             custom_address: m.custom_address,
+            manual_address: m.manual_address ?? null,
+            meeting_summary_notes: m.meeting_summary_notes ?? null,
+            calendar_type: m.calendar_type || 'active_client',
+            meeting_subject: m.meeting_subject || undefined,
+            extern1: m.extern1 ?? null,
+            extern2: m.extern2 ?? null,
             lastEdited: {
               timestamp: m.last_edited_timestamp,
               user: m.last_edited_by,
@@ -991,6 +1639,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             car_number: m.car_number,
             custom_link: m.custom_link,
             custom_address: m.custom_address,
+            manual_address: m.manual_address ?? null,
+            meeting_summary_notes: m.meeting_summary_notes ?? null,
+            calendar_type: m.calendar_type || 'active_client',
+            meeting_subject: m.meeting_subject || undefined,
+            extern1: m.extern1 ?? null,
+            extern2: m.extern2 ?? null,
             lastEdited: {
               timestamp: m.last_edited_timestamp,
               user: m.last_edited_by,
@@ -1008,6 +1662,167 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       console.error('Error fetching meetings:', error);
       toast.error('Failed to load meetings.');
     }
+  };
+
+  const loadMeetingParticipants = useCallback(async (meetingId: number) => {
+    setMeetingParticipantsById((prev) => ({
+      ...prev,
+      [meetingId]: { loading: true, participants: prev[meetingId]?.participants ?? [] },
+    }));
+
+    try {
+      const { data: partData, error: partErr } = await supabase
+        .from('meeting_participants')
+        .select('id, employee_id, firm_contact_id, free_name, free_email, free_phone, notes')
+        .eq('meeting_id', meetingId);
+      if (partErr) throw partErr;
+
+      const employeeIds = Array.from(
+        new Set(
+          (partData || [])
+            .map((r: any) => (r.employee_id != null ? Number(r.employee_id) : null))
+            .filter((n: any) => Number.isFinite(n) && n > 0)
+        )
+      ) as number[];
+      const firmIds = Array.from(
+        new Set(
+          (partData || [])
+            .map((r: any) => (r.firm_contact_id ? String(r.firm_contact_id) : null))
+            .filter(Boolean)
+        )
+      ) as string[];
+
+      const fetchEmployeesWithPhones = async () => {
+        if (!employeeIds.length) return { data: [] as any[] };
+        const res = await supabase
+          .from('tenants_employee')
+          .select('id, display_name, photo_url, photo, phone, mobile, phone_ext')
+          .in('id', employeeIds);
+        if (!res.error) return res;
+        if ((res.error as any)?.code === '42703') {
+          return supabase.from('tenants_employee').select('id, display_name, photo_url, photo').in('id', employeeIds);
+        }
+        return res;
+      };
+
+      const [empsRes, firmsRes] = await Promise.all([
+        fetchEmployeesWithPhones(),
+        firmIds.length
+          ? supabase
+              .from('firm_contacts')
+              .select('id, name, profile_image_url, email, second_email, phone, notes, firm_id, firms!firm_contacts_firm_id_fkey(id, name)')
+              .in('id', firmIds)
+          : Promise.resolve({ data: [] as any[] }),
+      ]);
+
+      const empById = new Map<number, any>();
+      (empsRes as any).data?.forEach((e: any) => empById.set(Number(e.id), e));
+      const firmById = new Map<string, any>();
+      (firmsRes as any).data?.forEach((f: any) => firmById.set(String(f.id), f));
+
+      const rows: MeetingParticipantRow[] = (partData || []).map((r: any, idx: number) => {
+        if (r.employee_id != null) {
+          const e = empById.get(Number(r.employee_id));
+          return {
+            id: r.id != null ? String(r.id) : `staff-${idx}`,
+            type: 'staff',
+            badge: 'Staff',
+            name: e?.display_name || `#${r.employee_id}`,
+            imageUrl: e?.photo_url || e?.photo || null,
+            employeeId: Number(r.employee_id),
+          };
+        }
+        if (r.firm_contact_id) {
+          const f = firmById.get(String(r.firm_contact_id));
+          const firmObj = Array.isArray(f?.firms) ? f.firms[0] : f?.firms;
+          return {
+            id: r.id != null ? String(r.id) : `firm-${idx}`,
+            type: 'firm',
+            badge: 'Firm',
+            name: f?.name || 'Firm contact',
+            subtitle: firmObj?.name ? String(firmObj.name) : null,
+            imageUrl: f?.profile_image_url || null,
+          };
+        }
+        return {
+          id: r.id != null ? String(r.id) : `extern-${idx}`,
+          type: 'extern',
+          badge: 'External',
+          name: String(r.free_name || '').trim() || 'External participant',
+        };
+      });
+
+      setMeetingParticipantsById((prev) => ({
+        ...prev,
+        [meetingId]: { loading: false, participants: rows },
+      }));
+    } catch (error) {
+      console.error('Failed to load meeting participants', error);
+      setMeetingParticipantsById((prev) => ({
+        ...prev,
+        [meetingId]: { loading: false, participants: [] },
+      }));
+    }
+  }, []);
+
+  useEffect(() => {
+    const staffMeetingIds = meetings
+      .filter((m) => m.calendar_type === 'staff' && typeof m.id === 'number')
+      .map((m) => Number(m.id));
+    staffMeetingIds.forEach((id) => {
+      void loadMeetingParticipants(id);
+    });
+  }, [meetings, loadMeetingParticipants]);
+
+  useEffect(() => {
+    if (!showNotifyModal) {
+      setSelectedEmailRecipientKeys(new Set());
+      return;
+    }
+    const keys = contacts
+      .filter((c) => c.email && c.email !== '---')
+      .map((c) => c.recipientKey);
+    if (keys.length === 0 && client.email) {
+      keys.push('client-primary-email');
+    }
+    setSelectedEmailRecipientKeys(new Set(keys));
+  }, [showNotifyModal, contacts, client.email]);
+
+  useEffect(() => {
+    if (!showWhatsAppNotifyModal) {
+      setSelectedWhatsAppRecipientKeys(new Set());
+      return;
+    }
+    const keys = whatsAppContacts
+      .filter((c) => getNotifyRecipientPhone(c))
+      .map((c) => c.recipientKey);
+    if (keys.length === 0) {
+      const clientPhone = client.phone?.trim();
+      const clientMobile = client.mobile?.trim();
+      const hasClientPhone =
+        (clientPhone && clientPhone !== '' && clientPhone !== '---') ||
+        (clientMobile && clientMobile !== '' && clientMobile !== '---');
+      if (hasClientPhone) keys.push('client-primary-phone');
+    }
+    setSelectedWhatsAppRecipientKeys(new Set(keys));
+  }, [showWhatsAppNotifyModal, whatsAppContacts, client.phone, client.mobile]);
+
+  const toggleEmailRecipient = (recipientKey: string) => {
+    setSelectedEmailRecipientKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(recipientKey)) next.delete(recipientKey);
+      else next.add(recipientKey);
+      return next;
+    });
+  };
+
+  const toggleWhatsAppRecipient = (recipientKey: string) => {
+    setSelectedWhatsAppRecipientKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(recipientKey)) next.delete(recipientKey);
+      else next.add(recipientKey);
+      return next;
+    });
   };
 
   const fetchLeadSchedulingInfo = async () => {
@@ -1344,84 +2159,69 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         : client.id;
 
       const fetchedContacts = await fetchLeadContacts(normalizedLeadId, isLegacyLead);
-      setContacts(fetchedContacts);
+      let allContacts: NotifyRecipient[] = fetchedContacts.map((c) => ({
+        ...c,
+        recipientKey: `lead-${c.id}`,
+        source: 'lead',
+        sourceLabel: c.isMain ? 'Lead (Main)' : 'Lead Contact',
+      }));
 
-      // Fetch email templates based on type
+      if (meeting.calendar_type === 'staff') {
+        const meetingDbId = getMeetingDbId(meeting);
+        if (meetingDbId != null) {
+          const participantContacts = await fetchMeetingParticipantContacts(meetingDbId);
+          allContacts = mergeNotifyRecipients(allContacts, participantContacts);
+        }
+      }
+
+      setContacts(allContacts);
+
+      // Fetch email templates from admin automation rules (location × placement × language)
       try {
-        let enTemplateId: number;
-        let heTemplateId: number;
+        const cache = emailAutomationCache ?? (await fetchEmailTemplatesAutomationCache());
+        if (!emailAutomationCache) setEmailAutomationCache(cache);
 
-        switch (type) {
-          case 'invitation':
-            enTemplateId = 151;
-            heTemplateId = 152;
-            break;
-          case 'invitation_jlm':
-            enTemplateId = 157;
-            heTemplateId = 158;
-            break;
-          case 'invitation_tlv':
-            enTemplateId = 161;
-            heTemplateId = 162;
-            break;
-          case 'invitation_tlv_parking':
-            enTemplateId = 159;
-            heTemplateId = 160;
-            break;
-          case 'reminder':
-            enTemplateId = 163;
-            heTemplateId = 167;
-            break;
-          case 'cancellation':
-            enTemplateId = 153;
-            heTemplateId = 154;
-            break;
-          case 'rescheduled':
-            enTemplateId = 155;
-            heTemplateId = 156;
-            break;
-          default:
-            enTemplateId = 151;
-            heTemplateId = 152;
-        }
+        const locationId = resolveMeetingLocationId(meeting.location, allMeetingLocations);
+        const templateIds = resolveMeetingEmailTemplateIds(cache, { locationId, emailType: type });
 
-        const { data: enTemplate, error: enError } = await supabase
-          .from('misc_emailtemplate')
-          .select('content, name')
-          .eq('id', enTemplateId)
-          .single();
-
-        const { data: heTemplate, error: heError } = await supabase
-          .from('misc_emailtemplate')
-          .select('content, name')
-          .eq('id', heTemplateId)
-          .single();
-
-        if (!enError && enTemplate) {
-          const parsedContent = parseTemplateContent(enTemplate.content);
-          setEmailTemplates(prev => ({
-            ...prev,
-            en: { content: parsedContent, name: enTemplate.name || null }
-          }));
-          setEmailTemplateIds(prev => ({ ...prev, en: enTemplateId }));
+        if (!templateIds.en && !templateIds.he) {
+          toast.error(
+            'No email templates configured for this location and email type. Set them in Admin → Misc → Email Templates Automation.'
+          );
+          setEmailTemplates({ en: null, he: null });
+          setEmailTemplateIds({ en: null, he: null });
         } else {
-          setEmailTemplates(prev => ({ ...prev, en: null }));
-          setEmailTemplateIds(prev => ({ ...prev, en: null }));
-        }
+          const idsToLoad = [templateIds.en, templateIds.he].filter(
+            (id): id is number => id != null && Number.isFinite(id)
+          );
+          const templatesById = await fetchMiscEmailTemplatesByIds(idsToLoad);
 
-        if (!heError && heTemplate) {
-          const parsedContent = parseTemplateContent(heTemplate.content);
-          setEmailTemplates(prev => ({
-            ...prev,
-            he: { content: parsedContent, name: heTemplate.name || null }
-          }));
-          setEmailTemplateIds(prev => ({ ...prev, he: heTemplateId }));
-        } else {
-          setEmailTemplates(prev => ({ ...prev, he: null }));
-          setEmailTemplateIds(prev => ({ ...prev, he: null }));
+          const applyTemplate = (lang: 'en' | 'he', templateId: number | null) => {
+            if (!templateId) {
+              setEmailTemplates((prev) => ({ ...prev, [lang]: null }));
+              setEmailTemplateIds((prev) => ({ ...prev, [lang]: null }));
+              return;
+            }
+            const row = templatesById.get(templateId);
+            if (!row?.content) {
+              setEmailTemplates((prev) => ({ ...prev, [lang]: null }));
+              setEmailTemplateIds((prev) => ({ ...prev, [lang]: null }));
+              return;
+            }
+            const parsedContent = parseTemplateContent(row.content);
+            setEmailTemplates((prev) => ({
+              ...prev,
+              [lang]: { content: parsedContent, name: row.name || null },
+            }));
+            setEmailTemplateIds((prev) => ({ ...prev, [lang]: templateId }));
+          };
+
+          applyTemplate('en', templateIds.en);
+          applyTemplate('he', templateIds.he);
         }
       } catch (error) {
         console.error('Error fetching email templates:', error);
+        toast.error('Failed to load email templates');
       }
 
       setShowNotifyModal(true);
@@ -1443,85 +2243,41 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         : client.id;
 
       const fetchedContacts = await fetchLeadContacts(normalizedLeadId, isLegacyLead);
-      console.log('📱 WhatsApp Notify - Fetched contacts (before dedup):', fetchedContacts.length, fetchedContacts);
+      let allContacts: NotifyRecipient[] = fetchedContacts.map((c) => ({
+        ...c,
+        recipientKey: `lead-${c.id}`,
+        source: 'lead',
+        sourceLabel: c.isMain ? 'Lead (Main)' : 'Lead Contact',
+      }));
 
-      // Deduplicate contacts - only remove exact duplicates within the contact list
-      const uniqueContacts: ContactInfo[] = [];
-      const seenContactKeys = new Set<string>();
-
-      // Helper to normalize contact info for comparison
-      const normalizeContactInfo = (c: Partial<ContactInfo>) => {
-        const normalizePhone = (phone: string | null | undefined) => phone?.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '') || '';
-        return {
-          name: (c.name || '').toLowerCase().trim(),
-          email: (c.email || '').toLowerCase().trim(),
-          phone: normalizePhone(c.phone || c.mobile), // Use phone or mobile, whichever is available
-        };
-      };
-
-      // Helper to check if two contacts are exact duplicates
-      const contactsMatch = (c1: ContactInfo, c2: ContactInfo): boolean => {
-        const n1 = normalizeContactInfo(c1);
-        const n2 = normalizeContactInfo(c2);
-
-        // Match if same email (and email is not empty)
-        if (n1.email && n2.email && n1.email === n2.email) {
-          return true;
+      if (meeting.calendar_type === 'staff') {
+        const meetingDbId = getMeetingDbId(meeting);
+        if (meetingDbId != null) {
+          const participantContacts = await fetchMeetingParticipantContacts(meetingDbId);
+          allContacts = mergeNotifyRecipients(allContacts, participantContacts);
         }
+      }
 
-        // Match if same phone (and phone is not empty)
-        if (n1.phone && n2.phone && n1.phone === n2.phone) {
-          return true;
-        }
-
-        // Match if same name AND (same email OR same phone)
-        if (n1.name && n2.name && n1.name === n2.name) {
-          if ((n1.email && n2.email && n1.email === n2.email) ||
-            (n1.phone && n2.phone && n1.phone === n2.phone)) {
-            return true;
-          }
-        }
-
-        return false;
-      };
-
-      // Add fetched contacts, deduplicating only exact duplicates
-      fetchedContacts.forEach((contact) => {
-        const normalized = normalizeContactInfo(contact);
-        const contactKey = `${normalized.email}_${normalized.phone}_${normalized.name}`;
-
-        // Check if we've already seen a contact with the same key
-        if (seenContactKeys.has(contactKey)) {
-          return; // Skip duplicate
-        }
-
-        // Check if this contact is a duplicate of any existing contact
-        const isDuplicate = uniqueContacts.some(existing => contactsMatch(existing, contact));
-        if (isDuplicate) {
-          return; // Skip duplicate
-        }
-
-        // Add the contact
-        seenContactKeys.add(contactKey);
-        uniqueContacts.push(contact);
-      });
+      console.log('📱 WhatsApp Notify - Fetched contacts (before dedup):', allContacts.length, allContacts);
 
       // If no contacts were found from DB, add a fallback contact based on the lead's primary info
-      if (uniqueContacts.length === 0 && (client.phone || client.mobile)) {
-        const fallbackContact: ContactInfo = {
-          id: -1, // Use -1 as a temporary ID for fallback contact
+      if (allContacts.length === 0 && (client.phone || client.mobile)) {
+        allContacts.push({
+          id: -1,
+          recipientKey: 'lead-fallback',
           name: client.name || 'Client',
           email: client.email || null,
           phone: client.phone || null,
           mobile: client.mobile || null,
           country_id: null,
           isMain: true,
-        };
-        uniqueContacts.push(fallbackContact);
+          source: 'lead',
+          sourceLabel: 'Lead (Main)',
+        });
       }
 
-      console.log('📱 WhatsApp Notify - Deduplicated contacts:', uniqueContacts.length, uniqueContacts);
-      setWhatsAppContacts(uniqueContacts);
+      console.log('📱 WhatsApp Notify - Contacts for modal:', allContacts.length, allContacts);
+      setWhatsAppContacts(allContacts);
       setShowWhatsAppNotifyModal(true);
     } catch (error) {
       console.error('Error fetching contacts:', error);
@@ -2037,9 +2793,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       // Use explicit email type if provided, otherwise use state
       const currentEmailType = explicitEmailType || emailType;
 
-      const joinLink = getMeetingJoinLink(meeting);
-      // Category and topic removed - not to be included in emails
       const locationName = getMeetingLocationName(meeting.location);
+      const joinLinkRaw = getMeetingJoinLink(meeting);
+      const locationRecord = resolveMeetingLocationRecord(meeting.location);
+      const includeJoinLink = shouldIncludeMeetingJoinLink(locationRecord, locationName);
+      const joinLink = includeJoinLink ? joinLinkRaw : '';
+      const teamsJoinUrlForCalendar =
+        includeJoinLink && joinLink && getLinkType(joinLink) === 'teams' ? joinLink : undefined;
+      const calendarLocationDisplay =
+        includeJoinLink && locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName;
 
       // Check if recipient email is a Microsoft domain (for Outlook/Exchange)
       const isMicrosoftEmail = (email: string | string[]): boolean => {
@@ -2062,7 +2824,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       // Build description HTML (category and topic removed)
       let descriptionHtml = `<p>Meeting with <strong>${recipientName}</strong></p>`;
       if (joinLink) {
-        descriptionHtml += `<p><strong>Join Teams Meeting:</strong> <a href="${joinLink}">${joinLink}</a></p>`;
+        const joinLabel = getLinkType(joinLink) === 'teams' ? 'Join Teams Meeting' : 'Join Meeting';
+        descriptionHtml += `<p><strong>${joinLabel}:</strong> <a href="${joinLink}">${joinLink}</a></p>`;
       }
       if (meeting.brief) {
         descriptionHtml += `<p><strong>Brief:</strong><br>${meeting.brief.replace(/\n/g, '<br>')}</p>`;
@@ -2162,13 +2925,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               subject: calendarSubject,
               startDateTime: startDateTime.toISOString(),
               endDateTime: endDateTime.toISOString(),
-              location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
+              location: calendarLocationDisplay,
               description: descriptionHtml,
               attendeeEmail: primaryRecipientEmail,
               attendeeName: recipientName,
               organizerEmail: account.username || 'noreply@lawoffice.org.il',
               organizerName: senderName,
-              teamsJoinUrl: locationName === 'Teams' ? joinLink : undefined,
+              teamsJoinUrl: teamsJoinUrlForCalendar,
               timeZone: 'Asia/Jerusalem'
             });
 
@@ -2189,13 +2952,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               date: meeting.date,
               time: formattedTime,
               durationMinutes: 60,
-              location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
+              location: calendarLocationDisplay,
               description: descriptionHtml.replace(/<[^>]+>/g, ''), // Strip HTML for ICS
               organizerEmail: account.username || 'noreply@lawoffice.org.il',
               organizerName: senderName,
               attendeeEmail: primaryRecipientEmail,
               attendeeName: recipientName,
-              teamsJoinUrl: locationName === 'Teams' ? joinLink : undefined,
+              teamsJoinUrl: teamsJoinUrlForCalendar,
               timeZone: 'Asia/Jerusalem'
             });
 
@@ -2863,6 +3626,223 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     };
   };
 
+  // Create an internal meeting (staff calendar) tied to the current lead, with
+  // external participants. Mirrors CalendarPage's TeamsMeetingModal create flow,
+  // but also links the meeting row to this lead via client_id / legacy_lead_id.
+  const STAFF_CALENDAR_EMAIL = 'shared-staffcalendar@lawoffice.org.il';
+  const createExternalMeetingForLead = async (params: {
+    date: string;
+    time: string;
+    durationMinutes?: number;
+    subject: string;
+    description?: string;
+    location: string;
+    internalMeetingTypeId: number | null;
+    selectedStaffEmployeeIds: number[];
+    selectedFirmContactIds: string[];
+    freeParticipants: FreeParticipant[];
+    freeDraft: FreeParticipant;
+  }): Promise<{ meetingId: number | null; teamsMeetingUrl: string | null } | null> => {
+    const startDateTime = new Date(`${params.date}T${params.time}:00`);
+    const endDateTime = new Date(startDateTime.getTime() + (params.durationMinutes ?? 60) * 60000);
+
+    const account = instance.getAllAccounts()[0];
+    if (!account) {
+      toast.error('You must be signed in to Microsoft to create internal meetings.');
+      return null;
+    }
+
+    const locationLower = String(params.location || '').trim().toLowerCase();
+    const shouldCreateTeamsMeeting = locationLower === 'teams' || locationLower.includes('teams');
+
+    const scopes = shouldCreateTeamsMeeting
+      ? ['https://graph.microsoft.com/Calendars.ReadWrite', 'https://graph.microsoft.com/OnlineMeetings.ReadWrite']
+      : ['https://graph.microsoft.com/Calendars.ReadWrite'];
+    const staffCalendarRequest = {
+      ...loginRequest,
+      scopes,
+      extraQueryParameters: { login_hint: STAFF_CALENDAR_EMAIL },
+    };
+    setShowAuthRedirectOption(false);
+    authRedirectParamsRef.current = { request: staffCalendarRequest, account };
+
+    const accessToken = await getAccessTokenWithFallback(
+      instance,
+      staffCalendarRequest,
+      account,
+      () => toast.loading('Authenticating with shared calendar...', { duration: 3000 })
+    );
+    if (!accessToken) {
+      toast.error('Microsoft auth failed. Allow popups or use "Sign in (this tab)".');
+      return null;
+    }
+
+    // Build attendee email list for the Outlook event (staff + firm names + free names)
+    const staffEmployees = allEmployees.filter((e: any) => params.selectedStaffEmployeeIds.includes(Number(e.id)));
+    const selectedFirms = firmContacts.filter((c) => params.selectedFirmContactIds.includes(c.id));
+    const freeDraftName = String(params.freeDraft?.name || '').trim();
+    const allFreeParticipants = [
+      ...(params.freeParticipants || []),
+      ...(freeDraftName
+        ? [{
+            name: freeDraftName,
+            email: (params.freeDraft?.email || '').trim() || undefined,
+            phone: (params.freeDraft?.phone || '').trim() || undefined,
+            notes: (params.freeDraft?.notes || '').trim() || undefined,
+          }]
+        : []),
+    ].filter((p) => p && typeof p.name === 'string' && p.name.trim() !== '');
+
+    const staffEmails: string[] = [];
+    {
+      const employeeIds = staffEmployees.map((e: any) => e.id);
+      if (employeeIds.length > 0) {
+        const { data: userRows } = await supabase
+          .from('users')
+          .select('employee_id, email')
+          .in('employee_id', employeeIds)
+          .eq('is_staff', true)
+          .not('email', 'is', null);
+        (userRows || []).forEach((r: any) => { if (r.email) staffEmails.push(String(r.email)); });
+      }
+    }
+    const firmNames = selectedFirms.map((c) => String(c.name || '').trim()).filter(Boolean);
+    const freeNames = allFreeParticipants.map((p) => String(p.name || '').trim()).filter(Boolean);
+    const teamsAttendeeEmails = Array.from(new Set([...staffEmails, ...firmNames, ...freeNames].filter(Boolean)));
+
+    const fmtGraph = (d: Date) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, '0');
+      const day = String(d.getDate()).padStart(2, '0');
+      const h = String(d.getHours()).padStart(2, '0');
+      const min = String(d.getMinutes()).padStart(2, '0');
+      const s = String(d.getSeconds()).padStart(2, '0');
+      return `${y}-${m}-${day}T${h}:${min}:${s}`;
+    };
+
+    let teamsMeetingId: string | null = null;
+    let teamsJoinUrl: string | null = null;
+    try {
+      if (shouldCreateTeamsMeeting) {
+        const result = await createStaffTeamsMeeting(accessToken, {
+          subject: params.subject,
+          startDateTime: fmtGraph(startDateTime),
+          endDateTime: fmtGraph(endDateTime),
+          attendees: teamsAttendeeEmails.map((email) => ({ email })),
+          isRecurring: false,
+          recurrencePattern: 'weekly',
+          recurrenceInterval: 1,
+          recurrenceEndDate: null,
+        });
+        if (!result || !result.id) throw new Error('Teams meeting creation returned invalid result');
+        teamsMeetingId = result.id;
+        teamsJoinUrl = result.onlineMeeting?.joinUrl || result.joinUrl || null;
+      } else {
+        const result = await createStaffCalendarEvent(accessToken, {
+          subject: params.subject,
+          startDateTime: fmtGraph(startDateTime),
+          endDateTime: fmtGraph(endDateTime),
+          locationName: params.location || null,
+          description: params.description || null,
+          attendeesEmails: teamsAttendeeEmails,
+          isRecurring: false,
+          recurrencePattern: 'weekly',
+          recurrenceInterval: 1,
+          recurrenceEndDate: null,
+        });
+        teamsMeetingId = result?.id || null;
+      }
+    } catch (err) {
+      console.error('External meeting Outlook creation failed:', err);
+      toast.error(err instanceof Error ? err.message : 'Failed to create Outlook event for external meeting.');
+      return null;
+    }
+
+    // Persist outlook_teams_meetings meta row (best-effort).
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user && teamsMeetingId) {
+        const meta: OutlookTeamsMeeting = {
+          teams_meeting_id: teamsMeetingId,
+          subject: params.subject,
+          start_date_time: startDateTime.toISOString(),
+          end_date_time: endDateTime.toISOString(),
+          ...(shouldCreateTeamsMeeting && teamsJoinUrl ? { teams_join_url: teamsJoinUrl, teams_meeting_url: teamsJoinUrl } : {}),
+          calendar_id: STAFF_CALENDAR_EMAIL,
+          attendees: teamsAttendeeEmails,
+          description: params.description || '',
+          location: params.location,
+          created_by: user.id,
+          is_online_meeting: shouldCreateTeamsMeeting,
+          ...(shouldCreateTeamsMeeting ? { online_meeting_provider: 'teamsForBusiness' } : {}),
+        };
+        await saveOutlookTeamsMeeting(meta);
+      }
+    } catch (e) {
+      console.warn('Failed to persist outlook_teams_meetings meta row', e);
+    }
+
+    // Insert the internal meeting row (calendar_type='staff') linked to this lead.
+    const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+    const legacyId = isLegacyLead ? client.id.toString().replace('legacy_', '') : null;
+    const { data: insertedMeeting, error: meetingInsertError } = await supabase
+      .from('meetings')
+      .insert({
+        client_id: isLegacyLead ? null : client.id,
+        legacy_lead_id: isLegacyLead ? legacyId : null,
+        meeting_date: params.date,
+        meeting_time: params.time,
+        meeting_location: params.location,
+        meeting_subject: params.subject,
+        meeting_brief: params.description || null,
+        calendar_type: 'staff',
+        internal_meeting_type_id: params.internalMeetingTypeId,
+        teams_id: teamsMeetingId,
+        teams_meeting_url: teamsJoinUrl,
+        custom_link: null,
+        status: 'scheduled',
+      })
+      .select('id')
+      .single();
+    if (meetingInsertError) {
+      console.error('External meeting insert failed', meetingInsertError);
+      toast.error(`Failed to save meeting: ${meetingInsertError.message}`);
+      return null;
+    }
+    const meetingId = insertedMeeting?.id ?? null;
+    if (meetingId == null) {
+      toast.error('Failed to save meeting');
+      return null;
+    }
+
+    // Save participants
+    const participantRows: any[] = [];
+    params.selectedStaffEmployeeIds.forEach((employeeId) =>
+      participantRows.push({ meeting_id: meetingId, employee_id: employeeId })
+    );
+    params.selectedFirmContactIds.forEach((firmContactId) =>
+      participantRows.push({ meeting_id: meetingId, firm_contact_id: firmContactId })
+    );
+    allFreeParticipants.forEach((p) =>
+      participantRows.push({
+        meeting_id: meetingId,
+        free_name: String(p.name).trim(),
+        free_email: p.email ? String(p.email).trim() : null,
+        free_phone: p.phone ? String(p.phone).trim() : null,
+        notes: p.notes ? String(p.notes).trim() : null,
+      })
+    );
+    if (participantRows.length > 0) {
+      const { error: partErr } = await supabase.from('meeting_participants').insert(participantRows);
+      if (partErr) {
+        console.warn('Failed to save participants', partErr);
+        toast.error(`Meeting saved but failed to save participants: ${partErr.message || 'Unknown error'}`);
+      }
+    }
+
+    return { meetingId, teamsMeetingUrl: teamsJoinUrl };
+  };
+
   // Test calendar access permissions
   const testCalendarAccess = async (accessToken: string, calendarEmail: string) => {
     try {
@@ -2894,6 +3874,56 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const account = instance.getAllAccounts()[0];
       if (!account) {
         toast.error("You must be signed in to schedule a Teams meeting.");
+        setIsSchedulingMeeting(false);
+        return;
+      }
+
+      // External meeting branch: create an Internal Meeting (calendar_type='staff')
+      // tied to this lead, with external participants. Skip the active/potential-client
+      // calendar flow entirely.
+      if (scheduleMeetingFormData.calendar === 'external') {
+        const subject = scheduleExternal.subject.trim()
+          || `[#${client.lead_number || client.id}] ${client.name} - Internal Meeting`;
+        const result = await createExternalMeetingForLead({
+          date: scheduleMeetingFormData.date,
+          time: scheduleMeetingFormData.time,
+          subject,
+          description: scheduleMeetingFormData.brief || '',
+          location: scheduleMeetingFormData.location,
+          internalMeetingTypeId: scheduleExternal.internalMeetingTypeId,
+          selectedStaffEmployeeIds: scheduleExternal.selectedStaffEmployeeIds,
+          selectedFirmContactIds: scheduleExternal.selectedFirmContactIds,
+          freeParticipants: scheduleExternal.freeParticipants,
+          freeDraft: scheduleExternal.freeDraft,
+        });
+        if (result) {
+          toast.success('Internal meeting created with external participants.');
+          setShowScheduleDrawer(false);
+          setScheduleMeetingFormData({
+            date: '',
+            time: '09:00',
+            location: 'Teams',
+            manager: '',
+            helper: '',
+            brief: '',
+            attendance_probability: 'Medium',
+            complexity: 'Simple',
+            car_number: '',
+            calendar: 'active_client',
+            custom_link: '',
+            custom_address: '',
+          });
+          setScheduleExternal({
+            subject: '',
+            internalMeetingTypeId: internalMeetingTypes.find((t) => t.code === 'staff')?.id ?? internalMeetingTypes[0]?.id ?? null,
+            selectedStaffEmployeeIds: [],
+            selectedFirmContactIds: [],
+            freeParticipants: [],
+            freeDraft: { name: '', email: '', phone: '', notes: '' },
+          });
+          if (onClientUpdate) await onClientUpdate();
+          await fetchMeetings();
+        }
         setIsSchedulingMeeting(false);
         return;
       }
@@ -3290,16 +4320,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         };
 
         // Determine the appropriate invitation type based on meeting location
-        const location = (scheduleMeetingFormData.location || '').toLowerCase();
-        let invitationType: 'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' = 'invitation';
-
-        if (location.includes('jrslm') || location.includes('jerusalem')) {
-          invitationType = 'invitation_jlm';
-        } else if (location.includes('tlv') && location.includes('parking')) {
-          invitationType = 'invitation_tlv_parking';
-        } else if (location.includes('tlv') || location.includes('tel aviv')) {
-          invitationType = 'invitation_tlv';
-        }
+        const invitationType = inferInvitationEmailTypeFromLocationName(scheduleMeetingFormData.location);
 
         console.log('🎯 Auto-sending meeting invitation:', {
           location: scheduleMeetingFormData.location,
@@ -3362,8 +4383,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const account = instance.getAllAccounts()[0];
 
       // Cancel the meeting
-      const { data: { user } } = await supabase.auth.getUser();
-      const editor = user?.email || account?.name || 'system';
+      const editor = await resolveEditorDisplayName();
       const { error: cancelError } = await supabase
         .from('meetings')
         .update({
@@ -3558,6 +4578,81 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     try {
       const account = instance.getAllAccounts()[0];
 
+      // External meeting branch: cancel previous meeting (if any) and create a
+      // new internal meeting with external participants tied to this lead.
+      if (rescheduleFormData.calendar === 'external') {
+        const isLegacyLeadExt = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+        const legacyIdExt = isLegacyLeadExt ? client.id.toString().replace('legacy_', '') : null;
+
+        // Cancel oldest upcoming meeting (mirrors normal reschedule semantics).
+        let cancelQuery = supabase
+          .from('meetings')
+          .select('id, meeting_date, meeting_time, meeting_location')
+          .neq('status', 'canceled')
+          .gte('meeting_date', new Date().toISOString().split('T')[0])
+          .order('meeting_date', { ascending: true })
+          .order('meeting_time', { ascending: true })
+          .limit(1);
+        if (isLegacyLeadExt) cancelQuery = cancelQuery.eq('legacy_lead_id', legacyIdExt);
+        else cancelQuery = cancelQuery.eq('client_id', client.id);
+        const { data: toCancel } = await cancelQuery;
+        if (toCancel && toCancel.length > 0) {
+          const editor = await resolveEditorDisplayName();
+          await supabase
+            .from('meetings')
+            .update({ status: 'canceled', last_edited_timestamp: new Date().toISOString(), last_edited_by: editor })
+            .eq('id', toCancel[0].id);
+        }
+
+        const subject = rescheduleExternal.subject.trim()
+          || `[#${client.lead_number || client.id}] ${client.name} - Internal Meeting`;
+        const result = await createExternalMeetingForLead({
+          date: rescheduleFormData.date,
+          time: rescheduleFormData.time,
+          subject,
+          description: rescheduleFormData.brief || '',
+          location: rescheduleFormData.location,
+          internalMeetingTypeId: rescheduleExternal.internalMeetingTypeId,
+          selectedStaffEmployeeIds: rescheduleExternal.selectedStaffEmployeeIds,
+          selectedFirmContactIds: rescheduleExternal.selectedFirmContactIds,
+          freeParticipants: rescheduleExternal.freeParticipants,
+          freeDraft: rescheduleExternal.freeDraft,
+        });
+        if (result) {
+          toast.success('Internal meeting created with external participants.');
+          setShowRescheduleDrawer(false);
+          setMeetingToDelete(null);
+          setNotifyClientOnReschedule(false);
+          setRescheduleFormData({
+            date: '',
+            time: '09:00',
+            location: 'Teams',
+            calendar: 'active_client',
+            manager: '',
+            helper: '',
+            brief: '',
+            attendance_probability: 'Medium',
+            complexity: 'Simple',
+            car_number: '',
+            custom_link: '',
+            custom_address: '',
+          });
+          setRescheduleExternal({
+            subject: '',
+            internalMeetingTypeId: internalMeetingTypes.find((t) => t.code === 'staff')?.id ?? internalMeetingTypes[0]?.id ?? null,
+            selectedStaffEmployeeIds: [],
+            selectedFirmContactIds: [],
+            freeParticipants: [],
+            freeDraft: { name: '', email: '', phone: '', notes: '' },
+          });
+          setRescheduleOption('cancel');
+          if (onClientUpdate) await onClientUpdate();
+          await fetchMeetings();
+        }
+        setIsReschedulingMeeting(false);
+        return;
+      }
+
       // IMPORTANT: Always automatically cancel the oldest upcoming meeting when rescheduling
       // Find and cancel the oldest upcoming meeting automatically (user doesn't need to select)
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
@@ -3590,8 +4685,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         meetingIdToCancel = upcomingMeetingsToCancel[0].id;
         console.log('🔄 Automatically canceling oldest upcoming meeting before rescheduling:', meetingIdToCancel);
 
-        const { data: { user } } = await supabase.auth.getUser();
-        const editor = user?.email || account?.name || 'system';
+        const editor = await resolveEditorDisplayName();
         const { error: cancelError } = await supabase
           .from('meetings')
           .update({
@@ -3855,7 +4949,21 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
         const userName = account?.name || 'Staff';
 
-        const meetingLink = getValidTeamsLink(teamsMeetingUrl);
+        const rescheduleLocationRecord = resolveMeetingLocationRecord(rescheduleFormData.location);
+        const rescheduleLocationName = getMeetingLocationName(rescheduleFormData.location);
+        const includeRescheduleJoinLink = shouldIncludeMeetingJoinLink(
+          rescheduleLocationRecord,
+          rescheduleLocationName
+        );
+        const meetingLink = includeRescheduleJoinLink ? getValidTeamsLink(teamsMeetingUrl) : '';
+        const teamsJoinUrlForReschedule =
+          includeRescheduleJoinLink && meetingLink && getLinkType(meetingLink) === 'teams'
+            ? meetingLink
+            : undefined;
+        const calendarLocationDisplayForReschedule =
+          includeRescheduleJoinLink && rescheduleFormData.location === 'Teams'
+            ? 'Microsoft Teams Meeting'
+            : rescheduleFormData.location;
         const joinButton = meetingLink
           ? `<div style='margin:24px 0;'>
               <a href='${meetingLink}' target='_blank' style='background:#3b28c7;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;display:inline-block;'>Join Meeting</a>
@@ -4027,13 +5135,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             subject: meetingSubject,
             startDateTime: startDateTime.toISOString(),
             endDateTime: endDateTime.toISOString(),
-            location: rescheduleFormData.location === 'Teams' ? 'Microsoft Teams Meeting' : rescheduleFormData.location,
+            location: calendarLocationDisplayForReschedule,
             description: emailBody,
             attendeeEmail: client.email,
             attendeeName: client.name,
             organizerEmail: account.username || 'noreply@lawoffice.org.il',
             organizerName: userName,
-            teamsJoinUrl: meetingLink || undefined,
+            teamsJoinUrl: teamsJoinUrlForReschedule,
             timeZone: 'Asia/Jerusalem'
           });
 
@@ -4083,6 +5191,121 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
+  const resetEditExternalState = useCallback(() => {
+    const defaultType = internalMeetingTypes.find((t) => t.code === 'staff') || internalMeetingTypes[0] || null;
+    setEditExternal({
+      subject: '',
+      internalMeetingTypeId: defaultType?.id ?? null,
+      selectedStaffEmployeeIds: [],
+      selectedFirmContactIds: [],
+      freeParticipants: [],
+      freeDraft: { name: '', email: '', phone: '', notes: '' },
+    });
+    setEditStaffSearch('');
+    setEditFirmContactSearch('');
+    setShowEditStaffDropdown(false);
+    setShowEditFirmContactDropdown(false);
+  }, [internalMeetingTypes]);
+
+  const loadEditExternalFromMeeting = useCallback(async (meetingId: number, meeting?: Partial<Meeting>) => {
+    try {
+      const [{ data: partData, error: partErr }, { data: meetingRow }] = await Promise.all([
+        supabase
+          .from('meeting_participants')
+          .select('employee_id, firm_contact_id, free_name, free_email, free_phone, notes')
+          .eq('meeting_id', meetingId),
+        supabase
+          .from('meetings')
+          .select('internal_meeting_type_id, meeting_subject')
+          .eq('id', meetingId)
+          .maybeSingle(),
+      ]);
+      if (partErr) throw partErr;
+
+      const staffIds: number[] = [];
+      const firmIds: string[] = [];
+      const freeParticipants: FreeParticipant[] = [];
+      (partData || []).forEach((r: any) => {
+        if (r.employee_id != null) {
+          staffIds.push(Number(r.employee_id));
+        } else if (r.firm_contact_id) {
+          firmIds.push(String(r.firm_contact_id));
+        } else if (r.free_name) {
+          freeParticipants.push({
+            name: String(r.free_name).trim(),
+            email: r.free_email ? String(r.free_email).trim() : undefined,
+            phone: r.free_phone ? String(r.free_phone).trim() : undefined,
+            notes: r.notes ? String(r.notes).trim() : undefined,
+          });
+        }
+      });
+
+      const defaultType = internalMeetingTypes.find((t) => t.code === 'staff') || internalMeetingTypes[0] || null;
+      setEditExternal({
+        subject: (meeting?.meeting_subject ?? meetingRow?.meeting_subject ?? '').trim(),
+        internalMeetingTypeId: meetingRow?.internal_meeting_type_id != null
+          ? Number(meetingRow.internal_meeting_type_id)
+          : defaultType?.id ?? null,
+        selectedStaffEmployeeIds: staffIds,
+        selectedFirmContactIds: firmIds,
+        freeParticipants,
+        freeDraft: { name: '', email: '', phone: '', notes: '' },
+      });
+    } catch (error) {
+      console.error('Failed to load edit participants', error);
+      resetEditExternalState();
+    }
+  }, [internalMeetingTypes, resetEditExternalState]);
+
+  const saveMeetingParticipantsForEdit = useCallback(async (
+    meetingId: number,
+    ext: {
+      selectedStaffEmployeeIds: number[];
+      selectedFirmContactIds: string[];
+      freeParticipants: FreeParticipant[];
+      freeDraft: FreeParticipant;
+    }
+  ) => {
+    const freeDraftName = String(ext.freeDraft?.name || '').trim();
+    const allFreeParticipants = [
+      ...(ext.freeParticipants || []),
+      ...(freeDraftName
+        ? [{
+            name: freeDraftName,
+            email: (ext.freeDraft?.email || '').trim() || undefined,
+            phone: (ext.freeDraft?.phone || '').trim() || undefined,
+            notes: (ext.freeDraft?.notes || '').trim() || undefined,
+          }]
+        : []),
+    ].filter((p) => p && typeof p.name === 'string' && p.name.trim() !== '');
+
+    await supabase.from('meeting_participants').delete().eq('meeting_id', meetingId);
+
+    const participantRows: any[] = [];
+    ext.selectedStaffEmployeeIds.forEach((employeeId) =>
+      participantRows.push({ meeting_id: meetingId, employee_id: employeeId })
+    );
+    ext.selectedFirmContactIds.forEach((firmContactId) =>
+      participantRows.push({ meeting_id: meetingId, firm_contact_id: firmContactId })
+    );
+    allFreeParticipants.forEach((p) =>
+      participantRows.push({
+        meeting_id: meetingId,
+        free_name: String(p.name).trim(),
+        free_email: p.email ? String(p.email).trim() : null,
+        free_phone: p.phone ? String(p.phone).trim() : null,
+        notes: p.notes ? String(p.notes).trim() : null,
+      })
+    );
+
+    if (participantRows.length > 0) {
+      const { error: partErr } = await supabase.from('meeting_participants').insert(participantRows);
+      if (partErr) throw partErr;
+    }
+
+    await loadMeetingParticipants(meetingId);
+  }, [loadMeetingParticipants]);
+
   const renderMeetingCard = (meeting: Meeting) => {
     const formattedDate = new Date(meeting.date).toLocaleDateString('en-GB');
 
@@ -4102,7 +5325,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     };
 
     // Edit meeting functions
-    const handleEditMeeting = (meeting: Meeting) => {
+    const handleEditMeeting = async (meeting: Meeting) => {
       setEditingMeetingId(meeting.id);
 
       // Find the location ID for the current location name
@@ -4146,7 +5369,23 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         car_number: meeting.car_number,
         custom_link: meeting.custom_link,
         custom_address: meeting.custom_address,
+        manual_address: meeting.manual_address ?? null,
+        extern1: meeting.extern1 ?? null,
+        extern2: meeting.extern2 ?? null,
+        meeting_subject: meeting.meeting_subject,
+        calendar_type: meeting.calendar_type,
       });
+
+      setEditGuest1SearchTerm('');
+      setEditGuest2SearchTerm('');
+      setShowEditGuest1Dropdown(false);
+      setShowEditGuest2Dropdown(false);
+
+      if (meeting.calendar_type === 'staff' && typeof meeting.id === 'number') {
+        await loadEditExternalFromMeeting(Number(meeting.id), meeting);
+      } else {
+        resetEditExternalState();
+      }
     };
 
     const handleCancelEditMeeting = () => {
@@ -4156,10 +5395,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       setEditManagerSearchTerm('');
       setEditSchedulerSearchTerm('');
       setEditHelperSearchTerm('');
+      setEditGuest1SearchTerm('');
+      setEditGuest2SearchTerm('');
       setShowEditLocationDropdown(false);
       setShowEditManagerDropdown(false);
       setShowEditSchedulerDropdown(false);
       setShowEditHelperDropdown(false);
+      setShowEditGuest1Dropdown(false);
+      setShowEditGuest2Dropdown(false);
+      resetEditExternalState();
     };
 
     const handleSaveMeeting = async () => {
@@ -4167,8 +5411,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
       setIsUpdatingMeeting(true);
       try {
-        const { data: { user } } = await supabase.auth.getUser();
-        const editor = user?.email || 'system';
+        const editor = await resolveEditorDisplayName();
 
         // Check if location changed to Teams and needs Teams meeting creation
         const originalMeeting = meetings.find(m => m.id === editingMeetingId);
@@ -4329,22 +5572,37 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             ? getEmployeeDisplayName(editedMeeting.scheduler)
             : null;
 
+          const meetingCalendarType = originalMeeting?.calendar_type;
+
           const updateData: any = {
             meeting_date: editedMeeting.date,
             meeting_time: editedMeeting.time,
             meeting_location: locationText, // Use location name (text) for new leads
-            meeting_manager: editedMeeting.manager,
-            meeting_currency: editedMeeting.currency,
-            meeting_amount: editedMeeting.amount,
             meeting_brief: editedMeeting.brief,
-            scheduler: schedulerDisplayName,
-            helper: editedMeeting.helper,
             car_number: editedMeeting.car_number || null,
             custom_link: selectedLocationIdForEdit === CUSTOM_LINK_LOCATION_ID ? customLinkValue : null,
             custom_address: selectedLocationIdForEdit === CUSTOM_ADDRESS_LOCATION_ID ? customAddressValue : null,
+            manual_address: (editedMeeting.manual_address || '').trim() || null,
             last_edited_timestamp: new Date().toISOString(),
             last_edited_by: editor,
           };
+
+          if (meetingCalendarType === 'staff') {
+            updateData.meeting_subject = editExternal.subject.trim() || originalMeeting?.meeting_subject || null;
+            updateData.internal_meeting_type_id = editExternal.internalMeetingTypeId;
+          } else {
+            updateData.meeting_currency = editedMeeting.currency;
+            updateData.meeting_amount = editedMeeting.amount;
+            if (meetingCalendarType !== 'active_client') {
+              updateData.meeting_manager = editedMeeting.manager;
+              updateData.scheduler = schedulerDisplayName;
+              updateData.helper = editedMeeting.helper;
+            }
+            if (meetingCalendarType === 'active_client' || meetingCalendarType === 'potential_client') {
+              updateData.extern1 = editedMeeting.extern1 ? String(editedMeeting.extern1) : null;
+              updateData.extern2 = editedMeeting.extern2 ? String(editedMeeting.extern2) : null;
+            }
+          }
 
           // Add Teams meeting URL if we created one
           if (teamsMeetingUrl && newLocationName === 'Teams') {
@@ -4360,6 +5618,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         }
 
         if (dbError) throw dbError;
+
+        if (!isLegacyMeeting && originalMeeting?.calendar_type === 'staff' && typeof editingMeetingId === 'number') {
+          await saveMeetingParticipantsForEdit(editingMeetingId, editExternal);
+        }
 
         // If it's a Teams meeting and date/time changed, update Outlook
         const finalTeamsUrl = teamsMeetingUrl || originalMeeting?.link;
@@ -4420,7 +5682,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         toast.success('Meeting updated successfully');
         setMeetings(prev => prev.map(m =>
           m.id === editingMeetingId
-            ? { ...m, ...editedMeeting, link: teamsMeetingUrl || m.link, lastEdited: { timestamp: new Date().toISOString(), user: editor } }
+            ? {
+                ...m,
+                ...editedMeeting,
+                meeting_subject: originalMeeting?.calendar_type === 'staff'
+                  ? (editExternal.subject.trim() || m.meeting_subject)
+                  : m.meeting_subject,
+                link: teamsMeetingUrl || m.link,
+                lastEdited: { timestamp: new Date().toISOString(), user: editor },
+              }
             : m
         ));
 
@@ -4430,10 +5700,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         setEditManagerSearchTerm('');
         setEditSchedulerSearchTerm('');
         setEditHelperSearchTerm('');
+        setEditGuest1SearchTerm('');
+        setEditGuest2SearchTerm('');
         setShowEditLocationDropdown(false);
         setShowEditManagerDropdown(false);
         setShowEditSchedulerDropdown(false);
         setShowEditHelperDropdown(false);
+        setShowEditGuest1Dropdown(false);
+        setShowEditGuest2Dropdown(false);
+        resetEditExternalState();
 
         if (onClientUpdate) await onClientUpdate();
       } catch (error) {
@@ -4452,8 +5727,388 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     const showPastActions = past && isRecentPastMeeting(meeting);
     const headerColor = past ? '#6B7280' : 'rgb(25, 49, 31)'; // Grey for past, dark green for upcoming
 
+    const calendarTypeBadge = getCalendarTypeBadgeStyles(meeting.calendar_type);
+    const meetingFieldLabelClass = 'text-xs font-medium uppercase tracking-wide text-gray-500';
+    const sideBtnClass =
+      'btn btn-circle h-11 w-11 min-h-11 min-w-11 p-0 shrink-0 bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 shadow-sm';
+
+    // Action buttons rendered in the vertical side column on the right of the card.
+    const sideActionButtons = (
+      <div className="flex flex-col items-center gap-2 sm:gap-3">
+        {typeof meeting.id === 'number' && !meeting.isLegacy && (
+          <div className="relative shrink-0">
+            <button
+              className="btn btn-circle h-11 w-11 min-h-11 min-w-11 p-0 shrink-0 border border-violet-300 bg-violet-50 text-violet-700 hover:bg-violet-100 hover:border-violet-400 shadow-sm"
+              onClick={() => setSummaryNotesMeeting(meeting)}
+              title="Meeting Summary (AI)"
+            >
+              <DocumentTextIcon className="w-5 h-5" />
+            </button>
+            <span className="absolute -top-1 -right-1 min-w-[1.25rem] h-5 px-1 flex items-center justify-center text-[10px] font-bold leading-none bg-violet-600 text-white rounded-full border-2 border-white shadow-sm pointer-events-none">
+              AI
+            </span>
+          </div>
+        )}
+        {/* Edit Button - only for upcoming meetings */}
+        {!past && (
+          <button
+            className={sideBtnClass}
+            onClick={() => handleEditMeeting(meeting)}
+            title="Edit Meeting"
+          >
+            <PencilIcon className="w-5 h-5" />
+          </button>
+        )}
+        {!past && (
+          <>
+            <div className="relative flex justify-center" ref={(el) => {
+              if (el) {
+                notifyDropdownRefs.current.set(meeting.id, el);
+              } else {
+                notifyDropdownRefs.current.delete(meeting.id);
+              }
+            }}>
+              <button
+                className={sideBtnClass}
+                onClick={() => {
+                  if (sendingEmailMeetingId !== meeting.id) {
+                    setShowNotifyDropdown(showNotifyDropdown === meeting.id ? null : meeting.id);
+                  }
+                }}
+                disabled={sendingEmailMeetingId === meeting.id}
+                title="Notify Client via Email"
+              >
+                {sendingEmailMeetingId === meeting.id ? (
+                  <span className="loading loading-spinner loading-sm"></span>
+                ) : (
+                  <OutlookIcon className="w-5 h-5" />
+                )}
+              </button>
+              {showNotifyDropdown === meeting.id && (
+                <div className="absolute right-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-50">
+                  {/* Conditional Meeting Invitation based on location */}
+                  {(() => {
+                    const location = (meeting.location || '').toLowerCase();
+
+                    if (location.includes('jrslm') || location.includes('jerusalem')) {
+                      return (
+                        <button
+                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
+                          onClick={() => handleNotifyClick(meeting, 'invitation_jlm')}
+                        >
+                          Meeting Invitation JLM
+                        </button>
+                      );
+                    } else if (location.includes('tlv') && location.includes('parking')) {
+                      return (
+                        <button
+                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
+                          onClick={() => handleNotifyClick(meeting, 'invitation_tlv_parking')}
+                        >
+                          Meeting Invitation TLV + Parking
+                        </button>
+                      );
+                    } else if (location.includes('tlv') || location.includes('tel aviv')) {
+                      return (
+                        <button
+                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
+                          onClick={() => handleNotifyClick(meeting, 'invitation_tlv')}
+                        >
+                          Meeting Invitation TLV
+                        </button>
+                      );
+                    } else {
+                      return (
+                        <button
+                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
+                          onClick={() => handleNotifyClick(meeting, 'invitation')}
+                        >
+                          Meeting Invitation
+                        </button>
+                      );
+                    }
+                  })()}
+                  <button
+                    className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100"
+                    onClick={() => handleNotifyClick(meeting, 'reminder')}
+                  >
+                    Meeting Reminder
+                  </button>
+                  <button
+                    className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100"
+                    onClick={() => handleNotifyClick(meeting, 'rescheduled')}
+                  >
+                    Meeting Rescheduled
+                  </button>
+                  <button
+                    className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100 last:rounded-b-lg text-red-600"
+                    onClick={() => handleNotifyClick(meeting, 'cancellation')}
+                  >
+                    Meeting Cancellation
+                  </button>
+                </div>
+              )}
+            </div>
+            <div className="relative flex justify-center" ref={(el) => {
+              if (el) {
+                whatsAppDropdownRefs.current.set(meeting.id, el);
+              } else {
+                whatsAppDropdownRefs.current.delete(meeting.id);
+              }
+            }}>
+              <button
+                className={sideBtnClass}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (sendingWhatsAppMeetingId !== meeting.id) {
+                    setShowWhatsAppDropdown(showWhatsAppDropdown === meeting.id ? null : meeting.id);
+                  }
+                }}
+                disabled={sendingWhatsAppMeetingId === meeting.id}
+                title="Send WhatsApp Reminder"
+              >
+                {sendingWhatsAppMeetingId === meeting.id ? (
+                  <span className="loading loading-spinner loading-sm"></span>
+                ) : (
+                  <FaWhatsapp className="w-5 h-5 text-green-600" aria-hidden="true" />
+                )}
+              </button>
+              {showWhatsAppDropdown === meeting.id && (
+                <div className="absolute right-0 top-full mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-50">
+                  <button
+                    className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setWhatsAppReminderType('reminder');
+                      handleWhatsAppNotifyClick(meeting);
+                      setShowWhatsAppDropdown(null);
+                    }}
+                  >
+                    Meeting Reminder
+                  </button>
+                  <button
+                    className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 last:rounded-b-lg"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setWhatsAppReminderType('missed_appointment');
+                      handleWhatsAppNotifyClick(meeting);
+                      setShowWhatsAppDropdown(null);
+                    }}
+                  >
+                    Missed Appointment
+                  </button>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+        {(() => {
+          const meetingLinkValue = meeting.link;
+          const validLink = getValidTeamsLink(meeting.link);
+          const hasLink = meetingLinkValue && meetingLinkValue.trim() !== '';
+          const locationName = getMeetingLocationName(meeting.location);
+          const isTeams = locationName === 'Teams';
+          const location = resolveMeetingLocationRecord(meeting.location);
+          const defaultLink = location?.default_link;
+
+          if (!past) {
+            // Determine which link to use: default_link first (if available), then valid link
+            const linkToUse = defaultLink || validLink;
+
+            // If we have a link (either default_link or valid link), show it
+            if (linkToUse) {
+              // Check if the link being used is a Teams link
+              const isTeamsLink = linkToUse === validLink && getLinkType(validLink) === 'teams';
+              const iconToShow = isTeamsLink ? <VideoCameraIcon className="w-5 h-5" /> : <LinkIcon className="w-5 h-5" />;
+              const title = isTeamsLink ? 'Join Teams Meeting' : 'Join Meeting';
+
+              return (
+                <div className="dropdown dropdown-end">
+                  <button
+                    type="button"
+                    className={sideBtnClass}
+                    title={title}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {iconToShow}
+                  </button>
+                  <ul
+                    tabIndex={0}
+                    className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-[1000]"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <li>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const url = getMeetingJoinLink(meeting);
+                          if (!url) {
+                            toast.error('No meeting URL available');
+                            return;
+                          }
+                          window.open(url, '_blank');
+                        }}
+                      >
+                        Enter meeting
+                      </button>
+                    </li>
+                    <li>
+                      <button
+                        type="button"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          const url = getMeetingJoinLink(meeting);
+                          if (!url) {
+                            toast.error('No meeting URL available');
+                            return;
+                          }
+                          const ok = await copyTextToClipboard(url);
+                          if (ok) toast.success('Meeting link copied');
+                          else toast.error('Failed to copy link');
+                        }}
+                      >
+                        Copy link
+                      </button>
+                    </li>
+                    {typeof navigator !== 'undefined' && typeof (navigator as any).share === 'function' && (
+                      <li>
+                        <button
+                          type="button"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const url = getMeetingJoinLink(meeting);
+                            if (!url) {
+                              toast.error('No meeting URL available');
+                              return;
+                            }
+                            try {
+                              await (navigator as any).share({ title: 'Meeting link', url });
+                            } catch {
+                              // user cancelled / unsupported
+                            }
+                          }}
+                        >
+                          Share
+                        </button>
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              );
+            }
+
+            // Show "Create Teams" button only for Teams location if there's NO link at all
+            if (isTeams && !hasLink && !defaultLink) {
+              return (
+                <button
+                  className={sideBtnClass}
+                  onClick={() => handleCreateTeamsMeeting(meeting)}
+                  disabled={creatingTeamsMeetingId === meeting.id}
+                  title="Create Teams Meeting"
+                >
+                  {creatingTeamsMeetingId === meeting.id ? (
+                    <span className="loading loading-spinner loading-sm"></span>
+                  ) : (
+                    <VideoCameraIcon className="w-5 h-5" />
+                  )}
+                </button>
+              );
+            }
+          }
+          return null;
+        })()}
+        {/* Fallback for legacy stored URL strings that don't parse as Teams JSON but still look like a URL */}
+        {(() => {
+          const raw = (meeting.link || '').trim();
+          const looksLikeUrl = /^https?:\/\//i.test(raw);
+          if (!raw || !looksLikeUrl) return null;
+          if (getMeetingJoinLink(meeting)) return null; // already handled above
+          return (
+            <div className="dropdown dropdown-end">
+              <button
+                type="button"
+                className={sideBtnClass}
+                onClick={(e) => e.stopPropagation()}
+                title="Meeting link"
+              >
+                <LinkIcon className="w-5 h-5" />
+              </button>
+              <ul
+                tabIndex={0}
+                className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-[1000]"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <li>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      window.open(raw, '_blank');
+                    }}
+                  >
+                    Enter meeting
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      const ok = await copyTextToClipboard(raw);
+                      if (ok) toast.success('Meeting link copied');
+                      else toast.error('Failed to copy link');
+                    }}
+                  >
+                    Copy link
+                  </button>
+                </li>
+                {typeof navigator !== 'undefined' && typeof (navigator as any).share === 'function' && (
+                  <li>
+                    <button
+                      type="button"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        try {
+                          await (navigator as any).share({ title: 'Meeting link', url: raw });
+                        } catch {
+                          // user cancelled / unsupported
+                        }
+                      }}
+                    >
+                      Share
+                    </button>
+                  </li>
+                )}
+              </ul>
+            </div>
+          );
+        })()}
+      </div>
+    );
+
+    const canUseSummaryNotes = typeof meeting.id === 'number' && !meeting.isLegacy;
+    const hasAnyActionButton = canUseSummaryNotes || !past;
+
+    const amountDisplay =
+      meeting.amount && meeting.amount > 0
+        ? `${getCurrencySymbol(meeting.currency)} ${typeof meeting.amount === 'number' ? meeting.amount.toLocaleString() : meeting.amount}`
+        : '--';
+    const carNumberDisplay = meeting.car_number?.trim() ? meeting.car_number.trim() : '--';
+    const isActiveMeeting = meeting.calendar_type === 'active_client';
+    const isStaffMeeting = meeting.calendar_type === 'staff';
+    const isPotentialMeeting = meeting.calendar_type === 'potential_client';
+    const handlerEmployeeId = client.case_handler_id ?? client.handler;
+    const retentionHandlerId = (client as any).retainer_handler_id ?? (client as any).retainer_handler;
+    const roleLeadId = isActiveMeeting ? handlerEmployeeId : meeting.manager;
+    const roleLeadLabel = isActiveMeeting ? 'Handler' : 'Manager';
+    const hasGuestEmployee = (guestId?: string | null) =>
+      Boolean(guestId && guestId !== '--' && String(guestId).trim() !== '');
+    const participantBundle =
+      typeof meeting.id === 'number' ? meetingParticipantsById[Number(meeting.id)] : undefined;
+
     return (
-      <div key={meeting.id} className="bg-white border border-gray-200 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden relative">
+      <div key={meeting.id} className="bg-white border border-gray-200 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 relative flex max-w-full">
         {/* Canceled watermark */}
         {meeting.status === 'canceled' && (
           <div className="absolute inset-0 flex items-center justify-center z-10 pointer-events-none">
@@ -4462,365 +6117,61 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>
           </div>
         )}
+        <div className="flex-1 min-w-0 overflow-hidden rounded-l-xl">
         {/* Header */}
         <div className="px-2 sm:px-4 py-2 sm:py-3 border-b" style={{ backgroundColor: headerColor, color: 'white' }}>
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 sm:gap-3">
-              <div className="flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-lg shadow-sm" style={{ backgroundColor: headerColor }}>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+              <div className="flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-lg shadow-sm flex-shrink-0" style={{ backgroundColor: headerColor }}>
                 <CalendarIcon className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
               </div>
-              <div>
-                <p className="font-bold text-sm sm:text-lg text-white">{formattedDate}</p>
-                <div className="flex items-center gap-1 sm:gap-2 text-white">
-                  <ClockIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+              <div className="min-w-0">
+                <p className="font-bold text-sm sm:text-lg text-white truncate">{formattedDate}</p>
+                <div className="flex items-center gap-1 sm:gap-2 text-white flex-wrap">
+                  <ClockIcon className="w-3 h-3 sm:w-4 sm:h-4 flex-shrink-0" />
                   <span className="text-xs sm:text-sm font-medium">{meeting.time ? meeting.time.substring(0, 5) : ''}</span>
+                  <span className="hidden md:inline-flex items-center gap-1.5 min-w-0 text-white/90">
+                    <span className="text-white/50" aria-hidden="true">·</span>
+                    <MapPinIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4 flex-shrink-0" aria-hidden="true" />
+                    <span className="text-xs sm:text-sm font-medium truncate" title={getMeetingLocationName(meeting.location)}>
+                      {getMeetingLocationName(meeting.location)}
+                    </span>
+                  </span>
+                  <span className="hidden md:inline text-white/50" aria-hidden="true">·</span>
+                  <span className="hidden md:inline text-xs sm:text-sm font-medium text-white/90 whitespace-nowrap" title={`Amount: ${amountDisplay}`}>
+                    {amountDisplay}
+                  </span>
+                  <span className="hidden md:inline text-white/50" aria-hidden="true">·</span>
+                  <span className="hidden md:inline text-xs sm:text-sm font-medium text-white/90 whitespace-nowrap" title={`Car number: ${carNumberDisplay}`}>
+                    {carNumberDisplay}
+                  </span>
                 </div>
               </div>
             </div>
-            {/* Action Buttons */}
-            <div className="flex gap-1 sm:gap-2">
-              {/* Edit Button - only for upcoming meetings */}
-              {!past && (
-                <button
-                  className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
-                  onClick={() => handleEditMeeting(meeting)}
-                  title="Edit Meeting"
+            <div className="flex flex-col items-end gap-1 min-w-0 sm:flex-row sm:items-center sm:gap-2 shrink">
+              {meeting.calendar_type === 'staff' && meeting.meeting_subject?.trim() && (
+                <span
+                  className="text-xs sm:text-sm font-semibold text-white truncate max-w-[140px] sm:max-w-xs text-right"
+                  title={meeting.meeting_subject.trim()}
                 >
-                  <PencilIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-                </button>
+                  {meeting.meeting_subject.trim()}
+                </span>
               )}
-              {!past && (
-                <>
-                  <div className="relative" ref={(el) => {
-                    if (el) {
-                      notifyDropdownRefs.current.set(meeting.id, el);
-                    } else {
-                      notifyDropdownRefs.current.delete(meeting.id);
-                    }
-                  }}>
-                    <button
-                      className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
-                      onClick={() => {
-                        if (sendingEmailMeetingId !== meeting.id) {
-                          setShowNotifyDropdown(showNotifyDropdown === meeting.id ? null : meeting.id);
-                        }
-                      }}
-                      disabled={sendingEmailMeetingId === meeting.id}
-                      title="Notify Client via Email"
-                    >
-                      {sendingEmailMeetingId === meeting.id ? (
-                        <span className="loading loading-spinner loading-xs" style={{ color: '#ffffff' }}></span>
-                      ) : (
-                        <>
-                          <EnvelopeIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-                          <ChevronDownIcon className="w-2.5 h-2.5 sm:w-3 sm:h-3 ml-0.5 sm:ml-1" />
-                        </>
-                      )}
-                    </button>
-                    {showNotifyDropdown === meeting.id && (
-                      <div className="absolute right-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-50">
-                        {/* Conditional Meeting Invitation based on location */}
-                        {(() => {
-                          const location = (meeting.location || '').toLowerCase();
-
-                          if (location.includes('jrslm') || location.includes('jerusalem')) {
-                            return (
-                              <button
-                                className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
-                                onClick={() => handleNotifyClick(meeting, 'invitation_jlm')}
-                              >
-                                Meeting Invitation JLM
-                              </button>
-                            );
-                          } else if (location.includes('tlv') && location.includes('parking')) {
-                            return (
-                              <button
-                                className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
-                                onClick={() => handleNotifyClick(meeting, 'invitation_tlv_parking')}
-                              >
-                                Meeting Invitation TLV + Parking
-                              </button>
-                            );
-                          } else if (location.includes('tlv') || location.includes('tel aviv')) {
-                            return (
-                              <button
-                                className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
-                                onClick={() => handleNotifyClick(meeting, 'invitation_tlv')}
-                              >
-                                Meeting Invitation TLV
-                              </button>
-                            );
-                          } else {
-                            return (
-                              <button
-                                className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
-                                onClick={() => handleNotifyClick(meeting, 'invitation')}
-                              >
-                                Meeting Invitation
-                              </button>
-                            );
-                          }
-                        })()}
-                        <button
-                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100"
-                          onClick={() => handleNotifyClick(meeting, 'reminder')}
-                        >
-                          Meeting Reminder
-                        </button>
-                        <button
-                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100"
-                          onClick={() => handleNotifyClick(meeting, 'rescheduled')}
-                        >
-                          Meeting Rescheduled
-                        </button>
-                        <button
-                          className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100 last:rounded-b-lg text-red-600"
-                          onClick={() => handleNotifyClick(meeting, 'cancellation')}
-                        >
-                          Meeting Cancellation
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                  <div className="relative" ref={(el) => {
-                    if (el) {
-                      whatsAppDropdownRefs.current.set(meeting.id, el);
-                    } else {
-                      whatsAppDropdownRefs.current.delete(meeting.id);
-                    }
-                  }}>
-                    <button
-                      className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        if (sendingWhatsAppMeetingId !== meeting.id) {
-                          setShowWhatsAppDropdown(showWhatsAppDropdown === meeting.id ? null : meeting.id);
-                        }
-                      }}
-                      disabled={sendingWhatsAppMeetingId === meeting.id}
-                      title="Send WhatsApp Reminder"
-                    >
-                      {sendingWhatsAppMeetingId === meeting.id ? (
-                        <span className="loading loading-spinner loading-xs" style={{ color: '#ffffff' }}></span>
-                      ) : (
-                        <>
-                          <FaWhatsapp className="w-3 h-3 sm:w-4 sm:h-4 text-green-300" />
-                          <ChevronDownIcon className="w-2.5 h-2.5 sm:w-3 sm:h-3 ml-0.5 sm:ml-1" />
-                        </>
-                      )}
-                    </button>
-                    {showWhatsAppDropdown === meeting.id && (
-                      <div className="absolute right-0 top-full mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-50">
-                        <button
-                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setWhatsAppReminderType('reminder');
-                            handleWhatsAppNotifyClick(meeting);
-                            setShowWhatsAppDropdown(null);
-                          }}
-                        >
-                          Meeting Reminder
-                        </button>
-                        <button
-                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 last:rounded-b-lg"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setWhatsAppReminderType('missed_appointment');
-                            handleWhatsAppNotifyClick(meeting);
-                            setShowWhatsAppDropdown(null);
-                          }}
-                        >
-                          Missed Appointment
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </>
+              {/* Meeting Type Badge (P / A / IM) — same style as CalendarPage */}
+              {calendarTypeBadge && (
+                <span
+                  className="inline-flex items-center justify-center min-w-[2.25rem] px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap flex-shrink-0 border border-white/40 bg-white/20 text-white backdrop-blur-md shadow-sm"
+                  title={
+                    meeting.calendar_type === 'staff'
+                      ? 'Internal Meeting (External Participants)'
+                      : meeting.calendar_type === 'active_client'
+                        ? 'Active Client'
+                        : 'Potential Client'
+                  }
+                >
+                  {calendarTypeBadge.label}
+                </span>
               )}
-              {(() => {
-                const meetingLinkValue = meeting.link;
-                const validLink = getValidTeamsLink(meeting.link);
-                const hasLink = meetingLinkValue && meetingLinkValue.trim() !== '';
-                const locationName = getMeetingLocationName(meeting.location);
-                const isTeams = locationName === 'Teams';
-                const location = resolveMeetingLocationRecord(meeting.location);
-                const defaultLink = location?.default_link;
-
-                if (!past) {
-                  // Determine which link to use: default_link first (if available), then valid link
-                  const linkToUse = defaultLink || validLink;
-
-                  // If we have a link (either default_link or valid link), show it
-                  if (linkToUse) {
-                    // Check if the link being used is a Teams link
-                    const isTeamsLink = linkToUse === validLink && getLinkType(validLink) === 'teams';
-                    const iconToShow = isTeamsLink ? <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" /> : <LinkIcon className="w-3 h-3 sm:w-4 sm:h-4" />;
-                    const title = isTeamsLink ? 'Join Teams Meeting' : 'Join Meeting';
-
-                    return (
-                      <div className="dropdown dropdown-end">
-                        <button
-                          type="button"
-                          className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
-                          title={title}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {iconToShow}
-                        </button>
-                        <ul
-                          tabIndex={0}
-                          className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-[1000]"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <li>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                const url = getMeetingJoinLink(meeting);
-                                if (!url) {
-                                  toast.error('No meeting URL available');
-                                  return;
-                                }
-                                window.open(url, '_blank');
-                              }}
-                            >
-                              Enter meeting
-                            </button>
-                          </li>
-                          <li>
-                            <button
-                              type="button"
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                const url = getMeetingJoinLink(meeting);
-                                if (!url) {
-                                  toast.error('No meeting URL available');
-                                  return;
-                                }
-                                const ok = await copyTextToClipboard(url);
-                                if (ok) toast.success('Meeting link copied');
-                                else toast.error('Failed to copy link');
-                              }}
-                            >
-                              Copy link
-                            </button>
-                          </li>
-                          {typeof navigator !== 'undefined' && typeof (navigator as any).share === 'function' && (
-                            <li>
-                              <button
-                                type="button"
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  const url = getMeetingJoinLink(meeting);
-                                  if (!url) {
-                                    toast.error('No meeting URL available');
-                                    return;
-                                  }
-                                  try {
-                                    await (navigator as any).share({ title: 'Meeting link', url });
-                                  } catch {
-                                    // user cancelled / unsupported
-                                  }
-                                }}
-                              >
-                                Share
-                              </button>
-                            </li>
-                          )}
-                        </ul>
-                      </div>
-                    );
-                  }
-
-                  // Show "Create Teams" button only for Teams location if there's NO link at all
-                  if (isTeams && !hasLink && !defaultLink) {
-                    return (
-                      <button
-                        className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
-                        onClick={() => handleCreateTeamsMeeting(meeting)}
-                        disabled={creatingTeamsMeetingId === meeting.id}
-                      >
-                        {creatingTeamsMeetingId === meeting.id ? (
-                          <span className="loading loading-spinner loading-xs"></span>
-                        ) : (
-                          <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4 sm:hidden" />
-                        )}
-                        <span className="hidden sm:inline">Teams</span>
-                      </button>
-                    );
-                  }
-                }
-                return null;
-              })()}
-              {/* Fallback for legacy stored URL strings that don't parse as Teams JSON but still look like a URL */}
-              {(() => {
-                const raw = (meeting.link || '').trim();
-                const looksLikeUrl = /^https?:\/\//i.test(raw);
-                if (!raw || !looksLikeUrl) return null;
-                if (getMeetingJoinLink(meeting)) return null; // already handled above
-                return (
-                  <div className="dropdown dropdown-end">
-                    <button
-                      type="button"
-                      className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
-                      onClick={(e) => e.stopPropagation()}
-                      title="Meeting link"
-                    >
-                      <LinkIcon className="w-3 h-3 sm:w-4 sm:h-4 sm:hidden" />
-                      <span className="hidden sm:inline">Link</span>
-                    </button>
-                    <ul
-                      tabIndex={0}
-                      className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-[1000]"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <li>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            window.open(raw, '_blank');
-                          }}
-                        >
-                          Enter meeting
-                        </button>
-                      </li>
-                      <li>
-                        <button
-                          type="button"
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            const ok = await copyTextToClipboard(raw);
-                            if (ok) toast.success('Meeting link copied');
-                            else toast.error('Failed to copy link');
-                          }}
-                        >
-                          Copy link
-                        </button>
-                      </li>
-                      {typeof navigator !== 'undefined' && typeof (navigator as any).share === 'function' && (
-                        <li>
-                          <button
-                            type="button"
-                            onClick={async (e) => {
-                              e.stopPropagation();
-                              try {
-                                await (navigator as any).share({ title: 'Meeting link', url: raw });
-                              } catch {
-                                // user cancelled / unsupported
-                              }
-                            }}
-                          >
-                            Share
-                          </button>
-                        </li>
-                      )}
-                    </ul>
-                  </div>
-                );
-              })()}
             </div>
           </div>
         </div>
@@ -4838,7 +6189,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 {/* Date and Time */}
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-2">
-                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Date</label>
+                    <label className={meetingFieldLabelClass}>Date</label>
                     <input
                       type="date"
                       className="input input-bordered w-full"
@@ -4859,10 +6210,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   </div>
                 </div>
 
-                {/* Location and Manager */}
-                <div className="grid grid-cols-2 gap-3">
+                {/* Location (+ role / participant fields by meeting type) */}
+                <div className={`grid grid-cols-1 gap-3 ${isStaffMeeting || isActiveMeeting ? '' : 'md:grid-cols-2'}`}>
                   <div className="space-y-2 relative" ref={editLocationDropdownRef}>
-                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Location</label>
+                    <label className={meetingFieldLabelClass}>Location</label>
                     <input
                       type="text"
                       className="input input-bordered w-full"
@@ -4878,7 +6229,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         setShowEditLocationDropdown(true);
                       }}
                       onBlur={() => {
-                        // Reset search term after a short delay to allow click to register
                         setTimeout(() => {
                           setEditLocationSearchTerm('');
                           setShowEditLocationDropdown(false);
@@ -4888,7 +6238,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     />
                     {showEditLocationDropdown && (
                       <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                        {allMeetingLocations
+                        {selectableMeetingLocations
                           .filter((location: any) => {
                             const searchTerm = editLocationSearchTerm.toLowerCase();
                             return !searchTerm || location.name.toLowerCase().includes(searchTerm);
@@ -4914,60 +6264,62 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       </div>
                     )}
                   </div>
-                  <div className="space-y-2 relative" ref={editManagerDropdownRef}>
-                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Manager</label>
-                    <input
-                      type="text"
-                      className="input input-bordered w-full"
-                      placeholder="Select manager..."
-                      value={editManagerSearchTerm !== '' ? editManagerSearchTerm : (getEmployeeDisplayName(editedMeeting.manager) || '')}
-                      onChange={(e) => {
-                        const value = e.target.value;
-                        setEditManagerSearchTerm(value);
-                        setShowEditManagerDropdown(true);
-                      }}
-                      onFocus={() => {
-                        setEditManagerSearchTerm(getEmployeeDisplayName(editedMeeting.manager) || '');
-                        setShowEditManagerDropdown(true);
-                      }}
-                      onBlur={() => {
-                        setTimeout(() => {
-                          setEditManagerSearchTerm('');
-                          setShowEditManagerDropdown(false);
-                        }, 200);
-                      }}
-                      autoComplete="off"
-                    />
-                    {showEditManagerDropdown && (
-                      <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                        {allEmployees
-                          .filter((emp: any) => {
-                            const searchTerm = editManagerSearchTerm.toLowerCase();
-                            const displayName = (emp.display_name || emp.full_name || '').toLowerCase();
-                            return !searchTerm || displayName.includes(searchTerm);
-                          })
-                          .map((emp: any) => (
-                            <div
-                              key={emp.id}
-                              className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center gap-3"
-                              onClick={() => {
-                                setEditedMeeting(prev => ({ ...prev, manager: emp.id }));
-                                setEditManagerSearchTerm('');
-                                setShowEditManagerDropdown(false);
-                              }}
-                            >
-                              <EmployeeAvatar employeeId={emp.id} size="sm" />
-                              <span>{emp.display_name || emp.full_name}</span>
-                            </div>
-                          ))}
-                      </div>
-                    )}
-                  </div>
+
+                  {!isStaffMeeting && !isActiveMeeting && (
+                    <div className="space-y-2 relative" ref={editManagerDropdownRef}>
+                      <label className={meetingFieldLabelClass}>Manager</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Select manager..."
+                        value={editManagerSearchTerm !== '' ? editManagerSearchTerm : (getEmployeeDisplayName(editedMeeting.manager) || '')}
+                        onChange={(e) => {
+                          setEditManagerSearchTerm(e.target.value);
+                          setShowEditManagerDropdown(true);
+                        }}
+                        onFocus={() => {
+                          setEditManagerSearchTerm(getEmployeeDisplayName(editedMeeting.manager) || '');
+                          setShowEditManagerDropdown(true);
+                        }}
+                        onBlur={() => {
+                          setTimeout(() => {
+                            setEditManagerSearchTerm('');
+                            setShowEditManagerDropdown(false);
+                          }, 200);
+                        }}
+                        autoComplete="off"
+                      />
+                      {showEditManagerDropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {allEmployees
+                            .filter((emp: any) => {
+                              const searchTerm = editManagerSearchTerm.toLowerCase();
+                              const displayName = (emp.display_name || emp.full_name || '').toLowerCase();
+                              return !searchTerm || displayName.includes(searchTerm);
+                            })
+                            .map((emp: any) => (
+                              <div
+                                key={emp.id}
+                                className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center gap-3"
+                                onClick={() => {
+                                  setEditedMeeting(prev => ({ ...prev, manager: emp.id }));
+                                  setEditManagerSearchTerm('');
+                                  setShowEditManagerDropdown(false);
+                                }}
+                              >
+                                <EmployeeAvatar employeeId={emp.id} size="sm" />
+                                <span>{emp.display_name || emp.full_name}</span>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {Number(editedMeeting.location) === CUSTOM_LINK_LOCATION_ID && (
                   <div className="space-y-2">
-                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Custom Link</label>
+                    <label className={meetingFieldLabelClass}>Custom Link</label>
                     <button
                       type="button"
                       className="btn btn-outline w-full justify-start"
@@ -4979,7 +6331,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 )}
                 {Number(editedMeeting.location) === CUSTOM_ADDRESS_LOCATION_ID && (
                   <div className="space-y-2">
-                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Custom Address</label>
+                    <label className={meetingFieldLabelClass}>Custom Address</label>
                     <button
                       type="button"
                       className="btn btn-outline w-full justify-start"
@@ -4990,111 +6342,501 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   </div>
                 )}
 
-                {/* Scheduler and Helper */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-2 relative" ref={editSchedulerDropdownRef}>
-                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Scheduler</label>
-                    <input
-                      type="text"
-                      className="input input-bordered w-full"
-                      placeholder="Select scheduler..."
-                      value={editSchedulerSearchTerm !== '' ? editSchedulerSearchTerm : (getEmployeeDisplayName(editedMeeting.scheduler) || '')}
-                      onChange={(e) => {
-                        const value = e.target.value;
-                        setEditSchedulerSearchTerm(value);
-                        setShowEditSchedulerDropdown(true);
-                      }}
-                      onFocus={() => {
-                        setEditSchedulerSearchTerm(getEmployeeDisplayName(editedMeeting.scheduler) || '');
-                        setShowEditSchedulerDropdown(true);
-                      }}
-                      onBlur={() => {
-                        setTimeout(() => {
-                          setEditSchedulerSearchTerm('');
-                          setShowEditSchedulerDropdown(false);
-                        }, 200);
-                      }}
-                      autoComplete="off"
+                {!(meeting as any).isLegacy && (
+                  <div className="space-y-2">
+                    <label className={meetingFieldLabelClass}>Manual Address</label>
+                    <textarea
+                      className="textarea textarea-bordered w-full min-h-[72px] text-base"
+                      value={editedMeeting.manual_address || ''}
+                      onChange={(e) => setEditedMeeting((prev) => ({ ...prev, manual_address: e.target.value }))}
+                      placeholder="Street, city, floor, parking instructions…"
+                      rows={2}
                     />
-                    {showEditSchedulerDropdown && (
-                      <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                        {allEmployees
-                          .filter((emp: any) => {
-                            const searchTerm = editSchedulerSearchTerm.toLowerCase();
-                            const displayName = (emp.display_name || emp.full_name || '').toLowerCase();
-                            return !searchTerm || displayName.includes(searchTerm);
-                          })
-                          .map((emp: any) => (
-                            <div
-                              key={emp.id}
-                              className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center gap-3"
-                              onClick={() => {
-                                setEditedMeeting(prev => ({ ...prev, scheduler: emp.id }));
-                                setEditSchedulerSearchTerm('');
-                                setShowEditSchedulerDropdown(false);
-                              }}
-                            >
-                              <EmployeeAvatar employeeId={emp.id} size="sm" />
-                              <span>{emp.display_name || emp.full_name}</span>
-                            </div>
-                          ))}
-                      </div>
-                    )}
+                    <p className="text-xs text-gray-500">
+                      Optional address for emails and WhatsApp reminders (independent of location).
+                    </p>
                   </div>
-                  <div className="space-y-2 relative" ref={editHelperDropdownRef}>
-                    <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Helper</label>
-                    <input
-                      type="text"
-                      className="input input-bordered w-full"
-                      placeholder="Select helper..."
-                      value={editHelperSearchTerm !== '' ? editHelperSearchTerm : (getEmployeeDisplayName(editedMeeting.helper) || '')}
-                      onChange={(e) => {
-                        const value = e.target.value;
-                        setEditHelperSearchTerm(value);
-                        setShowEditHelperDropdown(true);
-                      }}
-                      onFocus={() => {
-                        setEditHelperSearchTerm(getEmployeeDisplayName(editedMeeting.helper) || '');
-                        setShowEditHelperDropdown(true);
-                      }}
-                      onBlur={() => {
-                        setTimeout(() => {
-                          setEditHelperSearchTerm('');
-                          setShowEditHelperDropdown(false);
-                        }, 200);
-                      }}
-                      autoComplete="off"
-                    />
-                    {showEditHelperDropdown && (
-                      <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                        {allEmployees
-                          .filter((emp: any) => {
-                            const searchTerm = editHelperSearchTerm.toLowerCase();
-                            const displayName = (emp.display_name || emp.full_name || '').toLowerCase();
-                            return !searchTerm || displayName.includes(searchTerm);
-                          })
-                          .map((emp: any) => (
-                            <div
-                              key={emp.id}
-                              className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center gap-3"
-                              onClick={() => {
-                                setEditedMeeting(prev => ({ ...prev, helper: emp.id }));
-                                setEditHelperSearchTerm('');
-                                setShowEditHelperDropdown(false);
-                              }}
-                            >
-                              <EmployeeAvatar employeeId={emp.id} size="sm" />
-                              <span>{emp.display_name || emp.full_name}</span>
-                            </div>
-                          ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
+                )}
 
+                {isStaffMeeting && (
+                  <>
+                    <div className="space-y-2">
+                      <label className={meetingFieldLabelClass}>Meeting Subject</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Internal meeting subject"
+                        value={editExternal.subject}
+                        onChange={(e) => setEditExternal((prev) => ({ ...prev, subject: e.target.value }))}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <label className={meetingFieldLabelClass}>Internal Meeting Type</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={editExternal.internalMeetingTypeId != null ? String(editExternal.internalMeetingTypeId) : ''}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setEditExternal((prev) => ({ ...prev, internalMeetingTypeId: v === '' ? null : Number(v) }));
+                        }}
+                        disabled={internalMeetingTypes.length === 0}
+                      >
+                        {internalMeetingTypes.length === 0 ? (
+                          <option value="">Loading types…</option>
+                        ) : (
+                          internalMeetingTypes.map((t) => (
+                            <option key={t.id} value={String(t.id)}>{t.label}</option>
+                          ))
+                        )}
+                      </select>
+                    </div>
+                    <div className="relative space-y-2" ref={editStaffDropdownRef}>
+                      <label className={meetingFieldLabelClass}>Staff Attendees</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Search staff..."
+                        value={editStaffSearch}
+                        onFocus={() => setShowEditStaffDropdown(true)}
+                        onChange={(e) => { setEditStaffSearch(e.target.value); setShowEditStaffDropdown(true); }}
+                      />
+                      {showEditStaffDropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {(allEmployees || [])
+                            .filter((e: any) => {
+                              const q = editStaffSearch.trim().toLowerCase();
+                              return !q || (e.display_name || '').toLowerCase().includes(q);
+                            })
+                            .map((emp: any) => {
+                              const isSelected = editExternal.selectedStaffEmployeeIds.includes(Number(emp.id));
+                              return (
+                                <div
+                                  key={emp.id}
+                                  className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isSelected ? 'bg-primary/10 text-primary' : 'hover:bg-gray-100'}`}
+                                  onClick={() => {
+                                    setEditExternal((prev) => ({
+                                      ...prev,
+                                      selectedStaffEmployeeIds: isSelected
+                                        ? prev.selectedStaffEmployeeIds.filter((id) => id !== Number(emp.id))
+                                        : [...prev.selectedStaffEmployeeIds, Number(emp.id)],
+                                    }));
+                                  }}
+                                >
+                                  <span>{emp.display_name}</span>
+                                  {isSelected && <span className="text-xs">Selected</span>}
+                                </div>
+                              );
+                            })}
+                        </div>
+                      )}
+                      {editExternal.selectedStaffEmployeeIds.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {editExternal.selectedStaffEmployeeIds.map((id) => {
+                            const emp = (allEmployees || []).find((e: any) => Number(e.id) === id);
+                            return (
+                              <span key={id} className="badge badge-outline gap-2">
+                                {emp?.display_name || id}
+                                <button
+                                  type="button"
+                                  className="text-gray-500 hover:text-gray-800"
+                                  onClick={() => setEditExternal((prev) => ({
+                                    ...prev,
+                                    selectedStaffEmployeeIds: prev.selectedStaffEmployeeIds.filter((x) => x !== id),
+                                  }))}
+                                >×</button>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    <div className="relative space-y-2" ref={editFirmContactDropdownRef}>
+                      <label className={meetingFieldLabelClass}>Firm Contacts</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Search firm contacts..."
+                        value={editFirmContactSearch}
+                        onFocus={() => setShowEditFirmContactDropdown(true)}
+                        onChange={(e) => { setEditFirmContactSearch(e.target.value); setShowEditFirmContactDropdown(true); }}
+                      />
+                      {showEditFirmContactDropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {(() => {
+                            const q = editFirmContactSearch.trim().toLowerCase();
+                            const list = (q
+                              ? firmContacts.filter((c) => c.name.toLowerCase().includes(q) || (c.email || '').toLowerCase().includes(q))
+                              : firmContacts
+                            ).slice(0, 50);
+                            return list.length > 0 ? list.map((c) => {
+                              const isSelected = editExternal.selectedFirmContactIds.includes(c.id);
+                              return (
+                                <div
+                                  key={c.id}
+                                  className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isSelected ? 'bg-primary/10 text-primary' : 'hover:bg-gray-100'}`}
+                                  onClick={() => {
+                                    setEditExternal((prev) => ({
+                                      ...prev,
+                                      selectedFirmContactIds: isSelected
+                                        ? prev.selectedFirmContactIds.filter((id) => id !== c.id)
+                                        : [...prev.selectedFirmContactIds, c.id],
+                                    }));
+                                  }}
+                                >
+                                  <div className="min-w-0">
+                                    <div className="font-semibold truncate">{c.name}</div>
+                                    <div className="text-xs text-gray-500 truncate">{c.email || c.phone || ''}</div>
+                                  </div>
+                                  {isSelected && <span className="text-xs ml-2">Selected</span>}
+                                </div>
+                              );
+                            }) : (
+                              <div className="px-4 py-2 text-gray-500 text-center">No matches</div>
+                            );
+                          })()}
+                        </div>
+                      )}
+                      {editExternal.selectedFirmContactIds.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {editExternal.selectedFirmContactIds.map((id) => {
+                            const c = firmContacts.find((x) => x.id === id);
+                            if (!c) return null;
+                            return (
+                              <span key={id} className="badge badge-outline gap-2">
+                                {c.name}
+                                <button
+                                  type="button"
+                                  className="text-gray-500 hover:text-gray-800"
+                                  onClick={() => setEditExternal((prev) => ({
+                                    ...prev,
+                                    selectedFirmContactIds: prev.selectedFirmContactIds.filter((x) => x !== id),
+                                  }))}
+                                >×</button>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <label className={meetingFieldLabelClass}>Extern Participant</label>
+                      <div className="grid grid-cols-1 gap-2">
+                        <input
+                          className="input input-bordered w-full"
+                          placeholder="Name"
+                          value={editExternal.freeDraft.name}
+                          onChange={(e) => setEditExternal((prev) => ({ ...prev, freeDraft: { ...prev.freeDraft, name: e.target.value } }))}
+                        />
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          <input
+                            className="input input-bordered w-full"
+                            placeholder="Email (optional)"
+                            value={editExternal.freeDraft.email || ''}
+                            onChange={(e) => setEditExternal((prev) => ({ ...prev, freeDraft: { ...prev.freeDraft, email: e.target.value } }))}
+                          />
+                          <input
+                            className="input input-bordered w-full"
+                            placeholder="Phone (optional)"
+                            value={editExternal.freeDraft.phone || ''}
+                            onChange={(e) => setEditExternal((prev) => ({ ...prev, freeDraft: { ...prev.freeDraft, phone: e.target.value } }))}
+                          />
+                        </div>
+                        <textarea
+                          className="textarea textarea-bordered w-full"
+                          placeholder="Notes (optional)"
+                          value={editExternal.freeDraft.notes || ''}
+                          onChange={(e) => setEditExternal((prev) => ({ ...prev, freeDraft: { ...prev.freeDraft, notes: e.target.value } }))}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline"
+                          onClick={() => {
+                            const name = (editExternal.freeDraft.name || '').trim();
+                            if (!name) { toast.error('Extern participant name is required'); return; }
+                            setEditExternal((prev) => ({
+                              ...prev,
+                              freeParticipants: [
+                                ...prev.freeParticipants,
+                                {
+                                  name,
+                                  email: (prev.freeDraft.email || '').trim() || undefined,
+                                  phone: (prev.freeDraft.phone || '').trim() || undefined,
+                                  notes: (prev.freeDraft.notes || '').trim() || undefined,
+                                },
+                              ],
+                              freeDraft: { name: '', email: '', phone: '', notes: '' },
+                            }));
+                          }}
+                        >
+                          Add participant
+                        </button>
+                      </div>
+                      {editExternal.freeParticipants.length > 0 && (
+                        <div className="flex flex-wrap gap-2">
+                          {editExternal.freeParticipants.map((p, idx) => (
+                            <span key={`${p.name}-${idx}`} className="badge badge-outline gap-2">
+                              {p.name}
+                              <button
+                                type="button"
+                                className="text-gray-500 hover:text-gray-800"
+                                onClick={() => setEditExternal((prev) => ({
+                                  ...prev,
+                                  freeParticipants: prev.freeParticipants.filter((_, i) => i !== idx),
+                                }))}
+                              >×</button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {isActiveMeeting && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-2">
+                      <label className={meetingFieldLabelClass}>Handler</label>
+                      <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                        <EmployeeAvatar employeeId={handlerEmployeeId} size="sm" />
+                        <span className="text-sm text-gray-700">{getEmployeeDisplayName(handlerEmployeeId) || '--'}</span>
+                      </div>
+                      <p className="text-xs text-gray-400">Handler is managed in Roles and cannot be changed here.</p>
+                    </div>
+                    <div className="space-y-2">
+                      <label className={meetingFieldLabelClass}>Retention Handler</label>
+                      <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                        <EmployeeAvatar employeeId={retentionHandlerId} size="sm" />
+                        <span className="text-sm text-gray-700">{getEmployeeDisplayName(retentionHandlerId) || '--'}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {!isStaffMeeting && isPotentialMeeting && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-2 relative" ref={editSchedulerDropdownRef}>
+                      <label className={meetingFieldLabelClass}>Scheduler</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Select scheduler..."
+                        value={editSchedulerSearchTerm !== '' ? editSchedulerSearchTerm : (getEmployeeDisplayName(editedMeeting.scheduler) || '')}
+                        onChange={(e) => {
+                          setEditSchedulerSearchTerm(e.target.value);
+                          setShowEditSchedulerDropdown(true);
+                        }}
+                        onFocus={() => {
+                          setEditSchedulerSearchTerm(getEmployeeDisplayName(editedMeeting.scheduler) || '');
+                          setShowEditSchedulerDropdown(true);
+                        }}
+                        onBlur={() => {
+                          setTimeout(() => {
+                            setEditSchedulerSearchTerm('');
+                            setShowEditSchedulerDropdown(false);
+                          }, 200);
+                        }}
+                        autoComplete="off"
+                      />
+                      {showEditSchedulerDropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {allEmployees
+                            .filter((emp: any) => {
+                              const searchTerm = editSchedulerSearchTerm.toLowerCase();
+                              const displayName = (emp.display_name || emp.full_name || '').toLowerCase();
+                              return !searchTerm || displayName.includes(searchTerm);
+                            })
+                            .map((emp: any) => (
+                              <div
+                                key={emp.id}
+                                className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center gap-3"
+                                onClick={() => {
+                                  setEditedMeeting(prev => ({ ...prev, scheduler: emp.id }));
+                                  setEditSchedulerSearchTerm('');
+                                  setShowEditSchedulerDropdown(false);
+                                }}
+                              >
+                                <EmployeeAvatar employeeId={emp.id} size="sm" />
+                                <span>{emp.display_name || emp.full_name}</span>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-2 relative" ref={editHelperDropdownRef}>
+                      <label className={meetingFieldLabelClass}>Helper</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Select helper..."
+                        value={editHelperSearchTerm !== '' ? editHelperSearchTerm : (getEmployeeDisplayName(editedMeeting.helper) || '')}
+                        onChange={(e) => {
+                          setEditHelperSearchTerm(e.target.value);
+                          setShowEditHelperDropdown(true);
+                        }}
+                        onFocus={() => {
+                          setEditHelperSearchTerm(getEmployeeDisplayName(editedMeeting.helper) || '');
+                          setShowEditHelperDropdown(true);
+                        }}
+                        onBlur={() => {
+                          setTimeout(() => {
+                            setEditHelperSearchTerm('');
+                            setShowEditHelperDropdown(false);
+                          }, 200);
+                        }}
+                        autoComplete="off"
+                      />
+                      {showEditHelperDropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {allEmployees
+                            .filter((emp: any) => {
+                              const searchTerm = editHelperSearchTerm.toLowerCase();
+                              const displayName = (emp.display_name || emp.full_name || '').toLowerCase();
+                              return !searchTerm || displayName.includes(searchTerm);
+                            })
+                            .map((emp: any) => (
+                              <div
+                                key={emp.id}
+                                className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center gap-3"
+                                onClick={() => {
+                                  setEditedMeeting(prev => ({ ...prev, helper: emp.id }));
+                                  setEditHelperSearchTerm('');
+                                  setShowEditHelperDropdown(false);
+                                }}
+                              >
+                                <EmployeeAvatar employeeId={emp.id} size="sm" />
+                                <span>{emp.display_name || emp.full_name}</span>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {(isActiveMeeting || isPotentialMeeting) && (
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-2 relative" ref={editGuest1DropdownRef}>
+                      <label className={meetingFieldLabelClass}>Guest 1</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Select guest..."
+                        value={editGuest1SearchTerm !== '' ? editGuest1SearchTerm : (hasGuestEmployee(editedMeeting.extern1) ? getEmployeeDisplayName(editedMeeting.extern1) : '')}
+                        onChange={(e) => {
+                          setEditGuest1SearchTerm(e.target.value);
+                          setShowEditGuest1Dropdown(true);
+                        }}
+                        onFocus={() => {
+                          setEditGuest1SearchTerm(hasGuestEmployee(editedMeeting.extern1) ? getEmployeeDisplayName(editedMeeting.extern1) : '');
+                          setShowEditGuest1Dropdown(true);
+                        }}
+                        onBlur={() => {
+                          setTimeout(() => {
+                            setEditGuest1SearchTerm('');
+                            setShowEditGuest1Dropdown(false);
+                          }, 200);
+                        }}
+                        autoComplete="off"
+                      />
+                      {hasGuestEmployee(editedMeeting.extern1) && (
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs mt-1"
+                          onClick={() => setEditedMeeting((prev) => ({ ...prev, extern1: null }))}
+                        >
+                          Clear guest
+                        </button>
+                      )}
+                      {showEditGuest1Dropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {allEmployees
+                            .filter((emp: any) => {
+                              const searchTerm = editGuest1SearchTerm.toLowerCase();
+                              const displayName = (emp.display_name || emp.full_name || '').toLowerCase();
+                              return !searchTerm || displayName.includes(searchTerm);
+                            })
+                            .map((emp: any) => (
+                              <div
+                                key={emp.id}
+                                className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center gap-3"
+                                onClick={() => {
+                                  setEditedMeeting((prev) => ({ ...prev, extern1: String(emp.id) }));
+                                  setEditGuest1SearchTerm('');
+                                  setShowEditGuest1Dropdown(false);
+                                }}
+                              >
+                                <EmployeeAvatar employeeId={emp.id} size="sm" />
+                                <span>{emp.display_name || emp.full_name}</span>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="space-y-2 relative" ref={editGuest2DropdownRef}>
+                      <label className={meetingFieldLabelClass}>Guest 2</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Select guest..."
+                        value={editGuest2SearchTerm !== '' ? editGuest2SearchTerm : (hasGuestEmployee(editedMeeting.extern2) ? getEmployeeDisplayName(editedMeeting.extern2) : '')}
+                        onChange={(e) => {
+                          setEditGuest2SearchTerm(e.target.value);
+                          setShowEditGuest2Dropdown(true);
+                        }}
+                        onFocus={() => {
+                          setEditGuest2SearchTerm(hasGuestEmployee(editedMeeting.extern2) ? getEmployeeDisplayName(editedMeeting.extern2) : '');
+                          setShowEditGuest2Dropdown(true);
+                        }}
+                        onBlur={() => {
+                          setTimeout(() => {
+                            setEditGuest2SearchTerm('');
+                            setShowEditGuest2Dropdown(false);
+                          }, 200);
+                        }}
+                        autoComplete="off"
+                      />
+                      {hasGuestEmployee(editedMeeting.extern2) && (
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs mt-1"
+                          onClick={() => setEditedMeeting((prev) => ({ ...prev, extern2: null }))}
+                        >
+                          Clear guest
+                        </button>
+                      )}
+                      {showEditGuest2Dropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {allEmployees
+                            .filter((emp: any) => {
+                              const searchTerm = editGuest2SearchTerm.toLowerCase();
+                              const displayName = (emp.display_name || emp.full_name || '').toLowerCase();
+                              return !searchTerm || displayName.includes(searchTerm);
+                            })
+                            .map((emp: any) => (
+                              <div
+                                key={emp.id}
+                                className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center gap-3"
+                                onClick={() => {
+                                  setEditedMeeting((prev) => ({ ...prev, extern2: String(emp.id) }));
+                                  setEditGuest2SearchTerm('');
+                                  setShowEditGuest2Dropdown(false);
+                                }}
+                              >
+                                <EmployeeAvatar employeeId={emp.id} size="sm" />
+                                <span>{emp.display_name || emp.full_name}</span>
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {!isStaffMeeting && (
+                <>
                 {/* Amount */}
                 <div className="space-y-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Amount</label>
+                  <label className={meetingFieldLabelClass}>Amount</label>
                   <div className="flex gap-2">
                     <select
                       className="select select-bordered flex-shrink-0"
@@ -5117,7 +6859,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
                 {/* Car Number */}
                 <div className="space-y-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Car Number</label>
+                  <label className={meetingFieldLabelClass}>Car Number</label>
                   <input
                     type="text"
                     className="input input-bordered w-full"
@@ -5126,6 +6868,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     onChange={(e) => setEditedMeeting(prev => ({ ...prev, car_number: e.target.value }))}
                   />
                 </div>
+                </>
+                )}
 
                 {/* Action Buttons */}
                 <div className="flex gap-2 pt-4 border-t border-purple-100">
@@ -5155,61 +6899,152 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               </div>
             ) : (
               /* View Mode */
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-3">
-                <div className="space-y-2 sm:space-y-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Location</label>
+              <div className={`grid grid-cols-2 gap-3 sm:gap-3 ${isStaffMeeting ? 'md:grid-cols-1' : isActiveMeeting ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
+                <div className="space-y-2 sm:space-y-2 md:hidden">
+                  <label className={meetingFieldLabelClass}>Location</label>
                   <div className="flex items-center gap-2 sm:gap-2">
-                    <MapPinIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: 'rgb(40, 75, 50)' }} />
+                    <MapPinIcon className="w-4 h-4 sm:w-4 sm:h-4 text-gray-400" />
                     <span className="text-sm sm:text-base text-gray-900">{getMeetingLocationName(meeting.location)}</span>
                   </div>
                 </div>
+                {meeting.manual_address?.trim() && (
+                  <div className="space-y-2 sm:space-y-2 col-span-2">
+                    <label className={meetingFieldLabelClass}>Manual Address</label>
+                    <div className="flex items-start gap-2 sm:gap-2">
+                      <MapPinIcon className="w-4 h-4 sm:w-4 sm:h-4 text-gray-400 mt-0.5 shrink-0" />
+                      <span className="text-sm sm:text-base text-gray-900 whitespace-pre-wrap">{meeting.manual_address.trim()}</span>
+                    </div>
+                  </div>
+                )}
+                {isStaffMeeting ? (
+                  <div className="space-y-2 sm:space-y-2 col-span-2 md:col-span-1">
+                    <label className={meetingFieldLabelClass}>Participants</label>
+                    {participantBundle?.loading ? (
+                      <div className="flex items-center gap-2 py-1">
+                        <span className="loading loading-spinner loading-sm"></span>
+                        <span className="text-sm text-gray-500">Loading participants…</span>
+                      </div>
+                    ) : participantBundle?.participants?.length ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {participantBundle.participants.map((participant) => (
+                          <div key={participant.id} className="flex items-center gap-2 min-w-0">
+                            {renderMeetingParticipantAvatar(participant)}
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm sm:text-base text-gray-900 truncate" title={participant.name}>
+                                {participant.name}
+                              </div>
+                              {participant.subtitle ? (
+                                <div className="text-xs text-gray-500 truncate" title={participant.subtitle}>
+                                  {participant.subtitle}
+                                </div>
+                              ) : null}
+                              <span className={`inline-flex items-center mt-1 rounded-md border px-1.5 py-0.5 text-[10px] font-medium ${getParticipantBadgeClass(participant.type)}`}>
+                                {participant.badge}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-sm sm:text-base text-gray-900">--</span>
+                    )}
+                  </div>
+                ) : (
+                  <>
                 <div className="space-y-2 sm:space-y-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Manager</label>
+                  <label className={meetingFieldLabelClass}>{roleLeadLabel}</label>
                   <div className="flex items-center gap-2 sm:gap-2">
-                    <UserIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: 'rgb(40, 75, 50)' }} />
-                    <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.manager)}</span>
+                    <EmployeeAvatar employeeId={roleLeadId} size="md" />
+                    <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(roleLeadId)}</span>
                   </div>
                 </div>
+                {isActiveMeeting && (
+                  <div className="space-y-2 sm:space-y-2">
+                    <label className={meetingFieldLabelClass}>Retention Handler</label>
+                    <div className="flex items-center gap-2 sm:gap-2">
+                      <EmployeeAvatar employeeId={retentionHandlerId} size="md" />
+                      <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(retentionHandlerId) || '--'}</span>
+                    </div>
+                  </div>
+                )}
+                {(isActiveMeeting || isPotentialMeeting) && (
+                  <>
+                    <div className="space-y-2 sm:space-y-2">
+                      <label className={meetingFieldLabelClass}>Guest 1</label>
+                      <div className="flex items-center gap-2 sm:gap-2">
+                        {hasGuestEmployee(meeting.extern1) ? (
+                          <>
+                            <EmployeeAvatar employeeId={meeting.extern1} size="md" />
+                            <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.extern1)}</span>
+                          </>
+                        ) : (
+                          <span className="text-sm sm:text-base text-gray-900">--</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="space-y-2 sm:space-y-2">
+                      <label className={meetingFieldLabelClass}>Guest 2</label>
+                      <div className="flex items-center gap-2 sm:gap-2">
+                        {hasGuestEmployee(meeting.extern2) ? (
+                          <>
+                            <EmployeeAvatar employeeId={meeting.extern2} size="md" />
+                            <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.extern2)}</span>
+                          </>
+                        ) : (
+                          <span className="text-sm sm:text-base text-gray-900">--</span>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+                {!isActiveMeeting && (
                 <div className="space-y-2 sm:space-y-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Scheduler</label>
+                  <label className={meetingFieldLabelClass}>Scheduler</label>
                   <div className="flex items-center gap-2 sm:gap-2">
-                    <UserCircleIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: 'rgb(40, 75, 50)' }} />
+                    <EmployeeAvatar employeeId={meeting.scheduler} size="md" />
                     <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.scheduler)}</span>
                   </div>
                 </div>
+                )}
+                {!isActiveMeeting && (
                 <div className="space-y-2 sm:space-y-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Helper</label>
+                  <label className={meetingFieldLabelClass}>Helper</label>
                   <div className="flex items-center gap-2 sm:gap-2">
-                    <UserCircleIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: 'rgb(40, 75, 50)' }} />
+                    <EmployeeAvatar employeeId={meeting.helper} size="md" />
                     <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.helper)}</span>
                   </div>
                 </div>
+                )}
+                {!isActiveMeeting && (
                 <div className="space-y-2 sm:space-y-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Expert</label>
+                  <label className={meetingFieldLabelClass}>Expert</label>
                   <div className="flex items-center gap-2 sm:gap-2">
-                    <AcademicCapIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: 'rgb(40, 75, 50)' }} />
+                    <EmployeeAvatar employeeId={meeting.expert} size="md" />
                     <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.expert)}</span>
                   </div>
                 </div>
-                <div className="space-y-2 sm:space-y-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Amount</label>
+                )}
+                  </>
+                )}
+                <div className="space-y-2 sm:space-y-2 md:hidden">
+                  <label className={meetingFieldLabelClass}>Amount</label>
                   <div className="flex items-center gap-2">
                     {meeting.amount && meeting.amount > 0 ? (
                       <span className="text-sm sm:text-base font-semibold" style={{ color: 'rgb(40, 75, 50)' }}>
                         {getCurrencySymbol(meeting.currency)} {typeof meeting.amount === 'number' ? meeting.amount.toLocaleString() : meeting.amount}
                       </span>
                     ) : (
-                      <span className="text-sm sm:text-base text-gray-400 italic">Not specified</span>
+                      <span className="text-sm sm:text-base text-gray-900">--</span>
                     )}
                   </div>
                 </div>
-                <div className="space-y-2 sm:space-y-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Car Number</label>
+                <div className="space-y-2 sm:space-y-2 md:hidden">
+                  <label className={meetingFieldLabelClass}>Car Number</label>
                   <div className="flex items-center gap-2">
                     {meeting.car_number ? (
                       <span className="text-sm sm:text-base text-gray-900">{meeting.car_number}</span>
                     ) : (
-                      <span className="text-sm sm:text-base text-gray-400 italic">Not specified</span>
+                      <span className="text-sm sm:text-base text-gray-900">--</span>
                     )}
                   </div>
                 </div>
@@ -5218,21 +7053,20 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
             {/* Brief Section — edit opens a modal for comfortable writing */}
             {editingMeetingId !== meeting.id && (
-              <div className="border-t border-purple-100 pt-3 sm:pt-3">
+              <div className="pt-3 sm:pt-3">
                 <div className="flex justify-between items-center mb-2 sm:mb-2">
-                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: 'rgb(40, 75, 50)' }}>Brief</label>
+                  <label className={meetingFieldLabelClass}>Brief</label>
                   <button
                     type="button"
-                    className="btn btn-ghost btn-xs gap-1 hover:bg-purple-50"
+                    className="btn btn-ghost btn-xs btn-square hover:bg-gray-100"
                     onClick={handleEditBrief}
                     title="Edit brief"
                   >
-                    <PencilSquareIcon className="w-4 h-4 sm:w-4 sm:h-4 text-purple-500 hover:text-purple-600" />
-                    <span className="text-xs text-purple-600 font-medium">Edit</span>
+                    <PencilSquareIcon className="w-4 h-4 text-gray-900" />
                   </button>
                 </div>
                 <div
-                  className="bg-gray-50 rounded-lg p-3 sm:p-3 min-h-[60px] sm:min-h-[60px] cursor-pointer hover:bg-gray-100/90 transition-colors"
+                  className="bg-gray-50 rounded-lg p-3 sm:p-3 min-h-[60px] sm:min-h-[60px] max-h-48 overflow-y-auto cursor-pointer hover:bg-gray-100/90 transition-colors"
                   onClick={handleEditBrief}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === ' ') {
@@ -5245,7 +7079,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   title="Click to edit brief"
                 >
                   {meeting.brief ? (
-                    <p className="text-sm sm:text-base text-gray-900 whitespace-pre-wrap">{meeting.brief}</p>
+                    <p className="text-sm sm:text-base text-gray-700 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{meeting.brief}</p>
                   ) : (
                     <span className="text-sm sm:text-base text-gray-400 italic">No brief provided</span>
                   )}
@@ -5255,8 +7089,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
             {/* Brief Section in Edit Mode */}
             {editingMeetingId === meeting.id && (
-              <div className="border-t border-purple-100 pt-3">
-                <label className="text-sm font-medium text-purple-600 uppercase tracking-wide">Brief</label>
+              <div className="pt-3">
+                <label className={`${meetingFieldLabelClass} mt-2 block`}>Brief</label>
                 <textarea
                   className="textarea textarea-bordered w-full h-20 text-base mt-2"
                   value={editedMeeting.brief || ''}
@@ -5269,7 +7103,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             {/* Last Edited */}
             {meeting.lastEdited && (
               <div className="text-sm sm:text-sm text-gray-400 flex justify-between border-t border-gray-100 pt-2 sm:pt-2">
-                <span>Last edited by {meeting.lastEdited.user}</span>
+                <span>Last edited by {getLastEditedByDisplayName(meeting.lastEdited.user)}</span>
                 <span>{new Date(meeting.lastEdited.timestamp).toLocaleDateString()}</span>
               </div>
             )}
@@ -5364,7 +7198,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
         {/* Expander Toggle */}
         <div
-          className="cursor-pointer transition-all p-2 text-center border-t border-purple-200 bg-white"
+          className="cursor-pointer transition-all p-2 text-center bg-white"
           onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)}
         >
           <div className="flex items-center justify-center gap-2 text-xs font-medium" style={{ color: 'rgb(40, 75, 50)' }}>
@@ -5372,6 +7206,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             <ChevronDownIcon className={`w-4 h-4 transition-transform ${expandedMeetingId === meeting.id ? 'rotate-180' : ''}`} style={{ color: 'rgb(40, 75, 50)' }} />
           </div>
         </div>
+        </div>
+        {/* Right-side vertical action column */}
+        {hasAnyActionButton && (
+          <div className="flex flex-col items-center justify-start gap-2 sm:gap-3 p-2 sm:p-3 border-l border-gray-200 bg-gray-50/60 rounded-r-xl shrink-0 sticky top-20 self-start z-10">
+            {sideActionButtons}
+          </div>
+        )}
       </div>
     );
   };
@@ -5415,35 +7256,18 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             <p className="text-sm text-gray-500">Schedule and track client meetings</p>
           </div>
         </div>
-        {/* Schedule/Reschedule Meeting Button - Only show when stage is 60 or higher (client signed agreement and beyond) */}
-        {(() => {
-          const stageId = typeof client.stage === 'number' ? client.stage :
-            typeof client.stage === 'string' ? parseInt(client.stage, 10) : null;
-          return stageId !== null && stageId >= 60;
-        })() && (
-            <button
-              onClick={() => {
-                if (upcomingMeetings.length > 0) {
-                  setShowRescheduleDrawer(true);
-                } else {
-                  setShowScheduleDrawer(true);
-                }
-              }}
-              className="btn btn-ghost border border-gray-300 text-gray-700 hover:bg-gray-50"
-            >
-              <CalendarIcon className="w-5 h-5 mr-2 text-gray-600" />
-              {upcomingMeetings.length > 0 ? 'Reschedule Meeting' : 'Schedule Meeting'}
-            </button>
-          )}
+        {/* Schedule/Reschedule Meeting button moved to ClientHeader (top-left stage row).
+            See window events 'meeting-tab:open-schedule-drawer' / 'meeting-tab:open-reschedule-drawer'. */}
       </div>
 
       {/* Scheduling History Table */}
       {schedulingHistory.length > 0 && (
         <div className="mb-16">
           <h4 className="text-base font-semibold text-gray-900 mb-4">Scheduling History</h4>
-          <div className="overflow-x-auto">
-            <table className="table w-full">
-                <thead>
+          <div className="bg-white border border-gray-200 rounded-xl shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="table w-full">
+                <thead className="bg-gray-50">
                   <tr>
                     <th className="text-xs font-semibold text-gray-600 uppercase">Date</th>
                     <th className="text-xs font-semibold text-gray-600 uppercase">Created By</th>
@@ -5488,6 +7312,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   })}
                 </tbody>
               </table>
+            </div>
           </div>
         </div>
       )}
@@ -5542,7 +7367,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       {/* Upcoming Meetings with Past Meetings toggle */}
       <div className="relative">
         {/* Upcoming Meetings (main content) - centered */}
-        <div className="w-full max-w-2xl mx-auto">
+        <div className="w-full max-w-3xl mx-auto pr-14 sm:pr-16">
           <div className="flex items-center justify-end mb-5">
             {upcomingMeetings.length > 0 && (
               <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
@@ -5739,7 +7564,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 return (
                   <p className="text-center text-xs leading-snug text-gray-500 sm:text-left">
                     Edited by{' '}
-                    <span className="font-medium text-gray-600">{le.user || '—'}</span>
+                    <span className="font-medium text-gray-600">{getLastEditedByDisplayName(le.user)}</span>
                     {atText ? (
                       <>
                         {' '}
@@ -5754,13 +7579,37 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
       )}
 
+      <MeetingSummaryNotesModal
+        open={summaryNotesMeeting != null && typeof summaryNotesMeeting.id === 'number'}
+        meeting={
+          summaryNotesMeeting && typeof summaryNotesMeeting.id === 'number'
+            ? summaryNotesMeeting
+            : null
+        }
+        clientName={client.name || 'Client'}
+        leadNumber={client.lead_number != null ? String(client.lead_number) : null}
+        locationLabel={
+          summaryNotesMeeting ? getMeetingLocationName(summaryNotesMeeting.location) : null
+        }
+        onClose={() => setSummaryNotesMeeting(null)}
+        resolveEditorDisplayName={resolveEditorDisplayName}
+        onSaved={(meetingId, notes) => {
+          setMeetings((prev) =>
+            prev.map((m) =>
+              m.id === meetingId ? { ...m, meeting_summary_notes: notes || null } : m,
+            ),
+          );
+          void fetchMeetings();
+        }}
+      />
+
       {/* Notify Modal */}
       {showNotifyModal && selectedMeetingForNotify && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowNotifyModal(false)}>
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
-            <div className="p-6">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="p-6 overflow-y-auto flex-1">
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-semibold text-gray-900">Select Recipient</h3>
+                <h3 className="text-lg font-semibold text-gray-900">Select Recipients</h3>
                 <button
                   onClick={() => setShowNotifyModal(false)}
                   className="text-gray-400 hover:text-gray-600"
@@ -5799,86 +7648,159 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   <span className="loading loading-spinner loading-md"></span>
                 </div>
               ) : (
-                <div className="space-y-2">
-                  {/* Email All Option */}
-                  {contacts.filter(c => c.email && c.email !== '---').length > 1 && (
-                    <button
-                      onClick={() => {
-                        // Send to all contacts at once
-                        const allEmails = contacts
-                          .filter(c => c.email && c.email !== '---')
-                          .map(c => c.email!);
+                (() => {
+                  const sortedContacts = sortNotifyRecipients(contacts);
+                  const emailContacts = sortedContacts.filter((c) => c.email && c.email !== '---');
+                  const hasClientFallback = Boolean(client.email) && emailContacts.length === 0;
+                  const selectableCount = emailContacts.length + (hasClientFallback ? 1 : 0);
 
-                        if (allEmails.length === 0) {
-                          toast.error('No email addresses found for contacts');
-                          return;
-                        }
-
-                        handleSendEmail(selectedMeetingForNotify, allEmails, client.name);
-                      }}
-                      className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-purple-50 hover:border-purple-300 transition-colors"
-                    >
-                      <div className="flex items-center gap-3">
-                        <EnvelopeIcon className="w-5 h-5 text-purple-600" />
-                        <div>
-                          <div className="font-medium text-gray-900">Email All Contacts</div>
-                          <div className="text-sm text-gray-500">
-                            {contacts.filter(c => c.email && c.email !== '---').length} contact{contacts.filter(c => c.email && c.email !== '---').length !== 1 ? 's' : ''} with email
+                  return (
+                    <div className="space-y-3">
+                      {selectableCount > 1 && (
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-gray-500">
+                            {selectedEmailRecipientKeys.size} of {selectableCount} selected
+                          </span>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              className="text-primary hover:underline"
+                              onClick={() =>
+                                setSelectedEmailRecipientKeys(
+                                  new Set([
+                                    ...emailContacts.map((c) => c.recipientKey),
+                                    ...(hasClientFallback ? ['client-primary-email'] : []),
+                                  ])
+                                )
+                              }
+                            >
+                              Select all
+                            </button>
+                            <button
+                              type="button"
+                              className="text-gray-500 hover:underline"
+                              onClick={() => setSelectedEmailRecipientKeys(new Set())}
+                            >
+                              Clear
+                            </button>
                           </div>
                         </div>
-                      </div>
-                    </button>
-                  )}
+                      )}
 
-                  {/* Individual Contacts */}
-                  {contacts
-                    .filter(c => c.email && c.email !== '---')
-                    .map((contact) => (
-                      <button
-                        key={contact.id}
-                        onClick={() => handleSendEmail(selectedMeetingForNotify, contact.email!, contact.name)}
-                        className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-purple-50 hover:border-purple-300 transition-colors"
-                      >
-                        <div className="flex items-center gap-3">
-                          <UserCircleIcon className="w-5 h-5 text-purple-600" />
-                          <div className="flex-1">
-                            <div className="font-medium text-gray-900">
-                              {contact.name || '---'}
-                              {contact.isMain && (
-                                <span className="ml-2 text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">Main</span>
-                              )}
+                      <div className="space-y-2 max-h-64 overflow-y-auto">
+                        {sortedContacts.map((contact) => {
+                          const hasEmail = Boolean(contact.email && contact.email !== '---');
+                          const isSelected = hasEmail && selectedEmailRecipientKeys.has(contact.recipientKey);
+                          return (
+                            <label
+                              key={contact.recipientKey}
+                              className={`flex items-start gap-3 px-4 py-3 border rounded-lg transition-colors ${!hasEmail
+                                ? 'border-gray-100 bg-gray-50 opacity-60 cursor-not-allowed'
+                                : isSelected
+                                  ? 'border-purple-300 bg-purple-50 cursor-pointer'
+                                  : 'border-gray-200 hover:bg-gray-50 cursor-pointer'
+                                }`}
+                            >
+                              <input
+                                type="checkbox"
+                                className="checkbox checkbox-primary checkbox-sm mt-1"
+                                checked={isSelected}
+                                disabled={!hasEmail}
+                                onChange={() => toggleEmailRecipient(contact.recipientKey)}
+                              />
+                              <NotifyRecipientAvatar contact={contact} size="sm" />
+                              <div className="flex-1 min-w-0">
+                                <div className="font-medium text-gray-900 flex flex-wrap items-center gap-2">
+                                  <span>{contact.name || '---'}</span>
+                                  <span className={`text-xs px-2 py-0.5 rounded ${getNotifySourceBadgeClass(contact.source)}`}>
+                                    {contact.sourceLabel}
+                                  </span>
+                                </div>
+                                {contact.subtitle && (
+                                  <div className="text-xs text-gray-400 truncate">{contact.subtitle}</div>
+                                )}
+                                <div className="text-sm text-gray-500 truncate">
+                                  {hasEmail ? contact.email : 'No email address'}
+                                </div>
+                              </div>
+                            </label>
+                          );
+                        })}
+
+                        {hasClientFallback && (
+                          <label
+                            className={`flex items-start gap-3 px-4 py-3 border rounded-lg cursor-pointer transition-colors ${selectedEmailRecipientKeys.has('client-primary-email')
+                              ? 'border-purple-300 bg-purple-50'
+                              : 'border-gray-200 hover:bg-gray-50'
+                              }`}
+                          >
+                            <input
+                              type="checkbox"
+                              className="checkbox checkbox-primary checkbox-sm mt-1"
+                              checked={selectedEmailRecipientKeys.has('client-primary-email')}
+                              onChange={() => toggleEmailRecipient('client-primary-email')}
+                            />
+                            <div className="w-8 h-8 rounded-full flex items-center justify-center bg-purple-100 text-purple-700 font-semibold flex-shrink-0 text-xs">
+                              {getEmployeeInitials(client.name || 'Client')}
                             </div>
-                            <div className="text-sm text-gray-500">{contact.email}</div>
+                            <div className="flex-1 min-w-0">
+                              <div className="font-medium text-gray-900">{client.name}</div>
+                              <div className="text-sm text-gray-500 truncate">{client.email}</div>
+                            </div>
+                          </label>
+                        )}
+
+                        {sortedContacts.length === 0 && !hasClientFallback && (
+                          <div className="text-center py-8 text-gray-500">
+                            <EnvelopeIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                            <p>No recipients found</p>
                           </div>
-                        </div>
-                      </button>
-                    ))}
-
-                  {/* Client Email (fallback) */}
-                  {client.email && contacts.filter(c => c.email && c.email !== '---').length === 0 && (
-                    <button
-                      onClick={() => handleSendEmail(selectedMeetingForNotify, client.email, client.name)}
-                      className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-purple-50 hover:border-purple-300 transition-colors"
-                    >
-                      <div className="flex items-center gap-3">
-                        <EnvelopeIcon className="w-5 h-5 text-purple-600" />
-                        <div>
-                          <div className="font-medium text-gray-900">{client.name}</div>
-                          <div className="text-sm text-gray-500">{client.email}</div>
-                        </div>
+                        )}
                       </div>
-                    </button>
-                  )}
-
-                  {contacts.filter(c => c.email && c.email !== '---').length === 0 && !client.email && (
-                    <div className="text-center py-8 text-gray-500">
-                      <EnvelopeIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                      <p>No email addresses found</p>
                     </div>
-                  )}
-                </div>
+                  );
+                })()
               )}
             </div>
+
+            {!loadingContacts && (
+              <div className="p-6 pt-0 flex gap-3 border-t border-gray-100">
+                <button
+                  type="button"
+                  className="btn btn-ghost flex-1"
+                  onClick={() => setShowNotifyModal(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary flex-1"
+                  disabled={selectedEmailRecipientKeys.size === 0 || sendingEmailMeetingId === selectedMeetingForNotify.id}
+                  onClick={() => {
+                    const selectedEmails = contacts
+                      .filter((c) => selectedEmailRecipientKeys.has(c.recipientKey) && c.email && c.email !== '---')
+                      .map((c) => c.email!);
+
+                    if (selectedEmailRecipientKeys.has('client-primary-email') && client.email) {
+                      selectedEmails.push(client.email);
+                    }
+
+                    if (selectedEmails.length === 0) {
+                      toast.error('Select at least one recipient');
+                      return;
+                    }
+
+                    handleSendEmail(selectedMeetingForNotify, selectedEmails, client.name);
+                  }}
+                >
+                  {sendingEmailMeetingId === selectedMeetingForNotify.id ? (
+                    <span className="loading loading-spinner loading-sm"></span>
+                  ) : (
+                    `Send Email${selectedEmailRecipientKeys.size > 1 ? ` (${selectedEmailRecipientKeys.size})` : ''}`
+                  )}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -5886,8 +7808,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       {/* WhatsApp Notify Modal */}
       {showWhatsAppNotifyModal && selectedMeetingForWhatsAppNotify && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowWhatsAppNotifyModal(false)}>
-          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
-            <div className="p-6">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="p-6 overflow-y-auto flex-1">
               <div className="flex justify-between items-center mb-4">
                 <h3 className="text-lg font-semibold text-gray-900">
                   Send WhatsApp {whatsAppReminderType === 'missed_appointment' ? 'Missed Appointment' : 'Reminder'}
@@ -5941,121 +7863,178 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   <span className="loading loading-spinner loading-md"></span>
                 </div>
               ) : (
-                <div className="space-y-2">
-                  {/* Helper function to check if contact has valid phone */}
-                  {(() => {
-                    const contactsWithPhone = whatsAppContacts.filter(c => {
-                      const phone = c.phone?.trim();
-                      const mobile = c.mobile?.trim();
-                      return (phone && phone !== '' && phone !== '---') || (mobile && mobile !== '' && mobile !== '---');
-                    });
+                (() => {
+                  const sortedContacts = sortNotifyRecipients(whatsAppContacts);
+                  const phoneContacts = sortedContacts.filter((c) => getNotifyRecipientPhone(c));
+                  const clientPhone = client.phone?.trim();
+                  const clientMobile = client.mobile?.trim();
+                  const clientPhoneNumber =
+                    (clientPhone && clientPhone !== '' && clientPhone !== '---')
+                      ? clientPhone
+                      : (clientMobile && clientMobile !== '' && clientMobile !== '---')
+                        ? clientMobile
+                        : null;
+                  const hasClientFallback = Boolean(clientPhoneNumber) && phoneContacts.length === 0;
+                  const selectableCount = phoneContacts.length + (hasClientFallback ? 1 : 0);
 
-                    return (
-                      <>
-                        {/* WhatsApp All Option */}
-                        {contactsWithPhone.length > 1 && (
-                          <button
-                            onClick={() => {
-                              // Send to all contacts at once
-                              const allPhones = contactsWithPhone
-                                .map(c => {
-                                  const phone = c.phone?.trim();
-                                  const mobile = c.mobile?.trim();
-                                  return (phone && phone !== '' && phone !== '---') ? phone : (mobile && mobile !== '' && mobile !== '---') ? mobile : null;
-                                })
-                                .filter(Boolean) as string[];
-
-                              if (allPhones.length === 0) {
-                                toast.error('No phone numbers found for contacts');
-                                return;
+                  return (
+                    <div className="space-y-3">
+                      {selectableCount > 1 && (
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-gray-500">
+                            {selectedWhatsAppRecipientKeys.size} of {selectableCount} selected
+                          </span>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              className="text-green-600 hover:underline"
+                              onClick={() =>
+                                setSelectedWhatsAppRecipientKeys(
+                                  new Set([
+                                    ...phoneContacts.map((c) => c.recipientKey),
+                                    ...(hasClientFallback ? ['client-primary-phone'] : []),
+                                  ])
+                                )
                               }
+                            >
+                              Select all
+                            </button>
+                            <button
+                              type="button"
+                              className="text-gray-500 hover:underline"
+                              onClick={() => setSelectedWhatsAppRecipientKeys(new Set())}
+                            >
+                              Clear
+                            </button>
+                          </div>
+                        </div>
+                      )}
 
-                              handleSendWhatsAppReminder(selectedMeetingForWhatsAppNotify, allPhones, whatsAppReminderType);
-                            }}
-                            className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-green-50 hover:border-green-300 transition-colors"
-                          >
-                            <div className="flex items-center gap-3">
-                              <FaWhatsapp className="w-5 h-5 text-green-600" />
-                              <div>
-                                <div className="font-medium text-gray-900">Send to All Contacts</div>
-                                <div className="text-sm text-gray-500">
-                                  {contactsWithPhone.length} contact{contactsWithPhone.length !== 1 ? 's' : ''} with phone
-                                </div>
-                              </div>
-                            </div>
-                          </button>
-                        )}
-
-                        {/* Individual Contacts */}
-                        {contactsWithPhone.map((contact) => {
-                          const phone = contact.phone?.trim();
-                          const mobile = contact.mobile?.trim();
-                          const phoneNumber = (phone && phone !== '' && phone !== '---') ? phone : (mobile && mobile !== '' && mobile !== '---') ? mobile : null;
-
-                          if (!phoneNumber) return null;
+                      <div className="space-y-2 max-h-64 overflow-y-auto">
+                        {sortedContacts.map((contact) => {
+                          const phoneNumber = getNotifyRecipientPhone(contact);
+                          const hasPhone = Boolean(phoneNumber);
+                          const isSelected = hasPhone && selectedWhatsAppRecipientKeys.has(contact.recipientKey);
 
                           return (
-                            <button
-                              key={contact.id}
-                              onClick={() => handleSendWhatsAppReminder(selectedMeetingForWhatsAppNotify, phoneNumber, whatsAppReminderType)}
-                              className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-green-50 hover:border-green-300 transition-colors"
+                            <label
+                              key={contact.recipientKey}
+                              className={`flex items-start gap-3 px-4 py-3 border rounded-lg transition-colors ${!hasPhone
+                                ? 'border-gray-100 bg-gray-50 opacity-60 cursor-not-allowed'
+                                : isSelected
+                                  ? 'border-green-300 bg-green-50 cursor-pointer'
+                                  : 'border-gray-200 hover:bg-gray-50 cursor-pointer'
+                                }`}
                             >
-                              <div className="flex items-center gap-3">
-                                <UserCircleIcon className="w-5 h-5 text-green-600" />
-                                <div className="flex-1">
-                                  <div className="font-medium text-gray-900">
-                                    {contact.name || '---'}
-                                    {contact.isMain && (
-                                      <span className="ml-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Main</span>
-                                    )}
-                                  </div>
-                                  <div className="text-sm text-gray-500">{phoneNumber}</div>
+                              <input
+                                type="checkbox"
+                                className="checkbox checkbox-success checkbox-sm mt-1"
+                                checked={isSelected}
+                                disabled={!hasPhone}
+                                onChange={() => toggleWhatsAppRecipient(contact.recipientKey)}
+                              />
+                              <NotifyRecipientAvatar contact={contact} size="sm" />
+                              <div className="flex-1 min-w-0">
+                                <div className="font-medium text-gray-900 flex flex-wrap items-center gap-2">
+                                  <span>{contact.name || '---'}</span>
+                                  <span className={`text-xs px-2 py-0.5 rounded ${getNotifySourceBadgeClass(contact.source)}`}>
+                                    {contact.sourceLabel}
+                                  </span>
+                                </div>
+                                {contact.subtitle && (
+                                  <div className="text-xs text-gray-400 truncate">{contact.subtitle}</div>
+                                )}
+                                <div className="text-sm text-gray-500 truncate">
+                                  {hasPhone ? phoneNumber : 'No phone number'}
                                 </div>
                               </div>
-                            </button>
+                            </label>
                           );
                         })}
 
-                        {/* Client Phone (fallback) */}
-                        {(() => {
-                          const clientPhone = client.phone?.trim();
-                          const clientMobile = client.mobile?.trim();
-                          const hasClientPhone = (clientPhone && clientPhone !== '' && clientPhone !== '---') || (clientMobile && clientMobile !== '' && clientMobile !== '---');
+                        {hasClientFallback && clientPhoneNumber && (
+                          <label
+                            className={`flex items-start gap-3 px-4 py-3 border rounded-lg cursor-pointer transition-colors ${selectedWhatsAppRecipientKeys.has('client-primary-phone')
+                              ? 'border-green-300 bg-green-50'
+                              : 'border-gray-200 hover:bg-gray-50'
+                              }`}
+                          >
+                            <input
+                              type="checkbox"
+                              className="checkbox checkbox-success checkbox-sm mt-1"
+                              checked={selectedWhatsAppRecipientKeys.has('client-primary-phone')}
+                              onChange={() => toggleWhatsAppRecipient('client-primary-phone')}
+                            />
+                            <div className="w-8 h-8 rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold flex-shrink-0 text-xs">
+                              {getEmployeeInitials(client.name || 'Client')}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="font-medium text-gray-900">{client.name}</div>
+                              <div className="text-sm text-gray-500 truncate">{clientPhoneNumber}</div>
+                            </div>
+                          </label>
+                        )}
 
-                          if (hasClientPhone && contactsWithPhone.length === 0) {
-                            const clientPhoneNumber = (clientPhone && clientPhone !== '' && clientPhone !== '---') ? clientPhone : (clientMobile && clientMobile !== '' && clientMobile !== '---') ? clientMobile : null;
-                            if (clientPhoneNumber) {
-                              return (
-                                <button
-                                  onClick={() => handleSendWhatsAppReminder(selectedMeetingForWhatsAppNotify, clientPhoneNumber, whatsAppReminderType)}
-                                  className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-green-50 hover:border-green-300 transition-colors"
-                                >
-                                  <div className="flex items-center gap-3">
-                                    <FaWhatsapp className="w-5 h-5 text-green-600" />
-                                    <div>
-                                      <div className="font-medium text-gray-900">{client.name}</div>
-                                      <div className="text-sm text-gray-500">{clientPhoneNumber}</div>
-                                    </div>
-                                  </div>
-                                </button>
-                              );
-                            }
-                          }
-                          return null;
-                        })()}
-
-                        {contactsWithPhone.length === 0 && !(client.phone?.trim() && client.phone.trim() !== '' && client.phone.trim() !== '---') && !(client.mobile?.trim() && client.mobile.trim() !== '' && client.mobile.trim() !== '---') && (
+                        {sortedContacts.length === 0 && !hasClientFallback && (
                           <div className="text-center py-8 text-gray-500">
                             <FaWhatsapp className="w-12 h-12 mx-auto text-gray-300 mb-3" />
-                            <p>No phone numbers found</p>
+                            <p>No recipients found</p>
                           </div>
                         )}
-                      </>
-                    );
-                  })()}
-                </div>
+                      </div>
+                    </div>
+                  );
+                })()
               )}
             </div>
+
+            {!loadingWhatsAppContacts && (
+              <div className="p-6 pt-0 flex gap-3 border-t border-gray-100">
+                <button
+                  type="button"
+                  className="btn btn-ghost flex-1"
+                  onClick={() => setShowWhatsAppNotifyModal(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn bg-green-600 hover:bg-green-700 text-white border-green-600 flex-1"
+                  disabled={selectedWhatsAppRecipientKeys.size === 0 || sendingWhatsAppMeetingId === selectedMeetingForWhatsAppNotify.id}
+                  onClick={() => {
+                    const selectedPhones = whatsAppContacts
+                      .filter((c) => selectedWhatsAppRecipientKeys.has(c.recipientKey))
+                      .map((c) => getNotifyRecipientPhone(c))
+                      .filter(Boolean) as string[];
+
+                    if (selectedWhatsAppRecipientKeys.has('client-primary-phone')) {
+                      const clientPhone = client.phone?.trim();
+                      const clientMobile = client.mobile?.trim();
+                      const clientPhoneNumber =
+                        (clientPhone && clientPhone !== '' && clientPhone !== '---')
+                          ? clientPhone
+                          : (clientMobile && clientMobile !== '' && clientMobile !== '---')
+                            ? clientMobile
+                            : null;
+                      if (clientPhoneNumber) selectedPhones.push(clientPhoneNumber);
+                    }
+
+                    if (selectedPhones.length === 0) {
+                      toast.error('Select at least one recipient');
+                      return;
+                    }
+
+                    handleSendWhatsAppReminder(selectedMeetingForWhatsAppNotify, selectedPhones, whatsAppReminderType);
+                  }}
+                >
+                  {sendingWhatsAppMeetingId === selectedMeetingForWhatsAppNotify.id ? (
+                    <span className="loading loading-spinner loading-sm"></span>
+                  ) : (
+                    `Send WhatsApp${selectedWhatsAppRecipientKeys.size > 1 ? ` (${selectedWhatsAppRecipientKeys.size})` : ''}`
+                  )}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -6073,9 +8052,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       )}
 
 
-      {/* Schedule Meeting Drawer */}
-      {showScheduleDrawer && (
-        <div className="fixed inset-0 z-50 flex">
+      {/* Schedule Meeting Drawer — portaled to body so it covers the app header */}
+      {showScheduleDrawer && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[320] flex">
           {/* Overlay */}
           <div
             className="fixed inset-0 bg-black/30"
@@ -6100,7 +8079,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             }}
           />
           {/* Panel */}
-          <div className="ml-auto w-full max-w-md bg-base-100 h-screen shadow-2xl flex flex-col animate-slideInRight z-50">
+          <div className="fixed top-0 right-0 bottom-0 flex w-full max-w-md flex-col bg-base-100 shadow-2xl animate-slideInRight z-[321]">
             {showAuthRedirectOption && (
               <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 flex flex-col gap-2">
                 <p className="text-sm text-amber-800">Sign-in was blocked. Use the button below to sign in in this tab, then try again.</p>
@@ -6121,7 +8100,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               </div>
             )}
             {/* Fixed Header */}
-            <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
+            <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300 pt-[max(2rem,env(safe-area-inset-top))]">
               <h3 className="text-2xl font-bold">Schedule Meeting</h3>
               <button className="btn btn-ghost btn-sm" onClick={() => {
                 setShowAuthRedirectOption(false);
@@ -6157,7 +8136,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     value={scheduleMeetingFormData.location}
                     onChange={(e) => handleMeetingLocationChange(e.target.value, 'schedule')}
                   >
-                    {allMeetingLocations.map((location) => (
+                    {selectableMeetingLocations.map((location) => (
                       <option key={location.id} value={location.name}>
                         {location.name}
                       </option>
@@ -6199,6 +8178,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, calendar: e.target.value }))}
                   >
                     <option value="active_client">Active Client</option>
+                    <option value="external">External Meeting</option>
                   </select>
                 </div>
 
@@ -6260,139 +8240,249 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   )}
                 </div>
 
-                {/* Manager (Optional) */}
-                <div className="relative" ref={managerDropdownRef}>
-                  <label className="block font-semibold mb-1">Manager (Optional)</label>
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    placeholder="Select a manager..."
-                    value={scheduleMeetingFormData.manager}
-                    onChange={(e) => {
-                      const value = e.target.value;
-                      setScheduleMeetingFormData(prev => ({ ...prev, manager: value }));
-                      setManagerSearchTerm(value);
-                      setShowManagerDropdown(true);
-                    }}
-                    onFocus={() => {
-                      setManagerSearchTerm(scheduleMeetingFormData.manager || '');
-                      setShowManagerDropdown(true);
-                    }}
-                    autoComplete="off"
-                  />
-                  {showManagerDropdown && (
-                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                      {(() => {
-                        const searchTerm = (managerSearchTerm || scheduleMeetingFormData.manager || '').toLowerCase();
-                        const filteredEmployees = allEmployees.filter(emp => {
-                          return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
-                        });
-
-                        return filteredEmployees.length > 0 ? (
-                          filteredEmployees.map(emp => {
-                            const isUnavailable = scheduleMeetingFormData.date && scheduleMeetingFormData.time
-                              ? isEmployeeUnavailable(emp.display_name, scheduleMeetingFormData.date, scheduleMeetingFormData.time)
-                              : false;
-                            return (
-                              <div
-                                key={emp.id}
-                                className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isUnavailable
-                                  ? 'bg-red-50 text-red-600 hover:bg-red-100'
-                                  : 'hover:bg-gray-100'
-                                  }`}
-                                onClick={() => {
-                                  setScheduleMeetingFormData(prev => ({ ...prev, manager: emp.display_name }));
-                                  setManagerSearchTerm('');
-                                  setShowManagerDropdown(false);
-                                }}
-                              >
-                                <span>{emp.display_name}</span>
-                                {isUnavailable && (
-                                  <div className="flex items-center gap-1">
-                                    <ClockIcon className="w-4 h-4" />
-                                    <span className="text-xs">Unavailable</span>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })
-                        ) : (
-                          <div className="px-4 py-2 text-gray-500 text-center">
-                            No employees found
-                          </div>
-                        );
-                      })()}
+                {/* External Meeting fields (Internal Meeting with external participants) */}
+                {scheduleMeetingFormData.calendar === 'external' && (
+                  <>
+                    {/* Subject */}
+                    <div>
+                      <label className="block font-semibold mb-1">Meeting Subject</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder={`[#${client.lead_number || client.id}] ${client.name} - Internal Meeting`}
+                        value={scheduleExternal.subject}
+                        onChange={(e) => setScheduleExternal((prev) => ({ ...prev, subject: e.target.value }))}
+                      />
                     </div>
-                  )}
-                </div>
 
-                {/* Helper (Optional) */}
-                <div className="relative" ref={helperDropdownRef}>
-                  <label className="block font-semibold mb-1">Helper (Optional)</label>
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    placeholder="Select a helper..."
-                    value={scheduleMeetingFormData.helper}
-                    onChange={(e) => {
-                      const value = e.target.value;
-                      setScheduleMeetingFormData(prev => ({ ...prev, helper: value }));
-                      setHelperSearchTerm(value);
-                      setShowHelperDropdown(true);
-                    }}
-                    onFocus={() => {
-                      setHelperSearchTerm(scheduleMeetingFormData.helper || '');
-                      setShowHelperDropdown(true);
-                    }}
-                    autoComplete="off"
-                  />
-                  {showHelperDropdown && (
-                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                      {(() => {
-                        const searchTerm = (helperSearchTerm || scheduleMeetingFormData.helper || '').toLowerCase();
-                        const filteredEmployees = allEmployees.filter(emp => {
-                          return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
-                        });
-
-                        return filteredEmployees.length > 0 ? (
-                          filteredEmployees.map(emp => {
-                            const isUnavailable = scheduleMeetingFormData.date && scheduleMeetingFormData.time
-                              ? isEmployeeUnavailable(emp.display_name, scheduleMeetingFormData.date, scheduleMeetingFormData.time)
-                              : false;
-                            return (
-                              <div
-                                key={emp.id}
-                                className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isUnavailable
-                                  ? 'bg-red-50 text-red-600 hover:bg-red-100'
-                                  : 'hover:bg-gray-100'
-                                  }`}
-                                onClick={() => {
-                                  setScheduleMeetingFormData(prev => ({ ...prev, helper: emp.display_name }));
-                                  setHelperSearchTerm('');
-                                  setShowHelperDropdown(false);
-                                }}
-                              >
-                                <span>{emp.display_name}</span>
-                                {isUnavailable && (
-                                  <div className="flex items-center gap-1">
-                                    <ClockIcon className="w-4 h-4" />
-                                    <span className="text-xs">Unavailable</span>
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })
+                    {/* Internal meeting type */}
+                    <div>
+                      <label className="block font-semibold mb-1">Internal Meeting Type</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={scheduleExternal.internalMeetingTypeId != null ? String(scheduleExternal.internalMeetingTypeId) : ''}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setScheduleExternal((prev) => ({ ...prev, internalMeetingTypeId: v === '' ? null : Number(v) }));
+                        }}
+                        disabled={internalMeetingTypes.length === 0}
+                      >
+                        {internalMeetingTypes.length === 0 ? (
+                          <option value="">Loading types…</option>
                         ) : (
-                          <div className="px-4 py-2 text-gray-500 text-center">
-                            No employees found
-                          </div>
-                        );
-                      })()}
+                          internalMeetingTypes.map((t) => (
+                            <option key={t.id} value={String(t.id)}>{t.label}</option>
+                          ))
+                        )}
+                      </select>
                     </div>
-                  )}
-                </div>
 
-                {/* Meeting Brief (Optional) */}
+                    {/* Staff attendees */}
+                    <div className="relative" ref={scheduleStaffDropdownRef}>
+                      <label className="block font-semibold mb-1">Staff Attendees</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Search staff..."
+                        value={scheduleStaffSearch}
+                        onFocus={() => setShowScheduleStaffDropdown(true)}
+                        onChange={(e) => { setScheduleStaffSearch(e.target.value); setShowScheduleStaffDropdown(true); }}
+                      />
+                      {showScheduleStaffDropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {(() => {
+                            const q = scheduleStaffSearch.trim().toLowerCase();
+                            const list = (allEmployees || []).filter((e: any) => !q || (e.display_name || '').toLowerCase().includes(q));
+                            return list.length > 0 ? list.map((emp: any) => {
+                              const isSelected = scheduleExternal.selectedStaffEmployeeIds.includes(Number(emp.id));
+                              return (
+                                <div
+                                  key={emp.id}
+                                  className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isSelected ? 'bg-primary/10 text-primary' : 'hover:bg-gray-100'}`}
+                                  onClick={() => {
+                                    setScheduleExternal((prev) => ({
+                                      ...prev,
+                                      selectedStaffEmployeeIds: isSelected
+                                        ? prev.selectedStaffEmployeeIds.filter((id) => id !== Number(emp.id))
+                                        : [...prev.selectedStaffEmployeeIds, Number(emp.id)],
+                                    }));
+                                  }}
+                                >
+                                  <span>{emp.display_name}</span>
+                                  {isSelected && <span className="text-xs">Selected</span>}
+                                </div>
+                              );
+                            }) : (
+                              <div className="px-4 py-2 text-gray-500 text-center">No employees found</div>
+                            );
+                          })()}
+                        </div>
+                      )}
+                      {scheduleExternal.selectedStaffEmployeeIds.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {scheduleExternal.selectedStaffEmployeeIds.map((id) => {
+                            const emp = (allEmployees || []).find((e: any) => Number(e.id) === id);
+                            return (
+                              <span key={id} className="badge badge-outline gap-2">
+                                {emp?.display_name || id}
+                                <button
+                                  type="button"
+                                  className="text-gray-500 hover:text-gray-800"
+                                  onClick={() => setScheduleExternal((prev) => ({
+                                    ...prev,
+                                    selectedStaffEmployeeIds: prev.selectedStaffEmployeeIds.filter((x) => x !== id),
+                                  }))}
+                                >×</button>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Firm contacts */}
+                    <div className="relative" ref={scheduleFirmContactDropdownRef}>
+                      <label className="block font-semibold mb-1">Firm Contacts</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Search firm contacts..."
+                        value={scheduleFirmContactSearch}
+                        onFocus={() => setShowScheduleFirmContactDropdown(true)}
+                        onChange={(e) => { setScheduleFirmContactSearch(e.target.value); setShowScheduleFirmContactDropdown(true); }}
+                      />
+                      {showScheduleFirmContactDropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {(() => {
+                            const q = scheduleFirmContactSearch.trim().toLowerCase();
+                            const list = (q ? firmContacts.filter((c) => c.name.toLowerCase().includes(q) || (c.email || '').toLowerCase().includes(q)) : firmContacts).slice(0, 50);
+                            return list.length > 0 ? list.map((c) => {
+                              const isSelected = scheduleExternal.selectedFirmContactIds.includes(c.id);
+                              return (
+                                <div
+                                  key={c.id}
+                                  className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isSelected ? 'bg-primary/10 text-primary' : 'hover:bg-gray-100'}`}
+                                  onClick={() => {
+                                    setScheduleExternal((prev) => ({
+                                      ...prev,
+                                      selectedFirmContactIds: isSelected
+                                        ? prev.selectedFirmContactIds.filter((id) => id !== c.id)
+                                        : [...prev.selectedFirmContactIds, c.id],
+                                    }));
+                                  }}
+                                >
+                                  <div className="min-w-0">
+                                    <div className="font-semibold truncate">{c.name}</div>
+                                    <div className="text-xs text-gray-500 truncate">{c.email || c.phone || ''}</div>
+                                  </div>
+                                  {isSelected && <span className="text-xs ml-2">Selected</span>}
+                                </div>
+                              );
+                            }) : (
+                              <div className="px-4 py-2 text-gray-500 text-center">No matches</div>
+                            );
+                          })()}
+                        </div>
+                      )}
+                      {scheduleExternal.selectedFirmContactIds.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {scheduleExternal.selectedFirmContactIds.map((id) => {
+                            const c = firmContacts.find((x) => x.id === id);
+                            if (!c) return null;
+                            return (
+                              <span key={id} className="badge badge-outline gap-2">
+                                {c.name}
+                                <button
+                                  type="button"
+                                  className="text-gray-500 hover:text-gray-800"
+                                  onClick={() => setScheduleExternal((prev) => ({
+                                    ...prev,
+                                    selectedFirmContactIds: prev.selectedFirmContactIds.filter((x) => x !== id),
+                                  }))}
+                                >×</button>
+                              </span>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Extern participant (free) */}
+                    <div>
+                      <label className="block font-semibold mb-1">Extern Participant</label>
+                      <div className="grid grid-cols-1 gap-2">
+                        <input
+                          className="input input-bordered w-full"
+                          placeholder="Name"
+                          value={scheduleExternal.freeDraft.name}
+                          onChange={(e) => setScheduleExternal((prev) => ({ ...prev, freeDraft: { ...prev.freeDraft, name: e.target.value } }))}
+                        />
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          <input
+                            className="input input-bordered w-full"
+                            placeholder="Email (optional)"
+                            value={scheduleExternal.freeDraft.email || ''}
+                            onChange={(e) => setScheduleExternal((prev) => ({ ...prev, freeDraft: { ...prev.freeDraft, email: e.target.value } }))}
+                          />
+                          <input
+                            className="input input-bordered w-full"
+                            placeholder="Phone (optional)"
+                            value={scheduleExternal.freeDraft.phone || ''}
+                            onChange={(e) => setScheduleExternal((prev) => ({ ...prev, freeDraft: { ...prev.freeDraft, phone: e.target.value } }))}
+                          />
+                        </div>
+                        <textarea
+                          className="textarea textarea-bordered w-full"
+                          placeholder="Notes (optional)"
+                          value={scheduleExternal.freeDraft.notes || ''}
+                          onChange={(e) => setScheduleExternal((prev) => ({ ...prev, freeDraft: { ...prev.freeDraft, notes: e.target.value } }))}
+                        />
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-outline"
+                          onClick={() => {
+                            const name = (scheduleExternal.freeDraft.name || '').trim();
+                            if (!name) { toast.error('Extern participant name is required'); return; }
+                            setScheduleExternal((prev) => ({
+                              ...prev,
+                              freeParticipants: [
+                                ...prev.freeParticipants,
+                                {
+                                  name,
+                                  email: (prev.freeDraft.email || '').trim() || undefined,
+                                  phone: (prev.freeDraft.phone || '').trim() || undefined,
+                                  notes: (prev.freeDraft.notes || '').trim() || undefined,
+                                },
+                              ],
+                              freeDraft: { name: '', email: '', phone: '', notes: '' },
+                            }));
+                          }}
+                        >
+                          Add participant
+                        </button>
+                      </div>
+                      {scheduleExternal.freeParticipants.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {scheduleExternal.freeParticipants.map((p, idx) => (
+                            <span key={`${p.name}-${idx}`} className="badge badge-outline gap-2">
+                              {p.name}
+                              <button
+                                type="button"
+                                className="text-gray-500 hover:text-gray-800"
+                                onClick={() => setScheduleExternal((prev) => ({
+                                  ...prev,
+                                  freeParticipants: prev.freeParticipants.filter((_, i) => i !== idx),
+                                }))}
+                              >×</button>
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {/* Meeting Brief (Optional) — always available, used as Outlook description for external too */}
                 <div>
                   <label htmlFor="meeting-brief" className="block font-semibold mb-1">Meeting Brief (Optional)</label>
                   <textarea
@@ -6405,46 +8495,51 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   />
                 </div>
 
-                {/* Meeting Attendance Probability */}
-                <div>
-                  <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={scheduleMeetingFormData.attendance_probability}
-                    onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, attendance_probability: e.target.value }))}
-                  >
-                    <option value="Low">Low</option>
-                    <option value="Medium">Medium</option>
-                    <option value="High">High</option>
-                    <option value="Very High">Very High</option>
-                  </select>
-                </div>
+                {/* Active-client-only fields: hidden for External Meeting */}
+                {scheduleMeetingFormData.calendar !== 'external' && (
+                  <>
+                    {/* Meeting Attendance Probability */}
+                    <div>
+                      <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={scheduleMeetingFormData.attendance_probability}
+                        onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, attendance_probability: e.target.value }))}
+                      >
+                        <option value="Low">Low</option>
+                        <option value="Medium">Medium</option>
+                        <option value="High">High</option>
+                        <option value="Very High">Very High</option>
+                      </select>
+                    </div>
 
-                {/* Meeting Complexity */}
-                <div>
-                  <label className="block font-semibold mb-1">Meeting Complexity</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={scheduleMeetingFormData.complexity}
-                    onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, complexity: e.target.value }))}
-                  >
-                    <option value="Simple">Simple</option>
-                    <option value="Complex">Complex</option>
-                  </select>
-                </div>
+                    {/* Meeting Complexity */}
+                    <div>
+                      <label className="block font-semibold mb-1">Meeting Complexity</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={scheduleMeetingFormData.complexity}
+                        onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, complexity: e.target.value }))}
+                      >
+                        <option value="Simple">Simple</option>
+                        <option value="Complex">Complex</option>
+                      </select>
+                    </div>
 
-                {/* Meeting Car Number */}
-                <div>
-                  <label htmlFor="car-number" className="block font-semibold mb-1">Meeting Car Number</label>
-                  <input
-                    id="car-number"
-                    type="text"
-                    className="input input-bordered w-full"
-                    value={scheduleMeetingFormData.car_number}
-                    onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, car_number: e.target.value }))}
-                    placeholder="Enter car number..."
-                  />
-                </div>
+                    {/* Meeting Car Number */}
+                    <div>
+                      <label htmlFor="car-number" className="block font-semibold mb-1">Meeting Car Number</label>
+                      <input
+                        id="car-number"
+                        type="text"
+                        className="input input-bordered w-full"
+                        value={scheduleMeetingFormData.car_number}
+                        onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, car_number: e.target.value }))}
+                        placeholder="Enter car number..."
+                      />
+                    </div>
+                  </>
+                )}
               </div>
             </div>
 
@@ -6468,16 +8563,16 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
-      {/* Reschedule Meeting Drawer */}
-      {showRescheduleDrawer && (
-        <div className="fixed top-0 left-0 right-0 bottom-0 z-50 flex flex-row" style={{ margin: 0, padding: 0 }}>
+      {/* Reschedule Meeting Drawer — portaled to body so it covers the app header */}
+      {showRescheduleDrawer && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[320] flex flex-row">
           {/* Overlay */}
           <div
-            className="fixed top-0 left-0 right-0 bottom-0 bg-black/30"
-            style={{ margin: 0, padding: 0 }}
+            className="fixed inset-0 bg-black/30"
             onClick={() => {
               setShowAuthRedirectOption(false);
               authRedirectParamsRef.current = null;
@@ -6502,7 +8597,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             }}
           />
           {/* Panel */}
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50" style={{ marginLeft: 'auto', marginRight: 0, padding: 0, top: 0, right: 0 }}>
+          <div className="fixed top-0 right-0 bottom-0 flex w-full max-w-md flex-col bg-base-100 shadow-2xl animate-slideInRight z-[321]">
             {showAuthRedirectOption && (
               <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 flex flex-col gap-2">
                 <p className="text-sm text-amber-800">Sign-in was blocked. Use the button below to sign in in this tab, then try again.</p>
@@ -6523,7 +8618,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               </div>
             )}
             {/* Fixed Header */}
-            <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
+            <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300 pt-[max(2rem,env(safe-area-inset-top))]">
               <h3 className="text-2xl font-bold">Reschedule Meeting</h3>
               <button className="btn btn-ghost btn-sm" onClick={() => {
                 setShowAuthRedirectOption(false);
@@ -6645,7 +8740,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         value={rescheduleFormData.location}
                         onChange={(e) => handleMeetingLocationChange(e.target.value, 'reschedule')}
                       >
-                        {allMeetingLocations.map((location) => (
+                        {selectableMeetingLocations.map((location) => (
                           <option key={location.id} value={location.name}>
                             {location.name}
                           </option>
@@ -6687,6 +8782,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, calendar: e.target.value }))}
                       >
                         <option value="active_client">Active Client</option>
+                        <option value="external">External Meeting</option>
                       </select>
                     </div>
 
@@ -6724,139 +8820,244 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       </select>
                     </div>
 
-                    {/* Manager (Optional) */}
-                    <div className="relative" ref={managerDropdownRef}>
-                      <label className="block font-semibold mb-1">Manager (Optional)</label>
-                      <input
-                        type="text"
-                        className="input input-bordered w-full"
-                        placeholder="Select a manager..."
-                        value={rescheduleFormData.manager}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          setRescheduleFormData((prev: any) => ({ ...prev, manager: value }));
-                          setManagerSearchTerm(value);
-                          setShowManagerDropdown(true);
-                        }}
-                        onFocus={() => {
-                          setManagerSearchTerm(rescheduleFormData.manager || '');
-                          setShowManagerDropdown(true);
-                        }}
-                        autoComplete="off"
-                      />
-                      {showManagerDropdown && (
-                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                          {(() => {
-                            const searchTerm = (managerSearchTerm || rescheduleFormData.manager || '').toLowerCase();
-                            const filteredEmployees = allEmployees.filter(emp => {
-                              return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
-                            });
-
-                            return filteredEmployees.length > 0 ? (
-                              filteredEmployees.map(emp => {
-                                const isUnavailable = rescheduleFormData.date && rescheduleFormData.time
-                                  ? isEmployeeUnavailable(emp.display_name, rescheduleFormData.date, rescheduleFormData.time)
-                                  : false;
-                                return (
-                                  <div
-                                    key={emp.id}
-                                    className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isUnavailable
-                                      ? 'bg-red-50 text-red-600 hover:bg-red-100'
-                                      : 'hover:bg-gray-100'
-                                      }`}
-                                    onClick={() => {
-                                      setRescheduleFormData((prev: any) => ({ ...prev, manager: emp.display_name }));
-                                      setManagerSearchTerm('');
-                                      setShowManagerDropdown(false);
-                                    }}
-                                  >
-                                    <span>{emp.display_name}</span>
-                                    {isUnavailable && (
-                                      <div className="flex items-center gap-1">
-                                        <ClockIcon className="w-4 h-4" />
-                                        <span className="text-xs">Unavailable</span>
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })
-                            ) : (
-                              <div className="px-4 py-2 text-gray-500 text-center">
-                                No employees found
-                              </div>
-                            );
-                          })()}
+                    {/* External Meeting fields (Internal Meeting with external participants) */}
+                    {rescheduleFormData.calendar === 'external' && (
+                      <>
+                        <div>
+                          <label className="block font-semibold mb-1">Meeting Subject</label>
+                          <input
+                            type="text"
+                            className="input input-bordered w-full"
+                            placeholder={`[#${client.lead_number || client.id}] ${client.name} - Internal Meeting`}
+                            value={rescheduleExternal.subject}
+                            onChange={(e) => setRescheduleExternal((prev) => ({ ...prev, subject: e.target.value }))}
+                          />
                         </div>
-                      )}
-                    </div>
 
-                    {/* Helper (Optional) */}
-                    <div className="relative" ref={helperDropdownRef}>
-                      <label className="block font-semibold mb-1">Helper (Optional)</label>
-                      <input
-                        type="text"
-                        className="input input-bordered w-full"
-                        placeholder="Select a helper..."
-                        value={rescheduleFormData.helper}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          setRescheduleFormData((prev: any) => ({ ...prev, helper: value }));
-                          setHelperSearchTerm(value);
-                          setShowHelperDropdown(true);
-                        }}
-                        onFocus={() => {
-                          setHelperSearchTerm(rescheduleFormData.helper || '');
-                          setShowHelperDropdown(true);
-                        }}
-                        autoComplete="off"
-                      />
-                      {showHelperDropdown && (
-                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                          {(() => {
-                            const searchTerm = (helperSearchTerm || rescheduleFormData.helper || '').toLowerCase();
-                            const filteredEmployees = allEmployees.filter(emp => {
-                              return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
-                            });
-
-                            return filteredEmployees.length > 0 ? (
-                              filteredEmployees.map(emp => {
-                                const isUnavailable = rescheduleFormData.date && rescheduleFormData.time
-                                  ? isEmployeeUnavailable(emp.display_name, rescheduleFormData.date, rescheduleFormData.time)
-                                  : false;
-                                return (
-                                  <div
-                                    key={emp.id}
-                                    className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isUnavailable
-                                      ? 'bg-red-50 text-red-600 hover:bg-red-100'
-                                      : 'hover:bg-gray-100'
-                                      }`}
-                                    onClick={() => {
-                                      setRescheduleFormData((prev: any) => ({ ...prev, helper: emp.display_name }));
-                                      setHelperSearchTerm('');
-                                      setShowHelperDropdown(false);
-                                    }}
-                                  >
-                                    <span>{emp.display_name}</span>
-                                    {isUnavailable && (
-                                      <div className="flex items-center gap-1">
-                                        <ClockIcon className="w-4 h-4" />
-                                        <span className="text-xs">Unavailable</span>
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })
+                        <div>
+                          <label className="block font-semibold mb-1">Internal Meeting Type</label>
+                          <select
+                            className="select select-bordered w-full"
+                            value={rescheduleExternal.internalMeetingTypeId != null ? String(rescheduleExternal.internalMeetingTypeId) : ''}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              setRescheduleExternal((prev) => ({ ...prev, internalMeetingTypeId: v === '' ? null : Number(v) }));
+                            }}
+                            disabled={internalMeetingTypes.length === 0}
+                          >
+                            {internalMeetingTypes.length === 0 ? (
+                              <option value="">Loading types…</option>
                             ) : (
-                              <div className="px-4 py-2 text-gray-500 text-center">
-                                No employees found
-                              </div>
-                            );
-                          })()}
+                              internalMeetingTypes.map((t) => (
+                                <option key={t.id} value={String(t.id)}>{t.label}</option>
+                              ))
+                            )}
+                          </select>
                         </div>
-                      )}
-                    </div>
 
-                    {/* Meeting Brief (Optional) */}
+                        <div className="relative" ref={rescheduleStaffDropdownRef}>
+                          <label className="block font-semibold mb-1">Staff Attendees</label>
+                          <input
+                            type="text"
+                            className="input input-bordered w-full"
+                            placeholder="Search staff..."
+                            value={rescheduleStaffSearch}
+                            onFocus={() => setShowRescheduleStaffDropdown(true)}
+                            onChange={(e) => { setRescheduleStaffSearch(e.target.value); setShowRescheduleStaffDropdown(true); }}
+                          />
+                          {showRescheduleStaffDropdown && (
+                            <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                              {(() => {
+                                const q = rescheduleStaffSearch.trim().toLowerCase();
+                                const list = (allEmployees || []).filter((e: any) => !q || (e.display_name || '').toLowerCase().includes(q));
+                                return list.length > 0 ? list.map((emp: any) => {
+                                  const isSelected = rescheduleExternal.selectedStaffEmployeeIds.includes(Number(emp.id));
+                                  return (
+                                    <div
+                                      key={emp.id}
+                                      className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isSelected ? 'bg-primary/10 text-primary' : 'hover:bg-gray-100'}`}
+                                      onClick={() => {
+                                        setRescheduleExternal((prev) => ({
+                                          ...prev,
+                                          selectedStaffEmployeeIds: isSelected
+                                            ? prev.selectedStaffEmployeeIds.filter((id) => id !== Number(emp.id))
+                                            : [...prev.selectedStaffEmployeeIds, Number(emp.id)],
+                                        }));
+                                      }}
+                                    >
+                                      <span>{emp.display_name}</span>
+                                      {isSelected && <span className="text-xs">Selected</span>}
+                                    </div>
+                                  );
+                                }) : (
+                                  <div className="px-4 py-2 text-gray-500 text-center">No employees found</div>
+                                );
+                              })()}
+                            </div>
+                          )}
+                          {rescheduleExternal.selectedStaffEmployeeIds.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {rescheduleExternal.selectedStaffEmployeeIds.map((id) => {
+                                const emp = (allEmployees || []).find((e: any) => Number(e.id) === id);
+                                return (
+                                  <span key={id} className="badge badge-outline gap-2">
+                                    {emp?.display_name || id}
+                                    <button
+                                      type="button"
+                                      className="text-gray-500 hover:text-gray-800"
+                                      onClick={() => setRescheduleExternal((prev) => ({
+                                        ...prev,
+                                        selectedStaffEmployeeIds: prev.selectedStaffEmployeeIds.filter((x) => x !== id),
+                                      }))}
+                                    >×</button>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="relative" ref={rescheduleFirmContactDropdownRef}>
+                          <label className="block font-semibold mb-1">Firm Contacts</label>
+                          <input
+                            type="text"
+                            className="input input-bordered w-full"
+                            placeholder="Search firm contacts..."
+                            value={rescheduleFirmContactSearch}
+                            onFocus={() => setShowRescheduleFirmContactDropdown(true)}
+                            onChange={(e) => { setRescheduleFirmContactSearch(e.target.value); setShowRescheduleFirmContactDropdown(true); }}
+                          />
+                          {showRescheduleFirmContactDropdown && (
+                            <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                              {(() => {
+                                const q = rescheduleFirmContactSearch.trim().toLowerCase();
+                                const list = (q ? firmContacts.filter((c) => c.name.toLowerCase().includes(q) || (c.email || '').toLowerCase().includes(q)) : firmContacts).slice(0, 50);
+                                return list.length > 0 ? list.map((c) => {
+                                  const isSelected = rescheduleExternal.selectedFirmContactIds.includes(c.id);
+                                  return (
+                                    <div
+                                      key={c.id}
+                                      className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isSelected ? 'bg-primary/10 text-primary' : 'hover:bg-gray-100'}`}
+                                      onClick={() => {
+                                        setRescheduleExternal((prev) => ({
+                                          ...prev,
+                                          selectedFirmContactIds: isSelected
+                                            ? prev.selectedFirmContactIds.filter((id) => id !== c.id)
+                                            : [...prev.selectedFirmContactIds, c.id],
+                                        }));
+                                      }}
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="font-semibold truncate">{c.name}</div>
+                                        <div className="text-xs text-gray-500 truncate">{c.email || c.phone || ''}</div>
+                                      </div>
+                                      {isSelected && <span className="text-xs ml-2">Selected</span>}
+                                    </div>
+                                  );
+                                }) : (
+                                  <div className="px-4 py-2 text-gray-500 text-center">No matches</div>
+                                );
+                              })()}
+                            </div>
+                          )}
+                          {rescheduleExternal.selectedFirmContactIds.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {rescheduleExternal.selectedFirmContactIds.map((id) => {
+                                const c = firmContacts.find((x) => x.id === id);
+                                if (!c) return null;
+                                return (
+                                  <span key={id} className="badge badge-outline gap-2">
+                                    {c.name}
+                                    <button
+                                      type="button"
+                                      className="text-gray-500 hover:text-gray-800"
+                                      onClick={() => setRescheduleExternal((prev) => ({
+                                        ...prev,
+                                        selectedFirmContactIds: prev.selectedFirmContactIds.filter((x) => x !== id),
+                                      }))}
+                                    >×</button>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+
+                        <div>
+                          <label className="block font-semibold mb-1">Extern Participant</label>
+                          <div className="grid grid-cols-1 gap-2">
+                            <input
+                              className="input input-bordered w-full"
+                              placeholder="Name"
+                              value={rescheduleExternal.freeDraft.name}
+                              onChange={(e) => setRescheduleExternal((prev) => ({ ...prev, freeDraft: { ...prev.freeDraft, name: e.target.value } }))}
+                            />
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              <input
+                                className="input input-bordered w-full"
+                                placeholder="Email (optional)"
+                                value={rescheduleExternal.freeDraft.email || ''}
+                                onChange={(e) => setRescheduleExternal((prev) => ({ ...prev, freeDraft: { ...prev.freeDraft, email: e.target.value } }))}
+                              />
+                              <input
+                                className="input input-bordered w-full"
+                                placeholder="Phone (optional)"
+                                value={rescheduleExternal.freeDraft.phone || ''}
+                                onChange={(e) => setRescheduleExternal((prev) => ({ ...prev, freeDraft: { ...prev.freeDraft, phone: e.target.value } }))}
+                              />
+                            </div>
+                            <textarea
+                              className="textarea textarea-bordered w-full"
+                              placeholder="Notes (optional)"
+                              value={rescheduleExternal.freeDraft.notes || ''}
+                              onChange={(e) => setRescheduleExternal((prev) => ({ ...prev, freeDraft: { ...prev.freeDraft, notes: e.target.value } }))}
+                            />
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-outline"
+                              onClick={() => {
+                                const name = (rescheduleExternal.freeDraft.name || '').trim();
+                                if (!name) { toast.error('Extern participant name is required'); return; }
+                                setRescheduleExternal((prev) => ({
+                                  ...prev,
+                                  freeParticipants: [
+                                    ...prev.freeParticipants,
+                                    {
+                                      name,
+                                      email: (prev.freeDraft.email || '').trim() || undefined,
+                                      phone: (prev.freeDraft.phone || '').trim() || undefined,
+                                      notes: (prev.freeDraft.notes || '').trim() || undefined,
+                                    },
+                                  ],
+                                  freeDraft: { name: '', email: '', phone: '', notes: '' },
+                                }));
+                              }}
+                            >
+                              Add participant
+                            </button>
+                          </div>
+                          {rescheduleExternal.freeParticipants.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {rescheduleExternal.freeParticipants.map((p, idx) => (
+                                <span key={`${p.name}-${idx}`} className="badge badge-outline gap-2">
+                                  {p.name}
+                                  <button
+                                    type="button"
+                                    className="text-gray-500 hover:text-gray-800"
+                                    onClick={() => setRescheduleExternal((prev) => ({
+                                      ...prev,
+                                      freeParticipants: prev.freeParticipants.filter((_, i) => i !== idx),
+                                    }))}
+                                  >×</button>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </>
+                    )}
+
+                    {/* Meeting Brief (Optional) — always available */}
                     <div>
                       <label htmlFor="reschedule-meeting-brief" className="block font-semibold mb-1">Meeting Brief (Optional)</label>
                       <textarea
@@ -6869,46 +9070,48 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       />
                     </div>
 
-                    {/* Meeting Attendance Probability */}
-                    <div>
-                      <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
-                      <select
-                        className="select select-bordered w-full"
-                        value={rescheduleFormData.attendance_probability}
-                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, attendance_probability: e.target.value }))}
-                      >
-                        <option value="Low">Low</option>
-                        <option value="Medium">Medium</option>
-                        <option value="High">High</option>
-                        <option value="Very High">Very High</option>
-                      </select>
-                    </div>
+                    {/* Active-client-only fields: hidden for External Meeting */}
+                    {rescheduleFormData.calendar !== 'external' && (
+                      <>
+                        <div>
+                          <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
+                          <select
+                            className="select select-bordered w-full"
+                            value={rescheduleFormData.attendance_probability}
+                            onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, attendance_probability: e.target.value }))}
+                          >
+                            <option value="Low">Low</option>
+                            <option value="Medium">Medium</option>
+                            <option value="High">High</option>
+                            <option value="Very High">Very High</option>
+                          </select>
+                        </div>
 
-                    {/* Meeting Complexity */}
-                    <div>
-                      <label className="block font-semibold mb-1">Meeting Complexity</label>
-                      <select
-                        className="select select-bordered w-full"
-                        value={rescheduleFormData.complexity}
-                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, complexity: e.target.value }))}
-                      >
-                        <option value="Simple">Simple</option>
-                        <option value="Complex">Complex</option>
-                      </select>
-                    </div>
+                        <div>
+                          <label className="block font-semibold mb-1">Meeting Complexity</label>
+                          <select
+                            className="select select-bordered w-full"
+                            value={rescheduleFormData.complexity}
+                            onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, complexity: e.target.value }))}
+                          >
+                            <option value="Simple">Simple</option>
+                            <option value="Complex">Complex</option>
+                          </select>
+                        </div>
 
-                    {/* Meeting Car Number */}
-                    <div>
-                      <label htmlFor="reschedule-car-number" className="block font-semibold mb-1">Meeting Car Number</label>
-                      <input
-                        id="reschedule-car-number"
-                        type="text"
-                        className="input input-bordered w-full"
-                        value={rescheduleFormData.car_number}
-                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, car_number: e.target.value }))}
-                        placeholder="Enter car number..."
-                      />
-                    </div>
+                        <div>
+                          <label htmlFor="reschedule-car-number" className="block font-semibold mb-1">Meeting Car Number</label>
+                          <input
+                            id="reschedule-car-number"
+                            type="text"
+                            className="input input-bordered w-full"
+                            value={rescheduleFormData.car_number}
+                            onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, car_number: e.target.value }))}
+                            placeholder="Enter car number..."
+                          />
+                        </div>
+                      </>
+                    )}
                   </>
                 )}
               </div>
@@ -6975,7 +9178,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {showCustomLocationModal && (

@@ -172,6 +172,10 @@ interface ClientHeaderProps {
     handleOpenDeclinedDrawer?: () => void;
     setShowRescheduleDrawer?: (show: boolean) => void;
     scheduleMenuLabel?: string;
+    /** Top-left stage-row Schedule Meeting button (post stage 60). Triggers the MeetingTab Schedule drawer. */
+    onMeetingScheduleClick?: () => void;
+    /** Top-left stage-row Reschedule Meeting button (post stage 60). Triggers the MeetingTab Reschedule drawer. */
+    onMeetingRescheduleClick?: () => void;
     hasScheduledMeetings?: boolean;
     isStageNumeric?: boolean;
     stageNumeric?: number;
@@ -239,6 +243,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     handleOpenDeclinedDrawer,
     setShowRescheduleDrawer,
     scheduleMenuLabel,
+    onMeetingScheduleClick,
+    onMeetingRescheduleClick,
     hasScheduledMeetings,
     isStageNumeric,
     stageNumeric,
@@ -3412,7 +3418,27 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 {/* Stages 60 / 70 / 100 / 105 / 110 / 150: sub-efforts; finalize only on 110 & 150 */}
                                 {subEffortsStageFlags.showPickerLogAndModal && (
                                     <>
-                                        <div className="flex items-center justify-end gap-3">
+                                        <div className="flex items-center justify-end gap-3 flex-wrap">
+                                            {(onMeetingScheduleClick || onMeetingRescheduleClick) && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        if (hasScheduledMeetings && onMeetingRescheduleClick) {
+                                                            onMeetingRescheduleClick();
+                                                        } else if (onMeetingScheduleClick) {
+                                                            onMeetingScheduleClick();
+                                                        }
+                                                    }}
+                                                    className={STAGE_ACTION_BTN_CLASS}
+                                                >
+                                                    {hasScheduledMeetings ? (
+                                                        <ArrowPathIcon className="w-4 h-4" />
+                                                    ) : (
+                                                        <CalendarDaysIcon className="w-4 h-4" />
+                                                    )}
+                                                    {hasScheduledMeetings ? 'Reschedule Meeting' : 'Schedule Meeting'}
+                                                </button>
+                                            )}
                                             {subEffortsStageFlags.showFinalizeCaseWithSubEfforts && (
                                                 <button
                                                     onClick={() => updateLeadStage(200)}
@@ -4276,7 +4302,27 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     {/* Stages 60 / 70 / 100 / 105 / 110 / 150: sub-efforts; finalize only on 110 & 150 */}
                                                     {subEffortsStageFlags.showPickerLogAndModal && (
                                                         <>
-                                                            <div className="flex items-center justify-end gap-3">
+                                                            <div className="flex items-center justify-end gap-3 flex-wrap">
+                                                                {(onMeetingScheduleClick || onMeetingRescheduleClick) && (
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => {
+                                                                            if (hasScheduledMeetings && onMeetingRescheduleClick) {
+                                                                                onMeetingRescheduleClick();
+                                                                            } else if (onMeetingScheduleClick) {
+                                                                                onMeetingScheduleClick();
+                                                                            }
+                                                                        }}
+                                                                        className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                    >
+                                                                        {hasScheduledMeetings ? (
+                                                                            <ArrowPathIcon className="w-5 h-5" />
+                                                                        ) : (
+                                                                            <CalendarDaysIcon className="w-5 h-5" />
+                                                                        )}
+                                                                        {hasScheduledMeetings ? 'Reschedule Meeting' : 'Schedule Meeting'}
+                                                                    </button>
+                                                                )}
                                                                 {subEffortsStageFlags.showFinalizeCaseWithSubEfforts && (
                                                                     <button
                                                                         onClick={() => updateLeadStage(200)}

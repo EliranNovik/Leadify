@@ -652,17 +652,18 @@ export async function getMeetingLocation(
         physicalBranch: physical,
       });
 
-      if (!addr) {
-        dbgMeetingLocation('no address on catalog row → hyphen Place param');
-        return '-';
+      if (physical) {
+        if (addr) {
+          dbgMeetingLocation('returning address (physical branch)');
+          return sanitizeWhatsAppTemplateVariableText(addr);
+        }
+        dbgMeetingLocation('physical location without address → name fallback', { name, rawStr });
+        return sanitizeWhatsAppTemplateVariableText(name || rawStr || '-');
       }
 
-      if (physical) {
-        dbgMeetingLocation('returning address (physical branch)');
-        return sanitizeWhatsAppTemplateVariableText(addr);
-      }
-      dbgMeetingLocation('virtual branch with address field → name only', { name, rawStr });
-      return name || rawStr;
+      // Virtual / non-physical (Teams, Zoom, phone, etc.) — use location name, not address
+      dbgMeetingLocation('virtual branch → name only', { name, rawStr });
+      return sanitizeWhatsAppTemplateVariableText(name || rawStr);
     }
 
     dbgMeetingLocation('no loc row → raw meeting_location string', rawStr);
@@ -737,6 +738,44 @@ export async function getMeetingLink(
     return teams || '';
   } catch (error) {
     console.error('Error getting meeting link:', error);
+    return '';
+  }
+}
+
+/** Free-text meeting address from meetings.manual_address (most recent non-canceled meeting). */
+export async function getMeetingManualAddress(
+  clientId: string,
+  isLegacyLead: boolean,
+): Promise<string> {
+  try {
+    let queryId: string | number;
+    let columnName: string;
+
+    if (isLegacyLead) {
+      const legacyId = clientId.toString().replace('legacy_', '');
+      queryId = parseInt(legacyId, 10);
+      if (Number.isNaN(queryId) || queryId <= 0) return '';
+      columnName = 'legacy_lead_id';
+    } else {
+      queryId = clientId;
+      columnName = 'client_id';
+    }
+
+    const { data: meetings, error } = await supabase
+      .from('meetings')
+      .select('manual_address')
+      .eq(columnName, queryId)
+      .or('status.is.null,status.neq.canceled')
+      .order('meeting_date', { ascending: false })
+      .order('meeting_time', { ascending: false })
+      .limit(1);
+
+    if (error || !meetings?.length) return '';
+
+    const raw = meetings[0]?.manual_address;
+    return raw != null ? String(raw).trim() : '';
+  } catch (error) {
+    console.error('Error getting meeting manual_address:', error);
     return '';
   }
 }
@@ -1073,6 +1112,9 @@ export async function generateTemplateParameters(
       const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
       if (clientIdForMeeting) {
         paramValue = await getMeetingLocation(clientIdForMeeting, isLegacyLead);
+      }
+      if ((!paramValue || paramValue === '-') && client?.meeting_location) {
+        paramValue = sanitizeWhatsAppTemplateVariableText(String(client.meeting_location));
       }
     }
     // Param 4: Meeting link — always resolve from DB (client.meeting_link was often wrong default_link)

@@ -207,7 +207,12 @@ export async function generateParamsFromDefinitions(
         const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
         // Use lead_id if client is a contact, otherwise use client.id
         const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
-        value = await getMeetingLocation(clientIdForMeeting, isLegacyLead);
+        value = clientIdForMeeting
+          ? await getMeetingLocation(clientIdForMeeting, isLegacyLead)
+          : '';
+        if ((!value || value === '-') && client?.meeting_location) {
+          value = sanitizeWhatsAppTemplateVariableText(String(client.meeting_location));
+        }
         break;
       }
       case 'meeting_link': {

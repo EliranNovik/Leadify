@@ -305,6 +305,18 @@ const meetingsOverlapRange = (list: any[], from: string, to: string): boolean =>
   });
 };
 
+// Module-level caches so they survive component unmount/remount when the user
+// navigates away and comes back. Keyed by date-range so each range is independent.
+const calendarMeetingsByRangeCache: Map<
+  string,
+  { meetings: any[]; staffMeetings: any[]; fetchedAt: number }
+> = new Map();
+const calendarLastMeetingsFetchedAtMsByRange: Map<string, number> = new Map();
+
+/** Cache TTL for the in-memory meetings range cache. Realtime patches keep the
+ *  cached data in sync between fetches, so this can be relatively long. */
+const CALENDAR_MEETINGS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
 // Department mapping is now loaded dynamically from database
 
 
@@ -378,7 +390,17 @@ const CalendarPage: React.FC = () => {
   } | null>(null);
   const { instance, accounts } = useMsal();
   const realtimeRefreshTimerRef = useRef<number | null>(null);
-  const lastMeetingsFetchedAtMsRef = useRef<number | null>(null);
+  // Backed by a module-level Map keyed by range, so the staleness check survives
+  // unmount/remount (navigating away and back) and we don't re-fetch unnecessarily.
+  const lastMeetingsFetchedAtMsRef = useRef<{
+    get: (key: string) => number | null;
+    set: (key: string, value: number) => void;
+  }>({
+    get: (key: string) => calendarLastMeetingsFetchedAtMsByRange.get(key) ?? null,
+    set: (key: string, value: number) => {
+      calendarLastMeetingsFetchedAtMsByRange.set(key, value);
+    },
+  });
 
   // Currency conversion rates (same as DepartmentList)
   const currencyRates = {
@@ -471,6 +493,23 @@ const CalendarPage: React.FC = () => {
       );
     };
 
+    // Lightweight in-place refresh of the past-stages set so we never need to
+    // re-fetch all meetings just because a single lead's stage changed.
+    const refreshPastStagesInPlace = async () => {
+      try {
+        const [legacyRes, newRes] = await Promise.all([
+          supabase.from('leads_leadstage').select('lead_id').in('stage', [35, 40]).not('lead_id', 'is', null),
+          supabase.from('leads_leadstage').select('newlead_id').in('stage', [35, 40]).not('newlead_id', 'is', null),
+        ]);
+        const leadIds = new Set<string>();
+        (legacyRes.data || []).forEach((e: any) => { if (e.lead_id) leadIds.add(`legacy_${e.lead_id}`); });
+        (newRes.data || []).forEach((e: any) => { if (e.newlead_id) leadIds.add(e.newlead_id); });
+        setLeadsWithPastStages(leadIds);
+      } catch {
+        // Non-fatal: keep the previous set.
+      }
+    };
+
     const channel = supabase
       .channel('calendar-page:realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, (payload: any) => {
@@ -501,15 +540,18 @@ const CalendarPage: React.FC = () => {
         if (payload?.new?.id != null) patchLeadIntoMeetings(payload.new.id, 'legacy', payload.new);
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_leadstage' }, () => {
-        // Past-stage badge logic depends on this table; refresh that small derived set in background by reusing existing fetch path.
-        debounce(() => { setMeetingsRefreshTrigger((t) => t + 1); }, 500);
+        // Past-stage badge logic depends on this table; refresh ONLY the small derived
+        // set in place (no full meetings refetch). Debounced to coalesce bursts.
+        debounce(() => { void refreshPastStagesInPlace(); }, 500);
       })
-      // Metadata tables: update lazily by triggering a background data refresh.
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_category' }, () => debounce(() => { setMeetingsRefreshTrigger((t) => t + 1); setEmployeesCategoriesRefreshToken((t) => t + 1); }, 800))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_maincategory' }, () => debounce(() => { setMeetingsRefreshTrigger((t) => t + 1); setEmployeesCategoriesRefreshToken((t) => t + 1); }, 800))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_language' }, () => debounce(() => setMeetingsRefreshTrigger((t) => t + 1), 800))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_leadsource' }, () => debounce(() => setMeetingsRefreshTrigger((t) => t + 1), 800))
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'accounting_currencies' }, () => debounce(() => setMeetingsRefreshTrigger((t) => t + 1), 800))
+      // Metadata tables: only refresh the small cached lookups (employees+categories).
+      // Do NOT trigger a full meetings refetch; existing rows already hold their joined
+      // names, and stale lookups will pick up updates next time the user navigates here
+      // with an expired cache.
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_category' }, () => debounce(() => { setEmployeesCategoriesRefreshToken((t) => t + 1); }, 1500))
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_maincategory' }, () => debounce(() => { setEmployeesCategoriesRefreshToken((t) => t + 1); }, 1500))
+      // misc_language / misc_leadsource / accounting_currencies rarely change at runtime;
+      // skipping their listeners avoids spurious full-table refreshes.
       .subscribe();
 
     return () => {
@@ -999,6 +1041,12 @@ const CalendarPage: React.FC = () => {
 
   // Mobile filters modal (date, staff, meeting type)
   const [showMobileFiltersModal, setShowMobileFiltersModal] = useState(false);
+  // Desktop filter row collapse state (defaults to closed; user can toggle open)
+  const [showDesktopFilters, setShowDesktopFilters] = usePersistedState<boolean>(
+    'calendar-showDesktopFilters',
+    false,
+    { storage: 'sessionStorage' }
+  );
   const [isCustomAddressModalOpen, setIsCustomAddressModalOpen] = useState(false);
   const [selectedCustomAddress, setSelectedCustomAddress] = useState('');
 
@@ -1149,9 +1197,8 @@ const CalendarPage: React.FC = () => {
   /** Ignore stale responses when date range changes quickly (staff meetings are a separate query). */
   const staffMeetingsFetchSeqRef = useRef(0);
   const meetingsFetchSeqRef = useRef(0);
-  const meetingsByDateRangeRef = useRef<
-    Map<string, { meetings: any[]; staffMeetings: any[]; fetchedAt: number }>
-  >(new Map());
+  // Reference the module-level cache map so cached meetings survive unmount/remount.
+  const meetingsByDateRangeRef = useRef(calendarMeetingsByRangeCache);
   const legacyFetchRangeKeyRef = useRef<string | null>(null);
 
   const saveMeetingsRangeCache = (
@@ -2492,8 +2539,8 @@ const CalendarPage: React.FC = () => {
     const rangeKey = getCalendarRangeKey(dateRangeFrom, dateRangeTo);
 
     const nowMs = Date.now();
-    const lastMs = lastMeetingsFetchedAtMsRef.current;
-    const isStale = typeof lastMs === 'number' ? nowMs - lastMs > 5000 : true;
+    const lastMs = lastMeetingsFetchedAtMsRef.current.get(rangeKey);
+    const isStale = typeof lastMs === 'number' ? nowMs - lastMs > CALENDAR_MEETINGS_CACHE_TTL_MS : true;
     const rangeCache = meetingsByDateRangeRef.current.get(rangeKey);
     const meetingsMatchAppliedRange = meetingsOverlapRange(meetings, dateRangeFrom, dateRangeTo);
 
@@ -2505,6 +2552,25 @@ const CalendarPage: React.FC = () => {
       } else if (!meetingsMatchAppliedRange) {
         setIsLoading(true);
       }
+    }
+
+    // Fast path: we have a fresh cache for this range. Skip the heavy fetch entirely.
+    // Realtime patches (meetings + leads + leads_lead) keep the cached data in sync.
+    // Staff meetings (Outlook) are still refreshed lightly in the background so internal
+    // attendees stay up-to-date.
+    if (rangeCache && !isStale) {
+      if (rangeCache.meetings !== meetings) {
+        setMeetings(rangeCache.meetings);
+      }
+      if (rangeCache.staffMeetings !== staffMeetings) {
+        setStaffMeetings(rangeCache.staffMeetings);
+      }
+      setIsLoading(false);
+      prevFetchDepsRef.current = { pathname, appliedFromDate, appliedToDate, datesManuallySet, meetingsRefreshTrigger };
+      void fetchStaffMeetings(dateRangeFrom, dateRangeTo).then((staffRows) => {
+        saveMeetingsRangeCache(dateRangeFrom, dateRangeTo, rangeCache.meetings, staffRows);
+      });
+      return;
     }
 
     const canSkipFullFetch =
@@ -2933,7 +2999,7 @@ const CalendarPage: React.FC = () => {
         }
       } finally {
         if (fetchSeq === meetingsFetchSeqRef.current) {
-          lastMeetingsFetchedAtMsRef.current = Date.now();
+          lastMeetingsFetchedAtMsRef.current.set(rangeKey, Date.now());
           setIsLoading(false);
         }
       }
@@ -2961,17 +3027,24 @@ const CalendarPage: React.FC = () => {
   }, []);
 
   // Refetch on window focus (common case: user changes something elsewhere, comes back expecting fresh data).
+  // Realtime subscriptions already keep meetings + leads patched in place, so we only refetch on
+  // focus if the data is genuinely stale. The previous 1.5s threshold caused near-constant refetches
+  // every time the user switched tabs.
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    const FOCUS_REFETCH_STALE_MS = 5 * 60 * 1000; // 5 minutes
     const onFocus = () => {
-      // Throttle implicit refreshes: if we fetched very recently, skip.
-      const lastMs = lastMeetingsFetchedAtMsRef.current;
-      const isStale = typeof lastMs === 'number' ? Date.now() - lastMs > 1500 : true;
+      const today = formatLocalDateYmd(new Date());
+      const dateRangeFrom = appliedFromDate || today;
+      const dateRangeTo = appliedToDate || today;
+      const rangeKey = getCalendarRangeKey(dateRangeFrom, dateRangeTo);
+      const lastMs = lastMeetingsFetchedAtMsRef.current.get(rangeKey);
+      const isStale = typeof lastMs === 'number' ? Date.now() - lastMs > FOCUS_REFETCH_STALE_MS : true;
       if (isStale) setMeetingsRefreshTrigger((t) => t + 1);
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, []);
+  }, [appliedFromDate, appliedToDate]);
 
   // Refetch when the user signs in to Supabase so meetings are not stuck empty after auth catches up.
   useEffect(() => {
@@ -6149,10 +6222,14 @@ const CalendarPage: React.FC = () => {
                       to={buildClientRoute(lead)}
                       className="hover:opacity-80 text-sm sm:text-base break-words line-clamp-2"
                       style={{ color: '#3b28c7' }}
+                      onClick={(e) => e.stopPropagation()}
                     >
                       {lead.name || meeting.name}
                     </Link>
-                    <span className="text-xs sm:text-sm text-gray-500 font-semibold whitespace-nowrap">
+                    <span
+                      className="text-xs sm:text-sm text-gray-500 font-semibold whitespace-nowrap"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       ({lead.lead_number || meeting.lead_number})
                     </span>
                   </div>
@@ -6841,112 +6918,115 @@ const CalendarPage: React.FC = () => {
       )}
       {/* Fixed top: filters + date navigation (desktop) */}
       <div className="calendar-page-chrome-top z-30 w-full flex-shrink-0 bg-gray-100 md:sticky md:top-0 md:flex md:flex-col md:gap-2">
-      {/* Filters - desktop only; on mobile moved to modal */}
+      {/* Filters - desktop only; on mobile moved to modal. The toggle button lives
+          in the date-navigation row next to the clock icon (see below). */}
       <div className="mb-6 w-full hidden md:block md:mb-0">
-        <div className="flex flex-wrap gap-4 w-full">
-          <div className="flex flex-1 min-w-[260px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
-            <FunnelIcon className="w-5 h-5 text-gray-500" />
-            <div className="flex flex-wrap items-center gap-2 flex-1">
-              <input
-                type="date"
-                className="input input-bordered flex-1 min-w-[120px]"
-                value={fromDate}
-                onChange={(e) => {
-                  setFromDate(e.target.value);
-                }}
-                title="From Date"
-              />
-              <span className="text-gray-400 font-semibold">to</span>
-              <input
-                type="date"
-                className="input input-bordered flex-1 min-w-[120px]"
-                value={toDate}
-                onChange={(e) => {
-                  setToDate(e.target.value);
-                }}
-                title="To Date"
-              />
-              <button
-                onClick={handleShowButton}
-                className="btn btn-primary btn-sm w-full sm:w-auto"
-                title="Apply Date Filter and Load Legacy Meetings"
-              >
-                Show
-              </button>
+        {showDesktopFilters && (
+          <div id="calendar-desktop-filters" className="flex flex-wrap gap-4 w-full">
+            <div className="flex flex-1 min-w-[260px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
+              <FunnelIcon className="w-5 h-5 text-gray-500" />
+              <div className="flex flex-wrap items-center gap-2 flex-1">
+                <input
+                  type="date"
+                  className="input input-bordered flex-1 min-w-[120px]"
+                  value={fromDate}
+                  onChange={(e) => {
+                    setFromDate(e.target.value);
+                  }}
+                  title="From Date"
+                />
+                <span className="text-gray-400 font-semibold">to</span>
+                <input
+                  type="date"
+                  className="input input-bordered flex-1 min-w-[120px]"
+                  value={toDate}
+                  onChange={(e) => {
+                    setToDate(e.target.value);
+                  }}
+                  title="To Date"
+                />
+                <button
+                  onClick={handleShowButton}
+                  className="btn btn-primary btn-sm w-full sm:w-auto"
+                  title="Apply Date Filter and Load Legacy Meetings"
+                >
+                  Show
+                </button>
+              </div>
             </div>
-          </div>
-          <div className="flex flex-1 min-w-[220px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
-            <UserIcon className="w-5 h-5 text-gray-500" />
-            <div className="relative flex-1" ref={staffDropdownRef}>
-              <input
-                type="text"
-                className="input input-bordered w-full"
-                placeholder="All staff"
-                value={staffSearchTerm}
-                onFocus={() => setShowStaffDropdown(true)}
-                onChange={(e) => {
-                  const value = e.target.value;
-                  setStaffSearchTerm(value);
-                  setShowStaffDropdown(true);
-                  if (!value.trim()) {
-                    setSelectedStaff('');
-                  }
-                }}
-              />
-              {showStaffDropdown && (
-                <div className="absolute z-30 mt-2 w-full bg-white border border-gray-200 rounded-xl shadow-lg max-h-64 overflow-auto">
-                  <button
-                    type="button"
-                    className="w-full text-left px-4 py-2 text-sm text-gray-600 hover:bg-gray-100"
-                    onClick={() => {
+            <div className="flex flex-1 min-w-[220px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
+              <UserIcon className="w-5 h-5 text-gray-500" />
+              <div className="relative flex-1" ref={staffDropdownRef}>
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  placeholder="All staff"
+                  value={staffSearchTerm}
+                  onFocus={() => setShowStaffDropdown(true)}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setStaffSearchTerm(value);
+                    setShowStaffDropdown(true);
+                    if (!value.trim()) {
                       setSelectedStaff('');
-                      setStaffSearchTerm('');
-                      setShowStaffDropdown(false);
-                    }}
-                  >
-                    All Staff
-                  </button>
-                  {filteredStaffOptions.length > 0 ? (
-                    filteredStaffOptions.map((staffName, index) => (
-                      <button
-                        key={`${staffName}-${index}`}
-                        type="button"
-                        className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100"
-                        onClick={() => handleStaffSelect(staffName)}
-                      >
-                        {staffName}
-                      </button>
-                    ))
-                  ) : (
-                    <div className="px-4 py-3 text-sm text-gray-500">
-                      No matches
-                    </div>
-                  )}
-                </div>
-              )}
+                    }
+                  }}
+                />
+                {showStaffDropdown && (
+                  <div className="absolute z-30 mt-2 w-full bg-white border border-gray-200 rounded-xl shadow-lg max-h-64 overflow-auto">
+                    <button
+                      type="button"
+                      className="w-full text-left px-4 py-2 text-sm text-gray-600 hover:bg-gray-100"
+                      onClick={() => {
+                        setSelectedStaff('');
+                        setStaffSearchTerm('');
+                        setShowStaffDropdown(false);
+                      }}
+                    >
+                      All Staff
+                    </button>
+                    {filteredStaffOptions.length > 0 ? (
+                      filteredStaffOptions.map((staffName, index) => (
+                        <button
+                          key={`${staffName}-${index}`}
+                          type="button"
+                          className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100"
+                          onClick={() => handleStaffSelect(staffName)}
+                        >
+                          {staffName}
+                        </button>
+                      ))
+                    ) : (
+                      <div className="px-4 py-3 text-sm text-gray-500">
+                        No matches
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-1 min-w-[220px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
+              <CalendarIcon className="w-5 h-5 text-gray-500" />
+              <select
+                className="select select-bordered flex-1"
+                value={selectedMeetingType}
+                onChange={(e) =>
+                  setSelectedMeetingType(
+                    e.target.value as 'all' | 'potential' | 'active' | 'staff' | 'paid' | 'physical' | 'online'
+                  )
+                }
+              >
+                <option value="all">All Meetings</option>
+                <option value="potential">Potential Clients</option>
+                <option value="active">Active Clients</option>
+                <option value="staff">Staff Meetings</option>
+                <option value="paid">Paid Meetings</option>
+                <option value="physical">Physical meetings</option>
+                <option value="online">Online meetings</option>
+              </select>
             </div>
           </div>
-          <div className="flex flex-1 min-w-[220px] items-center gap-3 bg-white border border-base-200 rounded-xl p-3 shadow-sm">
-            <CalendarIcon className="w-5 h-5 text-gray-500" />
-            <select
-              className="select select-bordered flex-1"
-              value={selectedMeetingType}
-              onChange={(e) =>
-                setSelectedMeetingType(
-                  e.target.value as 'all' | 'potential' | 'active' | 'staff' | 'paid' | 'physical' | 'online'
-                )
-              }
-            >
-              <option value="all">All Meetings</option>
-              <option value="potential">Potential Clients</option>
-              <option value="active">Active Clients</option>
-              <option value="staff">Staff Meetings</option>
-              <option value="paid">Paid Meetings</option>
-              <option value="physical">Physical meetings</option>
-              <option value="online">Online meetings</option>
-            </select>
-          </div>
-        </div>
+        )}
       </div>
 
       {/* Mobile: filter FAB hidden - filters opened via action dropdown (action button is stacked on this spot) */}
@@ -7200,6 +7280,21 @@ const CalendarPage: React.FC = () => {
         </div>
 
         <div className="flex flex-shrink-0 items-center gap-1" ref={actionMenuDropdownRef}>
+          <button
+            type="button"
+            className={`hidden md:inline-flex btn btn-circle btn-ghost border-0 shadow-none btn-md md:btn-lg hover:bg-gray-100/80 ${showDesktopFilters ? 'bg-[#4418C4]/15' : ''}`}
+            title={showDesktopFilters ? 'Hide filters' : 'Show filters'}
+            aria-label={showDesktopFilters ? 'Hide filters' : 'Show filters'}
+            aria-pressed={showDesktopFilters}
+            aria-expanded={showDesktopFilters}
+            aria-controls="calendar-desktop-filters"
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowDesktopFilters((v) => !v);
+            }}
+          >
+            <FunnelIcon className="h-5 w-5 md:h-6 md:w-6" style={{ color: '#3b28c7' }} />
+          </button>
           <button
             type="button"
             className="hidden md:inline-flex btn btn-circle btn-ghost border-0 shadow-none btn-md md:btn-lg hover:bg-gray-100/80"

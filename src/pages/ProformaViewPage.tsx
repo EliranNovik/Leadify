@@ -5,9 +5,8 @@ import html2pdf from 'html2pdf.js';
 import { PaperAirplaneIcon, PencilSquareIcon, PrinterIcon, ShareIcon, TrashIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { shareProformaPublicLink } from '../lib/proformaPublicLink';
-import { sendProformaInvoiceBundle } from '../lib/proformaSendInvoice';
+import { sendProformaInvoiceBundle, buildProformaSendSuccessMessage, collectProformaSendPartialErrors } from '../lib/proformaSendInvoice';
 import type { ProformaSendLanguage } from '../lib/proformaSendLanguage';
-import { proformaSendLanguageLabel } from '../lib/proformaSendLanguage';
 import { useMailboxReconnect } from '../contexts/MailboxReconnectContext';
 import ProformaSendLanguageModal from '../components/proforma/ProformaSendLanguageModal';
 import ProformaExchangeRateFooter from '../components/proforma/ProformaExchangeRateFooter';
@@ -324,18 +323,15 @@ const ProformaViewPage: React.FC = () => {
     if (!id || !proforma) return;
     setSending(true);
     try {
-      const { whatsAppSent, whatsAppPhone, whatsAppError } = await sendProformaInvoiceBundle(
-        buildSendInput(language),
-      );
-      if (whatsAppError) {
-        toast.error(whatsAppError.message || 'WhatsApp invoice was not sent.');
+      const result = await sendProformaInvoiceBundle(buildSendInput(language));
+      collectProformaSendPartialErrors(result).forEach((message) => toast.error(message));
+      if (
+        result.emailError?.message === 'MAILBOX_NOT_CONNECTED' ||
+        (result.emailError as Error & { code?: string })?.code === 'MAILBOX_NOT_CONNECTED'
+      ) {
+        showReconnectModal('Connect Outlook to send invoices by email.');
       }
-      const langLabel = proformaSendLanguageLabel(language);
-      toast.success(
-        whatsAppSent
-          ? `Invoice sent in ${langLabel} by email and WhatsApp (${whatsAppPhone}).`
-          : `Invoice sent in ${langLabel} by email.`,
-      );
+      toast.success(buildProformaSendSuccessMessage(result, language));
       setSendLanguageModalOpen(false);
     } catch (e: unknown) {
       const err = e as Error & { code?: string };

@@ -1,6 +1,7 @@
 import React, { Suspense, lazy } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useExternalUser } from '../hooks/useExternalUser';
+import PageLoader from '../components/PageLoader';
 
 const LazyDashboard = lazy(() => import('../components/Dashboard'));
 
@@ -12,11 +13,7 @@ export default function HomeEntryPage() {
   const { isExternalUser, isLoading } = useExternalUser();
 
   if (isLoading) {
-    return (
-      <div className="flex min-h-[calc(100dvh-3.5rem)] w-full items-center justify-center bg-gray-100 dark:bg-base-300">
-        <span className="loading loading-spinner loading-md text-primary" />
-      </div>
-    );
+    return <PageLoader />;
   }
 
   if (isExternalUser) {
@@ -24,13 +21,7 @@ export default function HomeEntryPage() {
   }
 
   return (
-    <Suspense
-      fallback={
-        <div className="flex min-h-[calc(100dvh-3.5rem)] w-full items-center justify-center bg-gray-100 dark:bg-base-300">
-          <span className="loading loading-spinner loading-md text-primary" />
-        </div>
-      }
-    >
+    <Suspense fallback={<PageLoader />}>
       <LazyDashboard />
     </Suspense>
   );

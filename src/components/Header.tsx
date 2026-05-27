@@ -991,7 +991,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // Phone-like: starts with 0 and 3+ digits, or 6+ digits (not 5 digits without leading 0)
       // 5-digit queries without leading 0 are more likely to be lead numbers
       const isPhoneLikeQuery = (startsWithZero && digits.length >= 3) || (digits.length >= 6);
-      const shouldSkipNameEmailForPhone = isPhoneLikeQuery && !isEmail;
+      // Also skip name/email for clear 4+ digit pure lead-number queries (e.g. "2166", "21664").
+      // Logs showed these queries spend 1-1.5s running name+email against `leads_lead` and
+      // consistently return 0 matches (a 4-digit prefix on a name/email is essentially noise),
+      // while also triggering 404s on legacy FK-joined leads_lead requests in some envs.
+      // The dedicated lead-number search path already covers these queries correctly.
+      const isClearLeadNumberQuery = isLeadNumber && digits.length >= 4;
+      const shouldSkipNameEmailForPhone = (isPhoneLikeQuery || isClearLeadNumberQuery) && !isEmail;
 
       if ((trimmed.length >= 2 || (trimmed.length >= 1 && isEmail)) && !shouldSkipNameEmailForPhone) {
         searchPromises.push((async () => {
@@ -2286,9 +2292,31 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               };
             });
 
-            // For 4-6 digit queries, filter out non-exact matches before returning
+            // For 4-6 digit queries, only keep results whose lead_number actually matches the
+            // user's query. The previous filter (`!r.isFuzzyMatch || r.isContact === false`)
+            // was an OR which accidentally kept every non-contact result regardless of whether
+            // its lead_number matched the query — so legacy leads where row.id matched but
+            // row.lead_number was different (e.g. typed "209994" → row with id 209994,
+            // lead_number "20999") were shown with the wrong number.
+            //
+            // For 4-5 digit queries we mirror the DB-side prefix search and keep any lead whose
+            // lead_number starts with the typed digits, so the user can see candidate 6-digit
+            // leads (e.g. "L216642") while they're still typing intermediate digits like "21664".
+            // Only the complete 6-digit case is strict (exact master or sublead of that master).
+            const isSixDigitQuery = queryLength === 6;
             const filteredResults = isLongQuery
-              ? processedResults.filter(r => !r.isFuzzyMatch || r.isContact === false)
+              ? processedResults.filter(r => {
+                  const lnRaw = (r.lead_number || '').toString().toLowerCase().trim();
+                  const lnNoPrefix = lnRaw.replace(/^[lc]/i, '');
+                  if (lnNoPrefix === numPartLower) return true;
+                  // Subleads of the exact master always pass (e.g. "216642/2")
+                  if (lnNoPrefix.startsWith(`${numPartLower}/`)) return true;
+                  // 4-5 digit prefix candidates pass through — DB already filtered to leads
+                  // whose lead_number starts with these digits, so client-side we just need to
+                  // confirm that's still true (rejects rows that were only id-matched).
+                  if (!isSixDigitQuery && lnNoPrefix.startsWith(numPartLower)) return true;
+                  return false;
+                })
               : processedResults;
 
             console.log('[performImmediateSearch] Lead number search - processed results:', {
@@ -3553,6 +3581,24 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     const trimmed = query.trim();
     if (!trimmed || trimmed.length < 2) {
       console.log(`⚠️ [Header Fuzzy Search] Query too short, returning early`);
+      return [];
+    }
+
+    // For pure 4-6 digit lead-number queries, fuzzy (name-based) matching is meaningless and
+    // also dangerous: searchLeads() also returns legacy leads matched by row.id, whose actual
+    // lead_number column may differ from the query (e.g. id=214228 → lead_number="21422").
+    // Letting those slip through made the dropdown show "#21422" while the user typed "214228".
+    // Bail out — the lead-number path in performImmediateSearch already handled the only valid
+    // shapes (exact lead_number or sublead of the exact master).
+    const trimmedDigitsOnly = trimmed.replace(/[^\d]/g, '');
+    const trimmedLeadNumQuery = trimmed.replace(/[^\dLC]/gi, '');
+    const isPureLeadNumberQuery =
+      /^[LC]?\d{4,6}$/i.test(trimmedLeadNumQuery) &&
+      trimmedDigitsOnly.length >= 4 &&
+      trimmedDigitsOnly.length <= 6 &&
+      !trimmedDigitsOnly.startsWith('0');
+    if (isPureLeadNumberQuery) {
+      console.log(`⚠️ [Header Fuzzy Search] Skipping fuzzy for pure lead-number query "${trimmed}" — name fuzziness would produce wrong-number matches.`);
       return [];
     }
 
@@ -7274,17 +7320,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   };
 
   // Root / external-home: avoid painting full internal header until extern vs staff is known (refresh flash).
+  // Render an empty header shell (no spinner) so the page-level loader is the only loading indicator.
   if (shouldDeferInternalChrome(location.pathname, isLoadingExternal)) {
     return (
       <>
         <div
           data-mobile-header={isMobile ? 'floating' : undefined}
           className="navbar navbar-safe-x md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b md:border-base-200 md:dark:border-base-300 pt-safe pb-1.5 md:pb-0 md:pt-0"
-        >
-          <div className="flex w-full flex-1 items-center justify-center py-1">
-            <span className="loading loading-spinner loading-md text-primary" aria-hidden />
-          </div>
-        </div>
+          aria-hidden
+        />
       </>
     );
   }

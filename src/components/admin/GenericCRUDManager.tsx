@@ -56,12 +56,24 @@ interface GenericCRUDManagerProps {
   hideDeleteButton?: boolean; // Hide delete button for non-super users
   /** Most admin tables FK audit columns to auth.users(id). The `users` table uses public.users(id). */
   auditUserIdSource?: 'auth' | 'crm';
+  /** PostgreSQL boolean columns use true/false; legacy char columns use 't'/'f'. */
+  booleanStorage?: 'native' | 'char';
 }
 
 interface Record {
   id: string;
   [key: string]: any;
 }
+
+const coerceToAppBoolean = (value: unknown): boolean => {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  const s = String(value).trim().toLowerCase();
+  if (s === 'false' || s === 'f' || s === '0' || s === 'no') return false;
+  if (s === 'true' || s === 't' || s === '1' || s === 'yes') return true;
+  return false;
+};
 
 const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   tableName,
@@ -77,6 +89,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   skipIdAssignment = false,
   hideDeleteButton = false,
   auditUserIdSource = 'auth',
+  booleanStorage = 'char',
 }) => {
   const [records, setRecords] = useState<Record[]>([]);
   const [loading, setLoading] = useState(true);
@@ -157,12 +170,14 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         console.error(`Error fetching ${tableName}:`, error);
         toast.error(`Failed to load ${title}`);
       } else {
-        // Transform boolean fields from 't'/'f' to true/false
+        // Normalize boolean fields for the UI (char 't'/'f' or native true/false)
         const transformedData = (data || []).map((record: any) => {
           const transformedRecord: any = { ...record };
           fields.forEach(field => {
             if (field.type === 'boolean' && record[field.name] !== null && record[field.name] !== undefined) {
-              transformedRecord[field.name] = record[field.name] === 't' || record[field.name] === true;
+              transformedRecord[field.name] = booleanStorage === 'native'
+                ? coerceToAppBoolean(record[field.name])
+                : record[field.name] === 't' || record[field.name] === true;
             }
           });
           return transformedRecord;
@@ -579,8 +594,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   // Handle boolean toggle changes
   const handleToggleBoolean = async (record: Record, fieldName: string, newValue: boolean) => {
     try {
-      // Transform boolean value to database format
-      const dbValue = newValue ? 't' : 'f';
+      const dbValue = booleanStorage === 'native' ? newValue : (newValue ? 't' : 'f');
       
       const { error } = await supabase
         .from(tableName)
@@ -743,16 +757,18 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       }
     });
 
-    // Transform boolean fields from true/false to 't'/'f' for database
+    // Transform boolean fields for database storage
     fields.forEach(field => {
       if (field.type === 'boolean' && field.name in record) {
         const value = record[field.name];
-        if (value === true) {
+        if (value === null || value === undefined) return;
+        if (booleanStorage === 'native') {
+          record[field.name] = coerceToAppBoolean(value);
+        } else if (value === true) {
           record[field.name] = 't';
         } else if (value === false) {
           record[field.name] = 'f';
         }
-        // Keep null/undefined as is
       }
     });
 

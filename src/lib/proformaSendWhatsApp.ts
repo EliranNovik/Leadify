@@ -88,7 +88,10 @@ async function resolveContactIdForWhatsApp(
   return main?.id ?? null;
 }
 
-async function resolveContactPhone(input: ProformaSendWhatsAppInput): Promise<string> {
+/** Resolve a WhatsApp-ready phone number, or null when none is available. */
+export async function resolveProformaContactPhone(
+  input: ProformaSendWhatsAppInput,
+): Promise<string | null> {
   const displayRaw = input.contactPhone?.trim();
   if (displayRaw) {
     const fromDisplay = normalizePhoneForWhatsApp(displayRaw);
@@ -125,6 +128,12 @@ async function resolveContactPhone(input: ProformaSendWhatsAppInput): Promise<st
     }
   }
 
+  return null;
+}
+
+async function resolveContactPhone(input: ProformaSendWhatsAppInput): Promise<string> {
+  const phone = await resolveProformaContactPhone(input);
+  if (phone) return phone;
   throw new Error(
     'No phone number found for WhatsApp. Add a phone on the proforma contact or link a payment-plan contact.',
   );

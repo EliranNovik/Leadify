@@ -9,6 +9,13 @@ const EmailTemplatesPlacementManager: React.FC = () => {
       type: 'text' as const,
       required: true,
       placeholder: 'e.g., Header, Footer, Body'
+    },
+    {
+      name: 'code',
+      label: 'Code',
+      type: 'text' as const,
+      required: false,
+      placeholder: 'e.g., meeting_reminder'
     }
   ];
 

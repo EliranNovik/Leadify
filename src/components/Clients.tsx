@@ -110,6 +110,12 @@ import { useAuthContext } from '../contexts/AuthContext';
 import { ClientInteractionsCache, ClientTabProps } from '../types/client';
 import { useAdminRole } from '../hooks/useAdminRole';
 import {
+  isMeetingLocationActive,
+  markPendingMeetingRescheduleDrawer,
+  markPendingMeetingScheduleDrawer,
+  normalizeMeetingLocationRow,
+} from '../lib/meetingLocationUtils';
+import {
   InteractionRequiredAuthError,
   type AccountInfo,
 } from '@azure/msal-browser';
@@ -4768,7 +4774,18 @@ const Clients: React.FC<ClientsProps> = ({
             }
             setLanguagesList(data.languages || []);
             setCurrencies(data.currencies || []);
-            setMeetingLocations(data.meetingLocations || []);
+            setMeetingLocations(
+              (data.meetingLocations || [])
+                .filter((loc: any) => loc && loc.name)
+                .map((loc: any) => normalizeMeetingLocationRow(loc))
+                .filter(isMeetingLocationActive)
+                .map((loc: any) => ({
+                  id: loc.id,
+                  name: loc.name,
+                  default_link: loc.default_link ?? null,
+                  is_active: loc.is_active,
+                }))
+            );
             setAllTags(data.tags || []);
             const tagNames = (data.tags || []).map((tag: any) => tag.name);
             setTagsList(tagNames);
@@ -4811,7 +4828,7 @@ const Clients: React.FC<ClientsProps> = ({
           // Fetch meeting locations from tenants_meetinglocation table (all locations for the firm)
           supabase
             .from('tenants_meetinglocation')
-            .select('id, name, default_link, "order"')
+            .select('id, name, default_link, "order", is_active')
             .order('order', { ascending: true }),
           // Fetch tags
           supabase.from('misc_leadtag').select('id, name, order').eq('active', true).order('order', { ascending: true })
@@ -4867,10 +4884,13 @@ const Clients: React.FC<ClientsProps> = ({
         if (!meetingLocationsResult.error && meetingLocationsResult.data) {
           const processedLocations = meetingLocationsResult.data
             .filter((loc: any) => loc && loc.name)
+            .map((loc: any) => normalizeMeetingLocationRow(loc))
+            .filter(isMeetingLocationActive)
             .map((loc: any) => ({
               id: loc.id,
               name: loc.name,
               default_link: loc.default_link ?? null,
+              is_active: loc.is_active,
             }));
           setMeetingLocations(processedLocations);
         }
@@ -4903,10 +4923,11 @@ const Clients: React.FC<ClientsProps> = ({
             iso_code: currency.iso_code,
             name: currency.name
           })) : [])),
-          meetingLocations: meetingLocations.length > 0 ? meetingLocations : (meetingLocationsResult.data ? meetingLocationsResult.data.filter((loc: any) => loc && loc.name).map((loc: any) => ({
+          meetingLocations: meetingLocations.length > 0 ? meetingLocations : (meetingLocationsResult.data ? meetingLocationsResult.data.filter((loc: any) => loc && loc.name).map((loc: any) => normalizeMeetingLocationRow(loc)).filter(isMeetingLocationActive).map((loc: any) => ({
             id: loc.id,
             name: loc.name,
             default_link: loc.default_link ?? null,
+            is_active: loc.is_active,
           })) : []),
           tags: allTags.length > 0 ? allTags : (tagsResult.data || []),
         };
@@ -15577,6 +15598,16 @@ const Clients: React.FC<ClientsProps> = ({
             handleOpenDeclinedDrawer={handleOpenDeclinedDrawer}
             setShowRescheduleDrawer={setShowRescheduleDrawer}
             scheduleMenuLabel={scheduleMenuLabel}
+            onMeetingScheduleClick={() => {
+              markPendingMeetingScheduleDrawer();
+              setActiveTabWithUrl('meeting');
+              window.dispatchEvent(new CustomEvent('meeting-tab:open-schedule-drawer'));
+            }}
+            onMeetingRescheduleClick={() => {
+              markPendingMeetingRescheduleDrawer();
+              setActiveTabWithUrl('meeting');
+              window.dispatchEvent(new CustomEvent('meeting-tab:open-reschedule-drawer'));
+            }}
             hasScheduledMeetings={hasScheduledMeetings}
             isStageNumeric={isStageNumeric}
             stageNumeric={stageNumeric ?? undefined}

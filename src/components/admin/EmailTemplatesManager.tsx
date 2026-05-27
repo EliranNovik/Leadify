@@ -170,11 +170,7 @@ const buildPreview = (text: string): string => {
   return normalized;
 };
 
-interface EmailTemplatesManagerProps {
-  isSuperUser?: boolean;
-}
-
-const EmailTemplatesManager: React.FC<EmailTemplatesManagerProps> = ({ isSuperUser = false }) => {
+const EmailTemplatesManager: React.FC = () => {
   // Placement options are now loaded automatically via foreignKey configuration
 
   const fields = [
@@ -267,7 +263,7 @@ const EmailTemplatesManager: React.FC<EmailTemplatesManagerProps> = ({ isSuperUs
       description="Manage reusable email templates"
       sortColumn="id"
       pageSize={20}
-      hideDeleteButton={!isSuperUser}
+      hideDeleteButton={true}
     />
   );
 };
