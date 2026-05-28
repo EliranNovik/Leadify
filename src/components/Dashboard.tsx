@@ -11,14 +11,21 @@ const NewHandlerCasesWidget = lazy(() => import('./NewHandlerCasesWidget'));
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
-import { convertToNIS, calculateTotalRevenueInNIS, getCurrencySymbol } from '../lib/currencyConversion';
+import { getCurrencySymbol } from '../lib/currencyConversion';
+import {
+  convertToNISWithMeta,
+  getBoiCoverageStartDate,
+  loadBoiExchangeRates,
+  loadBoiExchangeRatesForDate,
+} from '../lib/boiCurrencyConversion';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot, ReferenceArea, BarChart, Bar, Legend as RechartsLegend, CartesianGrid } from 'recharts';
 import { RadialBarChart, RadialBar, PolarAngleAxis, Legend } from 'recharts';
 import { useMsal } from '@azure/msal-react';
 import { DateTime } from 'luxon';
 import { FaWhatsapp } from 'react-icons/fa';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { getCachedData, setCachedData } from '../utils/dataCache';
 import { getStageName } from '../lib/stageUtils';
 import EmployeeScoreboard from './EmployeeScoreboard';
 import { formatMeetingValue } from '../lib/meetingValue';
@@ -29,6 +36,34 @@ import MyContribution from './MyContribution';
 import { DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 import { employeeHasAnySalesRoleOnLeadBundle } from '../utils/rolePercentageCalculator';
 
+/** Scoreboard cache TTL — realtime subscriptions refresh data in place between fetches. */
+const DASHBOARD_SCOREBOARD_CACHE_TTL_MS = 10 * 60 * 1000;
+const DASHBOARD_TEAM_AVAILABILITY_CACHE_TTL_MS = 5 * 60 * 1000;
+
+type DashboardScoreboardRow = { count: number; amount: number; expected: number };
+type DashboardScoreboardData = {
+  Today: DashboardScoreboardRow[];
+  'Last 30d': DashboardScoreboardRow[];
+  [key: string]: DashboardScoreboardRow[];
+};
+
+type DashboardScoreboardCache = {
+  agreementData: DashboardScoreboardData;
+  invoicedData: DashboardScoreboardData;
+  departmentNames: string[];
+  departmentChartData: { [category: string]: { date: string; contracts: number; amount: number }[] };
+  fetchedAt: number;
+};
+
+type DashboardTeamAvailabilityCache = {
+  unavailableEmployeesData: any[];
+  groupedUnavailableData: { sick_days: any[]; vacation: any[]; general: any[] };
+  unavailableEmployeesCount: number;
+  currentlyUnavailableCount: number;
+  scheduledTimeOffCount: number;
+  availableDepartments: string[];
+  fetchedAt: number;
+};
 
 // My Availability Section Component
 const MyAvailabilitySection: React.FC<{ onAvailabilityChange?: () => void; onOpenUploadDocs?: () => void }> = ({ onAvailabilityChange, onOpenUploadDocs }) => {
@@ -177,7 +212,11 @@ const Dashboard: React.FC = () => {
   const [realOverdueLeads, setRealOverdueLeads] = useState<any[]>([]);
   const [overdueLeadsLoading, setOverdueLeadsLoading] = useState(false);
 
-  // Removed cache - simplified approach
+  const location = useLocation();
+  const dashboardPathname = location.pathname || '/';
+  const realtimeRefreshTimerRef = useRef<number | null>(null);
+  const [scoreboardRefreshToken, setScoreboardRefreshToken] = useState(0);
+  const [teamAvailabilityRefreshToken, setTeamAvailabilityRefreshToken] = useState(0);
 
   // State for "Show More" functionality
   const [showAllOverdueLeads, setShowAllOverdueLeads] = useState(false);
@@ -705,8 +744,29 @@ const Dashboard: React.FC = () => {
       const departments = Array.from(new Set(detailedData.map(item => item.department).filter(dept => dept && dept !== 'N/A')));
       departments.sort();
       setAvailableDepartments(departments as string[]);
+
+      const cachePayload: DashboardTeamAvailabilityCache = {
+        unavailableEmployeesData: detailedData,
+        groupedUnavailableData: {
+          sick_days: sickDaysData,
+          vacation: vacationData,
+          general: generalData,
+        },
+        unavailableEmployeesCount: totalUnavailable,
+        currentlyUnavailableCount: currentlyUnavailable,
+        scheduledTimeOffCount: scheduledTimeOff,
+        availableDepartments: departments as string[],
+        fetchedAt: Date.now(),
+      };
+      setCachedData(
+        dashboardPathname,
+        `dashboard-team-availability:v1:${selectedDateString}:${teamAvailabilityRefreshToken}`,
+        cachePayload,
+      );
+      return cachePayload;
     } catch (error) {
       console.error('Error fetching unavailable employees:', error);
+      return null;
     } finally {
       setUnavailableEmployeesLoading(false);
     }
@@ -2686,8 +2746,8 @@ const Dashboard: React.FC = () => {
   }, []);
 
   // Fetch real performance data from leads_leadstage
-  const fetchPerformanceData = async () => {
-    setPerformanceLoading(true);
+  const fetchPerformanceData = async (opts?: { background?: boolean }) => {
+    if (!opts?.background) setPerformanceLoading(true);
     try {
       // Get current user's employee ID and full name
       const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
@@ -2842,10 +2902,11 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  // Fetch performance data on component mount
+  // Fetch performance data on mount and when live-refresh token bumps (see realtime subscription).
   useEffect(() => {
-    fetchPerformanceData();
-  }, []);
+    void fetchPerformanceData({ background: scoreboardRefreshToken > 0 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- token drives background refetch only
+  }, [scoreboardRefreshToken]);
 
   // Shared fetch: departments + categories (join-based). Used by both Agreement signed and Invoiced to avoid duplicate requests.
   const fetchDepartmentsAndCategories = async (): Promise<{
@@ -2913,8 +2974,11 @@ const Dashboard: React.FC = () => {
   };
 
   // Fetch department performance data
-  const fetchDepartmentPerformance = async (shared?: Awaited<ReturnType<typeof fetchDepartmentsAndCategories>>) => {
-    setDepartmentPerformanceLoading(true);
+  const fetchDepartmentPerformance = async (
+    shared?: Awaited<ReturnType<typeof fetchDepartmentsAndCategories>>,
+    opts?: { background?: boolean },
+  ) => {
+    if (!opts?.background) setDepartmentPerformanceLoading(true);
     try {
       const now = new Date();
       const today = new Date();
@@ -3499,6 +3563,68 @@ const Dashboard: React.FC = () => {
       if (monthAgreementRecords && monthAgreementRecords.length > 0) {
       }
 
+      // BOI-first conversion for Agreement Signed (rate on sign date; legacy fallback inside helper)
+      const boiStart = await getBoiCoverageStartDate();
+      const latestBoiSnap = await loadBoiExchangeRates();
+      const boiSnapByDate = new Map<string, Promise<any>>();
+      const getBoiSnapForDate = (dateOnly: string | null): Promise<any> => {
+        if (!dateOnly || !/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) return Promise.resolve(latestBoiSnap);
+        if (boiStart && dateOnly < boiStart) return Promise.resolve(latestBoiSnap);
+        if (boiSnapByDate.has(dateOnly)) return boiSnapByDate.get(dateOnly)!;
+        const p = loadBoiExchangeRatesForDate(dateOnly).catch(() => latestBoiSnap);
+        boiSnapByDate.set(dateOnly, p);
+        return p;
+      };
+      const toNis = async (amount: number, currency: string | number, signDateOnly: string | null) => {
+        const snap = await getBoiSnapForDate(signDateOnly);
+        return convertToNISWithMeta(amount, currency, snap).amountNIS;
+      };
+
+      const parseNumericAmount = (val: any) => {
+        if (typeof val === 'number') return val;
+        if (typeof val === 'string') {
+          const cleaned = val.replace(/[^0-9.-]/g, '');
+          const parsed = parseFloat(cleaned);
+          return Number.isNaN(parsed) ? 0 : parsed;
+        }
+        return 0;
+      };
+
+      const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
+        for (const candidate of candidates) {
+          if (candidate === null || candidate === undefined) continue;
+          const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
+          if (rawValue === null || rawValue === undefined) continue;
+
+          if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
+            return { displaySymbol: getCurrencySymbol(rawValue), conversionValue: rawValue };
+          }
+
+          const valueStr = rawValue.toString().trim();
+          if (!valueStr) continue;
+
+          const numeric = Number(valueStr);
+          if (!Number.isNaN(numeric) && numeric.toString() === valueStr) {
+            return { displaySymbol: getCurrencySymbol(numeric), conversionValue: numeric };
+          }
+
+          const upper = valueStr.toUpperCase();
+          if (upper === '₪' || upper === 'NIS' || upper === 'ILS') {
+            return { displaySymbol: '₪', conversionValue: 'NIS' };
+          }
+          if (upper === 'USD' || valueStr === '$') {
+            return { displaySymbol: '$', conversionValue: 'USD' };
+          }
+          if (upper === 'EUR' || valueStr === '€') {
+            return { displaySymbol: '€', conversionValue: 'EUR' };
+          }
+          if (upper === 'GBP' || valueStr === '£') {
+            return { displaySymbol: '£', conversionValue: 'GBP' };
+          }
+        }
+        return { displaySymbol: '₪', conversionValue: 'NIS' };
+      };
+
       if (agreementRecords && agreementRecords.length > 0) {
         // Process all records efficiently
         let processedCount = 0;
@@ -3507,7 +3633,7 @@ const Dashboard: React.FC = () => {
         // Track processed records to prevent duplicates
         const processedRecordIds = new Set();
 
-        agreementRecords.forEach(record => {
+        for (const record of agreementRecords) {
           // Skip if already processed
           if (processedRecordIds.has(record.id)) {
             return;
@@ -3536,63 +3662,16 @@ const Dashboard: React.FC = () => {
               amount = parseFloat(lead.total) || 0;
             }
           }
-          const amountInNIS = convertToNIS(amount, lead.currency_id);
-
-          // Calculate and subtract subcontractor_fee (matching SignedSalesReportPage logic)
-          const parseNumericAmount = (val: any) => {
-            if (typeof val === 'number') return val;
-            if (typeof val === 'string') {
-              const cleaned = val.replace(/[^0-9.-]/g, '');
-              const parsed = parseFloat(cleaned);
-              return Number.isNaN(parsed) ? 0 : parsed;
-            }
-            return 0;
-          };
-
-          // Build currency meta for fee conversion (same logic as SignedSalesReportPage)
-          const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
-            for (const candidate of candidates) {
-              if (candidate === null || candidate === undefined) continue;
-              const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
-              if (rawValue === null || rawValue === undefined) continue;
-
-              if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
-                return { displaySymbol: getCurrencySymbol(rawValue), conversionValue: rawValue };
-              }
-
-              const valueStr = rawValue.toString().trim();
-              if (!valueStr) continue;
-
-              const numeric = Number(valueStr);
-              if (!Number.isNaN(numeric) && numeric.toString() === valueStr) {
-                return { displaySymbol: getCurrencySymbol(numeric), conversionValue: numeric };
-              }
-
-              const upper = valueStr.toUpperCase();
-              if (upper === '₪' || upper === 'NIS' || upper === 'ILS') {
-                return { displaySymbol: '₪', conversionValue: 'NIS' };
-              }
-              if (upper === 'USD' || valueStr === '$') {
-                return { displaySymbol: '$', conversionValue: 'USD' };
-              }
-              if (upper === 'EUR' || valueStr === '€') {
-                return { displaySymbol: '€', conversionValue: 'EUR' };
-              }
-              if (upper === 'GBP' || valueStr === '£') {
-                return { displaySymbol: '£', conversionValue: 'GBP' };
-              }
-            }
-            return { displaySymbol: '₪', conversionValue: 'NIS' };
-          };
+          const recordDate = record.date;
+          const recordDateOnly = extractDateFromRecord(recordDate);
+          const amountInNIS = await toNis(amount, lead.currency_id, recordDateOnly);
 
           const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
           const currencyMeta = record.isNewLead
             ? buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency)
             : buildCurrencyMeta(lead.currency_id, lead.meeting_total_currency_id, lead.accounting_currencies);
-          const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
+          const subcontractorFeeNIS = await toNis(subcontractorFee, currencyMeta.conversionValue, recordDateOnly);
           const amountAfterFee = amountInNIS - subcontractorFeeNIS;
-
-          const recordDate = record.date;
 
           // Debug currency conversion
           // Log non-NIS currencies for verification
@@ -3618,8 +3697,6 @@ const Dashboard: React.FC = () => {
 
             // For current month, use the department index directly (no General column)
             const monthDeptIndex = departmentIds.indexOf(departmentId);
-            // Extract date part for comparison
-            const recordDateOnly = extractDateFromRecord(recordDate);
 
             // Check if it's today
             if (recordDateOnly === todayStr) {
@@ -3660,7 +3737,7 @@ const Dashboard: React.FC = () => {
           } else {
             skippedCount++;
           }
-        });
+        }
       }
 
       // Process month data separately
@@ -3671,7 +3748,7 @@ const Dashboard: React.FC = () => {
         // Track processed records to prevent duplicates
         const processedMonthRecordIds = new Set();
 
-        monthAgreementRecords.forEach(record => {
+        for (const record of monthAgreementRecords) {
           // Skip if already processed
           if (processedMonthRecordIds.has(record.id)) {
             return;
@@ -3700,63 +3777,16 @@ const Dashboard: React.FC = () => {
               amount = parseFloat(lead.total) || 0;
             }
           }
-          const amountInNIS = convertToNIS(amount, lead.currency_id);
-
-          // Calculate and subtract subcontractor_fee (matching SignedSalesReportPage logic)
-          const parseNumericAmount = (val: any) => {
-            if (typeof val === 'number') return val;
-            if (typeof val === 'string') {
-              const cleaned = val.replace(/[^0-9.-]/g, '');
-              const parsed = parseFloat(cleaned);
-              return Number.isNaN(parsed) ? 0 : parsed;
-            }
-            return 0;
-          };
-
-          // Build currency meta for fee conversion (same logic as SignedSalesReportPage)
-          const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
-            for (const candidate of candidates) {
-              if (candidate === null || candidate === undefined) continue;
-              const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
-              if (rawValue === null || rawValue === undefined) continue;
-
-              if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
-                return { displaySymbol: getCurrencySymbol(rawValue), conversionValue: rawValue };
-              }
-
-              const valueStr = rawValue.toString().trim();
-              if (!valueStr) continue;
-
-              const numeric = Number(valueStr);
-              if (!Number.isNaN(numeric) && numeric.toString() === valueStr) {
-                return { displaySymbol: getCurrencySymbol(numeric), conversionValue: numeric };
-              }
-
-              const upper = valueStr.toUpperCase();
-              if (upper === '₪' || upper === 'NIS' || upper === 'ILS') {
-                return { displaySymbol: '₪', conversionValue: 'NIS' };
-              }
-              if (upper === 'USD' || valueStr === '$') {
-                return { displaySymbol: '$', conversionValue: 'USD' };
-              }
-              if (upper === 'EUR' || valueStr === '€') {
-                return { displaySymbol: '€', conversionValue: 'EUR' };
-              }
-              if (upper === 'GBP' || valueStr === '£') {
-                return { displaySymbol: '£', conversionValue: 'GBP' };
-              }
-            }
-            return { displaySymbol: '₪', conversionValue: 'NIS' };
-          };
+          const recordDate = record.date;
+          const recordDateOnly = extractDateFromRecord(recordDate);
+          const amountInNIS = await toNis(amount, lead.currency_id, recordDateOnly);
 
           const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
           const currencyMeta = record.isNewLead
             ? buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency)
             : buildCurrencyMeta(lead.currency_id, lead.meeting_total_currency_id, lead.accounting_currencies);
-          const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
+          const subcontractorFeeNIS = await toNis(subcontractorFee, currencyMeta.conversionValue, recordDateOnly);
           const amountAfterFee = amountInNIS - subcontractorFeeNIS;
-
-          const recordDate = record.date;
 
           // Get department ID from the JOIN
           let departmentId = null;
@@ -3774,8 +3804,6 @@ const Dashboard: React.FC = () => {
 
             // For current month, use the department index directly (no General column)
             const monthDeptIndex = departmentIds.indexOf(departmentId);
-            // Extract date part for comparison
-            const recordDateOnly = extractDateFromRecord(recordDate);
 
             // Check if it's in selected month (must be between start and end of month)
             if (recordDateOnly >= startOfMonthStr && recordDateOnly <= endOfMonthStr) {
@@ -3785,7 +3813,7 @@ const Dashboard: React.FC = () => {
           } else {
             monthSkippedCount++;
           }
-        });
+        }
       }
 
       // Calculate totals for each time period
@@ -3883,9 +3911,15 @@ const Dashboard: React.FC = () => {
       setAgreementData(newAgreementData);
 
       // Fetch daily chart data for the last 30 days
-      await fetchDepartmentChartData(departmentIds, departmentTargets, thirtyDaysAgoStr, todayStr);
+      const chartData = await fetchDepartmentChartData(departmentIds, departmentTargets, thirtyDaysAgoStr, todayStr);
 
+      return {
+        agreementData: newAgreementData,
+        departmentNames: names,
+        departmentChartData: chartData ?? {},
+      };
     } catch (error) {
+      return null;
     } finally {
       setDepartmentPerformanceLoading(false);
     }
@@ -3908,12 +3942,12 @@ const Dashboard: React.FC = () => {
         .lte('date', toDate);
 
       if (stageError) {
-        return;
+        return {};
       }
 
       if (!stageRecords || stageRecords.length === 0) {
         setDepartmentChartData({});
-        return;
+        return {};
       }
 
       // Fetch leads data
@@ -4009,8 +4043,10 @@ const Dashboard: React.FC = () => {
       });
 
       setDepartmentChartData(finalChartData);
+      return finalChartData;
     } catch (error) {
       setDepartmentChartData({});
+      return {};
     }
   };
 
@@ -4018,8 +4054,11 @@ const Dashboard: React.FC = () => {
   // For new leads: payment_plans where ready_to_pay = true and paid = false
   // For legacy leads: finances_paymentplanrow where ready_to_pay = true and actual_date IS NULL
   // Group by department instead of employee
-  const fetchInvoicedData = async (shared?: Awaited<ReturnType<typeof fetchDepartmentsAndCategories>>) => {
-    setInvoicedDataLoading(true);
+  const fetchInvoicedData = async (
+    shared?: Awaited<ReturnType<typeof fetchDepartmentsAndCategories>>,
+    opts?: { background?: boolean },
+  ) => {
+    if (!opts?.background) setInvoicedDataLoading(true);
     try {
       const now = new Date();
       const today = new Date();
@@ -4076,6 +4115,19 @@ const Dashboard: React.FC = () => {
           if (category.name) categoryNameToDataMap.set(category.name.trim().toLowerCase(), category);
         });
       }
+
+      // BOI-first conversion snapshots (same idea as CollectionFinancesReport)
+      const boiStart = await getBoiCoverageStartDate();
+      const latestBoiSnap = await loadBoiExchangeRates();
+      const boiSnapByDate = new Map<string, Promise<any>>();
+      const getBoiSnapForDate = (dateOnly: string | null): Promise<any> => {
+        if (!dateOnly || !/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) return Promise.resolve(latestBoiSnap);
+        if (boiStart && dateOnly < boiStart) return Promise.resolve(latestBoiSnap);
+        if (boiSnapByDate.has(dateOnly)) return boiSnapByDate.get(dateOnly)!;
+        const p = loadBoiExchangeRatesForDate(dateOnly).catch(() => latestBoiSnap);
+        boiSnapByDate.set(dateOnly, p);
+        return p;
+      };
 
       // Helper function to resolve category and get department (same as CollectionDueReport)
       const resolveCategoryAndDepartment = (
@@ -4616,11 +4668,11 @@ const Dashboard: React.FC = () => {
       // Process new payments
       let newPaymentsProcessed = 0;
       let newPaymentsSkipped = 0;
-      filteredNewPayments.forEach(payment => {
+      for (const payment of filteredNewPayments) {
         const lead = newLeadsMap.get(payment.lead_id);
         if (!lead) {
           newPaymentsSkipped++;
-          return;
+          continue;
         }
 
         // Get department from category -> main category -> department (using helper function)
@@ -4633,7 +4685,7 @@ const Dashboard: React.FC = () => {
         // Only include payments that have a department in our department list
         if (!departmentId || !departmentIds.includes(departmentId)) {
           newPaymentsSkipped++;
-          return;
+          continue;
         }
 
         newPaymentsProcessed++;
@@ -4646,10 +4698,12 @@ const Dashboard: React.FC = () => {
         else if (currencyForConversion === '€') currencyForConversion = 'EUR';
         else if (currencyForConversion === '$') currencyForConversion = 'USD';
         else if (currencyForConversion === '£') currencyForConversion = 'GBP';
-        const amountInNIS = convertToNIS(value, currencyForConversion);
 
         const dueDate = payment.due_date ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0]) : null;
-        if (!dueDate) return;
+        if (!dueDate) continue;
+
+        const snap = await getBoiSnapForDate(dueDate);
+        const amountInNIS = convertToNISWithMeta(value, currencyForConversion, snap).amountNIS;
 
         const deptIndex = departmentIds.indexOf(departmentId) + 1; // +1 to skip General column
 
@@ -4691,7 +4745,7 @@ const Dashboard: React.FC = () => {
           newInvoicedData[selectedMonthName][monthDeptIndex].count += 1;
           newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountInNIS;
         }
-      });
+      }
 
       console.log('📊 Invoiced Data - New payments processing:', {
         total: filteredNewPayments.length,
@@ -4704,14 +4758,14 @@ const Dashboard: React.FC = () => {
       // Multiple payment rows per lead are all counted and summed
       let legacyPaymentsProcessed = 0;
       let legacyPaymentsSkipped = 0;
-      filteredLegacyPayments.forEach(payment => {
+      for (const payment of filteredLegacyPayments) {
         const leadIdKey = payment.lead_id?.toString() || String(payment.lead_id);
         const leadIdNum = typeof payment.lead_id === 'number' ? payment.lead_id : Number(payment.lead_id);
         let lead = legacyLeadsMap.get(leadIdKey) || legacyLeadsMap.get(leadIdNum);
 
         if (!lead) {
           legacyPaymentsSkipped++;
-          return;
+          continue;
         }
 
         // Get department from category -> main category -> department (using helper function, matching CollectionDueReport)
@@ -4724,7 +4778,7 @@ const Dashboard: React.FC = () => {
         // Only include payments that have a department in our department list (or '—' which we'll skip)
         if (!departmentId || !departmentIds.includes(departmentId)) {
           legacyPaymentsSkipped++;
-          return;
+          continue;
         }
 
         legacyPaymentsProcessed++;
@@ -4761,11 +4815,12 @@ const Dashboard: React.FC = () => {
         else if (currencyForConversion === '£') currencyForConversion = 'GBP';
 
         // Convert to NIS (value without VAT), same as CollectionDueReport
-        const amountInNIS = convertToNIS(value, currencyForConversion);
-
         // Use due_date for date filtering (same as CollectionDueReport)
         const dueDate = payment.due_date ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0]) : null;
-        if (!dueDate) return;
+        if (!dueDate) continue;
+
+        const snap = await getBoiSnapForDate(dueDate);
+        const amountInNIS = convertToNISWithMeta(value, currencyForConversion, snap).amountNIS;
 
         const deptIndex = departmentIds.indexOf(departmentId) + 1; // +1 to skip General column
 
@@ -4807,7 +4862,7 @@ const Dashboard: React.FC = () => {
           newInvoicedData[selectedMonthName][monthDeptIndex].count += 1;
           newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountInNIS;
         }
-      });
+      }
 
       console.log('📊 Invoiced Data - Legacy payments processing:', {
         total: filteredLegacyPayments.length,
@@ -4852,8 +4907,10 @@ const Dashboard: React.FC = () => {
       newInvoicedData[selectedMonthName][totalIndexMonth] = { count: monthTotalCount, amount: monthTotalAmount, expected: 0 };
 
       setInvoicedData(newInvoicedData);
+      return newInvoicedData;
 
     } catch (error: any) {
+      return null;
     } finally {
       setInvoicedDataLoading(false);
     }
@@ -4940,36 +4997,175 @@ const Dashboard: React.FC = () => {
 
   const years = [2023, 2024, 2025, 2026, 2027];
 
-  // Add useEffect to refetch data when month/year changes (shared department + category fetch for faster load)
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const shared = await fetchDepartmentsAndCategories();
-        if (cancelled) return;
-        await Promise.all([fetchDepartmentPerformance(shared), fetchInvoicedData(shared)]);
-      } catch (e) {
-        if (!cancelled) {
-          fetchDepartmentPerformance();
-          fetchInvoicedData();
+  const applyTeamAvailabilityCache = useCallback((cached: DashboardTeamAvailabilityCache) => {
+    setUnavailableEmployeesData(cached.unavailableEmployeesData);
+    setGroupedUnavailableData(cached.groupedUnavailableData);
+    setUnavailableEmployeesCount(cached.unavailableEmployeesCount);
+    setCurrentlyUnavailableCount(cached.currentlyUnavailableCount);
+    setScheduledTimeOffCount(cached.scheduledTimeOffCount);
+    setAvailableDepartments(cached.availableDepartments);
+  }, []);
+
+  const loadScoreboardData = useCallback(
+    async (opts?: { background?: boolean }) => {
+      const periodKey = `${selectedYear}-${selectedMonth}`;
+      const cacheKey = `dashboard-scoreboard:v2:${periodKey}`;
+      const cached = getCachedData<DashboardScoreboardCache>(dashboardPathname, cacheKey);
+
+      if (cached) {
+        setAgreementData(cached.agreementData);
+        setInvoicedData(cached.invoicedData);
+        setDepartmentNames(cached.departmentNames);
+        setDepartmentChartData(cached.departmentChartData);
+        setDepartmentPerformanceLoading(false);
+        setInvoicedDataLoading(false);
+        const age = Date.now() - (cached.fetchedAt ?? 0);
+        if (age < DASHBOARD_SCOREBOARD_CACHE_TTL_MS && !opts?.background) {
+          return;
         }
       }
-    })();
-    return () => { cancelled = true; };
-  }, [selectedMonth, selectedYear]);
 
-  // Fetch unavailable employees data on component mount and when date changes
+      if (!opts?.background) {
+        setDepartmentPerformanceLoading(true);
+        setInvoicedDataLoading(true);
+      }
+
+      try {
+        const shared = await fetchDepartmentsAndCategories();
+        const [agreementResult, invoicedResult] = await Promise.all([
+          fetchDepartmentPerformance(shared, opts),
+          fetchInvoicedData(shared, opts),
+        ]);
+        if (agreementResult && invoicedResult) {
+          setDepartmentNames(agreementResult.departmentNames);
+          setDepartmentChartData(agreementResult.departmentChartData);
+          setCachedData(dashboardPathname, cacheKey, {
+            agreementData: agreementResult.agreementData,
+            invoicedData: invoicedResult,
+            departmentNames: agreementResult.departmentNames,
+            departmentChartData: agreementResult.departmentChartData,
+            fetchedAt: Date.now(),
+          });
+        }
+      } catch {
+        await Promise.all([
+          fetchDepartmentPerformance(undefined, opts),
+          fetchInvoicedData(undefined, opts),
+        ]);
+      }
+    },
+    [dashboardPathname, selectedMonth, selectedYear],
+  );
+
+  const loadTeamAvailability = useCallback(
+    async (date: string, opts?: { background?: boolean }) => {
+      const cacheKey = `dashboard-team-availability:v2:${date}`;
+      const cached = getCachedData<DashboardTeamAvailabilityCache>(dashboardPathname, cacheKey);
+
+      if (cached) {
+        applyTeamAvailabilityCache(cached);
+        setUnavailableEmployeesLoading(false);
+        const age = Date.now() - (cached.fetchedAt ?? 0);
+        if (age < DASHBOARD_TEAM_AVAILABILITY_CACHE_TTL_MS && !opts?.background) {
+          return;
+        }
+      }
+
+      if (!opts?.background) {
+        setUnavailableEmployeesLoading(true);
+      }
+      await fetchUnavailableEmployeesData(date);
+    },
+    [applyTeamAvailabilityCache, dashboardPathname],
+  );
+
+  // Scoreboard (Agreement signed + Invoiced): cache-first load; refetch on month/year change.
   useEffect(() => {
-    fetchUnavailableEmployeesData(teamAvailabilityDate);
-  }, [teamAvailabilityDate]);
+    void loadScoreboardData();
+  }, [loadScoreboardData]);
 
+  // Live refresh: background refetch (no full-page spinner) when realtime bumps the token.
+  useEffect(() => {
+    if (scoreboardRefreshToken === 0) return;
+    void loadScoreboardData({ background: true });
+  }, [scoreboardRefreshToken, loadScoreboardData]);
 
-  // Refresh data when unavailable employees modal closes
+  // Team availability: cache-first load; refetch on date change.
+  useEffect(() => {
+    void loadTeamAvailability(teamAvailabilityDate);
+  }, [teamAvailabilityDate, loadTeamAvailability]);
+
+  useEffect(() => {
+    if (teamAvailabilityRefreshToken === 0) return;
+    void loadTeamAvailability(teamAvailabilityDate, { background: true });
+  }, [teamAvailabilityRefreshToken, teamAvailabilityDate, loadTeamAvailability]);
+
+  // Live updates (same pattern as CalendarPage): debounced refresh without resetting the whole dashboard.
+  useEffect(() => {
+    const scheduleScoreboardRefresh = (ms = 500) => {
+      if (typeof window === 'undefined') return;
+      if (realtimeRefreshTimerRef.current) window.clearTimeout(realtimeRefreshTimerRef.current);
+      realtimeRefreshTimerRef.current = window.setTimeout(() => {
+        realtimeRefreshTimerRef.current = null;
+        setScoreboardRefreshToken((t) => t + 1);
+      }, ms);
+    };
+
+    const scheduleTeamAvailabilityRefresh = () => {
+      if (typeof window === 'undefined') return;
+      if (realtimeRefreshTimerRef.current) window.clearTimeout(realtimeRefreshTimerRef.current);
+      realtimeRefreshTimerRef.current = window.setTimeout(() => {
+        realtimeRefreshTimerRef.current = null;
+        setTeamAvailabilityRefreshToken((t) => t + 1);
+      }, 250);
+    };
+
+    const channel = supabase
+      .channel('dashboard-page:realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_leadstage' }, () => {
+        scheduleScoreboardRefresh(500);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payment_plans' }, () => {
+        scheduleScoreboardRefresh(500);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'finances_paymentplanrow' }, () => {
+        scheduleScoreboardRefresh(500);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, () => {
+        scheduleScoreboardRefresh(800);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_lead' }, () => {
+        scheduleScoreboardRefresh(800);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'contracts' }, () => {
+        scheduleScoreboardRefresh(500);
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employee_unavailability_reasons' }, () => {
+        scheduleTeamAvailabilityRefresh();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tenants_employee' }, () => {
+        scheduleTeamAvailabilityRefresh();
+      })
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR') {
+          console.warn('[Dashboard] realtime subscription failed — performance boxes will not auto-update');
+        }
+      });
+
+    return () => {
+      if (realtimeRefreshTimerRef.current && typeof window !== 'undefined') {
+        window.clearTimeout(realtimeRefreshTimerRef.current);
+      }
+      void supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // Refresh team availability when modal closes (force background refresh).
   useEffect(() => {
     if (!isUnavailableEmployeesModalOpen) {
-      fetchUnavailableEmployeesData(teamAvailabilityDate);
+      void loadTeamAvailability(teamAvailabilityDate, { background: true });
     }
-  }, [isUnavailableEmployeesModalOpen]);
+  }, [isUnavailableEmployeesModalOpen, teamAvailabilityDate, loadTeamAvailability]);
 
   // Invoiced data (second table) - will be populated with real data
   const [invoicedData, setInvoicedData] = useState<{
@@ -5414,7 +5610,7 @@ const Dashboard: React.FC = () => {
         {/* Mobile: departments as rows, periods as columns */}
         <div className="md:hidden overflow-x-auto -mx-4 px-4 pb-2">
           <table className="w-full min-w-[600px] text-sm table-fixed">
-            <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
+            <thead className="bg-white border-b border-slate-200 sticky top-0">
               <tr>
                 <th className="text-left px-1.5 py-2 font-semibold text-slate-700 w-[96px]">Department</th>
                 {mobilePeriods.map((p) => (
@@ -5494,7 +5690,7 @@ const Dashboard: React.FC = () => {
         {/* Desktop: existing layout */}
         <div className="hidden md:block overflow-x-auto -mx-4 md:mx-0 pl-5 pr-2 md:pl-0 md:pr-0 w-full">
           <table className="min-w-full text-xs md:text-sm w-full">
-            <thead className="bg-slate-50 border-b border-slate-200">
+            <thead className="bg-white border-b border-slate-200">
               <tr>
                 <th className="text-left px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700"></th>
                 {categories.map(category => {
@@ -7577,8 +7773,8 @@ const Dashboard: React.FC = () => {
                 </div>
                 {/* Agreement signed */}
                 <div>
-                  <div className="md:bg-white md:rounded-xl md:border md:border-gray-200 md:shadow-lg overflow-hidden -mx-4 md:mx-0">
-                    <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-slate-50 gap-2">
+                  <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden -mx-4 md:mx-0">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-white gap-2">
                       <div className={`text-xs md:text-sm font-semibold ${isAltTheme ? 'text-green-600' : 'text-[#3b28c7]'}`}>Agreement signed</div>
                       <div className="flex flex-wrap items-center gap-1 md:gap-2">
                         <span className="text-xs md:text-sm font-semibold text-slate-700 mr-1 md:mr-2">Filter by:</span>
@@ -7657,8 +7853,8 @@ const Dashboard: React.FC = () => {
 
                 {/* Invoiced */}
                 <div className="mt-4 md:mt-6">
-                  <div className="md:bg-white md:rounded-xl md:border md:border-gray-200 md:shadow-lg overflow-hidden -mx-4 md:mx-0">
-                    <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-slate-50 gap-2">
+                  <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden -mx-4 md:mx-0">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-white gap-2">
                       <div className={`text-xs md:text-sm font-semibold ${isAltTheme ? 'text-green-600' : 'text-[#3b28c7]'}`}>Invoiced</div>
                       <div className="flex flex-wrap items-center gap-1 md:gap-2">
                         <span className="text-xs md:text-sm font-semibold text-slate-700 mr-1 md:mr-2">Filter by:</span>
@@ -8222,7 +8418,7 @@ const Dashboard: React.FC = () => {
           <div className="hidden lg:block">
             <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-6 h-full">
               <MyAvailabilitySection
-                onAvailabilityChange={() => fetchUnavailableEmployeesData(teamAvailabilityDate)}
+                onAvailabilityChange={() => void loadTeamAvailability(teamAvailabilityDate, { background: true })}
                 onOpenUploadDocs={() => setIsSickDaysUploadModalOpen(true)}
               />
             </div>
@@ -8476,7 +8672,7 @@ const Dashboard: React.FC = () => {
               </div>
               <div className="p-6">
                 <MyAvailabilitySection
-                  onAvailabilityChange={() => fetchUnavailableEmployeesData(teamAvailabilityDate)}
+                  onAvailabilityChange={() => void loadTeamAvailability(teamAvailabilityDate, { background: true })}
                   onOpenUploadDocs={() => setIsSickDaysUploadModalOpen(true)}
                 />
               </div>
@@ -8491,7 +8687,7 @@ const Dashboard: React.FC = () => {
         onClose={() => setIsSickDaysUploadModalOpen(false)}
         onDocumentUploaded={() => {
           // Refresh availability data if needed
-          fetchUnavailableEmployeesData(teamAvailabilityDate);
+          void loadTeamAvailability(teamAvailabilityDate, { background: true });
         }}
       />
 

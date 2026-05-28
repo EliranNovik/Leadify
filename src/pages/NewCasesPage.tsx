@@ -2355,7 +2355,7 @@ const NewCasesPage: React.FC = () => {
   const isPageLoading = loading || !stageIdsResolved;
 
   return (
-    <div className="p-2 sm:p-4 md:p-6 lg:p-8">
+    <div className="bg-gray-100 min-h-[calc(100dvh-5rem)] md:min-h-full p-2 sm:p-4 md:p-6 lg:p-8">
       {/* Loading state: show spinner and text until leads and stages are ready */}
       {isPageLoading && (
         <div className="flex flex-col items-center justify-center min-h-[40vh] gap-4">

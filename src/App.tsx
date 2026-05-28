@@ -129,19 +129,11 @@ const AppContentInner: React.FC = () => {
     () => location.pathname === '/calendar' || location.pathname === '/outlook-calendar',
     [location.pathname],
   );
-  const isLeadSearchPage = useMemo(() => location.pathname === '/lead-search', [location.pathname]);
-  const isDashboardPage = useMemo(() => location.pathname === '/', [location.pathname]);
   const isClientsRoute = useMemo(
     () => location.pathname === '/clients' || location.pathname.startsWith('/clients/'),
     [location.pathname],
   );
-  const pageGreyChromeClass = useMemo(
-    () =>
-      isLeadSearchPage || isCalendarPage || isDashboardPage || isClientsRoute
-        ? 'bg-gray-100 dark:bg-base-300'
-        : 'bg-base-100',
-    [isLeadSearchPage, isCalendarPage, isDashboardPage, isClientsRoute],
-  );
+  const isDashboardPage = useMemo(() => location.pathname === '/', [location.pathname]);
   const msalAccount = instance.getActiveAccount() || accounts[0];
   const userName = accounts.length > 0 ? accounts[0].name : undefined;
 
@@ -890,7 +882,9 @@ const AppContentInner: React.FC = () => {
         path="/*"
         element={
           < ProtectedRoute user={authUser} >
-            <div className={`flex h-[100dvh] max-h-[100dvh] min-h-0 ${pageGreyChromeClass} ${appJustLoggedIn ? 'fade-in' : ''}`}>
+            <div
+              className={`flex h-[100dvh] max-h-[100dvh] min-h-0 ${isDashboardPage ? 'bg-gray-100 dark:bg-base-300' : 'bg-base-100'} ${appJustLoggedIn ? 'fade-in' : ''}`}
+            >
               {/* Always mount Sidebar so it does not reload when navigating; hide on full-width pages */}
               <div className={isSignedSalesPage || isCaseManagerPage || isContractPage ? 'hidden' : undefined}>
                 <Sidebar
@@ -902,7 +896,9 @@ const AppContentInner: React.FC = () => {
                   mobileOnly={sidebarMobileOnly}
                 />
               </div>
-              <div className={`flex min-h-0 flex-1 flex-col overflow-hidden ${pageGreyChromeClass} ${!isAdminPage && !isReportsPage && !isSignedSalesPage && !isCaseManagerPage && !isContractPage ? 'md:pl-24' : ''}`}>
+              <div
+                className={`flex min-h-0 flex-1 flex-col overflow-hidden ${isDashboardPage ? 'bg-transparent' : 'bg-base-100'} ${!isAdminPage && !isReportsPage && !isSignedSalesPage && !isCaseManagerPage && !isContractPage ? 'md:pl-24' : ''}`}
+              >
                 <Header
                   onMenuClick={handleMenuClick}
                   onSearchClick={handleSearchClick}
@@ -920,7 +916,7 @@ const AppContentInner: React.FC = () => {
                     isCalendarPage
                       ? 'max-md:overflow-x-hidden max-md:overflow-y-auto md:overflow-hidden md:flex md:flex-col'
                       : 'overflow-y-auto overflow-x-auto'
-                  } pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14 ${showBottomNav ? 'main-with-bottom-nav-padding' : ''} ${isLeadSearchPage || isCalendarPage || isDashboardPage || isClientsRoute ? 'bg-gray-100 dark:bg-base-300' : ''}`}
+                  } pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14 ${showBottomNav ? 'main-with-bottom-nav-padding' : ''} ${isDashboardPage ? 'bg-gray-100 dark:bg-base-300' : ''}`}
                 >
                   <Routes>
                     <Route path="/" element={<HomeEntryPage />} />

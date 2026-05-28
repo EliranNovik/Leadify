@@ -1,4 +1,5 @@
 import { convertToNIS } from '../lib/currencyConversion';
+import type { BoiDateRateConverter } from '../lib/boiCurrencyConversion';
 import {
   calculateSignedPortionAmount,
   calculateSignedPortionPercentage,
@@ -130,9 +131,119 @@ export const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string
 };
 
 /**
+ * Build sign-date maps from leads_leadstage stage-60 rows (latest date per lead).
+ */
+export const buildSignDateMapsFromStageHistory = (
+    stageHistoryData: any[] | null | undefined,
+): { newLeadSignDates: Map<string, string>; legacyLeadSignDates: Map<number, string> } => {
+    const newLeadSignDates = new Map<string, string>();
+    const legacyLeadSignDates = new Map<number, string>();
+    const pickLater = (existing: string | undefined, candidate: string) => {
+        if (!existing) return candidate;
+        return new Date(candidate) > new Date(existing) ? candidate : existing;
+    };
+
+    (stageHistoryData || []).forEach((entry) => {
+        const raw = (entry.date || entry.cdate || '').toString();
+        const dateOnly = raw.includes('T') ? raw.split('T')[0] : raw.slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) return;
+
+        if (entry.newlead_id) {
+            const id = String(entry.newlead_id);
+            newLeadSignDates.set(id, pickLater(newLeadSignDates.get(id), dateOnly));
+        }
+        if (entry.lead_id !== null && entry.lead_id !== undefined) {
+            const id = Number(entry.lead_id);
+            if (!Number.isNaN(id)) {
+                legacyLeadSignDates.set(id, pickLater(legacyLeadSignDates.get(id), dateOnly));
+            }
+        }
+    });
+
+    return { newLeadSignDates, legacyLeadSignDates };
+};
+
+/**
+ * Precompute signed NIS amounts on lead objects (BOI rate on sign date).
+ */
+export const enrichLeadWithSignedNisAmounts = async (
+    lead: any,
+    signDate: string | null,
+    converter: BoiDateRateConverter,
+    leadKind: 'new' | 'legacy',
+): Promise<void> => {
+    if (leadKind === 'new') {
+        const accountingCurrencies = Array.isArray(lead.accounting_currencies)
+            ? lead.accounting_currencies[0]
+            : lead.accounting_currencies;
+        const currencyMeta = buildCurrencyMeta(
+            lead.currency_id,
+            lead.proposal_currency,
+            lead.balance_currency,
+            accountingCurrencies,
+        );
+        const balanceAmount = parseFloat(lead.balance || 0);
+        const proposalAmount = parseFloat(lead.proposal_total || 0);
+        const rawAmount = balanceAmount || proposalAmount || 0;
+        const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
+        const full = await converter.toNis(rawAmount, currencyMeta.conversionValue, signDate);
+        const fee = await converter.toNis(subcontractorFee, currencyMeta.conversionValue, signDate);
+        lead._fullAmountNIS = full;
+        lead._amountAfterFeeNIS = full - fee;
+        return;
+    }
+
+    const currencyId = lead.currency_id;
+    const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+    let resolvedAmount = 0;
+    if (numericCurrencyId === 1) {
+        resolvedAmount = parseNumericAmount(lead.total_base) || 0;
+    } else {
+        resolvedAmount = parseNumericAmount(lead.total) || 0;
+    }
+    const currencyMeta = buildCurrencyMeta(
+        lead.accounting_currencies,
+        lead.meeting_total_currency_id,
+        lead.currency_id,
+    );
+    const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
+    const full = await converter.toNis(resolvedAmount, currencyMeta.conversionValue, signDate);
+    const fee = await converter.toNis(subcontractorFee, currencyMeta.conversionValue, signDate);
+    lead._fullAmountNIS = full;
+    lead._amountAfterFeeNIS = full - fee;
+};
+
+export const enrichLeadsMapsWithSignedNis = async (
+    newLeadsMap: Map<any, any>,
+    legacyLeadsMap: Map<any, any>,
+    signDates: { newLeadSignDates: Map<string, string>; legacyLeadSignDates: Map<number, string> },
+    converter: BoiDateRateConverter,
+): Promise<void> => {
+    for (const [id, lead] of newLeadsMap) {
+        await enrichLeadWithSignedNisAmounts(
+            lead,
+            signDates.newLeadSignDates.get(String(id)) ?? null,
+            converter,
+            'new',
+        );
+    }
+    for (const [id, lead] of legacyLeadsMap) {
+        await enrichLeadWithSignedNisAmounts(
+            lead,
+            signDates.legacyLeadSignDates.get(Number(id)) ?? null,
+            converter,
+            'legacy',
+        );
+    }
+};
+
+/**
  * Calculate amount after fee for a new lead
  */
 export const calculateNewLeadAmount = (lead: any): number => {
+    if (typeof lead._amountAfterFeeNIS === 'number' && Number.isFinite(lead._amountAfterFeeNIS)) {
+        return lead._amountAfterFeeNIS;
+    }
     const balanceAmount = parseFloat(lead.balance || 0);
     const proposalAmount = parseFloat(lead.proposal_total || 0);
     const rawAmount = balanceAmount || proposalAmount || 0;
@@ -152,6 +263,9 @@ export const calculateNewLeadAmount = (lead: any): number => {
  * Calculate full amount (without subtracting fee) for a new lead - used for signed totals
  */
 export const calculateNewLeadFullAmount = (lead: any): number => {
+    if (typeof lead._fullAmountNIS === 'number' && Number.isFinite(lead._fullAmountNIS)) {
+        return lead._fullAmountNIS;
+    }
     const balanceAmount = parseFloat(lead.balance || 0);
     const proposalAmount = parseFloat(lead.proposal_total || 0);
     const rawAmount = balanceAmount || proposalAmount || 0;
@@ -164,6 +278,9 @@ export const calculateNewLeadFullAmount = (lead: any): number => {
  * Calculate amount after fee for a legacy lead
  */
 export const calculateLegacyLeadAmount = (lead: any): number => {
+    if (typeof lead._amountAfterFeeNIS === 'number' && Number.isFinite(lead._amountAfterFeeNIS)) {
+        return lead._amountAfterFeeNIS;
+    }
     const currencyId = lead.currency_id;
     const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
     let resolvedAmount = 0;
@@ -192,6 +309,9 @@ export const calculateLegacyLeadAmount = (lead: any): number => {
  * This matches the modal logic exactly - uses full amount without subtracting fee
  */
 export const calculateLegacyLeadFullAmount = (lead: any): number => {
+    if (typeof lead._fullAmountNIS === 'number' && Number.isFinite(lead._fullAmountNIS)) {
+        return lead._fullAmountNIS;
+    }
     const currencyId = lead.currency_id;
     const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
     let resolvedAmount = 0;

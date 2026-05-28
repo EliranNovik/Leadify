@@ -15552,7 +15552,8 @@ const Clients: React.FC<ClientsProps> = ({
 
 
 
-          {/* Client header — full bleed under app chrome */}
+          {/* Client header — boxed width (match tabs content) */}
+          <div className="w-full min-w-0 px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8">
           <ClientHeader
             selectedClient={selectedClient}
             flaggedConversationCount={headerFlaggedConversationCount}
@@ -15794,8 +15795,9 @@ const Clients: React.FC<ClientsProps> = ({
               </>
             }
           />
+          </div>
           {/* Client record shell — tabs and tab content */}
-          <div className="w-full min-w-0 px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8">
+          <div className="w-full min-w-0 px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8 mt-4 md:mt-5 lg:mt-6">
           {/* Tabs Navigation */}
 
           {/* Tabs Navigation - Desktop Only (Hidden on Mobile) - Fixed at bottom with glassy blur effect */}

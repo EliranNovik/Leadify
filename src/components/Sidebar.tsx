@@ -603,7 +603,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
   // Handler for mouse enter with delay
   const handleMouseEnter = () => {
     if (hoverTimeout.current) clearTimeout(hoverTimeout.current);
-    hoverTimeout.current = setTimeout(() => setIsSidebarHovered(true), 250);
+    hoverTimeout.current = setTimeout(() => setIsSidebarHovered(true), 80);
   };
   // Handler for mouse leave (immediate collapse)
   const handleMouseLeave = () => {
@@ -672,12 +672,12 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
         <div className="hidden md:block">
           <div
             ref={sidebarRef}
-            className={`fixed top-20 bottom-6 left-4 flex flex-col min-h-0 overflow-hidden shadow-2xl z-40 ${isSidebarHovered ? 'w-64' : 'w-20'} transition-all duration-300 group/sidebar rounded-2xl min-h-[120px] border sidebar-frosted-glass`}
+            className={`fixed top-20 bottom-6 left-4 flex flex-col min-h-0 overflow-hidden shadow-2xl z-40 ${isSidebarHovered ? 'w-64' : 'w-20'} transition-all duration-200 group/sidebar rounded-2xl min-h-[120px] border sidebar-frosted-glass`}
             onMouseEnter={handleMouseEnter}
             onMouseLeave={handleMouseLeave}
           >
             {/* Navigation Items — min-h-0 + flex-1 so this scrolls fully; padding only inside scroll area */}
-            <nav className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-white/20 scrollbar-track-transparent hover:scrollbar-thumb-white/30 pt-2 pb-4 px-0 overscroll-contain">
+            <nav className="hide-scrollbar flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden pt-2 pb-4 px-0 overscroll-contain">
               {filteredDesktopItems
                 .map((item, index) => {
                   const Icon = item.icon;
@@ -693,7 +693,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                           className={`sidebar-link flex items-center gap-4 px-4 py-3 transition-all duration-200 cursor-pointer group/sidebar-link hover:bg-white/10 hover:text-white relative
                         ${isActive ? (isAltTheme ? 'sidebar-link--active text-green-200 font-bold border-l-4 border-green-300' : 'sidebar-link--active text-cyan-200 font-bold border-l-4 border-cyan-300') : 'text-white/80'}`}
                         >
-                          <Icon className={`w-6 h-6 min-w-[1.5rem] ${isActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
+                          <Icon className={`w-7 h-7 min-w-[1.75rem] ${isActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
                           <span className={`ml-2 text-base font-medium transition-opacity duration-200 whitespace-nowrap ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>
                             {item.label}
                           </span>
@@ -707,7 +707,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                             onClick={() => setExpandedMenu(isExpanded ? null : item.label)}
                             type="button"
                           >
-                            <Icon className={`w-6 h-6 min-w-[1.5rem] ${isActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
+                            <Icon className={`w-7 h-7 min-w-[1.75rem] ${isActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
                             <span className={`ml-2 text-base font-medium transition-opacity duration-200 whitespace-nowrap ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>
                               {item.label}
                             </span>
@@ -726,7 +726,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                                   ${isSubActive ? (isAltTheme ? 'sidebar-sublink--active text-green-200 font-semibold border-l-4 border-green-300' : 'sidebar-sublink--active text-cyan-200 font-semibold border-l-4 border-cyan-300') : 'text-white/80'}`}
                                     onClick={() => setExpandedMenu(item.label)}
                                   >
-                                    <SubIcon className={`w-5 h-5 min-w-[1.25rem] ${isSubActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
+                                    <SubIcon className={`w-6 h-6 min-w-[1.5rem] ${isSubActive ? (isAltTheme ? 'text-green-300' : 'text-cyan-300') : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
                                     <span className={`text-base font-medium transition-opacity duration-200 whitespace-nowrap ${isSidebarHovered ? 'opacity-100' : 'opacity-0'}`}>{sub.label}</span>
                                   </Link>
                                 );
@@ -772,7 +772,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
             </div>
 
             {/* Navigation */}
-            <nav className="flex-1 overflow-y-auto py-4">
+            <nav className="hide-scrollbar flex-1 overflow-y-auto py-4">
               <ul className="space-y-2 px-2">
                 {filteredMobileItems
                   .map((item, index) => {
@@ -789,7 +789,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                             className={`group flex items-center p-3 rounded-lg transition-all duration-200
                             ${isActive ? (isAltTheme ? 'bg-green-600 text-white font-bold' : 'bg-[#3b28c7] text-white font-bold') : 'text-base-content'}`}
                           >
-                            <Icon className={`w-6 h-6 min-w-[1.5rem] ${isActive ? 'text-white' : 'text-black'}`} />
+                            <Icon className={`w-7 h-7 min-w-[1.75rem] ${isActive ? 'text-white' : 'text-black'}`} />
                             <span className={`ml-3 font-medium ${isActive ? 'text-white' : 'text-black'}`}>{item.label}</span>
                           </Link>
                         )}
@@ -803,7 +803,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                               onClick={() => setExpandedMenu(isExpanded ? null : item.label)}
                               type="button"
                             >
-                              <Icon className={`w-6 h-6 min-w-[1.5rem] ${item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
+                              <Icon className={`w-7 h-7 min-w-[1.75rem] ${item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
                                 ? (isExpanded ? 'text-black' : 'text-black')
                                 : (isExpanded ? 'text-white' : 'text-black')
                                 }`} />
@@ -828,7 +828,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                                           : (isSubActive ? 'bg-white text-black font-bold shadow' : 'text-black')
                                           }`}
                                       >
-                                        <SubIcon className={`w-5 h-5 min-w-[1.25rem] ${item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
+                                        <SubIcon className={`w-6 h-6 min-w-[1.5rem] ${item.label === 'Calendar' || item.label === 'Leads' || item.label === 'Cases'
                                           ? (isSubActive ? 'text-white' : 'text-black')
                                           : (isSubActive ? 'text-black' : 'text-black')
                                           }`} />
@@ -856,7 +856,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                       if (onClose) onClose();
                     }}
                   >
-                    <FaRobot className={`w-6 h-6 min-w-[1.5rem] ${isAltTheme ? 'text-green-600' : 'text-primary'}`} />
+                    <FaRobot className={`w-7 h-7 min-w-[1.75rem] ${isAltTheme ? 'text-green-600' : 'text-primary'}`} />
                     <span className="ml-3 font-medium text-black">AI Assistant</span>
                   </button>
                 </li>

@@ -542,3 +542,39 @@ export function getCurrencyCode(currencyId: string | number | null | undefined):
   }
   return normalizeIsoCode(getCurrencyCodeLegacy(currencyId));
 }
+
+/** Normalize any date string to YYYY-MM-DD for BOI snapshot lookup. */
+export function toDateOnlyKey(date: string | null | undefined): string | null {
+  if (!date || !String(date).trim()) return null;
+  const s = String(date).trim().split('T')[0];
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
+export type BoiDateRateConverter = {
+  toNis: (amount: number, currency: CurrencyInput, dateOnly: string | null) => Promise<number>;
+};
+
+/**
+ * Cached per-date BOI snapshots for batch reports (signed date, due date, etc.).
+ */
+export async function createBoiDateRateConverter(): Promise<BoiDateRateConverter> {
+  const boiStart = await getBoiCoverageStartDate();
+  const latestBoiSnap = await loadBoiExchangeRates();
+  const boiSnapByDate = new Map<string, Promise<BoiRatesSnapshot>>();
+
+  const getBoiSnapForDate = (dateOnly: string | null): Promise<BoiRatesSnapshot> => {
+    if (!dateOnly) return Promise.resolve(latestBoiSnap);
+    if (boiStart && dateOnly < boiStart) return Promise.resolve(latestBoiSnap);
+    if (boiSnapByDate.has(dateOnly)) return boiSnapByDate.get(dateOnly)!;
+    const p = loadBoiExchangeRatesForDate(dateOnly).catch(() => latestBoiSnap);
+    boiSnapByDate.set(dateOnly, p);
+    return p;
+  };
+
+  return {
+    toNis: async (amount, currency, dateOnly) => {
+      const snap = await getBoiSnapForDate(toDateOnlyKey(dateOnly));
+      return convertToNISWithMeta(amount, currency, snap).amountNIS;
+    },
+  };
+}

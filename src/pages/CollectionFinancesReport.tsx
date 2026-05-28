@@ -4,7 +4,12 @@ import { supabase } from '../lib/supabase';
 import { BanknotesIcon, MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
 import { PencilSquareIcon, XMarkIcon, ArrowLeftIcon, XCircleIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
-import { convertToNIS } from '../lib/currencyConversion';
+import {
+  convertToNISWithMeta,
+  getBoiCoverageStartDate,
+  loadBoiExchangeRates,
+  loadBoiExchangeRatesForDate,
+} from '../lib/boiCurrencyConversion';
 
 type MainCategory = {
   id: string;
@@ -52,6 +57,14 @@ export type PaymentRow = {
   /** Payment row currency (accounting_currencies.id); used for currency filter. */
   currencyId?: number | null;
   leadType: 'new' | 'legacy';
+};
+
+type RowNisAmounts = {
+  valueNis: number;
+  vatNis: number;
+  totalNis: number;
+  rateSource: 'boi' | 'legacy';
+  rateDate: string | null;
 };
 
 const collectedOptions = [
@@ -241,6 +254,7 @@ const CollectionFinancesReport: React.FC = () => {
   const [rows, setRows] = usePersistedFilters<PaymentRow[]>('collectionFinancesReport_results', [], {
     storage: 'sessionStorage',
   });
+  const [nisByRowId, setNisByRowId] = useState<Record<string, RowNisAmounts>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [handlerOptions, setHandlerOptions] = useState<{ id: number; name: string }[]>([]);
@@ -737,32 +751,80 @@ const loadPayments = async () => {
     }
   };
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const computeNisAmounts = async () => {
+      if (!rows.length) {
+        setNisByRowId({});
+        return;
+      }
+
+      try {
+        const boiStart = await getBoiCoverageStartDate();
+        const latestSnap = await loadBoiExchangeRates();
+
+        const entries = await Promise.all(
+          rows.map(async (row): Promise<[string, RowNisAmounts]> => {
+            const currencyInput = row.currencyId != null ? row.currencyId : row.currency;
+            const isCollected = Boolean(row.collected);
+            const dateOnly = (row.collectedDate || '').slice(0, 10);
+
+            // Collected rows should use the BOI snapshot on the collected/payment date (when within BOI coverage).
+            // Otherwise use latest snapshot; BOI conversion will fall back to legacy if a currency rate is missing.
+            let snap = latestSnap;
+            let rateDate: string | null = snap?.rateDate ? String(snap.rateDate).slice(0, 10) : null;
+
+            if (
+              isCollected &&
+              row.collectedDate &&
+              boiStart &&
+              dateOnly &&
+              /^\d{4}-\d{2}-\d{2}$/.test(dateOnly) &&
+              dateOnly >= boiStart
+            ) {
+              snap = await loadBoiExchangeRatesForDate(dateOnly);
+              rateDate = snap?.rateDate ? String(snap.rateDate).slice(0, 10) : dateOnly;
+            }
+
+            const valueConv = convertToNISWithMeta(row.value, currencyInput, snap);
+            const vatConv = convertToNISWithMeta(row.vat, currencyInput, snap);
+            const usedLegacyFallback = Boolean(valueConv.usedLegacyFallback || vatConv.usedLegacyFallback);
+
+            return [
+              row.id,
+              {
+                valueNis: valueConv.amountNIS,
+                vatNis: vatConv.amountNIS,
+                totalNis: valueConv.amountNIS + vatConv.amountNIS,
+                rateSource: usedLegacyFallback ? 'legacy' : 'boi',
+                rateDate: usedLegacyFallback ? null : rateDate,
+              },
+            ];
+          }),
+        );
+
+        if (!cancelled) setNisByRowId(Object.fromEntries(entries));
+      } catch (e) {
+        console.warn('[CollectionFinancesReport] failed to compute NIS amounts:', e);
+        if (!cancelled) setNisByRowId({});
+      }
+    };
+
+    computeNisAmounts();
+    return () => {
+      cancelled = true;
+    };
+  }, [rows]);
+
   const totals = useMemo(() => {
     // Match CollectionDueReport logic: convert value (without VAT) to NIS
     const estimated = rows.reduce((sum, row) => {
-      // Normalize currency: convert symbols to codes for convertToNIS
-      let currencyForConversion = row.currency || 'NIS';
-      if (currencyForConversion === '₪') currencyForConversion = 'NIS';
-      else if (currencyForConversion === '€') currencyForConversion = 'EUR';
-      else if (currencyForConversion === '$') currencyForConversion = 'USD';
-      else if (currencyForConversion === '£') currencyForConversion = 'GBP';
-      
-      // Convert value to NIS (same as CollectionDueReport line 8815)
-      const valueInNIS = convertToNIS(row.value, currencyForConversion);
-      return sum + valueInNIS;
+      return sum + (nisByRowId[row.id]?.valueNis ?? 0);
     }, 0);
     const collected = rows.reduce((sum, row) => {
       if (row.collected) {
-        // Normalize currency: convert symbols to codes for convertToNIS
-        let currencyForConversion = row.currency || 'NIS';
-        if (currencyForConversion === '₪') currencyForConversion = 'NIS';
-        else if (currencyForConversion === '€') currencyForConversion = 'EUR';
-        else if (currencyForConversion === '$') currencyForConversion = 'USD';
-        else if (currencyForConversion === '£') currencyForConversion = 'GBP';
-        
-        // Convert value to NIS (same as CollectionDueReport)
-        const valueInNIS = convertToNIS(row.value, currencyForConversion);
-        return sum + valueInNIS;
+        return sum + (nisByRowId[row.id]?.valueNis ?? 0);
       }
       return sum;
     }, 0);
@@ -770,7 +832,12 @@ const loadPayments = async () => {
       estimated,
       collected,
     };
-  }, [rows]);
+  }, [rows, nisByRowId]);
+
+  const nisReady = useMemo(() => {
+    if (rows.length === 0) return true;
+    return rows.every((r) => Boolean(nisByRowId[r.id]));
+  }, [rows, nisByRowId]);
 
   const handleSaveHandler = async (rowId: string) => {
     if (!handlerEdit || handlerEdit.rowId !== rowId) {
@@ -1276,11 +1343,15 @@ const loadPayments = async () => {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-white border border-gray-200 p-4 rounded-xl">
           <p className="text-sm text-green-600">Total Estimated</p>
-          <p className="text-3xl font-bold text-green-800">{formatCurrency(totals.estimated, '₪')}</p>
+          <p className="text-3xl font-bold text-green-800">
+            {nisReady ? formatCurrency(totals.estimated, '₪') : 'Calculating…'}
+          </p>
         </div>
         <div className="bg-white border border-gray-200 p-4 rounded-xl">
           <p className="text-sm text-emerald-600">Total Collected</p>
-          <p className="text-3xl font-bold text-emerald-800">{formatCurrency(totals.collected, '₪')}</p>
+          <p className="text-3xl font-bold text-emerald-800">
+            {nisReady ? formatCurrency(totals.collected, '₪') : 'Calculating…'}
+          </p>
         </div>
       </div>
 
@@ -1370,20 +1441,7 @@ const loadPayments = async () => {
                     )}
                   </td>
                   <td className="font-semibold">
-                    {(() => {
-                      // Normalize currency: convert symbols to codes for convertToNIS
-                      let currencyForConversion = row.currency || 'NIS';
-                      if (currencyForConversion === '₪') currencyForConversion = 'NIS';
-                      else if (currencyForConversion === '€') currencyForConversion = 'EUR';
-                      else if (currencyForConversion === '$') currencyForConversion = 'USD';
-                      else if (currencyForConversion === '£') currencyForConversion = 'GBP';
-                      
-                      // Convert value to NIS
-                      const valueInNIS = convertToNIS(row.value, currencyForConversion);
-                      const vatInNIS = convertToNIS(row.vat, currencyForConversion);
-                      const totalInNIS = valueInNIS + vatInNIS;
-                      return formatCurrency(totalInNIS, '₪');
-                    })()}
+                    {nisByRowId[row.id] ? formatCurrency(nisByRowId[row.id]!.totalNis, '₪') : '…'}
                   </td>
                   <td>{row.orderLabel || '—'}</td>
                   <td>

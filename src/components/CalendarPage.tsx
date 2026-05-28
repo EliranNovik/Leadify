@@ -7471,13 +7471,13 @@ const CalendarPage: React.FC = () => {
       <div
         className={
           viewMode === 'cards'
-            ? 'max-md:mt-0 md:mt-0 calendar-page-meetings-wrap max-md:overflow-visible max-md:px-0 md:bg-base-200/60 md:rounded-xl md:px-2 md:py-3 sm:md:px-3'
-            : 'max-md:mt-0 md:mt-0 max-md:mx-4 bg-base-200/60 rounded-xl calendar-page-meetings-wrap px-2 py-3 sm:px-3'
+            ? 'max-md:mt-0 md:mt-0 calendar-page-meetings-wrap max-md:overflow-visible max-md:px-0 md:bg-base-200/60 md:rounded-xl md:px-2 md:pt-0 md:pb-3 sm:md:px-3'
+            : 'max-md:mt-0 md:mt-0 max-md:mx-4 bg-base-200/60 rounded-xl calendar-page-meetings-wrap px-2 pt-0 pb-3 sm:px-3'
         }
       >
         {/* Desktop Table - Show when viewMode is 'list' */}
         {viewMode === 'list' && (
-          <table className="calendar-page-meetings-table table w-full text-sm sm:text-base md:text-lg">
+          <table className="calendar-page-meetings-table table w-full -mt-3 text-sm sm:text-base md:text-lg">
             <thead className="calendar-page-meetings-thead md:sticky md:top-0 md:z-20">
               <tr className="bg-gray-100 text-sm sm:text-base calendar-page-meetings-head-row md:shadow-sm">
                 <th className="text-gray-500">Type</th>

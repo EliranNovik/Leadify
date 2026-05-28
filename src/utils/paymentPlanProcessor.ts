@@ -1,5 +1,15 @@
 import { convertToNIS } from '../lib/currencyConversion';
-import { buildCurrencyMeta, parseNumericAmount } from './salesContributionCalculator';
+import type { BoiDateRateConverter } from '../lib/boiCurrencyConversion';
+import { toDateOnlyKey } from '../lib/boiCurrencyConversion';
+
+const normalizePaymentCurrency = (currency: string | undefined): string => {
+    const c = currency || 'NIS';
+    if (c === '₪') return 'NIS';
+    if (c === '€') return 'EUR';
+    if (c === '$') return 'USD';
+    if (c === '£') return 'GBP';
+    return c;
+};
 
 /**
  * Process new payment plans and convert to NIS
@@ -25,6 +35,28 @@ export const processNewPayments = (payments: any[]): Map<string, number> => {
         const current = paymentsMap.get(leadId) || 0;
         paymentsMap.set(leadId, current + amountNIS);
     });
+
+    return paymentsMap;
+};
+
+/**
+ * Process new payment plans with BOI rate on due_date.
+ */
+export const processNewPaymentsAsync = async (
+    payments: any[],
+    converter: BoiDateRateConverter,
+): Promise<Map<string, number>> => {
+    const paymentsMap = new Map<string, number>();
+
+    for (const payment of payments) {
+        const leadId = payment.lead_id;
+        const value = Number(payment.value || 0);
+        const normalizedCurrency = normalizePaymentCurrency(payment.currency);
+        const dueDate = toDateOnlyKey(payment.due_date);
+        const amountNIS = await converter.toNis(value, normalizedCurrency, dueDate);
+        const current = paymentsMap.get(leadId) || 0;
+        paymentsMap.set(leadId, current + amountNIS);
+    }
 
     return paymentsMap;
 };
@@ -75,6 +107,30 @@ export const processLegacyPayments = (payments: any[], legacyLeadsMap?: Map<numb
         const current = paymentsMap.get(leadId) || 0;
         paymentsMap.set(leadId, current + amountNIS);
     });
+
+    return paymentsMap;
+};
+
+/**
+ * Process legacy payment plans with BOI rate on due_date.
+ */
+export const processLegacyPaymentsAsync = async (
+    payments: any[],
+    converter: BoiDateRateConverter,
+    legacyLeadsMap?: Map<number, any>,
+): Promise<Map<number, number>> => {
+    const paymentsMap = new Map<number, number>();
+
+    for (const payment of payments) {
+        const leadId = Number(payment.lead_id);
+        const value = Number(payment.value || payment.value_base || 0);
+        const currency = extractCurrencyFromLegacyPayment(payment, legacyLeadsMap?.get(leadId));
+        const normalizedCurrency = normalizePaymentCurrency(currency);
+        const dueDate = toDateOnlyKey(payment.due_date);
+        const amountNIS = await converter.toNis(value, normalizedCurrency, dueDate);
+        const current = paymentsMap.get(leadId) || 0;
+        paymentsMap.set(leadId, current + amountNIS);
+    }
 
     return paymentsMap;
 };

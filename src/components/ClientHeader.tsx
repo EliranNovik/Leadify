@@ -2361,8 +2361,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     return (
         <div className="w-full min-w-0">
-                {/* Full-width header card — flush under app chrome, extends left under the fixed sidebar (App wrapper md:pl-24 inset). Tailwind arbitrary values need underscores → spaces inside calc(). md:pl-[…] = 6rem sidebar inset + content gutter. */}
-                <div className="mb-0 flex w-full flex-col gap-5 border-b border-base-200/80 bg-white px-4 py-4 dark:border-base-300/55 dark:bg-base-100 sm:px-5 sm:py-5 md:mb-0 md:-ml-24 md:w-[calc(100%_+_6rem)] md:gap-4 md:py-5 md:pr-8 md:pl-[8.5rem] lg:pr-10 lg:pl-[9rem] xl:pr-12 xl:pl-[10rem]">
+                {/* Header card — rounded (boxed by Clients.tsx container). */}
+                <div className="mb-0 mt-3 flex w-full flex-col gap-5 rounded-2xl border border-base-200/80 bg-white px-4 py-4 shadow-sm dark:border-base-300/55 dark:bg-base-100 dark:shadow-none sm:px-5 sm:py-5 md:mb-0 md:mt-4 md:gap-4 md:px-6 md:py-5">
                     {/* Mobile: SaaS header — identity, contact card, stage + chips */}
                     <div className="flex w-full flex-col gap-5 md:hidden">
                         <header className="relative z-0 flex w-full min-w-0 flex-col gap-0">
@@ -3841,7 +3841,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 )}
 
                 {/* Workflow Actions Bar - Roles and Quick Actions */}
-                <div className="mt-7 pt-6 md:mt-0 md:pt-6 w-full">
+                <div className="mt-7 pt-6 md:mt-0 md:pt-6 w-full px-1 sm:px-2 md:px-3 lg:px-4">
                     <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-4">Assigned Team</p>
                     {(() => {
                         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');

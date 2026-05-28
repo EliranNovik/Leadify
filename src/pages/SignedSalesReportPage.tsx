@@ -3,7 +3,13 @@ import { Link, useNavigate } from 'react-router-dom';
 import { PencilSquareIcon, CheckIcon, XMarkIcon, ChevronDownIcon, ArrowLeftIcon } from '@heroicons/react/24/outline';
 import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../lib/supabase';
-import { convertToNIS, getCurrencySymbol } from '../lib/currencyConversion';
+import { getCurrencySymbol } from '../lib/currencyConversion';
+import {
+  convertToNISWithMeta,
+  getBoiCoverageStartDate,
+  loadBoiExchangeRates,
+  loadBoiExchangeRatesForDate,
+} from '../lib/boiCurrencyConversion';
 import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
 import { usePersistedFilters } from '../hooks/usePersistedState';
 
@@ -1443,23 +1449,39 @@ const resolveLegacyLanguage = (lead: any) => {
         .filter(lead => matchesCategoryFilter(resolveCategoryName(lead.category, lead.category_id, lead.misc_category)))
         .filter(lead => matchesLanguageFilter(lead.language || ''));
 
-      const newLeadRows: SignedLeadRow[] = filteredNewLeads.map(lead => {
+      // BOI-first conversion (sign date rate when within BOI coverage; legacy fallback only if needed)
+      const boiStart = await getBoiCoverageStartDate();
+      const latestBoiSnap = await loadBoiExchangeRates();
+      const boiSnapByDate = new Map<string, Promise<Awaited<ReturnType<typeof loadBoiExchangeRates>>>>();
+      const getBoiSnapForDate = (dateOnly: string | null) => {
+        if (!dateOnly || !/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) return Promise.resolve(latestBoiSnap);
+        if (boiStart && dateOnly < boiStart) return Promise.resolve(latestBoiSnap);
+        if (boiSnapByDate.has(dateOnly)) return boiSnapByDate.get(dateOnly)!;
+        const p = loadBoiExchangeRatesForDate(dateOnly).catch(() => latestBoiSnap);
+        boiSnapByDate.set(dateOnly, p);
+        return p;
+      };
+      const toNis = async (amount: number, currency: string | number, signDate: string | null) => {
+        const dateOnly = signDate ? signDate.slice(0, 10) : null;
+        const snap = await getBoiSnapForDate(dateOnly);
+        return convertToNISWithMeta(amount, currency, snap).amountNIS;
+      };
+
+      const newLeadRows: SignedLeadRow[] = [];
+      for (const lead of filteredNewLeads) {
         const balanceAmount = parseNumericAmount(lead.balance);
         const proposalAmount = parseNumericAmount(lead.proposal_total);
         const rawAmount = balanceAmount || proposalAmount || 0;
-        // Use raw amount directly (VAT already excluded in database)
         const resolvedAmount = rawAmount;
         const currencyMeta = buildCurrencyMeta(
           lead.currency_id,
           lead.proposal_currency,
           lead.balance_currency
         );
-        const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
-        // Get subcontractor_fee and convert to NIS
-        const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-        const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-        // Get sign date from stage 60 record (date)
         const signDate = newLeadStageDates.get(String(lead.id)) || lead.date_signed || null;
+        const amountNIS = await toNis(resolvedAmount, currencyMeta.conversionValue, signDate);
+        const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
+        const subcontractorFeeNIS = await toNis(subcontractorFee, currencyMeta.conversionValue, signDate);
 
         const schedulerDisplay = resolveEmployeeDisplayValue(lead.scheduler);
         const managerDisplay = resolveEmployeeDisplayValue(lead.manager);
@@ -1467,7 +1489,7 @@ const resolveLegacyLanguage = (lead: any) => {
         const expertDisplay = resolveEmployeeDisplayValue(lead.expert);
         const handlerDisplay = resolveEmployeeDisplayValue(lead.handler);
 
-        return {
+        newLeadRows.push({
           id: String(lead.id),
           leadType: 'new',
           leadNumber: lead.lead_number || lead.manual_id || lead.id,
@@ -1497,86 +1519,77 @@ const resolveLegacyLanguage = (lead: any) => {
           totalNISDisplay: formatCurrencyDisplay(amountNIS, '₪'),
           subcontractorFee,
           subcontractorFeeNIS,
-        };
-      });
+        });
+      }
 
       const legacyLeads = (legacyLeadsData || []).filter(lead => matchesEmployeeFilterLegacyLead(lead, employeeFilterName));
 
-      const legacyLeadRows: SignedLeadRow[] = legacyLeads
-        .filter(lead => matchesCategoryFilter(resolveLegacyCategory(lead, categoryNameToDataMap)))
-        .filter(lead => {
-          const languageName = resolveLegacyLanguage(lead);
-          return matchesLanguageFilter(languageName);
-        })
-        .map(lead => {
-          // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-          const currencyId = lead.currency_id;
-          const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-          let resolvedAmount = 0;
-          if (numericCurrencyId === 1) {
-            // Use total_base for NIS/ILS currency
-            resolvedAmount = parseNumericAmount(lead.total_base) || 0;
-          } else {
-            // Use total for other currencies
-            resolvedAmount = parseNumericAmount(lead.total) || 0;
-          }
-          // Get sign date from stage 60 record (date)
-          const signDate = legacyStageDates.get(Number(lead.id)) || lead.cdate || null;
-          const currencyMeta = buildCurrencyMeta(
-            lead.currency_id,
-            lead.meeting_total_currency_id,
-            lead.accounting_currencies
-          );
-          const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
-          // Get subcontractor_fee and convert to NIS
-          const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-          const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
+      const legacyLeadRows: SignedLeadRow[] = [];
+      for (const lead of legacyLeads.filter(l => matchesCategoryFilter(resolveLegacyCategory(l, categoryNameToDataMap))).filter(l => {
+        const languageName = resolveLegacyLanguage(l);
+        return matchesLanguageFilter(languageName);
+      })) {
+        const currencyId = lead.currency_id;
+        const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+        let resolvedAmount = 0;
+        if (numericCurrencyId === 1) {
+          resolvedAmount = parseNumericAmount(lead.total_base) || 0;
+        } else {
+          resolvedAmount = parseNumericAmount(lead.total) || 0;
+        }
+        const signDate = legacyStageDates.get(Number(lead.id)) || lead.cdate || null;
+        const currencyMeta = buildCurrencyMeta(
+          lead.currency_id,
+          lead.meeting_total_currency_id,
+          lead.accounting_currencies
+        );
+        const amountNIS = await toNis(resolvedAmount, currencyMeta.conversionValue, signDate);
+        const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
+        const subcontractorFeeNIS = await toNis(subcontractorFee, currencyMeta.conversionValue, signDate);
 
-          const schedulerName = getLegacyEmployeeDisplay(lead.scheduler_employee, lead.meeting_scheduler_id);
-          const managerName = getLegacyEmployeeDisplay(lead.manager_employee, lead.meeting_manager_id);
-          const closerName = getLegacyEmployeeDisplay(lead.closer_employee, lead.closer_id);
-          const expertName = getLegacyEmployeeDisplay(lead.expert_employee, lead.expert_id);
-          const handlerName = getLegacyEmployeeDisplay(lead.handler_employee, lead.case_handler_id);
+        const schedulerName = getLegacyEmployeeDisplay(lead.scheduler_employee, lead.meeting_scheduler_id);
+        const managerName = getLegacyEmployeeDisplay(lead.manager_employee, lead.meeting_manager_id);
+        const closerName = getLegacyEmployeeDisplay(lead.closer_employee, lead.closer_id);
+        const expertName = getLegacyEmployeeDisplay(lead.expert_employee, lead.expert_id);
+        const handlerName = getLegacyEmployeeDisplay(lead.handler_employee, lead.case_handler_id);
 
-          // Handler should only use case_handler_id, not fall back to meeting_lawyer_id (helper/lawyer)
-          const roleHandler = handlerName;
-          const handlerIdRaw =
-            lead.case_handler_id !== null && lead.case_handler_id !== undefined
-              ? lead.case_handler_id
-              : null;
+        const roleHandler = handlerName;
+        const handlerIdRaw =
+          lead.case_handler_id !== null && lead.case_handler_id !== undefined
+            ? lead.case_handler_id
+            : null;
 
-          // Format lead number with sublead suffix if applicable (same logic as Clients.tsx)
-          const formattedLeadNumber = (lead as any)._formattedLeadNumber || String(lead.id);
-          const legacyLeadNumber = formattedLeadNumber;
+        const formattedLeadNumber = (lead as any)._formattedLeadNumber || String(lead.id);
+        const legacyLeadNumber = formattedLeadNumber;
 
-          return {
-            id: `legacy-${lead.id}`,
-            leadType: 'legacy',
-            leadNumber: legacyLeadNumber,
-            leadIdentifier: String(lead.id),
-            leadName: lead.name || 'Unnamed Lead',
-            createdDate: lead.cdate || null,
-            category: resolveLegacyCategory(lead, categoryNameToDataMap),
-            stage: formatStageLabel(lead.stage ? String(lead.stage) : 'Client signed agreement'),
-            signDate,
-            scheduler: schedulerName,
-            manager: managerName,
-            closer: closerName,
-            expert: expertName,
-            handler: roleHandler,
-            schedulerId: lead.meeting_scheduler_id !== null && lead.meeting_scheduler_id !== undefined ? String(lead.meeting_scheduler_id) : null,
-            managerId: lead.meeting_manager_id !== null && lead.meeting_manager_id !== undefined ? String(lead.meeting_manager_id) : null,
-            closerId: lead.closer_id !== null && lead.closer_id !== undefined ? String(lead.closer_id) : null,
-            expertId: lead.expert_id !== null && lead.expert_id !== undefined ? String(lead.expert_id) : null,
-            handlerId: handlerIdRaw !== null && handlerIdRaw !== undefined ? String(handlerIdRaw) : null,
-            totalOriginal: resolvedAmount,
-            totalOriginalDisplay: formatCurrencyDisplay(resolvedAmount, currencyMeta.displaySymbol),
-            totalNIS: amountNIS,
-            totalNISDisplay: formatCurrencyDisplay(amountNIS, '₪'),
-            subcontractorFee,
-            subcontractorFeeNIS,
-          };
+        legacyLeadRows.push({
+          id: `legacy-${lead.id}`,
+          leadType: 'legacy',
+          leadNumber: legacyLeadNumber,
+          leadIdentifier: String(lead.id),
+          leadName: lead.name || 'Unnamed Lead',
+          createdDate: lead.cdate || null,
+          category: resolveLegacyCategory(lead, categoryNameToDataMap),
+          stage: formatStageLabel(lead.stage ? String(lead.stage) : 'Client signed agreement'),
+          signDate,
+          scheduler: schedulerName,
+          manager: managerName,
+          closer: closerName,
+          expert: expertName,
+          handler: roleHandler,
+          schedulerId: lead.meeting_scheduler_id !== null && lead.meeting_scheduler_id !== undefined ? String(lead.meeting_scheduler_id) : null,
+          managerId: lead.meeting_manager_id !== null && lead.meeting_manager_id !== undefined ? String(lead.meeting_manager_id) : null,
+          closerId: lead.closer_id !== null && lead.closer_id !== undefined ? String(lead.closer_id) : null,
+          expertId: lead.expert_id !== null && lead.expert_id !== undefined ? String(lead.expert_id) : null,
+          handlerId: handlerIdRaw !== null && handlerIdRaw !== undefined ? String(handlerIdRaw) : null,
+          totalOriginal: resolvedAmount,
+          totalOriginalDisplay: formatCurrencyDisplay(resolvedAmount, currencyMeta.displaySymbol),
+          totalNIS: amountNIS,
+          totalNISDisplay: formatCurrencyDisplay(amountNIS, '₪'),
+          subcontractorFee,
+          subcontractorFeeNIS,
         });
+      }
 
       // Combine rows and ensure no duplicates (by lead identifier)
       const combinedRowsMap = new Map<string, SignedLeadRow>();

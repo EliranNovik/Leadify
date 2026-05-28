@@ -2,7 +2,6 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useRef, useMe
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
-import { convertToNIS } from '../lib/currencyConversion';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import { ChevronDownIcon, ChevronRightIcon, ChartBarIcon, UserGroupIcon, BuildingOfficeIcon, SpeakerWaveIcon, CurrencyDollarIcon, PencilIcon, CheckIcon, XMarkIcon, GlobeAltIcon, FlagIcon, BriefcaseIcon, HomeIcon, AcademicCapIcon, RocketLaunchIcon, MapPinIcon, DocumentTextIcon, ScaleIcon, ShieldCheckIcon, BanknotesIcon, CogIcon, HeartIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, UsersIcon, Squares2X2Icon, MagnifyingGlassIcon, LinkIcon, InformationCircleIcon } from '@heroicons/react/24/outline';
 import EmployeeRoleLeadsModal from '../components/EmployeeRoleLeadsModal';
@@ -29,11 +28,15 @@ import {
   calculateLegacyLeadAmount,
   calculateNewLeadFullAmount,
   calculateLegacyLeadFullAmount,
+  buildSignDateMapsFromStageHistory,
+  enrichLeadWithSignedNisAmounts,
+  enrichLeadsMapsWithSignedNis,
   type EmployeeCalculationInput,
   type EmployeeCalculationResult
 } from '../utils/salesContributionCalculator';
+import { createBoiDateRateConverter } from '../lib/boiCurrencyConversion';
 import { calculateFieldViewDueByCategory } from '../utils/fieldViewDueCalculator';
-import { processNewPayments, processLegacyPayments } from '../utils/paymentPlanProcessor';
+import { processNewPaymentsAsync, processLegacyPaymentsAsync } from '../utils/paymentPlanProcessor';
 import {
   resolveMainCategory as resolveMainCategoryUtil,
   preprocessLeadsCategories as preprocessLeadsCategoriesUtil,
@@ -1644,17 +1647,22 @@ const SalesContributionPage = () => {
         }
       }
 
-      // Helper functions are now imported from salesContributionCalculator
+      const signDates = buildSignDateMapsFromStageHistory([
+        ...(legacyStageRecords || []),
+        ...(newLeadStageRecords || []),
+      ]);
+      const boiConverter = await createBoiDateRateConverter();
+      const legacyLeadsMapForEnrich = new Map(legacyLeadsData.map((l: any) => [Number(l.id), l]));
+      const newLeadsMapForEnrich = new Map(newLeadsData.map((l: any) => [l.id, l]));
+      await enrichLeadsMapsWithSignedNis(newLeadsMapForEnrich, legacyLeadsMapForEnrich, signDates, boiConverter);
 
       // Calculate total signed value in NIS - AFTER subcontractor fee (matches SignedSalesReportPage)
       let totalNIS = 0;
 
-      // Process legacy leads - amount after fee
       legacyLeadsData.forEach(lead => {
         totalNIS += calculateLegacyLeadAmount(lead);
       });
 
-      // Process new leads - amount after fee
       newLeadsData.forEach(lead => {
         totalNIS += calculateNewLeadAmount(lead);
       });
@@ -1993,6 +2001,10 @@ const SalesContributionPage = () => {
         }
       }
 
+      const signDates = buildSignDateMapsFromStageHistory(stageHistoryData);
+      const boiConverter = await createBoiDateRateConverter();
+      await enrichLeadsMapsWithSignedNis(newLeadsMap, legacyLeadsMap, signDates, boiConverter);
+
       // Step 4: Fetch payment plans for due amounts
       const newPaymentsMap = new Map<string, number>();
       if (newLeadIds.size > 0) {
@@ -2023,8 +2035,7 @@ const SalesContributionPage = () => {
               console.error('Error fetching new payment plans:', newPaymentsError);
               // Continue without payment data rather than failing completely
             } else if (newPayments) {
-              // Use utility function to process payments
-              const processedPayments = processNewPayments(newPayments);
+              const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter);
               processedPayments.forEach((amount, leadId) => {
                 const current = newPaymentsMap.get(leadId) || 0;
                 newPaymentsMap.set(leadId, current + amount);
@@ -2064,8 +2075,7 @@ const SalesContributionPage = () => {
               console.error('Error fetching legacy payment plans:', legacyPaymentsError);
               // Continue without payment data rather than failing completely
             } else if (legacyPayments) {
-              // Use utility function to process payments
-              const processedPayments = processLegacyPayments(legacyPayments, legacyLeadsMap);
+              const processedPayments = await processLegacyPaymentsAsync(legacyPayments, boiConverter, legacyLeadsMap);
               processedPayments.forEach((amount, leadId) => {
                 const current = legacyPaymentsMap.get(leadId) || 0;
                 legacyPaymentsMap.set(leadId, current + amount);
@@ -2120,8 +2130,7 @@ const SalesContributionPage = () => {
 
           const { data: allHandlerPayments } = await allHandlerPaymentsQuery;
           if (allHandlerPayments) {
-            // Use utility function to process payments
-            const processedPayments = processNewPayments(allHandlerPayments);
+            const processedPayments = await processNewPaymentsAsync(allHandlerPayments, boiConverter);
             processedPayments.forEach((amount, leadId) => {
               // Add to map (sum if already exists from signed leads)
               const current = newPaymentsMap.get(leadId) || 0;
@@ -2156,8 +2165,7 @@ const SalesContributionPage = () => {
 
           const { data: allHandlerLegacyPayments } = await allHandlerLegacyPaymentsQuery;
           if (allHandlerLegacyPayments) {
-            // Use utility function to process payments
-            const processedPayments = processLegacyPayments(allHandlerLegacyPayments, legacyLeadsMap);
+            const processedPayments = await processLegacyPaymentsAsync(allHandlerLegacyPayments, boiConverter, legacyLeadsMap);
             processedPayments.forEach((amount, leadId) => {
               // Add to map (sum if already exists from signed leads)
               const current = legacyPaymentsMap.get(leadId) || 0;
@@ -2722,6 +2730,7 @@ const SalesContributionPage = () => {
       const { startIso: fromDateTime, endIso: toDateTime } = computeDateBounds(filters.fromDate, filters.toDate);
 
       let totalDue = 0;
+      const boiConverter = await createBoiDateRateConverter();
 
       // Fetch new payment plans where employee is handler
       // For new leads, handler is stored in 'handler' field (text) or 'case_handler_id' (numeric)
@@ -2759,8 +2768,7 @@ const SalesContributionPage = () => {
 
           const { data: newPayments, error: newPaymentsError } = await newPaymentsQuery;
           if (!newPaymentsError && newPayments) {
-            // Use utility function to process payments
-            const processedPayments = processNewPayments(newPayments);
+            const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter);
             processedPayments.forEach((amount) => {
               totalDue += amount;
             });
@@ -2804,11 +2812,8 @@ const SalesContributionPage = () => {
 
           const { data: legacyPayments, error: legacyPaymentsError } = await legacyPaymentsQuery;
           if (!legacyPaymentsError && legacyPayments) {
-            // Use utility function to process payments
-            // Note: fetchDueAmounts doesn't have legacyLeadsMap, so we'll pass an empty map
-            // The utility will handle currency resolution from payment data
             const emptyLegacyLeadsMap = new Map<number, any>();
-            const processedPayments = processLegacyPayments(legacyPayments, emptyLegacyLeadsMap);
+            const processedPayments = await processLegacyPaymentsAsync(legacyPayments, boiConverter, emptyLegacyLeadsMap);
             processedPayments.forEach((amount) => {
               totalDue += amount;
             });
@@ -3268,8 +3273,8 @@ const SalesContributionPage = () => {
       });
 
       const categoryBreakdown: any[] = [];
-
-      // Helper functions are now imported from salesContributionCalculator
+      const signDates = buildSignDateMapsFromStageHistory(stageHistoryData);
+      const boiConverter = await createBoiDateRateConverter();
 
       // Fetch new leads with category and client info
       if (newLeadIds.size > 0) {
@@ -3302,11 +3307,18 @@ const SalesContributionPage = () => {
           .in('id', newLeadIdsArray);
 
         if (!newLeadsError && newLeads) {
-          // Use joined data directly (misc_category, misc_maincategory from select) - no preprocess map
           const uncategorizedLeads: any[] = [];
 
+          for (const lead of newLeads) {
+            await enrichLeadWithSignedNisAmounts(
+              lead,
+              signDates.newLeadSignDates.get(String(lead.id)) ?? null,
+              boiConverter,
+              'new',
+            );
+          }
+
           newLeads.forEach((lead: any) => {
-            // Get main category name using helper (joined misc_category from select)
             const mainCategoryNameFromLead = resolveMainCategory(
               lead.category,
               lead.category_id,
@@ -3384,8 +3396,16 @@ const SalesContributionPage = () => {
           .in('id', legacyLeadIdsArray);
 
         if (!legacyLeadsError && legacyLeads) {
-          // Use joined data directly (misc_category, misc_maincategory from select) - no preprocess map
           const uncategorizedLegacyLeads: any[] = [];
+
+          for (const lead of legacyLeads) {
+            await enrichLeadWithSignedNisAmounts(
+              lead,
+              signDates.legacyLeadSignDates.get(Number(lead.id)) ?? null,
+              boiConverter,
+              'legacy',
+            );
+          }
 
           legacyLeads.forEach((lead: any) => {
             const mainCategoryNameFromLead = resolveMainCategory(
@@ -4176,6 +4196,10 @@ const SalesContributionPage = () => {
             }
           }
 
+          const signDates = buildSignDateMapsFromStageHistory(stageHistoryData);
+          const boiConverter = await createBoiDateRateConverter();
+          await enrichLeadsMapsWithSignedNis(newLeadsMap, legacyLeadsMap, signDates, boiConverter);
+
           // Step 4: Fetch all payment plans - ONCE
           const newPaymentsMap = new Map<string, number>();
           const legacyPaymentsMap = new Map<number, number>();
@@ -4200,8 +4224,7 @@ const SalesContributionPage = () => {
 
             const { data: newPayments } = await newPaymentsQuery;
             if (newPayments) {
-              // Use utility function to process payments
-              const processedPayments = processNewPayments(newPayments);
+              const processedPayments = await processNewPaymentsAsync(newPayments, boiConverter);
               processedPayments.forEach((amount, leadId) => {
                 const current = newPaymentsMap.get(leadId) || 0;
                 newPaymentsMap.set(leadId, current + amount);
@@ -4228,8 +4251,7 @@ const SalesContributionPage = () => {
 
             const { data: legacyPayments } = await legacyPaymentsQuery;
             if (legacyPayments) {
-              // Use utility function to process payments
-              const processedPayments = processLegacyPayments(legacyPayments, legacyLeadsMap);
+              const processedPayments = await processLegacyPaymentsAsync(legacyPayments, boiConverter, legacyLeadsMap);
               processedPayments.forEach((amount, leadId) => {
                 const current = legacyPaymentsMap.get(leadId) || 0;
                 legacyPaymentsMap.set(leadId, current + amount);

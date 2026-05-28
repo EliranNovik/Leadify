@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { convertToNIS } from './currencyConversion';
+import { createBoiDateRateConverter, toDateOnlyKey } from './boiCurrencyConversion';
 
 function normalizeDateOnly(s: string): string {
   if (!s || !String(s).trim()) return '';
@@ -587,17 +587,19 @@ export async function fetchInvoicedTotalDueNisForDateRange(fromDateStr: string, 
         allDepartmentNamesToIdMap.set('Commercial & Civil', 20);
       }
 
+      const boiConverter = await createBoiDateRateConverter();
+
       // Process payments and group by department (using employee's department NAME, EXACTLY matching CollectionDueReport)
       // IMPORTANT: Each payment row is counted separately - no deduplication by lead_id
       // Multiple payment rows per lead are all counted and summed
       // Process new payments
       let newPaymentsProcessed = 0;
       let newPaymentsSkipped = 0;
-      filteredNewPayments.forEach(payment => {
+      for (const payment of filteredNewPayments) {
         const lead = newLeadsMap.get(payment.lead_id);
         if (!lead) {
           newPaymentsSkipped++;
-          return;
+          continue;
         }
 
         // Get department from category -> main category -> department (using helper function)
@@ -610,23 +612,23 @@ export async function fetchInvoicedTotalDueNisForDateRange(fromDateStr: string, 
         // Only include payments that have a department in our department list
         if (!departmentId || !departmentIds.includes(departmentId)) {
           newPaymentsSkipped++;
-          return;
+          continue;
         }
 
         newPaymentsProcessed++;
 
         // Use value (without VAT) for total amount from payment_plans table (matching CollectionDueReport logic)
         const value = Number(payment.value || 0);
-        // Normalize currency: convert symbols to codes for convertToNIS
         let currencyForConversion = payment.currency || 'NIS';
         if (currencyForConversion === '₪') currencyForConversion = 'NIS';
         else if (currencyForConversion === '€') currencyForConversion = 'EUR';
         else if (currencyForConversion === '$') currencyForConversion = 'USD';
         else if (currencyForConversion === '£') currencyForConversion = 'GBP';
-        const amountInNIS = convertToNIS(value, currencyForConversion);
 
-        const dueDate = payment.due_date ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0]) : null;
-        if (!dueDate) return;
+        const dueDate = toDateOnlyKey(payment.due_date);
+        if (!dueDate) continue;
+
+        const amountInNIS = await boiConverter.toNis(value, currencyForConversion, dueDate);
 
         const deptIndex = departmentIds.indexOf(departmentId) + 1; // +1 to skip General column
 
@@ -668,7 +670,7 @@ export async function fetchInvoicedTotalDueNisForDateRange(fromDateStr: string, 
           newInvoicedData[selectedMonthName][monthDeptIndex].count += 1;
           newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountInNIS;
         }
-      });
+      }
 
       console.log('📊 Invoiced Data - New payments processing:', {
         total: filteredNewPayments.length,
@@ -681,14 +683,14 @@ export async function fetchInvoicedTotalDueNisForDateRange(fromDateStr: string, 
       // Multiple payment rows per lead are all counted and summed
       let legacyPaymentsProcessed = 0;
       let legacyPaymentsSkipped = 0;
-      filteredLegacyPayments.forEach(payment => {
+      for (const payment of filteredLegacyPayments) {
         const leadIdKey = payment.lead_id?.toString() || String(payment.lead_id);
         const leadIdNum = typeof payment.lead_id === 'number' ? payment.lead_id : Number(payment.lead_id);
         let lead = legacyLeadsMap.get(leadIdKey) || legacyLeadsMap.get(leadIdNum);
 
         if (!lead) {
           legacyPaymentsSkipped++;
-          return;
+          continue;
         }
 
         // Get department from category -> main category -> department (using helper function, matching CollectionDueReport)
@@ -701,7 +703,7 @@ export async function fetchInvoicedTotalDueNisForDateRange(fromDateStr: string, 
         // Only include payments that have a department in our department list (or '—' which we'll skip)
         if (!departmentId || !departmentIds.includes(departmentId)) {
           legacyPaymentsSkipped++;
-          return;
+          continue;
         }
 
         legacyPaymentsProcessed++;
@@ -714,14 +716,12 @@ export async function fetchInvoicedTotalDueNisForDateRange(fromDateStr: string, 
           ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies)
           : null;
 
-        // Normalize currency: convert symbols to codes for convertToNIS
         let currencyForConversion = 'NIS'; // Default to NIS
         if (accountingCurrency?.name) {
           currencyForConversion = accountingCurrency.name;
         } else if (accountingCurrency?.iso_code) {
           currencyForConversion = accountingCurrency.iso_code;
         } else if (payment.currency_id) {
-          // Map currency_id to code
           switch (payment.currency_id) {
             case 1: currencyForConversion = 'NIS'; break;
             case 2: currencyForConversion = 'EUR'; break;
@@ -731,18 +731,15 @@ export async function fetchInvoicedTotalDueNisForDateRange(fromDateStr: string, 
           }
         }
 
-        // Normalize symbols to codes
         if (currencyForConversion === '₪') currencyForConversion = 'NIS';
         else if (currencyForConversion === '€') currencyForConversion = 'EUR';
         else if (currencyForConversion === '$') currencyForConversion = 'USD';
         else if (currencyForConversion === '£') currencyForConversion = 'GBP';
 
-        // Convert to NIS (value without VAT), same as CollectionDueReport
-        const amountInNIS = convertToNIS(value, currencyForConversion);
+        const dueDate = toDateOnlyKey(payment.due_date);
+        if (!dueDate) continue;
 
-        // Use due_date for date filtering (same as CollectionDueReport)
-        const dueDate = payment.due_date ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0]) : null;
-        if (!dueDate) return;
+        const amountInNIS = await boiConverter.toNis(value, currencyForConversion, dueDate);
 
         const deptIndex = departmentIds.indexOf(departmentId) + 1; // +1 to skip General column
 
@@ -783,7 +780,7 @@ export async function fetchInvoicedTotalDueNisForDateRange(fromDateStr: string, 
           newInvoicedData[selectedMonthName][monthDeptIndex].count += 1;
           newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountInNIS;
         }
-      });
+      }
 
       console.log('📊 Invoiced Data - Legacy payments processing:', {
         total: filteredLegacyPayments.length,

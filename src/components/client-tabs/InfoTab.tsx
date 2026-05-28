@@ -1645,13 +1645,13 @@ const InfoTab: React.FC<ClientTabProps> = ({
           <div className="flex flex-col lg:flex-row lg:items-stretch">
           {/* Case Probability */}
           <div className="flex-1 min-w-0 overflow-hidden">
-            <div className="px-0 sm:px-1 pt-2 pb-8 lg:py-2 lg:pr-6 lg:pb-6 space-y-5">
-              <div className="flex items-center justify-between gap-2">
-                <h4 className="text-lg font-semibold text-black">Case Probability</h4>
+            <div className="px-0 sm:px-1 pt-2 pb-8 lg:py-2 lg:pr-6 lg:pb-6">
+              <div className="flex items-center justify-between gap-2 px-1">
+                <h4 className="text-lg font-semibold text-gray-900">Case Probability</h4>
                 {!readOnly && (
                   <button
                     type="button"
-                    className="btn btn-ghost btn-sm rounded-md text-gray-500 hover:text-gray-900"
+                    className="btn btn-ghost btn-sm rounded-md text-gray-600 hover:text-gray-900"
                     onClick={() => setProbabilityModalOpen(true)}
                     disabled={!probFactorsLoaded}
                     aria-label="Edit case probability"
@@ -1661,7 +1661,9 @@ const InfoTab: React.FC<ClientTabProps> = ({
                 )}
               </div>
 
-              <div className="space-y-3">
+              <div className="mt-3 rounded-2xl border border-base-200/80 bg-white shadow-sm dark:border-base-300/55 dark:bg-base-100 dark:shadow-none overflow-hidden">
+                <div className="px-4 py-4 space-y-5">
+                  <div className="space-y-3">
                 {!probFactorsLoaded ? (
                   <div className="flex justify-center py-4">
                     <span className="loading loading-spinner loading-sm text-primary align-middle" />
@@ -1713,6 +1715,8 @@ const InfoTab: React.FC<ClientTabProps> = ({
                   </div>
                 </div>
               )}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1868,33 +1872,41 @@ const InfoTab: React.FC<ClientTabProps> = ({
           <div className="flex flex-col pt-10 lg:flex-row lg:items-stretch lg:pt-14">
           {/* Eligibility */}
           <div className="flex-1 min-w-0 overflow-hidden">
-            <div className="space-y-5 px-0 pb-8 pt-2 sm:px-1 lg:pb-6 lg:pl-0 lg:pr-6 lg:pt-2">
-              <h4 className="text-lg font-semibold text-gray-900">Eligibility Status</h4>
+            <div className="px-0 pb-8 pt-2 sm:px-1 lg:pb-6 lg:pl-0 lg:pr-6 lg:pt-2">
+              <div className="px-1">
+                <h4 className="text-lg font-semibold text-gray-900">Eligibility Status</h4>
+              </div>
 
-              <div className="space-y-4">
-                <div className="flex items-center justify-between gap-3 py-1">
-                  <div className="flex items-center gap-2">
-                    <span className={`w-2.5 h-2.5 rounded-full ${eligibilityDisplay.text === 'Not checked' ? 'bg-gray-300' : 'bg-emerald-500'}`} />
-                    <span className="text-sm text-gray-600">Status</span>
-                  </div>
-                  <span className="text-sm font-semibold text-gray-900">
-                    {eligibilityDisplay.text === 'Not checked' ? 'Not checked yet' : eligibilityDisplay.text}
-                  </span>
-                </div>
-
-                <div>
+              <div className="mt-3 rounded-2xl border border-base-200/80 bg-white shadow-sm dark:border-base-300/55 dark:bg-base-100 dark:shadow-none overflow-hidden">
+                <div className="px-4 py-4 space-y-4">
                   <div className="flex items-center justify-between gap-3 py-1">
                     <div className="flex items-center gap-2">
-                      <span className={`w-2.5 h-2.5 rounded-full ${eligibilityDisplay.text === 'Not checked' ? 'bg-gray-300' : 'bg-emerald-500'}`} />
+                      <span
+                        className={`w-2.5 h-2.5 rounded-full ${
+                          eligibilityDisplay.text === 'Not checked' ? 'bg-gray-300' : 'bg-emerald-500'
+                        }`}
+                      />
+                      <span className="text-sm text-gray-600">Status</span>
+                    </div>
+                    <span className="text-sm font-semibold text-gray-900">
+                      {eligibilityDisplay.text === 'Not checked' ? 'Not checked yet' : eligibilityDisplay.text}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 py-1">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`w-2.5 h-2.5 rounded-full ${
+                          eligibilityDisplay.text === 'Not checked' ? 'bg-gray-300' : 'bg-emerald-500'
+                        }`}
+                      />
                       <span className="text-sm text-gray-600">Expert Review</span>
                     </div>
                     <span className="text-sm font-semibold text-gray-900">
                       {eligibilityDisplay.text === 'Not checked' ? 'Not completed' : 'Completed'}
                     </span>
                   </div>
-                </div>
 
-                <div>
                   <div className="flex items-center justify-between gap-3 py-1">
                     <div className="flex items-center gap-2">
                       <span className={`w-2.5 h-2.5 rounded-full ${eligible ? 'bg-emerald-500' : 'bg-gray-300'}`} />
@@ -1908,35 +1920,39 @@ const InfoTab: React.FC<ClientTabProps> = ({
                         onChange={readOnly ? undefined : (e) => handleEligibleToggle(e.target.checked)}
                         disabled={readOnly}
                       />
-                      <span className="text-sm font-medium text-gray-700">
-                        {eligible ? 'Yes' : 'Not determined'}
-                      </span>
+                      <span className="text-sm font-medium text-gray-700">{eligible ? 'Yes' : 'Not determined'}</span>
                     </div>
                   </div>
+
+                  {(() => {
+                    const currentSection = isLegacy ? sectionEligibility : (client.section_eligibility ?? '');
+                    if (['feasible_no_check', 'feasible_check'].includes(getEligibilityStatus() ?? '') && currentSection) {
+                      const sections = [
+                        { value: '116', label: 'German Citizenship - § 116' },
+                        { value: '15', label: 'German Citizenship - § 15' },
+                        { value: '5', label: 'German Citizenship - § 5' },
+                        { value: '58c', label: 'Austrian Citizenship - § 58c' },
+                      ];
+                      const found = sections.find((s) => s.value === currentSection);
+                      return (
+                        <div className="mt-4 pt-4">
+                          <div
+                            className="h-px w-full bg-gradient-to-r from-transparent via-gray-300/40 to-transparent mb-4"
+                            aria-hidden
+                          />
+                          <p className="text-xs text-gray-500">
+                            Section:{' '}
+                            <span className="font-semibold text-gray-700">
+                              {found ? found.label.split(' - ')[1] : currentSection}
+                            </span>
+                          </p>
+                        </div>
+                      );
+                    }
+                    return null;
+                  })()}
                 </div>
               </div>
-
-              {(() => {
-                const currentSection = isLegacy ? sectionEligibility : (client.section_eligibility ?? '');
-                if (['feasible_no_check', 'feasible_check'].includes(getEligibilityStatus() ?? '') && currentSection) {
-                  const sections = [
-                    { value: '116', label: 'German Citizenship - § 116' },
-                    { value: '15', label: 'German Citizenship - § 15' },
-                    { value: '5', label: 'German Citizenship - § 5' },
-                    { value: '58c', label: 'Austrian Citizenship - § 58c' },
-                  ];
-                  const found = sections.find(s => s.value === currentSection);
-                  return (
-                    <div className="mt-4 pt-4">
-                      <div className="h-px w-full bg-gradient-to-r from-transparent via-gray-300/40 to-transparent mb-4" aria-hidden />
-                      <p className="text-xs text-gray-500">
-                        Section: <span className="font-semibold text-gray-700">{found ? found.label.split(' - ')[1] : currentSection}</span>
-                      </p>
-                    </div>
-                  );
-                }
-                return null;
-              })()}
             </div>
           </div>
 

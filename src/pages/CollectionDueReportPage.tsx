@@ -11,7 +11,12 @@ import EmployeeLeadDrawer, {
   LeadBaseDetail,
 } from '../components/reports/EmployeeLeadDrawer';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend, Cell } from 'recharts';
-import { convertToNIS } from '../lib/currencyConversion';
+import {
+  convertToNISWithMeta,
+  getBoiCoverageStartDate,
+  loadBoiExchangeRates,
+  loadBoiExchangeRatesForDate,
+} from '../lib/boiCurrencyConversion';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 
 const CollectionDueReport = () => {
@@ -2230,6 +2235,37 @@ const CollectionDueReport = () => {
       });
       setPaymentValueMap(paymentValueMapLocal);
 
+      // BOI-first conversion (rate on due date when within BOI coverage; legacy fallback inside helper)
+      const boiStart = await getBoiCoverageStartDate();
+      const latestBoiSnap = await loadBoiExchangeRates();
+      const boiSnapByDate = new Map<string, Promise<Awaited<ReturnType<typeof loadBoiExchangeRates>>>>();
+      const getBoiSnapForDate = (dateOnly: string | null) => {
+        if (!dateOnly || !/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) return Promise.resolve(latestBoiSnap);
+        if (boiStart && dateOnly < boiStart) return Promise.resolve(latestBoiSnap);
+        if (boiSnapByDate.has(dateOnly)) return boiSnapByDate.get(dateOnly)!;
+        const p = loadBoiExchangeRatesForDate(dateOnly).catch(() => latestBoiSnap);
+        boiSnapByDate.set(dateOnly, p);
+        return p;
+      };
+      const normalizeCurrencyForConversion = (currency: string | undefined) => {
+        let c = currency || 'NIS';
+        if (c === '₪') c = 'NIS';
+        else if (c === '€') c = 'EUR';
+        else if (c === '$') c = 'USD';
+        else if (c === '£') c = 'GBP';
+        return c;
+      };
+      const dueDateOnly = (dueDate: string | null) =>
+        dueDate
+          ? typeof dueDate === 'string'
+            ? dueDate.split('T')[0]
+            : new Date(dueDate).toISOString().split('T')[0]
+          : null;
+      const toNis = async (amount: number, currency: string, dueDate: string | null) => {
+        const snap = await getBoiSnapForDate(dueDateOnly(dueDate));
+        return convertToNISWithMeta(amount, normalizeCurrencyForConversion(currency), snap).amountNIS;
+      };
+
       // Group by employee
       // Cases count now represents the actual number of payment rows (not unique leads)
       const employeeMap = new Map<string, { handlerId: number | null; handlerName: string; departmentName: string; cases: number; applicantsLeads: Set<string>; applicants: number; total: number }>();
@@ -2243,7 +2279,7 @@ const CollectionDueReport = () => {
       const paymentsWith14 = filteredPayments.filter(p => p.handlerId === 14);
       console.log('🔍 DEBUG Employee 14 - Payments with handlerId 14 in filteredPayments:', paymentsWith14.length, paymentsWith14);
 
-      filteredPayments.forEach(payment => {
+      for (const payment of filteredPayments) {
         if (payment.handlerId === 14) {
           console.log('🔍 DEBUG Employee 14 - Processing payment for employee 14:', {
             leadId: payment.leadId,
@@ -2283,7 +2319,7 @@ const CollectionDueReport = () => {
         // IMPORTANT: Only count payment rows that have due_date within the date filter range
         // This ensures the count matches exactly what the drawer will show
         if (!payment.dueDate) {
-          return; // Skip payment rows without due_date
+          continue; // Skip payment rows without due_date
         }
 
         // Verify due_date is within date filter range (if date filters are applied)
@@ -2293,14 +2329,14 @@ const CollectionDueReport = () => {
           if (filters.fromDate) {
             const fromDate = new Date(`${filters.fromDate}T00:00:00`);
             if (paymentDueDate < fromDate) {
-              return; // Skip payment rows outside date range
+              continue; // Skip payment rows outside date range
             }
           }
 
           if (filters.toDate) {
             const toDate = new Date(`${filters.toDate}T23:59:59`);
             if (paymentDueDate > toDate) {
-              return; // Skip payment rows outside date range
+              continue; // Skip payment rows outside date range
             }
           }
         }
@@ -2313,14 +2349,7 @@ const CollectionDueReport = () => {
           employeePaymentRowIds.set(key, new Set());
         }
 
-        // Convert value to NIS before adding to total
-        // Normalize currency: convert symbols to codes for convertToNIS
-        let currencyForConversion = payment.currency || 'NIS';
-        if (currencyForConversion === '₪') currencyForConversion = 'NIS';
-        else if (currencyForConversion === '€') currencyForConversion = 'EUR';
-        else if (currencyForConversion === '$') currencyForConversion = 'USD';
-        else if (currencyForConversion === '£') currencyForConversion = 'GBP';
-        const valueInNIS = convertToNIS(payment.value, currencyForConversion);
+        const valueInNIS = await toNis(payment.value, payment.currency, payment.dueDate);
 
         // Store payment row identifier using the actual payment database ID
         if (payment.id) {
@@ -2354,7 +2383,7 @@ const CollectionDueReport = () => {
             entry.applicants += applicants;
           }
         }
-      });
+      }
 
       // Final check: fetch any handler IDs that appear in employee map but have "--" as name
       const missingHandlerIdsFinal = new Set<number>();
@@ -2537,7 +2566,7 @@ const CollectionDueReport = () => {
       const departmentPaymentRowIds = new Map<string, Set<string>>();
       // Store payment row values (in NIS) by payment row ID for accurate total calculation
       const departmentPaymentRowValues = new Map<string, number>();
-      filteredPayments.forEach(payment => {
+      for (const payment of filteredPayments) {
         // Get department from lead's category -> main category -> department
         // This is already extracted in payment.departmentId and payment.departmentName
         // If departmentName is '—' (no category), use "General" instead
@@ -2560,7 +2589,7 @@ const CollectionDueReport = () => {
         // IMPORTANT: Only count payment rows that have due_date within the date filter range
         // This ensures the count matches exactly what the drawer will show
         if (!payment.dueDate) {
-          return; // Skip payment rows without due_date
+          continue; // Skip payment rows without due_date
         }
 
         // Verify due_date is within date filter range (if date filters are applied)
@@ -2570,14 +2599,14 @@ const CollectionDueReport = () => {
           if (filters.fromDate) {
             const fromDate = new Date(`${filters.fromDate}T00:00:00`);
             if (paymentDueDate < fromDate) {
-              return; // Skip payment rows outside date range
+              continue; // Skip payment rows outside date range
             }
           }
 
           if (filters.toDate) {
             const toDate = new Date(`${filters.toDate}T23:59:59`);
             if (paymentDueDate > toDate) {
-              return; // Skip payment rows outside date range
+              continue; // Skip payment rows outside date range
             }
           }
         }
@@ -2590,14 +2619,7 @@ const CollectionDueReport = () => {
           departmentPaymentRowIds.set(key, new Set());
         }
 
-        // Convert value to NIS before adding to total
-        // Normalize currency: convert symbols to codes for convertToNIS
-        let currencyForConversion = payment.currency || 'NIS';
-        if (currencyForConversion === '₪') currencyForConversion = 'NIS';
-        else if (currencyForConversion === '€') currencyForConversion = 'EUR';
-        else if (currencyForConversion === '$') currencyForConversion = 'USD';
-        else if (currencyForConversion === '£') currencyForConversion = 'GBP';
-        const valueInNIS = convertToNIS(payment.value, currencyForConversion);
+        const valueInNIS = await toNis(payment.value, payment.currency, payment.dueDate);
 
         // Store payment row identifier using the actual payment database ID
         if (payment.id) {
@@ -2623,7 +2645,7 @@ const CollectionDueReport = () => {
             entry.applicants += applicants;
           }
         }
-      });
+      }
 
       // Store department map for drawer access
       setDepartmentMapStore(departmentMap);
