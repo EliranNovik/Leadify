@@ -2368,43 +2368,48 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         <header className="relative z-0 flex w-full min-w-0 flex-col gap-0">
                             <div className="flex w-full min-w-0 items-start justify-between gap-3">
                                 <div className="min-w-0 flex-1 pr-1 text-left">
-                                    <p className="font-mono text-xs font-medium tabular-nums text-base-content/50">
-                                        {renderLeadNumber()}
-                                    </p>
+                                    <div className="flex items-center gap-2">
+                                        <div className="flex shrink-0 items-center justify-start">{renderStageBadge('mobile')}</div>
+                                    </div>
                                 </div>
-                                <div className="flex shrink-0 flex-col items-end gap-2 self-start pt-0.5">
-                                    {stageAdjacentTagsFlags}
-                                    {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
-                                        <button
-                                            onClick={() => {
-                                                if (isSubLead && masterLeadNumber) navigate(`/clients/${masterLeadNumber}/master`);
-                                                else if (isMasterLead && selectedClient) {
-                                                    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                                    const identifier = isLegacyLead
-                                                        ? selectedClient.id.toString().replace('legacy_', '')
-                                                        : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
-                                                    navigate(`/clients/${encodeURIComponent(identifier)}/master`);
-                                                }
-                                            }}
-                                            className="btn btn-square btn-sm btn-ghost relative shrink-0 border-0 text-gray-700 hover:bg-base-200 hover:text-gray-900"
-                                            title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
-                                        >
-                                            <Squares2X2Icon className="h-6 w-6" />
-                                            <span
-                                                className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
-                                                style={{ backgroundColor: '#3a3a3a' }}
-                                            >
-                                                {(subLeadsCount || 0) + 1}
-                                            </span>
-                                        </button>
-                                    ) : null}
-                                </div>
+                                <div className="flex shrink-0 items-start self-start pt-0.5">{stageAdjacentTagsFlags}</div>
                             </div>
                             <div className="mt-3 flex w-full min-w-0 items-center justify-between gap-3">
-                                <h1 className="min-w-0 flex-1 text-left text-2xl font-semibold leading-[1.2] tracking-tight text-gray-900 dark:text-white">
-                                    {selectedClient.name || 'Unnamed Lead'}
-                                </h1>
-                                <div className="flex shrink-0 items-center justify-end">{renderStageBadge('mobile')}</div>
+                                <div className="min-w-0 flex-1 text-left">
+                                    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+                                        <h1 className="min-w-0 text-2xl font-semibold leading-[1.2] tracking-tight text-gray-900 dark:text-white">
+                                            {selectedClient.name || 'Unnamed Lead'}
+                                        </h1>
+                                        <p className="font-mono text-sm font-semibold tabular-nums text-slate-500">
+                                            {renderLeadNumber()}
+                                        </p>
+                                        {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
+                                            <button
+                                                onClick={() => {
+                                                    if (isSubLead && masterLeadNumber) navigate(`/clients/${masterLeadNumber}/master`);
+                                                    else if (isMasterLead && selectedClient) {
+                                                        const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                                        const identifier = isLegacyLead
+                                                            ? selectedClient.id.toString().replace('legacy_', '')
+                                                            : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
+                                                        navigate(`/clients/${encodeURIComponent(identifier)}/master`);
+                                                    }
+                                                }}
+                                                className="btn btn-square btn-sm btn-ghost relative -my-1 shrink-0 border-0 text-gray-700 hover:bg-base-200 hover:text-gray-900"
+                                                title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
+                                                aria-label={isSubLead ? 'View master dashboard' : 'View master dashboard'}
+                                            >
+                                                <Squares2X2Icon className="h-6 w-6" />
+                                                <span
+                                                    className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
+                                                    style={{ backgroundColor: '#3a3a3a' }}
+                                                >
+                                                    {(subLeadsCount || 0) + 1}
+                                                </span>
+                                            </button>
+                                        ) : null}
+                                    </div>
+                                </div>
                             </div>
                         </header>
 

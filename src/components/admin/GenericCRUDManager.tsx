@@ -772,6 +772,16 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       }
     });
 
+    // Optional fields: treat empty string as NULL so columns can stay null
+    // (helps for fields like login email / password hash where we don't want to store blanks).
+    fields.forEach((field) => {
+      if (field.required) return;
+      if (!(field.name in record)) return;
+      if (record[field.name] === '') {
+        record[field.name] = null;
+      }
+    });
+
     // Assign manual IDs for tables without database defaults
     if (
       !editingRecord?.id &&

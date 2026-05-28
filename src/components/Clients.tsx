@@ -1510,8 +1510,6 @@ const Clients: React.FC<ClientsProps> = ({
   const [isProgressCollapsed, setIsProgressCollapsed] = usePersistedState('clientsPage_isProgressCollapsed', false, {
     storage: 'sessionStorage',
   });
-  const [isMobileTabPanelOpen, setIsMobileTabPanelOpen] = useState(false);
-  const mobileTabPanelRef = useRef<HTMLDivElement>(null);
   const tabContentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1520,25 +1518,10 @@ const Clients: React.FC<ClientsProps> = ({
 
   const handleMobileTabSelect = (tabId: string) => {
     setActiveTabWithUrl(tabId);
-    setIsMobileTabPanelOpen(false);
     setTimeout(() => {
       tabContentRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 50);
   };
-
-  // Close mobile tab panel when clicking outside
-  useEffect(() => {
-    if (!isMobileTabPanelOpen) return;
-    const handleClickOutside = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (mobileTabPanelRef.current?.contains(target)) return;
-      const btn = document.querySelector('[data-mobile-tab-arrow-btn]');
-      if (btn?.contains(target)) return;
-      setIsMobileTabPanelOpen(false);
-    };
-    document.addEventListener('click', handleClickOutside);
-    return () => document.removeEventListener('click', handleClickOutside);
-  }, [isMobileTabPanelOpen]);
 
   // Set default collapsed state for mobile on mount
   useEffect(() => {
@@ -18891,105 +18874,41 @@ const Clients: React.FC<ClientsProps> = ({
             }}
           />
 
-          {/* Mobile Tabs — bottom sheet menu; FAB opens picker */}
+          {/* Mobile Tabs — native <select> picker (iOS/Android) */}
           {!showEditLeadDrawer && !isBalanceModalOpen && !showScheduleMeetingPanel && !showRescheduleDrawer && !showUpdateDrawer && (
             <>
-              {isMobileTabPanelOpen && (
-                <div className="md:hidden fixed inset-0 z-[320] flex items-end justify-center">
-                  <div
-                    className="absolute inset-0 bg-black/50 backdrop-blur-[2px]"
-                    onClick={() => setIsMobileTabPanelOpen(false)}
-                    aria-hidden="true"
-                  />
-                  <div
-                    ref={mobileTabPanelRef}
-                    role="dialog"
-                    aria-modal="true"
-                    aria-label="Choose client tab"
-                    className="relative w-full max-h-[min(88vh,820px)] flex flex-col bg-base-100 rounded-t-3xl shadow-2xl overflow-hidden animate-slide-up"
-                    onClick={(e) => e.stopPropagation()}
-                    style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}
-                  >
-                    <div className="flex justify-center pt-3 pb-2 shrink-0">
-                      <div className="h-1 w-10 rounded-full bg-base-300" aria-hidden />
-                    </div>
-                    <div className="flex items-center justify-between gap-3 px-5 pb-3 border-b border-base-200 shrink-0">
-                      <span className="font-semibold text-base text-base-content">Client tabs</span>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-circle btn-ghost"
-                        onClick={() => setIsMobileTabPanelOpen(false)}
-                        aria-label="Close tabs"
-                      >
-                        <XMarkIcon className="w-5 h-5" />
-                      </button>
-                    </div>
-                    <div className="overflow-y-auto overscroll-contain flex-1 min-h-0" role="menu">
-                      {tabs.map((tab) => {
-                        const isActive = activeTab === tab.id;
-                        return (
-                          <button
-                            key={tab.id}
-                            type="button"
-                            role="menuitem"
-                            className={`flex w-full items-center gap-4 px-5 py-4 text-left transition-colors border-b border-base-200 last:border-b-0 ${
-                              isActive
-                                ? 'bg-[#471CCA]/5 text-[#471CCA] font-semibold'
-                                : 'text-base-content hover:bg-base-200/50 active:bg-base-200/70'
-                            }`}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleMobileTabSelect(tab.id);
-                            }}
-                            onMouseEnter={() => prefetchTabChunk(tab.id)}
-                            onTouchStart={() => prefetchTabChunk(tab.id)}
-                          >
-                            <div className="relative shrink-0">
-                              <tab.icon className={`h-6 w-6 ${isActive ? 'text-[#471CCA]' : 'text-base-content/60'}`} />
-                              {tab.id === 'interactions' && tab.badge && (
-                                <span
-                                  className={`absolute -top-1.5 -right-2 min-w-[1.25rem] h-5 px-1 rounded-full text-[10px] font-bold flex items-center justify-center ${
-                                    isActive
-                                      ? 'bg-purple-200 text-[#471CCA]'
-                                      : 'bg-primary/15 text-primary'
-                                  }`}
-                                >
-                                  {tab.badge}
-                                </span>
-                              )}
-                            </div>
-                            <span className="flex flex-1 items-center justify-between gap-3 min-w-0">
-                              <span className="text-base font-medium truncate">{tab.label}</span>
-                              {isActive && <CheckIcon className="h-5 w-5 shrink-0 text-[#471CCA]" aria-hidden />}
-                            </span>
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              )}
-              {/* Floating button — opens tab picker (above bottom nav); hidden while sheet open */}
-              {!isMobileTabPanelOpen && (
-                <button
-                  type="button"
-                  data-mobile-tab-arrow-btn
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setIsMobileTabPanelOpen(true);
-                  }}
-                  className="md:hidden fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom,0px))] right-4 z-[45] flex items-center justify-center w-14 h-14 rounded-full shadow-xl border-2 border-white/20 text-white hover:opacity-95 active:scale-95 transition-all"
+              {/* Circle button look + native picker behavior (invisible <select> on top). */}
+              <div className="md:hidden fixed bottom-[calc(5.5rem+env(safe-area-inset-bottom,0px))] right-4 z-[45]">
+                <label className="sr-only" htmlFor="client-tabs-native-select">
+                  Client tabs
+                </label>
+                <div
+                  className="relative flex h-14 w-14 items-center justify-center rounded-full shadow-xl border-2 border-white/20 text-white active:scale-95 transition-all"
                   style={{ backgroundColor: '#471CCA' }}
-                  aria-expanded={false}
                   aria-label="Open tabs"
                 >
                   {(() => {
                     const activeTabData = tabs.find((t) => t.id === activeTab);
                     const IconComponent = activeTabData?.icon ?? InformationCircleIcon;
-                    return <IconComponent className="w-7 h-7" />;
+                    return <IconComponent className="h-7 w-7" aria-hidden />;
                   })()}
-                </button>
-              )}
+                  <select
+                    id="client-tabs-native-select"
+                    className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                    value={activeTab}
+                    onChange={(e) => handleMobileTabSelect(e.target.value)}
+                    onTouchStart={() => prefetchTabChunk(activeTab)}
+                    aria-label="Client tabs"
+                  >
+                    {tabs.map((tab) => (
+                      <option key={tab.id} value={tab.id}>
+                        {tab.label}
+                        {tab.id === 'interactions' && tab.badge ? ` (${tab.badge})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </>
           )}
         </>

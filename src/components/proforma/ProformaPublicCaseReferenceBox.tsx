@@ -80,16 +80,12 @@ export const ProformaPublicMobileMoreMenu: React.FC<MobileMoreMenuProps> = ({
       <button
         type="button"
         onClick={onToggle}
-        className={`inline-flex h-11 w-11 min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full text-white shadow-lg transition-all active:scale-95 ${
-          open
-            ? 'bg-orange-700 ring-2 ring-orange-300'
-            : 'bg-orange-500 hover:bg-orange-600'
-        }`}
+        className="inline-flex h-11 w-11 min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full bg-transparent text-slate-900 transition active:scale-95 hover:bg-slate-900/5"
         title={open ? 'Close case and notes' : 'Case and notes'}
         aria-expanded={open}
         aria-label="Case and notes"
       >
-        <EllipsisVerticalIcon className="h-5 w-5" aria-hidden />
+        <EllipsisVerticalIcon className="h-8 w-8" aria-hidden />
       </button>
     </>
   );

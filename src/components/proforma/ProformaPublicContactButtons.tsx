@@ -159,11 +159,7 @@ const NeedAssistanceControl: React.FC<NeedAssistanceProps> = ({
         aria-label={open ? 'Close assistance options' : 'Need assistance'}
         className={
           isMobile
-            ? `inline-flex h-11 w-11 items-center justify-center rounded-full border shadow-lg transition active:scale-95 ${
-                open
-                  ? 'border-slate-300 bg-slate-700 text-white'
-                  : 'border-slate-200/80 bg-white text-slate-700 hover:bg-slate-50'
-              }`
+            ? 'inline-flex h-11 w-11 items-center justify-center rounded-full bg-transparent text-slate-900 transition active:scale-95 hover:bg-slate-900/5'
             : `inline-flex items-center gap-2.5 rounded-2xl border px-4 py-3 text-sm font-semibold shadow-md transition hover:shadow-lg active:scale-[0.98] ${
                 open
                   ? 'border-slate-300 bg-slate-700 text-white'
@@ -172,7 +168,7 @@ const NeedAssistanceControl: React.FC<NeedAssistanceProps> = ({
         }
       >
         {isMobile ? (
-          <QuestionMarkCircleIcon className={`h-6 w-6 ${open ? 'text-white' : 'text-slate-600'}`} />
+          <QuestionMarkCircleIcon className="h-8 w-8 text-slate-900" />
         ) : (
           <>
             <LifebuoyIcon className={`h-5 w-5 shrink-0 ${open ? 'text-white' : 'text-slate-600'}`} />

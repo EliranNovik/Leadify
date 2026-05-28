@@ -19,17 +19,17 @@ const ProformaBackToLeadButton: React.FC<Props> = ({
     <Link
       to={href}
       className={[
-        'inline-flex shrink-0 items-center gap-1.5 rounded-full bg-gray-900 px-3 py-1.5',
-        'text-xs font-semibold text-white no-underline transition-colors',
-        'hover:bg-black focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-900',
+        'inline-flex shrink-0 items-center justify-center rounded-full',
+        'bg-transparent text-slate-900 no-underline transition',
+        'hover:bg-slate-900/5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400',
         className,
       ]
         .filter(Boolean)
         .join(' ')}
       title={label}
+      aria-label={label}
     >
-      <ChevronLeftIcon className="h-4 w-4 shrink-0 stroke-[2]" />
-      <span className="hidden sm:inline">{label}</span>
+      <ChevronLeftIcon className="h-7 w-7 shrink-0 stroke-[2.5]" aria-hidden />
     </Link>
   );
 };
