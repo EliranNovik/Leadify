@@ -58,6 +58,9 @@ let ratesLoadPromise: Promise<BoiRatesSnapshot> | null = null;
 const ratesByDateCache = new Map<string, BoiRatesSnapshot>();
 const ratesByDatePromises = new Map<string, Promise<BoiRatesSnapshot>>();
 
+let boiCoverageStartDate: { value: string | null; loadedAt: number } | null = null;
+let boiCoverageStartPromise: Promise<string | null> | null = null;
+
 let currencyIdToIso: Map<number, string> | null = null;
 let currencyIsoToSymbol: Map<string, string> | null = null;
 let currencyMapLoadedAt = 0;
@@ -164,6 +167,8 @@ export function invalidateBoiCurrencyCache(): void {
   ratesLoadPromise = null;
   ratesByDateCache.clear();
   ratesByDatePromises.clear();
+  boiCoverageStartDate = null;
+  boiCoverageStartPromise = null;
   currencyIdToIso = null;
   currencyIsoToSymbol = null;
   currencyMapLoadedAt = 0;
@@ -359,6 +364,39 @@ export async function loadBoiExchangeRatesForDate(
 
 export async function ensureBoiRatesReady(): Promise<BoiRatesSnapshot> {
   return loadBoiExchangeRates(false);
+}
+
+/**
+ * Earliest date (YYYY-MM-DD) available in boi_exchange_rates.
+ * Used to decide whether a paid invoice should prefer BOI rates (when payment date is within BOI coverage).
+ */
+export async function getBoiCoverageStartDate(force = false): Promise<string | null> {
+  const stale = boiCoverageStartDate && Date.now() - boiCoverageStartDate.loadedAt > CACHE_TTL_MS;
+  if (!force && boiCoverageStartDate && !stale) return boiCoverageStartDate.value;
+  if (!force && boiCoverageStartPromise) return boiCoverageStartPromise;
+
+  boiCoverageStartPromise = (async () => {
+    const { data, error } = await supabase
+      .from('boi_exchange_rates')
+      .select('rate_date')
+      .order('rate_date', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      console.warn('[boiCurrencyConversion] failed to read BOI coverage start date:', error.message);
+      boiCoverageStartDate = { value: null, loadedAt: Date.now() };
+      boiCoverageStartPromise = null;
+      return null;
+    }
+
+    const value = data?.rate_date ? String(data.rate_date).slice(0, 10) : null;
+    boiCoverageStartDate = { value, loadedAt: Date.now() };
+    boiCoverageStartPromise = null;
+    return value;
+  })();
+
+  return boiCoverageStartPromise;
 }
 
 /**

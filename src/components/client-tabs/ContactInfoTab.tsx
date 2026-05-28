@@ -5,8 +5,6 @@ import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, MinusIcon, DocumentTextIco
 import { supabase } from '../../lib/supabase';
 import { createPortal } from 'react-dom';
 import SignaturePad from 'react-signature-canvas';
-import { handleContractSigned } from '../../lib/contractAutomation';
-import { getPricePerApplicant } from '../../lib/contractPricing';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import { EditorContent, useEditor } from '@tiptap/react';
@@ -421,11 +419,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   const [viewAsClient, setViewAsClient] = useState(false);
   const [signaturePads, setSignaturePads] = useState<{ [key: string]: any }>({});
 
-  // New state for contract creation with applicant count and currency
+  // State for contract creation (template-only)
   const [showContractCreation, setShowContractCreation] = useState(false);
   const [contractForm, setContractForm] = useState({
-    applicantCount: 1,
-    selectedCurrency: null as { id: string, front_name: string, iso_code: string, name: string } | null,
     selectedTemplateId: '',
     contactId: null as number | null,
   });
@@ -455,16 +451,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   // Add state for most recent contract (for backward compatibility)
   const [mostRecentContract, setMostRecentContract] = useState<any>(null);
 
-  // Add state for archival research option
-  const [archivalResearch, setArchivalResearch] = useState<'none' | 'with'>('none');
-  // Add state for VAT inclusion
-  const [includeVAT, setIncludeVAT] = useState<boolean>(false);
+  // Contract creation is intentionally simple (template only).
 
   // State to track current stage (for legacy leads, fetch from DB)
   const [currentStage, setCurrentStage] = useState<number | null>(null);
 
-  // Add state for currencies from database
-  const [currencies, setCurrencies] = useState<Array<{ id: string, front_name: string, iso_code: string, name: string }>>([]);
+  // Currency/pricing/VAT is handled later inside ContractPage.
 
   // Add country codes data from database (matching CreateNewLead structure)
   const [countryOptions, setCountryOptions] = useState<Array<{ id: number; name: string; phone_code: string; iso_code: string }>>([
@@ -1920,7 +1912,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
           // If fetch failed or returned invalid data, try fallback to client.stage
           console.log('🔍 Trying fallback to client.stage:', client?.stage);
-          if (client?.stage !== null && client?.stage !== undefined && client?.stage !== '') {
+          if (client?.stage !== null && client?.stage !== undefined) {
             const stageValue = client.stage;
             const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
             if (!isNaN(parsed) && isFinite(parsed)) {
@@ -1936,7 +1928,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         } catch (error) {
           console.error('❌ Exception fetching stage for legacy lead:', error);
           // Try fallback to client.stage
-          if (client?.stage !== null && client?.stage !== undefined && client?.stage !== '') {
+          if (client?.stage !== null && client?.stage !== undefined) {
             const stageValue = client.stage;
             const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
             if (!isNaN(parsed) && isFinite(parsed)) {
@@ -1952,7 +1944,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       } else {
         // For new leads, use client.stage
         console.log('🔍 New lead, using client.stage:', client?.stage);
-        if (client?.stage !== null && client?.stage !== undefined && client?.stage !== '') {
+        if (client?.stage !== null && client?.stage !== undefined) {
           const stageValue = client.stage;
           const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
           if (!isNaN(parsed) && isFinite(parsed)) {
@@ -1969,7 +1961,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     fetchCurrentStage();
   }, [client?.id, client?.stage, client?.lead_type]);
 
-  // Fetch contract templates and currencies when component mounts
+  // Fetch contract templates when component mounts
   useEffect(() => {
     const fetchTemplates = async () => {
       try {
@@ -2036,15 +2028,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     };
 
     fetchTemplates();
-
-    // Fetch currencies from database
-    supabase.from('currencies').select('id, front_name, iso_code, name').eq('is_active', true).order('order_value').then(({ data, error }) => {
-      if (error) {
-        console.error('Error fetching currencies:', error);
-      } else if (data) {
-        setCurrencies(data);
-      }
-    });
   }, []);
 
   // Fetch contract statuses when contacts change
@@ -3107,7 +3090,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       return;
     }
 
-    if (!contractForm.selectedTemplateId || !client?.id || !contractForm.contactId || !contractForm.selectedCurrency) {
+    if (!contractForm.selectedTemplateId || !client?.id || contractForm.contactId == null) {
       console.log('handleCreateContract: Missing required data, returning early');
       return;
     }
@@ -3137,130 +3120,24 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       // Get the selected template to use its default pricing
       const selectedTemplate = contractTemplates.find(t => t.id === contractForm.selectedTemplateId);
 
-      // Initialize customPricing with correct currency based on selected currency
-      const isIsraeliCurrency = contractForm.selectedCurrency.iso_code === 'ILS' || contractForm.selectedCurrency.iso_code === 'NIS' || contractForm.selectedCurrency.name === '₪';
-      const currency = contractForm.selectedCurrency.name;
-
-      // Initialize pricing tiers - use template defaults if available, otherwise use system defaults
-      const pricingTiers: { [key: string]: number } = {};
-      const tierStructure = [
-        { key: '1', label: 'For one applicant', count: 1 },
-        { key: '2', label: 'For 2 applicants', count: 2 },
-        { key: '3', label: 'For 3 applicants', count: 3 },
-        { key: '4-7', label: 'For 4-7 applicants', count: 4 },
-        { key: '8-9', label: 'For 8-9 applicants', count: 8 },
-        { key: '10-15', label: 'For 10-15 applicants', count: 10 },
-        { key: '16+', label: 'For 16 applicants or more', count: 16 }
-      ];
-
-      // Use template default pricing tiers based on currency selection
-      // USD/GBP/EUR share the same pricing tiers, NIS has separate tiers
-      if (contractForm.selectedCurrency.iso_code === 'ILS' || contractForm.selectedCurrency.iso_code === 'NIS') {
-        // NIS currency - use NIS pricing tiers
-        if (selectedTemplate?.default_pricing_tiers_nis) {
-          Object.assign(pricingTiers, selectedTemplate.default_pricing_tiers_nis);
-        } else if (selectedTemplate?.default_pricing_tiers) {
-          // Fallback to legacy
-          Object.assign(pricingTiers, selectedTemplate.default_pricing_tiers);
-        }
-      } else {
-        // USD/GBP/EUR currencies - use USD pricing tiers
-        if (selectedTemplate?.default_pricing_tiers_usd) {
-          Object.assign(pricingTiers, selectedTemplate.default_pricing_tiers_usd);
-        } else if (selectedTemplate?.default_pricing_tiers) {
-          // Fallback to legacy
-          Object.assign(pricingTiers, selectedTemplate.default_pricing_tiers);
-        }
-      }
-
-      // If no template pricing tiers, use system defaults
-      if (Object.keys(pricingTiers).length === 0) {
-        tierStructure.forEach(tier => {
-          const priceTier = getPricePerApplicant(tier.count, isIsraeliCurrency);
-          const pricePerApplicant = isIsraeliCurrency && 'priceWithVat' in priceTier ? priceTier.priceWithVat : priceTier.price;
-          pricingTiers[tier.key] = pricePerApplicant;
-        });
-      }
-
-      // Calculate initial totals
-      const currentTierKey = getCurrentTierKey(contractForm.applicantCount);
-      const currentPricePerApplicant = pricingTiers[currentTierKey];
-      const total = currentPricePerApplicant * contractForm.applicantCount;
-      const discount = 0;
-      const discountAmount = 0;
-      const finalAmount = total;
-
-      // Calculate archivalFee before paymentPlan
-      // 850 for USD/GBP/EUR, 1650 for NIS
-      let archivalFee = 0;
-      if (archivalResearch === 'with' && contractForm.selectedCurrency) {
-        const isoCode = contractForm.selectedCurrency.iso_code?.toUpperCase();
-        const currencyName = contractForm.selectedCurrency.name;
-
-        // Check for NIS (1650)
-        if (isoCode === 'ILS' || isoCode === 'NIS' || currencyName === '₪') {
-          archivalFee = 1650;
-        }
-        // Check for USD/GBP/EUR (850)
-        else if (isoCode === 'USD' || isoCode === 'GBP' || isoCode === 'EUR'
-          || currencyName === '$' || currencyName === '£' || currencyName === '€') {
-          archivalFee = 850;
-        }
-      }
-
-      // Calculate due dates
-      const today = new Date();
-      const addDays = (days: number) => {
-        const d = new Date(today);
-        d.setDate(d.getDate() + days);
-        return d.toISOString().split('T')[0];
-      };
-
-      // Calculate VAT rate (17% for NIS, 0% for others)
-      const vatRate = includeVAT && isIsraeliCurrency ? 0.17 : 0;
-
-      let paymentPlan;
-      if (archivalResearch === 'with' && archivalFee > 0) {
-        // First payment: 100% of archival research fee
-        // Remaining: default plan for the rest
-        const restAmount = total - archivalFee;
-        const archivalFeeVAT = Math.round(archivalFee * vatRate);
-        paymentPlan = [
-          { percent: 100, due_date: addDays(0), value: archivalFee, value_vat: archivalFeeVAT, payment_order: 'Archival Research', notes: '', currency },
-        ];
-        if (restAmount > 0) {
-          const restAmount50 = Math.round(restAmount * 0.5);
-          const restAmount25 = Math.round(restAmount * 0.25);
-          paymentPlan = paymentPlan.concat([
-            { percent: 50, due_date: addDays(0), value: restAmount50, value_vat: Math.round(restAmount50 * vatRate), payment_order: 'First Payment', notes: '', currency },
-            { percent: 25, due_date: addDays(30), value: restAmount25, value_vat: Math.round(restAmount25 * vatRate), payment_order: 'Intermediate Payment', notes: '', currency },
-            { percent: 25, due_date: addDays(60), value: Math.round(restAmount * 0.25), value_vat: Math.round(Math.round(restAmount * 0.25) * vatRate), payment_order: 'Final Payment', notes: '', currency },
-          ]);
-        }
-      } else {
-        const payment50 = Math.round(finalAmount * 0.5);
-        const payment25 = Math.round(finalAmount * 0.25);
-        paymentPlan = [
-          { percent: 50, due_date: addDays(0), value: payment50, value_vat: Math.round(payment50 * vatRate), payment_order: 'First Payment', notes: '', currency },
-          { percent: 25, due_date: addDays(30), value: payment25, value_vat: Math.round(payment25 * vatRate), payment_order: 'Intermediate Payment', notes: '', currency },
-          { percent: 25, due_date: addDays(60), value: payment25, value_vat: Math.round(payment25 * vatRate), payment_order: 'Final Payment', notes: '', currency },
-        ];
-      }
-
       // Check if template is from legacy table (misc_contracttemplate) - these have numeric IDs, not UUIDs
       const isLegacyTemplate = selectedTemplate?.sourceTable === 'misc_contracttemplate';
 
       const initialCustomPricing = {
-        applicant_count: contractForm.applicantCount,
-        pricing_tiers: pricingTiers,
-        total_amount: total,
-        discount_percentage: discount,
-        discount_amount: discountAmount,
-        final_amount: finalAmount,
-        payment_plan: paymentPlan,
-        currency,
-        archival_research_fee: archivalFee,
-        include_vat: includeVAT,
+        applicant_count: 1,
+        pricing_tiers:
+          selectedTemplate?.default_pricing_tiers_nis ||
+          selectedTemplate?.default_pricing_tiers_usd ||
+          selectedTemplate?.default_pricing_tiers ||
+          {},
+        total_amount: 0,
+        discount_percentage: 0,
+        discount_amount: 0,
+        final_amount: 0,
+        payment_plan: [],
+        currency: null,
+        archival_research_fee: 0,
+        include_vat: false,
         // Store legacy template ID in custom_pricing for future reference
         ...(isLegacyTemplate && { legacy_template_id: contractForm.selectedTemplateId }),
       };
@@ -3303,8 +3180,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         contact_email: contactEmail, // Save contact email
         contact_phone: contactPhone, // Save contact phone
         contact_mobile: contactMobile, // Save contact mobile
-        applicant_count: contractForm.applicantCount,
-        client_country: contractForm.selectedCurrency.name,
+        applicant_count: 1,
+        client_country: null,
         custom_pricing: initialCustomPricing, // Save initial customPricing with legacy_template_id if needed
       };
 
@@ -3360,8 +3237,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       setTemplateSearchQuery(''); // Reset search when closing
       setShowTemplateDropdown(false); // Close dropdown when closing
       setContractForm({
-        applicantCount: 1,
-        selectedCurrency: null,
         selectedTemplateId: '',
         contactId: null,
       });
@@ -3471,8 +3346,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       console.log('Contract updated to signed:', contract);
 
       // Trigger the automation
-      console.log('Calling handleContractSigned with contract:', contract);
-      await handleContractSigned(contract);
+      console.log('Contract created:', contract);
+      // NOTE: Do not auto-generate payment plans/proformas on contract creation/sign.
 
       console.log('Contract signing automation completed successfully');
       alert('Contract signed! Payment plan has been automatically generated.');
@@ -4296,7 +4171,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
                                 // If currentStage is null, try to parse client.stage as fallback
                                 if (stage === null || stage === undefined) {
-                                  if (client?.stage !== null && client?.stage !== undefined && client?.stage !== '') {
+                                  if (client?.stage !== null && client?.stage !== undefined) {
                                     const stageValue = client.stage;
                                     const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
                                     if (!isNaN(parsed) && isFinite(parsed)) {
@@ -4406,160 +4281,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
             {/* Scrollable Content Area */}
             <div className="flex-1 overflow-y-auto p-8 pt-6 space-y-6">
-              {/* Applicant Count */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Number of Applicants</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={contractForm.applicantCount}
-                  onChange={(e) => setContractForm(prev => ({ ...prev, applicantCount: parseInt(e.target.value) }))}
-                >
-                  {Array.from({ length: 20 }, (_, i) => i + 1).map(num => (
-                    <option key={num} value={num}>{num} {num === 1 ? 'applicant' : 'applicants'}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Client Country */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Client Country</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={contractForm.selectedCurrency?.id || ''}
-                  onChange={(e) => {
-                    const selectedCurrency = currencies.find(c => c.id === e.target.value);
-                    setContractForm(prev => ({ ...prev, selectedCurrency: selectedCurrency || null }));
-                  }}
-                >
-                  <option value="">Select a country/currency</option>
-                  {currencies.map(currency => (
-                    <option key={currency.id} value={currency.id}>
-                      {currency.front_name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Price Preview */}
-              <div className="bg-gray-50 rounded-lg p-4">
-                <h3 className="text-lg font-semibold mb-3">Price Preview</h3>
-                {(() => {
-                  if (!contractForm.selectedTemplateId || !contractForm.selectedCurrency) {
-                    // No template or currency selected: show zeroes
-                    const currencySymbol = contractForm.selectedCurrency?.name || '$';
-                    return (
-                      <div className="space-y-2">
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Per applicant:</span>
-                          <span className="font-semibold">{currencySymbol} 0</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Total ({contractForm.applicantCount} applicants):</span>
-                          <span className="font-bold text-lg text-primary">{currencySymbol} 0</span>
-                        </div>
-                      </div>
-                    );
-                  }
-                  // Template selected: use its pricing tiers if available
-                  const selectedTemplate = contractTemplates.find(t => t.id === contractForm.selectedTemplateId);
-                  const isIsraeli = contractForm.selectedCurrency.iso_code === 'ILS' || contractForm.selectedCurrency.iso_code === 'NIS';
-                  let perApplicant = 0;
-                  let currencySymbol = contractForm.selectedCurrency.name; // Use currency symbol from selected currency
-
-                  // Get pricing tiers based on selected currency
-                  let pricingTiers: { [key: string]: number } | null = null;
-
-                  if (isIsraeli) {
-                    // NIS currency - use NIS pricing tiers
-                    if (selectedTemplate?.default_pricing_tiers_nis) {
-                      pricingTiers = selectedTemplate.default_pricing_tiers_nis;
-                    } else if (selectedTemplate?.default_pricing_tiers) {
-                      // Fallback to legacy
-                      pricingTiers = selectedTemplate.default_pricing_tiers;
-                    }
-                  } else {
-                    // USD/GBP/EUR currencies - use USD pricing tiers
-                    if (selectedTemplate?.default_pricing_tiers_usd) {
-                      pricingTiers = selectedTemplate.default_pricing_tiers_usd;
-                    } else if (selectedTemplate?.default_pricing_tiers) {
-                      // Fallback to legacy
-                      pricingTiers = selectedTemplate.default_pricing_tiers;
-                    }
-                  }
-
-                  if (pricingTiers) {
-                    // Use template's pricing tiers
-                    const tierKey = getCurrentTierKey(contractForm.applicantCount);
-                    perApplicant = pricingTiers[tierKey] || 0;
-                  } else {
-                    // Fallback to system pricing
-                    const priceTier = getPricePerApplicant(contractForm.applicantCount, isIsraeli);
-                    perApplicant = isIsraeli && 'priceWithVat' in priceTier ? priceTier.priceWithVat : priceTier.price;
-                  }
-
-                  const total = perApplicant * contractForm.applicantCount;
-                  const discount = 0;
-                  const discountAmount = 0;
-                  const finalAmount = total;
-
-                  // Calculate archival fee based on selected currency
-                  // 850 for USD/GBP/EUR, 1650 for NIS
-                  let archivalFee = 0;
-                  if (archivalResearch === 'with' && contractForm.selectedCurrency) {
-                    const isoCode = contractForm.selectedCurrency.iso_code?.toUpperCase();
-                    const currencyName = contractForm.selectedCurrency.name;
-
-                    // Check for NIS (1650)
-                    if (isoCode === 'ILS' || isoCode === 'NIS' || currencyName === '₪') {
-                      archivalFee = 1650;
-                    }
-                    // Check for USD/GBP/EUR (850)
-                    else if (isoCode === 'USD' || isoCode === 'GBP' || isoCode === 'EUR'
-                      || currencyName === '$' || currencyName === '£' || currencyName === '€') {
-                      archivalFee = 850;
-                    }
-                  }
-
-                  return (
-                    <div className="space-y-2">
-                      <div className="flex justify-between">
-                        <span className="text-gray-600">Per applicant:</span>
-                        <span className="font-semibold">{currencySymbol} {perApplicant.toLocaleString()}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-gray-600">Total ({contractForm.applicantCount} applicants):</span>
-                        <span className="font-bold text-lg text-primary">{currencySymbol} {total.toLocaleString()}</span>
-                      </div>
-                      {archivalResearch === 'with' && archivalFee > 0 && (
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Archival Research:</span>
-                          <span className="font-semibold">{currencySymbol} {archivalFee.toLocaleString()}</span>
-                        </div>
-                      )}
-                      {includeVAT && (() => {
-                        const isIsraeli = contractForm.selectedCurrency?.iso_code === 'ILS' || contractForm.selectedCurrency?.iso_code === 'NIS' || contractForm.selectedCurrency?.name === '₪';
-                        if (isIsraeli) {
-                          const totalWithArchival = total + (archivalResearch === 'with' ? archivalFee : 0);
-                          const vatAmount = Math.round(totalWithArchival * 0.17);
-                          return (
-                            <>
-                              <div className="flex justify-between">
-                                <span className="text-gray-600">VAT (17%):</span>
-                                <span className="font-semibold">{currencySymbol} {vatAmount.toLocaleString()}</span>
-                              </div>
-                              <div className="flex justify-between pt-2 border-t border-gray-200">
-                                <span className="text-gray-900 font-semibold">Total with VAT:</span>
-                                <span className="font-bold text-lg text-primary">{currencySymbol} {(totalWithArchival + vatAmount).toLocaleString()}</span>
-                              </div>
-                            </>
-                          );
-                        }
-                        return null;
-                      })()}
-                    </div>
-                  );
-                })()}
-              </div>
 
               {/* Template Selection */}
               <div className="relative">
@@ -4667,46 +4388,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     Clear selection
                   </button>
                 )}
-              </div>
-
-              {/* Archival Research Option */}
-              <div className="mb-4">
-                <label className="block text-sm font-medium text-gray-700 mb-2">Archival Research</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={archivalResearch}
-                  onChange={e => setArchivalResearch(e.target.value as any)}
-                >
-                  <option value="none">Without archival research</option>
-                  <option value="with">With archival research</option>
-                </select>
-              </div>
-
-              {/* VAT Option */}
-              <div className="mb-4">
-                <label className="block text-sm font-medium text-gray-700 mb-2">VAT</label>
-                <div className="flex items-center gap-4">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="vat"
-                      checked={!includeVAT}
-                      onChange={() => setIncludeVAT(false)}
-                      className="radio radio-primary"
-                    />
-                    <span>Exclude VAT</span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="vat"
-                      checked={includeVAT}
-                      onChange={() => setIncludeVAT(true)}
-                      className="radio radio-primary"
-                    />
-                    <span>Include VAT</span>
-                  </label>
-                </div>
               </div>
             </div>
 

@@ -13,7 +13,6 @@ import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
 import { generateJSON } from '@tiptap/html';
 import { CheckIcon, ArrowLeftIcon, ChevronDownIcon, ChevronUpIcon, PrinterIcon, ArrowDownTrayIcon, XMarkIcon, Cog6ToothIcon, ShareIcon, PencilIcon, CalendarIcon, ClipboardDocumentIcon, TrashIcon, PhoneIcon, EnvelopeIcon, UserIcon, TagIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
-import { handleContractSigned } from '../lib/contractAutomation';
 import { getPricePerApplicant } from '../lib/contractPricing';
 import SignaturePad from 'react-signature-canvas';
 import { v4 as uuidv4 } from 'uuid';
@@ -2407,20 +2406,7 @@ const ContractPage: React.FC = () => {
         supabase.from('contracts').update({ custom_pricing: updated }).eq('id', contract.id);
       }
     }
-    // Ensure payment_plan is initialized
-    if (customPricing && (!customPricing.payment_plan || customPricing.payment_plan.length === 0)) {
-      const finalAmount = customPricing.final_amount || 0;
-      const defaultPlan = [
-        { percent: 50, due_date: 'On signing', value: Math.round(finalAmount * 0.5) },
-        { percent: 25, due_date: '30 days', value: Math.round(finalAmount * 0.25) },
-        { percent: 25, due_date: '60 days', value: Math.round(finalAmount * 0.25) },
-      ];
-      const updated = { ...customPricing, payment_plan: defaultPlan };
-      setCustomPricing(updated);
-      if (contract) {
-        supabase.from('contracts').update({ custom_pricing: updated }).eq('id', contract.id);
-      }
-    }
+    // IMPORTANT: Never auto-generate a payment plan.
   }, [customPricing, contract]);
 
   // Ensure total_amount and pricing fields are always saved to DB after customPricing is initialized
@@ -2433,9 +2419,10 @@ const ContractPage: React.FC = () => {
     }
   }, [contract, customPricing]);
 
-  // When initializing or updating customPricing, use buildPaymentPlan with VAT calculations
+  // When initializing or updating customPricing, DO NOT auto-generate payment plans.
   useEffect(() => {
     if (!customPricing) return;
+    return;
 
     const archivalFee = customPricing.archival_research_fee || 0;
     const totalAmount = customPricing.total_amount || 0;
@@ -2500,33 +2487,10 @@ const ContractPage: React.FC = () => {
       }
     });
 
-    // Always update the payment plan to ensure VAT is applied
-    setCustomPricing((prev: typeof customPricing) => ({ ...prev, payment_plan: paymentPlan }));
+    // Intentionally disabled: never auto-generate or mutate payment plan from contract inputs.
   }, [customPricing?.total_amount, customPricing?.discount_amount, customPricing?.archival_research_fee, contract?.client_country, customPricing?.currency, customPricing?._forceVatCalculation, vatIncluded, currencyType]);
 
-  // Force VAT calculation on initial load (once only to avoid update loop)
-  const hasForcedVatRef = useRef(false);
-  useEffect(() => {
-    if (!customPricing || !customPricing.payment_plan || hasForcedVatRef.current) return;
-
-    const currency = customPricing?.currency || '₪';
-    const isIsraeli = currency === '₪' || currency === 'ILS' || currency === 'NIS';
-    const currentPaymentPlan = customPricing.payment_plan;
-
-    // Check if payment plan needs VAT calculation (has numeric values instead of "value + VAT" strings)
-    const needsVatCalculation = currentPaymentPlan.some((row: any) =>
-      typeof row.value === 'number' || (typeof row.value === 'string' && !row.value.includes('+'))
-    );
-
-    if (needsVatCalculation && isIsraeli) {
-      hasForcedVatRef.current = true;
-      // Trigger the main VAT calculation by updating a dependency
-      setCustomPricing((prev: typeof customPricing) => ({
-        ...prev,
-        _forceVatCalculation: Date.now()
-      }));
-    }
-  }, [customPricing?.payment_plan, customPricing?.currency]);
+  // NOTE: VAT/payment-plan automation disabled intentionally.
 
   // Discount options
   const discountOptions = [0, 5, 10, 15, 20];
@@ -2840,7 +2804,7 @@ const ContractPage: React.FC = () => {
         }
       }
 
-      await handleContractSigned(updatedContract);
+      // NOTE: Do not auto-generate payment plans/proformas on sign.
       alert('Contract signed! Payment plan has been automatically generated.');
       window.location.assign(getLeadPagePath());
 
@@ -4585,25 +4549,32 @@ const ContractPage: React.FC = () => {
                 key.toLowerCase().includes('date')
               );
 
-              if (dateKeys.length === 1) {
-                // Only one date field, use it
-                dateValue = clientInputs[dateKeys[0]];
-              } else if (dateKeys.length > 0) {
-                // Multiple date fields - try to match by numeric part if ID has numbers
-                if (id) {
-                  const numericMatch = id.match(/\d+/);
-                  if (numericMatch) {
-                    const numId = numericMatch[0];
-                    const matchingKey = dateKeys.find(key => key.includes(numId));
-                    if (matchingKey) {
-                      dateValue = clientInputs[matchingKey];
-                    }
-                  }
-                }
+              const stableDateKeys = dateKeys
+                .filter((k) => typeof clientInputs[k] === 'string' && String(clientInputs[k]).trim() !== '')
+                .sort((a, b) => {
+                  const an = Number(a.match(/\d+/)?.[0] ?? Number.POSITIVE_INFINITY);
+                  const bn = Number(b.match(/\d+/)?.[0] ?? Number.POSITIVE_INFINITY);
+                  return an - bn;
+                });
 
-                // If still no match and only one date key, use it
-                if (!dateValue && dateKeys.length === 1) {
-                  dateValue = clientInputs[dateKeys[0]];
+              if (stableDateKeys.length > 0) {
+                // If placeholder has no id (e.g. {{date}}), prefer the canonical date-1 key if present,
+                // otherwise use the smallest numeric date-* key.
+                const preferred =
+                  stableDateKeys.find((k) => k === 'date-1') ??
+                  stableDateKeys.find((k) => /^date-\d+$/.test(k)) ??
+                  stableDateKeys[0];
+                dateValue = clientInputs[preferred];
+              } else if (dateKeys.length === 1) {
+                // Only one date-like key (even if empty) — use it.
+                dateValue = clientInputs[dateKeys[0]];
+              } else if (dateKeys.length > 1 && id) {
+                // Multiple keys and we have an id — attempt numeric match.
+                const numericMatch = id.match(/\d+/);
+                if (numericMatch) {
+                  const numId = numericMatch[0];
+                  const matchingKey = dateKeys.find(key => key.includes(numId));
+                  if (matchingKey) dateValue = clientInputs[matchingKey];
                 }
               }
             }

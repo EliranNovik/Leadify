@@ -2,7 +2,6 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import SignaturePad from 'react-signature-canvas';
-import { handleContractSigned } from '../lib/contractAutomation';
 import { generateJSON } from '@tiptap/html';
 import { StarterKit } from '@tiptap/starter-kit';
 import { TextAlign } from '@tiptap/extension-text-align';
@@ -272,9 +271,9 @@ const PublicContractView: React.FC = () => {
         text = text.replace(/\{\{text:([^}]+)\}\}/g, (match: string, id: string) => {
           return clientFields[id] || '';
         });
-        // Replace {{signature:ID}} fields with signature data
+        // Replace {{signature:ID}} fields with signature data (stored per-field id)
         text = text.replace(/\{\{signature:([^}]+)\}\}/g, (match: string, id: string) => {
-          return clientSignature || '[Signed]';
+          return clientFields[id] || '';
         });
         // Replace {{date:ID}} fields with formatted date values when signing
         text = text.replace(/\{\{date:([^}]+)\}\}/g, (match: string, id: string) => {
@@ -772,6 +771,37 @@ const PublicContractView: React.FC = () => {
 
     setIsSubmitting(true);
     try {
+      // Validate required placeholders BEFORE signing the contract.
+      // Otherwise we can end up with status='signed' while date/signature fields are empty.
+      const sourceContent = contract.custom_content || template?.content;
+      // Normalize TipTap shape + placeholders so both `{{date}}` and `{{date:...}}` are treated consistently.
+      // Use the same preprocessing approach as the main render path to avoid ID mismatches.
+      const normalizedForValidation = sourceContent ? normalizeTiptapContent(sourceContent) : null;
+      const contentForValidation =
+        normalizedForValidation && normalizedForValidation.type === 'doc'
+          ? preprocessTemplatePlaceholders(normalizedForValidation)
+          : normalizedForValidation;
+      const contentStr = contentForValidation ? JSON.stringify(contentForValidation) : '';
+      const signatureIds = Array.from(contentStr.matchAll(/\{\{signature:([^}]+)\}\}/g)).map((m) => m[1]);
+      const dateIds = Array.from(contentStr.matchAll(/\{\{date:([^}]+)\}\}/g)).map((m) => m[1]);
+
+      const missingSignatureIds = signatureIds.filter((id) => {
+        const v = clientFields?.[id];
+        return !(typeof v === 'string' && v.startsWith('data:image/'));
+      });
+      const missingDateIds = dateIds.filter((id) => {
+        const v = clientFields?.[id];
+        return !(typeof v === 'string' && v.trim().length > 0);
+      });
+
+      if (missingSignatureIds.length > 0 || missingDateIds.length > 0) {
+        const parts: string[] = [];
+        if (missingDateIds.length > 0) parts.push('date');
+        if (missingSignatureIds.length > 0) parts.push('signature');
+        alert(`Please add your ${parts.join(' and ')} before submitting the contract.`);
+        return;
+      }
+
       // Fill in client fields in the contract content
       const filledContent = fillClientFieldsInContent(contract.custom_content || template.content?.content);
       await supabase.from('contracts').update({
@@ -888,10 +918,8 @@ const PublicContractView: React.FC = () => {
         }
       }
 
-      // Trigger backend logic (e.g., payment plan, lead balance)
-      if (updatedContract) {
-        await handleContractSigned(updatedContract);
-      }
+      // NOTE: Contract signing should NOT auto-generate payment plans/proformas.
+      // Any downstream financial actions must be initiated manually by staff.
 
       // Only scroll to top AFTER successful submission
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1410,7 +1438,8 @@ const PublicContractView: React.FC = () => {
             // Extract ID from the match - dateMatch[1] will be ":date-1" or similar, so substring(1) removes the colon
             // Use stable ID from placeholder or generate based on placeholderIndex
             const extractedId = dateMatch[1] ? dateMatch[1].substring(1) : null;
-            const id = extractedId || `date-${placeholderIndex.date++}`;
+            // Keep generated IDs aligned with preprocessTemplatePlaceholders (date-1, date-2, ...)
+            const id = extractedId || `date-${++placeholderIndex.date}`;
             const dateValue = clientFields[id];
             // Date fields are NEVER applicant fields - explicitly exclude
             if (applicantFieldIds.includes(id)) {
@@ -1811,8 +1840,12 @@ const PublicContractView: React.FC = () => {
                     className="border-2 rounded-lg bg-gray-50 p-3 border-gray-300 flex-shrink-0"
                     style={{ display: 'inline-block', maxWidth: '100%' }}
                   >
-                    {contract?.status === 'signed' && clientSignature ? (
-                      <img src={clientSignature} alt="Signature" style={{ width: '100%', maxWidth: 200, height: 80, display: 'block', borderRadius: 8, background: 'transparent' }} />
+                    {contract?.status === 'signed' && (clientFields[id] || clientSignature) ? (
+                      <img
+                        src={clientFields[id] || clientSignature || ''}
+                        alt="Signature"
+                        style={{ width: '100%', maxWidth: 200, height: 80, display: 'block', borderRadius: 8, background: 'transparent' }}
+                      />
                     ) : (
                       <SignaturePad
                         ref={(ref) => {

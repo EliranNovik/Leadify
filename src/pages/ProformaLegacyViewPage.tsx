@@ -37,6 +37,7 @@ import ProformaPaidBadge from '../components/proforma/ProformaPaidBadge';
 import { buildClientFinancesTabPath } from '../lib/proformaClientNavigation';
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import { pickWhatsAppPhoneFromContactFields } from '../lib/whatsappPhone';
+import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 
 const ProformaLegacyViewPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -68,6 +69,35 @@ const ProformaLegacyViewPage: React.FC = () => {
         setError(null);
       }
 
+      // Guard: some entry points may accidentally pass a legacy payment-plan-row id (ppr_id)
+      // instead of the proformainvoice.id.
+      //
+      // IMPORTANT: If the invoice id exists, we must NOT redirect — invoice ids and ppr_ids can
+      // collide numerically, and redirecting would open the wrong invoice (wrong lead/contact).
+      if (id) {
+        const { data: byInvoiceId, error: byInvoiceIdErr } = await supabase
+          .from('proformainvoice')
+          .select('id')
+          .eq('id', id)
+          .maybeSingle();
+
+        // Only if invoice id does not exist, try resolving by ppr_id.
+        if (!cancelled && !byInvoiceIdErr && !byInvoiceId) {
+          const { data: byPprId, error: byPprErr } = await supabase
+            .from('proformainvoice')
+            .select('id')
+            .eq('ppr_id', id)
+            .order('cdate', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          if (!byPprErr && byPprId?.id != null) {
+            navigate(`/proforma-legacy/${byPprId.id}`, { replace: true });
+            return null;
+          }
+        }
+      }
+
       // Variables to store issued by information
       let issuedBy: string | null = null;
       let issuedDate: string | null = null;
@@ -79,16 +109,18 @@ const ProformaLegacyViewPage: React.FC = () => {
         .eq('id', id)
         .single();
 
-      // Fetch cxd_by_id, creator_id, cxd_date, cdate, and ppr_id from proformainvoice table (for both view and direct fetch paths)
+      // Fetch invoice meta (including client_id + ppr_id) from proformainvoice table.
       const { data: proformaData, error: proformaError } = await supabase
         .from('proformainvoice')
-        .select('cxd_by_id, creator_id, cxd_date, cdate, ppr_id, currency_id')
+        .select('cxd_by_id, creator_id, cxd_date, cdate, ppr_id, currency_id, client_id, lead_id')
         .eq('id', id)
         .single();
 
-      // Fetch payment plan row date and client_id if ppr_id exists
+      // Fetch payment plan row date and client_id if ppr_id exists.
       let paymentPlanDate: string | null = null;
-      let paymentPlanClientId: number | null = null;
+      // Prefer invoice.client_id (when present), otherwise use payment plan row client_id, otherwise main contact fallback.
+      let paymentPlanClientId: number | null =
+        proformaData?.client_id != null ? Number(proformaData.client_id) : null;
       let paymentPlanOrder: string | number | null = null;
       let paymentPlanValue: number | string | null = null;
       let paymentPlanVatValue: number | string | null = null;
@@ -104,7 +136,9 @@ const ProformaLegacyViewPage: React.FC = () => {
 
         if (pprData) {
           paymentPlanDate = pprData.date || pprData.due_date || null;
-          paymentPlanClientId = pprData.client_id ? Number(pprData.client_id) : null;
+          if (paymentPlanClientId == null && pprData.client_id != null) {
+            paymentPlanClientId = Number(pprData.client_id);
+          }
           paymentPlanOrder = pprData.order ?? null;
           paymentPlanValue = pprData.value ?? null;
           paymentPlanVatValue = pprData.vat_value ?? null;
@@ -153,7 +187,7 @@ const ProformaLegacyViewPage: React.FC = () => {
                 '';
             }
           } else {
-            // Fallback: get main contact from lead_leadcontact
+            // Fallback: get main contact from lead_leadcontact (when proforma / ppr is missing client_id)
             const { data: allContacts, error: allContactsError } = await supabase
               .from('lead_leadcontact')
               .select(`
@@ -542,6 +576,20 @@ const ProformaLegacyViewPage: React.FC = () => {
         currency_id: resolvedCurrencyId,
       });
       setVatTotals(resolvedVat);
+
+      // Contact resolution: match FinancesTab behavior. If the payment plan row doesn't have a client_id,
+      // use the lead's main contact (and always prefer a contact row over stale proforma fields).
+      const resolvedBillingContact = await resolvePaymentPlanContact({
+        leadId: data.lead_id,
+        clientId: paymentPlanClientId ?? null,
+        clientNameFallback: (data as any)?.client_name ?? null,
+        leadNameFallback: (data as any)?.lead_name ?? (data as any)?.name ?? null,
+      });
+
+      (syncedProforma as any).client_name = resolvedBillingContact.name || (syncedProforma as any).client_name;
+      (syncedProforma as any).client_email = resolvedBillingContact.email || (syncedProforma as any).client_email;
+      (syncedProforma as any).client_phone = resolvedBillingContact.phone || (syncedProforma as any).client_phone;
+
       let contactIdForSend: number | null = paymentPlanClientId;
       if (!contactIdForSend && data?.lead_id) {
         const contacts = await fetchLeadContacts(data.lead_id, true);

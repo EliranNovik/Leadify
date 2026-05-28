@@ -5,6 +5,8 @@ const SCHEDULER_ENABLED =
 
 /** Hour in Asia/Jerusalem when the daily sync may run (default 6). */
 const RUN_HOUR = Number(process.env.BOI_RATES_SYNC_HOUR_JERUSALEM || '6');
+/** Hour in Asia/Jerusalem when the daily sync window ends (default 10). */
+const RUN_END_HOUR = Number(process.env.BOI_RATES_SYNC_END_HOUR_JERUSALEM || '10');
 const TICK_MS = 60 * 1000;
 const STARTUP_DELAY_MS = 15 * 1000;
 
@@ -37,6 +39,7 @@ function shouldRunDailySync() {
   const { dateKey, hour } = getJerusalemDateParts();
   if (lastSuccessDateKey === dateKey) return false;
   if (hour < RUN_HOUR) return false;
+  if (hour > RUN_END_HOUR) return false;
   return true;
 }
 
@@ -76,7 +79,12 @@ const tick = async () => {
 const runStartupSync = async () => {
   try {
     const status = await boiExchangeRatesService.getSyncStatus();
-    if (status.needsSync) {
+    // Restrict scheduler-driven BOI fetching to the morning window, to avoid unpredictable
+    // daytime syncs that can affect payments/plans.
+    const { dateKey, hour } = getJerusalemDateParts();
+    const inWindow = hour >= RUN_HOUR && hour <= RUN_END_HOUR;
+
+    if (status.needsSync && inWindow) {
       console.log(
         `💱 BOI startup sync: DB=${status.dbLatestDate || 'empty'} BOI=${status.boiLatestDate || 'unknown'}`,
       );
@@ -84,8 +92,7 @@ const runStartupSync = async () => {
       return;
     }
 
-    const { dateKey, hour } = getJerusalemDateParts();
-    if (hour >= RUN_HOUR && lastSuccessDateKey !== dateKey) {
+    if (inWindow && lastSuccessDateKey !== dateKey) {
       await runSync('startup-daily');
     }
   } catch {
@@ -100,7 +107,7 @@ function startBoiExchangeRatesScheduler() {
   }
 
   console.log(
-    `⏰ BOI exchange rates scheduler: daily after ${RUN_HOUR}:00 Asia/Jerusalem + stale check on startup`,
+    `⏰ BOI exchange rates scheduler: daily between ${RUN_HOUR}:00–${RUN_END_HOUR}:59 Asia/Jerusalem + stale check on startup`,
   );
 
   setTimeout(() => {

@@ -313,8 +313,8 @@ html,
  * Scrolling: content moves up and may pass behind the fixed header (expected); initial content starts below it.
  */
 .app-main-scroll {
-  padding-top: calc(constant(safe-area-inset-top, 0px) + 2.75rem + 0.5rem + 0.75rem);
-  padding-top: calc(env(safe-area-inset-top, 0px) + 2.75rem + 0.5rem + 0.75rem);
+  padding-top: calc(constant(safe-area-inset-top, 0px) + 2.75rem + 0.5rem + 1.5rem);
+  padding-top: calc(env(safe-area-inset-top, 0px) + 2.75rem + 0.5rem + 1.5rem);
 }
 @media (max-width: 767px) {
   .app-main-scroll {
@@ -335,7 +335,7 @@ html,
 }
 @media (min-width: 768px) {
   .app-main-scroll {
-    padding-top: 3rem; /* md:h-12 — match header height only */
+    padding-top: 3.5rem; /* md:h-12 — add breathing room under header */
     padding-bottom: 0;
   }
 }

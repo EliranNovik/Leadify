@@ -315,6 +315,12 @@ async function handlePelecardReturn(req, res, outcome) {
       return res.redirect(appRedirect('/payment/failed', { paymentId: secureToken, reason: 'payment_not_found' }));
     }
 
+    // Preserve the init-time charge breakdown (BOI rate + expected ILS total) that we store on session creation.
+    // Previously we overwrote `pelecard_raw_response` with callback payloads, losing `pelecardCharge`.
+    const previousRaw = (payment && payment.pelecard_raw_response && typeof payment.pelecard_raw_response === 'object')
+      ? payment.pelecard_raw_response
+      : {};
+
     const failedRedirectQuery = {
       paymentId: secureToken,
       ...(statusCode ? { pelecardStatus: statusCode } : {}),
@@ -326,7 +332,7 @@ async function handlePelecardReturn(req, res, outcome) {
         .from('payment_links')
         .update({
           status: 'cancelled',
-          pelecard_raw_response: data,
+          pelecard_raw_response: { ...previousRaw, callback: data },
         })
         .eq('id', payment.id);
       return res.redirect(appRedirect('/payment/cancelled', { paymentId: secureToken }));
@@ -342,7 +348,7 @@ async function handlePelecardReturn(req, res, outcome) {
         .update({
           status: 'failed',
           pelecard_status_code: statusCode || String(data.StatusCode || data.statusCode || ''),
-          pelecard_raw_response: data,
+          pelecard_raw_response: { ...previousRaw, callback: data },
           ...(transactionId ? { pelecard_transaction_id: String(transactionId) } : {}),
         })
         .eq('id', payment.id);
@@ -398,7 +404,11 @@ async function handlePelecardReturn(req, res, outcome) {
           pelecard_voucher_id: data.VoucherId || data.voucherId || null,
           pelecard_auth_number: data.AuthorizationNumber || data.DebitApproveNumber || null,
           pelecard_status_code: resolvedStatusCode,
-          pelecard_raw_response: verifyPayload,
+          pelecard_raw_response: {
+            ...previousRaw,
+            callback: data,
+            pelecard: verifyPayload?.pelecard ?? verifyPayload,
+          },
         })
         .eq('id', payment.id);
 
@@ -429,7 +439,11 @@ async function handlePelecardReturn(req, res, outcome) {
       .update({
         status: 'failed',
         pelecard_status_code: resolvedStatusCode,
-        pelecard_raw_response: verifyPayload,
+        pelecard_raw_response: {
+          ...previousRaw,
+          callback: data,
+          pelecard: verifyPayload?.pelecard ?? verifyPayload,
+        },
         ...(transactionId ? { pelecard_transaction_id: String(transactionId) } : {}),
       })
       .eq('id', payment.id);

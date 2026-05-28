@@ -1656,7 +1656,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       }
 
       console.log('fetchMeetings: All meetings:', allMeetings);
-      setMeetings(allMeetings);
+      // Legacy meetings coming from `leads_lead` should be treated as Potential Client meetings.
+      // Don't invent additional meeting types beyond the existing ones.
+      const normalizedMeetings = allMeetings.map((m: any) =>
+        m?.isLegacy ? { ...m, calendar_type: 'potential_client' } : m
+      );
+      setMeetings(normalizedMeetings);
 
     } catch (error) {
       console.error('Error fetching meetings:', error);

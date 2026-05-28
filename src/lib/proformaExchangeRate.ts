@@ -8,6 +8,7 @@ import {
   type CurrencyInput,
   buildCurrencyMetaFromId,
   convertToNISWithMeta,
+  getBoiCoverageStartDate,
   getJerusalemTodayIsoDate,
   isLocalCurrency,
   loadAccountingCurrenciesMap,
@@ -88,6 +89,39 @@ export async function fetchProformaExchangeRateInfo(
   const payDate = paid && paidAt ? toDateOnly(paidAt) : null;
 
   if (paid) {
+    // Paid invoices: prefer BOI by payment date *when payment date is within BOI coverage*.
+    // Only fall back to legacy currency_rates when BOI has no rate for that date/currency.
+    if (payDate) {
+      const boiStart = await getBoiCoverageStartDate();
+      if (boiStart && payDate >= boiStart) {
+        const snap = await loadBoiExchangeRatesForDate(payDate);
+        const subConv = convertToNISWithMeta(subtotal, currency, snap);
+        const vatConv = convertToNISWithMeta(vat, currency, snap);
+        const totalConv = convertToNISWithMeta(total, currency, snap);
+
+        const needsLegacyFallback =
+          subConv.usedLegacyFallback || vatConv.usedLegacyFallback || totalConv.usedLegacyFallback;
+
+        if (!needsLegacyFallback) {
+          return {
+            isoCode,
+            displaySymbol: meta.displaySymbol,
+            rateToIls: subConv.rate,
+            rateDate: snap.rateDate,
+            rateLabel: 'payment_date',
+            rateSource: 'boi',
+            isLocalCurrency: false,
+            paid,
+            paidAt: payDate,
+            subtotalNis: subConv.amountNIS,
+            vatNis: vatConv.amountNIS,
+            totalNis: totalConv.amountNIS,
+            usedLegacyFallback: false,
+          };
+        }
+      }
+    }
+
     const legacyRate = payDate
       ? await loadLegacyCurrencyRateForPaymentDate(currency, payDate)
       : await loadLatestLegacyCurrencyRate(currency);
@@ -212,8 +246,14 @@ export function buildProformaExchangeFooterLines(info: ProformaExchangeRateInfo)
 
   const lines: string[] = [];
 
-  if (info.rateSource === 'legacy' && info.rateLabel === 'payment_date' && info.paidAt) {
-    lines.push(`Exchange rate on payment date ${formatProformaRateDate(info.paidAt)}:`);
+  if (info.rateLabel === 'payment_date' && info.paidAt) {
+    if (info.rateSource === 'boi') {
+      lines.push(
+        `Representative exchange rate (Bank of Israel) on payment date ${formatProformaRateDate(info.paidAt)} — BOI rate date ${rateDateFmt}:`,
+      );
+    } else {
+      lines.push(`Exchange rate on payment date ${formatProformaRateDate(info.paidAt)}:`);
+    }
   } else if (info.rateSource === 'boi') {
     lines.push(`Representative exchange rate (Bank of Israel) for today — BOI rate date ${rateDateFmt}:`);
   } else {

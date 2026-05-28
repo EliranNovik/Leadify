@@ -18,6 +18,7 @@ import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo,
 import { fetchAllLeads, fetchLatestLead, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
 import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
 import { saveFollowUp } from '../lib/followUpsManager';
+import { displaySymbolForPaymentSave } from '../lib/paymentPlanCurrency';
 import { usePersistedState } from '../hooks/usePersistedState';
 import BalanceEditModal from './BalanceEditModal';
 import ProbabilityFactorsSliders, { type ProbabilityFactors } from './ProbabilityFactorsSliders';
@@ -11090,12 +11091,28 @@ const Clients: React.FC<ClientsProps> = ({
 
         const paymentPlansToInsert = payments.map(payment => ({
           lead_id: selectedClient.id,
+          client_id: payment.clientId ?? (selectedClient as any)?.selectedContactId ?? (selectedClient as any)?.contact_id ?? null,
           due_percent: payment.duePercent ? parseFloat(payment.duePercent.replace('%', '')) : 0,
           due_date: payment.dueDate || payment.date || null,
           value: typeof payment.value === 'number' ? payment.value : parseFloat(payment.value),
           value_vat: typeof payment.valueVat === 'number' ? payment.valueVat : parseFloat(payment.valueVat),
           client_name: payment.client,
           payment_order: payment.order,
+          currency_id: (() => {
+            const raw = payment.currency_id ?? (selectedClient as any)?.currency_id ?? 1;
+            const n = typeof raw === 'string' ? parseInt(raw, 10) : Number(raw);
+            return Number.isFinite(n) && n > 0 ? n : 1;
+          })(),
+          currency: (() => {
+            const currencyIdRaw = payment.currency_id ?? (selectedClient as any)?.currency_id ?? 1;
+            const currencyId = typeof currencyIdRaw === 'string' ? parseInt(currencyIdRaw, 10) : Number(currencyIdRaw);
+            const fallbackId = Number.isFinite(currencyId) && currencyId > 0 ? currencyId : 1;
+            const token = (payment.currency ?? (selectedClient as any)?.balance_currency ?? (selectedClient as any)?.proposal_currency ?? '₪')
+              ?.toString()
+              .trim();
+            // Persist the symbol/ISO token consistently (₪/$/€/£) so downstream display + conversions work.
+            return displaySymbolForPaymentSave({ currency: token, currency_id: fallbackId });
+          })(),
           notes: payment.notes,
           created_by: currentUserName,
         }));

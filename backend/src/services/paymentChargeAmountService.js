@@ -28,6 +28,16 @@ function isLocalCurrency(iso) {
   return ILS_ALIASES.has(normalizeIso(iso));
 }
 
+/** YYYY-MM-DD in Asia/Jerusalem for BOI "payment day" selection. */
+function getJerusalemTodayIsoDate(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Jerusalem',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
 /**
  * @param {object} payment - payment_links row with currency + optional payment_plans
  */
@@ -80,7 +90,10 @@ async function resolvePelecardChargeAmount(payment) {
     };
   }
 
-  const rates = await boiExchangeRatesService.getLatestRates();
+  // At payment session init time, charge using BOI rates for "today" in Asia/Jerusalem.
+  // If today's rates aren't present yet, the backend RPC falls back to the nearest rate_date
+  // on/before that day, so we don't accidentally jump to an unrelated older/manual table.
+  const rates = await boiExchangeRatesService.getRatesForDate(getJerusalemTodayIsoDate());
   const row = rates.find(
     (r) =>
       String(r.base_currency).toUpperCase() === iso &&

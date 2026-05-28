@@ -16,6 +16,7 @@ import {
   type ProformaExchangeRateInfo,
 } from '../lib/proformaExchangeRate';
 import { isLegacyPaymentLinkRow } from '../lib/paymentLinkLeadRef';
+import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 import toast from 'react-hot-toast';
 import {
   CheckCircleIcon,
@@ -86,12 +87,14 @@ interface PaymentLink {
     payment_order?: string;
     currency?: string | null;
     currency_id?: number | string | null;
+    client_id?: number | string | null;
     paid?: boolean | null;
     paid_at?: string | null;
   };
   legacy_payment_plan?: {
     order?: number | string | null;
     currency_id?: number | string | null;
+    client_id?: number | string | null;
     actual_date?: string | null;
     accounting_currencies?: { name?: string | null; iso_code?: string | null } | null;
   } | null;
@@ -296,6 +299,7 @@ const PaymentPage: React.FC = () => {
             .select(`
               id,
               order,
+              client_id,
               currency_id,
               actual_date,
               accounting_currencies!finances_paymentplanrow_currency_id_fkey (
@@ -322,7 +326,7 @@ const PaymentPage: React.FC = () => {
         } else if (enriched.payment_plan_id) {
           const { data: planRow, error: planError } = await supabase
             .from('payment_plans')
-            .select('payment_order, currency, currency_id, paid, paid_at')
+            .select('payment_order, currency, currency_id, client_id, paid, paid_at')
             .eq('id', enriched.payment_plan_id)
             .maybeSingle();
 
@@ -331,6 +335,40 @@ const PaymentPage: React.FC = () => {
           } else if (planRow) {
             enriched = { ...enriched, payment_plans: planRow };
           }
+        }
+
+        // Resolve billing contact (summary box should reflect invoice/payment-row contact, not lead main contact).
+        // For legacy links: use finances_paymentplanrow.client_id when present; otherwise main contact.
+        // For new links: use payment_plans.client_id when present; otherwise main contact.
+        try {
+          const leadId = isLegacyPaymentLink(enriched)
+            ? enriched.legacy_id ?? null
+            : enriched.client_id ?? null;
+          const clientId = isLegacyPaymentLink(enriched)
+            ? enriched.legacy_payment_plan?.client_id ?? null
+            : enriched.payment_plans?.client_id ?? null;
+
+          const resolved = await resolvePaymentPlanContact({
+            leadId,
+            clientId,
+            clientNameFallback:
+              enriched.description?.split(' - ')[1]?.split(' (#')[0]?.trim() ||
+              enriched.leads?.name ||
+              null,
+            leadNameFallback: enriched.leads?.name || null,
+          });
+
+          enriched = {
+            ...enriched,
+            leads: {
+              ...(enriched.leads || {}),
+              name: resolved.name,
+              email: resolved.email,
+              phone: resolved.phone,
+            },
+          };
+        } catch (err) {
+          console.warn('[PaymentPage] billing contact resolution failed:', err);
         }
 
         const paymentComplete = isPaymentComplete(enriched);

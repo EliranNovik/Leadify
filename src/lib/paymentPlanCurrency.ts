@@ -167,6 +167,24 @@ export async function resolvePaymentPlanCurrency(
 ): Promise<ResolvedPaymentPlanCurrency> {
   await loadAccountingCurrenciesMap();
 
+  // If the payment row explicitly has a currency_id, it must win — even when it's ILS (₪).
+  // Otherwise leads with multiple contacts can accidentally inherit the lead/main-contact currency.
+  if (input.currency_id != null && input.currency_id !== '') {
+    const id =
+      typeof input.currency_id === 'number' ? input.currency_id : parseInt(String(input.currency_id), 10);
+    if (Number.isFinite(id) && id > 0) {
+      const sym = getCurrencySymbol(id);
+      return { displaySymbol: sym || '₪', currencyId: id };
+    }
+  }
+
+  // If the payment row explicitly has a currency token (text/symbol/ISO), it must win — even when it maps to ₪.
+  const token = String(input.currency ?? '').trim();
+  if (token) {
+    const sym = mapLeadCurrencyToSymbol(token);
+    return { displaySymbol: sym, currencyId: currencyIdFromSymbol(sym) };
+  }
+
   const meta = buildCurrencyMetaFromId(
     input.currency_id,
     input.currency,

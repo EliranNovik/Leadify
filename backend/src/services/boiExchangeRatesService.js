@@ -200,9 +200,26 @@ async function getLatestRates(rateDate = null) {
   return data ?? [];
 }
 
+/**
+ * Rates for a specific calendar date (YYYY-MM-DD) using the same logic as the frontend:
+ * if that day isn't available, returns the latest stored rate_date on/before that day.
+ */
+async function getRatesForDate(rateDate) {
+  const dateOnly = String(rateDate || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) {
+    return getLatestRates();
+  }
+  const { data, error } = await supabase.rpc('get_boi_exchange_rates_for_date', {
+    p_rate_date: dateOnly,
+  });
+  if (error) throw error;
+  return data ?? [];
+}
+
 module.exports = {
   syncBoiExchangeRates,
   getLatestRates,
+  getRatesForDate,
   getSyncStatus,
   needsSyncFromBoi,
   getLatestRateDateInDb,
