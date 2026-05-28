@@ -201,19 +201,48 @@ async function getLatestRates(rateDate = null) {
 }
 
 /**
- * Rates for a specific calendar date (YYYY-MM-DD) using the same logic as the frontend:
- * if that day isn't available, returns the latest stored rate_date on/before that day.
+ * Rates for a specific calendar date (YYYY-MM-DD).
+ * Matches frontend loadBoiExchangeRatesForDate: use that date when present, otherwise the
+ * latest stored rate_date on or before that day (BOI often publishes with a lag).
  */
 async function getRatesForDate(rateDate) {
   const dateOnly = String(rateDate || '').slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) {
     return getLatestRates();
   }
+
   const { data, error } = await supabase.rpc('get_boi_exchange_rates_for_date', {
     p_rate_date: dateOnly,
   });
   if (error) throw error;
-  return data ?? [];
+  let rows = data ?? [];
+
+  if (rows.length === 0) {
+    const { data: nearestDateRow, error: nearestErr } = await supabase
+      .from('boi_exchange_rates')
+      .select('rate_date')
+      .lte('rate_date', dateOnly)
+      .order('rate_date', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (nearestErr) throw nearestErr;
+
+    if (nearestDateRow?.rate_date) {
+      const nearestDate = String(nearestDateRow.rate_date).slice(0, 10);
+      const res = await supabase.rpc('get_boi_exchange_rates_for_date', {
+        p_rate_date: nearestDate,
+      });
+      if (res.error) throw res.error;
+      rows = res.data ?? [];
+    }
+  }
+
+  if (rows.length === 0) {
+    return getLatestRates();
+  }
+
+  return rows;
 }
 
 module.exports = {

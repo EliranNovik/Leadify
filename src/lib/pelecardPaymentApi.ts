@@ -36,7 +36,30 @@ export interface CreatePelecardSessionResponse {
   error?: string;
 }
 
+/**
+ * In local dev, prefer the Vite `/api` proxy (same-origin) even when VITE_BACKEND_URL
+ * points at localhost:3001 — direct cross-origin calls fail CORS in the browser.
+ */
+function shouldUseViteApiProxy(): boolean {
+  if (!import.meta.env.DEV || typeof window === 'undefined') return false;
+  const host = window.location.hostname;
+  if (host.includes('ngrok')) return false;
+
+  const backend = (import.meta.env.VITE_BACKEND_URL as string | undefined)?.replace(/\/+$/, '');
+  if (!backend) return true;
+
+  try {
+    const { hostname } = new URL(backend);
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
 function getApiBase(): string {
+  if (shouldUseViteApiProxy()) {
+    return '/api/payments/pelecard';
+  }
   const backend = (import.meta.env.VITE_BACKEND_URL as string | undefined)?.replace(/\/+$/, '');
   if (backend) {
     return `${backend}/api/payments/pelecard`;

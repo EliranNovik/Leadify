@@ -91,12 +91,19 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
   WITH d AS (
-    SELECT COALESCE(p_rate_date, MAX(rate_date)) AS rd FROM public.boi_exchange_rates
+    SELECT COALESCE(
+      (
+        SELECT MAX(rate_date)
+        FROM public.boi_exchange_rates
+        WHERE p_rate_date IS NULL OR rate_date <= p_rate_date
+      ),
+      (SELECT MAX(rate_date) FROM public.boi_exchange_rates)
+    ) AS rd
   )
   SELECT cr.*
   FROM public.boi_exchange_rates cr
   CROSS JOIN d
-  WHERE cr.rate_date = d.rd
+  WHERE d.rd IS NOT NULL AND cr.rate_date = d.rd
   ORDER BY cr.base_currency;
 $$;
 
