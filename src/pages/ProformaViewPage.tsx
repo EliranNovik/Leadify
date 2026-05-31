@@ -224,6 +224,7 @@ const ProformaViewPage: React.FC = () => {
           subtotal,
           vat,
           total: totalWithVat,
+          paymentPlanId: id,
         });
         if (!cancelled) setExchangeInfo(info);
       } catch (err) {
@@ -238,7 +239,7 @@ const ProformaViewPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [proforma, paymentPlanMeta, vatTotals]);
+  }, [proforma, paymentPlanMeta, vatTotals, id]);
 
   // Format lead number using same logic as ClientHeader
   const formatLeadNumber = () => {

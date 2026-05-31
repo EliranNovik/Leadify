@@ -4,6 +4,7 @@ import {
   isLegacyLeadRef,
   parseLegacyLeadNumericId,
 } from './paymentLinkLeadRef';
+import { insertPaymentLinkRecord } from './paymentLinkQueries';
 
 type PaymentLinkRow = {
   secure_token?: string | null;
@@ -135,6 +136,8 @@ export type EnsureProformaPaymentLinkInput = {
   order: string;
   clientName: string;
   leadNumber: string;
+  /** Contact id from payment plan row (for per-contact payment history). */
+  planContactId?: number | null;
 };
 
 /** Create a pending payment link when none exists yet (e.g. right after proforma creation). */
@@ -157,24 +160,20 @@ export async function ensureProformaPaymentLink(
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + 30);
 
-  const leadRef = buildPaymentLinkLeadRef({
+  const { error } = await insertPaymentLinkRecord({
+    paymentPlanId: planRowId,
     leadId: options.leadClientId,
     leadType: options.leadType,
     isLegacyPaymentPlan:
       options.isLegacyPaymentPlan ?? isLegacyLeadRef(options.leadType, options.leadClientId),
-  });
-
-  const { error } = await supabase.from('payment_links').insert({
-    payment_plan_id: planRowId,
-    ...leadRef,
-    secure_token: secureToken,
+    planContactId: options.planContactId ?? null,
+    secureToken,
     amount: options.value,
-    vat_amount: options.valueVat,
-    total_amount: options.value + options.valueVat,
+    vatAmount: options.valueVat,
+    totalAmount: options.value + options.valueVat,
     currency: options.currency || '₪',
     description: `${options.order} - ${options.clientName} (#${options.leadNumber})`,
-    status: 'pending',
-    expires_at: expiresAt.toISOString(),
+    expiresAt: expiresAt.toISOString(),
   });
 
   if (error) {

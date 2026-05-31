@@ -2,7 +2,11 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon, ClockIcon } from '@heroicons/react/24/outline';
-import { buildPaymentLinkLeadRef, parseLegacyLeadNumericId } from '../../lib/paymentLinkLeadRef';
+import {
+  fetchContactPaymentHistory,
+  insertPaymentLinkRecord,
+  loadPaidPaymentLinkPlanIds,
+} from '../../lib/paymentLinkQueries';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
 import { useMsal } from '@azure/msal-react';
@@ -238,6 +242,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     primary: string;
     loading: boolean;
   }>({ primary: '—', loading: true });
+  const [contactTotalNisByName, setContactTotalNisByName] = useState<
+    Record<string, { primary: string; loading: boolean }>
+  >({});
   const [editingPaymentId, setEditingPaymentId] = useState<string | number | null>(null);
   const [editPaymentData, setEditPaymentData] = useState<any>({});
   const [isSavingPaymentRow, setIsSavingPaymentRow] = useState(false);
@@ -267,19 +274,35 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     if (!financePlan?.payments?.length) {
       setContractTotalNisDisplay({ primary: '—', loading: false });
       setOutstandingNisDisplay({ primary: '—', loading: false });
+      setContactTotalNisByName({});
       return;
     }
 
+    const contactNames = [...new Set(financePlan.payments.map((p) => p.client))];
     let cancelled = false;
     setContractTotalNisDisplay((prev) => ({ ...prev, loading: true }));
     setOutstandingNisDisplay((prev) => ({ ...prev, loading: true }));
+    setContactTotalNisByName(
+      contactNames.reduce(
+        (acc, name) => {
+          acc[name] = { primary: '…', loading: true };
+          return acc;
+        },
+        {} as Record<string, { primary: string; loading: boolean }>,
+      ),
+    );
 
     void (async () => {
       try {
         const unpaidPayments = financePlan.payments.filter((p) => !p.paid);
-        const [contractTotals, outstandingTotals] = await Promise.all([
+        const [contractTotals, outstandingTotals, ...contactResults] = await Promise.all([
           sumPaymentPlanTotalsInNis(financePlan.payments),
           sumPaymentPlanTotalsInNis(unpaidPayments),
+          ...contactNames.map(async (contactName) => {
+            const contactPayments = financePlan.payments.filter((p) => p.client === contactName);
+            const totals = await sumPaymentPlanTotalsInNis(contactPayments);
+            return { contactName, totals };
+          }),
         ]);
         if (cancelled) return;
         setContractTotalNisDisplay({
@@ -290,11 +313,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           ...formatOutstandingNisDisplay(outstandingTotals),
           loading: false,
         });
+        setContactTotalNisByName(
+          contactResults.reduce(
+            (acc, { contactName, totals }) => {
+              acc[contactName] = { ...formatOutstandingNisDisplay(totals), loading: false };
+              return acc;
+            },
+            {} as Record<string, { primary: string; loading: boolean }>,
+          ),
+        );
       } catch (err) {
         console.error('[FinancesTab] NIS summary totals:', err);
         if (!cancelled) {
           setContractTotalNisDisplay({ primary: '—', loading: false });
           setOutstandingNisDisplay({ primary: '—', loading: false });
+          setContactTotalNisByName({});
         }
       }
     })();
@@ -731,34 +764,26 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       expiresAt.setDate(expiresAt.getDate() + 30);
 
       // Create payment link in database
-      const leadRef = buildPaymentLinkLeadRef({
-        leadId: client.id,
-        leadType: client.lead_type,
-        isLegacyPaymentPlan: Boolean(payment.isLegacy),
-      });
-
       const planRowId = Number(payment.id);
       if (!Number.isFinite(planRowId)) {
         toast.error('Invalid payment row id. Refresh and try again.');
         return;
       }
 
-      const { data: paymentLink, error } = await supabase
-        .from('payment_links')
-        .insert({
-          payment_plan_id: planRowId,
-          ...leadRef,
-          secure_token: secureToken,
-          amount: payment.value,
-          vat_amount: payment.valueVat,
-          total_amount: payment.value + payment.valueVat,
-          currency: payment.currency || '₪',
-          description: `${payment.order} - ${client?.name} (#${client?.lead_number})`,
-          status: 'pending',
-          expires_at: expiresAt.toISOString(),
-        })
-        .select()
-        .single();
+      const { error } = await insertPaymentLinkRecord({
+        paymentPlanId: planRowId,
+        leadId: client.id,
+        leadType: client.lead_type,
+        isLegacyPaymentPlan: Boolean(payment.isLegacy),
+        planContactId: payment.client_id ?? null,
+        secureToken,
+        amount: payment.value,
+        vatAmount: payment.valueVat,
+        totalAmount: payment.value + payment.valueVat,
+        currency: payment.currency || '₪',
+        description: `${payment.order} - ${client?.name} (#${client?.lead_number})`,
+        expiresAt: expiresAt.toISOString(),
+      });
 
       if (error) throw error;
 
@@ -1537,16 +1562,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
     }
 
-    const loadLinkPaidPlanIds = async (clientId: string | number) => {
+    const loadLinkPaidPlanIds = async (
+      clientId: string | number,
+      paymentPlanIds?: Array<number | string>,
+    ) => {
       try {
-        const { data, error } = await supabase
-          .from('payment_links')
-          .select('payment_plan_id')
-          .eq('client_id', clientId)
-          .eq('status', 'paid')
-          .not('payment_plan_id', 'is', null);
-        if (error) throw error;
-        setLinkPaidPlanIds(new Set((data || []).map((row) => row.payment_plan_id)));
+        const ids = await loadPaidPaymentLinkPlanIds({
+          leadId: clientId,
+          leadType: client.lead_type,
+          paymentPlanIds,
+        });
+        setLinkPaidPlanIds(ids);
       } catch (err) {
         console.error('Error loading paid payment links:', err);
         setLinkPaidPlanIds(new Set());
@@ -2078,6 +2104,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             vat: Math.round(vat * 100) / 100,
             payments: payments,
           });
+          void loadLinkPaidPlanIds(client.id, payments.map((p) => p.id));
         } else {
           setFinancePlan(null);
           setPaidMap({});
@@ -2284,14 +2311,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     if (!client?.id) return;
 
     try {
-      const { data, error } = await supabase
-        .from('payment_links')
-        .select('payment_plan_id')
-        .eq('client_id', client.id)
-        .eq('status', 'paid')
-        .not('payment_plan_id', 'is', null);
-      if (error) throw error;
-      setLinkPaidPlanIds(new Set((data || []).map((row) => row.payment_plan_id)));
+      const planIds = (financePlan?.payments || []).map((p) => p.id);
+      const ids = await loadPaidPaymentLinkPlanIds({
+        leadId: client.id,
+        leadType: client.lead_type,
+        paymentPlanIds: planIds,
+      });
+      setLinkPaidPlanIds(ids);
     } catch (err) {
       console.error('Error loading paid payment links:', err);
       setLinkPaidPlanIds(new Set());
@@ -2638,6 +2664,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           vat: Math.round(vat * 100) / 100,
           payments: payments,
         });
+        const ids = await loadPaidPaymentLinkPlanIds({
+          leadId: client.id,
+          leadType: client.lead_type,
+          paymentPlanIds: payments.map((p) => p.id),
+        });
+        setLinkPaidPlanIds(ids);
       } else {
         setFinancePlan(null);
         setPaidMap({});
@@ -4760,35 +4792,31 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       return;
     }
     try {
-      const isLegacyLead =
-        client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      const legacyId = parseLegacyLeadNumericId(client.id);
+      const contactPayments = (financePlan?.payments || []).filter(
+        (p: PaymentPlan) => p.client === contactName,
+      );
+      const planIds = contactPayments
+        .map((p) => Number(p.id))
+        .filter((id) => Number.isFinite(id));
+      const contact = contacts.find((c) => c.name === contactName);
+      const planContactId =
+        contact?.id != null
+          ? Number(contact.id)
+          : contactPayments[0]?.client_id != null
+            ? Number(contactPayments[0].client_id)
+            : null;
 
-      let linksQuery = supabase.from('payment_links').select('id');
-      if (isLegacyLead && legacyId != null) {
-        linksQuery = linksQuery.eq('legacy_id', legacyId);
-      } else {
-        linksQuery = linksQuery.eq('client_id', client.id);
-      }
+      const data = await fetchContactPaymentHistory({
+        paymentPlanIds: planIds,
+        leadId: client.id,
+        leadType: client.lead_type,
+        planContactId: Number.isFinite(planContactId) ? planContactId : null,
+      });
 
-      const { data: links, error: linksError } = await linksQuery;
-      if (linksError) throw linksError;
-      const linkIds = links?.map(link => link.id) || [];
-      if (linkIds.length === 0) {
-        setPaymentHistory((prev) => ({ ...prev, [contactName]: [] }));
-        setOpenHistoryContact(contactName);
-        return;
-      }
-      // 2. Get all payment transactions for those links
-      const { data, error } = await supabase
-        .from('payment_transactions')
-        .select('*')
-        .in('payment_link_id', linkIds)
-        .order('created_at', { ascending: false });
-      if (error) throw error;
-      setPaymentHistory((prev) => ({ ...prev, [contactName]: data || [] }));
+      setPaymentHistory((prev) => ({ ...prev, [contactName]: data }));
       setOpenHistoryContact(contactName);
     } catch (error) {
+      console.error('[FinancesTab] fetchPaymentHistory:', error);
       toast.error('Failed to fetch payment history');
     }
   };
@@ -5917,6 +5945,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           onToggle={() =>
                             setCollapsedContacts((prev) => ({ ...prev, [contactName]: !prev[contactName] }))
                           }
+                          totalNis={contactTotalNisByName[contactName]}
                         />
                       </div>
 

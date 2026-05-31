@@ -13,11 +13,16 @@ import { supabase, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from 
 import { useAuthContext } from '../contexts/AuthContext';
 import { getCurrencySymbol } from '../lib/currencyConversion';
 import {
-  convertToNISWithMeta,
-  getBoiCoverageStartDate,
-  loadBoiExchangeRates,
-  loadBoiExchangeRatesForDate,
+  resolvePaymentPlanBoiAsOfInput,
+  createBoiDateRateConverter,
+  buildCurrencyMetaFromId,
 } from '../lib/boiCurrencyConversion';
+import {
+  fetchStage60RecordsInRange,
+  getJerusalemScoreboardDates,
+  resolveStage60SignTimestamp,
+  toSignCalendarDateKey,
+} from '../lib/stage60SignDate';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot, ReferenceArea, BarChart, Bar, Legend as RechartsLegend, CartesianGrid } from 'recharts';
 import { RadialBarChart, RadialBar, PolarAngleAxis, Legend } from 'recharts';
@@ -36,9 +41,66 @@ import MyContribution from './MyContribution';
 import { DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 import { employeeHasAnySalesRoleOnLeadBundle } from '../utils/rolePercentageCalculator';
 
+import { resolveCategoryAndDepartment } from '../lib/resolveCategoryDepartment';
+
 /** Scoreboard cache TTL — realtime subscriptions refresh data in place between fetches. */
 const DASHBOARD_SCOREBOARD_CACHE_TTL_MS = 10 * 60 * 1000;
 const DASHBOARD_TEAM_AVAILABILITY_CACHE_TTL_MS = 5 * 60 * 1000;
+
+/** Virtual column for leads/payments outside the main scoreboard departments. */
+const SCOREBOARD_OTHER_COLUMN = 'Other';
+
+const createEmptyScoreboardRow = () => ({ count: 0, amount: 0, expected: 0 });
+
+/** Today / Week / Last 30d row index (index 0 = General). */
+function getScoreboardPeriodDeptIndex(departmentId: number | null | undefined, departmentIds: number[]): number {
+  if (departmentId != null && departmentIds.includes(departmentId)) {
+    return departmentIds.indexOf(departmentId) + 1;
+  }
+  return departmentIds.length + 1;
+}
+
+/** Month row index (no General column). */
+function getScoreboardMonthDeptIndex(departmentId: number | null | undefined, departmentIds: number[]): number {
+  if (departmentId != null && departmentIds.includes(departmentId)) {
+    return departmentIds.indexOf(departmentId);
+  }
+  return departmentIds.length;
+}
+
+function buildScoreboardPeriodRows(departmentTargets: any[]) {
+  return [
+    createEmptyScoreboardRow(),
+    ...departmentTargets.map((dept) => ({
+      count: 0,
+      amount: 0,
+      expected: parseFloat(dept.min_income || '0'),
+    })),
+    { count: 0, amount: 0, expected: 0 },
+    createEmptyScoreboardRow(),
+  ];
+}
+
+function buildScoreboardMonthRows(departmentTargets: any[]) {
+  return [
+    ...departmentTargets.map((dept) => ({
+      count: 0,
+      amount: 0,
+      expected: parseFloat(dept.min_income || '0'),
+    })),
+    { count: 0, amount: 0, expected: 0 },
+    createEmptyScoreboardRow(),
+  ];
+}
+
+function getScoreboardTotalIndexes(departmentCount: number) {
+  return {
+    otherIndexToday: departmentCount + 1,
+    totalIndexToday: departmentCount + 2,
+    otherIndexMonth: departmentCount,
+    totalIndexMonth: departmentCount + 1,
+  };
+}
 
 type DashboardScoreboardRow = { count: number; amount: number; expected: number };
 type DashboardScoreboardData = {
@@ -3060,8 +3122,8 @@ const Dashboard: React.FC = () => {
       departmentTargets.forEach((dept, index) => {
       });
 
-      // Set department names for UI display
-      const names = departmentTargets.map(dept => dept.name);
+      // Set department names for UI display (main departments + Other bucket)
+      const names = [...departmentTargets.map(dept => dept.name), SCOREBOARD_OTHER_COLUMN];
       setDepartmentNames(names);
       // Debug: Show the exact mapping of ID -> Name -> Target
       departmentTargets.forEach((dept, index) => {
@@ -3074,61 +3136,17 @@ const Dashboard: React.FC = () => {
       })();
       // Initialize data structure dynamically based on actual departments
       const newAgreementData = {
-        Today: [
-          { count: 0, amount: 0, expected: 0 }, // General (index 0)
-          ...departmentTargets.map(dept => ({
-            count: 0,
-            amount: 0,
-            expected: parseFloat(dept.min_income || '0')
-          })), // Actual departments
-          { count: 0, amount: 0, expected: 0 }, // Total (last index)
-        ],
-        Yesterday: [
-          { count: 0, amount: 0, expected: 0 }, // General (index 0)
-          ...departmentTargets.map(dept => ({
-            count: 0,
-            amount: 0,
-            expected: parseFloat(dept.min_income || '0')
-          })), // Actual departments
-          { count: 0, amount: 0, expected: 0 }, // Total (last index)
-        ],
-        Week: [
-          { count: 0, amount: 0, expected: 0 }, // General (index 0)
-          ...departmentTargets.map(dept => ({
-            count: 0,
-            amount: 0,
-            expected: parseFloat(dept.min_income || '0')
-          })), // Actual departments
-          { count: 0, amount: 0, expected: 0 }, // Total (last index)
-        ],
-        "Last 30d": [
-          { count: 0, amount: 0, expected: 0 }, // General (index 0)
-          ...departmentTargets.map(dept => ({
-            count: 0,
-            amount: 0,
-            expected: parseFloat(dept.min_income || '0')
-          })), // Actual departments
-          { count: 0, amount: 0, expected: 0 }, // Total (last index)
-        ],
-        [selectedMonthName]: [
-          ...departmentTargets.map(dept => ({
-            count: 0,
-            amount: 0,
-            expected: parseFloat(dept.min_income || '0')
-          })), // Actual departments (no General column for month view)
-          { count: 0, amount: 0, expected: 0 }, // Total (last index)
-        ],
+        Today: buildScoreboardPeriodRows(departmentTargets),
+        Yesterday: buildScoreboardPeriodRows(departmentTargets),
+        Week: buildScoreboardPeriodRows(departmentTargets),
+        "Last 30d": buildScoreboardPeriodRows(departmentTargets),
+        [selectedMonthName]: buildScoreboardMonthRows(departmentTargets),
       };
 
-      // Calculate date ranges
-      const todayStr = today.toISOString().split('T')[0];
-      const yesterday = new Date(today);
-      yesterday.setDate(yesterday.getDate() - 1);
-      const yesterdayStr = yesterday.toISOString().split('T')[0];
-      const oneWeekAgo = new Date(today);
-      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-      const oneWeekAgoStr = oneWeekAgo.toISOString().split('T')[0];
-      const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
+      // Calculate date ranges (Asia/Jerusalem — matches SignedSalesReportPage)
+      const { todayStr, yesterdayStr, oneWeekAgoStr, thirtyDaysAgoStr: last30dStartDate } =
+        getJerusalemScoreboardDates(today);
+      const effectiveLast30dEnd = todayStr;
 
       // Fix timezone issue: Use UTC to avoid timezone conversion problems
       const startOfMonth = new Date(Date.UTC(selectedYear, selectedMonthIndex, 1));
@@ -3137,110 +3155,21 @@ const Dashboard: React.FC = () => {
       const endOfMonth = new Date(selectedYear, selectedMonthIndex + 1, 0);
       const endOfMonthStr = endOfMonth.toISOString().split('T')[0];
 
-      // Calculate Last 30d: today and 30 days before today (inclusive)
-      // Last 30d should always be from 30 days ago to today, regardless of month view
-      const currentYear = today.getFullYear();
-      const currentMonthIndex = today.getMonth();
-      const isViewingCurrentMonth = selectedYear === currentYear && selectedMonthIndex === currentMonthIndex;
-      // For Last 30d, always use thirtyDaysAgoStr (30 days ago from today)
-      const last30dStartDate = thirtyDaysAgoStr;
-      const effectiveLast30dEnd = todayStr;
-      console.log('🔍 Agreement Signed - Date ranges:', {
-        todayStr,
-        thirtyDaysAgoStr,
-        last30dStartDate,
-        effectiveLast30dEnd,
-        startOfMonthStr,
-        endOfMonthStr,
-        isViewingCurrentMonth,
-        selectedYear,
-        currentYear,
-        selectedMonthIndex,
-        currentMonthIndex
-      });
-      // For date comparison, we need to extract just the date part from the record date
-      const extractDateFromRecord = (recordDate: string) => {
-        // Handle both ISO string format and date-only format
-        if (recordDate.includes('T')) {
-          return recordDate.split('T')[0];
-        }
-        return recordDate;
-      };
-      // CORRECT APPROACH: Query leads_leadstage for stage 60 (agreement signed) separately
-      // Fetch data for Today and Last 30d (use effectiveThirtyDaysAgo so it matches month data at end of month)
-      // Fetch legacy leads stage records with timeout protection
-      let stageRecords: any[] = [];
-      let stageError: any = null;
-
+      // Fetch stage 60 (agreement signed) — same widened SQL + Jerusalem calendar filter as SignedSalesReportPage
+      let allStage60InWindow: any[] = [];
+      let stageFetchError: any = null;
       try {
-        // Query legacy leads - use date for filtering
-        // Use last30dStartDate (thirtyDaysAgoStr) for Last 30d - always from 30 days ago to today
-        const queryPromise = supabase
-          .from('leads_leadstage')
-          .select('id, date, cdate, lead_id')
-          .eq('stage', 60)
-          .not('lead_id', 'is', null) // Legacy leads only
-          .gte('date', last30dStartDate)
-          .lte('date', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0])
-          .limit(5000); // Add limit to prevent timeout
-
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Query timeout')), 15000)
-        );
-
-        const result = await Promise.race([queryPromise, timeoutPromise]) as any;
-
-        if (result?.error) {
-          stageError = result.error;
-        } else {
-          stageRecords = result?.data || [];
-        }
+        allStage60InWindow = await fetchStage60RecordsInRange(last30dStartDate, effectiveLast30dEnd);
       } catch (err: any) {
-        stageError = err;
+        stageFetchError = err;
       }
-
-      if (stageError) {
+      if (stageFetchError) {
         // Don't throw, continue without stage records
       }
-      // Fetch new leads signed agreements from multiple sources
-      // Fetch new leads signed agreements ONLY from leads_leadstage (stage 60)
-      // Do NOT include contracts - match SignedSalesReportPage behavior
-      // 2. Fetch new leads stage records (newlead_id)
-      // Add timeout protection and limit to prevent query timeout
-      let newLeadStageRecords: any[] = [];
-      let newLeadStageError: any = null;
 
-      try {
-        // Use last30dStartDate (thirtyDaysAgoStr) and todayStr to ensure we include today's records
-        // Last 30d should always be from 30 days ago to today
-        const queryPromise = supabase
-          .from('leads_leadstage')
-          .select('id, date, cdate, newlead_id')
-          .eq('stage', 60)
-          .not('newlead_id', 'is', null) // New leads only
-          .gte('date', last30dStartDate)
-          .lte('date', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0])
-          .limit(5000); // Add limit to prevent timeout
+      const stageRecords = allStage60InWindow.filter((r) => r.lead_id != null);
+      const newLeadStageRecords = allStage60InWindow.filter((r) => r.newlead_id != null);
 
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Query timeout')), 15000)
-        );
-
-        const result = await Promise.race([queryPromise, timeoutPromise]) as any;
-
-        if (result?.error) {
-          newLeadStageError = result.error;
-        } else {
-          newLeadStageRecords = result?.data || [];
-        }
-      } catch (err: any) {
-        newLeadStageError = err;
-        // Continue without new lead stages
-      }
-
-      if (newLeadStageError) {
-        // Don't throw, continue without new lead stages
-      }
       // Combine all new lead IDs (only from leads_leadstage for stage 60)
       const newLeadIdsSet = new Set<string>();
       (newLeadStageRecords || []).forEach(record => {
@@ -3254,7 +3183,7 @@ const Dashboard: React.FC = () => {
         const { data: newLeads, error: newLeadsError } = await supabase
           .from('leads')
           .select(`
-              id, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, category,
+              id, lead_number, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, category, category_id,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -3372,8 +3301,7 @@ const Dashboard: React.FC = () => {
         if (!record.newlead_id) return;
         const lead = newLeadsMap.get(String(record.newlead_id));
         if (!lead) return;
-        // Use date as the sign date (preferred) or cdate as fallback
-        const recordDate = (record.date || record.cdate || '').split('T')[0];
+        const recordDate = resolveStage60SignTimestamp(record);
         agreementRecords.push({
           id: `newstage-${record.id}`,
           date: recordDate,
@@ -3385,39 +3313,24 @@ const Dashboard: React.FC = () => {
         });
       });
 
-      // Only use leads_leadstage for stage 60 - no date_signed from leads table
-      if (agreementRecords && agreementRecords.length > 0) {
-      }
+      const resolveLeadDepartment = (lead: any) =>
+        resolveCategoryAndDepartment(
+          lead?.category,
+          lead?.category_id,
+          lead?.misc_category,
+          allCategoriesData,
+          categoryNameToDataMap,
+        );
 
-      // Fetch data for selected month (separate query)
-      // endOfMonthStr is already calculated above, reuse it
-
-      // Fetch legacy leads stage records for month
-      // Use endOfMonthStr + 1 day as upper bound to ensure we include the entire last day of the month
-      const monthEndUpperBound = new Date(new Date(endOfMonthStr).getTime() + 86400000).toISOString().split('T')[0];
-      const { data: monthStageRecords, error: monthStageError } = await supabase
-        .from('leads_leadstage')
-        .select('id, date, cdate, lead_id')
-        .eq('stage', 60)
-        .not('lead_id', 'is', null) // Legacy leads only
-        .gte('date', startOfMonthStr)
-        .lte('date', monthEndUpperBound);
-
-      if (monthStageError) {
+      // Fetch data for selected month (Jerusalem calendar filter — same as SignedSalesReportPage)
+      let monthStage60Records: any[] = [];
+      try {
+        monthStage60Records = await fetchStage60RecordsInRange(startOfMonthStr, endOfMonthStr);
+      } catch (monthStageError) {
         throw monthStageError;
       }
-      // Fetch new leads signed agreements for month ONLY from leads_leadstage (stage 60)
-      // Do NOT include contracts - match SignedSalesReportPage behavior
-      const { data: monthNewLeadStageRecords, error: monthNewLeadStageError } = await supabase
-        .from('leads_leadstage')
-        .select('id, date, cdate, newlead_id')
-        .eq('stage', 60)
-        .not('newlead_id', 'is', null) // New leads only
-        .gte('date', startOfMonthStr)
-        .lte('date', monthEndUpperBound);
-
-      if (monthNewLeadStageError) {
-      }
+      const monthStageRecords = monthStage60Records.filter((r) => r.lead_id != null);
+      const monthNewLeadStageRecords = monthStage60Records.filter((r) => r.newlead_id != null);
       // Combine all new lead IDs for month (only from leads_leadstage for stage 60)
       const monthNewLeadIdsSet = new Set<string>();
       (monthNewLeadStageRecords || []).forEach(record => {
@@ -3431,7 +3344,7 @@ const Dashboard: React.FC = () => {
         const { data: monthNewLeads, error: monthNewLeadsError } = await supabase
           .from('leads')
           .select(`
-              id, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, category,
+              id, lead_number, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, category, category_id,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -3546,8 +3459,7 @@ const Dashboard: React.FC = () => {
         if (!record.newlead_id) return;
         const lead = monthNewLeadsMap.get(String(record.newlead_id));
         if (!lead) return;
-        // Use date as the sign date (preferred) or cdate as fallback
-        const recordDate = (record.date || record.cdate || '').split('T')[0];
+        const recordDate = resolveStage60SignTimestamp(record);
         monthAgreementRecords.push({
           id: `month-newstage-${record.id}`,
           date: recordDate,
@@ -3563,21 +3475,20 @@ const Dashboard: React.FC = () => {
       if (monthAgreementRecords && monthAgreementRecords.length > 0) {
       }
 
-      // BOI-first conversion for Agreement Signed (rate on sign date; legacy fallback inside helper)
-      const boiStart = await getBoiCoverageStartDate();
-      const latestBoiSnap = await loadBoiExchangeRates();
-      const boiSnapByDate = new Map<string, Promise<any>>();
-      const getBoiSnapForDate = (dateOnly: string | null): Promise<any> => {
-        if (!dateOnly || !/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) return Promise.resolve(latestBoiSnap);
-        if (boiStart && dateOnly < boiStart) return Promise.resolve(latestBoiSnap);
-        if (boiSnapByDate.has(dateOnly)) return boiSnapByDate.get(dateOnly)!;
-        const p = loadBoiExchangeRatesForDate(dateOnly).catch(() => latestBoiSnap);
-        boiSnapByDate.set(dateOnly, p);
-        return p;
-      };
+      // BOI as-of conversion for Agreement Signed (rate available on sign date)
+      const boiConverter = await createBoiDateRateConverter();
       const toNis = async (amount: number, currency: string | number, signDateOnly: string | null) => {
-        const snap = await getBoiSnapForDate(signDateOnly);
-        return convertToNISWithMeta(amount, currency, snap).amountNIS;
+        return boiConverter.toNis(amount, currency, signDateOnly);
+      };
+
+      const buildAgreementCurrencyMeta = (...candidates: any[]) => {
+        const meta = buildCurrencyMetaFromId(...candidates);
+        return {
+          displaySymbol: meta.displaySymbol,
+          conversionValue: meta.isoCode,
+          isoCode: meta.isoCode,
+          currencyId: meta.currencyId,
+        };
       };
 
       const parseNumericAmount = (val: any) => {
@@ -3590,241 +3501,131 @@ const Dashboard: React.FC = () => {
         return 0;
       };
 
-      const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
-        for (const candidate of candidates) {
-          if (candidate === null || candidate === undefined) continue;
-          const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
-          if (rawValue === null || rawValue === undefined) continue;
-
-          if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
-            return { displaySymbol: getCurrencySymbol(rawValue), conversionValue: rawValue };
-          }
-
-          const valueStr = rawValue.toString().trim();
-          if (!valueStr) continue;
-
-          const numeric = Number(valueStr);
-          if (!Number.isNaN(numeric) && numeric.toString() === valueStr) {
-            return { displaySymbol: getCurrencySymbol(numeric), conversionValue: numeric };
-          }
-
-          const upper = valueStr.toUpperCase();
-          if (upper === '₪' || upper === 'NIS' || upper === 'ILS') {
-            return { displaySymbol: '₪', conversionValue: 'NIS' };
-          }
-          if (upper === 'USD' || valueStr === '$') {
-            return { displaySymbol: '$', conversionValue: 'USD' };
-          }
-          if (upper === 'EUR' || valueStr === '€') {
-            return { displaySymbol: '€', conversionValue: 'EUR' };
-          }
-          if (upper === 'GBP' || valueStr === '£') {
-            return { displaySymbol: '£', conversionValue: 'GBP' };
-          }
-        }
-        return { displaySymbol: '₪', conversionValue: 'NIS' };
-      };
-
       if (agreementRecords && agreementRecords.length > 0) {
-        // Process all records efficiently
-        let processedCount = 0;
-        let skippedCount = 0;
-
-        // Track processed records to prevent duplicates
         const processedRecordIds = new Set();
 
         for (const record of agreementRecords) {
-          // Skip if already processed
           if (processedRecordIds.has(record.id)) {
-            return;
+            continue;
           }
           processedRecordIds.add(record.id);
 
           const lead = record.leads_lead as any;
           if (!lead) {
-            return;
+            continue;
           }
 
           // Use actual amounts (VAT already excluded in database)
           let amount = 0;
           if (record.isNewLead) {
-            // For new leads, use balance or proposal_total
             amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
           } else {
-            // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
             const currencyId = lead.currency_id;
             const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
             if (numericCurrencyId === 1) {
-              // Use total_base for NIS/ILS currency
               amount = parseFloat(lead.total_base) || 0;
             } else {
-              // Use total for other currencies
               amount = parseFloat(lead.total) || 0;
             }
           }
-          const recordDate = record.date;
-          const recordDateOnly = extractDateFromRecord(recordDate);
-          const amountInNIS = await toNis(amount, lead.currency_id, recordDateOnly);
+          const recordDate = resolveStage60SignTimestamp(record);
+          const recordDateOnly = toSignCalendarDateKey(recordDate) ?? '';
+          const currencyMeta = record.isNewLead
+            ? buildAgreementCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency)
+            : buildAgreementCurrencyMeta(lead.currency_id, lead.meeting_total_currency_id, lead.accounting_currencies);
+          const amountInNIS = await toNis(amount, currencyMeta.conversionValue, recordDateOnly);
 
           const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-          const currencyMeta = record.isNewLead
-            ? buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency)
-            : buildCurrencyMeta(lead.currency_id, lead.meeting_total_currency_id, lead.accounting_currencies);
           const subcontractorFeeNIS = await toNis(subcontractorFee, currencyMeta.conversionValue, recordDateOnly);
           const amountAfterFee = amountInNIS - subcontractorFeeNIS;
 
-          // Debug currency conversion
-          // Log non-NIS currencies for verification
-          if (lead.currency_id && lead.currency_id !== 1) {
+          const { departmentId } = resolveLeadDepartment(lead);
+          const deptIndex = getScoreboardPeriodDeptIndex(departmentId, departmentIds);
+
+          if (recordDateOnly === todayStr) {
+            newAgreementData.Today[deptIndex].count++;
+            newAgreementData.Today[deptIndex].amount += amountAfterFee;
+            newAgreementData.Today[0].count++;
+            newAgreementData.Today[0].amount += amountAfterFee;
           }
 
-          // Get department ID from the JOIN
-          let departmentId = null;
-          if (lead.misc_category?.misc_maincategory?.department_id) {
-            departmentId = lead.misc_category.misc_maincategory.department_id;
-          } else if (lead.category && categoryNameToDataMap) {
-            const normalizedCategoryName = lead.category.trim().toLowerCase();
-            const mappedCategory = categoryNameToDataMap.get(normalizedCategoryName);
-            if (mappedCategory?.misc_maincategory?.department_id) {
-              departmentId = mappedCategory.misc_maincategory.department_id;
-            }
+          if (recordDateOnly === yesterdayStr) {
+            newAgreementData.Yesterday[deptIndex].count++;
+            newAgreementData.Yesterday[deptIndex].amount += amountAfterFee;
+            newAgreementData.Yesterday[0].count++;
+            newAgreementData.Yesterday[0].amount += amountAfterFee;
           }
-          if (departmentId && departmentIds.includes(departmentId)) {
-            processedCount++;
 
-            // For Today and Last 30d, use the department index + 1 (to skip General)
-            const deptIndex = departmentIds.indexOf(departmentId) + 1;
+          if (recordDateOnly >= oneWeekAgoStr && recordDateOnly <= todayStr) {
+            newAgreementData.Week[deptIndex].count++;
+            newAgreementData.Week[deptIndex].amount += amountAfterFee;
+            newAgreementData.Week[0].count++;
+            newAgreementData.Week[0].amount += amountAfterFee;
+          }
 
-            // For current month, use the department index directly (no General column)
-            const monthDeptIndex = departmentIds.indexOf(departmentId);
-
-            // Check if it's today
-            if (recordDateOnly === todayStr) {
-              newAgreementData.Today[deptIndex].count++;
-              newAgreementData.Today[deptIndex].amount += amountAfterFee; // Use amount after fee
-              newAgreementData.Today[0].count++; // General
-              newAgreementData.Today[0].amount += amountAfterFee; // Use amount after fee
-            }
-
-            // Check if it's yesterday
-            if (recordDateOnly === yesterdayStr) {
-              newAgreementData.Yesterday[deptIndex].count++;
-              newAgreementData.Yesterday[deptIndex].amount += amountAfterFee; // Use amount after fee
-              newAgreementData.Yesterday[0].count++; // General
-              newAgreementData.Yesterday[0].amount += amountAfterFee; // Use amount after fee
-            }
-
-            // Check if it's in the last week (7 days including today)
-            if (recordDateOnly >= oneWeekAgoStr && recordDateOnly <= todayStr) {
-              newAgreementData.Week[deptIndex].count++;
-              newAgreementData.Week[deptIndex].amount += amountAfterFee; // Use amount after fee
-              newAgreementData.Week[0].count++; // General
-              newAgreementData.Week[0].amount += amountAfterFee; // Use amount after fee
-            }
-
-            // Check if it's in last 30 days (rolling 30 days from today)
-            // Always use thirtyDaysAgoStr for Last 30d - from 30 days ago to today
-            if (recordDateOnly >= last30dStartDate && recordDateOnly <= todayStr) {
-              newAgreementData["Last 30d"][deptIndex].count++;
-              newAgreementData["Last 30d"][deptIndex].amount += amountAfterFee; // Use amount after fee
-              newAgreementData["Last 30d"][0].count++; // General
-              newAgreementData["Last 30d"][0].amount += amountAfterFee; // Use amount after fee
-            }
-
-            // Note: Month data will be processed separately from monthStageRecords
-
-            // Debug: Show why dates might be different
-          } else {
-            skippedCount++;
+          if (recordDateOnly >= last30dStartDate && recordDateOnly <= todayStr) {
+            newAgreementData["Last 30d"][deptIndex].count++;
+            newAgreementData["Last 30d"][deptIndex].amount += amountAfterFee;
+            newAgreementData["Last 30d"][0].count++;
+            newAgreementData["Last 30d"][0].amount += amountAfterFee;
           }
         }
       }
 
       // Process month data separately
       if (monthAgreementRecords && monthAgreementRecords.length > 0) {
-        let monthProcessedCount = 0;
-        let monthSkippedCount = 0;
-
-        // Track processed records to prevent duplicates
         const processedMonthRecordIds = new Set();
 
         for (const record of monthAgreementRecords) {
-          // Skip if already processed
           if (processedMonthRecordIds.has(record.id)) {
-            return;
+            continue;
           }
           processedMonthRecordIds.add(record.id);
 
           const lead = record.leads_lead as any;
           if (!lead) {
-            return;
+            continue;
           }
 
-          // Use actual amounts (VAT already excluded in database)
           let amount = 0;
           if (record.isNewLead) {
-            // For new leads, use balance or proposal_total
             amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
           } else {
-            // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
             const currencyId = lead.currency_id;
             const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
             if (numericCurrencyId === 1) {
-              // Use total_base for NIS/ILS currency
               amount = parseFloat(lead.total_base) || 0;
             } else {
-              // Use total for other currencies
               amount = parseFloat(lead.total) || 0;
             }
           }
-          const recordDate = record.date;
-          const recordDateOnly = extractDateFromRecord(recordDate);
-          const amountInNIS = await toNis(amount, lead.currency_id, recordDateOnly);
+          const recordDate = resolveStage60SignTimestamp(record);
+          const recordDateOnly = toSignCalendarDateKey(recordDate) ?? '';
+          const currencyMeta = record.isNewLead
+            ? buildAgreementCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency)
+            : buildAgreementCurrencyMeta(lead.currency_id, lead.meeting_total_currency_id, lead.accounting_currencies);
+          const amountInNIS = await toNis(amount, currencyMeta.conversionValue, recordDateOnly);
 
           const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-          const currencyMeta = record.isNewLead
-            ? buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency)
-            : buildCurrencyMeta(lead.currency_id, lead.meeting_total_currency_id, lead.accounting_currencies);
           const subcontractorFeeNIS = await toNis(subcontractorFee, currencyMeta.conversionValue, recordDateOnly);
           const amountAfterFee = amountInNIS - subcontractorFeeNIS;
 
-          // Get department ID from the JOIN
-          let departmentId = null;
-          if (lead.misc_category?.misc_maincategory?.department_id) {
-            departmentId = lead.misc_category.misc_maincategory.department_id;
-          } else if (lead.category && categoryNameToDataMap) {
-            const normalizedCategoryName = lead.category.trim().toLowerCase();
-            const mappedCategory = categoryNameToDataMap.get(normalizedCategoryName);
-            if (mappedCategory?.misc_maincategory?.department_id) {
-              departmentId = mappedCategory.misc_maincategory.department_id;
-            }
-          }
-          if (departmentId && departmentIds.includes(departmentId)) {
-            monthProcessedCount++;
+          const { departmentId } = resolveLeadDepartment(lead);
+          const monthDeptIndex = getScoreboardMonthDeptIndex(departmentId, departmentIds);
 
-            // For current month, use the department index directly (no General column)
-            const monthDeptIndex = departmentIds.indexOf(departmentId);
-
-            // Check if it's in selected month (must be between start and end of month)
-            if (recordDateOnly >= startOfMonthStr && recordDateOnly <= endOfMonthStr) {
-              newAgreementData[selectedMonthName][monthDeptIndex].count++;
-              newAgreementData[selectedMonthName][monthDeptIndex].amount += amountAfterFee; // Use amount after fee
-            }
-          } else {
-            monthSkippedCount++;
+          if (recordDateOnly >= startOfMonthStr && recordDateOnly <= endOfMonthStr) {
+            newAgreementData[selectedMonthName][monthDeptIndex].count++;
+            newAgreementData[selectedMonthName][monthDeptIndex].amount += amountAfterFee;
           }
         }
       }
 
       // Calculate totals for each time period
-      // Debug: Show the raw data before calculating totals
-      // Calculate dynamic totals based on actual number of departments
       const numDepartments = departmentTargets.length;
-      const totalIndexToday = numDepartments + 1; // General + departments + Total
-      const totalIndexMonth = numDepartments; // departments + Total (no General for month)
-      // Today totals (sum of departments, excluding General and Total)
-      const todayTotalCount = newAgreementData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
-      const todayTotalAmount = Math.ceil(newAgreementData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+      const { totalIndexToday, totalIndexMonth } = getScoreboardTotalIndexes(numDepartments);
+      // Today totals (sum of departments + Other, excluding General and Total)
+      const todayTotalCount = newAgreementData.Today.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
+      const todayTotalAmount = Math.ceil(newAgreementData.Today.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
       newAgreementData.Today[totalIndexToday] = {
         count: todayTotalCount,
         amount: todayTotalAmount,
@@ -3832,8 +3633,8 @@ const Dashboard: React.FC = () => {
       };
 
       // Yesterday totals
-      const yesterdayTotalCount = newAgreementData.Yesterday.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
-      const yesterdayTotalAmount = Math.ceil(newAgreementData.Yesterday.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+      const yesterdayTotalCount = newAgreementData.Yesterday.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
+      const yesterdayTotalAmount = Math.ceil(newAgreementData.Yesterday.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
       newAgreementData.Yesterday[totalIndexToday] = {
         count: yesterdayTotalCount,
         amount: yesterdayTotalAmount,
@@ -3841,8 +3642,8 @@ const Dashboard: React.FC = () => {
       };
 
       // Week totals
-      const weekTotalCount = newAgreementData.Week.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
-      const weekTotalAmount = Math.ceil(newAgreementData.Week.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+      const weekTotalCount = newAgreementData.Week.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
+      const weekTotalAmount = Math.ceil(newAgreementData.Week.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
       newAgreementData.Week[totalIndexToday] = {
         count: weekTotalCount,
         amount: weekTotalAmount,
@@ -3859,59 +3660,18 @@ const Dashboard: React.FC = () => {
       };
 
       // Current month totals - calculate by summing the individual department values
-      const monthTotalCount = newAgreementData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.count, 0);
-      const monthTotalAmount = Math.ceil(newAgreementData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.amount, 0));
+      const monthTotalCount = newAgreementData[selectedMonthName].slice(0, totalIndexMonth).reduce((sum, item) => sum + item.count, 0);
+      const monthTotalAmount = Math.ceil(newAgreementData[selectedMonthName].slice(0, totalIndexMonth).reduce((sum, item) => sum + item.amount, 0));
       newAgreementData[selectedMonthName][totalIndexMonth] = {
         count: monthTotalCount,
         amount: monthTotalAmount,
         expected: 0
       };
 
-      console.log('🔍 Agreement Signed - Totals comparison:', {
-        last30dCount: last30TotalCount,
-        last30dAmount: last30TotalAmount,
-        monthCount: monthTotalCount,
-        monthAmount: monthTotalAmount,
-        difference: last30TotalCount - monthTotalCount,
-        amountDifference: last30TotalAmount - monthTotalAmount
-      });
-
-      // Debug: Show the calculated totals
-      // Log currency distribution summary
-      const currencyDistribution = {
-        NIS: 0,
-        USD: 0,
-        EUR: 0,
-        GBP: 0,
-        Unknown: 0
-      };
-      // Combine all records that were processed
-      const allProcessedRecords = [...(agreementRecords || []), ...(monthAgreementRecords || [])];
-      if (allProcessedRecords.length > 0) {
-        // Check first 5 records for currency data
-        for (let i = 0; i < Math.min(5, allProcessedRecords.length); i++) {
-          const record = allProcessedRecords[i];
-          const lead = record.leads_lead;
-        }
-      }
-
-      allProcessedRecords.forEach((record, index) => {
-        const lead = record.leads_lead;
-        if (lead && lead.currency_id) {
-          switch (lead.currency_id) {
-            case 1: currencyDistribution.NIS++; break;
-            case 2: currencyDistribution.USD++; break;
-            case 3: currencyDistribution.EUR++; break;
-            case 4: currencyDistribution.GBP++; break;
-            default: currencyDistribution.Unknown++; break;
-          }
-        } else if (index < 5) { // Log first 5 records that don't have currency
-        }
-      });
       setAgreementData(newAgreementData);
 
       // Fetch daily chart data for the last 30 days
-      const chartData = await fetchDepartmentChartData(departmentIds, departmentTargets, thirtyDaysAgoStr, todayStr);
+      const chartData = await fetchDepartmentChartData(departmentIds, departmentTargets, last30dStartDate, todayStr);
 
       return {
         agreementData: newAgreementData,
@@ -3919,6 +3679,7 @@ const Dashboard: React.FC = () => {
         departmentChartData: chartData ?? {},
       };
     } catch (error) {
+      console.error('[Dashboard Agreement Signed] fetchDepartmentPerformance failed:', error);
       return null;
     } finally {
       setDepartmentPerformanceLoading(false);
@@ -4116,73 +3877,8 @@ const Dashboard: React.FC = () => {
         });
       }
 
-      // BOI-first conversion snapshots (same idea as CollectionFinancesReport)
-      const boiStart = await getBoiCoverageStartDate();
-      const latestBoiSnap = await loadBoiExchangeRates();
-      const boiSnapByDate = new Map<string, Promise<any>>();
-      const getBoiSnapForDate = (dateOnly: string | null): Promise<any> => {
-        if (!dateOnly || !/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) return Promise.resolve(latestBoiSnap);
-        if (boiStart && dateOnly < boiStart) return Promise.resolve(latestBoiSnap);
-        if (boiSnapByDate.has(dateOnly)) return boiSnapByDate.get(dateOnly)!;
-        const p = loadBoiExchangeRatesForDate(dateOnly).catch(() => latestBoiSnap);
-        boiSnapByDate.set(dateOnly, p);
-        return p;
-      };
-
-      // Helper function to resolve category and get department (same as CollectionDueReport)
-      const resolveCategoryAndDepartment = (
-        categoryValue?: string | null,
-        categoryId?: string | number | null,
-        miscCategory?: any
-      ): { departmentId: number | null; departmentName: string } => {
-        let resolvedMiscCategory = miscCategory;
-
-        // If miscCategory join failed but we have categoryId, try to find by ID in allCategoriesData
-        if (!resolvedMiscCategory && categoryId !== null && categoryId !== undefined && allCategoriesData) {
-          const numericId = typeof categoryId === 'number' ? categoryId : Number(categoryId);
-          if (!Number.isNaN(numericId)) {
-            const foundById = (allCategoriesData || []).find((cat: any) => cat.id === numericId);
-            if (foundById) {
-              resolvedMiscCategory = foundById;
-            }
-          }
-        }
-
-        // If we still don't have a category but have categoryValue, try to look it up in the map by name
-        if (!resolvedMiscCategory && categoryValue && categoryValue.trim() !== '' && categoryNameToDataMap.size > 0) {
-          const normalizedName = categoryValue.trim().toLowerCase();
-          const mappedCategory = categoryNameToDataMap.get(normalizedName);
-          if (mappedCategory) {
-            resolvedMiscCategory = mappedCategory;
-          }
-        }
-
-        if (!resolvedMiscCategory) {
-          return { departmentId: null, departmentName: '—' };
-        }
-
-        const categoryRecord = Array.isArray(resolvedMiscCategory) ? resolvedMiscCategory[0] : resolvedMiscCategory;
-        if (!categoryRecord) {
-          return { departmentId: null, departmentName: '—' };
-        }
-
-        let mainCategory = Array.isArray(categoryRecord.misc_maincategory)
-          ? categoryRecord.misc_maincategory[0]
-          : categoryRecord.misc_maincategory;
-
-        if (!mainCategory) {
-          return { departmentId: null, departmentName: categoryRecord.name || '—' };
-        }
-
-        const department = mainCategory.tenant_departement
-          ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement)
-          : null;
-
-        const departmentId = department?.id || mainCategory.department_id || null;
-        const departmentName = department?.name || mainCategory.name || categoryRecord.name || '—';
-
-        return { departmentId, departmentName };
-      };
+      // BOI as-of conversion for invoiced totals (paid → payment time; unpaid → due date)
+      const boiConverter = await createBoiDateRateConverter();
 
       // Create target map (department ID -> min_income)
       const targetMap: { [key: number]: number } = {};
@@ -4202,20 +3898,6 @@ const Dashboard: React.FC = () => {
       // If today is Jan 11, 30 days ago is Dec 12, so range is Dec 12 to Jan 11 (inclusive) = 31 days total
       const effectiveThirtyDaysAgo = thirtyDaysAgoStr;
 
-      // Debug: Log the date range for Last 30d to verify it matches Collection Due Report
-      console.log('🔍 Invoiced Data - Last 30d date range:', {
-        effectiveThirtyDaysAgo,
-        todayStr,
-        range: `${effectiveThirtyDaysAgo} to ${todayStr} (inclusive)`,
-        note: 'This should match Collection Due Report date range'
-      });
-
-      // Debug: Log the date range for Last 30d
-      console.log('🔍 Invoiced Data - Last 30d date range:', {
-        effectiveThirtyDaysAgo,
-        todayStr,
-        range: `${effectiveThirtyDaysAgo} to ${todayStr} (inclusive)`
-      });
       // Calculate date ranges for invoiced data
       const yesterday = new Date(today);
       yesterday.setDate(yesterday.getDate() - 1);
@@ -4226,56 +3908,16 @@ const Dashboard: React.FC = () => {
 
       // Initialize invoiced data structure
       const newInvoicedData = {
-        Today: [
-          { count: 0, amount: 0, expected: 0 }, // General (index 0)
-          ...departmentTargets.map(dept => ({
-            count: 0,
-            amount: 0,
-            expected: parseFloat(dept.min_income || '0')
-          })), // Actual departments
-          { count: 0, amount: 0, expected: 0 }, // Total (last index)
-        ],
-        Yesterday: [
-          { count: 0, amount: 0, expected: 0 }, // General (index 0)
-          ...departmentTargets.map(dept => ({
-            count: 0,
-            amount: 0,
-            expected: parseFloat(dept.min_income || '0')
-          })), // Actual departments
-          { count: 0, amount: 0, expected: 0 }, // Total (last index)
-        ],
-        Week: [
-          { count: 0, amount: 0, expected: 0 }, // General (index 0)
-          ...departmentTargets.map(dept => ({
-            count: 0,
-            amount: 0,
-            expected: parseFloat(dept.min_income || '0')
-          })), // Actual departments
-          { count: 0, amount: 0, expected: 0 }, // Total (last index)
-        ],
-        "Last 30d": [
-          { count: 0, amount: 0, expected: 0 }, // General (index 0)
-          ...departmentTargets.map(dept => ({
-            count: 0,
-            amount: 0,
-            expected: parseFloat(dept.min_income || '0')
-          })), // Actual departments
-          { count: 0, amount: 0, expected: 0 }, // Total (last index)
-        ],
-        [selectedMonthName]: [
-          ...departmentTargets.map(dept => ({
-            count: 0,
-            amount: 0,
-            expected: parseFloat(dept.min_income || '0')
-          })), // Actual departments (no General for month)
-          { count: 0, amount: 0, expected: 0 }, // Total (last index)
-        ],
+        Today: buildScoreboardPeriodRows(departmentTargets),
+        Yesterday: buildScoreboardPeriodRows(departmentTargets),
+        Week: buildScoreboardPeriodRows(departmentTargets),
+        "Last 30d": buildScoreboardPeriodRows(departmentTargets),
+        [selectedMonthName]: buildScoreboardMonthRows(departmentTargets),
       };
 
       // Fetch new payment plans - show all payments with due_date (both paid and unpaid)
       // Note: We don't filter by date range here because we need data for multiple periods (Today, Last 30d, Month)
       // We'll filter by date in the processing step
-      console.log('🔍 Invoiced Data - Fetching new payment plans with ready_to_pay=true (showing all, paid and unpaid)...');
       let newPaymentsQuery = supabase
         .from('payment_plans')
         .select(`
@@ -4287,7 +3929,8 @@ const Dashboard: React.FC = () => {
           due_date,
           cancel_date,
           ready_to_pay,
-          paid
+          paid,
+          paid_at
         `)
         .eq('ready_to_pay', true)
         .not('due_date', 'is', null)
@@ -4298,31 +3941,15 @@ const Dashboard: React.FC = () => {
         console.error('❌ Invoiced Data - Error fetching new payments:', newError);
         throw newError;
       }
-      console.log('✅ Invoiced Data - Fetched new payments:', newPayments?.length || 0);
 
       // Filter out any payments with cancel_date (safety check)
       const filteredNewPayments = (newPayments || []).filter(p => !p.cancel_date);
-      if (filteredNewPayments.length !== (newPayments || []).length) {
-        console.log('⚠️ Invoiced Data - Filtered out', (newPayments || []).length - filteredNewPayments.length, 'new payments with cancel_date');
-      }
-
-      if (filteredNewPayments.length > 0) {
-        console.log('📊 Invoiced Data - Sample new payment:', {
-          id: filteredNewPayments[0].id,
-          lead_id: filteredNewPayments[0].lead_id,
-          due_date: filteredNewPayments[0].due_date,
-          value: filteredNewPayments[0].value,
-          ready_to_pay: filteredNewPayments[0].ready_to_pay,
-          paid: filteredNewPayments[0].paid
-        });
-      }
 
       // Fetch legacy payment plans from finances_paymentplanrow
       // IMPORTANT: Match Collection Due Report - NO ready_to_pay filter, only filter by due_date IS NOT NULL
       // Use pagination to fetch ALL records (Supabase limit is 1000 per query)
       // Note: We don't filter by date range here because we need data for multiple periods (Today, Last 30d, Month)
       // We'll filter by date in the processing step
-      console.log('🔍 Invoiced Data - Fetching legacy payment plans (matching Collection Due Report - all with due_date, no ready_to_pay filter, using pagination)...');
 
       let allLegacyPayments: any[] = [];
       const batchSize = 1000; // Supabase limit
@@ -4360,7 +3987,6 @@ const Dashboard: React.FC = () => {
 
         if (batch && batch.length > 0) {
           allLegacyPayments = [...allLegacyPayments, ...batch];
-          console.log(`✅ Invoiced Data - Fetched batch ${batchNumber}: ${batch.length} payments (total so far: ${allLegacyPayments.length})`);
 
           // If we got fewer than batchSize, we've reached the end
           if (batch.length < batchSize) {
@@ -4373,38 +3999,16 @@ const Dashboard: React.FC = () => {
         }
       }
 
-      console.log('✅ Invoiced Data - Fetched all legacy payments (all with due_date, matching Collection Due Report):', allLegacyPayments.length);
-
       // Filter out any payments with cancel_date (safety check)
       const filteredLegacyPayments = allLegacyPayments.filter(p => !p.cancel_date);
-      if (filteredLegacyPayments.length !== allLegacyPayments.length) {
-        console.log('⚠️ Invoiced Data - Filtered out', allLegacyPayments.length - filteredLegacyPayments.length, 'legacy payments with cancel_date');
-      }
-
-      console.log('✅ Invoiced Data - Total legacy payments (after cancel_date filter):', filteredLegacyPayments.length);
-
-      if (filteredLegacyPayments.length > 0) {
-        console.log('📊 Invoiced Data - Sample legacy payment:', {
-          id: filteredLegacyPayments[0].id,
-          lead_id: filteredLegacyPayments[0].lead_id,
-          due_date: filteredLegacyPayments[0].due_date,
-          date: filteredLegacyPayments[0].date,
-          value_base: filteredLegacyPayments[0].value_base,
-          actual_date: filteredLegacyPayments[0].actual_date
-        });
-      }
 
       // Get unique lead IDs
       const newLeadIds = Array.from(new Set(filteredNewPayments.map(p => p.lead_id).filter(Boolean)));
       const legacyLeadIds = Array.from(new Set(filteredLegacyPayments.map(p => p.lead_id).filter(Boolean))).map(id => Number(id)).filter(id => !Number.isNaN(id));
 
-      console.log('📊 Invoiced Data - Unique new lead IDs:', newLeadIds.length);
-      console.log('📊 Invoiced Data - Unique legacy lead IDs:', legacyLeadIds.length);
-
       // Fetch lead metadata with handler info and category (to get department from category, matching Agreement Signed)
       let newLeadsMap = new Map();
       if (newLeadIds.length > 0) {
-        console.log('🔍 Invoiced Data - Fetching new leads metadata...');
         const { data: newLeads, error: newLeadsError } = await supabase
           .from('leads')
           .select(`
@@ -4425,7 +4029,6 @@ const Dashboard: React.FC = () => {
         if (newLeadsError) {
           console.error('❌ Invoiced Data - Error fetching new leads:', newLeadsError);
         } else {
-          console.log('✅ Invoiced Data - Fetched new leads:', newLeads?.length || 0);
           if (newLeads) {
             newLeads.forEach(lead => {
               newLeadsMap.set(lead.id, lead);
@@ -4436,8 +4039,6 @@ const Dashboard: React.FC = () => {
 
       let legacyLeadsMap = new Map();
       if (legacyLeadIds.length > 0) {
-        console.log('🔍 Invoiced Data - Fetching legacy leads metadata...');
-
         // Supabase's .in() has a limit of 1000 items, so we need to fetch in batches
         const leadIdBatchSize = 1000;
         let allLegacyLeads: any[] = [];
@@ -4470,12 +4071,10 @@ const Dashboard: React.FC = () => {
           } else {
             if (legacyLeadsBatch) {
               allLegacyLeads = [...allLegacyLeads, ...legacyLeadsBatch];
-              console.log(`✅ Invoiced Data - Fetched legacy leads batch: ${legacyLeadsBatch.length} leads (total so far: ${allLegacyLeads.length})`);
             }
           }
         }
 
-        console.log('✅ Invoiced Data - Fetched legacy leads:', allLegacyLeads.length);
         if (allLegacyLeads.length > 0) {
           allLegacyLeads.forEach(lead => {
             const key = lead.id?.toString() || String(lead.id);
@@ -4486,14 +4085,6 @@ const Dashboard: React.FC = () => {
           });
         }
       }
-
-      console.log('📊 Invoiced Data - Date ranges:', {
-        todayStr,
-        effectiveThirtyDaysAgo,
-        startOfMonthStr,
-        endOfMonthStr,
-        selectedMonthName
-      });
 
       // Fetch handler information and map to departments (EXACTLY matching CollectionDueReport)
       // Collect handler names from new leads and handler IDs from legacy leads
@@ -4676,17 +4267,13 @@ const Dashboard: React.FC = () => {
         }
 
         // Get department from category -> main category -> department (using helper function)
-        const { departmentId, departmentName } = resolveCategoryAndDepartment(
+        const { departmentId } = resolveCategoryAndDepartment(
           lead.category,
           lead.category_id,
-          lead.misc_category
+          lead.misc_category,
+          allCategoriesData,
+          categoryNameToDataMap,
         );
-
-        // Only include payments that have a department in our department list
-        if (!departmentId || !departmentIds.includes(departmentId)) {
-          newPaymentsSkipped++;
-          continue;
-        }
 
         newPaymentsProcessed++;
 
@@ -4702,10 +4289,14 @@ const Dashboard: React.FC = () => {
         const dueDate = payment.due_date ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0]) : null;
         if (!dueDate) continue;
 
-        const snap = await getBoiSnapForDate(dueDate);
-        const amountInNIS = convertToNISWithMeta(value, currencyForConversion, snap).amountNIS;
+        const rateAsOf = resolvePaymentPlanBoiAsOfInput({
+          paid: payment.paid,
+          paid_at: payment.paid_at,
+          due_date: payment.due_date,
+        });
+        const amountInNIS = await boiConverter.toNis(value, currencyForConversion, rateAsOf);
 
-        const deptIndex = departmentIds.indexOf(departmentId) + 1; // +1 to skip General column
+        const deptIndex = getScoreboardPeriodDeptIndex(departmentId, departmentIds);
 
         // Check if it's today
         if (dueDate === todayStr) {
@@ -4741,17 +4332,11 @@ const Dashboard: React.FC = () => {
 
         // Check if it's in selected month
         if (dueDate >= startOfMonthStr && dueDate <= endOfMonthStr) {
-          const monthDeptIndex = departmentIds.indexOf(departmentId); // No General column for month
+          const monthDeptIndex = getScoreboardMonthDeptIndex(departmentId, departmentIds);
           newInvoicedData[selectedMonthName][monthDeptIndex].count += 1;
           newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountInNIS;
         }
       }
-
-      console.log('📊 Invoiced Data - New payments processing:', {
-        total: filteredNewPayments.length,
-        processed: newPaymentsProcessed,
-        skipped: newPaymentsSkipped
-      });
 
       // Process legacy payments
       // IMPORTANT: Each payment row is counted separately - no deduplication by lead_id
@@ -4769,17 +4354,13 @@ const Dashboard: React.FC = () => {
         }
 
         // Get department from category -> main category -> department (using helper function, matching CollectionDueReport)
-        const { departmentId, departmentName } = resolveCategoryAndDepartment(
+        const { departmentId } = resolveCategoryAndDepartment(
           lead.category,
           lead.category_id,
-          lead.misc_category
+          lead.misc_category,
+          allCategoriesData,
+          categoryNameToDataMap,
         );
-
-        // Only include payments that have a department in our department list (or '—' which we'll skip)
-        if (!departmentId || !departmentIds.includes(departmentId)) {
-          legacyPaymentsSkipped++;
-          continue;
-        }
 
         legacyPaymentsProcessed++;
 
@@ -4819,10 +4400,13 @@ const Dashboard: React.FC = () => {
         const dueDate = payment.due_date ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0]) : null;
         if (!dueDate) continue;
 
-        const snap = await getBoiSnapForDate(dueDate);
-        const amountInNIS = convertToNISWithMeta(value, currencyForConversion, snap).amountNIS;
+        const rateAsOf = resolvePaymentPlanBoiAsOfInput({
+          actual_date: payment.actual_date,
+          due_date: payment.due_date,
+        });
+        const amountInNIS = await boiConverter.toNis(value, currencyForConversion, rateAsOf);
 
-        const deptIndex = departmentIds.indexOf(departmentId) + 1; // +1 to skip General column
+        const deptIndex = getScoreboardPeriodDeptIndex(departmentId, departmentIds);
 
         // Check if it's today
         if (dueDate === todayStr) {
@@ -4858,52 +4442,39 @@ const Dashboard: React.FC = () => {
 
         // Check if it's in selected month
         if (dueDate >= startOfMonthStr && dueDate <= endOfMonthStr) {
-          const monthDeptIndex = departmentIds.indexOf(departmentId); // No General column for month
+          const monthDeptIndex = getScoreboardMonthDeptIndex(departmentId, departmentIds);
           newInvoicedData[selectedMonthName][monthDeptIndex].count += 1;
           newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountInNIS;
         }
       }
 
-      console.log('📊 Invoiced Data - Legacy payments processing:', {
-        total: filteredLegacyPayments.length,
-        processed: legacyPaymentsProcessed,
-        skipped: legacyPaymentsSkipped
-      });
-
-      console.log('📊 Invoiced Data - Final data before totals:', {
-        Today: newInvoicedData["Today"].map((item, idx) => ({ idx, count: item.count, amount: item.amount })),
-        Last30d: newInvoicedData["Last 30d"].map((item, idx) => ({ idx, count: item.count, amount: item.amount })),
-        Month: newInvoicedData[selectedMonthName].map((item, idx) => ({ idx, count: item.count, amount: item.amount }))
-      });
-
       // Calculate totals
       const numDepartments = departmentTargets.length;
-      const totalIndexToday = numDepartments + 1; // General + departments + Total
-      const totalIndexMonth = numDepartments; // departments + Total (no General for month)
+      const { totalIndexToday, totalIndexMonth } = getScoreboardTotalIndexes(numDepartments);
 
-      // Today totals (sum of departments, excluding General and Total)
-      const todayTotalCount = newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
-      const todayTotalAmount = Math.ceil(newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+      // Today totals (sum of departments + Other, excluding General and Total)
+      const todayTotalCount = newInvoicedData.Today.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
+      const todayTotalAmount = Math.ceil(newInvoicedData.Today.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
       newInvoicedData.Today[totalIndexToday] = { count: todayTotalCount, amount: todayTotalAmount, expected: 0 };
 
       // Yesterday totals
-      const yesterdayTotalCount = newInvoicedData.Yesterday.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
-      const yesterdayTotalAmount = Math.ceil(newInvoicedData.Yesterday.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+      const yesterdayTotalCount = newInvoicedData.Yesterday.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
+      const yesterdayTotalAmount = Math.ceil(newInvoicedData.Yesterday.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
       newInvoicedData.Yesterday[totalIndexToday] = { count: yesterdayTotalCount, amount: yesterdayTotalAmount, expected: 0 };
 
       // Week totals
-      const weekTotalCount = newInvoicedData.Week.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
-      const weekTotalAmount = Math.ceil(newInvoicedData.Week.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+      const weekTotalCount = newInvoicedData.Week.slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
+      const weekTotalAmount = Math.ceil(newInvoicedData.Week.slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
       newInvoicedData.Week[totalIndexToday] = { count: weekTotalCount, amount: weekTotalAmount, expected: 0 };
 
       // Last 30d totals
-      const last30TotalCount = newInvoicedData["Last 30d"].slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
-      const last30TotalAmount = Math.ceil(newInvoicedData["Last 30d"].slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+      const last30TotalCount = newInvoicedData["Last 30d"].slice(1, totalIndexToday).reduce((sum, item) => sum + item.count, 0);
+      const last30TotalAmount = Math.ceil(newInvoicedData["Last 30d"].slice(1, totalIndexToday).reduce((sum, item) => sum + item.amount, 0));
       newInvoicedData["Last 30d"][totalIndexToday] = { count: last30TotalCount, amount: last30TotalAmount, expected: 0 };
 
       // Current month totals
-      const monthTotalCount = newInvoicedData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.count, 0);
-      const monthTotalAmount = Math.ceil(newInvoicedData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.amount, 0));
+      const monthTotalCount = newInvoicedData[selectedMonthName].slice(0, totalIndexMonth).reduce((sum, item) => sum + item.count, 0);
+      const monthTotalAmount = Math.ceil(newInvoicedData[selectedMonthName].slice(0, totalIndexMonth).reduce((sum, item) => sum + item.amount, 0));
       newInvoicedData[selectedMonthName][totalIndexMonth] = { count: monthTotalCount, amount: monthTotalAmount, expected: 0 };
 
       setInvoicedData(newInvoicedData);
@@ -5009,7 +4580,7 @@ const Dashboard: React.FC = () => {
   const loadScoreboardData = useCallback(
     async (opts?: { background?: boolean }) => {
       const periodKey = `${selectedYear}-${selectedMonth}`;
-      const cacheKey = `dashboard-scoreboard:v2:${periodKey}`;
+      const cacheKey = `dashboard-scoreboard:v5:${periodKey}`;
       const cached = getCachedData<DashboardScoreboardCache>(dashboardPathname, cacheKey);
 
       if (cached) {
@@ -5608,7 +5179,7 @@ const Dashboard: React.FC = () => {
     return (
       <>
         {/* Mobile: departments as rows, periods as columns */}
-        <div className="md:hidden overflow-x-auto -mx-4 px-4 pb-2">
+        <div className="md:hidden overflow-x-auto w-full min-w-0 px-2 pb-2">
           <table className="w-full min-w-[600px] text-sm table-fixed">
             <thead className="bg-white border-b border-slate-200 sticky top-0">
               <tr>
@@ -5644,10 +5215,11 @@ const Dashboard: React.FC = () => {
                     if (p.key === `Target ${selectedMonth}`) {
                       const row = deptName === 'Total'
                         ? (() => {
-                          const numDepartments = departmentNames.length;
-                          const totalTarget = dataSource[selectedMonth]?.slice(0, numDepartments).reduce(
+                          const otherIdx = departmentNames.indexOf(SCOREBOARD_OTHER_COLUMN);
+                          const mainDeptCount = otherIdx >= 0 ? otherIdx : departmentNames.length;
+                          const totalTarget = dataSource[selectedMonth]?.slice(0, mainDeptCount).reduce(
                             (sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0),
-                            0
+                            0,
                           ) || 0;
                           return { expected: totalTarget, amount: getTotalData(selectedMonth).amount };
                         })()
@@ -5688,7 +5260,7 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/* Desktop: existing layout */}
-        <div className="hidden md:block overflow-x-auto -mx-4 md:mx-0 pl-5 pr-2 md:pl-0 md:pr-0 w-full">
+        <div className="hidden md:block overflow-x-auto w-full min-w-0">
           <table className="min-w-full text-xs md:text-sm w-full">
             <thead className="bg-white border-b border-slate-200">
               <tr>
@@ -5759,10 +5331,10 @@ const Dashboard: React.FC = () => {
                     {isThisMonth && (
                       <tr className="bg-white border border-slate-200">
                         <td className="px-0.5 md:px-5 py-1 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">Target {columnType}</td>
-                        {categories.map((category, index) => {
-                          const data = dataSource[selectedMonth]?.[index];
-                          const amount = data?.amount ?? 0;
-                          const target = data?.expected ?? 0;
+                        {categories.map((category) => {
+                          const data = getDeptData(category, selectedMonth);
+                          const amount = data.amount ?? 0;
+                          const target = data.expected ?? 0;
                           const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
                           return (
                             <td key={`${category}-target`} className={`px-0.5 md:px-5 py-1 md:py-3 text-center text-[10px] md:text-sm font-semibold ${targetClass} whitespace-nowrap`}>
@@ -5772,8 +5344,12 @@ const Dashboard: React.FC = () => {
                         })}
                         <td className="px-0.5 md:px-5 py-1 md:py-3 text-center text-[10px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
                           {(() => {
-                            const numDepartments = departmentNames.length;
-                            const totalTarget = dataSource[selectedMonth]?.slice(0, numDepartments).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0), 0) || 0;
+                            const otherIdx = departmentNames.indexOf(SCOREBOARD_OTHER_COLUMN);
+                            const mainDeptCount = otherIdx >= 0 ? otherIdx : departmentNames.length;
+                            const totalTarget = dataSource[selectedMonth]?.slice(0, mainDeptCount).reduce(
+                              (sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0),
+                              0,
+                            ) || 0;
                             return totalTarget ? `₪${Math.ceil(totalTarget).toLocaleString()}` : '—';
                           })()}
                         </td>
@@ -7621,9 +7197,7 @@ const Dashboard: React.FC = () => {
       )}
 
       {/* Performance scoreboard (full width; archived AI column: `dashboard/DashboardAiSuggestionsArchive.tsx`) */}
-      <div className="mb-6 md:mb-10 w-full relative transition-all duration-500 ease-in-out">
-        <div className="w-full transition-all duration-500 ease-in-out">
-          <div className="p-4 md:p-6">
+      <div className="mb-6 md:mb-10 w-full min-w-0">
             {/* Header - simple on background */}
             <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-4">
               <div className="flex items-center gap-3">
@@ -7773,7 +7347,7 @@ const Dashboard: React.FC = () => {
                 </div>
                 {/* Agreement signed */}
                 <div>
-                  <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden -mx-4 md:mx-0">
+                  <div className="bg-white rounded-2xl border border-gray-200 shadow-lg overflow-hidden min-w-0 w-full">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-white gap-2">
                       <div className={`text-xs md:text-sm font-semibold ${isAltTheme ? 'text-green-600' : 'text-[#3b28c7]'}`}>Agreement signed</div>
                       <div className="flex flex-wrap items-center gap-1 md:gap-2">
@@ -7853,7 +7427,7 @@ const Dashboard: React.FC = () => {
 
                 {/* Invoiced */}
                 <div className="mt-4 md:mt-6">
-                  <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden -mx-4 md:mx-0">
+                  <div className="bg-white rounded-2xl border border-gray-200 shadow-lg overflow-hidden min-w-0 w-full">
                     <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-white gap-2">
                       <div className={`text-xs md:text-sm font-semibold ${isAltTheme ? 'text-green-600' : 'text-[#3b28c7]'}`}>Invoiced</div>
                       <div className="flex flex-wrap items-center gap-1 md:gap-2">
@@ -8094,8 +7668,6 @@ const Dashboard: React.FC = () => {
 
             {/* Quick Actions removed per request */}
       </div>
-    </div>
-  </div>
 
       {/* Clock In/Out Box - Commented out */}
       {/* <div className="w-full mt-12">

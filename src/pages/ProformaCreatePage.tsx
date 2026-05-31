@@ -398,6 +398,7 @@ const ProformaCreatePage: React.FC = () => {
         await ensureProformaPaymentLink({
           paymentPlanId: paymentId!,
           leadClientId: payment.lead_id || proformaData.clientId,
+          planContactId: payment.client_id ?? proformaData.contactId ?? null,
           value: Number(payment.value) || 0,
           valueVat: Number(payment.value_vat ?? vat) || 0,
           currency,

@@ -1,7 +1,6 @@
 const supabase = require('../config/supabase');
 const pelecardService = require('../services/pelecardService');
-const { chargeAmountFromPayment } = require('../services/paymentChargeAmountService');
-const { sendPaymentConfirmationEmail } = require('../services/paymentConfirmationEmailService');
+const reconciliation = require('../services/pelecardPaymentReconciliationService');
 
 function appRedirect(path, query = {}) {
   const { appPublicUrl } = pelecardService.getConfig();
@@ -15,161 +14,31 @@ function appRedirect(path, query = {}) {
   return `${appPublicUrl}${path}${qs ? `?${qs}` : ''}`;
 }
 
-/** Normalize Pelecard callback query/body fields. */
-function extractPelecardMeta(data = {}) {
-  const statusCode = String(
-    data.PelecardStatusCode ||
-      data.StatusCode ||
-      data.statusCode ||
-      ''
-  ).trim();
-  const statusDescription = String(
-    data.StatusDescription ||
-      data.statusDescription ||
-      ''
-  ).trim();
-  const transactionId =
-    data.PelecardTransactionId ||
-    data.pelecardTransactionId ||
-    data.TransactionId ||
-    null;
-  return { statusCode, statusDescription, transactionId };
+function mergeCallbackData(req) {
+  return { ...(req.query || {}), ...(req.body || {}) };
 }
 
-function pelecardDescriptionFromRaw(raw) {
-  if (!raw || typeof raw !== 'object') return null;
-  return (
-    raw.StatusDescription ||
-    raw.statusDescription ||
-    raw.callback?.StatusDescription ||
-    null
+function hasCallbackIdentity(data) {
+  return Boolean(
+    data.ParamX ||
+      data.paramX ||
+      data.paymentId ||
+      data.PelecardTransactionId ||
+      data.pelecardTransactionId ||
+      data.TransactionId,
   );
 }
 
-async function fetchPaymentByToken(secureToken) {
-  const { data, error } = await supabase
-    .from('payment_links')
-    .select(`
-      *,
-      leads:client_id(lead_number, topic, name, email, phone)
-    `)
-    .eq('secure_token', secureToken)
-    .maybeSingle();
-
-  if (error) throw error;
-  if (!data) return null;
-
-  let enriched = data;
-
-  if (!enriched.leads && enriched.legacy_id) {
-    const { data: legacyLead, error: legacyLeadError } = await supabase
-      .from('leads_lead')
-      .select('id, name, email, phone, topic')
-      .eq('id', enriched.legacy_id)
-      .maybeSingle();
-
-    if (legacyLeadError) {
-      console.error('Failed to fetch legacy lead for payment link:', legacyLeadError);
-    } else if (legacyLead) {
-      enriched = {
-        ...enriched,
-        leads: {
-          lead_number: String(legacyLead.id),
-          name: legacyLead.name,
-          email: legacyLead.email,
-          phone: legacyLead.phone,
-          topic: legacyLead.topic,
-        },
-      };
-    }
-  }
-
-  const isLegacy =
-    enriched.legacy_id != null ||
-    enriched.is_legacy_payment_plan === true ||
-    String(enriched.client_id || '').startsWith('legacy_');
-
-  if (isLegacy && enriched.payment_plan_id) {
-    const { data: legacyPlan, error: legacyError } = await supabase
-      .from('finances_paymentplanrow')
-      .select(`
-        id,
-        order,
-        currency_id,
-        actual_date,
-        accounting_currencies!finances_paymentplanrow_currency_id_fkey (
-          name,
-          iso_code
-        )
-      `)
-      .eq('id', enriched.payment_plan_id)
-      .maybeSingle();
-
-    if (legacyError) {
-      console.error('Failed to fetch legacy payment plan for payment link:', legacyError);
-    } else if (legacyPlan) {
-      enriched = { ...enriched, legacy_payment_plan: legacyPlan };
-    }
-  } else if (enriched.payment_plan_id) {
-    const { data: planRow, error: planError } = await supabase
-      .from('payment_plans')
-      .select('payment_order, currency, currency_id, paid, paid_at')
-      .eq('id', enriched.payment_plan_id)
-      .maybeSingle();
-
-    if (planError) {
-      console.error('Failed to fetch payment plan for payment link:', planError);
-    } else if (planRow) {
-      enriched = { ...enriched, payment_plans: planRow };
-    }
-  }
-
-  return enriched;
-}
-
-async function markPaymentPlanPaid(paymentLink) {
-  if (!paymentLink?.payment_plan_id) return;
-
-  const isLegacy =
-    paymentLink.legacy_id != null ||
-    paymentLink.is_legacy_payment_plan === true ||
-    String(paymentLink.client_id || '').startsWith('legacy_');
-
-  if (isLegacy) {
-    const paidDate = new Date().toISOString().split('T')[0];
-    await supabase
-      .from('finances_paymentplanrow')
-      .update({ actual_date: paidDate })
-      .eq('id', paymentLink.payment_plan_id);
-    return;
-  }
-
-  const email = paymentLink.leads?.email || null;
-  await supabase
-    .from('payment_plans')
-    .update({
-      paid: true,
-      paid_at: new Date().toISOString(),
-      ...(email ? { paid_by: email } : {}),
-    })
-    .eq('id', paymentLink.payment_plan_id);
-}
-
-async function recordTransaction(paymentLinkId, status, amount, method, extra = {}) {
-  await supabase.from('payment_transactions').insert({
-    payment_link_id: paymentLinkId,
-    status,
-    payment_method: method,
-    amount,
-    completed_at: status === 'success' ? new Date().toISOString() : null,
-    transaction_reference: extra.transactionReference || null,
-    error_message: extra.errorMessage || null,
-  });
+function sendNoCacheJson(res, payload) {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.removeHeader('ETag');
+  return res.json(payload);
 }
 
 /**
  * POST /api/payments/pelecard/create-payment-session
- * Body: { paymentId } — paymentId is payment_links.secure_token
  */
 async function createPaymentSession(req, res) {
   try {
@@ -178,13 +47,26 @@ async function createPaymentSession(req, res) {
       return res.status(400).json({ success: false, error: 'Missing paymentId' });
     }
 
-    const payment = await fetchPaymentByToken(paymentId);
+    let payment = await reconciliation.fetchPaymentByToken(paymentId);
     if (!payment) {
       return res.status(404).json({ success: false, error: 'Payment not found' });
     }
 
     if (payment.status === 'paid') {
       return res.status(400).json({ success: false, error: 'Payment already paid' });
+    }
+
+    // Recover charges that succeeded at Pelecard but were not saved on a prior attempt.
+    if (payment.status === 'processing' || payment.status === 'failed') {
+      payment = (await reconciliation.tryReconcilePaymentLink(payment)) || payment;
+      if (payment.status === 'paid') {
+        return res.json({
+          success: true,
+          alreadyPaid: true,
+          paymentId,
+          status: 'paid',
+        });
+      }
     }
 
     if (payment.expires_at && new Date(payment.expires_at) < new Date()) {
@@ -249,15 +131,19 @@ async function getPaymentStatus(req, res) {
   try {
     const paymentId = req.params.paymentId;
     if (!paymentId) {
-      return res.status(400).json({ success: false, error: 'Missing paymentId' });
+      return sendNoCacheJson(res, { success: false, error: 'Missing paymentId' });
     }
 
-    const payment = await fetchPaymentByToken(paymentId);
+    let payment = await reconciliation.fetchPaymentByToken(paymentId);
     if (!payment) {
-      return res.status(404).json({ success: false, error: 'Payment not found' });
+      return sendNoCacheJson(res, { success: false, error: 'Payment not found' });
     }
 
-    return res.json({
+    if (payment.status === 'processing' || payment.status === 'failed' || payment.status === 'paid') {
+      payment = (await reconciliation.tryReconcilePaymentLink(payment)) || payment;
+    }
+
+    return sendNoCacheJson(res, {
       success: true,
       paymentId: payment.secure_token,
       status: payment.status,
@@ -270,56 +156,102 @@ async function getPaymentStatus(req, res) {
       expires_at: payment.expires_at || null,
       pelecard_transaction_id: payment.pelecard_transaction_id || null,
       pelecard_status_code: payment.pelecard_status_code || null,
-      pelecard_status_description: pelecardDescriptionFromRaw(payment.pelecard_raw_response),
+      pelecard_status_description: reconciliation.pelecardDescriptionFromRaw(
+        payment.pelecard_raw_response,
+      ),
       confirmation_email_sent: Boolean(payment.payment_confirmation_email_sent_at),
     });
   } catch (error) {
     console.error('Get payment status error:', error);
-    return res.status(500).json({ success: false, error: 'Internal server error' });
+    return sendNoCacheJson(res, { success: false, error: 'Internal server error' });
   }
 }
 
 /**
- * Shared Pelecard return handler (success / error / cancel)
+ * POST /api/payments/pelecard/reconcile/:paymentId
+ * Manual / ops recovery for a single payment link.
  */
-async function handlePelecardReturn(req, res, outcome) {
+async function reconcilePayment(req, res) {
   try {
-    const data = { ...req.query, ...req.body };
-    const { statusCode, statusDescription, transactionId: metaTxId } = extractPelecardMeta(data);
-    const secureToken =
-      data.ParamX ||
-      data.paramX ||
-      data.paymentId ||
-      req.query.paymentId;
+    const paymentId = req.params.paymentId;
+    if (!paymentId) {
+      return sendNoCacheJson(res, { success: false, error: 'Missing paymentId' });
+    }
 
     const transactionId =
-      metaTxId ||
-      data.PelecardTransactionId ||
-      data.pelecardTransactionId ||
-      data.TransactionId;
+      req.body?.transactionId ||
+      req.body?.pelecardTransactionId ||
+      req.query?.transactionId ||
+      null;
+    const authNumber =
+      req.body?.authNumber ||
+      req.body?.authorizationNumber ||
+      req.query?.authNumber ||
+      null;
+
+    const result = await reconciliation.reconcilePaymentBySecureToken(paymentId, {
+      transactionId: transactionId ? String(transactionId) : null,
+      authNumber: authNumber ? String(authNumber) : null,
+    });
+    if (!result.ok && result.error === 'not_found') {
+      return sendNoCacheJson(res, { success: false, error: 'Payment not found' });
+    }
+
+    return sendNoCacheJson(res, { success: true, ...result });
+  } catch (error) {
+    console.error('Reconcile payment error:', error);
+    return sendNoCacheJson(res, { success: false, error: 'Internal server error' });
+  }
+}
+
+/**
+ * Shared Pelecard return handler (success / error / cancel).
+ */
+async function handlePelecardReturn(req, res, outcome) {
+  let secureToken = null;
+  let payment = null;
+  let data = {};
+
+  try {
+    data = mergeCallbackData(req);
+    const { statusCode, statusDescription, transactionId } = reconciliation.extractPelecardMeta(data);
+    secureToken = data.ParamX || data.paramX || data.paymentId || req.query.paymentId;
 
     console.info('[Pelecard] Return callback', {
       outcome,
-      paymentId: secureToken,
-      statusCode,
-      statusDescription,
+      method: req.method,
+      paymentId: secureToken || null,
+      statusCode: statusCode || null,
+      statusDescription: statusDescription || null,
       transactionId: transactionId || null,
+      hasBody: Boolean(req.body && Object.keys(req.body).length),
+      hasQuery: Boolean(req.query && Object.keys(req.query).length),
     });
+
+    if (!hasCallbackIdentity(data)) {
+      if (req.method === 'POST') {
+        return res.status(200).send('OK');
+      }
+      return res.redirect(appRedirect('/payment/failed', { reason: 'missing_payment_id' }));
+    }
 
     if (!secureToken) {
       return res.redirect(appRedirect('/payment/failed', { reason: 'missing_payment_id' }));
     }
 
-    const payment = await fetchPaymentByToken(secureToken);
+    payment = await reconciliation.fetchPaymentByToken(secureToken);
     if (!payment) {
-      return res.redirect(appRedirect('/payment/failed', { paymentId: secureToken, reason: 'payment_not_found' }));
+      return res.redirect(
+        appRedirect('/payment/failed', { paymentId: secureToken, reason: 'payment_not_found' }),
+      );
     }
 
-    // Preserve the init-time charge breakdown (BOI rate + expected ILS total) that we store on session creation.
-    // Previously we overwrote `pelecard_raw_response` with callback payloads, losing `pelecardCharge`.
-    const previousRaw = (payment && payment.pelecard_raw_response && typeof payment.pelecard_raw_response === 'object')
-      ? payment.pelecard_raw_response
-      : {};
+    // Save callback + transaction id immediately — survives later verification/DB failures.
+    await reconciliation.persistCallbackSnapshot(payment, data, { returnOutcome: outcome });
+
+    if (payment.status === 'paid') {
+      return res.redirect(appRedirect('/payment/success', { paymentId: secureToken }));
+    }
 
     const failedRedirectQuery = {
       paymentId: secureToken,
@@ -328,6 +260,10 @@ async function handlePelecardReturn(req, res, outcome) {
     };
 
     if (outcome === 'cancel') {
+      const previousRaw =
+        payment.pelecard_raw_response && typeof payment.pelecard_raw_response === 'object'
+          ? payment.pelecard_raw_response
+          : {};
       await supabase
         .from('payment_links')
         .update({
@@ -338,137 +274,74 @@ async function handlePelecardReturn(req, res, outcome) {
       return res.redirect(appRedirect('/payment/cancelled', { paymentId: secureToken }));
     }
 
-    if (outcome === 'error') {
-      const failMessage =
-        statusDescription ||
-        (statusCode ? `Pelecard declined (${statusCode})` : 'Payment not completed at Pelecard');
-
-      await supabase
-        .from('payment_links')
-        .update({
-          status: 'failed',
-          pelecard_status_code: statusCode || String(data.StatusCode || data.statusCode || ''),
-          pelecard_raw_response: { ...previousRaw, callback: data },
-          ...(transactionId ? { pelecard_transaction_id: String(transactionId) } : {}),
-        })
-        .eq('id', payment.id);
-
-      await recordTransaction(payment.id, 'failed', chargeAmountFromPayment(payment), 'pelecard', {
-        transactionReference: transactionId ? String(transactionId) : null,
-        errorMessage: failMessage.slice(0, 500),
-      });
-
-      console.warn('[Pelecard] Payment failed (error return)', {
-        paymentId: secureToken,
-        statusCode,
-        statusDescription,
-      });
-
-      return res.redirect(appRedirect('/payment/failed', failedRedirectQuery));
+    if (reconciliation.isSessionExpiredCode(statusCode)) {
+      await reconciliation.handleSessionExpired(payment, data);
+      return res.redirect(
+        appRedirect('/payment/failed', {
+          ...failedRedirectQuery,
+          pelecardStatus: statusCode,
+          pelecardMessage: 'Your secure payment session has expired. Please try again.',
+        }),
+      );
     }
 
-    // success — verify server-side when we have a transaction id
-    let verified = false;
-    let verifyPayload = data;
-    let resolvedStatusCode = statusCode;
+    const verifyResult = await reconciliation.verifyPelecardTransaction(transactionId, data);
 
-    if (transactionId) {
-      try {
-        const tx = await pelecardService.getTransaction(String(transactionId));
-        verifyPayload = { callback: data, pelecard: tx.raw };
-        const result = tx.result || {};
-        resolvedStatusCode = String(result.StatusCode || resolvedStatusCode || '');
-        verified = pelecardService.isSuccessfulStatus(resolvedStatusCode, result);
-      } catch (verifyErr) {
-        console.error('Pelecard GetTransaction failed:', verifyErr);
-        verified = pelecardService.isSuccessfulStatus(resolvedStatusCode, data);
-      }
-    } else {
-      verified = pelecardService.isSuccessfulStatus(resolvedStatusCode, data);
-    }
-
-    if (verified) {
-      const wasAlreadyPaid = payment.status === 'paid';
-      const paidAt = new Date().toISOString();
-      const txRef = transactionId ? String(transactionId) : `PELE_${Date.now()}`;
-
-      await supabase
-        .from('payment_links')
-        .update({
-          status: 'paid',
-          paid_at: paidAt,
-          payment_method: 'pelecard',
-          transaction_reference: txRef,
-          pelecard_transaction_id: transactionId ? String(transactionId) : null,
-          pelecard_confirmation_key: data.ConfirmationKey || data.confirmationKey || payment.pelecard_confirmation_key,
-          pelecard_voucher_id: data.VoucherId || data.voucherId || null,
-          pelecard_auth_number: data.AuthorizationNumber || data.DebitApproveNumber || null,
-          pelecard_status_code: resolvedStatusCode,
-          pelecard_raw_response: {
-            ...previousRaw,
-            callback: data,
-            pelecard: verifyPayload?.pelecard ?? verifyPayload,
-          },
-        })
-        .eq('id', payment.id);
-
-      await markPaymentPlanPaid(payment);
-      await recordTransaction(payment.id, 'success', chargeAmountFromPayment(payment), 'pelecard', {
-        transactionReference: txRef,
-      });
-
-      console.info('[Pelecard] Payment succeeded', { paymentId: secureToken, statusCode: resolvedStatusCode });
-
-      if (!wasAlreadyPaid) {
-        // Run after redirect — email failures must never affect the client payment flow
-        setImmediate(() => {
-          void sendPaymentConfirmationEmail(payment, { paidAt });
+    if (verifyResult.verified) {
+      const persistResult = await reconciliation.persistPaymentSuccess(
+        payment,
+        secureToken,
+        data,
+        verifyResult,
+      );
+      if (!persistResult.ok) {
+        console.error('[Pelecard] CRITICAL: verified paid but DB persist failed', {
+          paymentId: secureToken,
+          transactionId: transactionId || null,
         });
+        return res.redirect(
+          appRedirect('/payment/failed', {
+            paymentId: secureToken,
+            reason: 'server_error',
+          }),
+        );
       }
-
       return res.redirect(appRedirect('/payment/success', { paymentId: secureToken }));
     }
 
     const failDesc =
-      pelecardDescriptionFromRaw(verifyPayload) ||
+      reconciliation.pelecardDescriptionFromRaw(verifyResult.verifyPayload) ||
       statusDescription ||
-      (resolvedStatusCode ? `Declined (${resolvedStatusCode})` : 'Verification failed');
+      (verifyResult.resolvedStatusCode
+        ? `Declined (${verifyResult.resolvedStatusCode})`
+        : 'Payment not completed');
 
-    await supabase
-      .from('payment_links')
-      .update({
-        status: 'failed',
-        pelecard_status_code: resolvedStatusCode,
-        pelecard_raw_response: {
-          ...previousRaw,
-          callback: data,
-          pelecard: verifyPayload?.pelecard ?? verifyPayload,
-        },
-        ...(transactionId ? { pelecard_transaction_id: String(transactionId) } : {}),
-      })
-      .eq('id', payment.id);
-
-    await recordTransaction(payment.id, 'failed', chargeAmountFromPayment(payment), 'pelecard', {
-      transactionReference: transactionId ? String(transactionId) : null,
-      errorMessage: String(failDesc).slice(0, 500),
-    });
-
-    console.warn('[Pelecard] Payment failed (success return, not verified)', {
-      paymentId: secureToken,
-      statusCode: resolvedStatusCode,
-      statusDescription: failDesc,
-    });
+    await reconciliation.persistPaymentFailure(payment, secureToken, data, verifyResult, failDesc);
 
     return res.redirect(
       appRedirect('/payment/failed', {
         ...failedRedirectQuery,
-        pelecardStatus: resolvedStatusCode || failedRedirectQuery.pelecardStatus,
+        pelecardStatus: verifyResult.resolvedStatusCode || failedRedirectQuery.pelecardStatus,
         pelecardMessage: String(failDesc).slice(0, 300),
-      })
+      }),
     );
   } catch (error) {
     console.error('Pelecard return handler error:', error);
-    return res.redirect(appRedirect('/payment/failed', { reason: 'server_error' }));
+
+    if (payment && secureToken && data && Object.keys(data).length) {
+      await reconciliation.persistCallbackSnapshot(payment, data, {
+        returnOutcome: outcome,
+        handlerError: String(error.message || error).slice(0, 500),
+      });
+      void reconciliation.tryReconcilePaymentLink(payment);
+    }
+
+    return res.redirect(
+      appRedirect('/payment/failed', {
+        ...(secureToken ? { paymentId: secureToken } : {}),
+        reason: 'server_error',
+      }),
+    );
   }
 }
 
@@ -506,6 +379,7 @@ async function getCheckoutCssInfo(req, res) {
 module.exports = {
   createPaymentSession,
   getPaymentStatus,
+  reconcilePayment,
   getCheckoutCssInfo,
   returnSuccess,
   returnError,

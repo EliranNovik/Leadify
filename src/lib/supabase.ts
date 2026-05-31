@@ -1,8 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
-import {
-  buildPaymentLinkLeadRef,
-  isLegacyLeadRef,
-} from './paymentLinkLeadRef';
+import { isLegacyLeadRef } from './paymentLinkLeadRef';
+import { insertPaymentLinkRecord } from './paymentLinkQueries';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -772,6 +770,7 @@ export async function createPaymentLink({
   leadNumber,
   leadType,
   isLegacyPaymentPlan,
+  planContactId,
 }: {
   paymentPlanId: string;
   clientId: string;
@@ -783,6 +782,7 @@ export async function createPaymentLink({
   leadNumber: string;
   leadType?: string | null;
   isLegacyPaymentPlan?: boolean;
+  planContactId?: number | null;
 }) {
   // Generate secure token
   const secureToken = `payment_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
@@ -790,29 +790,25 @@ export async function createPaymentLink({
   const expiresAt = new Date();
   expiresAt.setDate(expiresAt.getDate() + 30);
 
-  const leadRef = buildPaymentLinkLeadRef({
+  const planRowId = Number(paymentPlanId);
+  if (!Number.isFinite(planRowId)) {
+    throw new Error('Invalid payment plan id');
+  }
+
+  const { error } = await insertPaymentLinkRecord({
+    paymentPlanId: planRowId,
     leadId: clientId,
     leadType,
     isLegacyPaymentPlan: isLegacyPaymentPlan ?? isLegacyLeadRef(leadType, clientId),
+    planContactId: planContactId ?? null,
+    secureToken,
+    amount: value,
+    vatAmount: valueVat,
+    totalAmount: value + valueVat,
+    currency: currency || '₪',
+    description: `${order} - ${clientName} (#${leadNumber})`,
+    expiresAt: expiresAt.toISOString(),
   });
-
-  // Create payment link in database
-  const { data: paymentLink, error } = await supabase
-    .from('payment_links')
-    .insert({
-      payment_plan_id: paymentPlanId,
-      ...leadRef,
-      secure_token: secureToken,
-      amount: value,
-      vat_amount: valueVat,
-      total_amount: value + valueVat,
-      currency: currency || '₪',
-      description: `${order} - ${clientName} (#${leadNumber})`,
-      status: 'pending',
-      expires_at: expiresAt.toISOString(),
-    })
-    .select()
-    .single();
   if (error) throw error;
   // Generate the payment URL
   const paymentUrl = `${window.location.origin}/payment/${secureToken}`;

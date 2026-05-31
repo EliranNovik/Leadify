@@ -425,7 +425,16 @@ async function getTransaction(transactionId) {
 function isSuccessfulStatus(statusCode, resultData) {
   const code = String(statusCode ?? resultData?.StatusCode ?? resultData?.statusCode ?? '').trim();
   if (code === '000') return true;
-  if (resultData?.Status === 'Success') return true;
+  if (resultData?.Status === 'Success' || resultData?.Result === 'Success') return true;
+  // Some GetTransaction responses omit StatusCode but include an approval number.
+  const approval =
+    resultData?.DebitApproveNumber ||
+    resultData?.AuthorizationNumber ||
+    resultData?.ApprovalNo;
+  if (approval && String(approval).trim() !== '') {
+    const approvalCode = String(resultData?.StatusCode ?? resultData?.statusCode ?? code).trim();
+    if (!approvalCode || approvalCode === '000') return true;
+  }
   return false;
 }
 

@@ -24,6 +24,7 @@ const { startMailboxSyncScheduler } = require('./src/services/mailboxSyncSchedul
 const { startMeetingNotificationScheduler } = require('./src/services/meetingNotificationScheduler');
 const { startBoiExchangeRatesScheduler } = require('./src/services/boiExchangeRatesScheduler');
 const { startGoogleSheetsConversionSyncScheduler } = require('./src/services/googleSheetsConversionSyncScheduler');
+const { startPelecardPaymentReconciliationScheduler } = require('./src/services/pelecardPaymentReconciliationScheduler');
 const accessLogger = require('./src/middleware/accessLogger');
 const { notifyConversationParticipants } = require('./src/services/rmqNotificationService');
 
@@ -469,6 +470,7 @@ server.listen(PORT, () => {
   startMeetingNotificationScheduler();
   startBoiExchangeRatesScheduler();
   startGoogleSheetsConversionSyncScheduler();
+  startPelecardPaymentReconciliationScheduler();
 });
 
 // Graceful shutdown

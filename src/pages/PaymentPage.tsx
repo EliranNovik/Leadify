@@ -13,6 +13,7 @@ import {
   currencyInputFromLegacyProforma,
   currencyInputFromNewPayment,
   fetchProformaExchangeRateInfo,
+  lockedBoiChargeFromPaymentLinkRaw,
   type ProformaExchangeRateInfo,
 } from '../lib/proformaExchangeRate';
 import { isLegacyPaymentLinkRow } from '../lib/paymentLinkLeadRef';
@@ -83,6 +84,15 @@ interface PaymentLink {
     phone?: string;
   };
   paid_at?: string | null;
+  pelecard_raw_response?: {
+    pelecardCharge?: {
+      rateToIls?: number;
+      rateDate?: string | null;
+      chargeTotalNis?: number;
+      lockedAt?: string | null;
+      rateCreatedAt?: string | null;
+    };
+  } | null;
   payment_plans?: {
     payment_order?: string;
     currency?: string | null;
@@ -417,6 +427,7 @@ const PaymentPage: React.FC = () => {
     const loadExchange = async () => {
       setExchangeLoading(true);
       try {
+        const lockedBoiCharge = lockedBoiChargeFromPaymentLinkRaw(paymentLink.pelecard_raw_response);
         const info = await fetchProformaExchangeRateInfo({
           currency: isLegacyPaymentLink(paymentLink)
             ? currencyInputFromLegacyProforma({
@@ -437,6 +448,8 @@ const PaymentPage: React.FC = () => {
           subtotal: Number(paymentLink.amount) || 0,
           vat: Number(paymentLink.vat_amount) || 0,
           total: Number(paymentLink.total_amount) || 0,
+          paymentPlanId: paymentLink.payment_plan_id,
+          lockedBoiCharge,
         });
         if (!cancelled) setExchangeInfo(info);
       } catch (err) {
@@ -470,6 +483,10 @@ const PaymentPage: React.FC = () => {
 
     try {
       const result = await createPelecardPaymentSession(token);
+      if (result.alreadyPaid || result.status === 'paid') {
+        navigate(`/payment/success?paymentId=${encodeURIComponent(token)}`);
+        return;
+      }
       if (!result.success || !result.paymentUrl) {
         throw new Error(result.error || 'Failed to create payment session');
       }

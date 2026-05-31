@@ -242,11 +242,14 @@ export function ContactPlanHeader({
   payments,
   collapsed,
   onToggle,
+  totalNis,
 }: {
   contactName: string;
   payments: PaymentPlanRowLike[];
   collapsed: boolean;
   onToggle: () => void;
+  /** Sum of row totals (value + VAT) in NIS — BOI rate per row at payment/due date. */
+  totalNis?: { primary: string; loading?: boolean };
 }) {
   const stats = computePlanSummary(payments);
   return (
@@ -264,6 +267,14 @@ export function ContactPlanHeader({
           <p className="text-sm text-slate-500">
             {stats.scheduledCount} scheduled · {stats.paidCount} paid · {stats.unpaidCount} outstanding
           </p>
+          {totalNis ? (
+            <p className="mt-1 text-sm font-semibold text-indigo-700">
+              Total{' '}
+              <span className="tabular-nums">
+                {totalNis.loading ? '…' : totalNis.primary}
+              </span>
+            </p>
+          ) : null}
         </div>
       </button>
       <div className="w-full sm:w-64">

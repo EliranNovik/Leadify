@@ -174,6 +174,7 @@ const PublicProformaLegacyViewPage: React.FC = () => {
         const subtotal = resolved.subtotal;
         const vat = resolved.vat;
         const total = resolved.totalWithVat;
+        const paymentPlanRowId = proforma.ppr_id ?? null;
         const info = await fetchProformaExchangeRateInfo({
           currency: currencyInputFromLegacyProforma(proforma),
           paid: Boolean(proforma.paymentPaid),
@@ -181,6 +182,7 @@ const PublicProformaLegacyViewPage: React.FC = () => {
           subtotal,
           vat,
           total,
+          paymentPlanId: paymentPlanRowId,
         });
         if (!cancelled) setExchangeInfo(info);
       } catch (err) {

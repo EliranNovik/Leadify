@@ -5,11 +5,9 @@ import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplic
 import { supabase } from '../lib/supabase';
 import { getCurrencySymbol } from '../lib/currencyConversion';
 import {
-  convertToNISWithMeta,
-  getBoiCoverageStartDate,
-  loadBoiExchangeRates,
-  loadBoiExchangeRatesForDate,
+  createBoiDateRateConverter,
 } from '../lib/boiCurrencyConversion';
+import { computeDateBounds, fetchStage60RecordsInRange } from '../lib/stage60SignDate';
 import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
 import { usePersistedFilters } from '../hooks/usePersistedState';
 
@@ -149,66 +147,6 @@ const SIGNED_STAGE_TOKENS = new Set([
   'client_signed',
   'client signed agreement',
 ]);
-
-const toStartOfDayIso = (dateStr: string) => {
-  // Use explicit UTC time to avoid timezone shifts
-  // Format: YYYY-MM-DDTHH:mm:ss.sssZ
-  return `${dateStr}T00:00:00.000Z`;
-};
-
-const toEndOfDayIso = (dateStr: string) => {
-  // Use explicit UTC time for end of day (23:59:59.999)
-  // Format: YYYY-MM-DDTHH:mm:ss.sssZ
-  return `${dateStr}T23:59:59.999Z`;
-};
-
-const computeDateBounds = (fromDate?: string, toDate?: string) => {
-  const startIso = fromDate ? toStartOfDayIso(fromDate) : null;
-  const endIso = (() => {
-    if (toDate) return toEndOfDayIso(toDate);
-    if (fromDate) return toEndOfDayIso(fromDate);
-    return null;
-  })();
-  return { startIso, endIso };
-};
-
-/** YYYY-MM-DD in the user's local calendar for an ISO/DB timestamp (avoids pure-UTC day mismatches). */
-const toLocalCalendarDateKey = (value: string | null | undefined): string | null => {
-  if (!value) return null;
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toLocaleDateString('en-CA');
-};
-
-const addCalendarDays = (isoDate: string, delta: number): string => {
-  const [y, m, day] = isoDate.split('-').map(Number);
-  const dt = new Date(Date.UTC(y, m - 1, day + delta));
-  const yy = dt.getUTCFullYear();
-  const mm = String(dt.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(dt.getUTCDate()).padStart(2, '0');
-  return `${yy}-${mm}-${dd}`;
-};
-
-/**
- * Strict match: sign moment (date or cdate) falls on a local calendar day within [fromDate, toDate].
- * Used after a widened SQL fetch so rows with NULL `date` (legacy) or TZ-shifted timestamps aren't dropped.
- */
-const stageRecordMatchesSignDateRange = (
-  record: { date?: string | null; cdate?: string | null },
-  fromDate?: string,
-  toDate?: string
-): boolean => {
-  if (!fromDate && !toDate) return true;
-  const raw = record.date ?? record.cdate;
-  if (!raw) return false;
-  const key = toLocalCalendarDateKey(raw);
-  if (!key) return false;
-  const from = fromDate || toDate;
-  const to = toDate || fromDate;
-  if (from && key < from) return false;
-  if (to && key > to) return false;
-  return true;
-};
 
 const extractCurrencyCandidate = (candidate: any): any => {
   if (candidate === null || candidate === undefined) return null;
@@ -1149,68 +1087,16 @@ const resolveLegacyLanguage = (lead: any) => {
       const languageFilter = filters.language;
       const { startIso, endIso } = computeDateBounds(fromDate, toDate);
       const anyCalendarFilter = Boolean(fromDate || toDate);
-      const rangeDayLo = fromDate || toDate;
-      const rangeDayHi = toDate || fromDate;
-
-      // Widen SQL range by ±1 calendar day so timestamps stored near UTC midnight still match
-      // after we apply strict local-calendar filtering below (fixes Israel/EU off-by-one vs UTC-only bounds).
-      const wideStartIso =
-        anyCalendarFilter && rangeDayLo ? toStartOfDayIso(addCalendarDays(rangeDayLo, -1)) : startIso;
-      const wideEndIso =
-        anyCalendarFilter && rangeDayHi ? toEndOfDayIso(addCalendarDays(rangeDayHi, 1)) : endIso;
-
-      // Stage 60 = Client signed agreement. Legacy rows sometimes have `date` NULL and only `cdate` set;
-      // filtering only `date` excludes those rows in PostgREST (NULL fails gte/lte).
-      const stage60Select = 'id, lead_id, newlead_id, stage, cdate, date';
 
       let allStage60Records: any[] = [];
 
-      if (anyCalendarFilter && wideStartIso && wideEndIso) {
-        const qDate = supabase
-          .from('leads_leadstage')
-          .select(stage60Select)
-          .eq('stage', 60)
-          .gte('date', wideStartIso)
-          .lte('date', wideEndIso);
-
-        const qCdateWhenDateNull = supabase
-          .from('leads_leadstage')
-          .select(stage60Select)
-          .eq('stage', 60)
-          .is('date', null)
-          .gte('cdate', wideStartIso)
-          .lte('cdate', wideEndIso);
-
-        const [resDate, resCdate] = await Promise.all([qDate, qCdateWhenDateNull]);
-
-        if (resDate.error) {
-          console.error('Failed to load stage 60 (date):', resDate.error);
-          throw resDate.error;
-        }
-        if (resCdate.error) {
-          console.error('Failed to load stage 60 (cdate, date null):', resCdate.error);
-          throw resCdate.error;
-        }
-
-        const rDate = resDate.data;
-        const rCdate = resCdate.data;
-
-        const byId = new Map<number, any>();
-        for (const row of [...(rDate || []), ...(rCdate || [])]) {
-          const id = Number(row.id);
-          if (Number.isFinite(id)) byId.set(id, row);
-        }
-        allStage60Records = Array.from(byId.values());
-
-        const beforeStrict = allStage60Records.length;
-        allStage60Records = allStage60Records.filter(row =>
-          stageRecordMatchesSignDateRange(row, fromDate || undefined, toDate || undefined)
-        );
+      if (anyCalendarFilter) {
+        allStage60Records = await fetchStage60RecordsInRange(fromDate || undefined, toDate || undefined);
         console.log(
-          `[SignedSalesReport] Stage 60: ${beforeStrict} rows in widened SQL window → ${allStage60Records.length} after local-calendar filter (${fromDate} … ${toDate})`
+          `[SignedSalesReport] Stage 60: ${allStage60Records.length} rows after Jerusalem-calendar filter (${fromDate} … ${toDate})`,
         );
       } else {
-        let stage60Query = supabase.from('leads_leadstage').select(stage60Select).eq('stage', 60);
+        let stage60Query = supabase.from('leads_leadstage').select('id, lead_id, newlead_id, stage, cdate, date').eq('stage', 60);
         if (startIso) {
           stage60Query = stage60Query.gte('date', startIso);
         }
@@ -1449,22 +1335,11 @@ const resolveLegacyLanguage = (lead: any) => {
         .filter(lead => matchesCategoryFilter(resolveCategoryName(lead.category, lead.category_id, lead.misc_category)))
         .filter(lead => matchesLanguageFilter(lead.language || ''));
 
-      // BOI-first conversion (sign date rate when within BOI coverage; legacy fallback only if needed)
-      const boiStart = await getBoiCoverageStartDate();
-      const latestBoiSnap = await loadBoiExchangeRates();
-      const boiSnapByDate = new Map<string, Promise<Awaited<ReturnType<typeof loadBoiExchangeRates>>>>();
-      const getBoiSnapForDate = (dateOnly: string | null) => {
-        if (!dateOnly || !/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) return Promise.resolve(latestBoiSnap);
-        if (boiStart && dateOnly < boiStart) return Promise.resolve(latestBoiSnap);
-        if (boiSnapByDate.has(dateOnly)) return boiSnapByDate.get(dateOnly)!;
-        const p = loadBoiExchangeRatesForDate(dateOnly).catch(() => latestBoiSnap);
-        boiSnapByDate.set(dateOnly, p);
-        return p;
-      };
+      // BOI as-of conversion (sign date — rate available at that moment, not calendar lookup after sync)
+      const boiConverter = await createBoiDateRateConverter();
       const toNis = async (amount: number, currency: string | number, signDate: string | null) => {
-        const dateOnly = signDate ? signDate.slice(0, 10) : null;
-        const snap = await getBoiSnapForDate(dateOnly);
-        return convertToNISWithMeta(amount, currency, snap).amountNIS;
+        const asOfInput = signDate ? signDate.slice(0, 10) : null;
+        return boiConverter.toNis(amount, currency, asOfInput);
       };
 
       const newLeadRows: SignedLeadRow[] = [];

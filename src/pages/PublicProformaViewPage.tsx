@@ -183,6 +183,7 @@ const PublicProformaViewPage: React.FC = () => {
           subtotal,
           vat,
           total: totalWithVat,
+          paymentPlanId: id,
         });
         if (!cancelled) setExchangeInfo(info);
       } catch (err) {
@@ -197,7 +198,7 @@ const PublicProformaViewPage: React.FC = () => {
     return () => {
       cancelled = true;
     };
-  }, [proforma, paymentPlanMeta, vatTotals]);
+  }, [proforma, paymentPlanMeta, vatTotals, id]);
 
   const handlePrint = () => window.print();
 

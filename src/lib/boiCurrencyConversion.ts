@@ -57,6 +57,8 @@ let ratesSnapshot: BoiRatesSnapshot | null = null;
 let ratesLoadPromise: Promise<BoiRatesSnapshot> | null = null;
 const ratesByDateCache = new Map<string, BoiRatesSnapshot>();
 const ratesByDatePromises = new Map<string, Promise<BoiRatesSnapshot>>();
+const ratesByAsOfCache = new Map<string, BoiRatesSnapshot>();
+const ratesByAsOfPromises = new Map<string, Promise<BoiRatesSnapshot>>();
 
 let boiCoverageStartDate: { value: string | null; loadedAt: number } | null = null;
 let boiCoverageStartPromise: Promise<string | null> | null = null;
@@ -167,6 +169,8 @@ export function invalidateBoiCurrencyCache(): void {
   ratesLoadPromise = null;
   ratesByDateCache.clear();
   ratesByDatePromises.clear();
+  ratesByAsOfCache.clear();
+  ratesByAsOfPromises.clear();
   boiCoverageStartDate = null;
   boiCoverageStartPromise = null;
   currencyIdToIso = null;
@@ -183,6 +187,20 @@ export function getJerusalemTodayIsoDate(date = new Date()): string {
     month: '2-digit',
     day: '2-digit',
   }).format(date);
+}
+
+/** Calendar date in Asia/Jerusalem for a payment timestamp (matches Pelecard charge day logic). */
+export function getJerusalemDateFromTimestamp(timestamp: string | null | undefined): string {
+  if (timestamp != null && String(timestamp).trim()) {
+    const s = String(timestamp).trim();
+    const d = /^\d{4}-\d{2}-\d{2}$/.test(s)
+      ? new Date(`${s}T12:00:00`)
+      : new Date(s.includes(' ') ? s.replace(' ', 'T') : s);
+    if (!Number.isNaN(d.getTime())) {
+      return getJerusalemTodayIsoDate(d);
+    }
+  }
+  return getJerusalemTodayIsoDate();
 }
 
 function snapshotFromRows(rows: Array<{
@@ -359,6 +377,134 @@ export async function loadBoiExchangeRatesForDate(
   })();
 
   ratesByDatePromises.set(dateOnly, promise);
+  return promise;
+}
+
+/**
+ * Resolve an as-of timestamp for BOI lookups.
+ * Full ISO/datetime strings use the exact instant; date-only is a last-resort fallback (noon Jerusalem).
+ * Prefer payment_links.pelecardCharge.lockedAt or payment_links.paid_at when available.
+ */
+export function resolveBoiAsOfTimestamp(
+  timestamp: string | null | undefined,
+): string {
+  if (timestamp != null && String(timestamp).trim()) {
+    const s = String(timestamp).trim();
+    if (/^\d{4}-\d{2}-\d{2}[T ]/.test(s)) {
+      const d = new Date(s.includes(' ') ? s.replace(' ', 'T') : s);
+      if (!Number.isNaN(d.getTime())) return d.toISOString();
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      return jerusalemNoonIso(s);
+    }
+  }
+  return new Date().toISOString();
+}
+
+function jerusalemNoonIso(dateOnly: string): string {
+  for (const offset of ['+03:00', '+02:00']) {
+    const candidate = `${dateOnly}T12:00:00${offset}`;
+    const d = new Date(candidate);
+    const formatted = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Jerusalem',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(d);
+    if (formatted === dateOnly) return d.toISOString();
+  }
+  return new Date(`${dateOnly}T12:00:00+03:00`).toISOString();
+}
+
+/** Direct table query when as-of RPC is missing or returns empty (respects created_at). */
+async function loadBoiExchangeRateRowsAsOfDirect(asOfIso: string): Promise<
+  Array<{
+    rate_date: string;
+    base_currency: string;
+    target_currency: string;
+    rate: number | string;
+    created_at?: string;
+  }>
+> {
+  const { data, error } = await supabase
+    .from('boi_exchange_rates')
+    .select('rate_date, base_currency, target_currency, rate, created_at')
+    .lte('created_at', asOfIso)
+    .order('rate_date', { ascending: false });
+
+  if (error || !data?.length) return [];
+
+  const maxRateDate = data.reduce(
+    (max, row) => (row.rate_date > max ? row.rate_date : max),
+    data[0].rate_date,
+  );
+  return data.filter((row) => row.rate_date === maxRateDate);
+}
+
+function normalizeAsOfCacheKey(asOf: string | Date): string {
+  const iso =
+    typeof asOf === 'string' ? resolveBoiAsOfTimestamp(asOf) : asOf.toISOString();
+  return iso.slice(0, 19);
+}
+
+/**
+ * BOI snapshot available at a specific moment — only rows with created_at <= asOf.
+ * Uses the latest rate_date among those eligible rows (matches PaymentPage charge logic).
+ */
+export async function loadBoiExchangeRatesAsOf(
+  asOf: string | Date = new Date(),
+  force = false,
+): Promise<BoiRatesSnapshot> {
+  const cacheKey = normalizeAsOfCacheKey(asOf);
+  const asOfIso =
+    typeof asOf === 'string' ? resolveBoiAsOfTimestamp(asOf) : asOf.toISOString();
+
+  if (!force && ratesByAsOfCache.has(cacheKey)) {
+    return ratesByAsOfCache.get(cacheKey)!;
+  }
+  if (!force && ratesByAsOfPromises.has(cacheKey)) {
+    return ratesByAsOfPromises.get(cacheKey)!;
+  }
+
+  const promise = (async () => {
+    await loadAccountingCurrenciesMap(force);
+
+    let rows: Array<{
+      rate_date: string;
+      base_currency: string;
+      target_currency: string;
+      rate: number | string;
+      created_at?: string;
+    }> = [];
+
+    const { data, error } = await supabase.rpc('get_boi_exchange_rates_as_of', {
+      p_as_of: asOfIso,
+    });
+
+    if (error) {
+      console.warn('[boiCurrencyConversion] as-of RPC failed, using direct query:', error.message);
+      rows = await loadBoiExchangeRateRowsAsOfDirect(asOfIso);
+    } else {
+      rows = (data ?? []) as typeof rows;
+      if (rows.length === 0) {
+        rows = await loadBoiExchangeRateRowsAsOfDirect(asOfIso);
+      }
+    }
+
+    if (rows.length === 0) {
+      ratesByAsOfPromises.delete(cacheKey);
+      throw new Error(
+        `No BOI exchange rates available as of ${asOfIso}. Sync BOI rates in admin.`,
+      );
+    }
+
+    const snap = snapshotFromRows(rows);
+    ratesByAsOfCache.set(cacheKey, snap);
+    ratesByAsOfPromises.delete(cacheKey);
+    return snap;
+  })();
+
+  ratesByAsOfPromises.set(cacheKey, promise);
   return promise;
 }
 
@@ -551,29 +697,59 @@ export function toDateOnlyKey(date: string | null | undefined): string | null {
 }
 
 export type BoiDateRateConverter = {
-  toNis: (amount: number, currency: CurrencyInput, dateOnly: string | null) => Promise<number>;
+  /**
+   * Convert using BOI rows with created_at <= as-of moment.
+   * @param asOfInput - full ISO timestamp, or YYYY-MM-DD (Jerusalem noon on that day)
+   */
+  toNis: (amount: number, currency: CurrencyInput, asOfInput: string | null) => Promise<number>;
 };
 
+/** Rate lookup instant for payment-plan rows (paid → payment time; else due date). */
+export function resolvePaymentPlanBoiAsOfInput(payment: {
+  paid?: boolean | null;
+  paid_at?: string | null;
+  due_date?: string | null;
+  actual_date?: string | null;
+}): string | null {
+  if (payment.paid_at) return payment.paid_at;
+  if (payment.actual_date) return payment.actual_date;
+  return toDateOnlyKey(payment.due_date);
+}
+
 /**
- * Cached per-date BOI snapshots for batch reports (signed date, due date, etc.).
+ * Cached as-of BOI snapshots for batch reports (sign date, due date, payment date, etc.).
+ * Uses created_at <= as-of — not calendar rate_date lookup (avoids post-sync drift).
  */
 export async function createBoiDateRateConverter(): Promise<BoiDateRateConverter> {
   const boiStart = await getBoiCoverageStartDate();
   const latestBoiSnap = await loadBoiExchangeRates();
-  const boiSnapByDate = new Map<string, Promise<BoiRatesSnapshot>>();
+  const snapByKey = new Map<string, Promise<BoiRatesSnapshot>>();
 
-  const getBoiSnapForDate = (dateOnly: string | null): Promise<BoiRatesSnapshot> => {
-    if (!dateOnly) return Promise.resolve(latestBoiSnap);
-    if (boiStart && dateOnly < boiStart) return Promise.resolve(latestBoiSnap);
-    if (boiSnapByDate.has(dateOnly)) return boiSnapByDate.get(dateOnly)!;
-    const p = loadBoiExchangeRatesForDate(dateOnly).catch(() => latestBoiSnap);
-    boiSnapByDate.set(dateOnly, p);
-    return p;
+  const getSnap = (asOfInput: string | null): Promise<BoiRatesSnapshot> => {
+    if (!asOfInput) {
+      const key = '__now__';
+      if (!snapByKey.has(key)) {
+        snapByKey.set(key, loadBoiExchangeRatesAsOf(new Date()).catch(() => latestBoiSnap));
+      }
+      return snapByKey.get(key)!;
+    }
+
+    const dateOnly = toDateOnlyKey(asOfInput);
+    if (dateOnly && boiStart && dateOnly < boiStart) {
+      return Promise.resolve(latestBoiSnap);
+    }
+
+    const asOfIso = resolveBoiAsOfTimestamp(asOfInput);
+    const cacheKey = asOfIso.slice(0, 19);
+    if (!snapByKey.has(cacheKey)) {
+      snapByKey.set(cacheKey, loadBoiExchangeRatesAsOf(asOfIso).catch(() => latestBoiSnap));
+    }
+    return snapByKey.get(cacheKey)!;
   };
 
   return {
-    toNis: async (amount, currency, dateOnly) => {
-      const snap = await getBoiSnapForDate(toDateOnlyKey(dateOnly));
+    toNis: async (amount, currency, asOfInput) => {
+      const snap = await getSnap(asOfInput);
       return convertToNISWithMeta(amount, currency, snap).amountNIS;
     },
   };

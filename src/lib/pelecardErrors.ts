@@ -23,6 +23,10 @@ export function describePelecardFailure(
     return 'Your card was declined. Please try another card or contact the office for help.';
   }
 
+  if (code === '004') {
+    return 'The payment could not be processed. Please try again or use another card.';
+  }
+
   if (code === '001' || code === '003') {
     return 'Your payment could not be completed. Please try another card or contact the office for help.';
   }

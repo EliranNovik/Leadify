@@ -651,6 +651,7 @@ const ProformaLegacyViewPage: React.FC = () => {
         const subtotal = vatTotals?.subtotal ?? Number(proforma.sub_total || proforma.total_base || 0);
         const vat = vatTotals?.vat ?? 0;
         const total = vatTotals?.totalWithVat ?? Number(proforma.total || 0);
+        const paymentPlanRowId = proforma.ppr_id ?? null;
         const info = await fetchProformaExchangeRateInfo({
           currency: currencyInputFromLegacyProforma(proforma),
           paid: Boolean(proforma.paymentPaid),
@@ -658,6 +659,7 @@ const ProformaLegacyViewPage: React.FC = () => {
           subtotal,
           vat,
           total,
+          paymentPlanId: paymentPlanRowId,
         });
         if (!cancelled) setExchangeInfo(info);
       } catch (err) {

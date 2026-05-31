@@ -29,6 +29,9 @@ export interface CreatePelecardSessionResponse {
   success: boolean;
   paymentUrl?: string;
   paymentId?: string;
+  /** Set when backend reconciled a prior charge and link is already paid. */
+  alreadyPaid?: boolean;
+  status?: PaymentLinkStatus;
   /** CssURL sent to Pelecard at init — verify this URL returns your CSS file. */
   cssUrl?: string;
   /** False when Pelecard ignores CssURL and loads default variant CSS (terminal must be enabled by Pelecard). */
@@ -133,7 +136,7 @@ export async function fetchPaymentStatus(
   try {
     const response = await fetch(
       `${getApiBase()}/status/${encodeURIComponent(paymentId)}`,
-      { headers: buildHeaders() }
+      { headers: buildHeaders(), cache: 'no-store' },
     );
     return await parseJsonResponse<PaymentStatusResponse>(response);
   } catch (error) {

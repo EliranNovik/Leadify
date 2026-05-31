@@ -1,6 +1,6 @@
 import { convertToNIS } from '../lib/currencyConversion';
 import type { BoiDateRateConverter } from '../lib/boiCurrencyConversion';
-import { toDateOnlyKey } from '../lib/boiCurrencyConversion';
+import { resolvePaymentPlanBoiAsOfInput } from '../lib/boiCurrencyConversion';
 
 const normalizePaymentCurrency = (currency: string | undefined): string => {
     const c = currency || 'NIS';
@@ -52,8 +52,12 @@ export const processNewPaymentsAsync = async (
         const leadId = payment.lead_id;
         const value = Number(payment.value || 0);
         const normalizedCurrency = normalizePaymentCurrency(payment.currency);
-        const dueDate = toDateOnlyKey(payment.due_date);
-        const amountNIS = await converter.toNis(value, normalizedCurrency, dueDate);
+        const rateAsOf = resolvePaymentPlanBoiAsOfInput({
+            paid: payment.paid,
+            paid_at: payment.paid_at,
+            due_date: payment.due_date,
+        });
+        const amountNIS = await converter.toNis(value, normalizedCurrency, rateAsOf);
         const current = paymentsMap.get(leadId) || 0;
         paymentsMap.set(leadId, current + amountNIS);
     }
@@ -126,8 +130,11 @@ export const processLegacyPaymentsAsync = async (
         const value = Number(payment.value || payment.value_base || 0);
         const currency = extractCurrencyFromLegacyPayment(payment, legacyLeadsMap?.get(leadId));
         const normalizedCurrency = normalizePaymentCurrency(currency);
-        const dueDate = toDateOnlyKey(payment.due_date);
-        const amountNIS = await converter.toNis(value, normalizedCurrency, dueDate);
+        const rateAsOf = resolvePaymentPlanBoiAsOfInput({
+            actual_date: payment.actual_date,
+            due_date: payment.due_date,
+        });
+        const amountNIS = await converter.toNis(value, normalizedCurrency, rateAsOf);
         const current = paymentsMap.get(leadId) || 0;
         paymentsMap.set(leadId, current + amountNIS);
     }

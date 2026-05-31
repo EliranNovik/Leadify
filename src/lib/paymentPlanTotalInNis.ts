@@ -2,6 +2,7 @@ import type { CurrencyInput } from './boiCurrencyConversion';
 import {
   currencyInputFromLegacyProforma,
   currencyInputFromNewPayment,
+  fetchPaymentPlanExchangeContexts,
   fetchProformaExchangeRateInfo,
   formatIlsAmount,
 } from './proformaExchangeRate';
@@ -30,8 +31,8 @@ function resolvePaymentRowCurrencyInput(payment: PaymentPlanRowLike): CurrencyIn
 }
 
 /**
- * Sum payment-plan rows in NIS using the same rules as proforma / ClientHeader conversion:
- * unpaid → BOI today; paid → legacy rate on payment date.
+ * Sum payment-plan rows in NIS using the same rules as proforma / PaymentPage:
+ * locked BOI charge when Pelecard session exists; unpaid → BOI today; paid → payment-date rate.
  */
 export async function sumPaymentPlanTotalsInNis(
   payments: PaymentPlanRowLike[],
@@ -39,11 +40,19 @@ export async function sumPaymentPlanTotalsInNis(
   let subtotalNis = 0;
   let vatNis = 0;
 
+  const planIds = payments
+    .map((p) => (typeof p.id === 'number' ? p.id : parseInt(String(p.id), 10)))
+    .filter((id) => Number.isFinite(id));
+  const exchangeContexts = await fetchPaymentPlanExchangeContexts(planIds);
+
   for (const payment of payments) {
     const subtotal = Number(payment.value) || 0;
     const vat = Number(payment.valueVat) || 0;
     const total = subtotal + vat;
     if (total <= 0 && subtotal <= 0) continue;
+
+    const planId =
+      typeof payment.id === 'number' ? payment.id : parseInt(String(payment.id), 10);
 
     const info = await fetchProformaExchangeRateInfo({
       currency: resolvePaymentRowCurrencyInput(payment),
@@ -52,6 +61,10 @@ export async function sumPaymentPlanTotalsInNis(
       subtotal,
       vat,
       total,
+      paymentPlanId: Number.isFinite(planId) ? planId : null,
+      preloadedExchangeContext: Number.isFinite(planId)
+        ? exchangeContexts.get(planId) ?? null
+        : null,
     });
 
     if (!info) continue;

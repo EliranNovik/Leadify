@@ -475,6 +475,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
         client: clientName,
         clientId: data.id,
         leadId: data.id,
+        planContactId: resolvedContactId ?? (pprData?.client_id != null ? Number(pprData.client_id) : null),
         pprId: pprId,
         paymentPlanDate,
         paymentOrder: pprData?.order ?? null,
@@ -827,6 +828,10 @@ const ProformaLegacyCreatePage: React.FC = () => {
           leadClientId: leadId,
           leadType: 'legacy',
           isLegacyPaymentPlan: true,
+          planContactId:
+            proformaData.planContactId != null
+              ? Number(proformaData.planContactId)
+              : null,
           value: totalBase,
           valueVat: vat,
           currency: currencySymbol,

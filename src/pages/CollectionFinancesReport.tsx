@@ -7,9 +7,16 @@ import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedSta
 import {
   convertToNISWithMeta,
   getBoiCoverageStartDate,
-  loadBoiExchangeRates,
+  getJerusalemTodayIsoDate,
+  loadBoiExchangeRatesAsOf,
   loadBoiExchangeRatesForDate,
 } from '../lib/boiCurrencyConversion';
+import {
+  applyLockedChargeTotalIfMatching,
+  fetchPaymentPlanExchangeContexts,
+  parsePaymentPlanIdFromCollectionRowId,
+  resolvePaymentBoiAsOf,
+} from '../lib/proformaExchangeRate';
 
 type MainCategory = {
   id: string;
@@ -19,6 +26,9 @@ type MainCategory = {
 type Filters = {
   fromDate: string;
   toDate: string;
+  /** When set, filters by collected/paid date instead of due/plan date. */
+  paymentFromDate: string;
+  paymentToDate: string;
   collected: string[]; // Multi-select
   categoryId: string[]; // Changed to array for multi-select
   order: string[]; // Changed to array for multi-select
@@ -120,6 +130,270 @@ function dateInRange(dateStr: string, fromDate: string, toDate: string): boolean
   if (fromDate && normalized < fromDate) return false;
   if (toDate && normalized > toDate) return false;
   return true;
+}
+
+function hasPaymentDateFilter(filters: Filters): boolean {
+  return Boolean(filters.paymentFromDate || filters.paymentToDate);
+}
+
+function applyPaymentDateRangeToQuery(
+  query: any,
+  filters: Filters,
+  column: 'paid_at' | 'actual_date',
+) {
+  if (!hasPaymentDateFilter(filters)) return query;
+  const fromDate = filters.paymentFromDate ?? '';
+  const toDate = filters.paymentToDate ?? '';
+  query = query.not(column, 'is', null);
+  if (column === 'paid_at') {
+    if (isCrossYearRange(fromDate, toDate)) {
+      return query.or(`paid_at.gte.${fromDate}T00:00:00,paid_at.lte.${toDate}T23:59:59.999`);
+    }
+    if (fromDate) query = query.gte('paid_at', `${fromDate}T00:00:00`);
+    if (toDate) query = query.lte('paid_at', `${toDate}T23:59:59.999`);
+    return query;
+  }
+  if (isCrossYearRange(fromDate, toDate)) {
+    return query.or(`actual_date.gte.${fromDate},actual_date.lte.${toDate}`);
+  }
+  if (fromDate) query = query.gte('actual_date', fromDate);
+  if (toDate) query = query.lte('actual_date', toDate);
+  return query;
+}
+
+/** Temporary debug target — contact filtered out of Collection Finances report. */
+const DEBUG_CONTACT_NAME = 'Daniel Granot';
+const DEBUG_CONTACT_EXPECTED_DUE = '2026-05-28';
+
+function nameMatchesDebugContact(name: string | null | undefined): boolean {
+  if (!name) return false;
+  const n = name.toLowerCase();
+  return n.includes('daniel') && n.includes('granot');
+}
+
+function rowMatchesDebugContact(row: Partial<PaymentRow>): boolean {
+  return nameMatchesDebugContact(row.clientName) || nameMatchesDebugContact(row.leadName);
+}
+
+function summarizeRowForDebug(row: Partial<PaymentRow>) {
+  return {
+    id: row.id,
+    leadId: row.leadId,
+    clientId: row.clientId,
+    leadName: row.leadName,
+    clientName: row.clientName,
+    dueDate: row.dueDate,
+    planDate: row.planDate,
+    collectedDate: row.collectedDate,
+    collected: row.collected,
+    hasProforma: row.hasProforma,
+    readyToPay: row.readyToPay,
+    orderCode: row.orderCode,
+    mainCategoryId: row.mainCategoryId,
+    currencyId: row.currencyId,
+    leadType: row.leadType,
+    caseNumber: row.caseNumber,
+  };
+}
+
+function getCollectionRowFilterReason(row: PaymentRow, filters: Filters): string | null {
+  if (filters.due === 'due_only') {
+    if (row.leadType === 'legacy' && !row.dueDate) {
+      return 'due_only: legacy row has no due_date (filtered even if plan date matches)';
+    }
+    if (row.leadType === 'new' && row.readyToPay !== true) {
+      return `due_only: new row ready_to_pay=${String(row.readyToPay)} (must be true)`;
+    }
+  }
+  if (Array.isArray(filters.categoryId) && filters.categoryId.length > 0) {
+    if (!row.mainCategoryId || !filters.categoryId.includes(row.mainCategoryId)) {
+      return `category: row mainCategoryId=${row.mainCategoryId ?? 'null'}, filter=${filters.categoryId.join(',')}`;
+    }
+  }
+  if (Array.isArray(filters.collected) && filters.collected.length > 0) {
+    let matchesFilter = false;
+    if (filters.collected.includes('yes_with_proforma') && row.collected && row.hasProforma) matchesFilter = true;
+    if (filters.collected.includes('yes_without_proforma') && row.collected && !row.hasProforma) matchesFilter = true;
+    if (filters.collected.includes('no_with_proforma') && !row.collected && row.hasProforma) matchesFilter = true;
+    if (filters.collected.includes('no_without_proforma') && !row.collected && !row.hasProforma) matchesFilter = true;
+    if (!matchesFilter) {
+      return `collected: filter=[${filters.collected.join(',')}], row collected=${row.collected}, hasProforma=${row.hasProforma}`;
+    }
+  }
+  if (Array.isArray(filters.order) && filters.order.length > 0) {
+    if (!row.orderCode || !filters.order.includes(row.orderCode)) {
+      return `order: row orderCode=${row.orderCode ?? 'null'}, filter=${filters.order.join(',')}`;
+    }
+  }
+  if (Array.isArray(filters.currencyId) && filters.currencyId.length > 0) {
+    const rowCurrencyId = row.currencyId != null ? String(row.currencyId) : null;
+    if (!rowCurrencyId || !filters.currencyId.includes(rowCurrencyId)) {
+      return `currency: row currencyId=${rowCurrencyId ?? 'null'}, filter=${filters.currencyId.join(',')}`;
+    }
+  }
+  if (hasPaymentDateFilter(filters)) {
+    if (!row.collectedDate) {
+      return `payment date: no collectedDate/paid_at (filter ${filters.paymentFromDate ?? ''} – ${filters.paymentToDate ?? ''})`;
+    }
+    const paymentDateStr = row.collectedDate.split('T')[0];
+    if (!dateInRange(paymentDateStr, filters.paymentFromDate ?? '', filters.paymentToDate ?? '')) {
+      return `payment date: collectedDate=${paymentDateStr} outside ${filters.paymentFromDate ?? ''} – ${filters.paymentToDate ?? ''}`;
+    }
+  } else if (filters.fromDate || filters.toDate) {
+    const usesPlanDate = filters.due === 'ignore' && row.leadType === 'legacy';
+    const dateToCheck = usesPlanDate ? row.planDate : row.dueDate;
+    const dateColumn = usesPlanDate ? 'planDate (legacy date column)' : 'dueDate';
+    if (!dateToCheck) {
+      return `due/plan date: missing ${dateColumn} (due=${filters.due}, legacy=${row.leadType === 'legacy'})`;
+    }
+    const dateStr = dateToCheck.split('T')[0];
+    if (!dateInRange(dateStr, filters.fromDate, filters.toDate)) {
+      return `${dateColumn}: ${dateStr} outside filter ${filters.fromDate} – ${filters.toDate} (legacy ignore uses plan date, not due_date)`;
+    }
+  }
+  return null;
+}
+
+function explainDbDateFilterForLegacyPlan(plan: { date?: string | null; due_date?: string | null }, filters: Filters): string {
+  if (hasPaymentDateFilter(filters)) {
+    return `DB filters actual_date (payment date), not due_date=${plan.due_date ?? 'null'}`;
+  }
+  if (!filters.fromDate && !filters.toDate) return 'No date filter on DB query';
+  if (filters.due === 'due_only') {
+    const inRange = plan.due_date && dateInRange(String(plan.due_date).split('T')[0], filters.fromDate, filters.toDate);
+    return `DB due_only: due_date=${plan.due_date ?? 'null'}, inRange=${inRange}, filter=${filters.fromDate}–${filters.toDate}`;
+  }
+  const planDateInRange = plan.date && dateInRange(String(plan.date).split('T')[0], filters.fromDate, filters.toDate);
+  const dueDateInRange = plan.due_date && dateInRange(String(plan.due_date).split('T')[0], filters.fromDate, filters.toDate);
+  return `DB ignore: filters legacy "date" column=${plan.date ?? 'null'} inRange=${planDateInRange}; due_date=${plan.due_date ?? 'null'} inRange=${dueDateInRange} (NOT used for DB when due=ignore)`;
+}
+
+function logDanielGranotDebug(phase: string, payload: unknown) {
+  console.log(`🔍 [Daniel Granot debug] ${phase}`, payload);
+}
+
+async function debugDanielGranotDbLookup(filters: Filters): Promise<void> {
+  logDanielGranotDebug('DB lookup — row missing from report; searching contacts and payment plans', {
+    filters: {
+      fromDate: filters.fromDate,
+      toDate: filters.toDate,
+      paymentFromDate: filters.paymentFromDate,
+      paymentToDate: filters.paymentToDate,
+      due: filters.due,
+      collected: filters.collected,
+      categoryId: filters.categoryId,
+      order: filters.order,
+      currencyId: filters.currencyId,
+    },
+    expectedDueDate: DEBUG_CONTACT_EXPECTED_DUE,
+  });
+
+  const { data: contacts, error: contactsError } = await supabase
+    .from('leads_contact')
+    .select('id, name, lead_id')
+    .ilike('name', '%Daniel%Granot%');
+  if (contactsError) {
+    logDanielGranotDebug('Contact search error', contactsError);
+    return;
+  }
+  logDanielGranotDebug('Matching contacts in leads_contact', contacts ?? []);
+
+  const contactIds = (contacts ?? []).map((c) => c.id).filter((id) => id != null);
+  if (contactIds.length === 0) {
+    const { data: modernByName } = await supabase
+      .from('payment_plans')
+      .select('id, lead_id, client_name, due_date, paid_at, paid, cancel_date, ready_to_pay')
+      .is('cancel_date', null)
+      .ilike('client_name', '%Daniel%Granot%');
+    logDanielGranotDebug('No leads_contact match — modern payment_plans by client_name', modernByName ?? []);
+    return;
+  }
+
+  const { data: legacyPlans, error: legacyError } = await supabase
+    .from('finances_paymentplanrow')
+    .select('id, lead_id, client_id, date, due_date, actual_date, cancel_date, ready_to_pay, order, value')
+    .in('client_id', contactIds)
+    .is('cancel_date', null);
+  if (legacyError) {
+    logDanielGranotDebug('Legacy plan search error', legacyError);
+  } else {
+    logDanielGranotDebug(
+      'Legacy finances_paymentplanrow rows (unfiltered by date)',
+      (legacyPlans ?? []).map((plan) => ({
+        ...plan,
+        dbDateFilterExplanation: explainDbDateFilterForLegacyPlan(plan, filters),
+        wouldPassClientDueFilter:
+          !filters.fromDate && !filters.toDate
+            ? true
+            : (() => {
+                const dateToCheck = filters.due === 'ignore' ? plan.date : plan.due_date;
+                return dateToCheck
+                  ? dateInRange(String(dateToCheck).split('T')[0], filters.fromDate, filters.toDate)
+                  : false;
+              })(),
+      })),
+    );
+  }
+
+  const leadIds = [...new Set((contacts ?? []).map((c) => c.lead_id).filter(Boolean))];
+  if (leadIds.length > 0) {
+    const { data: modernPlans } = await supabase
+      .from('payment_plans')
+      .select('id, lead_id, client_name, due_date, paid_at, paid, cancel_date, ready_to_pay')
+      .in('lead_id', leadIds)
+      .is('cancel_date', null);
+    logDanielGranotDebug(
+      'Modern payment_plans for contact lead_id(s) (unfiltered by date)',
+      (modernPlans ?? []).map((plan) => ({
+        ...plan,
+        dueDateInFilter: plan.due_date
+          ? dateInRange(String(plan.due_date).split('T')[0], filters.fromDate, filters.toDate)
+          : false,
+        dbUsesDueDate: !hasPaymentDateFilter(filters),
+      })),
+    );
+  }
+}
+
+function traceDanielGranotInRows(phase: string, rows: PaymentRow[]) {
+  const matches = rows.filter(rowMatchesDebugContact);
+  logDanielGranotDebug(`${phase}: ${matches.length} row(s)`, matches.map(summarizeRowForDebug));
+  return matches;
+}
+
+function traceDanielGranotFilterPass(phase: string, rows: PaymentRow[], filters: Filters) {
+  const matches = rows.filter(rowMatchesDebugContact);
+  if (matches.length === 0) return [];
+  matches.forEach((row) => {
+    const reason = getCollectionRowFilterReason(row, filters);
+    if (reason) {
+      logDanielGranotDebug(`${phase}: FILTERED OUT`, { row: summarizeRowForDebug(row), reason });
+    } else {
+      logDanielGranotDebug(`${phase}: passes client filters`, summarizeRowForDebug(row));
+    }
+  });
+  return matches;
+}
+
+function traceDanielGranotDedup(
+  filtered: PaymentRow[],
+  rowsToSet: PaymentRow[],
+  filters: Filters,
+) {
+  const before = filtered.filter(rowMatchesDebugContact);
+  const after = rowsToSet.filter(rowMatchesDebugContact);
+  if (before.length === 0) return;
+  if (before.length > after.length) {
+    const orderRank: Record<string, number> = { '9': 3, '5': 2, '1': 1, '90': 0, '99': 0 };
+    logDanielGranotDebug('Removed by per-contact deduplication (due_only)', {
+      before: before.map((row) => ({
+        ...summarizeRowForDebug(row),
+        orderRank: orderRank[row.orderCode ?? ''] ?? -1,
+      })),
+      kept: after.map(summarizeRowForDebug),
+      dedupKey: before.map((row) => (row.clientId != null ? `${row.leadId}_${row.clientId}` : row.leadId)),
+    });
+  }
 }
 
 // Reports list for search functionality
@@ -241,6 +515,8 @@ const CollectionFinancesReport: React.FC = () => {
   const [filters, setFilters] = usePersistedFilters<Filters>('collectionFinancesReport_filters', {
     fromDate: todayIso,
     toDate: todayIso,
+    paymentFromDate: '',
+    paymentToDate: '',
     collected: [], // Multi-select
     categoryId: [], // Changed to empty array for multi-select
     order: [], // Changed to empty array for multi-select
@@ -433,6 +709,10 @@ const CollectionFinancesReport: React.FC = () => {
     setFilters(prev => ({ ...prev, currencyId: currencies.map(c => String(c.id)) }));
   };
 
+  const handleClearPaymentDates = () => {
+    setFilters((prev) => ({ ...prev, paymentFromDate: '', paymentToDate: '' }));
+  };
+
   const handleClearAllCurrencies = () => {
     setFilters(prev => ({ ...prev, currencyId: [] }));
   };
@@ -444,6 +724,8 @@ const loadPayments = async () => {
       console.log(`🔍 [loadPayments] Starting with filters:`, filters);
       const [modern, legacy] = await Promise.all([fetchModernPayments(filters), fetchLegacyPayments(filters)]);
       console.log(`✅ [loadPayments] Fetched ${modern.length} modern payments, ${legacy.length} legacy payments`);
+      traceDanielGranotInRows('After fetch (modern)', modern);
+      traceDanielGranotInRows('After fetch (legacy)', legacy);
       
       // Debug: Check for lead 168080 only (sublead 54977/2) — match by leadId, not caseNumber "54977"
       const is168080 = (row: PaymentRow) => row.leadId?.toString() === '168080' || row.leadId?.toString() === 'legacy_168080';
@@ -551,16 +833,24 @@ const loadPayments = async () => {
       const beforeFiltering = withProforma.length;
       const filtered = withProforma.filter((row) => {
         const is168080 = row.leadId?.toString() === '168080' || row.leadId?.toString() === 'legacy_168080';
+        const isDanielGranot = rowMatchesDebugContact(row);
         // Due date included: legacy = only if due_date is not null; new = only if ready_to_pay is true.
         // Ignore = no extra filter (show all rows).
         if (filters.due === 'due_only') {
-          if (row.leadType === 'legacy' && !row.dueDate) return false;
-          if (row.leadType === 'new' && row.readyToPay !== true) return false;
+          if (row.leadType === 'legacy' && !row.dueDate) {
+            if (isDanielGranot) logDanielGranotDebug('Client filter: due_only — legacy missing due_date', summarizeRowForDebug(row));
+            return false;
+          }
+          if (row.leadType === 'new' && row.readyToPay !== true) {
+            if (isDanielGranot) logDanielGranotDebug('Client filter: due_only — new ready_to_pay not true', summarizeRowForDebug(row));
+            return false;
+          }
         }
         // Category filter (multi-select)
         if (Array.isArray(filters.categoryId) && filters.categoryId.length > 0) {
           if (!row.mainCategoryId || !filters.categoryId.includes(row.mainCategoryId)) {
             if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by category: mainCategoryId=${row.mainCategoryId}, filter=${filters.categoryId}`);
+            if (isDanielGranot) logDanielGranotDebug('Client filter: category', { row: summarizeRowForDebug(row), filter: filters.categoryId });
             return false;
           }
         }
@@ -596,6 +886,7 @@ const loadPayments = async () => {
           
           if (!matchesFilter) {
             if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by collected: row.collected=${row.collected}, row.hasProforma=${row.hasProforma}, filter=${filters.collected?.join(',')}`);
+            if (isDanielGranot) logDanielGranotDebug('Client filter: collected', { row: summarizeRowForDebug(row), filter: filters.collected });
             return false;
           }
         }
@@ -604,6 +895,7 @@ const loadPayments = async () => {
         if (Array.isArray(filters.order) && filters.order.length > 0) {
           if (!row.orderCode || !filters.order.includes(row.orderCode)) {
             if (is168080) console.log(`🔍 [loadPayments] 168080 filtered OUT by order: orderCode=${row.orderCode}, filter=${filters.order?.join(',')}`);
+            if (isDanielGranot) logDanielGranotDebug('Client filter: order', { row: summarizeRowForDebug(row), filter: filters.order });
             return false;
           }
         }
@@ -611,24 +903,72 @@ const loadPayments = async () => {
         // Currency filter (multi-select, by payment row currency_id)
         if (Array.isArray(filters.currencyId) && filters.currencyId.length > 0) {
           const rowCurrencyId = row.currencyId != null ? String(row.currencyId) : null;
-          if (!rowCurrencyId || !filters.currencyId.includes(rowCurrencyId)) return false;
+          if (!rowCurrencyId || !filters.currencyId.includes(rowCurrencyId)) {
+            if (isDanielGranot) logDanielGranotDebug('Client filter: currency', { row: summarizeRowForDebug(row), filter: filters.currencyId });
+            return false;
+          }
         }
 
-        // Date range: DB already filtered by the correct column (Ignore: legacy=date, new=due_date; Due included: due_date for both). Use dateInRange so cross-year (e.g. Nov–Mar) is handled.
-        if (filters.fromDate || filters.toDate) {
+        // Payment date filter takes precedence over due/plan date when set.
+        if (hasPaymentDateFilter(filters)) {
+          if (!row.collectedDate) {
+            if (isDanielGranot) logDanielGranotDebug('Client filter: payment date — no collectedDate', summarizeRowForDebug(row));
+            return false;
+          }
+          const paymentDateStr = row.collectedDate.split('T')[0];
+          if (!dateInRange(paymentDateStr, filters.paymentFromDate ?? '', filters.paymentToDate ?? '')) {
+            if (isDanielGranot) {
+              logDanielGranotDebug('Client filter: payment date out of range', {
+                row: summarizeRowForDebug(row),
+                paymentDateStr,
+                filter: { from: filters.paymentFromDate, to: filters.paymentToDate },
+              });
+            }
+            return false;
+          }
+        } else if (filters.fromDate || filters.toDate) {
+          // Date range: DB already filtered by the correct column (Ignore: legacy=date, new=due_date; Due included: due_date for both). Use dateInRange so cross-year (e.g. Nov–Mar) is handled.
           const dateToCheck = filters.due === 'ignore' && row.leadType === 'legacy' ? row.planDate : row.dueDate;
-          if (!dateToCheck) return false;
+          const dateColumnLabel = filters.due === 'ignore' && row.leadType === 'legacy' ? 'planDate (legacy date column)' : 'dueDate';
+          if (!dateToCheck) {
+            if (isDanielGranot) {
+              logDanielGranotDebug('Client filter: missing date for range check', {
+                row: summarizeRowForDebug(row),
+                dateColumnLabel,
+                dueMode: filters.due,
+                note: 'Legacy + Due=Ignore uses plan date column, not due_date — if due is 28/05/2026 but plan date differs, row is excluded',
+              });
+            }
+            return false;
+          }
           const dateStr = dateToCheck.split('T')[0];
-          if (!dateInRange(dateStr, filters.fromDate, filters.toDate)) return false;
+          if (!dateInRange(dateStr, filters.fromDate, filters.toDate)) {
+            if (isDanielGranot) {
+              logDanielGranotDebug('Client filter: date out of range', {
+                row: summarizeRowForDebug(row),
+                dateColumnLabel,
+                dateStr,
+                filter: { from: filters.fromDate, to: filters.toDate },
+                expectedDue: DEBUG_CONTACT_EXPECTED_DUE,
+                dueDateMatchesFilter: row.dueDate ? dateInRange(row.dueDate.split('T')[0], filters.fromDate, filters.toDate) : false,
+                planDateMatchesFilter: row.planDate ? dateInRange(row.planDate.split('T')[0], filters.fromDate, filters.toDate) : false,
+              });
+            }
+            return false;
+          }
         }
+
+        if (isDanielGranot) logDanielGranotDebug('Client filter: row PASSES all filters', summarizeRowForDebug(row));
         
         return true;
       });
 
+      traceDanielGranotFilterPass('Before dedup (combined)', withProforma, filters);
+
       // When "Due date included", show one row per contact: the one whose due_date is in range and has the highest order (Final > Intermediate > First).
       // This fixes legacy where both Intermediate (date in range) and Final (due_date in range) can match — we show the row that matches due_date, i.e. Final.
       let rowsToSet = filtered;
-      if (filters.due === 'due_only' && (filters.fromDate || filters.toDate)) {
+      if (filters.due === 'due_only' && (filters.fromDate || filters.toDate) && !hasPaymentDateFilter(filters)) {
         const orderRank: Record<string, number> = { '9': 3, '5': 2, '1': 1, '90': 0, '99': 0 };
         const byContact = new Map<string, PaymentRow>();
         for (const row of filtered) {
@@ -641,6 +981,8 @@ const loadPayments = async () => {
         rowsToSet = Array.from(byContact.values());
         console.log(`✅ [loadPayments] After per-contact deduplication (Due date included): ${rowsToSet.length} rows`);
       }
+      traceDanielGranotDedup(filtered, rowsToSet, filters);
+      traceDanielGranotInRows('After client filter + dedup (final)', rowsToSet);
 
       console.log(`✅ [loadPayments] After client-side filtering: ${rowsToSet.length} plans (was ${beforeFiltering})`);
       
@@ -741,6 +1083,19 @@ const loadPayments = async () => {
       } else {
         console.log(`❌ [loadPayments] Payment plan for 155026 WILL NOT BE SET`);
       }
+
+      const finalDanielGranot = rowsToSet.filter(rowMatchesDebugContact);
+      if (finalDanielGranot.length === 0) {
+        logDanielGranotDebug('NOT in final results — running DB lookup', {
+          inModernFetch: modern.filter(rowMatchesDebugContact).length,
+          inLegacyFetch: legacy.filter(rowMatchesDebugContact).length,
+          inCombinedBeforeFilter: withProforma.filter(rowMatchesDebugContact).length,
+          activeFilters: filters,
+        });
+        await debugDanielGranotDbLookup(filters);
+      } else {
+        logDanielGranotDebug('IN final results', finalDanielGranot.map(summarizeRowForDebug));
+      }
       
       setRows(rowsToSet);
     } catch (err) {
@@ -762,17 +1117,22 @@ const loadPayments = async () => {
 
       try {
         const boiStart = await getBoiCoverageStartDate();
-        const latestSnap = await loadBoiExchangeRates();
+        const todaySnap = await loadBoiExchangeRatesForDate(getJerusalemTodayIsoDate());
+        const planIds = rows
+          .map((row) => parsePaymentPlanIdFromCollectionRowId(row.id))
+          .filter((id): id is number => id != null);
+        const lockedByPlan = await fetchPaymentPlanExchangeContexts(planIds);
 
         const entries = await Promise.all(
           rows.map(async (row): Promise<[string, RowNisAmounts]> => {
             const currencyInput = row.currencyId != null ? row.currencyId : row.currency;
             const isCollected = Boolean(row.collected);
             const dateOnly = (row.collectedDate || '').slice(0, 10);
+            const planId = parsePaymentPlanIdFromCollectionRowId(row.id);
+            const exchangeCtx = planId != null ? lockedByPlan.get(planId) ?? null : null;
+            const locked = exchangeCtx?.pelecardCharge ?? null;
 
-            // Collected rows should use the BOI snapshot on the collected/payment date (when within BOI coverage).
-            // Otherwise use latest snapshot; BOI conversion will fall back to legacy if a currency rate is missing.
-            let snap = latestSnap;
+            let snap = todaySnap;
             let rateDate: string | null = snap?.rateDate ? String(snap.rateDate).slice(0, 10) : null;
 
             if (
@@ -783,20 +1143,28 @@ const loadPayments = async () => {
               /^\d{4}-\d{2}-\d{2}$/.test(dateOnly) &&
               dateOnly >= boiStart
             ) {
-              snap = await loadBoiExchangeRatesForDate(dateOnly);
+              const asOf = resolvePaymentBoiAsOf(true, row.collectedDate, exchangeCtx);
+              snap = await loadBoiExchangeRatesAsOf(asOf);
               rateDate = snap?.rateDate ? String(snap.rateDate).slice(0, 10) : dateOnly;
             }
 
             const valueConv = convertToNISWithMeta(row.value, currencyInput, snap);
             const vatConv = convertToNISWithMeta(row.vat, currencyInput, snap);
             const usedLegacyFallback = Boolean(valueConv.usedLegacyFallback || vatConv.usedLegacyFallback);
+            const amounts = applyLockedChargeTotalIfMatching(
+              locked,
+              snap,
+              valueConv.amountNIS,
+              vatConv.amountNIS,
+              valueConv.amountNIS + vatConv.amountNIS,
+            );
 
             return [
               row.id,
               {
-                valueNis: valueConv.amountNIS,
-                vatNis: vatConv.amountNIS,
-                totalNis: valueConv.amountNIS + vatConv.amountNIS,
+                valueNis: amounts.subtotalNis,
+                vatNis: amounts.vatNis,
+                totalNis: amounts.totalNis,
                 rateSource: usedLegacyFallback ? 'legacy' : 'boi',
                 rateDate: usedLegacyFallback ? null : rateDate,
               },
@@ -1002,12 +1370,12 @@ const loadPayments = async () => {
       <div className="card bg-base-100 shadow-lg p-6">
         <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
           <div className="form-control">
-            <label className="label mb-2"><span className="label-text">From date:</span></label>
-            <input type="date" className="input input-bordered" value={filters.fromDate} onChange={(e) => handleFilterChange('fromDate', e.target.value)} />
+            <label className="label mb-2"><span className="label-text">Due from date:</span></label>
+            <input type="date" className="input input-bordered" value={filters.fromDate} onChange={(e) => handleFilterChange('fromDate', e.target.value)} disabled={hasPaymentDateFilter(filters)} />
           </div>
           <div className="form-control">
-            <label className="label mb-2"><span className="label-text">To date:</span></label>
-            <input type="date" className="input input-bordered" value={filters.toDate} onChange={(e) => handleFilterChange('toDate', e.target.value)} />
+            <label className="label mb-2"><span className="label-text">Due to date:</span></label>
+            <input type="date" className="input input-bordered" value={filters.toDate} onChange={(e) => handleFilterChange('toDate', e.target.value)} disabled={hasPaymentDateFilter(filters)} />
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Collected:</span></label>
@@ -1332,6 +1700,45 @@ const loadPayments = async () => {
             </select>
           </div>
         </div>
+        <div className="mt-4 pt-4 border-t border-base-200">
+          <p className="text-sm font-medium text-slate-600 mb-3">
+            Payment date (collected / paid)
+            {hasPaymentDateFilter(filters) && (
+              <span className="ml-2 text-xs font-normal text-primary">— active; due date filter ignored</span>
+            )}
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
+            <div className="form-control">
+              <label className="label mb-2"><span className="label-text">Payment from:</span></label>
+              <input
+                type="date"
+                className="input input-bordered"
+                value={filters.paymentFromDate ?? ''}
+                onChange={(e) => handleFilterChange('paymentFromDate', e.target.value)}
+              />
+            </div>
+            <div className="form-control">
+              <label className="label mb-2"><span className="label-text">Payment to:</span></label>
+              <input
+                type="date"
+                className="input input-bordered"
+                value={filters.paymentToDate ?? ''}
+                onChange={(e) => handleFilterChange('paymentToDate', e.target.value)}
+              />
+            </div>
+            <div className="form-control">
+              <label className="label mb-2"><span className="label-text">&nbsp;</span></label>
+              <button
+                type="button"
+                className="btn btn-outline btn-sm"
+                onClick={handleClearPaymentDates}
+                disabled={!hasPaymentDateFilter(filters)}
+              >
+                Clear payment dates
+              </button>
+            </div>
+          </div>
+        </div>
         <div className="mt-6 flex flex-wrap items-center gap-4">
           <button className="btn btn-primary" onClick={loadPayments} disabled={loading}>
             {loading ? <ArrowPathIcon className="w-5 h-5 animate-spin" /> : 'Show'}
@@ -1564,9 +1971,11 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
   // Always filter out cancelled plans
   query = query.is('cancel_date', null);
 
-  // New leads: always apply date range on due_date (one column, no combining rows).
-  // When fromDate > toDate (e.g. Nov–Mar), treat as cross-year: due_date >= fromDate OR due_date <= toDate.
-  if (filters.fromDate || filters.toDate) {
+  if (hasPaymentDateFilter(filters)) {
+    query = applyPaymentDateRangeToQuery(query, filters, 'paid_at');
+  } else if (filters.fromDate || filters.toDate) {
+    // New leads: always apply date range on due_date (one column, no combining rows).
+    // When fromDate > toDate (e.g. Nov–Mar), treat as cross-year: due_date >= fromDate OR due_date <= toDate.
     if (isCrossYearRange(filters.fromDate, filters.toDate)) {
       query = query.or(`due_date.gte.${filters.fromDate},due_date.lte.${filters.toDate}`);
     } else {
@@ -1594,6 +2003,24 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
   }
   
   console.log(`✅ [fetchModernPayments] Fetched ${data?.length || 0} payment plans from database (paginated)`);
+  const danielGranotRawModern = (data || []).filter((plan: any) => nameMatchesDebugContact(plan.client_name));
+  if (danielGranotRawModern.length > 0) {
+    logDanielGranotDebug('fetchModernPayments — raw rows after DB query', danielGranotRawModern.map((plan: any) => ({
+      id: plan.id,
+      lead_id: plan.lead_id,
+      client_name: plan.client_name,
+      due_date: plan.due_date,
+      paid_at: plan.paid_at,
+      ready_to_pay: plan.ready_to_pay,
+      dueDateInFilter: plan.due_date
+        ? dateInRange(String(plan.due_date).split('T')[0], filters.fromDate, filters.toDate)
+        : false,
+    })));
+  } else if (!hasPaymentDateFilter(filters) && (filters.fromDate || filters.toDate)) {
+    logDanielGranotDebug('fetchModernPayments — NOT in DB result (likely excluded by due_date DB filter)', {
+      filter: { from: filters.fromDate, to: filters.toDate, due: filters.due },
+    });
+  }
   console.log(`🔍 [fetchModernPayments] Query filters applied:`, {
     due: filters.due,
     fromDate: filters.fromDate,
@@ -1701,6 +2128,18 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
     const orderCode = normalizeOrderCode(plan.payment_order);
     const paidAt = normalizeDate(plan.paid_at);
     const dueDate = normalizeDate(plan.due_date);
+
+    if (nameMatchesDebugContact(plan.client_name) || nameMatchesDebugContact(meta?.contactName) || nameMatchesDebugContact(meta?.leadName)) {
+      logDanielGranotDebug('fetchModernPayments — mapped PaymentRow', {
+        planId: plan.id,
+        lead_id: plan.lead_id,
+        client_name: plan.client_name,
+        due_date: plan.due_date,
+        dueDate,
+        paid_at: plan.paid_at,
+        ready_to_pay: plan.ready_to_pay,
+      });
+    }
     
     // Extract createdAt from proforma JSON for new leads
     let proformaDate: string | null = null;
@@ -1758,9 +2197,12 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
   // Always filter out cancelled plans
   query = query.is('cancel_date', null);
 
-  // Legacy: Ignore = show ALL rows (date range on date column when set; due_date can be NULL).
-  // When fromDate > toDate (e.g. Nov–Mar), treat as cross-year: date >= fromDate OR date <= toDate.
-  if (filters.fromDate || filters.toDate) {
+  if (hasPaymentDateFilter(filters)) {
+    query = applyPaymentDateRangeToQuery(query, filters, 'actual_date');
+    console.log(`🔍 [fetchLegacyPayments] Payment date filter on actual_date`);
+  } else if (filters.fromDate || filters.toDate) {
+    // Legacy: Ignore = show ALL rows (date range on date column when set; due_date can be NULL).
+    // When fromDate > toDate (e.g. Nov–Mar), treat as cross-year: date >= fromDate OR date <= toDate.
     if (filters.due === 'due_only') {
       query = query.not('due_date', 'is', null);
       if (isCrossYearRange(filters.fromDate, filters.toDate)) {
@@ -1922,6 +2364,31 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     }
     console.log(`✅ [fetchLegacyPayments] Fetched ${contactMap.size} contact names for client_ids`);
   }
+
+  const danielGranotContactIds = Array.from(contactMap.entries())
+    .filter(([, name]) => nameMatchesDebugContact(name))
+    .map(([id]) => id);
+  const danielGranotLegacyRaw = activePlans.filter((plan: any) =>
+    danielGranotContactIds.includes(Number(plan.client_id)),
+  );
+  if (danielGranotLegacyRaw.length > 0) {
+    logDanielGranotDebug('fetchLegacyPayments — raw rows after DB query', danielGranotLegacyRaw.map((plan: any) => ({
+      id: plan.id,
+      lead_id: plan.lead_id,
+      client_id: plan.client_id,
+      contactName: contactMap.get(Number(plan.client_id)),
+      date: plan.date,
+      due_date: plan.due_date,
+      actual_date: plan.actual_date,
+      ready_to_pay: plan.ready_to_pay,
+      dbDateFilterExplanation: explainDbDateFilterForLegacyPlan(plan, filters),
+    })));
+  } else if (!hasPaymentDateFilter(filters) && (filters.fromDate || filters.toDate)) {
+    logDanielGranotDebug('fetchLegacyPayments — NOT in DB result (likely excluded by date/due_date DB filter)', {
+      filter: { from: filters.fromDate, to: filters.toDate, due: filters.due },
+      hint: 'When Due=Ignore, legacy DB filters "date" column not due_date — due 28/05/2026 may differ from plan date',
+    });
+  }
   
   // Fetch proforma dates from proformainvoice table for legacy leads (batch to avoid URL/param limits with large date ranges)
   // Match by ppr_id when set (payment plan row id), and by lead_id (+ client_id) when ppr_id is null (lead-level proformas)
@@ -2069,8 +2536,25 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
         },
       });
     }
+
     // Legacy: planDate = "date" column (used for date filter when Due = Ignore)
     const planDate = normalizeDate(plan.date);
+
+    if (nameMatchesDebugContact(contactName)) {
+      logDanielGranotDebug('fetchLegacyPayments — mapped PaymentRow', {
+        planId: plan.id,
+        lead_id: plan.lead_id,
+        client_id: plan.client_id,
+        contactName,
+        dateColumn: plan.date,
+        due_date: plan.due_date,
+        dueDate,
+        planDate,
+        actualDate,
+        ready_to_pay: plan.ready_to_pay,
+        dbDateFilterExplanation: explainDbDateFilterForLegacyPlan(plan, filters),
+      });
+    }
     // Always use lead_id metadata for lead information (leadName, caseNumber, etc.)
     // Use contact name from client_id (contact_id) for clientName field
     return {

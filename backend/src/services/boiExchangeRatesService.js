@@ -245,10 +245,32 @@ async function getRatesForDate(rateDate) {
   return rows;
 }
 
+/**
+ * Rates available at a specific moment — only rows with created_at <= asOf.
+ */
+async function getRatesAsOf(asOfIso) {
+  const asOf = asOfIso ? new Date(asOfIso).toISOString() : new Date().toISOString();
+
+  const { data, error } = await supabase.rpc('get_boi_exchange_rates_as_of', {
+    p_as_of: asOf,
+  });
+  if (error) throw error;
+  const rows = data ?? [];
+
+  if (rows.length === 0) {
+    const err = new Error(`No Bank of Israel exchange rates available as of ${asOf}`);
+    err.code = 'EXCHANGE_RATE_UNAVAILABLE';
+    throw err;
+  }
+
+  return rows;
+}
+
 module.exports = {
   syncBoiExchangeRates,
   getLatestRates,
   getRatesForDate,
+  getRatesAsOf,
   getSyncStatus,
   needsSyncFromBoi,
   getLatestRateDateInDb,
