@@ -58,6 +58,12 @@ interface GenericCRUDManagerProps {
   auditUserIdSource?: 'auth' | 'crm';
   /** PostgreSQL boolean columns use true/false; legacy char columns use 't'/'f'. */
   booleanStorage?: 'native' | 'char';
+  /** Optional filter controls rendered beside the search bar */
+  filterBar?: React.ReactNode;
+  /** Apply extra filters to the list query (e.g. month/year) */
+  queryModifier?: (query: any) => any;
+  /** Change this value to refetch when queryModifier inputs change */
+  queryModifierKey?: unknown;
 }
 
 interface Record {
@@ -90,6 +96,9 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   hideDeleteButton = false,
   auditUserIdSource = 'auth',
   booleanStorage = 'char',
+  filterBar,
+  queryModifier,
+  queryModifierKey,
 }) => {
   const [records, setRecords] = useState<Record[]>([]);
   const [loading, setLoading] = useState(true);
@@ -151,6 +160,10 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       if (tableName === 'tenants_employee' && userActiveFilter !== 'all' && hasUserIdField) {
         const userActiveValue = userActiveFilter === 'yes' ? true : false;
         query = query.eq('users.is_active', userActiveValue);
+      }
+
+      if (queryModifier) {
+        query = queryModifier(query);
       }
 
       // Add pagination only if not showing all records
@@ -589,7 +602,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   useEffect(() => {
     fetchRecords();
     fetchAllForeignKeyOptions();
-  }, [currentPage, searchTerm, isActiveFilter, userActiveFilter, showAllRecords, refreshKey, sortColumn, sortAscending]);
+  }, [currentPage, searchTerm, isActiveFilter, userActiveFilter, showAllRecords, refreshKey, sortColumn, sortAscending, queryModifierKey]);
 
   // Handle boolean toggle changes
   const handleToggleBoolean = async (record: Record, fieldName: string, newValue: boolean) => {
@@ -1929,7 +1942,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         </div>
         
         {/* Filters */}
-        <div className="flex flex-col sm:flex-row gap-2">
+        <div className="flex flex-col sm:flex-row gap-2 flex-wrap items-center">
+          {filterBar}
           {/* Is Active Filter */}
           {fields.some(f => f.name === 'is_active') && (
             <select

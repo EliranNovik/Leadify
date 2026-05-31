@@ -7,7 +7,18 @@ import {
 } from '../components/EngravedFilterPanel';
 import { ChannelLabel } from '../components/ChannelLabel';
 import { fetchStageNames, getStageName } from '../lib/stageUtils';
-import { convertToNIS } from '../lib/currencyConversion';
+import { convertToNIS, getCurrencySymbol } from '../lib/currencyConversion';
+import {
+  buildJerusalemEndOfDayIso,
+  buildJerusalemStartOfDayIso,
+  buildLegacyLeadSourceIdOrFilterClause,
+  buildLeadSourceOrFilterClause,
+  resolveEffectiveSourceIdsForFetch,
+  isFirmOnlyReportScope,
+  resolveSourceFilterNames,
+  timestampInCalendarRange,
+  type SourceRowLike,
+} from '../lib/leadDateFilters';
 import {
   ResponsiveContainer,
   BarChart,
@@ -32,7 +43,7 @@ type ChannelRow = { id: string; code: string; label: string; is_active: boolean 
 /** misc_leadsource.id is bigint: keep as string to avoid precision loss */
 type SourceRow = { id: string; name: string; channel_id: string | null };
 type FirmRow = { id: string; name: string };
-type CountryRow = { id: number; name: string };
+type CountryRow = { id: number; name: string; phone_code?: string | null };
 
 type LeadRow = {
   id: string;
@@ -46,7 +57,7 @@ type LeadRow = {
   source: string | null;
   /** bigint in DB; treat as string to avoid int8 precision issues */
   source_id: string | null;
-  status: string | null;
+  status: string | number | null;
   eligible: boolean | null;
   eligibility_status: string | null;
   unactivated_at: string | null;
@@ -56,6 +67,10 @@ type LeadRow = {
   balance_currency: string | null;
   probability: number | null;
   country_id: number | null;
+  /** Legacy leads_lead.currency_id — used for NIS revenue conversion */
+  currency_id?: number | null;
+  phone?: string | null;
+  mobile?: string | null;
   misc_country?: { id: number; name: string } | null;
   misc_leadsource?: {
     id: number;
@@ -111,7 +126,7 @@ function stageRank(lead: LeadRow): number {
 
 function isInactiveLead(lead: LeadRow): boolean {
   if (lead.unactivated_at) return true;
-  if (lead.status === 'inactive') return true;
+  if (lead.status === 'inactive' || lead.status === '10' || lead.status === 10) return true;
   const r = stageRank(lead);
   if (r === 91) return true;
   return false;
@@ -122,23 +137,74 @@ function isEligibleLead(lead: LeadRow): boolean {
   if (isInactiveLead(lead)) {
     const reason = (lead.unactivation_reason || '').toLowerCase();
     if (reason.includes('no legal') || reason.includes('eligib')) return false;
+    return false;
   }
+  if (lead.eligible === true) return true;
   const r = stageRank(lead);
   if (r >= HIST_STAGE.offer) return true;
-  if (lead.eligible === true) return true;
   if (lead.eligibility_status && String(lead.eligibility_status).toLowerCase().includes('eligible')) return true;
-  if (r >= 20 && !isInactiveLead(lead)) return true;
+  if (r >= HIST_STAGE.meeting) return true;
   return false;
-}
-
-function hasMeetingScheduled(lead: LeadRow): boolean {
-  // Report requirement: count meetings ONLY when stage is "meeting scheduled" (20),
-  // and explicitly exclude "meeting rescheduled" (21).
-  return stageRank(lead) === 20;
 }
 
 function hasOfferOrBeyond(lead: LeadRow): boolean {
   return stageRank(lead) >= HIST_STAGE.offer;
+}
+
+function isCanceledMeetingStatus(status: string | null | undefined): boolean {
+  const s = String(status ?? '').trim().toLowerCase();
+  return s === 'canceled' || s === 'cancelled';
+}
+
+type MeetingLinkRow = {
+  client_id: string | null;
+  legacy_lead_id: number | null;
+  status: string | null;
+};
+
+/** Lead ids (UUID or legacy-{n}) that have at least one non-canceled row in public.meetings. */
+async function fetchLeadIdsWithMeetingsFromTable(
+  newLeadIds: string[],
+  legacyLeadNumericIds: number[],
+): Promise<{ leadIds: Set<string>; error: string | null }> {
+  const leadIds = new Set<string>();
+  const chunkSize = 100;
+
+  const appendBatch = (rows: MeetingLinkRow[]) => {
+    for (const m of rows) {
+      if (isCanceledMeetingStatus(m.status)) continue;
+      if (m.client_id) leadIds.add(String(m.client_id));
+      if (m.legacy_lead_id != null && Number.isFinite(Number(m.legacy_lead_id))) {
+        leadIds.add(`legacy-${m.legacy_lead_id}`);
+      }
+    }
+  };
+
+  for (let i = 0; i < newLeadIds.length; i += chunkSize) {
+    const chunk = newLeadIds.slice(i, i + chunkSize);
+    const { data, error } = await supabase
+      .from('meetings')
+      .select('client_id, legacy_lead_id, status')
+      .in('client_id', chunk);
+    if (error) return { leadIds, error: error.message };
+    appendBatch((data || []) as MeetingLinkRow[]);
+  }
+
+  for (let i = 0; i < legacyLeadNumericIds.length; i += chunkSize) {
+    const chunk = legacyLeadNumericIds.slice(i, i + chunkSize);
+    const { data, error } = await supabase
+      .from('meetings')
+      .select('client_id, legacy_lead_id, status')
+      .in('legacy_lead_id', chunk);
+    if (error) return { leadIds, error: error.message };
+    appendBatch((data || []) as MeetingLinkRow[]);
+  }
+
+  return { leadIds, error: null };
+}
+
+function leadHasMeetingRecord(lead: LeadRow, leadIdsWithMeeting: Set<string>): boolean {
+  return leadIdsWithMeeting.has(lead.id);
 }
 
 function hasSignedDeal(lead: LeadRow): boolean {
@@ -216,16 +282,724 @@ function daysBetween(fromMs: number | null, toMs: number | null): number | null 
   return (toMs - fromMs) / (1000 * 60 * 60 * 24);
 }
 
-// Align date filtering with LeadSearchPage: interpret YYYY-MM-DD as local day, then convert to UTC ISO.
-function buildUtcStartOfDay(dateStr: string) {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  const local = new Date(year, (month || 1) - 1, day || 1, 0, 0, 0, 0);
-  return local.toISOString();
+/** Calendar months (YYYY-MM-01) overlapping the report date range. Empty when no dates set. */
+function listExpenseMonthsInRange(fromDate: string, toDate: string): string[] {
+  const from = (fromDate || toDate || '').trim();
+  const to = (toDate || fromDate || '').trim();
+  if (!from && !to) return [];
+
+  const parseYm = (s: string) => {
+    const [y, m] = s.split('-').map(Number);
+    return { y: y || 2000, m: m || 1 };
+  };
+
+  let { y: y1, m: m1 } = parseYm(from || to);
+  let { y: y2, m: m2 } = parseYm(to || from);
+  if (y1 > y2 || (y1 === y2 && m1 > m2)) {
+    [y1, m1, y2, m2] = [y2, m2, y1, m1];
+  }
+
+  const out: string[] = [];
+  let y = y1;
+  let m = m1;
+  for (;;) {
+    out.push(`${y}-${String(m).padStart(2, '0')}-01`);
+    if (y === y2 && m === m2) break;
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+  }
+  return out;
 }
-function buildUtcEndOfDay(dateStr: string) {
-  const [year, month, day] = dateStr.split('-').map(Number);
-  const local = new Date(year, (month || 1) - 1, day || 1, 23, 59, 59, 999);
-  return local.toISOString();
+
+async function fetchMediaExpensesBySource(
+  fromDate: string,
+  toDate: string,
+): Promise<Record<string, number>> {
+  const monthKeys = listExpenseMonthsInRange(fromDate, toDate);
+  let q = supabase.from('source_media_expense').select('lead_source_id, amount');
+  if (monthKeys.length > 0) {
+    q = q.in('expense_month', monthKeys);
+  }
+  const { data, error } = await q;
+  if (error) {
+    console.warn('source_media_expense:', error.message);
+    return {};
+  }
+  const bySource: Record<string, number> = {};
+  for (const row of data || []) {
+    const sid = String(row.lead_source_id);
+    bySource[sid] = (bySource[sid] || 0) + (Number(row.amount) || 0);
+  }
+  return bySource;
+}
+
+function managementAmountToNis(amount: unknown, currency: string | null | undefined): number {
+  const raw = Number(amount);
+  if (!Number.isFinite(raw) || raw === 0) return 0;
+  const sym = (currency || 'ILS').trim();
+  try {
+    return convertToNIS(raw, sym === 'ILS' ? '₪' : sym);
+  } catch {
+    return raw;
+  }
+}
+
+async function fetchManagementExpensesByFirm(
+  fromDate: string,
+  toDate: string,
+): Promise<Record<string, number>> {
+  const monthKeys = listExpenseMonthsInRange(fromDate, toDate);
+  let q = supabase.from('firm_management_costs').select('firm_id, amount, currency');
+  if (monthKeys.length > 0) {
+    q = q.in('billing_month', monthKeys);
+  }
+  const { data, error } = await q;
+  if (error) {
+    console.warn('firm_management_costs:', error.message);
+    return {};
+  }
+  const byFirm: Record<string, number> = {};
+  for (const row of data || []) {
+    const firmId = String(row.firm_id);
+    byFirm[firmId] = (byFirm[firmId] || 0) + managementAmountToNis(row.amount, row.currency);
+  }
+  return byFirm;
+}
+
+function extractCountryCodeFromPhone(phone: string | null | undefined): string | null {
+  if (!phone) return null;
+  const normalized = phone.replace(/[\s\-()]/g, '');
+  if (normalized.startsWith('+')) {
+    if (normalized.length > 4) {
+      const threeDigit = normalized.substring(1, 4);
+      if (/^97[0-9]$/.test(threeDigit) || /^35[0-9]$/.test(threeDigit) || /^90[0-9]$/.test(threeDigit)) {
+        return `+${threeDigit}`;
+      }
+    }
+    if (normalized.length > 3) {
+      const twoDigit = normalized.substring(1, 3);
+      if (/^[2-9][0-9]$/.test(twoDigit)) return `+${twoDigit}`;
+    }
+    if (normalized.startsWith('+1') && normalized.length > 2) return '+1';
+  }
+  if (normalized.startsWith('00')) {
+    if (normalized.length > 5) {
+      const threeDigit = normalized.substring(2, 5);
+      if (/^97[0-9]$/.test(threeDigit) || /^35[0-9]$/.test(threeDigit) || /^90[0-9]$/.test(threeDigit)) {
+        return `+${threeDigit}`;
+      }
+    }
+    if (normalized.length > 4) {
+      const twoDigit = normalized.substring(2, 4);
+      if (/^[2-9][0-9]$/.test(twoDigit)) return `+${twoDigit}`;
+    }
+    if (normalized.startsWith('001') && normalized.length > 3) return '+1';
+  }
+  if (normalized.length > 2) {
+    const threeDigit = normalized.substring(0, 3);
+    if (/^97[0-9]$/.test(threeDigit) || /^35[0-9]$/.test(threeDigit) || /^90[0-9]$/.test(threeDigit)) {
+      return `+${threeDigit}`;
+    }
+  }
+  if (normalized.length > 1) {
+    const twoDigit = normalized.substring(0, 2);
+    if (/^[2-9][0-9]$/.test(twoDigit)) return `+${twoDigit}`;
+    if (normalized.startsWith('1') && normalized.length > 1) return '+1';
+  }
+  return null;
+}
+
+function normalizeSourceName(value: string | null | undefined): string {
+  return String(value || '').trim().toLowerCase();
+}
+
+function buildSourceLookupMaps(allSources: SourceRow[]) {
+  const sourceNameToRow = new Map<string, SourceRow>();
+  const sourceIdToRow = new Map<string, SourceRow>();
+  for (const s of allSources) {
+    const key = normalizeSourceName(s.name);
+    if (key && !sourceNameToRow.has(key)) sourceNameToRow.set(key, s);
+    sourceIdToRow.set(String(s.id), s);
+  }
+  return { sourceNameToRow, sourceIdToRow };
+}
+
+function resolveLeadSourceRow(
+  lead: LeadRow,
+  sourceNameToRow: Map<string, SourceRow>,
+  sourceIdToRow: Map<string, SourceRow>,
+): SourceRow | null {
+  if (lead.misc_leadsource) {
+    return {
+      id: String(lead.misc_leadsource.id),
+      name: lead.misc_leadsource.name,
+      channel_id: lead.misc_leadsource.channel_id,
+    };
+  }
+  const sid = lead.source_id != null && String(lead.source_id).trim() !== '' ? String(lead.source_id) : null;
+  if (sid && sourceIdToRow.has(sid)) return sourceIdToRow.get(sid)!;
+  const key = normalizeSourceName(lead.source);
+  return key ? sourceNameToRow.get(key) || null : null;
+}
+
+function leadChannelId(
+  lead: LeadRow,
+  sourceNameToRow: Map<string, SourceRow>,
+  sourceIdToRow: Map<string, SourceRow>,
+): string | null {
+  if (lead.misc_leadsource?.channel_id) return lead.misc_leadsource.channel_id;
+  return resolveLeadSourceRow(lead, sourceNameToRow, sourceIdToRow)?.channel_id ?? null;
+}
+
+function buildSelectedPhoneCodes(countryIds: string[], countries: CountryRow[]): Set<string> {
+  const selectedCountryIds = new Set(
+    countryIds.map((c) => parseInt(c, 10)).filter((n) => Number.isFinite(n)),
+  );
+  const codes = new Set<string>();
+  for (const country of countries) {
+    if (!selectedCountryIds.has(country.id)) continue;
+    const raw = country.phone_code?.trim();
+    if (!raw) continue;
+    codes.add(raw.startsWith('+') ? raw : `+${raw}`);
+  }
+  return codes;
+}
+
+function leadMatchesSourceFilter(
+  lead: LeadRow,
+  selectedSourceIds: string[],
+  allSources: SourceRow[],
+  sourceNameToRow: Map<string, SourceRow>,
+  sourceIdToRow: Map<string, SourceRow>,
+): boolean {
+  if (selectedSourceIds.length === 0) return true;
+  const selectedIdSet = new Set(selectedSourceIds.map(String));
+  const selectedNames = new Set(
+    allSources.filter((s) => selectedIdSet.has(String(s.id))).map((s) => normalizeSourceName(s.name)),
+  );
+  // Lead Search resolves source names -> all matching misc_leadsource ids (.in('name', ...)).
+  const allowedIds = new Set(selectedSourceIds.map(String));
+  for (const s of allSources) {
+    const name = normalizeSourceName(s.name);
+    if (name && selectedNames.has(name)) allowedIds.add(String(s.id));
+  }
+
+  const sourceText = normalizeSourceName(lead.source);
+  const joinedText = normalizeSourceName(lead.misc_leadsource?.name);
+  if (sourceText && selectedNames.has(sourceText)) return true;
+  if (joinedText && selectedNames.has(joinedText)) return true;
+
+  const candidates = new Set<string>();
+  if (lead.source_id != null && String(lead.source_id).trim() !== '') candidates.add(String(lead.source_id));
+  if (lead.misc_leadsource?.id != null) candidates.add(String(lead.misc_leadsource.id));
+  const resolved = resolveLeadSourceRow(lead, sourceNameToRow, sourceIdToRow);
+  if (resolved?.id) candidates.add(String(resolved.id));
+  for (const id of candidates) {
+    if (allowedIds.has(id)) return true;
+  }
+  return false;
+}
+
+function leadMatchesCountryFilter(lead: LeadRow, countryIds: string[], countries: CountryRow[]): boolean {
+  if (countryIds.length === 0) return true;
+  const ok = new Set(countryIds.map((c) => parseInt(c, 10)).filter((n) => Number.isFinite(n)));
+  if (lead.country_id != null && ok.has(lead.country_id)) return true;
+  const phoneCodes = buildSelectedPhoneCodes(countryIds, countries);
+  const phoneCode = extractCountryCodeFromPhone(lead.phone);
+  if (phoneCode && phoneCodes.has(phoneCode)) return true;
+  const mobileCode = extractCountryCodeFromPhone(lead.mobile);
+  if (mobileCode && phoneCodes.has(mobileCode)) return true;
+  return false;
+}
+
+function leadMatchesFirmFilter(
+  lead: LeadRow,
+  firmIds: string[],
+  firmIdToSourceIds: Map<string, string[]>,
+  sourceIdToFirmIds: Map<string, string[]>,
+  allSources: SourceRow[],
+  sourceNameToRow: Map<string, SourceRow>,
+  sourceIdToRow: Map<string, SourceRow>,
+): boolean {
+  if (firmIds.length === 0) return true;
+  const selectedFirms = new Set(firmIds.map(String));
+
+  const resolved = resolveLeadSourceRow(lead, sourceNameToRow, sourceIdToRow);
+  const candidateSourceIds = new Set<string>();
+  if (resolved?.id) candidateSourceIds.add(String(resolved.id));
+  if (lead.source_id != null && String(lead.source_id).trim() !== '') {
+    candidateSourceIds.add(String(lead.source_id));
+  }
+  if (lead.misc_leadsource?.id != null) {
+    candidateSourceIds.add(String(lead.misc_leadsource.id));
+  }
+
+  for (const sid of candidateSourceIds) {
+    const linkedFirms = sourceIdToFirmIds.get(sid) || [];
+    if (linkedFirms.some((f) => selectedFirms.has(String(f)))) return true;
+  }
+
+  const allowedSourceIds: string[] = [];
+  for (const firmId of firmIds) {
+    allowedSourceIds.push(...(firmIdToSourceIds.get(firmId) || []));
+  }
+  if (allowedSourceIds.length === 0) return false;
+  return leadMatchesSourceFilter(
+    lead,
+    [...new Set(allowedSourceIds)],
+    allSources,
+    sourceNameToRow,
+    sourceIdToRow,
+  );
+}
+
+function isLegacyLeadId(id: string): boolean {
+  return id.startsWith('legacy-');
+}
+
+function legacyLeadNumericId(lead: LeadRow): number | null {
+  if (!isLegacyLeadId(lead.id)) return null;
+  const n = parseInt(lead.id.slice('legacy-'.length), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+function parseLegacyTriState(value: unknown): boolean | null {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  const s = String(value ?? '').trim().toLowerCase();
+  if (!s) return null;
+  if (s === 'true' || s === '1' || s === 'yes') return true;
+  if (s === 'false' || s === '0' || s === 'no') return false;
+  return null;
+}
+
+function legacyBalanceAndCurrency(raw: Record<string, unknown>): {
+  balance: number | null;
+  proposal_total: number | null;
+  balance_currency: string;
+  currency_id: number | null;
+} {
+  const currencyJoin = raw.accounting_currencies as
+    | { id?: number; name?: string | null }
+    | { id?: number; name?: string | null }[]
+    | null
+    | undefined;
+  const currencyRec = Array.isArray(currencyJoin) ? currencyJoin[0] : currencyJoin;
+  let currencyId = raw.currency_id != null ? Number(raw.currency_id) : NaN;
+  if (!Number.isFinite(currencyId)) currencyId = currencyRec?.id != null ? Number(currencyRec.id) : 1;
+  if (!Number.isFinite(currencyId)) currencyId = 1;
+
+  const balance =
+    currencyId === 1
+      ? raw.total_base != null
+        ? Number(raw.total_base)
+        : null
+      : raw.total != null
+        ? Number(raw.total)
+        : raw.total_base != null
+          ? Number(raw.total_base)
+          : null;
+
+  const proposal_total = raw.proposal != null ? Number(raw.proposal) : null;
+  const balance_currency = (currencyRec?.name || getCurrencySymbol(currencyId)).trim() || '₪';
+
+  return { balance, proposal_total, balance_currency, currency_id: currencyId };
+}
+
+function mapLegacyLeadToRow(raw: Record<string, unknown>): LeadRow {
+  const srcJoin = raw.misc_leadsource as
+    | { id: number; name: string; channel_id?: string | null }
+    | { id: number; name: string; channel_id?: string | null }[]
+    | null
+    | undefined;
+  const src = Array.isArray(srcJoin) ? srcJoin[0] : srcJoin;
+  const schedJoin = raw.scheduler_employee as { display_name?: string | null } | { display_name?: string | null }[] | null | undefined;
+  const sched = Array.isArray(schedJoin) ? schedJoin[0] : schedJoin;
+  const cdate = raw.cdate != null ? String(raw.cdate) : '';
+  const createdAt = cdate || new Date().toISOString();
+  const legacyStatus = raw.status;
+  const isLegacyInactive = legacyStatus === 10 || legacyStatus === '10';
+  const eligibleRaw = raw.eligibile ?? raw.eligible;
+  const { balance, proposal_total, balance_currency, currency_id } = legacyBalanceAndCurrency(raw);
+
+  return {
+    id: `legacy-${raw.id}`,
+    created_at: createdAt,
+    lead_number: raw.lead_number != null ? String(raw.lead_number) : String(raw.id),
+    scheduler: sched?.display_name?.trim() || null,
+    meeting_scheduler_id:
+      raw.meeting_scheduler_id != null && !Number.isNaN(Number(raw.meeting_scheduler_id))
+        ? Number(raw.meeting_scheduler_id)
+        : null,
+    stage: (raw.stage as string | number | null) ?? null,
+    source: src?.name ?? (raw.source_external_id != null ? String(raw.source_external_id) : null),
+    source_id: raw.source_id != null ? String(raw.source_id) : null,
+    status: isLegacyInactive ? 'inactive' : legacyStatus != null ? legacyStatus : null,
+    eligible: parseLegacyTriState(eligibleRaw),
+    eligibility_status:
+      raw.eligibility_status != null ? String(raw.eligibility_status) : null,
+    unactivated_at: isLegacyInactive ? createdAt : null,
+    unactivation_reason: null,
+    balance,
+    proposal_total,
+    balance_currency,
+    currency_id,
+    probability: raw.probability != null ? Number(raw.probability) : null,
+    country_id: null,
+    phone: raw.phone != null ? String(raw.phone) : null,
+    mobile: raw.mobile != null ? String(raw.mobile) : null,
+    misc_leadsource: src
+      ? { id: src.id, name: src.name, channel_id: src.channel_id ?? null }
+      : null,
+  };
+}
+
+async function paginateLegacyLeadQuery(
+  buildQuery: () => ReturnType<ReturnType<typeof supabase.from>['select']>,
+  maxRows: number,
+): Promise<Record<string, unknown>[]> {
+  const pageSize = 1000;
+  const combined: Record<string, unknown>[] = [];
+  let offset = 0;
+  for (;;) {
+    const { data, error } = await buildQuery().order('cdate', { ascending: false }).range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    const batch = (data || []) as Record<string, unknown>[];
+    combined.push(...batch);
+    if (batch.length < pageSize) break;
+    offset += pageSize;
+    if (combined.length >= maxRows) break;
+  }
+  return combined;
+}
+
+async function fetchLegacyLeadMainContactCountryIds(): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
+  let offset = 0;
+  for (;;) {
+    const { data, error } = await supabase
+      .from('lead_leadcontact')
+      .select(
+        `
+        lead_id,
+        leads_contact (
+          country_id
+        )
+      `,
+      )
+      .eq('main', true)
+      .range(offset, offset + 999);
+    if (error) throw error;
+    const batch = data || [];
+    for (const row of batch) {
+      const leadId = row.lead_id != null ? String(row.lead_id) : '';
+      if (!leadId) continue;
+      const contact = row.leads_contact as { country_id?: number | null } | { country_id?: number | null }[] | null;
+      const c = Array.isArray(contact) ? contact[0] : contact;
+      const countryId = c?.country_id;
+      if (countryId != null && Number.isFinite(Number(countryId))) {
+        map.set(leadId, Number(countryId));
+      }
+    }
+    if (batch.length < 1000) break;
+    offset += 1000;
+  }
+  return map;
+}
+
+async function fetchLegacyLeadRows(
+  fromDate: string,
+  toDate: string,
+  maxRows: number,
+  allSources: SourceRow[],
+  sourceIdsForSql: string[] | null,
+): Promise<LeadRow[]> {
+  if (sourceIdsForSql !== null && sourceIdsForSql.length === 0) return [];
+  const legacySelect = `
+    *,
+    misc_leadsource!leads_lead_source_id_fkey(id, name, channel_id),
+    scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
+    accounting_currencies!leads_lead_currency_id_fkey(id, name, iso_code)
+  `;
+
+  const applyDateFilters = (q: ReturnType<ReturnType<typeof supabase.from>['select']>) => {
+    let next = q;
+    if (fromDate) next = next.gte('cdate', fromDate);
+    if (toDate) next = next.lte('cdate', `${toDate}T23:59:59`);
+    return next;
+  };
+
+  const selectedSourceNames =
+    sourceIdsForSql === null
+      ? []
+      : resolveSourceFilterNames(sourceIdsForSql, allSources as SourceRowLike[]);
+  const byId = new Map<string, Record<string, unknown>>();
+
+  const mergeBatch = (batch: Record<string, unknown>[]) => {
+    for (const raw of batch) {
+      byId.set(String(raw.id), raw);
+    }
+  };
+
+  try {
+    if (selectedSourceNames.length === 0 && sourceIdsForSql === null) {
+      mergeBatch(
+        await paginateLegacyLeadQuery(
+          () => applyDateFilters(supabase.from('leads_lead').select(legacySelect)),
+          maxRows,
+        ),
+      );
+    } else if (sourceIdsForSql != null) {
+      const sourceOr = buildLegacyLeadSourceIdOrFilterClause(
+        sourceIdsForSql,
+        allSources as SourceRowLike[],
+      );
+
+      if (sourceOr) {
+        mergeBatch(
+          await paginateLegacyLeadQuery(
+            () => applyDateFilters(supabase.from('leads_lead').select(legacySelect)).or(sourceOr),
+            maxRows,
+          ),
+        );
+      } else {
+        const nums = sourceIdsForSql.map((id) => Number(id)).filter((n) => Number.isFinite(n));
+        if (nums.length === 1) {
+          mergeBatch(
+            await paginateLegacyLeadQuery(
+              () =>
+                applyDateFilters(supabase.from('leads_lead').select(legacySelect)).eq('source_id', nums[0]),
+              maxRows,
+            ),
+          );
+        } else if (nums.length > 1) {
+          mergeBatch(
+            await paginateLegacyLeadQuery(
+              () =>
+                applyDateFilters(supabase.from('leads_lead').select(legacySelect)).in('source_id', nums),
+              maxRows,
+            ),
+          );
+        }
+      }
+
+      // Same fallback as Lead Search — catches rows where source_id is stale but join name matches.
+      if (selectedSourceNames.length === 1) {
+        mergeBatch(
+          await paginateLegacyLeadQuery(
+            () =>
+              applyDateFilters(supabase.from('leads_lead').select(legacySelect)).eq(
+                'misc_leadsource.name',
+                selectedSourceNames[0],
+              ),
+            maxRows,
+          ),
+        );
+      } else if (selectedSourceNames.length > 1) {
+        mergeBatch(
+          await paginateLegacyLeadQuery(
+            () =>
+              applyDateFilters(supabase.from('leads_lead').select(legacySelect)).in(
+                'misc_leadsource.name',
+                selectedSourceNames,
+              ),
+            maxRows,
+          ),
+        );
+      }
+    }
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String((error as { message?: string })?.message ?? error);
+    console.warn('leads_lead:', msg, error);
+    return [];
+  }
+
+  return [...byId.values()].map(mapLegacyLeadToRow);
+}
+
+async function fetchPaginatedNewLeads(
+  fromDate: string,
+  toDate: string,
+  maxRows: number,
+  allSources: SourceRow[],
+  sourceIdsForSql: string[] | null,
+): Promise<{ rows: LeadRow[]; truncated: boolean }> {
+  if (sourceIdsForSql !== null && sourceIdsForSql.length === 0) {
+    return { rows: [], truncated: false };
+  }
+  let q = supabase.from('leads').select(`
+    id,
+    created_at,
+    lead_number,
+    scheduler,
+    meeting_scheduler_id,
+    stage,
+    source,
+    source_id,
+    status,
+    eligible,
+    eligibility_status,
+    unactivated_at,
+    unactivation_reason,
+    balance,
+    proposal_total,
+    balance_currency,
+    probability,
+    country_id,
+    currency_id,
+    phone,
+    mobile,
+    misc_country!country_id ( id, name ),
+    misc_leadsource!fk_leads_source_id ( id, name, channel_id )
+  `);
+
+  if (fromDate) q = q.gte('created_at', buildJerusalemStartOfDayIso(fromDate));
+  if (toDate) q = q.lte('created_at', buildJerusalemEndOfDayIso(toDate));
+
+  const selectedSourceNames =
+    sourceIdsForSql === null
+      ? []
+      : resolveSourceFilterNames(sourceIdsForSql, allSources as SourceRowLike[]);
+  if (sourceIdsForSql != null && sourceIdsForSql.length > 0) {
+    const sourceOr = buildLeadSourceOrFilterClause(sourceIdsForSql, allSources as SourceRowLike[]);
+    if (sourceOr) {
+      q = q.or(sourceOr);
+    }
+  }
+
+  const pageSize = 1000;
+  const combined: LeadRow[] = [];
+  let offset = 0;
+  let truncated = false;
+  for (;;) {
+    const { data, error } = await q.order('created_at', { ascending: false }).range(offset, offset + pageSize - 1);
+    if (error) throw error;
+    const batch = (data || []) as unknown as LeadRow[];
+    combined.push(...batch);
+    if (batch.length < pageSize) break;
+    offset += pageSize;
+    if (combined.length >= maxRows) {
+      truncated = true;
+      break;
+    }
+  }
+  const rows = combined;
+  return { rows, truncated };
+}
+
+async function fetchCallLogsPaged(
+  applyLeadFilter: (q: ReturnType<typeof supabase.from>) => ReturnType<typeof supabase.from>,
+  callFrom?: string,
+  callTo?: string,
+): Promise<{ rows: CallLogRow[]; error: string | null }> {
+  const combined: CallLogRow[] = [];
+  let offset = 0;
+  for (;;) {
+    let qCalls = applyLeadFilter(
+      supabase.from('call_logs').select('id, employee_id, lead_id, client_id, duration, cdate'),
+    );
+    if (callFrom) qCalls = qCalls.gte('cdate', callFrom);
+    if (callTo) qCalls = qCalls.lte('cdate', callTo);
+    const { data, error } = await qCalls.order('cdate', { ascending: true }).range(offset, offset + 999);
+    if (error) return { rows: combined, error: error.message };
+    const batch = (data || []) as CallLogRow[];
+    combined.push(...batch);
+    if (batch.length < 1000) break;
+    offset += 1000;
+  }
+  return { rows: combined, error: null };
+}
+
+async function fetchCallLogsForCohort(
+  newLeadIds: string[],
+  legacyLeadNumericIds: number[],
+  callFrom?: string,
+  callTo?: string,
+): Promise<{ rows: CallLogRow[]; error: string | null }> {
+  const chunkSize = 100;
+  const combined: CallLogRow[] = [];
+  const seen = new Set<number | string>();
+
+  const appendUnique = (rows: CallLogRow[]) => {
+    for (const c of rows) {
+      const key = c.id != null ? c.id : `${c.cdate}|${c.duration}|${c.client_id ?? c.lead_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      combined.push(c);
+    }
+  };
+
+  for (let i = 0; i < newLeadIds.length; i += chunkSize) {
+    const chunk = newLeadIds.slice(i, i + chunkSize);
+    const { rows, error } = await fetchCallLogsPaged((q) => q.in('client_id', chunk), callFrom, callTo);
+    if (error) return { rows: combined, error };
+    appendUnique(rows);
+  }
+
+  for (let i = 0; i < legacyLeadNumericIds.length; i += chunkSize) {
+    const chunk = legacyLeadNumericIds.slice(i, i + chunkSize);
+    const { rows, error } = await fetchCallLogsPaged((q) => q.in('lead_id', chunk), callFrom, callTo);
+    if (error) return { rows: combined, error };
+    appendUnique(rows);
+  }
+
+  return { rows: combined, error: null };
+}
+
+function applyMarketingLeadFilters(
+  rows: LeadRow[],
+  opts: {
+    fromDate: string;
+    toDate: string;
+    channelIds: string[];
+    sourceIdsForSql: string[] | null;
+    countryIds: string[];
+    firmIds: string[];
+    allSources: SourceRow[];
+    countries: CountryRow[];
+    firmIdToSourceIds: Map<string, string[]>;
+    sourceIdToFirmIds: Map<string, string[]>;
+  },
+): LeadRow[] {
+  const lookup = buildSourceLookupMaps(opts.allSources);
+  return rows.filter((lead) => {
+    if (!timestampInCalendarRange(lead.created_at, opts.fromDate, opts.toDate)) return false;
+    if (opts.channelIds.length > 0) {
+      const cid = leadChannelId(lead, lookup.sourceNameToRow, lookup.sourceIdToRow);
+      if (!cid || !opts.channelIds.includes(cid)) return false;
+    }
+    if (
+      opts.sourceIdsForSql != null &&
+      opts.sourceIdsForSql.length > 0 &&
+      !leadMatchesSourceFilter(
+        lead,
+        opts.sourceIdsForSql,
+        opts.allSources,
+        lookup.sourceNameToRow,
+        lookup.sourceIdToRow,
+      )
+    ) {
+      return false;
+    }
+    if (!leadMatchesCountryFilter(lead, opts.countryIds, opts.countries)) return false;
+    if (
+      !leadMatchesFirmFilter(
+        lead,
+        opts.firmIds,
+        opts.firmIdToSourceIds,
+        opts.sourceIdToFirmIds,
+        opts.allSources,
+        lookup.sourceNameToRow,
+        lookup.sourceIdToRow,
+      )
+    ) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function average(nums: number[]): number {
@@ -233,7 +1007,7 @@ function average(nums: number[]): number {
   return nums.reduce((a, b) => a + b, 0) / nums.length;
 }
 
-/** Digits-only number from lead_number — legacy CTI may store this in call_logs.lead_id; new leads use client_id. */
+/** Digits-only number from lead_number — fallback when call_logs.lead_id stores lead number digits. */
 function leadNumberAsCallLeadId(lead: LeadRow): number | null {
   const raw = String(lead.lead_number ?? '').replace(/\D/g, '');
   if (!raw) return null;
@@ -280,9 +1054,9 @@ function resolveSchedulerEmployeeId(
 function leadRevenueNis(lead: LeadRow): number {
   const raw = Number(lead.balance ?? lead.proposal_total ?? 0);
   if (!raw) return 0;
-  const sym = lead.balance_currency || '₪';
+  const currency = lead.currency_id ?? lead.balance_currency ?? '₪';
   try {
-    return convertToNIS(raw, sym);
+    return convertToNIS(raw, currency);
   } catch {
     return raw;
   }
@@ -301,8 +1075,12 @@ type AggRow = {
   revenueNis: number;
   inactive: number;
   notEligible: number;
+  mediaNis: number;
+  managementNis: number;
   /** Internal aggregation helper (stripped before display). */
   _providerNames?: Set<string>;
+  _sourceIds?: Set<string>;
+  _firmIds?: Set<string>;
 };
 
 /** Sortable macro table columns (excludes Channel, Source, Provider). */
@@ -595,6 +1373,33 @@ function MarketingSearchMultiFilter({
   );
 }
 
+async function fetchAllSourceFirmLinks(): Promise<
+  {
+    firm_id: string;
+    source_id: number | string;
+    firms: { name: string }[] | { name: string } | null;
+  }[]
+> {
+  const combined: {
+    firm_id: string;
+    source_id: number | string;
+    firms: { name: string }[] | { name: string } | null;
+  }[] = [];
+  let offset = 0;
+  for (;;) {
+    const { data, error } = await supabase
+      .from('sources_firms')
+      .select('firm_id, source_id, firms ( name )')
+      .range(offset, offset + 999);
+    if (error) throw error;
+    const batch = data || [];
+    combined.push(...batch);
+    if (batch.length < 1000) break;
+    offset += 1000;
+  }
+  return combined;
+}
+
 export type MarketingDashboardReportProps = {
   /** When set with `onDocsOpenChange`, modal open state is controlled by the parent (e.g. Reports shell title bar). */
   docsOpen?: boolean;
@@ -628,6 +1433,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
 
   const [channels, setChannels] = useState<ChannelRow[]>([]);
   const [sources, setSources] = useState<SourceRow[]>([]);
+  const [allSources, setAllSources] = useState<SourceRow[]>([]);
   const [firms, setFirms] = useState<FirmRow[]>([]);
   /** firm ↔ sources from public.sources_firms (for provider filter + labels). */
   const [sourceFirmLinks, setSourceFirmLinks] = useState<
@@ -638,15 +1444,23 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  /** history_leads rows grouped by original_id (new leads only). */
+  /** history rows grouped by lead id (new UUID + legacy-* ids). */
   const [historyByLead, setHistoryByLead] = useState<Map<string, HistoryLeadRow[]>>(new Map());
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [callLogsRows, setCallLogsRows] = useState<CallLogRow[]>([]);
   const [callLogsError, setCallLogsError] = useState<string | null>(null);
+  /** Lead ids in the report cohort with ≥1 non-canceled row in public.meetings. */
+  const [leadIdsWithMeeting, setLeadIdsWithMeeting] = useState<Set<string>>(() => new Set());
+  const [meetingsError, setMeetingsError] = useState<string | null>(null);
   const [schedulerDisplayNames, setSchedulerDisplayNames] = useState<Record<string, string>>({});
   const [employeeIdToPhotoUrl, setEmployeeIdToPhotoUrl] = useState<Record<string, string>>({});
   /** tenants_employee: normalized display_name → id (for leads.scheduler CTI match). */
   const [employeeDisplayNameToId, setEmployeeDisplayNameToId] = useState<Map<string, number>>(() => new Map());
+  /** Sum of source_media_expense.amount per lead_source_id for months in the report date range. */
+  const [mediaExpenseBySourceId, setMediaExpenseBySourceId] = useState<Record<string, number>>({});
+  /** Sum of firm_management_costs.amount per firm_id for months in the report date range. */
+  const [managementExpenseByFirmId, setManagementExpenseByFirmId] = useState<Record<string, number>>({});
+  const [fetchTruncated, setFetchTruncated] = useState(false);
 
   // Targeted debug for a known failing source↔channel link.
   const didDebugSource39Ref = useRef(false);
@@ -676,39 +1490,54 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     return m;
   }, [sourceFirmLinks]);
 
+  const sourceIdToFirmIds = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const r of sourceFirmLinks) {
+      const sid = String(r.source_id);
+      const existing = m.get(sid) || [];
+      if (!existing.includes(r.firm_id)) existing.push(r.firm_id);
+      m.set(sid, existing);
+    }
+    return m;
+  }, [sourceFirmLinks]);
+
   const loadReferenceData = useCallback(async () => {
-    const [ch, src, fr, co, sf] = await Promise.all([
+    const [ch, src, fr, co] = await Promise.all([
       // Load ALL channels so sources linked to inactive channels still resolve (avoid "Unassigned channel").
       // We’ll filter inactive channels out of the filter dropdown UI separately.
       supabase.from('channels').select('id, code, label, is_active').order('sort_order'),
-      supabase.from('misc_leadsource').select('id, name, channel_id').eq('active', true).order('name'),
+      supabase.from('misc_leadsource').select('id, name, channel_id, active').order('name'),
       supabase.from('firms').select('id, name').eq('is_active', true).order('name'),
-      supabase.from('misc_country').select('id, name').order('name'),
-      supabase.from('sources_firms').select('firm_id, source_id, firms ( name )'),
+      supabase.from('misc_country').select('id, name, phone_code').order('name'),
     ]);
+    let sfRows: Awaited<ReturnType<typeof fetchAllSourceFirmLinks>> = [];
+    try {
+      sfRows = await fetchAllSourceFirmLinks();
+    } catch (sfErr) {
+      console.warn('sources_firms load (provider filter):', sfErr);
+    }
     if (!ch.error && ch.data) {
       const next = ch.data as ChannelRow[];
       // Guard: never clobber a populated mapping with an empty set (can happen under RLS/policies on refetch).
       setChannels((prev) => (next.length > 0 ? next : prev));
     }
     if (!src.error && src.data) {
-      const rows = (src.data as { id: number | string; name: string; channel_id: string | null }[]).map((r) => ({
+      const rawRows = src.data as { id: number | string; name: string; channel_id: string | null; active?: boolean }[];
+      const rows = rawRows.map((r) => ({
         id: String(r.id),
         name: r.name,
         channel_id: r.channel_id,
       }));
-      setSources(rows);
+      setAllSources(rows);
+      setSources(rows.filter((r) => {
+        const raw = rawRows.find((x) => String(x.id) === r.id);
+        return raw?.active !== false;
+      }));
     }
     if (!fr.error && fr.data) setFirms(fr.data as FirmRow[]);
     if (!co.error && co.data) setCountries(co.data as CountryRow[]);
-    if (!sf.error && sf.data) {
-      const rows = (
-        sf.data as {
-          firm_id: string;
-          source_id: number | string;
-          firms: { name: string }[] | { name: string } | null;
-        }[]
-      ).map((r) => ({
+    if (sfRows.length > 0) {
+      const rows = sfRows.map((r) => ({
         firm_id: r.firm_id,
         source_id: String(r.source_id),
         firm_name: (
@@ -716,9 +1545,6 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         ).trim() || '—',
       }));
       setSourceFirmLinks(rows);
-    } else if (sf.error) {
-      console.warn('sources_firms load (provider filter):', sf.error.message);
-      setSourceFirmLinks([]);
     }
   }, []);
 
@@ -752,79 +1578,68 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     setLoading(true);
     setLoadError(null);
     setSearched(true);
+    setFetchTruncated(false);
     try {
-      let q = supabase.from('leads').select(`
-        id,
-        created_at,
-        lead_number,
-        scheduler,
-        meeting_scheduler_id,
-        stage,
-        source,
-        source_id,
-        status,
-        eligible,
-        eligibility_status,
-        unactivated_at,
-        unactivation_reason,
-        balance,
-        proposal_total,
-        balance_currency,
-        probability,
-        country_id,
-        misc_country!country_id ( id, name ),
-        misc_leadsource!fk_leads_source_id ( id, name, channel_id )
-      `);
+      const maxRows = 30000;
+      const effectiveSourceIds = resolveEffectiveSourceIdsForFetch(
+        sourceIds,
+        channelIds,
+        firmIds,
+        allSources,
+        firmIdToSourceIds,
+      );
+      // Firm-only: fetch full date cohort (same as unfiltered), then filter by provider client-side.
+      // SQL source_id scoping misses leads whose resolved source differs from sources_firms ids.
+      const sourceIdsForSql = isFirmOnlyReportScope(sourceIds, channelIds, firmIds)
+        ? null
+        : effectiveSourceIds;
 
-      if (fromDate) q = q.gte('created_at', buildUtcStartOfDay(fromDate));
-      if (toDate) q = q.lte('created_at', buildUtcEndOfDay(toDate));
-
-      // IMPORTANT: avoid undercounting due to a hard cap. Fetch in pages.
-      const pageSize = 1000;
-      const maxRows = 30000; // safety cap to avoid runaway loads
-      const combined: LeadRow[] = [];
-      let offset = 0;
-      for (;;) {
-        const { data, error } = await q
-          .order('created_at', { ascending: false })
-          .range(offset, offset + pageSize - 1);
-        if (error) throw error;
-        const batch = (data || []) as unknown as LeadRow[];
-        combined.push(...batch);
-        if (batch.length < pageSize) break;
-        offset += pageSize;
-        if (combined.length >= maxRows) break;
-      }
-
-      let rows = combined;
-
-      const normalizeSourceName = (s: string | null | undefined) =>
-        String(s || '').trim().toLowerCase();
-      const sourceNameToRow = new Map<string, SourceRow>();
-      const sourceIdToRow = new Map<string, SourceRow>();
-      for (const s of sources) {
-        const key = normalizeSourceName(s.name);
-        if (key && !sourceNameToRow.has(key)) sourceNameToRow.set(key, s);
-        sourceIdToRow.set(String(s.id), s);
-      }
-      const resolveSourceRow = (l: LeadRow): SourceRow | null => {
-        if (l.misc_leadsource) {
-          return {
-            id: String(l.misc_leadsource.id),
-            name: l.misc_leadsource.name,
-            channel_id: l.misc_leadsource.channel_id,
-          };
+      let legacyContactCountryIds = new Map<string, number>();
+      if (countryIds.length > 0) {
+        try {
+          legacyContactCountryIds = await fetchLegacyLeadMainContactCountryIds();
+        } catch (e) {
+          console.warn('lead_leadcontact country lookup:', e);
         }
-        const sid = l.source_id != null && String(l.source_id).trim() !== '' ? String(l.source_id) : null;
-        if (sid && sourceIdToRow.has(sid)) return sourceIdToRow.get(sid)!;
-        const key = normalizeSourceName(l.source);
-        return key ? sourceNameToRow.get(key) || null : null;
-      };
+      }
+
+      const [{ rows: newLeadRows, truncated: newTruncated }, legacyLeadRowsRaw] = await Promise.all([
+        fetchPaginatedNewLeads(fromDate, toDate, maxRows, allSources, sourceIdsForSql),
+        fetchLegacyLeadRows(fromDate, toDate, maxRows, allSources, sourceIdsForSql),
+      ]);
+
+      const legacyLeadRows = legacyLeadRowsRaw.map((lead) => {
+        const numericId = legacyLeadNumericId(lead);
+        if (numericId == null) return lead;
+        const contactCountryId = legacyContactCountryIds.get(String(numericId));
+        if (contactCountryId == null) return lead;
+        return { ...lead, country_id: contactCountryId };
+      });
+
+      let rows = applyMarketingLeadFilters([...newLeadRows, ...legacyLeadRows], {
+        fromDate,
+        toDate,
+        channelIds,
+        sourceIdsForSql,
+        countryIds,
+        firmIds,
+        allSources,
+        countries,
+        firmIdToSourceIds,
+        sourceIdToFirmIds,
+      });
+
+      setFetchTruncated(newTruncated || legacyLeadRows.length >= maxRows);
+
+      const lookup = buildSourceLookupMaps(allSources);
+      const resolveSourceRow = (l: LeadRow) =>
+        resolveLeadSourceRow(l, lookup.sourceNameToRow, lookup.sourceIdToRow);
 
       // Debug: what do leads say for source_id "39"?
       if (import.meta.env.DEV) {
         const TARGET_SOURCE_ID = '39';
         const TARGET_SOURCE_NAME = 'PPC World GER-AUS';
+        const combined = rows;
         const bySourceId = combined.filter((l) => String(l.source_id ?? '') === TARGET_SOURCE_ID);
         const byEmbeddedSourceId = combined.filter(
           (l) => String(l.misc_leadsource?.id ?? '') === TARGET_SOURCE_ID
@@ -834,18 +1649,18 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           return (l.source_id == null || String(l.source_id) === '') && txt === TARGET_SOURCE_NAME.toLowerCase();
         });
 
-        const summarize = (rows: LeadRow[]) => ({
-          count: rows.length,
+        const summarize = (debugRows: LeadRow[]) => ({
+          count: debugRows.length,
           distinctEmbeddedChannelIds: Array.from(
-            new Set(rows.map((l) => String(l.misc_leadsource?.channel_id ?? 'null')))
+            new Set(debugRows.map((l) => String(l.misc_leadsource?.channel_id ?? 'null')))
           ),
-          sample: rows[0]
+          sample: debugRows[0]
             ? {
-                id: rows[0].id,
-                created_at: rows[0].created_at,
-                source_id: rows[0].source_id,
-                source: rows[0].source,
-                misc_leadsource: rows[0].misc_leadsource ?? null,
+                id: debugRows[0].id,
+                created_at: debugRows[0].created_at,
+                source_id: debugRows[0].source_id,
+                source: debugRows[0].source,
+                misc_leadsource: debugRows[0].misc_leadsource ?? null,
               }
             : null,
         });
@@ -854,50 +1669,26 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         console.log('[MarketingDashboardReport][debug] source 39 lead matching', {
           dateRange: { fromDate, toDate },
           combinedCount: combined.length,
+          newLeadCount: newLeadRows.length,
+          legacyLeadCount: legacyLeadRows.length,
           bySourceId: summarize(bySourceId),
           byEmbeddedSourceId: summarize(byEmbeddedSourceId),
           bySourceTextOnly: summarize(bySourceTextOnly),
         });
       }
 
-      if (channelIds.length > 0) {
-        const ok = new Set(channelIds);
-        rows = rows.filter((l) => {
-          const cid = resolveSourceRow(l)?.channel_id;
-          return cid != null && ok.has(cid);
-        });
-      }
-      if (sourceIds.length > 0) {
-        const ok = new Set(sourceIds);
-        rows = rows.filter((l) => {
-          const sid = resolveSourceRow(l)?.id || (l.source_id != null ? String(l.source_id) : null);
-          return sid != null && ok.has(sid);
-        });
-      }
-      if (countryIds.length > 0) {
-        const ok = new Set(countryIds.map((c) => parseInt(c, 10)).filter((n) => Number.isFinite(n)));
-        rows = rows.filter((l) => l.country_id != null && ok.has(l.country_id));
-      }
-      if (firmIds.length > 0) {
-        const allowed = new Set<string>();
-        for (const fid of firmIds) {
-          const arr = firmIdToSourceIds.get(fid);
-          if (arr) arr.forEach((sid) => allowed.add(String(sid)));
-        }
-        if (allowed.size > 0) {
-          rows = rows.filter((l) => {
-            const sid = resolveSourceRow(l)?.id || (l.source_id != null ? String(l.source_id) : null);
-            return sid != null && allowed.has(sid);
-          });
-        } else {
-          rows = [];
-        }
-      }
-
       setLeads(rows);
+      const [mediaBySource, managementByFirm] = await Promise.all([
+        fetchMediaExpensesBySource(fromDate, toDate),
+        fetchManagementExpensesByFirm(fromDate, toDate),
+      ]);
+      setMediaExpenseBySourceId(mediaBySource);
+      setManagementExpenseByFirmId(managementByFirm);
 
       setCallLogsError(null);
       setCallLogsRows([]);
+      setMeetingsError(null);
+      setLeadIdsWithMeeting(new Set());
       setSchedulerDisplayNames({});
       setEmployeeDisplayNameToId(new Map());
 
@@ -925,23 +1716,21 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       setSchedulerDisplayNames(idToName);
       setEmployeeIdToPhotoUrl(idToPhoto);
 
-      const schedulerIds = [
-        ...new Set(
-          rows
-            .map((r) => resolveSchedulerEmployeeId(r, nameToId))
-            .filter((x): x is number => x != null && !Number.isNaN(x))
-        ),
-      ];
-      if (schedulerIds.length > 0) {
+      const newLeadIds = rows.filter((r) => !isLegacyLeadId(r.id)).map((r) => r.id).filter(Boolean);
+      const legacyLeadNumericIds = rows
+        .map((r) => legacyLeadNumericId(r))
+        .filter((n): n is number => n != null);
+
+      if (newLeadIds.length > 0 || legacyLeadNumericIds.length > 0) {
         let callFrom =
           fromDate != null && fromDate !== ''
-            ? buildUtcStartOfDay(fromDate)
+            ? buildJerusalemStartOfDayIso(fromDate)
             : rows.length > 0
               ? new Date(Math.min(...rows.map((r) => new Date(r.created_at).getTime()))).toISOString()
               : undefined;
         let callTo =
           toDate != null && toDate !== ''
-            ? buildUtcEndOfDay(toDate)
+            ? buildJerusalemEndOfDayIso(toDate)
             : rows.length > 0
               ? new Date(Math.max(...rows.map((r) => new Date(r.created_at).getTime()))).toISOString()
               : undefined;
@@ -950,69 +1739,89 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           callFrom = callTo;
           callTo = t;
         }
-        const combinedCalls: CallLogRow[] = [];
-        let offset = 0;
-        let cErr: string | null = null;
-        for (;;) {
-          let qCalls = supabase
-            .from('call_logs')
-            .select('id, employee_id, lead_id, client_id, duration, cdate')
-            .in('employee_id', schedulerIds);
-          if (callFrom) qCalls = qCalls.gte('cdate', callFrom);
-          if (callTo) qCalls = qCalls.lte('cdate', callTo);
-          const { data: cData, error: cError } = await qCalls.order('cdate', { ascending: true }).range(offset, offset + 999);
-          if (cError) {
-            cErr = cError.message;
-            console.warn('call_logs:', cError);
-            break;
-          }
-          const batch = (cData || []) as CallLogRow[];
-          combinedCalls.push(...batch);
-          if (batch.length < 1000) break;
-          offset += 1000;
-        }
+        const [{ rows: callRows, error: cErr }, { leadIds: meetingLeadIds, error: mErr }] =
+          await Promise.all([
+            fetchCallLogsForCohort(newLeadIds, legacyLeadNumericIds, callFrom, callTo),
+            fetchLeadIdsWithMeetingsFromTable(newLeadIds, legacyLeadNumericIds),
+          ]);
         if (cErr) {
           setCallLogsError(cErr);
         } else {
-          setCallLogsRows(combinedCalls);
+          setCallLogsRows(callRows);
+        }
+        if (mErr) {
+          setMeetingsError(mErr);
+        } else {
+          setLeadIdsWithMeeting(meetingLeadIds);
         }
       }
 
       setHistoryError(null);
       setHistoryByLead(new Map());
-      const leadIds = rows.map((r) => r.id).filter(Boolean) as string[];
-      if (leadIds.length > 0) {
+
+      const loadHistoryChunk = async (
+        table: 'history_leads' | 'history_leads_lead',
+        ids: string[],
+        selectFields: string,
+      ) => {
         const combined: HistoryLeadRow[] = [];
-        const chunkSize = 100;
         let histErr: string | null = null;
-        for (let i = 0; i < leadIds.length; i += chunkSize) {
-          const chunk = leadIds.slice(i, i + chunkSize);
+        const chunkSize = 100;
+        for (let i = 0; i < ids.length; i += chunkSize) {
+          const chunk = ids.slice(i, i + chunkSize);
           let offset = 0;
           for (;;) {
             const { data: hist, error: hError } = await supabase
-              .from('history_leads')
-              .select('original_id, stage, changed_at, communication_started_at')
+              .from(table)
+              .select(selectFields)
               .in('original_id', chunk)
               .order('changed_at', { ascending: true })
               .range(offset, offset + 999);
             if (hError) {
               histErr = hError.message;
-              console.warn('history_leads:', hError);
+              console.warn(`${table}:`, hError);
               break;
             }
-            const batch = (hist || []) as HistoryLeadRow[];
+            const batch = (hist || []) as unknown as HistoryLeadRow[];
             combined.push(...batch);
             if (batch.length < 1000) break;
             offset += 1000;
           }
           if (histErr) break;
         }
+        return { combined, histErr };
+      };
+
+      if (newLeadIds.length > 0 || legacyLeadNumericIds.length > 0) {
+        const [newHist, legacyHist] = await Promise.all([
+          newLeadIds.length > 0
+            ? loadHistoryChunk(
+                'history_leads',
+                newLeadIds,
+                'original_id, stage, changed_at, communication_started_at',
+              )
+            : Promise.resolve({ combined: [] as HistoryLeadRow[], histErr: null }),
+          legacyLeadNumericIds.length > 0
+            ? loadHistoryChunk(
+                'history_leads_lead',
+                legacyLeadNumericIds.map(String),
+                'original_id, stage, changed_at',
+              )
+            : Promise.resolve({ combined: [] as HistoryLeadRow[], histErr: null }),
+        ]);
+
+        const histErr = newHist.histErr || legacyHist.histErr;
         if (histErr) {
           setHistoryError(histErr);
         } else {
           const map = new Map<string, HistoryLeadRow[]>();
-          for (const h of combined) {
+          for (const h of newHist.combined) {
             const oid = String(h.original_id);
+            if (!map.has(oid)) map.set(oid, []);
+            map.get(oid)!.push(h);
+          }
+          for (const h of legacyHist.combined) {
+            const oid = `legacy-${h.original_id}`;
             if (!map.has(oid)) map.set(oid, []);
             map.get(oid)!.push(h);
           }
@@ -1023,16 +1832,22 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       console.error(e);
       setLoadError(e?.message || 'Failed to load leads');
       setLeads([]);
+      setMediaExpenseBySourceId({});
+      setManagementExpenseByFirmId({});
+      setFetchTruncated(false);
       setHistoryByLead(new Map());
       setHistoryError(null);
       setCallLogsRows([]);
       setCallLogsError(null);
+      setLeadIdsWithMeeting(new Set());
+      setMeetingsError(null);
       setSchedulerDisplayNames({});
       setEmployeeDisplayNameToId(new Map());
+      setFetchTruncated(false);
     } finally {
       setLoading(false);
     }
-  }, [fromDate, toDate, channelIds, sourceIds, countryIds, firmIds, firmIdToSourceIds]);
+  }, [fromDate, toDate, channelIds, sourceIds, countryIds, firmIds, firmIdToSourceIds, sourceIdToFirmIds, allSources, countries]);
 
   useEffect(() => {
     runReportRef.current = runReport;
@@ -1068,7 +1883,11 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       .on('postgres_changes', { event: '*', schema: 'public', table: 'firms' }, scheduleRefetch)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'misc_country' }, scheduleRefetch)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sources_firms' }, scheduleRefetch)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'source_media_expense' }, scheduleReportRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'firm_management_costs' }, scheduleReportRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'leads' }, scheduleReportRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leads_lead' }, scheduleReportRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, scheduleReportRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'history_leads' }, scheduleReportRefresh)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'call_logs' }, scheduleReportRefresh)
       .subscribe();
@@ -1086,29 +1905,10 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
 
   const aggregates = useMemo(() => {
     const map = new Map<string, AggRow>();
-    const normalizeSourceName = (s: string | null | undefined) =>
-      String(s || '').trim().toLowerCase();
-    const sourceNameToRow = new Map<string, SourceRow>();
-    const sourceIdToRow = new Map<string, SourceRow>();
-    for (const s of sources) {
-      const key = normalizeSourceName(s.name);
-      if (key && !sourceNameToRow.has(key)) sourceNameToRow.set(key, s);
-      sourceIdToRow.set(String(s.id), s);
-    }
+    const lookup = buildSourceLookupMaps(allSources);
 
-    const resolveSourceRow = (l: LeadRow): SourceRow | null => {
-      if (l.misc_leadsource) {
-        return {
-          id: String(l.misc_leadsource.id),
-          name: l.misc_leadsource.name,
-          channel_id: l.misc_leadsource.channel_id,
-        };
-      }
-      const sid = l.source_id != null && String(l.source_id).trim() !== '' ? String(l.source_id) : null;
-      if (sid && sourceIdToRow.has(sid)) return sourceIdToRow.get(sid)!;
-      const key = normalizeSourceName(l.source);
-      return key ? sourceNameToRow.get(key) || null : null;
-    };
+    const resolveSourceRow = (l: LeadRow): SourceRow | null =>
+      resolveLeadSourceRow(l, lookup.sourceNameToRow, lookup.sourceIdToRow);
 
     const channelLabel = (cid: string | null | undefined) => {
       if (!cid) return '—';
@@ -1119,7 +1919,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     };
 
     const getChannelLabel = (l: LeadRow) =>
-      channelLabel(resolveSourceRow(l)?.channel_id ?? null);
+      channelLabel(leadChannelId(l, lookup.sourceNameToRow, lookup.sourceIdToRow));
     const getSourceLabel = (l: LeadRow) =>
       resolveSourceRow(l)?.name || l.source?.trim() || `Source #${l.source_id ?? '?'}`;
 
@@ -1145,24 +1945,76 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           revenueNis: 0,
           inactive: 0,
           notEligible: 0,
+          mediaNis: 0,
+          managementNis: 0,
           _providerNames: new Set<string>(),
+          _sourceIds: new Set<string>(),
+          _firmIds: new Set<string>(),
         });
       }
       const row = map.get(key)!;
-      const sid = l.source_id;
-      if (sid != null) {
-        const pname = sourceIdToFirmName.get(String(sid));
+      const srcRow = resolveSourceRow(l);
+      const trackSourceId = (sourceId: string) => {
+        row._sourceIds!.add(sourceId);
+        for (const firmId of sourceIdToFirmIds.get(sourceId) || []) {
+          row._firmIds!.add(firmId);
+        }
+      };
+      if (srcRow?.id) trackSourceId(String(srcRow.id));
+      else if (l.source_id != null && String(l.source_id).trim() !== '') {
+        trackSourceId(String(l.source_id));
+      }
+      const firmSourceId = srcRow?.id ?? (l.source_id != null ? String(l.source_id) : null);
+      if (firmSourceId) {
+        const pname = sourceIdToFirmName.get(String(firmSourceId));
         if (pname && row._providerNames) row._providerNames.add(pname);
       }
       row.leads += 1;
       if (isInactiveLead(l)) row.inactive += 1;
       if (isEligibleLead(l)) row.eligible += 1;
       else row.notEligible += 1;
-      if (hasMeetingScheduled(l) && !isInactiveLead(l)) row.meetings += 1;
+      if (leadHasMeetingRecord(l, leadIdsWithMeeting) && !isInactiveLead(l)) row.meetings += 1;
       if (hasOfferOrBeyond(l)) row.offers += 1;
       if (hasSignedDeal(l)) {
         row.deals += 1;
         row.revenueNis += leadRevenueNis(l);
+      }
+    }
+
+    // Firm filter: show every source linked to the selected firm(s), even with 0 leads in range.
+    if (firmIds.length > 0 && groupMode === 'source') {
+      const linkedSourceIds = new Set<string>();
+      for (const firmId of firmIds) {
+        for (const sid of firmIdToSourceIds.get(firmId) || []) {
+          linkedSourceIds.add(String(sid));
+        }
+      }
+      for (const sid of linkedSourceIds) {
+        const srcRow = lookup.sourceIdToRow.get(sid);
+        const channel = channelLabel(srcRow?.channel_id ?? null);
+        const source = srcRow?.name || `Source #${sid}`;
+        const key = `${channel}|||${source}`;
+        if (map.has(key)) continue;
+        const providerName = sourceIdToFirmName.get(sid) || '—';
+        map.set(key, {
+          key,
+          channel,
+          source,
+          provider: '—',
+          leads: 0,
+          eligible: 0,
+          meetings: 0,
+          offers: 0,
+          deals: 0,
+          revenueNis: 0,
+          inactive: 0,
+          notEligible: 0,
+          mediaNis: 0,
+          managementNis: 0,
+          _providerNames: new Set(providerName !== '—' ? [providerName] : []),
+          _sourceIds: new Set([sid]),
+          _firmIds: new Set(sourceIdToFirmIds.get(sid) || []),
+        });
       }
     }
 
@@ -1171,10 +2023,18 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       let provider = '—';
       if (names && names.size === 1) provider = [...names][0];
       else if (names && names.size > 1) provider = 'Multiple providers';
-      const { _providerNames, ...rest } = r;
-      return { ...rest, provider };
+      const mediaNis = [...(r._sourceIds || [])].reduce(
+        (sum, sourceId) => sum + (mediaExpenseBySourceId[sourceId] || 0),
+        0,
+      );
+      const managementNis = [...(r._firmIds || [])].reduce(
+        (sum, firmId) => sum + (managementExpenseByFirmId[firmId] || 0),
+        0,
+      );
+      const { _providerNames, _sourceIds, _firmIds, ...rest } = r;
+      return { ...rest, provider, mediaNis, managementNis };
     });
-  }, [leads, groupMode, channels, sourceIdToFirmName]);
+  }, [leads, leadIdsWithMeeting, groupMode, channels, firmIds, firmIdToSourceIds, sourceIdToFirmName, sourceIdToFirmIds, mediaExpenseBySourceId, managementExpenseByFirmId, allSources]);
 
   const sortedAggregates = useMemo(() => {
     const rows = [...aggregates];
@@ -1275,41 +2135,50 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
 
   /**
    * Qualified = active & stage before price offer (rank &lt; 45).
-   * Calls: same employee as scheduler; match lead via call_logs.client_id = leads.id or legacy lead_id vs lead_number digits.
+   * Calls linked via call_logs.client_id; attributed to the lead's scheduler for aggregation.
    */
   const salesBehaviourStats = useMemo(() => {
     const qualified = leads.filter((l) => !isInactiveLead(l) && stageRank(l) < 45);
-    const index = new Map<string, CallLogRow[]>();
-    const push = (k: string, c: CallLogRow) => {
-      if (!index.has(k)) index.set(k, []);
-      index.get(k)!.push(c);
-    };
+    const callsByClientId = new Map<string, CallLogRow[]>();
+    const callsByLeadNumberId = new Map<number, CallLogRow[]>();
     for (const c of callLogsRows) {
-      if (c.employee_id == null) continue;
-      const e = Number(c.employee_id);
-      if (c.client_id) push(`${e}|c:${c.client_id}`, c);
-      if (c.lead_id != null && !Number.isNaN(Number(c.lead_id))) push(`${e}|n:${Number(c.lead_id)}`, c);
+      if (c.client_id) {
+        const k = String(c.client_id);
+        if (!callsByClientId.has(k)) callsByClientId.set(k, []);
+        callsByClientId.get(k)!.push(c);
+      }
+      if (c.lead_id != null && !Number.isNaN(Number(c.lead_id))) {
+        const n = Number(c.lead_id);
+        if (!callsByLeadNumberId.has(n)) callsByLeadNumberId.set(n, []);
+        callsByLeadNumberId.get(n)!.push(c);
+      }
     }
     const bySched = new Map<number, { sec: number; n: number; answered: number; missed: number }>();
     let totalSec = 0;
     let totalN = 0;
     let totalAnswered = 0;
     let totalMissed = 0;
+    const seenCallIds = new Set<number | string>();
     for (const lead of qualified) {
       const schedEmpId = resolveSchedulerEmployeeId(lead, employeeDisplayNameToId);
       if (schedEmpId == null) continue;
-      const n = leadNumberAsCallLeadId(lead);
-      const fromClient = index.get(`${schedEmpId}|c:${lead.id}`) || [];
-      const fromNum = n != null ? index.get(`${schedEmpId}|n:${n}`) || [] : [];
-      const seen = new Set<number | string>();
-      const calls: CallLogRow[] = [];
-      for (const c of [...fromClient, ...fromNum]) {
-        const cid = c.id != null ? c.id : `${c.cdate}|${c.duration}`;
-        if (seen.has(cid)) continue;
-        seen.add(cid);
-        calls.push(c);
-      }
-      for (const c of calls) {
+      const legacyId = legacyLeadNumericId(lead);
+      const leadNumId = leadNumberAsCallLeadId(lead);
+      const fromClient = legacyId == null ? callsByClientId.get(String(lead.id)) || [] : [];
+      const fromLegacy =
+        legacyId != null
+          ? [
+              ...(callsByLeadNumberId.get(legacyId) || []),
+              ...(leadNumId != null && leadNumId !== legacyId
+                ? callsByLeadNumberId.get(leadNumId) || []
+                : []),
+            ]
+          : [];
+      const fromNum = legacyId == null && leadNumId != null ? callsByLeadNumberId.get(leadNumId) || [] : [];
+      for (const c of [...fromClient, ...fromLegacy, ...fromNum]) {
+        const cid = c.id != null ? c.id : `${c.cdate}|${c.duration}|${c.client_id ?? c.lead_id}`;
+        if (seenCallIds.has(cid)) continue;
+        seenCallIds.add(cid);
         const d = Number(c.duration) || 0;
         const answered = d > 0;
         totalSec += d;
@@ -1422,12 +2291,12 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
             <section>
               <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Scope & data</h4>
               <p>
-                This dashboard uses <strong>new leads only</strong>. Funnel timing comes from{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">history_leads</code>. Call-based behaviour uses{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">scheduler</code> with{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">call_logs</code> (employee + lead linkage). Legacy{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">leads_lead</code>, marketing invoices, and HR from
-                contribution are not included until wired separately.
+                Lead cohorts combine <strong>new leads</strong> (<code className="rounded bg-base-200 px-1 text-[11px]">leads</code>, date on{' '}
+                <code className="rounded bg-base-200 px-1 text-[11px]">created_at</code>) and <strong>legacy leads</strong> (
+                <code className="rounded bg-base-200 px-1 text-[11px]">leads_lead</code>, including subleads /2, /3, date on{' '}
+                <code className="rounded bg-base-200 px-1 text-[11px]">cdate</code>). Creation dates use the <strong>Asia/Jerusalem</strong> calendar (same as Lead Search). Source, country, channel, and firm filters match Lead Search. Funnel timing uses{' '}
+                <code className="rounded bg-base-200 px-1 text-[11px]">history_leads</code> /{' '}
+                <code className="rounded bg-base-200 px-1 text-[11px]">history_leads_lead</code>.
               </p>
             </section>
 
@@ -1435,11 +2304,6 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Not in this version</h4>
               <ul className="list-inside list-disc space-y-1 text-base-content/80">
                 <li>Department filter (no department on the lead row)</li>
-                <li>
-                  Legacy <code className="rounded bg-base-200 px-1 text-[11px]">leads_lead</code> +{' '}
-                  <code className="rounded bg-base-200 px-1 text-[11px]">history_leads_lead</code>
-                </li>
-                <li>Per-source media / management invoices</li>
                 <li>HR cost from contribution report</li>
                 <li>Follow-up counts beyond calls</li>
                 <li>Multi-factor probability breakdown</li>
@@ -1451,16 +2315,27 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
             </section>
 
             <section>
+              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Meetings column</h4>
+              <p>
+                <strong>Meetings</strong> counts active leads in the cohort with at least one row in{' '}
+                <code className="rounded bg-base-200 px-1 text-[11px]">public.meetings</code> linked by{' '}
+                <code className="rounded bg-base-200 px-1 text-[11px]">client_id</code> (new) or{' '}
+                <code className="rounded bg-base-200 px-1 text-[11px]">legacy_lead_id</code> (legacy). Canceled meetings are excluded. One lead = one meeting in the count (not multiple meeting rows).
+              </p>
+            </section>
+
+            <section>
               <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Macro table · CPL columns</h4>
               <p>
-                <strong>CPL</strong> and <strong>cost / eligible</strong> need a media + management cost table; values show “—” until that exists. The optional HR column is only a layout placeholder when enabled — no HR data is loaded yet.
+                <strong>CPL</strong> and <strong>cost / eligible</strong> use media spend from Admin → Marketing expenses and management costs from External Firms (both filtered to calendar months overlapping the report date range). Optional HR columns remain placeholders.
               </p>
             </section>
 
             <section>
               <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Funnel timing (avg. days)</h4>
               <p>
-                Derived from <code className="rounded bg-base-200 px-1 text-[11px]">history_leads</code>: stage ≥15 = communication, ≥20 meeting, ≥45 offer, ≥60 signed, ≥70 payment. Communication time also uses{' '}
+                Derived from <code className="rounded bg-base-200 px-1 text-[11px]">history_leads</code> /{' '}
+                <code className="rounded bg-base-200 px-1 text-[11px]">history_leads_lead</code>: stage ≥15 = communication, ≥20 meeting, ≥50 offer, ≥60 signed, ≥70 payment. Communication time also uses{' '}
                 <code className="rounded bg-base-200 px-1 text-[11px]">communication_started_at</code> when set. A segment only counts when both endpoints exist.
               </p>
               <p className="mt-2 text-xs text-base-content/60">
@@ -1471,17 +2346,14 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
             <section>
               <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Sales behaviour / quality</h4>
               <p>
-                <strong>Cohort:</strong> active leads with stage before price offer (rank &lt; 45).{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">call_logs.employee_id</code> is matched to the lead’s scheduler via{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">leads.scheduler</code> (same as{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">tenants_employee.display_name</code>, case-insensitive), or{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">meeting_scheduler_id</code> if scheduler is empty or “---”. Lead linkage:{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">call_logs.client_id</code> = lead UUID (1com sync), or legacy{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">lead_id</code> vs digits from{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">lead_number</code>. Durations are seconds (CTI).
+                <strong>Cohort:</strong> active leads with stage before price offer (rank &lt; 45). Calls are loaded by{' '}
+                <code className="rounded bg-base-200 px-1 text-[11px]">call_logs.client_id</code> (new leads) or{' '}
+                <code className="rounded bg-base-200 px-1 text-[11px]">call_logs.lead_id</code> (legacy / subleads). Matched calls are attributed to the lead’s scheduler (
+                <code className="rounded bg-base-200 px-1 text-[11px]">leads.scheduler</code> /{' '}
+                <code className="rounded bg-base-200 px-1 text-[11px]">meeting_scheduler_id</code>), regardless of which employee handled the call. Durations are seconds (CTI).
               </p>
               <p className="mt-2 text-xs text-base-content/60">
-                If no calls match, verify scheduler names on leads and that 1com sync populated <code className="rounded bg-base-200 px-1 text-[11px]">client_id</code> or legacy <code className="rounded bg-base-200 px-1 text-[11px]">lead_id</code>.
+                If no calls match, verify scheduler on leads and that 1com sync populated <code className="rounded bg-base-200 px-1 text-[11px]">client_id</code> (new) or <code className="rounded bg-base-200 px-1 text-[11px]">lead_id</code> (legacy).
               </p>
             </section>
 
@@ -1623,6 +2495,20 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       {loadError && (
         <div className="alert alert-error text-sm">
           <span>{loadError}</span>
+        </div>
+      )}
+
+      {meetingsError && !loadError && (
+        <div className="alert alert-warning text-sm">
+          <span>Meetings could not be loaded: {meetingsError} (check RLS / meetings table access).</span>
+        </div>
+      )}
+
+      {fetchTruncated && !loadError && (
+        <div className="alert alert-warning text-sm">
+          <span>
+            Results may be incomplete: the report stopped at 30,000 leads per table. Narrow the date range or filters.
+          </span>
         </div>
       )}
 
@@ -1867,6 +2753,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                 {sortedAggregates.map((r) => {
                   const pct = (a: number, b: number) => (b > 0 ? ((a / b) * 100).toFixed(1) : '—');
                   const pctLeads = totals.leads ? ((r.leads / totals.leads) * 100).toFixed(1) : '0.0';
+                  const totalCostNis = r.mediaNis + r.managementNis;
                   return (
                     <tr key={r.key}>
                       <td className="whitespace-nowrap">
@@ -1889,9 +2776,9 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                       <td className="text-right">{pct(r.deals, r.leads)}</td>
                       <td className="text-right text-sm font-semibold">{fmtMoney(r.revenueNis)}</td>
                       <td className="text-right">{r.inactive}</td>
-                      <td className="text-right">—</td>
-                      <td className="text-right">—</td>
-                      <td className="text-right">—</td>
+                      <td className="text-right">{r.mediaNis > 0 ? fmtMoney(r.mediaNis) : '—'}</td>
+                      <td className="text-right">{r.managementNis > 0 ? fmtMoney(r.managementNis) : '—'}</td>
+                      <td className="text-right">{totalCostNis > 0 ? fmtMoney(totalCostNis) : '—'}</td>
                       <td className="text-right">{pctLeads}%</td>
                     </tr>
                   );
@@ -2057,7 +2944,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                   ) : (
                     <p className="text-sm text-base-content/60">
                       No calls matched (check scheduler on leads; 1com sync should set{' '}
-                      <code className="text-xs">client_id</code> or legacy <code className="text-xs">lead_id</code>).
+                      <code className="text-xs">client_id</code>).
                     </p>
                   )}
                 </div>

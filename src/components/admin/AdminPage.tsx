@@ -45,6 +45,7 @@ import EmailTemplatesPlacementManager from './EmailTemplatesPlacementManager';
 import EmailTemplatesAutomationManager from './EmailTemplatesAutomationManager';
 import PublicMessagesManager from './PublicMessagesManager';
 import WebhookSettingsManager from './WebhookSettingsManager';
+import SourceMediaExpensesManager from './SourceMediaExpensesManager';
 import BoiExchangeRatesTestPage from '../../pages/BoiExchangeRatesTestPage';
 import EmployeeFieldAssignmentsManager from './EmployeeFieldAssignmentsManager';
 import { useAdminRole } from '../../hooks/useAdminRole';
@@ -1651,6 +1652,9 @@ const AdminPage: React.FC = () => {
                 ) : selectedTab?.label === 'Whatsapp' &&
                   selectedTab?.subcategories[selected.sub] === 'Whats app templates' ? (
                   <div className="w-full"><WhatsAppTemplatesManager /></div>
+                ) : selectedTab?.label === 'Marketing' &&
+                  selectedTab?.subcategories[selected.sub] === 'Marketing expenses' ? (
+                  <div className="w-full"><SourceMediaExpensesManager /></div>
                 ) : (
                   <div className="flex items-center justify-center text-xl font-semibold text-primary">
                     {`${selectedTab?.label} / ${selectedTab?.subcategories[selected.sub]}`}

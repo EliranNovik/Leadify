@@ -19,6 +19,13 @@ import { Search, Loader2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { toast } from 'react-hot-toast';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
+import {
+  buildJerusalemEndOfDayIso,
+  buildJerusalemStartOfDayIso,
+  buildLegacyLeadSourceIdOrFilterClauseFromNames,
+  buildLeadSourceOrFilterClauseFromNames,
+  timestampInCalendarRange,
+} from '../lib/leadDateFilters';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import { useTheme } from '../hooks/useTheme';
 
@@ -2401,17 +2408,6 @@ const LeadSearchPage: React.FC = () => {
     }
 
     try {
-      // Helper to build UTC range for a given local date string (YYYY-MM-DD)
-      const buildUtcStartOfDay = (dateStr: string) => {
-        const [year, month, day] = dateStr.split('-').map(Number);
-        const local = new Date(year, (month || 1) - 1, day || 1, 0, 0, 0, 0);
-        return local.toISOString();
-      };
-      const buildUtcEndOfDay = (dateStr: string) => {
-        const [year, month, day] = dateStr.split('-').map(Number);
-        const local = new Date(year, (month || 1) - 1, day || 1, 23, 59, 59, 999);
-        return local.toISOString();
-      };
       // Fetch employee data for role filtering
       const { data: employees, error: empError } = await supabase
         .from('tenants_employee')
@@ -2559,11 +2555,11 @@ const LeadSearchPage: React.FC = () => {
           let dateOnlyQuery = newLeadsQuery;
           if (filters.fromDate) {
             console.log('📅 Testing fromDate filter only (UTC range):', filters.fromDate);
-            dateOnlyQuery = dateOnlyQuery.gte('created_at', buildUtcStartOfDay(filters.fromDate));
+            dateOnlyQuery = dateOnlyQuery.gte('created_at', buildJerusalemStartOfDayIso(filters.fromDate));
           }
           if (filters.toDate) {
             console.log('📅 Testing toDate filter only (UTC range):', filters.toDate);
-            const endOfDay = buildUtcEndOfDay(filters.toDate);
+            const endOfDay = buildJerusalemEndOfDayIso(filters.toDate);
             console.log('📅 Using end of day (UTC) for toDate:', endOfDay);
             dateOnlyQuery = dateOnlyQuery.lte('created_at', endOfDay);
           }
@@ -2604,11 +2600,11 @@ const LeadSearchPage: React.FC = () => {
       // Apply filters for new leads
       if (filters.fromDate) {
         console.log('📅 Adding fromDate filter for new leads (UTC range):', filters.fromDate);
-        newLeadsQuery = newLeadsQuery.gte('created_at', buildUtcStartOfDay(filters.fromDate));
+        newLeadsQuery = newLeadsQuery.gte('created_at', buildJerusalemStartOfDayIso(filters.fromDate));
       }
       if (filters.toDate) {
         console.log('📅 Adding toDate filter for new leads (UTC range):', filters.toDate);
-        const endOfDay = buildUtcEndOfDay(filters.toDate);
+        const endOfDay = buildJerusalemEndOfDayIso(filters.toDate);
         console.log('📅 Using end of day (UTC) for toDate:', endOfDay);
         newLeadsQuery = newLeadsQuery.lte('created_at', endOfDay);
       }
@@ -2795,9 +2791,6 @@ const LeadSearchPage: React.FC = () => {
       }
       if (filters.source && filters.source.length > 0) {
         console.log('📡 Adding source filter for new leads:', filters.source);
-        // Important: PostgREST `.or(...)` does NOT support dotted embedded paths like `misc_leadsource.name`.
-        // So we resolve selected source names -> source_id(s), then OR on plain columns:
-        //   source_id IN (...)  OR  source == "name"
         try {
           const selectedSourceNames = filters.source.map((s) => (s || '').trim()).filter(Boolean);
           const { data: srcRows, error: srcErr } = await supabase
@@ -2807,25 +2800,9 @@ const LeadSearchPage: React.FC = () => {
 
           if (srcErr) throw srcErr;
 
-          const sourceIds = (srcRows || [])
-            .map((r) => Number(r.id))
-            .filter((n) => Number.isFinite(n));
-
-          const orParts: string[] = [];
-          if (sourceIds.length === 1) {
-            orParts.push(`source_id.eq.${sourceIds[0]}`);
-          } else if (sourceIds.length > 1) {
-            orParts.push(`source_id.in.(${sourceIds.join(',')})`);
-          }
-
-          for (const name of selectedSourceNames) {
-            // Encode values so spaces/punctuation don't break the URL.
-            const enc = encodeURIComponent(name);
-            orParts.push(`source.eq.${enc}`);
-          }
-
-          if (orParts.length > 0) {
-            newLeadsQuery = newLeadsQuery.or(orParts.join(','));
+          const sourceOr = buildLeadSourceOrFilterClauseFromNames(selectedSourceNames, srcRows || []);
+          if (sourceOr) {
+            newLeadsQuery = newLeadsQuery.or(sourceOr);
           }
         } catch (e) {
           console.log('⚠️ New leads source filter lookup failed, falling back to text `source` only:', e);
@@ -3200,33 +3177,21 @@ const LeadSearchPage: React.FC = () => {
       if (filters.source && filters.source.length > 0) {
         console.log('📡 Adding source filter for legacy leads:', filters.source);
         try {
-          // Look up all selected sources to get their source_ids
-          const sourceIds: number[] = [];
-          for (const source of filters.source) {
-            const sourceLookup = await supabase
-              .from('misc_leadsource')
-              .select('id')
-              .eq('name', source)
-              .limit(1);
+          const selectedSourceNames = filters.source.map((s) => (s || '').trim()).filter(Boolean);
+          const { data: srcRows, error: srcErr } = await supabase
+            .from('misc_leadsource')
+            .select('id, name')
+            .in('name', selectedSourceNames);
 
-            if (sourceLookup.data && sourceLookup.data.length > 0) {
-              const sourceId = sourceLookup.data[0].id;
-              sourceIds.push(sourceId);
-              console.log('🔍 Found source_id:', sourceId, 'for source:', source);
-            }
-          }
+          if (srcErr) throw srcErr;
 
-          if (sourceIds.length > 0) {
-            // Use IN operator for multiple source_ids
-            legacyLeadsQuery = legacyLeadsQuery.in('source_id', sourceIds);
-          } else {
-            console.log('❌ No source_ids found for any sources');
-            // Fallback to exact match on misc_leadsource.name
-            if (filters.source.length === 1) {
-              legacyLeadsQuery = legacyLeadsQuery.eq('misc_leadsource.name', filters.source[0]);
-            } else {
-              legacyLeadsQuery = legacyLeadsQuery.in('misc_leadsource.name', filters.source);
-            }
+          const sourceOr = buildLegacyLeadSourceIdOrFilterClauseFromNames(selectedSourceNames, srcRows || []);
+          if (sourceOr) {
+            legacyLeadsQuery = legacyLeadsQuery.or(sourceOr);
+          } else if (selectedSourceNames.length === 1) {
+            legacyLeadsQuery = legacyLeadsQuery.eq('misc_leadsource.name', selectedSourceNames[0]);
+          } else if (selectedSourceNames.length > 1) {
+            legacyLeadsQuery = legacyLeadsQuery.in('misc_leadsource.name', selectedSourceNames);
           }
         } catch (error) {
           console.log('⚠️ Source lookup failed, falling back to misc_leadsource.name:', error);
@@ -3871,10 +3836,10 @@ const LeadSearchPage: React.FC = () => {
           // Apply all the same filters as newLeadsQuery, but skip country_id
           // Date filters
           if (filters.fromDate) {
-            phoneCheckQuery = phoneCheckQuery.gte('created_at', buildUtcStartOfDay(filters.fromDate));
+            phoneCheckQuery = phoneCheckQuery.gte('created_at', buildJerusalemStartOfDayIso(filters.fromDate));
           }
           if (filters.toDate) {
-            phoneCheckQuery = phoneCheckQuery.lte('created_at', buildUtcEndOfDay(filters.toDate));
+            phoneCheckQuery = phoneCheckQuery.lte('created_at', buildJerusalemEndOfDayIso(filters.toDate));
           }
           // Category filter
           if (filters.category && filters.category.length > 0) {
@@ -3990,22 +3955,9 @@ const LeadSearchPage: React.FC = () => {
 
               if (srcErr) throw srcErr;
 
-              const sourceIds = (srcRows || [])
-                .map((r) => Number(r.id))
-                .filter((n) => Number.isFinite(n));
-
-              const orParts: string[] = [];
-              if (sourceIds.length === 1) {
-                orParts.push(`source_id.eq.${sourceIds[0]}`);
-              } else if (sourceIds.length > 1) {
-                orParts.push(`source_id.in.(${sourceIds.join(',')})`);
-              }
-              for (const name of selectedSourceNames) {
-                const enc = encodeURIComponent(name);
-                orParts.push(`source.eq.${enc}`);
-              }
-              if (orParts.length > 0) {
-                phoneCheckQuery = phoneCheckQuery.or(orParts.join(','));
+              const sourceOr = buildLeadSourceOrFilterClauseFromNames(selectedSourceNames, srcRows || []);
+              if (sourceOr) {
+                phoneCheckQuery = phoneCheckQuery.or(sourceOr);
               }
             } catch (e) {
               console.log('⚠️ Phone-check source filter lookup failed, falling back to text `source` only:', e);
@@ -4689,8 +4641,10 @@ const LeadSearchPage: React.FC = () => {
       // Combine results and sort by creation date
       const allResults = [
         ...mappedNewLeads,
-        ...mappedLegacyLeads
-      ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        ...mappedLegacyLeads,
+      ]
+        .filter((lead) => timestampInCalendarRange(lead.created_at, filters.fromDate, filters.toDate))
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
       console.log('🎯 Final combined results:', {
         totalCount: allResults.length,
