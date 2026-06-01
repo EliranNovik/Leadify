@@ -1,7 +1,10 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useCallback, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useExternalUser } from '../hooks/useExternalUser';
 import PageLoader from '../components/PageLoader';
+import DashboardWelcomeModal from '../components/DashboardWelcomeModal';
+import { DashboardWelcomeReadyProvider } from '../contexts/DashboardWelcomeReadyContext';
+import { clearDashboardWelcomePending, hasDashboardWelcomePending } from '../lib/dashboardWelcomeSession';
 
 const LazyDashboard = lazy(() => import('../components/Dashboard'));
 
@@ -11,18 +14,39 @@ const LazyDashboard = lazy(() => import('../components/Dashboard'));
  */
 export default function HomeEntryPage() {
   const { isExternalUser, isLoading } = useExternalUser();
+  const [welcomeActive, setWelcomeActive] = useState(() => hasDashboardWelcomePending());
+  const [departmentPerformanceReady, setDepartmentPerformanceReady] = useState(false);
 
-  if (isLoading) {
-    return <PageLoader />;
-  }
+  const handleWelcomeFinished = useCallback(() => {
+    setWelcomeActive(false);
+  }, []);
 
-  if (isExternalUser) {
+  const handleDepartmentPerformanceReady = useCallback(() => {
+    setDepartmentPerformanceReady(true);
+  }, []);
+
+  if (!isLoading && isExternalUser) {
+    clearDashboardWelcomePending();
     return <Navigate to="/external-home" replace />;
   }
 
+  const showWelcomeOverlay = welcomeActive;
+
   return (
-    <Suspense fallback={<PageLoader />}>
-      <LazyDashboard />
-    </Suspense>
+    <>
+      {showWelcomeOverlay && (
+        <DashboardWelcomeModal
+          ready={departmentPerformanceReady}
+          onFinished={handleWelcomeFinished}
+        />
+      )}
+      <DashboardWelcomeReadyProvider onReady={handleDepartmentPerformanceReady}>
+        {isLoading ? null : (
+          <Suspense fallback={showWelcomeOverlay ? null : <PageLoader />}>
+            <LazyDashboard />
+          </Suspense>
+        )}
+      </DashboardWelcomeReadyProvider>
+    </>
   );
 }

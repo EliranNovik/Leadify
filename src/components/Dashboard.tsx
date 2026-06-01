@@ -44,6 +44,8 @@ import { useRefetchOnVisible } from '../hooks/useRefetchOnVisible';
 import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 
 import { resolveCategoryAndDepartment } from '../lib/resolveCategoryDepartment';
+import { hasDashboardWelcomePending } from '../lib/dashboardWelcomeSession';
+import { useReportDashboardWelcomeReady } from '../contexts/DashboardWelcomeReadyContext';
 
 function getDashboardScoreboardCacheTtlMs(): number {
   return getMobileAwareCacheTtlMs(10 * 60 * 1000, 2 * 60 * 1000);
@@ -228,6 +230,7 @@ const Dashboard: React.FC = () => {
   const [expanded, setExpanded] = useState<'meetings' | 'overdue' | 'messages' | null>(null);
 
   const [isLoading, setIsLoading] = useState(true);
+  const reportWelcomeReady = useReportDashboardWelcomeReady();
   const [leads, setLeads] = useState<any[]>([]);
   const [meetings, setMeetings] = useState<any[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
@@ -4672,6 +4675,12 @@ const Dashboard: React.FC = () => {
     void loadScoreboardData();
   }, [loadScoreboardData]);
 
+  useEffect(() => {
+    if (!departmentPerformanceLoading) {
+      reportWelcomeReady?.();
+    }
+  }, [departmentPerformanceLoading, reportWelcomeReady]);
+
   // Live refresh: background refetch (no full-page spinner) when realtime bumps the token.
   useEffect(() => {
     if (scoreboardRefreshToken === 0) return;
@@ -6154,8 +6163,15 @@ const Dashboard: React.FC = () => {
     </div>
   );
 
+  const postLoginWelcomeActive = hasDashboardWelcomePending();
+
   return (
-    <div className="min-h-screen bg-gray-100 p-0 md:p-6 space-y-8 animate-fade-in dark:bg-base-300">
+    <>
+    <div
+      className={`min-h-screen bg-gray-100 p-0 md:p-6 space-y-8 dark:bg-base-300 ${
+        postLoginWelcomeActive ? '' : 'animate-fade-in'
+      }`}
+    >
       {/* 1. Summary Boxes: 4 columns */}
       <div className="flex md:grid md:grid-cols-4 gap-3 md:gap-6 mb-8 w-full mt-6 md:mt-0 overflow-x-auto scrollbar-hide pb-2 md:pb-0 overflow-y-visible">
         {/* Meetings Today */}
@@ -7434,11 +7450,13 @@ const Dashboard: React.FC = () => {
                         </details>
                       </div>
                     </div>
-                    {departmentPerformanceLoading ? (
+                    {departmentPerformanceLoading && !postLoginWelcomeActive ? (
                       <div className="flex justify-center items-center py-12">
                         <span className={`loading loading-spinner loading-lg ${isAltTheme ? 'text-green-600' : 'text-primary'}`}></span>
                       </div>
-                    ) : renderColumnsView('agreement')}
+                    ) : !departmentPerformanceLoading ? (
+                      renderColumnsView('agreement')
+                    ) : null}
                   </div>
                 </div>
 
@@ -7514,11 +7532,13 @@ const Dashboard: React.FC = () => {
                         </details>
                       </div>
                     </div>
-                    {invoicedDataLoading ? (
+                    {invoicedDataLoading && !postLoginWelcomeActive ? (
                       <div className="flex justify-center items-center py-12">
                         <span className={`loading loading-spinner loading-lg ${isAltTheme ? 'text-green-600' : 'text-primary'}`}></span>
                       </div>
-                    ) : renderColumnsView('invoiced')}
+                    ) : !invoicedDataLoading ? (
+                      renderColumnsView('invoiced')
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -8281,6 +8301,7 @@ const Dashboard: React.FC = () => {
       />
 
     </div>
+    </>
   );
 };
 

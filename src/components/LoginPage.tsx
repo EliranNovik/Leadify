@@ -4,6 +4,8 @@ import { supabase } from '../lib/supabase';
 import { AtSymbolIcon, ArrowRightOnRectangleIcon, CheckCircleIcon, Bars3Icon, XMarkIcon, EyeIcon, EyeSlashIcon } from '@heroicons/react/24/outline';
 import { LockClosedIcon } from '@heroicons/react/24/outline';
 import { preCheckExternalUser } from '../hooks/useExternalUser';
+import { fetchWelcomeProfileForEmail } from '../lib/loginWelcomeProfile';
+import { setDashboardWelcomePending } from '../lib/dashboardWelcomeSession';
 
 const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -12,9 +14,6 @@ const LoginPage: React.FC = () => {
   const [magicLinkLoading, setMagicLinkLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const [showSuccessAnim, setShowSuccessAnim] = useState(false);
-  const [welcomeName, setWelcomeName] = useState<string>('');
-  const [welcomeImage, setWelcomeImage] = useState<string>('');
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
@@ -26,112 +25,19 @@ const LoginPage: React.FC = () => {
     setSuccess(null);
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) setError(error.message);
-    else {
-      // Try to fetch the user's official_name from the tenants_employee table using JOIN
-      let name = email;
-      let imageUrl = '';
+    else if (data?.user) {
+      const profile = data.user.email
+        ? await fetchWelcomeProfileForEmail(data.user.email, data.user)
+        : { name: email, imageUrl: '' };
 
-      if (data?.user?.email) {
-        // Fetch user with joined employee (image, name) via users.employee_id -> tenants_employee.id
-        let userData: { first_name?: string; last_name?: string; full_name?: string; employee_id?: number; tenants_employee?: any } | null = null;
-        let userError: Error | null = null;
+      setDashboardWelcomePending(profile);
 
-        const { data: withJoin, error: joinErr } = await supabase
-          .from('users')
-          .select(`
-            first_name,
-            last_name,
-            full_name,
-            employee_id,
-            tenants_employee!users_employee_id_fkey(
-              official_name,
-              display_name,
-              photo,
-              photo_url
-            )
-          `)
-          .eq('email', data.user.email)
-          .single();
-
-        if (!joinErr && withJoin) {
-          userData = withJoin;
-        } else {
-          userError = joinErr ?? null;
-          // Fallback: fetch without join if FK missing or join fails
-          const { data: fallbackData, error: fallbackErr } = await supabase
-            .from('users')
-            .select('first_name, last_name, full_name, employee_id')
-            .eq('email', data.user.email)
-            .single();
-          if (!fallbackErr && fallbackData) {
-            userData = fallbackData;
-          } else {
-            userError = fallbackErr ?? userError;
-          }
-        }
-
-        console.log('Login - User data fetched:', userData);
-        if (userError) console.log('Login - User error:', userError);
-
-        if (!userError && userData) {
-          const empData = userData.tenants_employee
-            ? (Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee)
-            : null;
-
-          console.log('Login - Employee data (from join):', empData);
-
-          if (empData) {
-            imageUrl = (empData.photo_url && String(empData.photo_url).trim()) || (empData.photo && String(empData.photo).trim()) || '';
-          }
-
-          // Priority: official_name > display_name > first_name + last_name > full_name
-          if (empData?.official_name && empData.official_name.trim()) {
-            name = empData.official_name.trim();
-            console.log('Login - Using official_name:', name);
-          } else if (empData?.display_name && empData.display_name.trim()) {
-            name = empData.display_name.trim();
-            console.log('Login - Using display_name:', name);
-          } else if (userData.first_name && userData.last_name && userData.first_name.trim() && userData.last_name.trim()) {
-            name = `${userData.first_name.trim()} ${userData.last_name.trim()}`;
-            console.log('Login - Using first_name + last_name:', name);
-          } else if (userData.full_name && userData.full_name.trim()) {
-            name = userData.full_name.trim();
-            console.log('Login - Using full_name:', name);
-          } else {
-            console.log('Login - No name found, using email:', name);
-          }
-        } else {
-          console.log('Login - User error or no data, error:', userError);
-          // Fallback to auth user metadata
-          if (data.user.user_metadata?.first_name || data.user.user_metadata?.full_name) {
-            name = data.user.user_metadata.first_name || data.user.user_metadata.full_name;
-          }
-        }
-      }
-      setWelcomeName(name);
-      setWelcomeImage(imageUrl);
-      setSuccess('Signed in! Redirecting...');
-      setShowSuccessAnim(true);
-
-      // Save to session storage that user is signed in - this allows Dashboard to load immediately
-      if (typeof window !== 'undefined') {
-        sessionStorage.setItem('user_signed_in', 'true');
-        sessionStorage.setItem('user_signed_in_timestamp', Date.now().toString());
+      void import('../components/Dashboard');
+      if (data.user.id) {
+        void preCheckExternalUser(data.user.id);
       }
 
-      // Pre-check external user status in the background during the delay
-      // This runs during the 1 second login screen delay, so the check is ready when dashboard loads
-      if (data?.user?.id) {
-        preCheckExternalUser(data.user.id).catch(err => {
-          console.error('Error pre-checking external user:', err);
-        });
-      }
-
-      // Navigate after showing welcome message for a bit longer
-      // Keep this interstitial short; the dashboard can load with skeletons.
-      setTimeout(() => {
-        navigate('/', { replace: true });
-      }, 1400);
+      navigate('/', { replace: true });
     }
     setLoading(false);
   };
@@ -181,9 +87,7 @@ const LoginPage: React.FC = () => {
       <div className="absolute inset-0 w-full h-full bg-gradient-to-b from-[rgba(10,10,10,0.38)] to-[rgba(10,10,10,0.58)] z-0" />
       <div className="absolute inset-0 w-full h-full bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.05),transparent_60%)] z-0" />
 
-      {/* Only render login UI if not showing welcome animation */}
-      {!showSuccessAnim && (
-        <>
+      <>
           {/* Full width login box */}
           <div className="w-full flex flex-col justify-start items-center min-h-screen relative z-10 pt-16 md:pt-20">
             {/* Header bar - Mobile */}
@@ -457,74 +361,7 @@ const LoginPage: React.FC = () => {
               <span className="text-white/85 text-lg font-semibold text-center w-full">© Rainmaker Queen 2.0 {new Date().getFullYear()}</span>
             </div>
           </div>
-        </>
-      )}
-
-
-      {/* Success animation overlay — same video as login + frosted blur (no blue gradient) */}
-      {showSuccessAnim && (
-        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center w-full h-full overflow-hidden">
-          <video
-            className="absolute inset-0 w-full h-full object-cover z-0"
-            autoPlay
-            muted
-            loop
-            playsInline
-            preload="metadata"
-          >
-            <source src="/login-hero.mp4" type="video/mp4" />
-          </video>
-          {/* Same background style as login: video + soft gradient + frosted overlay */}
-          <div className="absolute inset-0 z-[1] bg-gradient-to-b from-[rgba(10,10,10,0.38)] to-[rgba(10,10,10,0.58)]" />
-          <div className="absolute inset-0 z-[2] bg-black/22 backdrop-blur-lg" />
-          <div className="absolute inset-0 z-[3] bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.05),transparent_60%)] pointer-events-none" />
-
-          <div className="relative z-10 flex w-full h-full flex-col items-center justify-center px-4 text-center">
-            {/* Brand (small, premium) */}
-            <div className="mb-7 flex items-center gap-3 opacity-95">
-              <img src="/RMQ_LOGO.png" alt="RMQ 2.0" className="h-10 w-10 object-contain" />
-              <div className="text-sm font-semibold tracking-[0.18em] uppercase text-white/80">RMQ 2.0</div>
-            </div>
-
-            {/* Main handoff */}
-            <div className="slide-fade-in flex flex-col items-center gap-3">
-              <div className="text-3xl md:text-4xl font-semibold text-white tracking-tight">
-                Welcome back{welcomeName ? `, ${welcomeName.split(' ')[0]}` : ''}.
-              </div>
-              <div className="text-sm md:text-base text-white/70">
-                Preparing your workspace…
-              </div>
-            </div>
-
-            {/* Progress */}
-            <div className="mt-7 w-full max-w-xs">
-              <progress className="progress progress-primary w-full h-2" />
-              <div className="mt-3 text-xs text-white/55">Signing you in securely</div>
-            </div>
-
-            {/* Optional: small signed-in chip (more product-like than a big avatar) */}
-            {welcomeName && (
-              <div className="mt-8 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/70">
-                {welcomeImage ? (
-                  <img
-                    src={welcomeImage}
-                    alt=""
-                    className="h-6 w-6 rounded-full object-cover ring-1 ring-white/15"
-                    onError={(e) => {
-                      (e.currentTarget as HTMLImageElement).style.display = 'none';
-                    }}
-                  />
-                ) : (
-                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-white/10 text-[10px] font-semibold text-white/70 ring-1 ring-white/15">
-                    {welcomeName.trim().slice(0, 2).toUpperCase()}
-                  </span>
-                )}
-                <span className="truncate max-w-[14rem]">Signed in as {welcomeName}</span>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      </>
     </div>
   );
 };

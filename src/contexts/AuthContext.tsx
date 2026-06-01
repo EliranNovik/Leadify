@@ -381,6 +381,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (typeof window !== 'undefined') {
           sessionStorage.removeItem('user_signed_in');
           sessionStorage.removeItem('user_signed_in_timestamp');
+          sessionStorage.removeItem('crm_dashboard_welcome_v1');
         }
         // Only clear if we actually had a user
         setAuthState(prev => {
