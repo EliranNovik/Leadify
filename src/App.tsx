@@ -13,6 +13,7 @@ import AIChatWindow from './components/AIChatWindow';
 import EmailThreadModal from './components/EmailThreadModal';
 import ContactSelectorModal from './components/ContactSelectorModal';
 import { supabase } from './lib/supabase';
+import { persistClientToSessionStorage } from './lib/clientSessionCache';
 import { CelebrationProvider } from './contexts/CelebrationContext';
 import { MailboxReconnectProvider } from './contexts/MailboxReconnectContext';
 import MoneyRainCelebration from './components/MoneyRainCelebration';
@@ -418,6 +419,7 @@ const AppContentInner: React.FC = () => {
         });
 
         setSelectedClient(clientData);
+        persistClientToSessionStorage(clientData);
       } else {
         // Handle new leads
         console.log('🔄 Refreshing new lead data for ID:', clientId);
@@ -508,6 +510,7 @@ const AppContentInner: React.FC = () => {
             category: newClientData.category,
             active_handler_type: (newClientData as any).active_handler_type,
           });
+          persistClientToSessionStorage(newClientData);
           return newClientData;
         });
         console.log('✅ setSelectedClient (functional) applied for new lead refresh');
@@ -515,7 +518,7 @@ const AppContentInner: React.FC = () => {
     } catch (error) {
       console.error('Error refreshing client data:', error);
     }
-  }, []);
+  }, [setSelectedClient, selectedClient]);
 
   // Memoized callbacks for Header and Sidebar to prevent unnecessary re-renders
   const handleMenuClick = useCallback(() => {

@@ -1619,6 +1619,9 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
   if (typeof window === 'undefined') return null;
 
+  const showUploadZone = !requireCaseDocumentClassification || !!uploadClassificationId;
+  const uploadDisabled = !showUploadZone || isUploading || caseUploadBlocked;
+
   return createPortal(
     <>
     <div className={`fixed inset-0 z-[1000] flex items-end justify-end bg-black bg-opacity-40 transition-opacity duration-300 ${isOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`} style={{ top: 0, left: 0 }}>
@@ -1628,60 +1631,70 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       >
         {/* Modal Header */}
         <header className="relative mb-4 shrink-0 md:mb-6">
-          {/* Mobile: close badge in top-most right corner */}
-          <button
-            type="button"
-            className="btn btn-circle btn-sm absolute right-0 top-0 z-10 h-11 w-11 border-0 bg-white text-black shadow-md ring-1 ring-base-300 hover:bg-base-200 hover:text-black md:hidden"
-            onClick={onClose}
-            aria-label="Close"
-          >
-            <XMarkIcon className="h-6 w-6 text-black" strokeWidth={2} aria-hidden />
-          </button>
+          {showUploadZone ? (
+            <input
+              type="file"
+              className="hidden"
+              id="file-upload-modal"
+              multiple
+              onChange={handleFileInput}
+              disabled={isUploading || caseUploadBlocked}
+            />
+          ) : null}
 
-          <div className="flex min-w-0 flex-col gap-4 md:flex-row md:items-start md:justify-between md:gap-6">
-            <div className="min-w-0 flex-1 max-md:pr-14 md:pr-2">
+          <div className="flex min-w-0 items-start justify-between gap-2 md:gap-6">
+            <div className="min-w-0 flex-1 md:pr-2">
               <h2 className="mb-1 text-xl font-bold sm:text-2xl">{modalTitle ?? 'Documents'}</h2>
               <p className="text-sm text-base-content/70">Lead: {clientName} ({leadNumber})</p>
               {folderPathHint ? (
                 <p className="mt-1 text-xs text-base-content/60">{folderPathHint}</p>
               ) : null}
-              <button
-                type="button"
-                className="btn btn-primary btn-sm mt-3 gap-1.5 shadow-sm md:hidden"
-                onClick={handleDownloadAll}
-                disabled={
-                  loading ||
-                  (requireCaseDocumentClassification ? documentsInActiveCategory.length === 0 : documents.length === 0)
-                }
-                title="Download all"
-              >
-                <ArrowDownTrayIcon className="h-5 w-5 shrink-0" />
-                All
-              </button>
             </div>
 
-            {/* Desktop: plain action + close (no grey pill toolbar) */}
-            <div className="hidden shrink-0 items-center gap-2 md:flex">
+            <div className="flex shrink-0 items-center gap-0.5 sm:gap-1">
               <button
                 type="button"
-                className="btn btn-ghost btn-sm h-auto min-h-0 gap-1.5 border-0 bg-transparent px-2 py-1 font-medium text-base-content shadow-none hover:bg-base-200/60 hover:text-base-content disabled:bg-transparent disabled:opacity-40"
+                className="btn btn-ghost btn-sm h-auto min-h-0 gap-1 border-0 bg-transparent px-2 py-1 font-medium text-base-content shadow-none hover:bg-base-200/60 hover:text-base-content disabled:bg-transparent disabled:opacity-40"
                 onClick={handleDownloadAll}
                 disabled={
                   loading ||
-                  (requireCaseDocumentClassification ? documentsInActiveCategory.length === 0 : documents.length === 0)
+                  (requireCaseDocumentClassification
+                    ? documentsInActiveCategory.length === 0
+                    : documents.length === 0)
                 }
                 title="Download all"
+                aria-label="Download all"
               >
                 <ArrowDownTrayIcon className="h-5 w-5 shrink-0" aria-hidden />
-                Download All
+                <span className="md:hidden">All</span>
+                <span className="hidden md:inline">Download All</span>
               </button>
+
+              {showUploadZone ? (
+                <label
+                  htmlFor="file-upload-modal"
+                  className={`btn btn-ghost btn-sm h-auto min-h-0 gap-1 border-0 bg-transparent px-2 py-1 font-medium text-base-content shadow-none hover:bg-base-200/60 hover:text-base-content md:hidden ${
+                    uploadDisabled ? 'btn-disabled pointer-events-none opacity-40' : ''
+                  }`}
+                  title={isUploading ? 'Processing…' : 'Upload document'}
+                  aria-label={isUploading ? 'Processing files' : 'Upload document'}
+                >
+                  {isUploading ? (
+                    <span className="loading loading-spinner loading-sm" />
+                  ) : (
+                    <DocumentArrowUpIcon className="h-5 w-5 shrink-0" aria-hidden />
+                  )}
+                  {isUploading ? '…' : 'Upload'}
+                </label>
+              ) : null}
+
               <button
                 type="button"
-                className="btn btn-ghost btn-circle h-11 w-11 min-h-11 min-w-11 border-0 bg-transparent p-0 text-base-content shadow-none hover:bg-base-200/60"
+                className="btn btn-ghost btn-circle h-10 w-10 min-h-10 min-w-10 border-0 bg-transparent p-0 text-base-content shadow-none hover:bg-base-200/60 md:h-11 md:w-11 md:min-h-11 md:min-w-11"
                 onClick={onClose}
                 aria-label="Close"
               >
-                <XMarkIcon className="h-7 w-7" strokeWidth={2} aria-hidden />
+                <XMarkIcon className="h-6 w-6 md:h-7 md:w-7" strokeWidth={2} aria-hidden />
               </button>
             </div>
           </div>
@@ -1700,7 +1713,6 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
           {/* Case docs: upload when a real category tab is active. Expert: always. */}
           {(() => {
-            const showUploadZone = !requireCaseDocumentClassification || !!uploadClassificationId;
             if (!showUploadZone) return null;
             const uploadLabel = uploadClassificationId
               ? classifications.find((c) => c.id === uploadClassificationId)?.label
@@ -1712,29 +1724,6 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                     Uploads are added to <span className="font-medium text-base-content/90">{uploadLabel}</span>.
                   </p>
                 ) : null}
-                <input
-                  type="file"
-                  className="hidden"
-                  id="file-upload-modal"
-                  multiple
-                  onChange={handleFileInput}
-                  disabled={isUploading || caseUploadBlocked}
-                />
-                {/* Mobile: one control → native file picker (no drag-and-drop UI) */}
-                <div
-                  className={`mb-6 md:hidden ${caseUploadBlocked || isUploading ? 'pointer-events-none opacity-50' : ''}`}
-                >
-                  <label
-                    htmlFor="file-upload-modal"
-                    className={`btn btn-outline btn-primary btn-block min-h-12 gap-2 border-2 bg-white text-primary shadow-none hover:bg-primary/5 active:bg-primary/10 dark:bg-base-100 dark:hover:bg-primary/10 ${isUploading || caseUploadBlocked ? 'btn-disabled' : ''}`}
-                  >
-                    <DocumentArrowUpIcon className="h-5 w-5 shrink-0" />
-                    {isUploading ? 'Processing…' : 'Upload document'}
-                  </label>
-                  {isUploading ? (
-                    <p className="mt-2 text-center text-xs text-base-content/60">Processing files…</p>
-                  ) : null}
-                </div>
                 {/* md+: drag-and-drop zone + choose files */}
                 <div
                   className={`mb-6 hidden max-w-full min-w-0 md:block rounded-lg border-2 border-dashed p-6 text-center transition-colors duration-200 sm:p-8 ${

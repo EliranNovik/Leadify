@@ -137,6 +137,9 @@ import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
 import { addRecentLead } from '../lib/recentSearchStorage';
 import { saveLeadCaseProbability } from '../lib/saveLeadCaseProbability';
 import { readPendingProbSession, clearPendingProbSession, writePendingProbSession } from '../lib/pendingProbabilityStorage';
+import { persistClientToSessionStorage } from '../lib/clientSessionCache';
+import { useRefetchOnVisible, isNarrowViewport } from '../hooks/useRefetchOnVisible';
+import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 
 // Performance debugging for Clients load: in DEV, logs timings to console. Set window.__CLIENTS_PERF__ = true for Performance tab marks.
 const CLIENT_LOAD_PERF = typeof window !== 'undefined' && import.meta.env.DEV;
@@ -1450,19 +1453,11 @@ const Clients: React.FC<ClientsProps> = ({
   // Helper function to persist client data to sessionStorage
   const persistClientData = useCallback((client: any, leadNumber?: string) => {
     try {
-      const keyToUse = getClientStorageKey(client, leadNumber);
-      if (keyToUse) {
-        const persistedKey = `clientsPage_clientData_${keyToUse}`;
-        sessionStorage.setItem(persistedKey, JSON.stringify(client));
-        const route = buildClientRoute((client as any)?.manual_id, client?.lead_number);
-        if (route && route !== '/clients') {
-          sessionStorage.setItem('clientsPage_lastLeadRoute', route);
-        }
-      }
+      persistClientToSessionStorage(client, leadNumber);
     } catch (error) {
       console.error('Error persisting client data:', error);
     }
-  }, [buildClientRoute, getClientStorageKey]);
+  }, []);
 
   // Persist duplicate contacts so they don't need refetch when navigating back
   const persistDuplicateContacts = useCallback((client: any, duplicates: typeof duplicateContacts) => {
@@ -1778,7 +1773,7 @@ const Clients: React.FC<ClientsProps> = ({
       // Check cache first
       const cacheKey = 'clientsPage_employeesData';
       const cacheTimestampKey = 'clientsPage_employeesData_timestamp';
-      const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+      const CACHE_DURATION = getMobileAwareCacheTtlMs(30 * 60 * 1000);
 
       try {
         const cachedData = sessionStorage.getItem(cacheKey);
@@ -2075,6 +2070,37 @@ const Clients: React.FC<ClientsProps> = ({
 
   const lastCategoryRefreshIds = useRef<Set<string>>(new Set());
   const isBalanceUpdatingRef = useRef<boolean>(false);
+  const [isClientSyncing, setIsClientSyncing] = useState(false);
+  const lastClientRefreshAtRef = useRef(0);
+  const clientSyncInFlightRef = useRef(false);
+
+  const syncClientFromServer = useCallback(
+    async (clientId: number | string, options?: { silent?: boolean }) => {
+      if (!clientId || clientSyncInFlightRef.current) return;
+      clientSyncInFlightRef.current = true;
+      const showIndicator = options?.silent !== true;
+      if (showIndicator) setIsClientSyncing(true);
+      try {
+        await refreshClientData(clientId);
+        lastClientRefreshAtRef.current = Date.now();
+      } finally {
+        clientSyncInFlightRef.current = false;
+        if (showIndicator) setIsClientSyncing(false);
+      }
+    },
+    [refreshClientData]
+  );
+
+  useRefetchOnVisible({
+    enabled: !!selectedClient?.id,
+    staleMs: isNarrowViewport() ? 30_000 : 90_000,
+    lastFetchedAtRef: lastClientRefreshAtRef,
+    onRefetch: () => {
+      if (selectedClient?.id) {
+        return syncClientFromServer(selectedClient.id, { silent: true });
+      }
+    },
+  });
 
   // State for unactivation modal
   const [showUnactivationModal, setShowUnactivationModal] = useState(false);
@@ -3721,7 +3747,7 @@ const Clients: React.FC<ClientsProps> = ({
               }
               const id = normalizedPersistedData?.id ?? (normalizedPersistedData as any)?.lead_number;
               if (id != null) {
-                refreshClientData(id).catch(() => {});
+                void syncClientFromServer(id);
               }
               return; // Skip fetch - use persisted data
             }
@@ -4438,6 +4464,7 @@ const Clients: React.FC<ClientsProps> = ({
 
             clientsPerfMark('process-done');
             setSelectedClient(normalizedClient);
+            lastClientRefreshAtRef.current = Date.now();
 
             // Update lastRouteRef ONLY after client is successfully loaded
             lastRouteRef.current = currentRoute;
@@ -4696,7 +4723,7 @@ const Clients: React.FC<ClientsProps> = ({
       // Check cache first
       const cacheKey = 'clientsPage_backgroundData';
       const cacheTimestampKey = 'clientsPage_backgroundData_timestamp';
-      const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+      const CACHE_DURATION = getMobileAwareCacheTtlMs(30 * 60 * 1000);
 
       try {
         const cachedData = sessionStorage.getItem(cacheKey);
@@ -14545,6 +14572,7 @@ const Clients: React.FC<ClientsProps> = ({
             onDismissPendingProbability={handleDismissPendingProbability}
             onSwitchClientTab={setActiveTabWithUrl}
             refreshClientData={refreshClientData}
+            isClientSyncing={isClientSyncing}
             isSubLead={isSubLead}
             masterLeadNumber={masterLeadNumber}
             isMasterLead={isMasterLead}

@@ -8326,12 +8326,12 @@ export default function ReportsPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [selectedReport, setSelectedReport] = useState<ReportItem | null>(null);
-  const [marketingReportDocsOpen, setMarketingReportDocsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showSearchDropdown, setShowSearchDropdown] = useState<boolean>(false);
   const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
   const [hasCollectionAccess, setHasCollectionAccess] = useState<boolean>(false);
   const [permissionsLoaded, setPermissionsLoaded] = useState<boolean>(false);
+  const [marketingReportDocsOpen, setMarketingReportDocsOpen] = useState(false);
 
   // Fetch superuser status and collection access
   useEffect(() => {
@@ -8898,7 +8898,11 @@ export default function ReportsPage() {
                 : 'bg-white rounded-xl shadow-lg p-8 border border-base-200'
             }
           >
-            <div className="flex items-start justify-between mb-6 flex-wrap gap-4">
+            <div
+              className={`flex items-start justify-between flex-wrap gap-4 ${
+                selectedReport?.label === 'Marketing dashboard' ? 'mb-4' : 'mb-6'
+              }`}
+            >
               <div className="min-w-0 flex-1">
                 {selectedReport.shellTitle ? (
                   <selectedReport.shellTitle />

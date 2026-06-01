@@ -40,12 +40,18 @@ import SickDaysDocumentUploadModal from './SickDaysDocumentUploadModal';
 import MyContribution from './MyContribution';
 import { DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 import { employeeHasAnySalesRoleOnLeadBundle } from '../utils/rolePercentageCalculator';
+import { useRefetchOnVisible } from '../hooks/useRefetchOnVisible';
+import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 
 import { resolveCategoryAndDepartment } from '../lib/resolveCategoryDepartment';
 
-/** Scoreboard cache TTL — realtime subscriptions refresh data in place between fetches. */
-const DASHBOARD_SCOREBOARD_CACHE_TTL_MS = 10 * 60 * 1000;
-const DASHBOARD_TEAM_AVAILABILITY_CACHE_TTL_MS = 5 * 60 * 1000;
+function getDashboardScoreboardCacheTtlMs(): number {
+  return getMobileAwareCacheTtlMs(10 * 60 * 1000, 2 * 60 * 1000);
+}
+
+function getDashboardTeamAvailabilityCacheTtlMs(): number {
+  return getMobileAwareCacheTtlMs(5 * 60 * 1000, 90_000);
+}
 
 /** Virtual column for leads/payments outside the main scoreboard departments. */
 const SCOREBOARD_OTHER_COLUMN = 'Other';
@@ -279,6 +285,17 @@ const Dashboard: React.FC = () => {
   const realtimeRefreshTimerRef = useRef<number | null>(null);
   const [scoreboardRefreshToken, setScoreboardRefreshToken] = useState(0);
   const [teamAvailabilityRefreshToken, setTeamAvailabilityRefreshToken] = useState(0);
+  const dashboardLastResumeRef = useRef(0);
+
+  useRefetchOnVisible({
+    enabled: location.pathname === '/' || location.pathname === '/dashboard',
+    staleMs: getMobileAwareCacheTtlMs(2 * 60 * 1000, 45_000),
+    lastFetchedAtRef: dashboardLastResumeRef,
+    onRefetch: () => {
+      setScoreboardRefreshToken((t) => t + 1);
+      setTeamAvailabilityRefreshToken((t) => t + 1);
+    },
+  });
 
   // State for "Show More" functionality
   const [showAllOverdueLeads, setShowAllOverdueLeads] = useState(false);
@@ -4591,7 +4608,7 @@ const Dashboard: React.FC = () => {
         setDepartmentPerformanceLoading(false);
         setInvoicedDataLoading(false);
         const age = Date.now() - (cached.fetchedAt ?? 0);
-        if (age < DASHBOARD_SCOREBOARD_CACHE_TTL_MS && !opts?.background) {
+        if (age < getDashboardScoreboardCacheTtlMs() && !opts?.background) {
           return;
         }
       }
@@ -4637,7 +4654,7 @@ const Dashboard: React.FC = () => {
         applyTeamAvailabilityCache(cached);
         setUnavailableEmployeesLoading(false);
         const age = Date.now() - (cached.fetchedAt ?? 0);
-        if (age < DASHBOARD_TEAM_AVAILABILITY_CACHE_TTL_MS && !opts?.background) {
+        if (age < getDashboardTeamAvailabilityCacheTtlMs() && !opts?.background) {
           return;
         }
       }

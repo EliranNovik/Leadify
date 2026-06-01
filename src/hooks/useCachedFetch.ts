@@ -1,6 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigationType } from 'react-router-dom';
 import { getCachedData, setCachedData } from '../utils/dataCache';
+import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
+import { useRefetchOnVisible } from './useRefetchOnVisible';
 
 /**
  * Custom hook to fetch data with automatic caching
@@ -35,12 +37,51 @@ export function useCachedFetch<T>(
   const [error, setError] = useState<Error | null>(null);
   const fetchFnRef = useRef(fetchFn);
   const pathnameRef = useRef(pathname);
-  
+  const lastFetchedAtRef = useRef(0);
+
+  const runFetch = (skipCacheRead: boolean) => {
+    if (!skipCacheRead) {
+      const cached = getCachedData<T>(pathnameRef.current, cacheKey);
+      if (cached) {
+        setData(cached);
+        setLoading(false);
+        setError(null);
+        return Promise.resolve(cached);
+      }
+    }
+    setLoading(true);
+    setError(null);
+    return fetchFnRef
+      .current()
+      .then((result) => {
+        setData(result);
+        setCachedData(pathnameRef.current, cacheKey, result);
+        setError(null);
+        lastFetchedAtRef.current = Date.now();
+        return result;
+      })
+      .catch((err) => {
+        setError(err);
+        setData(null);
+        throw err;
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  };
+
   // Update refs when they change
   useEffect(() => {
     fetchFnRef.current = fetchFn;
     pathnameRef.current = pathname;
   }, [fetchFn, pathname]);
+
+  useRefetchOnVisible({
+    enabled: options?.enabled !== false,
+    staleMs: getMobileAwareCacheTtlMs(10 * 60 * 1000, 60_000),
+    lastFetchedAtRef,
+    onRefetch: () => runFetch(true),
+  });
   
   useEffect(() => {
     const enabled = options?.enabled !== false;
@@ -49,38 +90,18 @@ export function useCachedFetch<T>(
       return;
     }
     
-    // Check cache FIRST before doing anything else
     const cached = getCachedData<T>(pathname, cacheKey);
-    
+
     if (cached && !options?.skipCache) {
-      console.log('[useCachedFetch] ✅ Using cached data (no fetch needed):', { pathname, cacheKey, navType });
       setData(cached);
       setLoading(false);
       setError(null);
+      lastFetchedAtRef.current = Date.now();
       return;
     }
-    
-    // Only fetch if we don't have cached data
-    console.log('[useCachedFetch] ❌ No cache found, fetching data:', { pathname, cacheKey, navType, hasCached: !!cached, skipCache: options?.skipCache });
-    setLoading(true);
-    setError(null);
-    
-    fetchFnRef.current()
-      .then((result) => {
-        console.log('[useCachedFetch] ✅ Fetch completed, caching result:', { pathname, cacheKey });
-        setData(result);
-        setCachedData(pathname, cacheKey, result);
-        setError(null);
-      })
-      .catch((err) => {
-        console.error('[useCachedFetch] ❌ Error:', err);
-        setError(err);
-        setData(null);
-      })
-      .finally(() => {
-        setLoading(false);
-      });
-  }, [pathname, cacheKey, options?.enabled, options?.skipCache]); // Removed navType from deps to avoid re-running
+
+    void runFetch(true);
+  }, [pathname, cacheKey, options?.enabled, options?.skipCache]);
   
   return { data, loading, error };
 }

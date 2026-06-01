@@ -21,6 +21,8 @@ import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
 import { convertToNIS } from '../lib/currencyConversion';
 import CallOptionsModal from './CallOptionsModal';
 import EditLeadDrawer from './EditLeadDrawer';
+import { useRefetchOnVisible } from '../hooks/useRefetchOnVisible';
+import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 
 interface LeadForPipeline {
   id: number | string;
@@ -1933,9 +1935,11 @@ const PipelinePage: React.FC = () => {
       setLeads([]);
     }
     setIsLoading(false);
+    pipelineLastFetchedAtRef.current = Date.now();
   };
 
   // Stable refs for realtime-triggered refreshes (avoid subscription churn).
+  const pipelineLastFetchedAtRef = useRef(0);
   const fetchLeadsRef = useRef(fetchLeads);
   useEffect(() => {
     fetchLeadsRef.current = fetchLeads;
@@ -3609,6 +3613,16 @@ const PipelinePage: React.FC = () => {
   useEffect(() => {
     fetchRealSummaryStatsRef.current = fetchRealSummaryStats;
   }, [fetchRealSummaryStats]);
+
+  useRefetchOnVisible({
+    enabled: pipelineIdentityReady && !!currentUserEmployeeId && !!currentUserFullName?.trim(),
+    staleMs: getMobileAwareCacheTtlMs(3 * 60 * 1000, 45_000),
+    lastFetchedAtRef: pipelineLastFetchedAtRef,
+    onRefetch: () => {
+      void fetchLeadsRef.current();
+      void fetchRealSummaryStatsRef.current();
+    },
+  });
 
   // Fetch real summary stats when user info is available
   useEffect(() => {

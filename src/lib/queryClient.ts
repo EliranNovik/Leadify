@@ -7,14 +7,12 @@ import { QueryClient } from '@tanstack/react-query';
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // Cache data for 5 minutes
-      staleTime: 5 * 60 * 1000,
-      // Keep unused data in cache for 10 minutes
+      // Cache data briefly; pages using useSupabaseQuery still benefit from shared defaults.
+      staleTime: 2 * 60 * 1000,
       gcTime: 10 * 60 * 1000,
-      // Refetch on window focus - set to false to prevent refetches when returning to tab
-      refetchOnWindowFocus: false,
-      // Don't refetch on reconnect
-      refetchOnReconnect: false,
+      // Refresh when user returns to the tab (important on mobile after backgrounding).
+      refetchOnWindowFocus: true,
+      refetchOnReconnect: true,
       // Retry failed requests once
       retry: 1,
     },

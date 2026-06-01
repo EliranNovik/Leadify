@@ -139,6 +139,8 @@ const CLIENT_DECLINED_STAGE_BTN_COMPACT = 'btn btn-error rounded-full px-5 gap-2
 interface ClientHeaderProps {
     selectedClient: any;
     refreshClientData: (clientId: number | string) => Promise<void>;
+    /** True while a background server refresh is in flight (e.g. cache-first load on mobile). */
+    isClientSyncing?: boolean;
     isSubLead?: boolean;
     masterLeadNumber?: string | null;
     isMasterLead?: boolean;
@@ -214,6 +216,7 @@ interface ClientHeaderProps {
 const ClientHeader: React.FC<ClientHeaderProps> = ({
     selectedClient,
     refreshClientData,
+    isClientSyncing = false,
     isSubLead,
     masterLeadNumber,
     isMasterLead,
@@ -2406,6 +2409,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         <p className="font-mono text-sm font-semibold tabular-nums text-slate-500">
                                             {renderLeadNumber()}
                                         </p>
+                                        {isClientSyncing && (
+                                            <span
+                                                className="inline-flex items-center gap-1 text-xs font-medium text-base-content/50"
+                                                title="Syncing latest data from server"
+                                            >
+                                                <span className="loading loading-spinner loading-xs" aria-hidden />
+                                                Syncing
+                                            </span>
+                                        )}
                                         {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
                                             <button
                                                 onClick={() => {
@@ -2791,6 +2803,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 <span className="text-sm font-medium tabular-nums text-gray-500 dark:text-gray-400">
                                     {renderLeadNumber()}
                                 </span>
+                                {isClientSyncing && (
+                                    <span
+                                        className="inline-flex items-center gap-1 text-xs font-medium text-base-content/50"
+                                        title="Syncing latest data from server"
+                                    >
+                                        <span className="loading loading-spinner loading-xs" aria-hidden />
+                                        Syncing
+                                    </span>
+                                )}
                                 <h1 className="min-w-0 text-[1.375rem] font-semibold leading-snug tracking-tight text-gray-900 dark:text-white">
                                     {selectedClient.name || 'Unnamed Lead'}
                                 </h1>

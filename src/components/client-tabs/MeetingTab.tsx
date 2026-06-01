@@ -104,12 +104,6 @@ const currencyOptions = [
   { value: 'EUR', symbol: '€' }
 ];
 
-const timeOptions = Array.from({ length: 32 }, (_, i) => {
-  const hour = Math.floor(i / 2) + 8; // Start from 8:00
-  const minute = i % 2 === 0 ? '00' : '30';
-  return `${hour.toString().padStart(2, '0')}:${minute}`;
-});
-
 interface Meeting {
   id: number;
   client_id: string;
@@ -549,8 +543,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   });
   const [isSchedulingMeeting, setIsSchedulingMeeting] = useState(false);
   const [meetingCountsByTime, setMeetingCountsByTime] = useState<Record<string, number>>({});
-  const [showTimeDropdown, setShowTimeDropdown] = useState(false);
-  const timeDropdownRef = useRef<HTMLDivElement>(null);
   const [showManagerDropdown, setShowManagerDropdown] = useState(false);
   const managerDropdownRef = useRef<HTMLDivElement>(null);
   const [managerSearchTerm, setManagerSearchTerm] = useState('');
@@ -1274,7 +1266,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Fetch meeting counts by time for the selected date (for both schedule drawer and edit form)
   useEffect(() => {
     const fetchMeetingCounts = async () => {
-      const dateToUse = scheduleMeetingFormData.date || editedMeeting.date;
+      const dateToUse =
+        scheduleMeetingFormData.date || rescheduleFormData.date || editedMeeting.date;
       if (!dateToUse) {
         setMeetingCountsByTime({});
         return;
@@ -1312,14 +1305,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     };
 
     fetchMeetingCounts();
-  }, [scheduleMeetingFormData.date, editedMeeting.date]);
+  }, [scheduleMeetingFormData.date, rescheduleFormData.date, editedMeeting.date]);
 
   // Handle click outside for dropdowns
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (timeDropdownRef.current && !timeDropdownRef.current.contains(event.target as Node)) {
-        setShowTimeDropdown(false);
-      }
       if (managerDropdownRef.current && !managerDropdownRef.current.contains(event.target as Node)) {
         setShowManagerDropdown(false);
       }
@@ -7944,47 +7934,20 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 </div>
 
                 {/* Time */}
-                <div className="relative" ref={timeDropdownRef}>
-                  <label className="block font-semibold mb-1">Time</label>
-                  <div
-                    className="input input-bordered w-full cursor-pointer flex items-center justify-between"
-                    onClick={() => setShowTimeDropdown(!showTimeDropdown)}
-                  >
-                    <span>{scheduleMeetingFormData.time}</span>
-                    <ChevronDownIcon className="w-4 h-4" />
-                  </div>
-                  {showTimeDropdown && (
-                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                      {Array.from({ length: 32 }, (_, i) => {
-                        const hour = Math.floor(i / 2) + 8; // Start from 8:00
-                        const minute = i % 2 === 0 ? '00' : '30';
-                        const timeOption = `${hour.toString().padStart(2, '0')}:${minute}`;
-                        const count = meetingCountsByTime[timeOption] || 0;
-                        // Determine badge color based on count
-                        const badgeClass = count === 0
-                          ? 'badge badge-ghost'
-                          : count <= 2
-                            ? 'badge badge-success'
-                            : count <= 5
-                              ? 'badge badge-warning'
-                              : 'badge badge-error';
-                        return (
-                          <div
-                            key={timeOption}
-                            className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center justify-between"
-                            onClick={() => {
-                              setScheduleMeetingFormData(prev => ({ ...prev, time: timeOption }));
-                              setShowTimeDropdown(false);
-                            }}
-                          >
-                            <span>{timeOption}</span>
-                            <span className={badgeClass}>{count}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                <TimePicker
+                  variant="inline"
+                  label="Time"
+                  value={scheduleMeetingFormData.time}
+                  onChange={(time) =>
+                    setScheduleMeetingFormData((prev) => ({ ...prev, time }))
+                  }
+                  meetingCounts={
+                    scheduleMeetingFormData.date ? meetingCountsByTime : {}
+                  }
+                  minHour={8}
+                  maxHour={23}
+                  disabled={!scheduleMeetingFormData.date}
+                />
 
                 {/* External Meeting fields (Internal Meeting with external participants) */}
                 {scheduleMeetingFormData.calendar === 'external' && (
@@ -8539,32 +8502,29 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         type="date"
                         className="input input-bordered w-full"
                         value={rescheduleFormData.date}
-                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, date: e.target.value }))}
+                        onChange={(e) => {
+                          setRescheduleFormData((prev: any) => ({ ...prev, date: e.target.value }));
+                          setMeetingCountsByTime({});
+                        }}
                         required
                       />
                     </div>
 
                     {/* Time */}
-                    <div>
-                      <label className="block font-semibold mb-1">New Time</label>
-                      <select
-                        className="select select-bordered w-full"
-                        value={rescheduleFormData.time}
-                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, time: e.target.value }))}
-                        required
-                      >
-                        {Array.from({ length: 32 }, (_, i) => {
-                          const hour = Math.floor(i / 2) + 8; // Start from 8:00
-                          const minute = i % 2 === 0 ? '00' : '30';
-                          const timeOption = `${hour.toString().padStart(2, '0')}:${minute}`;
-                          return (
-                            <option key={timeOption} value={timeOption}>
-                              {timeOption}
-                            </option>
-                          );
-                        })}
-                      </select>
-                    </div>
+                    <TimePicker
+                      variant="inline"
+                      label="New Time"
+                      value={rescheduleFormData.time}
+                      onChange={(time) =>
+                        setRescheduleFormData((prev: any) => ({ ...prev, time }))
+                      }
+                      meetingCounts={
+                        rescheduleFormData.date ? meetingCountsByTime : {}
+                      }
+                      minHour={8}
+                      maxHour={23}
+                      disabled={!rescheduleFormData.date}
+                    />
 
                     {/* External Meeting fields (Internal Meeting with external participants) */}
                     {rescheduleFormData.calendar === 'external' && (

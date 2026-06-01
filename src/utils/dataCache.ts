@@ -12,7 +12,11 @@ interface CacheEntry<T = any> {
 // Global cache: pathname -> cacheKey -> CacheEntry
 const dataCache = new Map<string, Map<string, CacheEntry>>();
 
-const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
+
+function getCacheDurationMs(): number {
+  return getMobileAwareCacheTtlMs(30 * 60 * 1000, 5 * 60 * 1000);
+}
 const STORAGE_KEY = 'data_cache';
 
 // Load cache from sessionStorage on initialization
@@ -26,7 +30,7 @@ function loadCacheFromStorage() {
         cacheEntries.forEach(([cacheKey, entry]) => {
           // Check if cache is still valid
           const age = Date.now() - entry.timestamp;
-          if (age <= CACHE_DURATION) {
+          if (age <= getCacheDurationMs()) {
             routeCache.set(cacheKey, entry);
           }
         });
@@ -78,7 +82,7 @@ export function getCachedData<T>(pathname: string, cacheKey: string): T | null {
   
   // Check if cache is stale
   const age = Date.now() - entry.timestamp;
-  if (age > CACHE_DURATION) {
+  if (age > getCacheDurationMs()) {
     console.log('[dataCache] Cache expired:', { pathname, cacheKey, age });
     routeCache.delete(cacheKey);
     return null;
@@ -137,7 +141,7 @@ export function clearStaleCache(): void {
   for (const [pathname, routeCache] of dataCache.entries()) {
     for (const [cacheKey, entry] of routeCache.entries()) {
       const age = now - entry.timestamp;
-      if (age > CACHE_DURATION) {
+      if (age > getCacheDurationMs()) {
         routeCache.delete(cacheKey);
       }
     }

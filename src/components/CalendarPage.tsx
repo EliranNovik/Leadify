@@ -314,9 +314,17 @@ const calendarMeetingsByRangeCache: Map<
 > = new Map();
 const calendarLastMeetingsFetchedAtMsByRange: Map<string, number> = new Map();
 
-/** Cache TTL for the in-memory meetings range cache. Realtime patches keep the
- *  cached data in sync between fetches, so this can be relatively long. */
-const CALENDAR_MEETINGS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+/** In-memory meetings cache TTL — shorter on mobile so resume shows fresher data. */
+function getCalendarMeetingsCacheTtlMs(): number {
+  if (typeof window === 'undefined') return 10 * 60 * 1000;
+  return window.matchMedia('(max-width: 767px)').matches ? 2 * 60 * 1000 : 10 * 60 * 1000;
+}
+
+/** Refetch on tab resume when data is older than this threshold. */
+function getCalendarResumeStaleMs(): number {
+  if (typeof window === 'undefined') return 2 * 60 * 1000;
+  return window.matchMedia('(max-width: 767px)').matches ? 45_000 : 2 * 60 * 1000;
+}
 
 // Department mapping is now loaded dynamically from database
 
@@ -511,6 +519,21 @@ const CalendarPage: React.FC = () => {
       }
     };
 
+    const refreshRealtimeAuth = async () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) {
+          await supabase.realtime.setAuth(session.access_token);
+        }
+      } catch {
+        /* non-fatal */
+      }
+    };
+
+    void refreshRealtimeAuth();
+    document.addEventListener('visibilitychange', refreshRealtimeAuth);
+
     const channel = supabase
       .channel('calendar-page:realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'meetings' }, (payload: any) => {
@@ -556,6 +579,7 @@ const CalendarPage: React.FC = () => {
       .subscribe();
 
     return () => {
+      document.removeEventListener('visibilitychange', refreshRealtimeAuth);
       if (realtimeRefreshTimerRef.current && typeof window !== 'undefined') {
         window.clearTimeout(realtimeRefreshTimerRef.current);
       }
@@ -2553,7 +2577,7 @@ const CalendarPage: React.FC = () => {
 
     const nowMs = Date.now();
     const lastMs = lastMeetingsFetchedAtMsRef.current.get(rangeKey);
-    const isStale = typeof lastMs === 'number' ? nowMs - lastMs > CALENDAR_MEETINGS_CACHE_TTL_MS : true;
+    const isStale = typeof lastMs === 'number' ? nowMs - lastMs > getCalendarMeetingsCacheTtlMs() : true;
     const rangeCache = meetingsByDateRangeRef.current.get(rangeKey);
     const meetingsMatchAppliedRange = meetingsOverlapRange(meetings, dateRangeFrom, dateRangeTo);
 
@@ -3026,37 +3050,33 @@ const CalendarPage: React.FC = () => {
     // });
   }, [location.pathname, appliedFromDate, appliedToDate, datesManuallySet, meetingsRefreshTrigger]); // Run when pathname/date range changes or when explicitly refreshed (e.g. after Teams modal close)
 
-  // If fetch was skipped while the tab was hidden, run again once the user returns.
+  // Resume / focus: refetch when hidden fetch was skipped or data is stale (mobile-friendly thresholds).
   useEffect(() => {
-    const onVisibilityChange = () => {
-      if (typeof document === 'undefined' || document.visibilityState !== 'visible') return;
-      if (skippedCalendarFetchWhileHiddenRef.current) {
-        skippedCalendarFetchWhileHiddenRef.current = false;
-        setMeetingsRefreshTrigger((t) => t + 1);
-      }
-    };
-    document.addEventListener('visibilitychange', onVisibilityChange);
-    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
-  }, []);
+    if (typeof document === 'undefined') return;
 
-  // Refetch on window focus (common case: user changes something elsewhere, comes back expecting fresh data).
-  // Realtime subscriptions already keep meetings + leads patched in place, so we only refetch on
-  // focus if the data is genuinely stale. The previous 1.5s threshold caused near-constant refetches
-  // every time the user switched tabs.
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const FOCUS_REFETCH_STALE_MS = 5 * 60 * 1000; // 5 minutes
-    const onFocus = () => {
+    const bumpRefreshIfNeeded = () => {
+      if (document.visibilityState !== 'visible') return;
+
       const today = formatLocalDateYmd(new Date());
       const dateRangeFrom = appliedFromDate || today;
       const dateRangeTo = appliedToDate || today;
       const rangeKey = getCalendarRangeKey(dateRangeFrom, dateRangeTo);
       const lastMs = lastMeetingsFetchedAtMsRef.current.get(rangeKey);
-      const isStale = typeof lastMs === 'number' ? Date.now() - lastMs > FOCUS_REFETCH_STALE_MS : true;
-      if (isStale) setMeetingsRefreshTrigger((t) => t + 1);
+      const resumeStaleMs = getCalendarResumeStaleMs();
+      const isStale = typeof lastMs !== 'number' || Date.now() - lastMs > resumeStaleMs;
+
+      if (skippedCalendarFetchWhileHiddenRef.current || isStale) {
+        skippedCalendarFetchWhileHiddenRef.current = false;
+        setMeetingsRefreshTrigger((t) => t + 1);
+      }
     };
-    window.addEventListener('focus', onFocus);
-    return () => window.removeEventListener('focus', onFocus);
+
+    document.addEventListener('visibilitychange', bumpRefreshIfNeeded);
+    window.addEventListener('focus', bumpRefreshIfNeeded);
+    return () => {
+      document.removeEventListener('visibilitychange', bumpRefreshIfNeeded);
+      window.removeEventListener('focus', bumpRefreshIfNeeded);
+    };
   }, [appliedFromDate, appliedToDate]);
 
   // Refetch when the user signs in to Supabase so meetings are not stuck empty after auth catches up.

@@ -1,11 +1,22 @@
-/** Marketing performance dashboard — see “About this report” in the UI for methodology. */
+/** Marketing performance dashboard — see “About this report” next to the title. */
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import {
   ENGRAVED_FILTER_CONTROL_CLASSES,
-  ENGRAVED_FILTER_PRIMARY_BUTTON_CLASSES,
 } from '../components/EngravedFilterPanel';
 import { ChannelLabel } from '../components/ChannelLabel';
+import MarketingDashboardLeadBreakdownModal from '../components/MarketingDashboardLeadBreakdownModal';
+import {
+  buildDealsBreakdownTitle,
+  filterLeadsForMarketingBreakdown,
+  formatMarketingCategoryDisplay,
+  resolveMarketingMainCategoryId,
+  type MarketingLeadBreakdownRow,
+  type MiscCategoryJoin,
+  isMarketingStage91,
+  leadCountsAsMarketingMeeting,
+  STAGE_DROPPED_SPAM,
+} from '../lib/marketingDashboardBreakdown';
 import { fetchStageNames, getStageName } from '../lib/stageUtils';
 import { convertToNIS, getCurrencySymbol } from '../lib/currencyConversion';
 import {
@@ -44,11 +55,16 @@ type ChannelRow = { id: string; code: string; label: string; is_active: boolean 
 type SourceRow = { id: string; name: string; channel_id: string | null };
 type FirmRow = { id: string; name: string };
 type CountryRow = { id: number; name: string; phone_code?: string | null };
+type MainCategoryRow = { id: string; name: string };
 
 type LeadRow = {
   id: string;
   created_at: string;
   lead_number: string | null;
+  name: string | null;
+  category: string | null;
+  /** misc_maincategory.id from category join (for main-category filter). */
+  main_category_id: string | null;
   /** Display name of scheduler (match tenants_employee.display_name); primary for CTI match */
   scheduler: string | null;
   /** Fallback when scheduler text does not resolve */
@@ -108,6 +124,8 @@ const STRING_STAGE_RANK: Record<string, number> = {
   client_declined: 0,
   lead_summary: 55,
   unactivated: 0,
+  unactivate_spam: 91,
+  dropped_spam: 91,
   payment_request_sent: 70,
   finances_and_payments_plan: 75,
 };
@@ -127,8 +145,7 @@ function stageRank(lead: LeadRow): number {
 function isInactiveLead(lead: LeadRow): boolean {
   if (lead.unactivated_at) return true;
   if (lead.status === 'inactive' || lead.status === '10' || lead.status === 10) return true;
-  const r = stageRank(lead);
-  if (r === 91) return true;
+  if (isMarketingStage91(lead)) return true;
   return false;
 }
 
@@ -147,8 +164,12 @@ function isEligibleLead(lead: LeadRow): boolean {
   return false;
 }
 
+/** Offer-stage lead; never counts stage 91 (91 ≥ offer threshold numerically). */
 function hasOfferOrBeyond(lead: LeadRow): boolean {
-  return stageRank(lead) >= HIST_STAGE.offer;
+  if (isMarketingStage91(lead)) return false;
+  const r = stageRank(lead);
+  if (r === STAGE_DROPPED_SPAM) return false;
+  return r >= HIST_STAGE.offer;
 }
 
 function isCanceledMeetingStatus(status: string | null | undefined): boolean {
@@ -170,13 +191,19 @@ async function fetchLeadIdsWithMeetingsFromTable(
   const leadIds = new Set<string>();
   const chunkSize = 100;
 
+  const leadIdFromMeetingRow = (m: MeetingLinkRow): string | null => {
+    if (m.client_id) return String(m.client_id);
+    if (m.legacy_lead_id != null && Number.isFinite(Number(m.legacy_lead_id))) {
+      return `legacy-${m.legacy_lead_id}`;
+    }
+    return null;
+  };
+
   const appendBatch = (rows: MeetingLinkRow[]) => {
     for (const m of rows) {
       if (isCanceledMeetingStatus(m.status)) continue;
-      if (m.client_id) leadIds.add(String(m.client_id));
-      if (m.legacy_lead_id != null && Number.isFinite(Number(m.legacy_lead_id))) {
-        leadIds.add(`legacy-${m.legacy_lead_id}`);
-      }
+      const id = leadIdFromMeetingRow(m);
+      if (id) leadIds.add(id);
     }
   };
 
@@ -203,11 +230,8 @@ async function fetchLeadIdsWithMeetingsFromTable(
   return { leadIds, error: null };
 }
 
-function leadHasMeetingRecord(lead: LeadRow, leadIdsWithMeeting: Set<string>): boolean {
-  return leadIdsWithMeeting.has(lead.id);
-}
-
 function hasSignedDeal(lead: LeadRow): boolean {
+  if (isMarketingStage91(lead)) return false;
   const r = stageRank(lead);
   if (r >= 60) return true;
   const name = getStageName(String(lead.stage ?? '')).toLowerCase();
@@ -503,6 +527,13 @@ function leadMatchesSourceFilter(
   return false;
 }
 
+function leadMatchesMainCategoryFilter(lead: LeadRow, mainCategoryIds: string[]): boolean {
+  if (mainCategoryIds.length === 0) return true;
+  const id = lead.main_category_id;
+  if (!id) return false;
+  return mainCategoryIds.includes(String(id));
+}
+
 function leadMatchesCountryFilter(lead: LeadRow, countryIds: string[], countries: CountryRow[]): boolean {
   if (countryIds.length === 0) return true;
   const ok = new Set(countryIds.map((c) => parseInt(c, 10)).filter((n) => Number.isFinite(n)));
@@ -609,6 +640,21 @@ function legacyBalanceAndCurrency(raw: Record<string, unknown>): {
   return { balance, proposal_total, balance_currency, currency_id: currencyId };
 }
 
+type LeadRowWithCategoryJoin = LeadRow & {
+  misc_category?: MiscCategoryJoin | MiscCategoryJoin[] | null;
+};
+
+function enrichLeadCategoryName(row: LeadRowWithCategoryJoin): LeadRow {
+  const category = formatMarketingCategoryDisplay(row.misc_category, row.category);
+  const main_category_id = resolveMarketingMainCategoryId(row.misc_category);
+  const { misc_category: _omit, ...rest } = row;
+  return {
+    ...rest,
+    category: category === '—' ? null : category,
+    main_category_id,
+  };
+}
+
 function mapLegacyLeadToRow(raw: Record<string, unknown>): LeadRow {
   const srcJoin = raw.misc_leadsource as
     | { id: number; name: string; channel_id?: string | null }
@@ -625,10 +671,19 @@ function mapLegacyLeadToRow(raw: Record<string, unknown>): LeadRow {
   const eligibleRaw = raw.eligibile ?? raw.eligible;
   const { balance, proposal_total, balance_currency, currency_id } = legacyBalanceAndCurrency(raw);
 
+  const catJoin = raw.misc_category as MiscCategoryJoin | MiscCategoryJoin[] | null | undefined;
+  const categoryRaw = raw.category != null ? String(raw.category) : null;
+  const categoryFormatted = formatMarketingCategoryDisplay(catJoin, categoryRaw);
+  const category = categoryFormatted === '—' ? null : categoryFormatted;
+  const main_category_id = resolveMarketingMainCategoryId(catJoin);
+
   return {
     id: `legacy-${raw.id}`,
     created_at: createdAt,
     lead_number: raw.lead_number != null ? String(raw.lead_number) : String(raw.id),
+    name: raw.name != null ? String(raw.name) : null,
+    category,
+    main_category_id,
     scheduler: sched?.display_name?.trim() || null,
     meeting_scheduler_id:
       raw.meeting_scheduler_id != null && !Number.isNaN(Number(raw.meeting_scheduler_id))
@@ -721,6 +776,7 @@ async function fetchLegacyLeadRows(
   const legacySelect = `
     *,
     misc_leadsource!leads_lead_source_id_fkey(id, name, channel_id),
+    misc_category!leads_lead_category_id_fkey ( name, parent_id, misc_maincategory!parent_id ( id, name ) ),
     scheduler_employee:tenants_employee!fk_leads_lead_meeting_scheduler_id(id, display_name),
     accounting_currencies!leads_lead_currency_id_fkey(id, name, iso_code)
   `;
@@ -834,6 +890,8 @@ async function fetchPaginatedNewLeads(
     id,
     created_at,
     lead_number,
+    name,
+    category,
     scheduler,
     meeting_scheduler_id,
     stage,
@@ -853,7 +911,8 @@ async function fetchPaginatedNewLeads(
     phone,
     mobile,
     misc_country!country_id ( id, name ),
-    misc_leadsource!fk_leads_source_id ( id, name, channel_id )
+    misc_leadsource!fk_leads_source_id ( id, name, channel_id ),
+    misc_category!category_id ( name, parent_id, misc_maincategory!parent_id ( id, name ) )
   `);
 
   if (fromDate) q = q.gte('created_at', buildJerusalemStartOfDayIso(fromDate));
@@ -877,7 +936,7 @@ async function fetchPaginatedNewLeads(
   for (;;) {
     const { data, error } = await q.order('created_at', { ascending: false }).range(offset, offset + pageSize - 1);
     if (error) throw error;
-    const batch = (data || []) as unknown as LeadRow[];
+    const batch = ((data || []) as unknown as LeadRow[]).map(enrichLeadCategoryName);
     combined.push(...batch);
     if (batch.length < pageSize) break;
     offset += pageSize;
@@ -958,6 +1017,7 @@ function applyMarketingLeadFilters(
     sourceIdsForSql: string[] | null;
     countryIds: string[];
     firmIds: string[];
+    mainCategoryIds: string[];
     allSources: SourceRow[];
     countries: CountryRow[];
     firmIdToSourceIds: Map<string, string[]>;
@@ -967,6 +1027,7 @@ function applyMarketingLeadFilters(
   const lookup = buildSourceLookupMaps(opts.allSources);
   return rows.filter((lead) => {
     if (!timestampInCalendarRange(lead.created_at, opts.fromDate, opts.toDate)) return false;
+    if (!leadMatchesMainCategoryFilter(lead, opts.mainCategoryIds)) return false;
     if (opts.channelIds.length > 0) {
       const cid = leadChannelId(lead, lookup.sourceNameToRow, lookup.sourceIdToRow);
       if (!cid || !opts.channelIds.includes(cid)) return false;
@@ -1072,6 +1133,10 @@ type AggRow = {
   meetings: number;
   offers: number;
   deals: number;
+  /** Denominator for Lead→Offer % and Lead→Deal % (excludes stage 91). */
+  leadsExclStage91: number;
+  /** Internal: stage-91 count (stripped before display). */
+  stage91?: number;
   revenueNis: number;
   inactive: number;
   notEligible: number;
@@ -1081,6 +1146,8 @@ type AggRow = {
   _providerNames?: Set<string>;
   _sourceIds?: Set<string>;
   _firmIds?: Set<string>;
+  /** One meeting count per lead id within this aggregate row. */
+  _countedMeetingLeadIds?: Set<string>;
 };
 
 /** Sortable macro table columns (excludes Channel, Source, Provider). */
@@ -1096,6 +1163,13 @@ type MacroSortKey =
   | 'pctDeal'
   | 'revenue'
   | 'inactive';
+
+function macroPct(numerator: number, denominator: number): string {
+  const n = Number(numerator);
+  const d = Number(denominator);
+  if (!Number.isFinite(d) || d <= 0) return '—';
+  return ((n / d) * 100).toFixed(1);
+}
 
 function macroSortValue(r: AggRow, key: MacroSortKey): number {
   switch (key) {
@@ -1118,9 +1192,9 @@ function macroSortValue(r: AggRow, key: MacroSortKey): number {
     case 'pctMtg':
       return r.leads > 0 ? r.meetings / r.leads : -1;
     case 'pctOffer':
-      return r.leads > 0 ? r.offers / r.leads : -1;
+      return r.leadsExclStage91 > 0 ? r.offers / r.leadsExclStage91 : -1;
     case 'pctDeal':
-      return r.leads > 0 ? r.deals / r.leads : -1;
+      return r.leadsExclStage91 > 0 ? r.deals / r.leadsExclStage91 : -1;
     default:
       return 0;
   }
@@ -1175,10 +1249,34 @@ type MultiFilterOption = { id: string; label: string };
 
 /** Shared label style above engraved fields — spacing + hierarchy without crowding the control. */
 const FILTER_FIELD_LABEL_CLASS =
-  'mb-2 block text-[11px] font-semibold uppercase tracking-[0.14em] text-base-content/55';
+  'mb-1 block text-[11px] font-semibold uppercase tracking-[0.14em] text-base-content/55';
+
+/** Fixed filter column width — keeps the grid left-aligned without stretching across the page. */
+const FILTER_COL_CLASS = 'w-[10.25rem] min-w-0 max-w-full shrink-0';
 
 /** Grey titles: card/section headings (h3) and table column headers (with global `.table th` override). */
 const REPORT_SECTION_TITLE_CLASS = 'text-base-content/55';
+
+const MARKETING_REPORT_INTRO = (
+  <>
+    Compare lead volume and funnel conversion by <strong>source</strong> or <strong>channel</strong> for leads
+    created in the date range you choose (calendar dates in Asia/Jerusalem, same as Lead Search). The cohort
+    includes new leads and legacy leads (including subleads). Use the filters, then click{' '}
+    <strong>go</strong> to load results.
+  </>
+);
+
+const MARKETING_REPORT_INTRO_DETAILS = (
+  <>
+    The macro table shows leads, eligible, meetings, offers, signed deals, revenue (NIS), inactive leads, and
+    media/management cost columns. <strong>Meetings</strong> are active leads with at least one non-canceled
+    meeting in the meetings table (one per lead); stage 21 (meeting rescheduling) is not counted.{' '}
+    <strong>Offers</strong>, <strong>deals</strong>, and Lead→Offer / Lead→Deal % exclude stage 91 (dropped
+    spam). Click a deals number to open the signed-deal list. Provider (firm) comes from source–firm links in
+    Admin. Funnel timing uses stage history; sales behaviour uses scheduler-matched call logs for qualified
+    leads before offer stage.
+  </>
+);
 const REPORT_TABLE_CLASS =
   'table text-sm md:text-base [&_thead_th]:!text-base-content/55';
 
@@ -1400,8 +1498,10 @@ async function fetchAllSourceFirmLinks(): Promise<
   return combined;
 }
 
+const GROUP_BY_TOGGLE_CLASS =
+  'min-w-[7rem] cursor-pointer rounded-[0.65rem] px-4 py-2 text-sm font-bold tracking-tight transition-colors duration-200 ease-out outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0';
+
 export type MarketingDashboardReportProps = {
-  /** When set with `onDocsOpenChange`, modal open state is controlled by the parent (e.g. Reports shell title bar). */
   docsOpen?: boolean;
   onDocsOpenChange?: (open: boolean) => void;
 };
@@ -1417,6 +1517,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   const [sourceIds, setSourceIds] = useState<string[]>([]);
   const [countryIds, setCountryIds] = useState<string[]>([]);
   const [firmIds, setFirmIds] = useState<string[]>([]);
+  const [mainCategoryIds, setMainCategoryIds] = useState<string[]>([]);
   const [groupMode, setGroupMode] = useState<GroupMode>('source');
   const [macroSort, setMacroSort] = useState<{ key: MacroSortKey; dir: 'asc' | 'desc' }>({
     key: 'leads',
@@ -1440,6 +1541,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     { firm_id: string; source_id: string; firm_name: string }[]
   >([]);
   const [countries, setCountries] = useState<CountryRow[]>([]);
+  const [mainCategories, setMainCategories] = useState<MainCategoryRow[]>([]);
   const [leads, setLeads] = useState<LeadRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
@@ -1461,6 +1563,11 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   /** Sum of firm_management_costs.amount per firm_id for months in the report date range. */
   const [managementExpenseByFirmId, setManagementExpenseByFirmId] = useState<Record<string, number>>({});
   const [fetchTruncated, setFetchTruncated] = useState(false);
+  const [leadBreakdownModal, setLeadBreakdownModal] = useState<{
+    open: boolean;
+    title: string;
+    rows: MarketingLeadBreakdownRow[];
+  }>({ open: false, title: '', rows: [] });
 
   // Targeted debug for a known failing source↔channel link.
   const didDebugSource39Ref = useRef(false);
@@ -1502,13 +1609,14 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   }, [sourceFirmLinks]);
 
   const loadReferenceData = useCallback(async () => {
-    const [ch, src, fr, co] = await Promise.all([
+    const [ch, src, fr, co, mc] = await Promise.all([
       // Load ALL channels so sources linked to inactive channels still resolve (avoid "Unassigned channel").
       // We’ll filter inactive channels out of the filter dropdown UI separately.
       supabase.from('channels').select('id, code, label, is_active').order('sort_order'),
       supabase.from('misc_leadsource').select('id, name, channel_id, active').order('name'),
       supabase.from('firms').select('id, name').eq('is_active', true).order('name'),
       supabase.from('misc_country').select('id, name, phone_code').order('name'),
+      supabase.from('misc_maincategory').select('id, name').order('name'),
     ]);
     let sfRows: Awaited<ReturnType<typeof fetchAllSourceFirmLinks>> = [];
     try {
@@ -1536,6 +1644,14 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     }
     if (!fr.error && fr.data) setFirms(fr.data as FirmRow[]);
     if (!co.error && co.data) setCountries(co.data as CountryRow[]);
+    if (!mc.error && mc.data) {
+      setMainCategories(
+        (mc.data as { id: number | string; name: string }[]).map((r) => ({
+          id: String(r.id),
+          name: r.name,
+        })),
+      );
+    }
     if (sfRows.length > 0) {
       const rows = sfRows.map((r) => ({
         firm_id: r.firm_id,
@@ -1623,6 +1739,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         sourceIdsForSql,
         countryIds,
         firmIds,
+        mainCategoryIds,
         allSources,
         countries,
         firmIdToSourceIds,
@@ -1847,7 +1964,19 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     } finally {
       setLoading(false);
     }
-  }, [fromDate, toDate, channelIds, sourceIds, countryIds, firmIds, firmIdToSourceIds, sourceIdToFirmIds, allSources, countries]);
+  }, [
+    fromDate,
+    toDate,
+    channelIds,
+    sourceIds,
+    countryIds,
+    firmIds,
+    mainCategoryIds,
+    firmIdToSourceIds,
+    sourceIdToFirmIds,
+    allSources,
+    countries,
+  ]);
 
   useEffect(() => {
     runReportRef.current = runReport;
@@ -1942,6 +2071,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           meetings: 0,
           offers: 0,
           deals: 0,
+          leadsExclStage91: 0,
+          stage91: 0,
           revenueNis: 0,
           inactive: 0,
           notEligible: 0,
@@ -1950,6 +2081,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           _providerNames: new Set<string>(),
           _sourceIds: new Set<string>(),
           _firmIds: new Set<string>(),
+          _countedMeetingLeadIds: new Set<string>(),
         });
       }
       const row = map.get(key)!;
@@ -1970,10 +2102,17 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         if (pname && row._providerNames) row._providerNames.add(pname);
       }
       row.leads += 1;
+      if (isMarketingStage91(l)) row.stage91 = (row.stage91 ?? 0) + 1;
       if (isInactiveLead(l)) row.inactive += 1;
       if (isEligibleLead(l)) row.eligible += 1;
       else row.notEligible += 1;
-      if (leadHasMeetingRecord(l, leadIdsWithMeeting) && !isInactiveLead(l)) row.meetings += 1;
+      if (
+        leadCountsAsMarketingMeeting(l, leadIdsWithMeeting) &&
+        !row._countedMeetingLeadIds!.has(l.id)
+      ) {
+        row._countedMeetingLeadIds!.add(l.id);
+        row.meetings += 1;
+      }
       if (hasOfferOrBeyond(l)) row.offers += 1;
       if (hasSignedDeal(l)) {
         row.deals += 1;
@@ -2006,6 +2145,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           meetings: 0,
           offers: 0,
           deals: 0,
+          leadsExclStage91: 0,
+          stage91: 0,
           revenueNis: 0,
           inactive: 0,
           notEligible: 0,
@@ -2014,6 +2155,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           _providerNames: new Set(providerName !== '—' ? [providerName] : []),
           _sourceIds: new Set([sid]),
           _firmIds: new Set(sourceIdToFirmIds.get(sid) || []),
+          _countedMeetingLeadIds: new Set<string>(),
         });
       }
     }
@@ -2031,8 +2173,17 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         (sum, firmId) => sum + (managementExpenseByFirmId[firmId] || 0),
         0,
       );
-      const { _providerNames, _sourceIds, _firmIds, ...rest } = r;
-      return { ...rest, provider, mediaNis, managementNis };
+      const stage91 = r.stage91 ?? 0;
+      const leadsExclStage91 = Math.max(0, r.leads - stage91);
+      const {
+        _providerNames,
+        _sourceIds,
+        _firmIds,
+        _countedMeetingLeadIds: _mtgIds,
+        stage91: _s91,
+        ...rest
+      } = r;
+      return { ...rest, provider, mediaNis, managementNis, leadsExclStage91 };
     });
   }, [leads, leadIdsWithMeeting, groupMode, channels, firmIds, firmIdToSourceIds, sourceIdToFirmName, sourceIdToFirmIds, mediaExpenseBySourceId, managementExpenseByFirmId, allSources]);
 
@@ -2054,6 +2205,29 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'desc' },
     );
   }, []);
+
+  const openDealsBreakdown = useCallback(
+    (agg: AggRow) => {
+      if (agg.deals <= 0) return;
+      const rows = filterLeadsForMarketingBreakdown({
+        leads,
+        agg: { key: agg.key, channel: agg.channel, source: agg.source },
+        groupMode,
+        channels,
+        allSources,
+        metric: 'deals',
+      });
+      setLeadBreakdownModal({
+        open: true,
+        title: buildDealsBreakdownTitle(
+          { key: agg.key, channel: agg.channel, source: agg.source },
+          groupMode,
+        ),
+        rows,
+      });
+    },
+    [leads, groupMode, channels, allSources],
+  );
 
   const totals = useMemo(() => {
     const t = {
@@ -2252,7 +2426,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   };
 
   return (
-    <div className="space-y-6 pb-16 relative">
+    <div className="space-y-4 pb-12 relative">
       {loading && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center pointer-events-none">
           <div className="flex flex-col items-center gap-3">
@@ -2286,85 +2460,15 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                 ✕
               </button>
             </div>
-
-            <div className="space-y-5 text-sm leading-relaxed text-base-content/90">
-            <section>
-              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Scope & data</h4>
-              <p>
-                Lead cohorts combine <strong>new leads</strong> (<code className="rounded bg-base-200 px-1 text-[11px]">leads</code>, date on{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">created_at</code>) and <strong>legacy leads</strong> (
-                <code className="rounded bg-base-200 px-1 text-[11px]">leads_lead</code>, including subleads /2, /3, date on{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">cdate</code>). Creation dates use the <strong>Asia/Jerusalem</strong> calendar (same as Lead Search). Source, country, channel, and firm filters match Lead Search. Funnel timing uses{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">history_leads</code> /{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">history_leads_lead</code>.
+            <div className="space-y-4 text-sm leading-relaxed text-base-content/80">
+              <p>{MARKETING_REPORT_INTRO}</p>
+              <p>{MARKETING_REPORT_INTRO_DETAILS}</p>
+              <p className="text-base-content/60">
+                Media and management costs use Admin marketing expenses and firm management costs for calendar
+                months overlapping your date range. Large cohorts may stop at 30,000 leads—narrow dates or filters if
+                you see a truncation warning.
               </p>
-            </section>
-
-            <section>
-              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Not in this version</h4>
-              <ul className="list-inside list-disc space-y-1 text-base-content/80">
-                <li>Department filter (no department on the lead row)</li>
-                <li>HR cost from contribution report</li>
-                <li>Follow-up counts beyond calls</li>
-                <li>Multi-factor probability breakdown</li>
-                <li>Exact “boss eligibility” vs inactive reason (needs consistent reason codes)</li>
-              </ul>
-              <p className="mt-2 text-xs text-base-content/60">
-                <strong>Provider (firm)</strong> uses <code className="rounded bg-base-200 px-1 text-[11px]">sources_firms</code> — configure under Admin → Firms → Lead sources.
-              </p>
-            </section>
-
-            <section>
-              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Meetings column</h4>
-              <p>
-                <strong>Meetings</strong> counts active leads in the cohort with at least one row in{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">public.meetings</code> linked by{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">client_id</code> (new) or{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">legacy_lead_id</code> (legacy). Canceled meetings are excluded. One lead = one meeting in the count (not multiple meeting rows).
-              </p>
-            </section>
-
-            <section>
-              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Macro table · CPL columns</h4>
-              <p>
-                <strong>CPL</strong> and <strong>cost / eligible</strong> use media spend from Admin → Marketing expenses and management costs from External Firms (both filtered to calendar months overlapping the report date range). Optional HR columns remain placeholders.
-              </p>
-            </section>
-
-            <section>
-              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Funnel timing (avg. days)</h4>
-              <p>
-                Derived from <code className="rounded bg-base-200 px-1 text-[11px]">history_leads</code> /{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">history_leads_lead</code>: stage ≥15 = communication, ≥20 meeting, ≥50 offer, ≥60 signed, ≥70 payment. Communication time also uses{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">communication_started_at</code> when set. A segment only counts when both endpoints exist.
-              </p>
-              <p className="mt-2 text-xs text-base-content/60">
-                If timing fails to load, check RLS and table access for <code className="rounded bg-base-200 px-1 text-[11px]">history_leads</code> (errors appear on the main screen).
-              </p>
-            </section>
-
-            <section>
-              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Sales behaviour / quality</h4>
-              <p>
-                <strong>Cohort:</strong> active leads with stage before price offer (rank &lt; 45). Calls are loaded by{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">call_logs.client_id</code> (new leads) or{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">call_logs.lead_id</code> (legacy / subleads). Matched calls are attributed to the lead’s scheduler (
-                <code className="rounded bg-base-200 px-1 text-[11px]">leads.scheduler</code> /{' '}
-                <code className="rounded bg-base-200 px-1 text-[11px]">meeting_scheduler_id</code>), regardless of which employee handled the call. Durations are seconds (CTI).
-              </p>
-              <p className="mt-2 text-xs text-base-content/60">
-                If no calls match, verify scheduler on leads and that 1com sync populated <code className="rounded bg-base-200 px-1 text-[11px]">client_id</code> (new) or <code className="rounded bg-base-200 px-1 text-[11px]">lead_id</code> (legacy).
-              </p>
-            </section>
-
-            <section>
-              <h4 className="mb-2 text-xs font-bold uppercase tracking-wide text-base-content/55">Cost & profitability</h4>
-              <p>
-                The cost table is a <strong>placeholder</strong>. When media, management, and optional HR costs exist per source, you can compute <code className="rounded bg-base-200 px-1 text-[11px]">Revenue − Total cost</code> and ROI with and without HR (dual columns as in your spec).
-              </p>
-            </section>
-          </div>
-
+            </div>
             <div className="modal-action mt-6 border-t border-base-200 pt-4">
               <button type="button" className="btn btn-primary" onClick={() => setDocsOpen(false)}>
                 Close
@@ -2375,81 +2479,18 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         </div>
       )}
 
-      <div className="space-y-5">
-        <div className="grid grid-cols-1 gap-x-4 gap-y-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7">
-          <label className="form-control min-w-0 xl:col-span-1">
-            <span className={FILTER_FIELD_LABEL_CLASS}>From</span>
-            <input
-              type="date"
-              className={`input input-md min-h-12 w-full text-base ${ENGRAVED_FILTER_CONTROL_CLASSES}`}
-              value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-            />
-          </label>
-          <label className="form-control min-w-0 xl:col-span-1">
-            <span className={FILTER_FIELD_LABEL_CLASS}>To</span>
-            <input
-              type="date"
-              className={`input input-md min-h-12 w-full text-base ${ENGRAVED_FILTER_CONTROL_CLASSES}`}
-              value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-            />
-          </label>
-          <div className="min-w-0 xl:col-span-1">
-            <MarketingSearchMultiFilter
-              label="Channel"
-              placeholder="Search channels…"
-              options={channels.filter((c) => c.is_active).map((c) => ({ id: c.id, label: c.label }))}
-              selected={channelIds}
-              onChange={setChannelIds}
-              inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
-            />
-          </div>
-          <div className="min-w-0 xl:col-span-1">
-            <MarketingSearchMultiFilter
-              label="Source"
-              placeholder="Search sources…"
-              options={sources.map((s) => ({ id: String(s.id), label: s.name }))}
-              selected={sourceIds}
-              onChange={setSourceIds}
-              inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
-            />
-          </div>
-          <div className="min-w-0 xl:col-span-1">
-            <MarketingSearchMultiFilter
-              label="Country"
-              placeholder="Search countries…"
-              options={countries.map((c) => ({ id: String(c.id), label: c.name }))}
-              selected={countryIds}
-              onChange={setCountryIds}
-              inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
-            />
-          </div>
-          <div className="min-w-0 xl:col-span-1">
-            <MarketingSearchMultiFilter
-              label="Provider (firm)"
-              placeholder="Search firms…"
-              options={firms.map((f) => ({ id: f.id, label: f.name }))}
-              selected={firmIds}
-              onChange={setFirmIds}
-              inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
-            />
-          </div>
-          <div className="flex min-w-0 flex-col items-end justify-end xl:col-span-1">
-            <span className={`${FILTER_FIELD_LABEL_CLASS} w-full`}>Action</span>
-            <button
-              type="button"
-              className={`btn btn-primary min-h-12 h-12 w-auto shrink-0 px-5 text-base font-semibold ${ENGRAVED_FILTER_PRIMARY_BUTTON_CLASSES}`}
-              onClick={() => void runReport()}
-              disabled={loading}
-            >
-              {loading ? <span className="loading loading-spinner loading-md" /> : 'Run report'}
-            </button>
-          </div>
-        </div>
-
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
+      <div className="flex w-full flex-col items-start gap-3">
+        <div className="flex flex-wrap items-end gap-2 sm:gap-3">
+          <button
+            type="button"
+            className="btn btn-circle h-12 w-12 min-h-12 shrink-0 rounded-full border-0 bg-black text-sm font-bold lowercase tracking-tight text-white shadow-sm hover:bg-neutral-800 disabled:opacity-50"
+            onClick={() => void runReport()}
+            disabled={loading}
+            aria-label="Run report"
+          >
+            {loading ? <span className="loading loading-spinner loading-sm text-white" /> : 'go'}
+          </button>
+          <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
             <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-base-content/55">
               Group by
             </span>
@@ -2466,7 +2507,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               <button
                 type="button"
                 aria-pressed={groupMode === 'source'}
-                className={`min-w-[7rem] cursor-pointer rounded-[0.65rem] px-4 py-2 text-sm font-bold tracking-tight transition-colors duration-200 ease-out outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 ${
+                className={`${GROUP_BY_TOGGLE_CLASS} ${
                   groupMode === 'source'
                     ? 'bg-primary text-primary-content shadow-[inset_0_3px_10px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.14)] dark:shadow-[inset_0_4px_14px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.08)]'
                     : 'text-base-content/55 shadow-[inset_0_2px_6px_rgba(0,0,0,0.05)] hover:bg-black/[0.04] hover:text-base-content/90 dark:shadow-[inset_0_2px_8px_rgba(0,0,0,0.25)] dark:hover:bg-white/[0.05]'
@@ -2478,7 +2519,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               <button
                 type="button"
                 aria-pressed={groupMode === 'channel'}
-                className={`min-w-[7rem] cursor-pointer rounded-[0.65rem] px-4 py-2 text-sm font-bold tracking-tight transition-colors duration-200 ease-out outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:ring-offset-0 ${
+                className={`${GROUP_BY_TOGGLE_CLASS} ${
                   groupMode === 'channel'
                     ? 'bg-primary text-primary-content shadow-[inset_0_3px_10px_rgba(0,0,0,0.38),inset_0_1px_0_rgba(255,255,255,0.14)] dark:shadow-[inset_0_4px_14px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.08)]'
                     : 'text-base-content/55 shadow-[inset_0_2px_6px_rgba(0,0,0,0.05)] hover:bg-black/[0.04] hover:text-base-content/90 dark:shadow-[inset_0_2px_8px_rgba(0,0,0,0.25)] dark:hover:bg-white/[0.05]'
@@ -2488,6 +2529,76 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                 Channel
               </button>
             </div>
+          </div>
+        </div>
+        <div className="grid w-max max-w-full grid-cols-2 gap-x-3 gap-y-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-7">
+          <label className={`form-control ${FILTER_COL_CLASS}`}>
+            <span className={FILTER_FIELD_LABEL_CLASS}>From</span>
+            <input
+              type="date"
+              className={`input input-md min-h-12 w-full text-base ${ENGRAVED_FILTER_CONTROL_CLASSES}`}
+              value={fromDate}
+              onChange={(e) => setFromDate(e.target.value)}
+            />
+          </label>
+          <label className={`form-control ${FILTER_COL_CLASS}`}>
+            <span className={FILTER_FIELD_LABEL_CLASS}>To</span>
+            <input
+              type="date"
+              className={`input input-md min-h-12 w-full text-base ${ENGRAVED_FILTER_CONTROL_CLASSES}`}
+              value={toDate}
+              onChange={(e) => setToDate(e.target.value)}
+            />
+          </label>
+          <div className={FILTER_COL_CLASS}>
+            <MarketingSearchMultiFilter
+              label="Main category"
+              placeholder="Search main categories…"
+              options={mainCategories.map((c) => ({ id: c.id, label: c.name }))}
+              selected={mainCategoryIds}
+              onChange={setMainCategoryIds}
+              inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
+            />
+          </div>
+          <div className={FILTER_COL_CLASS}>
+            <MarketingSearchMultiFilter
+              label="Channel"
+              placeholder="Search channels…"
+              options={channels.filter((c) => c.is_active).map((c) => ({ id: c.id, label: c.label }))}
+              selected={channelIds}
+              onChange={setChannelIds}
+              inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
+            />
+          </div>
+          <div className={FILTER_COL_CLASS}>
+            <MarketingSearchMultiFilter
+              label="Source"
+              placeholder="Search sources…"
+              options={sources.map((s) => ({ id: String(s.id), label: s.name }))}
+              selected={sourceIds}
+              onChange={setSourceIds}
+              inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
+            />
+          </div>
+          <div className={FILTER_COL_CLASS}>
+            <MarketingSearchMultiFilter
+              label="Country"
+              placeholder="Search countries…"
+              options={countries.map((c) => ({ id: String(c.id), label: c.name }))}
+              selected={countryIds}
+              onChange={setCountryIds}
+              inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
+            />
+          </div>
+          <div className={FILTER_COL_CLASS}>
+            <MarketingSearchMultiFilter
+              label="Provider (firm)"
+              placeholder="Search firms…"
+              options={firms.map((f) => ({ id: f.id, label: f.name }))}
+              selected={firmIds}
+              onChange={setFirmIds}
+              inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
+            />
           </div>
         </div>
       </div>
@@ -2751,8 +2862,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               </thead>
               <tbody>
                 {sortedAggregates.map((r) => {
-                  const pct = (a: number, b: number) => (b > 0 ? ((a / b) * 100).toFixed(1) : '—');
                   const pctLeads = totals.leads ? ((r.leads / totals.leads) * 100).toFixed(1) : '0.0';
+                  const offerDealDenom = r.leadsExclStage91;
                   const totalCostNis = r.mediaNis + r.managementNis;
                   return (
                     <tr key={r.key}>
@@ -2769,11 +2880,24 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                       <td className="text-right">{r.eligible}</td>
                       <td className="text-right">{r.meetings}</td>
                       <td className="text-right">{r.offers}</td>
-                      <td className="text-right">{r.deals}</td>
-                      <td className="text-right">{pct(r.eligible, r.leads)}</td>
-                      <td className="text-right">{pct(r.meetings, r.leads)}</td>
-                      <td className="text-right">{pct(r.offers, r.leads)}</td>
-                      <td className="text-right">{pct(r.deals, r.leads)}</td>
+                      <td className="text-right">
+                        {r.deals > 0 ? (
+                          <button
+                            type="button"
+                            className="inline border-0 bg-transparent p-0 text-inherit text-sm md:text-base font-normal leading-normal cursor-pointer rounded-sm hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-base-content/30"
+                            onClick={() => openDealsBreakdown(r)}
+                            title="View signed deals for this row"
+                          >
+                            {r.deals}
+                          </button>
+                        ) : (
+                          r.deals
+                        )}
+                      </td>
+                      <td className="text-right">{macroPct(r.eligible, r.leads)}</td>
+                      <td className="text-right">{macroPct(r.meetings, r.leads)}</td>
+                      <td className="text-right">{macroPct(r.offers, offerDealDenom)}</td>
+                      <td className="text-right">{macroPct(r.deals, offerDealDenom)}</td>
                       <td className="text-right text-sm font-semibold">{fmtMoney(r.revenueNis)}</td>
                       <td className="text-right">{r.inactive}</td>
                       <td className="text-right">{r.mediaNis > 0 ? fmtMoney(r.mediaNis) : '—'}</td>
@@ -2957,13 +3081,21 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       )}
 
       {!searched && (
-        <div className="rounded-2xl border border-dashed border-base-300/70 bg-base-200/25 px-6 py-14 text-center dark:border-base-content/15 dark:bg-base-300/10">
+        <div className="rounded-2xl border border-dashed border-base-300/70 bg-base-200/25 px-4 py-10 text-center dark:border-base-content/15 dark:bg-base-300/10">
           <p className="text-base leading-relaxed text-base-content/55">
-            Set your filters above, then click <span className="font-semibold text-base-content/75">Run report</span> to
+            Set your filters above, then click <span className="font-semibold text-base-content/75">go</span> to
             load results.
           </p>
         </div>
       )}
+
+      <MarketingDashboardLeadBreakdownModal
+        isOpen={leadBreakdownModal.open}
+        onClose={() => setLeadBreakdownModal((prev) => ({ ...prev, open: false }))}
+        title={leadBreakdownModal.title}
+        rows={leadBreakdownModal.rows}
+        formatMoney={fmtMoney}
+      />
     </div>
   );
 };
