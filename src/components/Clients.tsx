@@ -281,6 +281,8 @@ const formatEmailBody = async (
     meetingTime?: string;
     meetingLocation?: string;
     meetingLink?: string;
+    meetingId?: number | string | null;
+    templateLanguage?: string | null;
   }
 ): Promise<string> => {
   if (!template) return '';
@@ -299,6 +301,8 @@ const formatEmailBody = async (
       meetingTime: context.meetingTime || null,
       meetingLocation: context.meetingLocation || null,
       meetingLink: context.meetingLink || null,
+      meetingId: context.meetingId ?? null,
+      templateLanguage: context.templateLanguage ?? null,
     };
 
     htmlBody = await replaceEmailTemplateParams(template, templateContext);
@@ -1672,33 +1676,6 @@ const Clients: React.FC<ClientsProps> = ({
   const [showLeadSummaryDrawer, setShowLeadSummaryDrawer] = useState(false);
   const [showEditLeadDrawer, setShowEditLeadDrawer] = useState(false);
   // Helper function to get category display name for edit lead drawer
-  const getCategoryDisplayNameForEdit = (categoryId: string | number | null | undefined, fallbackCategory?: string): string => {
-    // Use getCategoryName if allCategories is loaded, otherwise use fallback
-    if (allCategories.length > 0) {
-      return getCategoryName(categoryId, fallbackCategory);
-    }
-    return fallbackCategory || '';
-  };
-
-  const [editLeadData, setEditLeadData] = useState({
-    tags: selectedClient?.tags || '',
-    source: selectedClient?.source || '',
-    source_id: null as string | null,
-    name: selectedClient?.name || '',
-    language: selectedClient?.language || '',
-    category: getCategoryDisplayNameForEdit(selectedClient?.category_id, selectedClient?.category),
-    topic: selectedClient?.topic || '',
-    special_notes: selectedClient?.special_notes || '',
-    probability: selectedClient?.probability || 0,
-    legal_potential: 0,
-    seriousness: 0,
-    financial_ability: 0,
-    number_of_applicants_meeting: selectedClient?.number_of_applicants_meeting || '',
-    potential_applicants_meeting: selectedClient?.potential_applicants_meeting || '',
-    balance: selectedClient?.balance || '',
-    next_followup: selectedClient?.next_followup || '',
-    balance_currency: selectedClient?.balance_currency || '',
-  });
   // Main categories for Edit Lead drawer
   const [mainCategories, setMainCategories] = useState<string[]>([]);
   const [sourceOptions, setSourceOptions] = useState<LeadSourceOption[]>([]);
@@ -2416,20 +2393,6 @@ const Clients: React.FC<ClientsProps> = ({
     listRef.scrollTop = 0;
   }, [stageDropdownAnchor, selectedClient?.stage, sortedStages, resolveStageId]);
 
-  // Update balance_currency in editLeadData when selectedClient or currencies change
-  useEffect(() => {
-    if (!selectedClient || currencies.length === 0) return;
-
-    const currencyId = (selectedClient as any)?.currency_id ?? 1;
-    const currencyName = getCurrencyName(currencyId, (selectedClient as any)?.accounting_currencies);
-
-    if (currencyName && currencyName.trim() !== '') {
-      setEditLeadData(prev => ({
-        ...prev,
-        balance_currency: selectedClient.balance_currency || currencyName
-      }));
-    }
-  }, [selectedClient, currencies]);
 
   const getStageIdOrWarn = useCallback(
     (alias: string | number): number | null => {
@@ -3233,6 +3196,7 @@ const Clients: React.FC<ClientsProps> = ({
             total,
             total_base,
             subcontractor_fee,
+            external_firm_id,
             currency_id,
             closer_id,
             case_handler_id,
@@ -3363,6 +3327,7 @@ const Clients: React.FC<ClientsProps> = ({
             total: data.total || null, // Include total for balance badge logic
             total_base: data.total_base || null, // Include total_base for balance badge logic (when currency_id is 1)
             subcontractor_fee: data.subcontractor_fee || null, // Include subcontractor_fee for balance badge logic
+            external_firm_id: data.external_firm_id || null,
             balance_currency: (() => {
               // Use accounting_currencies name if available, otherwise fallback
               if (legacyCurrencyRecord?.name) {
@@ -7081,7 +7046,9 @@ const Clients: React.FC<ClientsProps> = ({
                   meetingDate: formattedDate,
                   meetingTime: formattedTime,
                   meetingLocation: meetingFormData.location || '',
-                  meetingLink: newMeeting.link || ''
+                  meetingLink: newMeeting.link || '',
+                  meetingId: newMeeting.id ?? insertedData?.[0]?.id ?? null,
+                  templateLanguage: isHebrew ? 'he' : 'en',
                 }
               );
 
@@ -8130,497 +8097,6 @@ const Clients: React.FC<ClientsProps> = ({
     }
   };
 
-  useEffect(() => {
-    if (selectedClient) {
-      // Get the correct currency for this lead (handles both new and legacy leads)
-      const currentCurrency = getCurrencySymbol(
-        selectedClient?.currency_id || selectedClient?.meeting_total_currency_id,
-        selectedClient?.balance_currency
-      );
-
-      // Get the full category display name (subcategory + main category) using category_id
-      const categoryDisplayName = getCategoryName(selectedClient?.category_id, selectedClient?.category);
-
-      setEditLeadData({
-        tags: selectedClient.tags || '',
-        source: selectedClient.source || '',
-        source_id: normalizeLeadSourceId(selectedClient.source_id),
-        name: selectedClient.name || '',
-        language: selectedClient.language || '',
-        category: categoryDisplayName,
-        topic: selectedClient.topic || '',
-        special_notes: selectedClient.special_notes || '',
-        probability: selectedClient.probability || 0,
-        legal_potential: (editLeadData as any).legal_potential || 0,
-        seriousness: (editLeadData as any).seriousness || 0,
-        financial_ability: (editLeadData as any).financial_ability || 0,
-        number_of_applicants_meeting: selectedClient.number_of_applicants_meeting || '',
-        potential_applicants_meeting: selectedClient.potential_applicants_meeting || '',
-        balance: selectedClient.balance || selectedClient.total || '',
-        next_followup: selectedClient.next_followup || '',
-        balance_currency: currentCurrency,
-      });
-    }
-  }, [selectedClient, currencies]);
-
-  const handleEditLeadChange = (field: string, value: any) => {
-    // For category field, keep the full formatted string (subcategory + main category)
-    setEditLeadData(prev => ({ ...prev, [field]: value }));
-  };
-
-  const handleSourceInputChange = (value: string) => {
-    const resolved = resolveSourceFromInputValue(value, sourceOptions);
-    setEditLeadData((prev) => ({
-      ...prev,
-      source: resolved.source,
-      source_id: resolved.source_id,
-    }));
-  };
-
-  // Fetch current lead tags for editing
-  const fetchCurrentLeadTags = async (leadId: string) => {
-    try {
-      // Check if it's a legacy lead
-      const isLegacyLead = leadId.toString().startsWith('legacy_');
-
-      if (isLegacyLead) {
-        const legacyId = parseInt(leadId.replace('legacy_', ''));
-        const { data, error } = await supabase
-          .from('leads_lead_tags')
-          .select(`
-            id,
-            leadtag_id,
-            misc_leadtag (
-              id,
-              name
-            )
-          `)
-          .eq('lead_id', legacyId);
-
-        if (!error && data) {
-          const tags = data
-            .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
-            .map(item => (item.misc_leadtag as any).name);
-
-          // Join tags with comma and space
-          const tagsString = tags.join(', ');
-          setCurrentLeadTags(tagsString);
-          return tagsString;
-        } else {
-          console.error('Error fetching current lead tags (legacy):', error);
-          setCurrentLeadTags('');
-          return '';
-        }
-      } else {
-        // For new leads, fetch from leads_lead_tags table using newlead_id (some DBs use new_lead_id)
-        let { data, error } = await supabase
-          .from('leads_lead_tags')
-          .select(`
-            id,
-            leadtag_id,
-            misc_leadtag (
-              id,
-              name
-            )
-          `)
-          .eq('newlead_id', leadId);
-
-        if (error) {
-          dbgTags('fetchCurrentLeadTags: newlead_id query failed, trying new_lead_id', {
-            leadId,
-            message: error.message,
-            code: (error as any).code,
-            details: (error as any).details,
-            hint: (error as any).hint,
-          });
-          const alt = await supabase
-            .from('leads_lead_tags')
-            .select(`
-              id,
-              leadtag_id,
-              misc_leadtag (
-                id,
-                name
-              )
-            `)
-            .eq('new_lead_id', leadId);
-          data = alt.data;
-          error = alt.error;
-          if (!error) dbgTags('fetchCurrentLeadTags: new_lead_id ok', { leadId, rowCount: data?.length ?? 0 });
-        }
-
-        if (!error && data) {
-          const tags = data
-            .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
-            .map(item => (item.misc_leadtag as any).name);
-
-          // Join tags with comma and space
-          const tagsString = tags.join(', ');
-          setCurrentLeadTags(tagsString);
-          return tagsString;
-        } else {
-          console.error('Error fetching current lead tags (new):', error);
-          setCurrentLeadTags('');
-          return '';
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching current lead tags:', error);
-      setCurrentLeadTags('');
-      return '';
-    }
-  };
-  // Save lead tags
-  const saveLeadTags = async (leadId: string, tagsString: string) => {
-    const normName = (s: unknown) => String(s ?? '').trim();
-    const resolveTagIdFromCatalog = (rawName: string): number | undefined => {
-      const t = normName(rawName);
-      if (!t) return undefined;
-      const row = allTags.find((tag) => normName(tag.name) === t);
-      if (row?.id == null || row.id === '') return undefined;
-      const n = Number(row.id);
-      return Number.isFinite(n) ? n : undefined;
-    };
-
-    try {
-      const isLegacyLead = leadId.toString().startsWith('legacy_');
-      const tag42InCatalog = allTags.find((t) => Number(t.id) === 42);
-      dbgTags('saveLeadTags start', {
-        leadId,
-        isLegacyLead,
-        tagsStringPreview: tagsString.slice(0, 200),
-        allTagsCount: allTags.length,
-        tagId42InActiveCatalog: tag42InCatalog
-          ? { id: tag42InCatalog.id, name: tag42InCatalog.name }
-          : 'absent (inactive in misc_leadtag or not loaded)',
-      });
-
-      if (isLegacyLead) {
-        const legacyId = parseInt(leadId.replace('legacy_', ''));
-
-        // First, remove all existing tags for this legacy lead
-        const { error: deleteError } = await supabase
-          .from('leads_lead_tags')
-          .delete()
-          .eq('lead_id', legacyId);
-
-        if (deleteError) {
-          console.error('Error deleting existing tags (legacy):', deleteError);
-          dbgTags('delete failed (legacy)', {
-            legacyId,
-            message: deleteError.message,
-            code: (deleteError as any).code,
-            details: (deleteError as any).details,
-            hint: (deleteError as any).hint,
-          });
-          return;
-        }
-        dbgTags('delete ok (legacy)', { legacyId });
-
-        // Parse the tags string and find matching tag IDs
-        if (tagsString.trim()) {
-          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(Boolean);
-          const resolutions = tagNames.map((name) => {
-            const id = resolveTagIdFromCatalog(name);
-            return { name, leadtag_id: id, resolved: id != null };
-          });
-          const unresolved = resolutions.filter((r) => !r.resolved).map((r) => r.name);
-          const tagIds = resolutions.map((r) => r.leadtag_id).filter((id): id is number => id != null);
-
-          dbgTags('name → id (legacy)', {
-            resolutions,
-            unresolved,
-            leadtag_ids: tagIds,
-            includes42: tagIds.some((id) => Number(id) === 42),
-          });
-          if (unresolved.length) {
-            dbgTags('unresolved tag names (not in allTags / name mismatch / inactive tag)', unresolved);
-          }
-
-          // Insert new tags for legacy lead
-          if (tagIds.length > 0) {
-            const audit = await buildLeadTagJunctionAuditFields();
-            const tagInserts = tagIds.map(tagId => ({
-              lead_id: legacyId,
-              leadtag_id: tagId,
-              ...audit,
-            }));
-
-            const { error: insertError } = await supabase
-              .from('leads_lead_tags')
-              .insert(tagInserts);
-
-            if (insertError) {
-              console.error('Error inserting new tags (legacy):', insertError);
-              dbgTags('insert failed (legacy)', {
-                payload: tagInserts,
-                message: insertError.message,
-                code: (insertError as any).code,
-                details: (insertError as any).details,
-                hint: (insertError as any).hint,
-              });
-              return;
-            }
-            dbgTags('insert ok (legacy)', { rowCount: tagInserts.length });
-          }
-        }
-
-      } else {
-        // For new leads: try newlead_id first, then new_lead_id (matches LeadTagsModal)
-        let deleteError = (await supabase.from('leads_lead_tags').delete().eq('newlead_id', leadId)).error;
-        let deleteColumn: 'newlead_id' | 'new_lead_id' = 'newlead_id';
-        if (deleteError) {
-          dbgTags('delete newlead_id failed, trying new_lead_id', {
-            leadId,
-            message: deleteError.message,
-            code: (deleteError as any).code,
-          });
-          deleteError = (await supabase.from('leads_lead_tags').delete().eq('new_lead_id', leadId)).error;
-          deleteColumn = 'new_lead_id';
-        }
-
-        if (deleteError) {
-          console.error('Error deleting existing tags (new):', deleteError);
-          dbgTags('delete failed (new)', {
-            leadId,
-            columnTried: deleteColumn,
-            message: deleteError.message,
-            code: (deleteError as any).code,
-            details: (deleteError as any).details,
-            hint: (deleteError as any).hint,
-          });
-          return;
-        }
-        dbgTags('delete ok (new)', { leadId, column: deleteColumn });
-
-        // Parse the tags string and find matching tag IDs
-        if (tagsString.trim()) {
-          const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(Boolean);
-          const resolutions = tagNames.map((name) => {
-            const id = resolveTagIdFromCatalog(name);
-            return { name, leadtag_id: id, resolved: id != null };
-          });
-          const unresolved = resolutions.filter((r) => !r.resolved).map((r) => r.name);
-          const tagIds = resolutions.map((r) => r.leadtag_id).filter((id): id is number => id != null);
-
-          dbgTags('name → id (new lead)', {
-            resolutions,
-            unresolved,
-            leadtag_ids: tagIds,
-            includes42: tagIds.some((id) => Number(id) === 42),
-          });
-          if (unresolved.length) {
-            dbgTags('unresolved tag names (not in allTags / name mismatch / inactive tag)', unresolved);
-          }
-
-          // Insert new tags for new lead
-          if (tagIds.length > 0) {
-            const audit = await buildLeadTagJunctionAuditFields();
-            const tryInsert = async (col: 'newlead_id' | 'new_lead_id') => {
-              const tagInserts = tagIds.map(tagId => ({
-                [col]: leadId,
-                leadtag_id: tagId,
-                ...audit,
-              })) as Record<string, unknown>[];
-              const { error: insertError } = await supabase.from('leads_lead_tags').insert(tagInserts as any);
-              return { insertError, col, tagInserts };
-            };
-
-            let { insertError, col: insertCol, tagInserts } = await tryInsert('newlead_id');
-            if (insertError) {
-              dbgTags('insert newlead_id failed, trying new_lead_id', {
-                message: insertError.message,
-                code: (insertError as any).code,
-                details: (insertError as any).details,
-              });
-              const second = await tryInsert('new_lead_id');
-              insertError = second.insertError;
-              insertCol = second.col;
-              tagInserts = second.tagInserts;
-            }
-
-            if (insertError) {
-              console.error('Error inserting new tags (new):', insertError);
-              dbgTags('insert failed (new)', {
-                column: insertCol,
-                payload: tagInserts,
-                message: insertError.message,
-                code: (insertError as any).code,
-                details: (insertError as any).details,
-                hint: (insertError as any).hint,
-              });
-              return;
-            }
-            dbgTags('insert ok (new)', { column: insertCol, rowCount: tagInserts.length });
-          }
-        }
-
-      }
-    } catch (error) {
-      console.error('Error saving tags:', error);
-      dbgTags('saveLeadTags exception', error);
-    }
-  };
-
-  const openEditLeadDrawer = async () => {
-    // Get the correct currency for this lead (handles both new and legacy leads)
-    const currentCurrency = getCurrencySymbol(
-      selectedClient?.currency_id || selectedClient?.meeting_total_currency_id,
-      selectedClient?.balance_currency
-    );
-
-    // Fetch current tags for this lead
-    const tagsString = await fetchCurrentLeadTags(selectedClient?.id || '');
-
-    // Fetch follow-up from follow_ups table for current user
-    let followUpDate = '';
-    let sourceName = (getSourceDisplayFromJoin(selectedClient) ?? selectedClient?.source) || '';
-    let sourceIdForForm: string | null = normalizeLeadSourceId(selectedClient?.source_id);
-    let languageName = selectedClient?.language || '';
-
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) {
-      const { data: userData } = await supabase
-        .from('users')
-        .select('id')
-        .eq('auth_id', user.id)
-        .single();
-
-      if (userData && selectedClient) {
-        const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-
-        if (isLegacyLead) {
-          const legacyId = selectedClient.id.toString().replace('legacy_', '');
-
-          // Fetch follow-up
-          const { data: followUpData } = await supabase
-            .from('follow_ups')
-            .select('date')
-            .eq('user_id', userData.id)
-            .eq('lead_id', legacyId)
-            .is('new_lead_id', null)
-            .maybeSingle();
-
-          if (followUpData?.date) {
-            followUpDate = new Date(followUpData.date).toISOString().split('T')[0];
-          }
-
-          // Fetch source name from source_id for legacy leads
-          const legacySourceId = normalizeLeadSourceId(selectedClient.source_id);
-          if (legacySourceId) {
-            sourceIdForForm = legacySourceId;
-            const cached = sourceOptions.find((s) => s.id === legacySourceId);
-            if (cached) {
-              sourceName = cached.name;
-            } else {
-              const { data: sourceData } = await supabase
-                .from('misc_leadsource')
-                .select('name')
-                .eq('id', legacySourceId)
-                .maybeSingle();
-              if (sourceData?.name) sourceName = sourceData.name;
-            }
-          }
-
-          // Language is already fetched as name from the joined table, so use it directly
-          // But if it's an ID string, try to fetch the name
-          if (selectedClient.language && !isNaN(Number(selectedClient.language))) {
-            const languageId = Number(selectedClient.language);
-            const { data: languageData } = await supabase
-              .from('misc_language')
-              .select('name')
-              .eq('id', languageId)
-              .maybeSingle();
-
-            if (languageData?.name) {
-              languageName = languageData.name;
-            }
-          }
-        } else {
-          const { data: followUpData } = await supabase
-            .from('follow_ups')
-            .select('date')
-            .eq('user_id', userData.id)
-            .eq('new_lead_id', selectedClient.id)
-            .is('lead_id', null)
-            .maybeSingle();
-
-          if (followUpData?.date) {
-            followUpDate = new Date(followUpData.date).toISOString().split('T')[0];
-          }
-
-          const { data: leadSourceRow } = await supabase
-            .from('leads')
-            .select('source_id, misc_leadsource!fk_leads_source_id ( id, name )')
-            .eq('id', selectedClient.id)
-            .maybeSingle();
-
-          sourceIdForForm =
-            normalizeLeadSourceId(leadSourceRow?.source_id) ?? sourceIdForForm;
-          sourceName =
-            getSourceDisplayFromJoin(leadSourceRow) ??
-            getSourceDisplayFromJoinLib(leadSourceRow) ??
-            (sourceIdForForm
-              ? sourceOptions.find((s) => s.id === sourceIdForForm)?.name ?? sourceName
-              : sourceName);
-        }
-      }
-    }
-
-    // Reset the edit form data with current client data
-    // Ensure probability is a number
-    const probabilityValue = (() => {
-      const prob = selectedClient?.probability;
-      if (typeof prob === 'string') {
-        return prob === '' ? 0 : (Number(prob) || 0);
-      }
-      return prob !== null && prob !== undefined ? Number(prob) : 0;
-    })();
-
-    // Get the full category display name (subcategory + main category) using category_id
-    const categoryDisplayName = getCategoryName(selectedClient?.category_id, selectedClient?.category);
-
-    // Factors: if missing, default from probability using shared helper
-    const parseFactor = (v: any): number | null => {
-      if (v == null || v === '') return null;
-      if (typeof v === 'string') {
-        const n = parseInt(v.trim(), 10);
-        return Number.isNaN(n) ? null : n;
-      }
-      const n = Number(v);
-      return Number.isNaN(n) ? null : Math.round(n);
-    };
-
-    const fL = parseFactor((selectedClient as any)?.legal_potential);
-    const fS = parseFactor((selectedClient as any)?.seriousness);
-    const fF = parseFactor((selectedClient as any)?.financial_ability);
-    const factors =
-      fL == null && fS == null && fF == null
-        ? splitProbabilityEvenly(clampProbabilityPart(probabilityValue))
-        : { legal: fL ?? 0, seriousness: fS ?? 0, financial: fF ?? 0 };
-    const computedProb = caseProbabilityFromFactors(factors.legal, factors.seriousness, factors.financial);
-
-    setEditLeadData({
-      tags: tagsString || selectedClient?.tags || '',
-      source: sourceName,
-      source_id: sourceIdForForm,
-      name: selectedClient?.name || '',
-      language: languageName,
-      category: categoryDisplayName,
-      topic: selectedClient?.topic || '',
-      special_notes: selectedClient?.special_notes || '',
-      probability: computedProb,
-      legal_potential: factors.legal,
-      seriousness: factors.seriousness,
-      financial_ability: factors.financial,
-      number_of_applicants_meeting: selectedClient?.number_of_applicants_meeting || '',
-      potential_applicants_meeting: selectedClient?.potential_applicants_meeting || '',
-      balance: selectedClient?.balance || selectedClient?.total || '',
-      next_followup: followUpDate || '',
-      balance_currency: currentCurrency,
-    });
-    setShowEditLeadDrawer(true);
-  };
   const categoryOptions = useMemo(() => {
     const categories = allCategories || [];
     const options = categories
@@ -8879,509 +8355,6 @@ const Clients: React.FC<ClientsProps> = ({
     []
   );
 
-  const handleSaveEditLead = async () => {
-    if (!selectedClient) return;
-
-    // Check if this is a legacy lead
-    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-
-    try {
-      // Get current user name from Supabase users table
-      const currentUserName = await fetchCurrentUserFullName();
-
-      console.log('Current user for lead edit:', currentUserName);
-      console.log('Is legacy lead:', isLegacyLead);
-
-      // Create update data based on whether it's a legacy lead or not
-      // Only include fields that have actually changed
-      let updateData: any = {};
-
-      if (isLegacyLead) {
-        // For legacy leads, only include fields that exist in leads_lead table
-        // Map balance to total and balance_currency to currency_id
-        const currencyNameToId = (currencyName: string): number | null => {
-          switch (currencyName) {
-            case '₪': return 1; // NIS
-            case '€': return 2; // EUR  
-            case '$': return 3; // USD
-            case '£': return 4; // GBP
-            default: return 1; // Default to NIS
-          }
-        };
-
-        // Check each field and only include if it has changed
-        if (editLeadData.name !== selectedClient.name) {
-          updateData.name = editLeadData.name;
-        }
-        if (editLeadData.topic !== selectedClient.topic) {
-          updateData.topic = editLeadData.topic;
-        }
-        if (editLeadData.special_notes !== selectedClient.special_notes) {
-          const newSpecialNotes = editLeadData.special_notes;
-          const fileIdStr = String(selectedClient.file_id || '').trim();
-          if (fileIdStr && String(newSpecialNotes || '').trim() === fileIdStr) {
-            // Avoid writing file_id into notes/special_notes (guard against accidental copy)
-            console.warn('Edit lead: skipped writing value that matches file_id into special_notes/notes');
-          } else {
-            updateData.special_notes = newSpecialNotes;
-            updateData.notes = newSpecialNotes; // Map special_notes to notes for legacy
-          }
-        }
-        // Probability + factors (legacy: legal_potential is TEXT)
-        const nextL = clampProbabilityPart(Number((editLeadData as any).legal_potential || 0));
-        const nextS = clampProbabilityPart(Number((editLeadData as any).seriousness || 0));
-        const nextF = clampProbabilityPart(Number((editLeadData as any).financial_ability || 0));
-        const nextProb = caseProbabilityFromFactors(nextL, nextS, nextF);
-
-        const curLRaw: any = (selectedClient as any).legal_potential;
-        const curSRaw: any = (selectedClient as any).seriousness;
-        const curFRaw: any = (selectedClient as any).financial_ability;
-
-        if (String(nextL) !== String(curLRaw ?? '')) updateData.legal_potential = String(nextL);
-        if (Number(curSRaw ?? 0) !== nextS) updateData.seriousness = nextS;
-        if (Number(curFRaw ?? 0) !== nextF) updateData.financial_ability = nextF;
-
-        const currentProbability = typeof selectedClient.probability === 'string'
-          ? (selectedClient.probability === '' ? 0 : Number(selectedClient.probability) || 0)
-          : (selectedClient.probability || 0);
-        if (Math.round(currentProbability) !== nextProb) updateData.probability = nextProb;
-        // Handle source via source_id (legacy leads_lead)
-        const resolvedLegacySource = await resolveSourceIdForEditSave({
-          sourceDisplay: editLeadData.source,
-          sourceIdInForm: editLeadData.source_id,
-          options: sourceOptions,
-        });
-        const currentLegacySourceId = normalizeLeadSourceId(selectedClient.source_id);
-        const nextLegacySourceId = resolvedLegacySource?.id ?? null;
-        if (editLeadData.source?.trim() && !nextLegacySourceId) {
-          toast.error('Please select a source from the list (only active sources can be used).');
-          return;
-        }
-        if (nextLegacySourceId !== currentLegacySourceId) {
-          applyLeadSourceIdUpdate(
-            updateData,
-            nextLegacySourceId,
-            resolvedLegacySource?.name ?? editLeadData.source,
-          );
-        }
-        // Handle language - convert language name to language_id
-        if (editLeadData.language !== selectedClient.language) {
-          if (editLeadData.language && editLeadData.language.trim() !== '') {
-            // Look up language_id from misc_language table by name
-            const { data: languageData } = await supabase
-              .from('misc_language')
-              .select('id')
-              .eq('name', editLeadData.language)
-              .maybeSingle();
-
-            if (languageData?.id) {
-              updateData.language_id = languageData.id;
-            } else {
-              // If language not found, try to parse as ID (in case user entered ID directly)
-              const languageId = parseInt(editLeadData.language);
-              if (!isNaN(languageId)) {
-                updateData.language_id = languageId;
-              }
-            }
-          } else {
-            updateData.language_id = null;
-          }
-        }
-        // Handle number_of_applicants_meeting - map to no_of_applicants for legacy
-        if (editLeadData.number_of_applicants_meeting !== selectedClient.number_of_applicants_meeting) {
-          // Handle empty string for numeric field
-          let applicantsValue = null;
-          if (editLeadData.number_of_applicants_meeting !== '' && editLeadData.number_of_applicants_meeting !== null && editLeadData.number_of_applicants_meeting !== undefined) {
-            const parsed = Number(editLeadData.number_of_applicants_meeting);
-            applicantsValue = isNaN(parsed) ? null : parsed;
-          }
-          updateData.no_of_applicants = applicantsValue;
-        }
-        // Follow-up is now handled separately in follow_ups table - don't include in updateData
-        if (editLeadData.balance !== selectedClient.balance) {
-          // Handle empty string for balance field
-          const balanceValue = editLeadData.balance === '' || editLeadData.balance === null ? null : String(editLeadData.balance);
-          updateData.total = balanceValue; // Convert to string for text column
-        }
-        if (editLeadData.balance_currency !== selectedClient.balance_currency) {
-          updateData.currency_id = currencyNameToId(editLeadData.balance_currency); // Map currency name to ID
-        }
-        if (editLeadData.category !== selectedClient.category) {
-          // Find the exact category ID from the formatted category name for legacy leads
-          // We need to match both the subcategory name AND the main category name
-          const fullCategoryString = editLeadData.category;
-          const foundCategory = allCategories.find((cat: any) => {
-            const expectedFormat = cat.misc_maincategory?.name
-              ? `${cat.name} (${cat.misc_maincategory.name})`
-              : cat.name;
-            return expectedFormat === fullCategoryString;
-          });
-
-          if (foundCategory) {
-            updateData.category_id = foundCategory.id;
-            updateData.category = foundCategory.name; // Save just the subcategory name
-          } else {
-            // Fallback: try to find by subcategory name only (less precise)
-            const categoryName = editLeadData.category.includes(' (') ? editLeadData.category.split(' (')[0] : editLeadData.category;
-            const fallbackCategory = allCategories.find((cat: any) =>
-              cat.name.toLowerCase().trim() === categoryName.toLowerCase().trim()
-            );
-
-            if (fallbackCategory) {
-              updateData.category_id = fallbackCategory.id;
-              updateData.category = categoryName;
-            } else {
-              updateData.category = editLeadData.category; // Final fallback
-            }
-          }
-        }
-
-        // Handle tags separately for legacy leads (using saveLeadTags function)
-        const currentTagsString = await fetchCurrentLeadTags(selectedClient.id);
-        if (editLeadData.tags !== currentTagsString) {
-          await saveLeadTags(selectedClient.id, editLeadData.tags);
-        }
-      } else {
-        // For regular leads, check each field and only include if it has changed
-        if (editLeadData.tags !== selectedClient.tags) {
-          // Use saveLeadTags function for proper tag management
-          await saveLeadTags(selectedClient.id, editLeadData.tags);
-        }
-        const { data: currentLeadRow } = await supabase
-          .from('leads')
-          .select('source_id')
-          .eq('id', selectedClient.id)
-          .maybeSingle();
-        const resolvedNewSource = await resolveSourceIdForEditSave({
-          sourceDisplay: editLeadData.source,
-          sourceIdInForm: editLeadData.source_id,
-          options: sourceOptions,
-        });
-        const currentNewSourceId = normalizeLeadSourceId(
-          currentLeadRow?.source_id ?? selectedClient.source_id,
-        );
-        const nextNewSourceId = resolvedNewSource?.id ?? null;
-        if (editLeadData.source?.trim() && !nextNewSourceId) {
-          toast.error('Please select a source from the list (only active sources can be used).');
-          return;
-        }
-        if (nextNewSourceId !== currentNewSourceId) {
-          applyLeadSourceIdUpdate(
-            updateData,
-            nextNewSourceId,
-            resolvedNewSource?.name ?? editLeadData.source,
-          );
-        }
-        if (editLeadData.name !== selectedClient.name) {
-          updateData.name = editLeadData.name;
-        }
-        if (editLeadData.language !== selectedClient.language) {
-          updateData.language = editLeadData.language;
-        }
-        if (editLeadData.category !== selectedClient.category) {
-          // Find the exact category ID from the formatted category name
-          // We need to match both the subcategory name AND the main category name
-          const fullCategoryString = editLeadData.category;
-          const foundCategory = allCategories.find((cat: any) => {
-            const expectedFormat = cat.misc_maincategory?.name
-              ? `${cat.name} (${cat.misc_maincategory.name})`
-              : cat.name;
-            return expectedFormat === fullCategoryString;
-          });
-
-          if (foundCategory) {
-            updateData.category_id = foundCategory.id;
-            updateData.category = foundCategory.name; // Save just the subcategory name
-          } else {
-            // Fallback: try to find by subcategory name only (less precise)
-            const categoryName = editLeadData.category.includes(' (') ? editLeadData.category.split(' (')[0] : editLeadData.category;
-            const fallbackCategory = allCategories.find((cat: any) =>
-              cat.name.toLowerCase().trim() === categoryName.toLowerCase().trim()
-            );
-
-            if (fallbackCategory) {
-              updateData.category_id = fallbackCategory.id;
-              updateData.category = categoryName;
-            } else {
-              updateData.category = editLeadData.category; // Final fallback
-            }
-          }
-        }
-        if (editLeadData.topic !== selectedClient.topic) {
-          updateData.topic = editLeadData.topic;
-        }
-        if (editLeadData.special_notes !== selectedClient.special_notes) {
-          const newSpecialNotes = editLeadData.special_notes;
-          const fileIdStr = String(selectedClient.file_id || '').trim();
-          if (fileIdStr && String(newSpecialNotes || '').trim() === fileIdStr) {
-            console.warn('Edit lead: skipped writing value that matches file_id into special_notes');
-          } else {
-            updateData.special_notes = newSpecialNotes;
-          }
-        }
-        // Probability + factors (new leads: all numeric)
-        const nextL = clampProbabilityPart(Number((editLeadData as any).legal_potential || 0));
-        const nextS = clampProbabilityPart(Number((editLeadData as any).seriousness || 0));
-        const nextF = clampProbabilityPart(Number((editLeadData as any).financial_ability || 0));
-        const nextProb = caseProbabilityFromFactors(nextL, nextS, nextF);
-
-        const curL = clampProbabilityPart(Number((selectedClient as any).legal_potential || 0));
-        const curS = clampProbabilityPart(Number((selectedClient as any).seriousness || 0));
-        const curF = clampProbabilityPart(Number((selectedClient as any).financial_ability || 0));
-
-        if (nextL !== curL) updateData.legal_potential = nextL;
-        if (nextS !== curS) updateData.seriousness = nextS;
-        if (nextF !== curF) updateData.financial_ability = nextF;
-
-        const currentProbabilityNew = typeof selectedClient.probability === 'string'
-          ? (selectedClient.probability === '' ? 0 : Number(selectedClient.probability) || 0)
-          : (selectedClient.probability || 0);
-        if (Math.round(currentProbabilityNew) !== nextProb) updateData.probability = nextProb;
-        if (editLeadData.number_of_applicants_meeting !== selectedClient.number_of_applicants_meeting) {
-          // Handle empty string for numeric field
-          let applicantsValue = null;
-          if (editLeadData.number_of_applicants_meeting !== '' && editLeadData.number_of_applicants_meeting !== null && editLeadData.number_of_applicants_meeting !== undefined) {
-            const parsed = Number(editLeadData.number_of_applicants_meeting);
-            applicantsValue = isNaN(parsed) ? null : parsed;
-          }
-          updateData.number_of_applicants_meeting = applicantsValue;
-        }
-        if (editLeadData.potential_applicants_meeting !== selectedClient.potential_applicants_meeting) {
-          // Handle empty string for numeric field
-          let potentialValue = null;
-          if (editLeadData.potential_applicants_meeting !== '' && editLeadData.potential_applicants_meeting !== null && editLeadData.potential_applicants_meeting !== undefined) {
-            const parsed = Number(editLeadData.potential_applicants_meeting);
-            potentialValue = isNaN(parsed) ? null : parsed;
-          }
-          updateData.potential_applicants_meeting = potentialValue;
-        }
-        if (editLeadData.balance !== selectedClient.balance) {
-          // Handle empty string for numeric field
-          let balanceValue = null;
-          if (editLeadData.balance !== '' && editLeadData.balance !== null && editLeadData.balance !== undefined) {
-            const parsed = Number(editLeadData.balance);
-            balanceValue = isNaN(parsed) ? null : parsed;
-          }
-          updateData.balance = balanceValue;
-        }
-        // Follow-up is now handled separately in follow_ups table - don't include in updateData
-        if (editLeadData.balance_currency !== selectedClient.balance_currency) {
-          updateData.balance_currency = editLeadData.balance_currency;
-        }
-      }
-
-      // Track changes by comparing old and new values
-      const changesToInsert = [];
-
-      // Since we only include changed fields in updateData, we can directly track them
-      const fieldsToTrack = Object.keys(updateData);
-      const fieldMapping: { [key: string]: string } = isLegacyLead ? {
-        'total': 'balance',
-        'currency_id': 'balance_currency',
-        'notes': 'special_notes',
-        'category_id': 'category'
-      } : {
-        'category_id': 'category'
-      };
-
-      for (const field of fieldsToTrack) {
-        // For legacy leads, map the field names to match the client data structure
-        const clientField = fieldMapping[field] || field;
-        const oldValue = selectedClient[clientField as keyof typeof selectedClient] || '';
-        const newValue = updateData[field as keyof typeof updateData] || '';
-
-        // Convert to strings for comparison
-        let oldValueStr = String(oldValue);
-        let newValueStr = String(newValue);
-
-        // Special handling for currency_id comparison
-        if (field === 'currency_id' && isLegacyLead) {
-          // Convert the current currency name to ID for comparison
-          const currencyNameToId = (currencyName: string): string => {
-            switch (currencyName) {
-              case '₪': return '1';
-              case '€': return '2';
-              case '$': return '3';
-              case '£': return '4';
-              default: return '1';
-            }
-          };
-          oldValueStr = currencyNameToId(String(oldValue));
-        }
-
-        console.log(`${field} changed: ${oldValueStr} -> ${newValueStr}`);
-        changesToInsert.push({
-          lead_id: selectedClient.id,
-          field_name: clientField, // Use the mapped field name for tracking
-          old_value: oldValueStr,
-          new_value: newValueStr,
-          changed_by: currentUserName,
-          changed_at: new Date().toISOString()
-        });
-      }
-
-      console.log('Total changes detected:', changesToInsert.length);
-      console.log('Changes to insert:', changesToInsert);
-
-      // If no changes were detected, don't proceed with the update
-      if (Object.keys(updateData).length === 0) {
-        console.log('No changes detected, skipping update');
-        setShowEditLeadDrawer(false);
-        return;
-      }
-
-      let updateError;
-
-      if (isLegacyLead) {
-        // For legacy leads, update the leads_lead table
-        const legacyId = selectedClient.id.toString().replace('legacy_', '');
-        console.log('Updating legacy lead with ID:', legacyId);
-
-        const { error } = await supabase
-          .from('leads_lead')
-          .update(updateData)
-          .eq('id', legacyId);
-
-        updateError = error;
-      } else {
-        // For regular leads, update the leads table
-        console.log('Updating regular lead with ID:', selectedClient.id);
-
-        const { error } = await supabase
-          .from('leads')
-          .update(updateData)
-          .eq('id', selectedClient.id);
-
-        updateError = error;
-      }
-
-      if (updateError) {
-        console.error('Error updating lead:', updateError);
-        const msg =
-          (updateError as { message?: string }).message ||
-          'Failed to update lead.';
-        toast.error(msg);
-        return;
-      }
-
-      // Handle follow-up save/update in follow_ups table
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) {
-        const { data: userData } = await supabase
-          .from('users')
-          .select('id')
-          .eq('auth_id', user.id)
-          .single();
-
-        if (userData) {
-          // Fetch current follow-up to compare
-          let currentFollowUp;
-          if (isLegacyLead) {
-            const legacyId = selectedClient.id.toString().replace('legacy_', '');
-            const { data } = await supabase
-              .from('follow_ups')
-              .select('id, date')
-              .eq('user_id', userData.id)
-              .eq('lead_id', legacyId)
-              .is('new_lead_id', null)
-              .maybeSingle();
-            currentFollowUp = data;
-          } else {
-            const { data } = await supabase
-              .from('follow_ups')
-              .select('id, date')
-              .eq('user_id', userData.id)
-              .eq('new_lead_id', selectedClient.id)
-              .is('lead_id', null)
-              .maybeSingle();
-            currentFollowUp = data;
-          }
-
-          const currentFollowUpDate = currentFollowUp?.date ? new Date(currentFollowUp.date).toISOString().split('T')[0] : '';
-          const newFollowUpDate = editLeadData.next_followup || '';
-
-          if (currentFollowUpDate !== newFollowUpDate) {
-            if (newFollowUpDate && newFollowUpDate.trim() !== '') {
-              // Update or create follow-up
-              if (currentFollowUp) {
-                // Update existing
-                const { error: followupError } = await supabase
-                  .from('follow_ups')
-                  .update({ date: newFollowUpDate + 'T00:00:00Z' })
-                  .eq('id', currentFollowUp.id)
-                  .eq('user_id', userData.id);
-
-                if (followupError) {
-                  console.error('Error updating follow-up:', followupError);
-                  toast.error('Failed to update follow-up date');
-                }
-              } else {
-                // Create new
-                const insertData: any = {
-                  user_id: userData.id,
-                  date: newFollowUpDate + 'T00:00:00Z',
-                  created_at: new Date().toISOString()
-                };
-
-                if (isLegacyLead) {
-                  const legacyId = selectedClient.id.toString().replace('legacy_', '');
-                  insertData.lead_id = legacyId;
-                  insertData.new_lead_id = null;
-                } else {
-                  insertData.new_lead_id = selectedClient.id;
-                  insertData.lead_id = null;
-                }
-
-                const { error: followupError } = await supabase
-                  .from('follow_ups')
-                  .insert(insertData);
-
-                if (followupError) {
-                  console.error('Error creating follow-up:', followupError);
-                  toast.error('Failed to save follow-up date');
-                }
-              }
-            } else {
-              // Delete follow-up if date is empty
-              if (currentFollowUp) {
-                const { error: followupError } = await supabase
-                  .from('follow_ups')
-                  .delete()
-                  .eq('id', currentFollowUp.id)
-                  .eq('user_id', userData.id);
-
-                if (followupError) {
-                  console.error('Error deleting follow-up:', followupError);
-                  toast.error('Failed to delete follow-up');
-                }
-              }
-            }
-          }
-        }
-      }
-
-      // Log the changes to lead_changes table (only for regular leads, as legacy leads don't have this table)
-      if (!isLegacyLead && changesToInsert.length > 0) {
-        const { error: historyError } = await supabase
-          .from('lead_changes')
-          .insert(changesToInsert);
-
-        if (historyError) {
-          console.error('Error logging lead changes:', historyError);
-        } else {
-          console.log('Logged', changesToInsert.length, 'field changes');
-        }
-      }
-
-      setShowEditLeadDrawer(false);
-      if (onClientUpdate) await onClientUpdate();
-      toast.success('Lead updated!');
-
-    } catch (error) {
-      console.error('Error in handleSaveEditLead:', error);
-      toast.error('Failed to update lead.');
-    }
-  };
   // Handler for canceling meeting only
   const handleCancelMeeting = async () => {
     if (!selectedClient || !meetingToDelete) return;
@@ -9547,6 +8520,8 @@ const Clients: React.FC<ClientsProps> = ({
             meetingDate: formattedDate,
             meetingTime: formattedTime,
             meetingLocation: locationName,
+            meetingId: canceledMeeting.id ?? null,
+            templateLanguage: isHebrew ? 'he' : 'en',
           });
           // Use template name as subject if available, otherwise fallback
           emailSubject = templateName || `[${selectedClient.lead_number}] - ${selectedClient.name} - Meeting Canceled`;
@@ -10422,6 +9397,8 @@ const Clients: React.FC<ClientsProps> = ({
               meetingTime: formattedNewTime,
               meetingLocation: newLocationName,
               meetingLink: meetingLink || undefined,
+              meetingId: insertedData?.[0]?.id ?? null,
+              templateLanguage: isHebrew ? 'he' : 'en',
             });
 
             // Manually replace old meeting details if the template has those placeholders
@@ -10441,6 +9418,8 @@ const Clients: React.FC<ClientsProps> = ({
               meetingTime: formattedNewTime,
               meetingLocation: newLocationName,
               meetingLink: meetingLink || undefined,
+              meetingId: insertedData?.[0]?.id ?? null,
+              templateLanguage: isHebrew ? 'he' : 'en',
             });
             // Use template name as subject if available
             emailSubject = templateNameForReschedule || `[${selectedClient.lead_number}] - ${selectedClient.name} - Meeting Rescheduled`;
@@ -10483,7 +9462,9 @@ const Clients: React.FC<ClientsProps> = ({
                 meetingDate: formattedNewDate,
                 meetingTime: formattedNewTime,
                 meetingLocation: newLocationName,
-                meetingLink: meetingLink || ''
+                meetingLink: meetingLink || '',
+                meetingId: insertedData?.[0]?.id ?? null,
+                templateLanguage: isHebrew ? 'he' : 'en',
               }
             );
             // Use template name as subject if available
@@ -10690,7 +9671,9 @@ const Clients: React.FC<ClientsProps> = ({
                     meetingDate: formattedDate,
                     meetingTime: formattedTime,
                     meetingLocation: rescheduleFormData.location || '',
-                    meetingLink: newMeeting.link || ''
+                    meetingLink: newMeeting.link || '',
+                    meetingId: newMeeting.id ?? insertedData?.[0]?.id ?? null,
+                    templateLanguage: isHebrew ? 'he' : 'en',
                   }
                 );
 
@@ -15582,7 +14565,7 @@ const Clients: React.FC<ClientsProps> = ({
             setIsDuplicateDropdownOpen={setIsDuplicateDropdownOpen}
             isDuplicateDropdownOpen={isDuplicateDropdownOpen}
             setShowSubLeadDrawer={setShowSubLeadDrawer}
-            openEditLeadDrawer={openEditLeadDrawer}
+            onEditLeadDrawerOpenChange={setShowEditLeadDrawer}
             handleActivation={handleActivation}
             setShowUnactivationModal={setShowUnactivationModal}
             renderStageBadge={(anchor) => getStageBadge(selectedClient.stage, anchor, selectedClient?.stage_name != null || selectedClient?.stage_colour != null ? { name: selectedClient?.stage_name, colour: selectedClient?.stage_colour } : undefined)}
@@ -17311,161 +16294,6 @@ const Clients: React.FC<ClientsProps> = ({
                     ) : (
                       'Yes, delete lead'
                     )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Edit Lead Drawer — z-[320] above client header (z-200) so drawers cover header + datalist popups stack */}
-          {showEditLeadDrawer && (
-            <div
-              className="fixed inset-0 z-[320] flex"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="edit-lead-drawer-title"
-            >
-              {/* Overlay */}
-              <div className="fixed inset-0 bg-black/30" onClick={() => setShowEditLeadDrawer(false)} />
-              {/* Drawer */}
-              <div className="relative z-10 ml-auto flex h-full w-full flex-col bg-base-100 p-8 shadow-2xl animate-slideInRight md:max-w-md">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 id="edit-lead-drawer-title" className="text-2xl font-bold">
-                    Edit Lead
-                  </h3>
-                  <button className="btn btn-ghost btn-sm" onClick={() => setShowEditLeadDrawer(false)}>
-                    <XMarkIcon className="w-6 h-6" />
-                  </button>
-                </div>
-                <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overflow-x-hidden">
-                  {(() => {
-                    const dlId = selectedClient?.id != null ? String(selectedClient.id) : 'draft';
-                    const tagsListId = `edit-lead-tags-${dlId}`;
-                    const sourceListId = `edit-lead-source-${dlId}`;
-                    const languageListId = `edit-lead-language-${dlId}`;
-                    const categoryListId = `edit-lead-category-${dlId}`;
-                    return (
-                      <>
-                  <div className="relative mb-1 focus-within:z-[100]">
-                    <label className="mb-1 block font-semibold">Tags</label>
-                    <input
-                      type="text"
-                      className="input input-bordered w-full"
-                      placeholder="Search or select tags..."
-                      value={editLeadData.tags}
-                      onChange={e => handleEditLeadChange('tags', e.target.value)}
-                      list={tagsListId}
-                      autoComplete="off"
-                    />
-                    <datalist id={tagsListId}>
-                      {tagsList.map((name, index) => (
-                        <option key={`${name}-${index}`} value={name} />
-                      ))}
-                    </datalist>
-                  </div>
-                  <div className="relative mb-1 focus-within:z-[100]">
-                    <label className="mb-1 block font-semibold">Source</label>
-                    <input
-                      type="text"
-                      className="input input-bordered w-full"
-                      placeholder="Search or select a source..."
-                      value={editLeadData.source}
-                      onChange={e => handleSourceInputChange(e.target.value)}
-                      list={sourceListId}
-                      autoComplete="off"
-                    />
-                    <datalist id={sourceListId}>
-                      {sourceOptions.map((source, index) => (
-                        <option key={`${source.id}-${index}`} value={source.name} />
-                      ))}
-                    </datalist>
-                  </div>
-                  <div>
-                    <label className="mb-1 block font-semibold">Client Name</label>
-                    <input type="text" className="input input-bordered w-full" value={editLeadData.name} onChange={e => handleEditLeadChange('name', e.target.value)} />
-                  </div>
-                  <div className="relative mb-1 focus-within:z-[100]">
-                    <label className="mb-1 block font-semibold">Language</label>
-                    <input
-                      type="text"
-                      className="input input-bordered w-full"
-                      placeholder="Search or select a language..."
-                      value={editLeadData.language}
-                      onChange={e => handleEditLeadChange('language', e.target.value)}
-                      list={languageListId}
-                      autoComplete="off"
-                    />
-                    <datalist id={languageListId}>
-                      {languagesList.map((name, index) => (
-                        <option key={`${name}-${index}`} value={name} />
-                      ))}
-                    </datalist>
-                  </div>
-                  <div className="relative mb-1 focus-within:z-[100]">
-                    <label className="mb-1 block font-semibold">Category</label>
-                    <input
-                      type="text"
-                      className="input input-bordered w-full"
-                      placeholder="Search or select a category..."
-                      value={editLeadData.category}
-                      onChange={e => handleEditLeadChange('category', e.target.value)}
-                      list={categoryListId}
-                      autoComplete="off"
-                    />
-                    <datalist id={categoryListId}>
-                      {mainCategories.map((name, index) => (
-                        <option key={`${name}-${index}`} value={name} />
-                      ))}
-                    </datalist>
-                  </div>
-                      </>
-                    );
-                  })()}
-                  <div>
-                    <label className="block font-semibold mb-1">Topic</label>
-                    <input type="text" className="input input-bordered w-full" value={editLeadData.topic} onChange={e => handleEditLeadChange('topic', e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Special Notes</label>
-                    <textarea className="textarea textarea-bordered w-full min-h-[60px]" value={editLeadData.special_notes} onChange={e => handleEditLeadChange('special_notes', e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Case Probability</label>
-                    <ProbabilityFactorsSliders
-                      baselineProbability={selectedClient?.probability ?? null}
-                      value={{
-                        legal_potential: Number((editLeadData as any).legal_potential || 0),
-                        seriousness: Number((editLeadData as any).seriousness || 0),
-                        financial_ability: Number((editLeadData as any).financial_ability || 0),
-                      }}
-                      onChange={(next: ProbabilityFactors) => {
-                        const computed = caseProbabilityFromFactors(next.legal_potential, next.seriousness, next.financial_ability);
-                        setEditLeadData((prev: any) => ({
-                          ...prev,
-                          legal_potential: next.legal_potential,
-                          seriousness: next.seriousness,
-                          financial_ability: next.financial_ability,
-                          probability: computed,
-                        }));
-                      }}
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Number of Applicants</label>
-                    <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.number_of_applicants_meeting} onChange={e => handleEditLeadChange('number_of_applicants_meeting', e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Potential Applicants</label>
-                    <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.potential_applicants_meeting} onChange={e => handleEditLeadChange('potential_applicants_meeting', e.target.value)} />
-                  </div>
-                  <div>
-                    <label className="block font-semibold mb-1">Follow Up Date</label>
-                    <input type="date" className="input input-bordered w-full" value={editLeadData.next_followup} onChange={e => handleEditLeadChange('next_followup', e.target.value)} />
-                  </div>
-                </div>
-                <div className="mt-6 flex justify-end">
-                  <button className="btn btn-primary px-8" onClick={handleSaveEditLead}>
-                    Save
                   </button>
                 </div>
               </div>

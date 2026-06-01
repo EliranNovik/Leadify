@@ -364,6 +364,91 @@ export async function createStaffCalendarEvent(
   return { id: data.id as string, webLink: data.webLink as string | undefined };
 }
 
+/** Local wall-clock string for Graph `dateTime` (paired with `timeZone`, not UTC Z). */
+export function formatLocalDateTimeForGraph(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
+}
+
+export function buildStaffMeetingWindow(
+  date: string,
+  time: string,
+  durationMinutes: number
+): { start: Date; end: Date; graphStart: string; graphEnd: string } {
+  const timeNorm = time.trim().length === 5 ? `${time.trim()}:00` : time.trim();
+  const start = new Date(`${date}T${timeNorm}`);
+  const dur = Number.isFinite(durationMinutes) && durationMinutes > 0 ? durationMinutes : 60;
+  const end = new Date(start.getTime() + dur * 60000);
+  return {
+    start,
+    end,
+    graphStart: formatLocalDateTimeForGraph(start),
+    graphEnd: formatLocalDateTimeForGraph(end),
+  };
+}
+
+/**
+ * PATCH an event in the shared staff calendar. `eventId` must be URL-encoded in the path.
+ */
+export async function updateStaffCalendarEvent(
+  accessToken: string,
+  eventId: string,
+  eventDetails: {
+    subject: string;
+    startDateTime: string;
+    endDateTime: string;
+    locationName?: string | null;
+    description?: string | null;
+  }
+): Promise<void> {
+  const staffCalendarEmail = 'shared-staffcalendar@lawoffice.org.il';
+  const encodedId = encodeURIComponent(eventId);
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(staffCalendarEmail)}/calendar/events/${encodedId}`;
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+  const response = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      subject: eventDetails.subject,
+      start: { dateTime: eventDetails.startDateTime, timeZone: tz },
+      end: { dateTime: eventDetails.endDateTime, timeZone: tz },
+      body: {
+        contentType: 'text',
+        content: eventDetails.description || '',
+      },
+      location: eventDetails.locationName
+        ? { displayName: eventDetails.locationName }
+        : undefined,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    const err = new Error(
+      `Failed to update staff calendar event: ${response.status} ${response.statusText} ${errorText}`
+    );
+    (err as Error & { status?: number }).status = response.status;
+    throw err;
+  }
+}
+
+export function isOutlookEventNotFoundError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const status = (error as { status?: number }).status;
+  if (status === 404) return true;
+  const msg = error instanceof Error ? error.message : String(error);
+  return /ErrorItemNotFound|not found in the store|404/i.test(msg);
+}
+
 // Teams Calling Functions
 export async function initiateTeamsCall(accessToken: string, targetUserId: string, callType: 'audio' | 'video' = 'audio') {
   const url = 'https://graph.microsoft.com/v1.0/communications/calls';

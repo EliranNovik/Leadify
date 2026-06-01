@@ -42,9 +42,16 @@ interface EditLeadDrawerProps {
     next_followup?: string | null;
     eligible?: boolean | null;
     tags?: string[] | null;
+    special_notes?: string | null;
+    subcontractor_fee?: number | string | null;
+    external_firm_id?: string | null;
+    category_id?: string | number | null;
+    source_id?: string | null;
   } | null;
-  onSave?: () => void;
+  onSave?: () => void | Promise<void>;
 }
+
+type FirmOption = { id: string; name: string };
 
 const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, onSave }) => {
   const [editLeadData, setEditLeadData] = useState({
@@ -67,6 +74,9 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
     next_followup: '',
     balance_currency: '₪',
     eligible: true,
+    special_notes: '',
+    subcontractor_fee: '',
+    external_firm_id: '' as string,
   });
   const [currentLeadTags, setCurrentLeadTags] = useState<string>('');
   const [mainCategories, setMainCategories] = useState<string[]>([]);
@@ -74,6 +84,8 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
   const [languagesList, setLanguagesList] = useState<string[]>([]);
   const [tagsList, setTagsList] = useState<string[]>([]);
   const [currencies, setCurrencies] = useState<Array<{id: string, front_name: string, iso_code: string, name: string}>>([]);
+  const [firmOptions, setFirmOptions] = useState<FirmOption[]>([]);
+  const [loadingFirms, setLoadingFirms] = useState(false);
 
   // Fetch reference data on mount
   useEffect(() => {
@@ -109,6 +121,24 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
 
         const sources = await fetchActiveLeadSourceOptions();
         setSourceOptions(sources);
+
+        setLoadingFirms(true);
+        const { data: firmsData, error: firmsError } = await supabase
+          .from('firms')
+          .select('id, name')
+          .eq('is_active', true)
+          .order('name', { ascending: true });
+        if (firmsError) {
+          console.error('Error fetching firms:', firmsError);
+        } else {
+          setFirmOptions(
+            (firmsData ?? []).map((f) => ({
+              id: String(f.id),
+              name: String(f.name ?? '').trim() || 'Unnamed firm',
+            })),
+          );
+        }
+        setLoadingFirms(false);
 
         // Fetch languages for dropdown
         const { data: languagesData, error: languagesError } = await supabase
@@ -196,7 +226,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
       if (isLegacyLead) {
         const { data, error } = await supabase
           .from('leads_lead')
-          .select('name, topic, probability, legal_potential, seriousness, financial_ability, no_of_applicants, total, currency_id, eligibile, source_id, language_id, category_id')
+          .select('name, topic, probability, legal_potential, seriousness, financial_ability, no_of_applicants, total, currency_id, eligibile, source_id, language_id, category_id, subcontractor_fee, external_firm_id, notes')
           .eq('id', leadId)
           .single();
         
@@ -253,6 +283,9 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
             source_id,
             language,
             category_id,
+            subcontractor_fee,
+            external_firm_id,
+            special_notes,
             misc_leadsource!fk_leads_source_id ( id, name )
           `)
           .eq('id', leadId)
@@ -369,6 +402,20 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
         eligible: isLegacyLead 
           ? (leadDetails?.eligibile !== 'no' && leadDetails?.eligibile !== false && lead.eligible !== false)
           : (leadDetails?.eligible !== false && lead.eligible !== false),
+        special_notes: isLegacyLead
+          ? (leadDetails?.notes ?? (lead as any).special_notes ?? '')
+          : (leadDetails?.special_notes ?? (lead as any).special_notes ?? ''),
+        subcontractor_fee:
+          leadDetails?.subcontractor_fee != null
+            ? String(leadDetails.subcontractor_fee)
+            : lead.subcontractor_fee != null
+              ? String(lead.subcontractor_fee)
+              : '',
+        external_firm_id: leadDetails?.external_firm_id
+          ? String(leadDetails.external_firm_id)
+          : lead.external_firm_id
+            ? String(lead.external_firm_id)
+            : '',
       });
       
       // Fetch current lead's tags
@@ -613,7 +660,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
         // Fetch current lead data to compare
         const { data: currentData } = await supabase
           .from('leads_lead')
-          .select('name, topic, probability, legal_potential, seriousness, financial_ability, no_of_applicants, total, next_followup, currency_id, eligibile, source_id, language_id, category_id')
+          .select('name, topic, probability, legal_potential, seriousness, financial_ability, no_of_applicants, total, next_followup, currency_id, eligibile, source_id, language_id, category_id, subcontractor_fee, external_firm_id, notes')
           .eq('id', legacyId)
           .single();
         
@@ -719,6 +766,22 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
               updateData.language_id = null;
             }
           }
+          const currentNotes = currentData.notes ?? '';
+          if (editLeadData.special_notes !== currentNotes) {
+            updateData.notes = editLeadData.special_notes;
+          }
+          const currentSubFee = Number(currentData.subcontractor_fee ?? 0);
+          const nextSubFee = Number(editLeadData.subcontractor_fee) || 0;
+          if (currentSubFee !== nextSubFee) {
+            updateData.subcontractor_fee = nextSubFee;
+          }
+          const currentFirmId = currentData.external_firm_id
+            ? String(currentData.external_firm_id)
+            : '';
+          const nextFirmId = editLeadData.external_firm_id?.trim() || '';
+          if (currentFirmId !== nextFirmId) {
+            updateData.external_firm_id = nextFirmId || null;
+          }
         }
       } else {
         // For new leads
@@ -727,7 +790,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
         // Fetch current lead data to compare
         const { data: currentData } = await supabase
           .from('leads')
-          .select('name, topic, probability, legal_potential, seriousness, financial_ability, number_of_applicants_meeting, potential_applicants_meeting, balance, next_followup, balance_currency, eligible, source_id, language, category_id')
+          .select('name, topic, probability, legal_potential, seriousness, financial_ability, number_of_applicants_meeting, potential_applicants_meeting, balance, next_followup, balance_currency, eligible, source_id, language, category_id, subcontractor_fee, external_firm_id, special_notes')
           .eq('id', leadId)
           .single();
         
@@ -817,6 +880,21 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
           }
           if (editLeadData.eligible !== currentData.eligible) {
             updateData.eligible = editLeadData.eligible;
+          }
+          if (editLeadData.special_notes !== (currentData.special_notes ?? '')) {
+            updateData.special_notes = editLeadData.special_notes;
+          }
+          const currentSubFee = Number(currentData.subcontractor_fee ?? 0);
+          const nextSubFee = Number(editLeadData.subcontractor_fee) || 0;
+          if (currentSubFee !== nextSubFee) {
+            updateData.subcontractor_fee = nextSubFee;
+          }
+          const currentFirmId = currentData.external_firm_id
+            ? String(currentData.external_firm_id)
+            : '';
+          const nextFirmId = editLeadData.external_firm_id?.trim() || '';
+          if (currentFirmId !== nextFirmId) {
+            updateData.external_firm_id = nextFirmId || null;
           }
         }
       }
@@ -1005,7 +1083,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
   if (!isOpen || !lead) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex">
+    <div className="fixed inset-0 z-[320] flex">
       {/* Overlay */}
       <div className="fixed inset-0 bg-black/30" onClick={onClose} />
       {/* Drawer */}
@@ -1121,6 +1199,41 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
           <div>
             <label className="block font-semibold mb-1">Balance (Amount)</label>
             <input type="number" min="0" className="input input-bordered w-full" value={editLeadData.balance} onChange={e => handleEditLeadChange('balance', e.target.value)} />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">Subcontractor fee</label>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              className="input input-bordered w-full"
+              value={editLeadData.subcontractor_fee}
+              onChange={(e) => handleEditLeadChange('subcontractor_fee', e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">Subcontractor firm</label>
+            <select
+              className="select select-bordered w-full"
+              value={editLeadData.external_firm_id}
+              onChange={(e) => handleEditLeadChange('external_firm_id', e.target.value)}
+              disabled={loadingFirms}
+            >
+              <option value="">— None —</option>
+              {firmOptions.map((firm) => (
+                <option key={firm.id} value={firm.id}>
+                  {firm.name}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block font-semibold mb-1">Special notes</label>
+            <textarea
+              className="textarea textarea-bordered w-full min-h-[60px]"
+              value={editLeadData.special_notes}
+              onChange={(e) => handleEditLeadChange('special_notes', e.target.value)}
+            />
           </div>
           <div>
             <label className="block font-semibold mb-1">Follow Up Date</label>

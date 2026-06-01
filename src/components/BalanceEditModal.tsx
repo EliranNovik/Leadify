@@ -5,6 +5,8 @@ import toast from 'react-hot-toast';
 import { convertToNIS } from '../lib/currencyConversion';
 import { getVatRateForLegacyLead } from '../lib/financeUnpaidTotal';
 
+type FirmOption = { id: string; name: string };
+
 interface BalanceEditModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -30,15 +32,42 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
     proposal_total: 0,
     proposal_vat: '',
     subcontractor_fee: 0,
+    external_firm_id: '' as string,
     potential_value: 0,
     potential_applicants_meeting: 0,
-    number_of_applicants_meeting: 1,
+    number_of_applicants_meeting: '' as number | '',
     vat_value: 0
   });
   const [loading, setLoading] = useState(false);
   const [currencies, setCurrencies] = useState<any[]>([]);
   const [loadingCurrencies, setLoadingCurrencies] = useState(false);
+  const [firmOptions, setFirmOptions] = useState<FirmOption[]>([]);
+  const [loadingFirms, setLoadingFirms] = useState(false);
   const initializedForClientRef = useRef<string | null>(null);
+  const firmsLoadedRef = useRef(false);
+
+  const mergeFirmOption = (prev: FirmOption[], firm: FirmOption): FirmOption[] => {
+    if (prev.some((f) => f.id === firm.id)) return prev;
+    return [...prev, firm].sort((a, b) => a.name.localeCompare(b.name));
+  };
+
+  /** Include linked firm in dropdown even when is_active is false */
+  const ensureFirmInOptions = async (firmId: string) => {
+    const id = firmId.trim();
+    if (!id) return;
+    const { data, error } = await supabase
+      .from('firms')
+      .select('id, name')
+      .eq('id', id)
+      .maybeSingle();
+    if (error || !data) return;
+    setFirmOptions((prev) =>
+      mergeFirmOption(prev, {
+        id: String(data.id),
+        name: String(data.name ?? '').trim() || 'Unnamed firm',
+      }),
+    );
+  };
 
   // Helper function to get currency symbol
   const getCurrencySymbol = (currency: string | undefined) => {
@@ -113,7 +142,39 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
   useEffect(() => {
     if (!isOpen) {
       initializedForClientRef.current = null;
+      return;
     }
+    if (firmsLoadedRef.current) return;
+    let cancelled = false;
+    const loadFirms = async () => {
+      setLoadingFirms(true);
+      try {
+        const { data: firmsData, error: firmsError } = await supabase
+          .from('firms')
+          .select('id, name')
+          .eq('is_active', true)
+          .order('name', { ascending: true });
+        if (firmsError) {
+          console.error('Error fetching firms:', firmsError);
+          return;
+        }
+        if (!cancelled) {
+          setFirmOptions(
+            (firmsData ?? []).map((f) => ({
+              id: String(f.id),
+              name: String(f.name ?? '').trim() || 'Unnamed firm',
+            })),
+          );
+          firmsLoadedRef.current = true;
+        }
+      } finally {
+        if (!cancelled) setLoadingFirms(false);
+      }
+    };
+    void loadFirms();
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen]);
 
   useEffect(() => {
@@ -133,8 +194,8 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
       return;
     }
 
-    // Check if we've already initialized for this client
-    if (initializedForClientRef.current === clientId) {
+    const initKey = `${clientId}:${String((selectedClient as any)?.external_firm_id ?? '')}`;
+    if (initializedForClientRef.current === initKey) {
       return;
     }
 
@@ -231,6 +292,9 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
       // For legacy leads: determine which value to use based on currency_id
       let proposalTotalValue = 0;
       let subcontractorFeeValue = 0;
+      let externalFirmId = (selectedClient as any).external_firm_id
+        ? String((selectedClient as any).external_firm_id)
+        : '';
       let applicantsValue: number | null = null;
       let potentialApplicantsValue: number | null = null;
       
@@ -240,7 +304,7 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         try {
           const { data: leadData, error: leadError } = await supabase
             .from('leads_lead')
-            .select('subcontractor_fee, no_of_applicants, potential_applicants')
+            .select('subcontractor_fee, external_firm_id, no_of_applicants, potential_applicants')
             .eq('id', legacyId)
             .single();
           
@@ -249,6 +313,9 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
               subcontractorFeeValue = Number(leadData.subcontractor_fee);
             } else {
               subcontractorFeeValue = Number((selectedClient as any).subcontractor_fee ?? selectedClient.subcontractor_fee ?? 0);
+            }
+            if (leadData.external_firm_id) {
+              externalFirmId = String(leadData.external_firm_id);
             }
 
             if (leadData.no_of_applicants !== null && leadData.no_of_applicants !== undefined) {
@@ -292,9 +359,12 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         try {
           const { data: leadData, error: leadError } = await supabase
             .from('leads')
-            .select('number_of_applicants_meeting, potential_applicants_meeting')
+            .select('number_of_applicants_meeting, potential_applicants_meeting, external_firm_id')
             .eq('id', selectedClient.id)
             .single();
+          if (!leadError && leadData?.external_firm_id) {
+            externalFirmId = String(leadData.external_firm_id);
+          }
           if (!leadError && leadData && leadData.number_of_applicants_meeting !== null && leadData.number_of_applicants_meeting !== undefined) {
             const n = Number(leadData.number_of_applicants_meeting);
             applicantsValue = Number.isFinite(n) ? n : null;
@@ -322,8 +392,11 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         subcontractorFeeRaw: (selectedClient as any).subcontractor_fee ?? selectedClient.subcontractor_fee,
         total_base: (selectedClient as any).total_base,
         total: selectedClient.total,
+        externalFirmId,
         selectedClientKeys: Object.keys(selectedClient)
       });
+
+      await ensureFirmInOptions(externalFirmId);
       
       setFormData({
         currencyId: currencyId,
@@ -331,30 +404,40 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         proposal_total: (isLocked && lockedBaseTotal !== null) ? lockedBaseTotal : proposalTotalValue,
         proposal_vat: vatStatus,
         subcontractor_fee: subcontractorFeeValue,
+        external_firm_id: externalFirmId,
         potential_value: selectedClient.potential_value || selectedClient.potential_total || 0,
         potential_applicants_meeting: potentialApplicantsValue ?? 0,
         number_of_applicants_meeting: (() => {
-          if (applicantsValue !== null) return applicantsValue;
-          const fallback = isLegacyLead
-            ? Number((selectedClient as any).no_of_applicants ?? (selectedClient as any).number_of_applicants_meeting ?? 0)
-            : Number(selectedClient.number_of_applicants_meeting ?? 0);
-          return Number.isFinite(fallback) ? fallback : 0;
+          const raw =
+            applicantsValue !== null
+              ? applicantsValue
+              : isLegacyLead
+                ? (selectedClient as any).no_of_applicants ?? (selectedClient as any).number_of_applicants_meeting
+                : selectedClient.number_of_applicants_meeting;
+          if (raw === null || raw === undefined || raw === '') return '';
+          const n = Number(raw);
+          return Number.isFinite(n) ? n : '';
         })(),
         vat_value: (isLocked && lockedVatTotal !== null) ? lockedVatTotal : (selectedClient.vat_value || 0)
       });
 
-      // Mark as initialized for this client
-      initializedForClientRef.current = clientId;
+      initializedForClientRef.current = initKey;
     };
     
     initializeFormData();
-  }, [isOpen, selectedClient?.id, currencies.length, loadingCurrencies]);
+  }, [isOpen, selectedClient?.id, selectedClient?.external_firm_id, currencies.length, loadingCurrencies]);
 
   const handleInputChange = (field: string, value: any) => {
     setFormData(prev => ({
       ...prev,
       [field]: value
     }));
+  };
+
+  const applicantsForDb = (raw: number | ''): number | null => {
+    if (raw === '') return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
   };
 
   // Handle input focus to select all text for any number value
@@ -414,16 +497,17 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         // For legacy leads: if currency_id is 1 (NIS/ILS), save to total_base; otherwise save to total and convert to NIS for total_base
         const updateData: any = {
           currency_id: currencyId,
-          no_of_applicants: formData.number_of_applicants_meeting,
           potential_total: formData.potential_value.toString(),
           vat: vatColumnValue, // Save VAT status in 'vat' column for legacy leads
           subcontractor_fee: Number(formData.subcontractor_fee) || 0, // Always save subcontractor_fee as a number
+          external_firm_id: formData.external_firm_id?.trim() || null,
           vat_value: persistedVat
         };
         if (formData.potential_applicants_meeting !== null && formData.potential_applicants_meeting !== undefined) {
           updateData.potential_applicants = Number(formData.potential_applicants_meeting) || 0;
         }
-        
+        updateData.no_of_applicants = applicantsForDb(formData.number_of_applicants_meeting);
+
         // Save logic for legacy leads (NET ex-VAT in total/total_base; VAT in vat_value):
         // If currency_id is 1 (NIS): Save only to total_base
         // If currency_id is other than 1: Save to total, and calculate NIS equivalent and save to total_base
@@ -455,7 +539,7 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
           .from('leads_lead')
           .update(updateData)
           .eq('id', selectedClient.id.toString().replace('legacy_', ''))
-          .select('id, total, total_base, subcontractor_fee, currency_id, master_id');
+          .select('id, total, total_base, subcontractor_fee, external_firm_id, currency_id, master_id');
 
         if (error) {
           console.error('❌ Error updating legacy lead:', error);
@@ -499,8 +583,9 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         const updateData: any = {
           currency_id: currencyId, // Save currency ID (like legacy leads)
           subcontractor_fee: formData.subcontractor_fee,
+          external_firm_id: formData.external_firm_id?.trim() || null,
           potential_total: formData.potential_value,
-          number_of_applicants_meeting: formData.number_of_applicants_meeting,
+          number_of_applicants_meeting: applicantsForDb(formData.number_of_applicants_meeting),
           vat_value: persistedVat,
           vat: vatColumnValue
         };
@@ -519,7 +604,7 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
           .from('leads')
           .update(updateData)
           .eq('id', selectedClient.id)
-          .select('id, currency_id, balance'); // Select back to verify
+          .select('id, currency_id, balance, external_firm_id'); // Select back to verify
 
         if (error) {
           console.error('❌ Error updating balance:', error);
@@ -707,6 +792,26 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
               />
             </div>
 
+            {/* Subcontractor firm */}
+            <div className="form-control">
+              <label className="label">
+                <span className="label-text font-medium">Subcontractor firm:</span>
+              </label>
+              <select
+                className="select select-bordered w-full"
+                value={formData.external_firm_id}
+                onChange={(e) => handleInputChange('external_firm_id', e.target.value)}
+                disabled={loadingFirms}
+              >
+                <option value="">— None —</option>
+                {firmOptions.map((firm) => (
+                  <option key={firm.id} value={firm.id}>
+                    {firm.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {/* Potential Value */}
             <div className="form-control">
               <label className="label">
@@ -744,12 +849,18 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
               </label>
               <input
                 type="number"
-                min="1"
+                min="0"
                 className="input input-bordered w-full"
                 value={formData.number_of_applicants_meeting}
-                onChange={(e) => handleInputChange('number_of_applicants_meeting', parseInt(e.target.value) || 1)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  handleInputChange(
+                    'number_of_applicants_meeting',
+                    v === '' ? '' : parseInt(v, 10),
+                  );
+                }}
                 onFocus={handleInputFocus}
-                required
+                placeholder="Optional"
               />
             </div>
           </div>

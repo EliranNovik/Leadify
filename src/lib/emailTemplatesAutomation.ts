@@ -19,6 +19,28 @@ export const MEETING_EMAIL_TYPE_TO_PLACEMENT_CODE: Record<MeetingEmailNotifyType
   rescheduled: 'meeting_rescheduled',
 };
 
+/** Admin → Email Templates Automation rows with `meeting_location_id` NULL (external / IM meetings). */
+export const EXTERNAL_MEETING_EMAIL_TYPE_TO_PLACEMENT_CODE: Record<MeetingEmailNotifyType, string> = {
+  invitation: 'external_meeting_invitation',
+  invitation_jlm: 'external_meeting_invitation_jlm',
+  invitation_tlv: 'external_meeting_invitation_tlv',
+  invitation_tlv_parking: 'external_meeting_invitation_tlv_parking',
+  reminder: 'external_meeting_reminder',
+  cancellation: 'external_meeting_cancellation',
+  rescheduled: 'external_meeting_rescheduled',
+};
+
+/** Internal / staff calendar meetings (MeetingTab “External Meeting” + Calendar internal meetings). */
+export function isStaffOrInternalMeeting(meeting: { calendar_type?: string } | null | undefined): boolean {
+  return meeting?.calendar_type === 'staff';
+}
+
+/** misc_emailtemplate ids for IM / external meeting invitations (EN / HE). */
+export const IM_MEETING_INVITATION_EMAIL_TEMPLATE_IDS = {
+  en: 186,
+  he: 185,
+} as const;
+
 export type EmailAutomationRule = {
   meeting_location_id: number | null;
   placement_code: string;
@@ -186,26 +208,87 @@ export function resolveEmailTemplateIdFromAutomation(
   return fallback?.email_template_id ?? null;
 }
 
+function resolveEmailTemplateIdForMeetingType(
+  cache: EmailAutomationCache,
+  params: {
+    locationId: number | null;
+    emailType: MeetingEmailNotifyType;
+    languageId: number | null;
+    useExternalMeetingPlacements?: boolean;
+  },
+): number | null {
+  const useExternal = params.useExternalMeetingPlacements === true;
+  const placementMap = useExternal
+    ? EXTERNAL_MEETING_EMAIL_TYPE_TO_PLACEMENT_CODE
+    : MEETING_EMAIL_TYPE_TO_PLACEMENT_CODE;
+  const locationId = useExternal ? null : params.locationId;
+
+  const tryCode = (type: MeetingEmailNotifyType) =>
+    resolveEmailTemplateIdFromAutomation(cache, {
+      locationId,
+      placementCode: placementMap[type],
+      languageId: params.languageId,
+    });
+
+  const primary = tryCode(params.emailType);
+  if (primary || !useExternal) return primary;
+
+  // External / IM: if only base invitation is configured, fall back from JLM/TLV variants.
+  if (params.emailType.startsWith('invitation') && params.emailType !== 'invitation') {
+    return tryCode('invitation');
+  }
+
+  return null;
+}
+
 export function resolveMeetingEmailTemplateIds(
   cache: EmailAutomationCache,
   params: {
     locationId: number | null;
     emailType: MeetingEmailNotifyType;
+    /** When true, use external_meeting_* placement codes and ignore location-specific rows. */
+    useExternalMeetingPlacements?: boolean;
   }
 ): { en: number | null; he: number | null } {
-  const placementCode = MEETING_EMAIL_TYPE_TO_PLACEMENT_CODE[params.emailType];
   return {
-    en: resolveEmailTemplateIdFromAutomation(cache, {
+    en: resolveEmailTemplateIdForMeetingType(cache, {
       locationId: params.locationId,
-      placementCode,
+      emailType: params.emailType,
       languageId: cache.languageIds.en,
+      useExternalMeetingPlacements: params.useExternalMeetingPlacements,
     }),
-    he: resolveEmailTemplateIdFromAutomation(cache, {
+    he: resolveEmailTemplateIdForMeetingType(cache, {
       locationId: params.locationId,
-      placementCode,
+      emailType: params.emailType,
       languageId: cache.languageIds.he,
+      useExternalMeetingPlacements: params.useExternalMeetingPlacements,
     }),
   };
+}
+
+export function resolveMeetingEmailTemplateIdsForNotify(
+  cache: EmailAutomationCache,
+  meeting: { calendar_type?: string; location?: string | number | null },
+  allMeetingLocations: Array<{ id: number | string; name?: string | null }>,
+  emailType: MeetingEmailNotifyType,
+): { en: number | null; he: number | null } {
+  const useExternal = isStaffOrInternalMeeting(meeting);
+
+  if (useExternal && emailType.startsWith('invitation')) {
+    return {
+      en: IM_MEETING_INVITATION_EMAIL_TEMPLATE_IDS.en,
+      he: IM_MEETING_INVITATION_EMAIL_TEMPLATE_IDS.he,
+    };
+  }
+
+  const locationId = useExternal
+    ? null
+    : resolveMeetingLocationId(meeting.location, allMeetingLocations);
+  return resolveMeetingEmailTemplateIds(cache, {
+    locationId,
+    emailType,
+    useExternalMeetingPlacements: useExternal,
+  });
 }
 
 export async function fetchMiscEmailTemplatesByIds(

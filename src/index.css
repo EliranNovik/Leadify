@@ -1417,6 +1417,15 @@ body:has(.manual-price-offer-modal-open) .tooltip::after {
   display: none !important;
 }
 
+/* Sales Contribution: row tooltips must not paint above sticky dept title / column headers while scrolling */
+.sc-contribution-table tbody .tooltip {
+  z-index: auto;
+}
+.sc-contribution-table tbody .tooltip::before,
+.sc-contribution-table tbody .tooltip::after {
+  z-index: 35 !important;
+}
+
 /* ============================================
    ALTERNATIVE (GREEN) THEME - Component Level
    ============================================

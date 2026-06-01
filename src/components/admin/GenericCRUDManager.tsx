@@ -60,6 +60,8 @@ interface GenericCRUDManagerProps {
   booleanStorage?: 'native' | 'char';
   /** Optional filter controls rendered beside the search bar */
   filterBar?: React.ReactNode;
+  /** Optional control rendered beside the page title (e.g. help button) */
+  headerExtra?: React.ReactNode;
   /** Apply extra filters to the list query (e.g. month/year) */
   queryModifier?: (query: any) => any;
   /** Change this value to refetch when queryModifier inputs change */
@@ -97,6 +99,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   auditUserIdSource = 'auth',
   booleanStorage = 'char',
   filterBar,
+  headerExtra,
   queryModifier,
   queryModifierKey,
 }) => {
@@ -1913,7 +1916,10 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       {!hideTitle && (
         <div className="flex justify-between items-center mb-6">
           <div>
-            <h2 className="text-2xl font-bold text-base-content">{title}</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl font-bold text-base-content">{title}</h2>
+              {headerExtra}
+            </div>
             {description && <p className="text-base-content/70 mt-1">{description}</p>}
           </div>
           {!hideAddButton && (

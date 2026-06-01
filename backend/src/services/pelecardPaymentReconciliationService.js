@@ -5,6 +5,7 @@
  */
 const supabase = require('../config/supabase');
 const pelecardService = require('./pelecardService');
+const { rateFromPelecardRawResponse } = require('../lib/paymentLinkExchangeRate');
 const { chargeAmountFromPayment } = require('./paymentChargeAmountService');
 const { sendPaymentConfirmationEmail } = require('./paymentConfirmationEmailService');
 
@@ -269,6 +270,11 @@ async function persistPaymentSuccess(payment, secureToken, callbackData, verifyR
   const wasAlreadyPaid = payment.status === 'paid';
   const paidAt = new Date().toISOString();
   const txRef = transactionId ? String(transactionId) : `PELE_${Date.now()}`;
+  const paidRate =
+    rateFromPelecardRawResponse(previousRaw) ??
+    (payment.rate != null && Number.isFinite(Number(payment.rate)) && Number(payment.rate) > 0
+      ? Number(payment.rate)
+      : null);
 
   const linkResult = await withDbRetry('payment_links paid update', async () => {
     const { error: linkError } = await supabase
@@ -278,6 +284,7 @@ async function persistPaymentSuccess(payment, secureToken, callbackData, verifyR
         paid_at: paidAt,
         payment_method: 'pelecard',
         transaction_reference: txRef,
+        ...(paidRate != null ? { rate: paidRate } : {}),
         pelecard_transaction_id: transactionId ? String(transactionId) : null,
         pelecard_confirmation_key:
           callbackData.ConfirmationKey ||

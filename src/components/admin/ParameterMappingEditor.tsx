@@ -10,6 +10,8 @@ export type ParamType =
   | 'mobile_number'
   | 'email'
   | 'meeting_location'
+  | 'location'
+  | 'manual_address'
   | 'meeting_link'
   | 'invoice_link'
   | 'payment_link'
@@ -36,7 +38,22 @@ const PARAM_TYPE_OPTIONS: Array<{ value: ParamType; label: string; description: 
   { value: 'meeting_datetime', label: 'Meeting Date & Time', description: 'Full meeting date and time (e.g., "January 15, 2025 at 10:00 AM")' },
   { value: 'meeting_date', label: 'Meeting Date Only', description: 'Just the meeting date (e.g., "January 15, 2025")' },
   { value: 'meeting_time', label: 'Meeting Time Only', description: 'Just the meeting time (e.g., "10:00 AM")' },
-  { value: 'meeting_location', label: 'Meeting Location', description: 'The location of the meeting' },
+  {
+    value: 'meeting_location',
+    label: 'Meeting Location (resolved)',
+    description:
+      'Resolved meeting place: physical address from tenants_meetinglocation (address_en for English templates when set, else address), custom_address, or location name (not the raw DB column)',
+  },
+  {
+    value: 'location',
+    label: 'Location',
+    description: 'Raw meetings.meeting_location value as stored on the meeting row',
+  },
+  {
+    value: 'manual_address',
+    label: 'Manual Address',
+    description: 'Free-text address from meetings.manual_address on the meeting row',
+  },
   { value: 'meeting_link', label: 'Meeting Link', description: 'The Zoom/Teams meeting link (URL)' },
   {
     value: 'invoice_link',

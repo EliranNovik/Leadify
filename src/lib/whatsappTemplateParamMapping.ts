@@ -27,6 +27,8 @@ export interface TemplateParamDefinition {
     | 'mobile_number'
     | 'email'
     | 'meeting_location'
+    | 'location'
+    | 'manual_address'
     | 'meeting_link'
     | 'invoice_link'
     | 'payment_link'
@@ -111,6 +113,9 @@ export type ProformaWhatsAppParamContext = {
   leadNumber?: string;
 };
 
+const isStaffMeetingClient = (client: any): boolean =>
+  client?.isStaffMeeting === true || client?.id === 'staff-meeting';
+
 export async function generateParamsFromDefinitions(
   definitions: TemplateParamDefinition[],
   client: any,
@@ -124,10 +129,14 @@ export async function generateParamsFromDefinitions(
     getMobileNumber,
     getEmailAddress,
     getMeetingLocation,
+    getMeetingLocationRaw,
+    getMeetingManualAddress,
     getMeetingLink,
     getPaymentLinkForClient,
     sanitizeWhatsAppTemplateVariableText,
   } = await import('./whatsappTemplateParams');
+
+  const staffMeeting = isStaffMeetingClient(client);
 
   const ctx: ProformaWhatsAppParamContext = {
     invoiceLink:
@@ -155,9 +164,13 @@ export async function generateParamsFromDefinitions(
       // Backward compatibility: support old 'contact_name' and 'client_name' types
       case 'contact_name':
       case 'client_name':
-        // Automatically resolves to contact name or client name based on context
-        // The frontend decides whether to use contact or client name
-        value = await getClientOrContactName(client, contactId);
+        if (staffMeeting) {
+          value = sanitizeWhatsAppTemplateVariableText(
+            client?.templateRecipientName || client?.name || 'Participant',
+          );
+        } else {
+          value = await getClientOrContactName(client, contactId);
+        }
         break;
       case 'phone_number':
         value = await getPhoneNumber(client, contactId);
@@ -169,57 +182,109 @@ export async function generateParamsFromDefinitions(
         value = await getEmailAddress(client, contactId);
         break;
       case 'meeting_datetime': {
-        const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-        // Use lead_id if client is a contact, otherwise use client.id
-        const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
-        const meetingDateTime = await getMeetingDateTime(clientIdForMeeting, isLegacyLead);
-        // If no meeting found, use a placeholder instead of empty string
-        value = meetingDateTime || 'your scheduled appointment';
+        if (staffMeeting && client?.meeting_datetime) {
+          value = sanitizeWhatsAppTemplateVariableText(String(client.meeting_datetime));
+        } else {
+          const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+          const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
+          const meetingDateTime = await getMeetingDateTime(clientIdForMeeting, isLegacyLead);
+          value = meetingDateTime || 'your scheduled appointment';
+        }
         break;
       }
       case 'meeting_date': {
-        const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-        // Use lead_id if client is a contact, otherwise use client.id
-        const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
-        const dateTime = await getMeetingDateTime(clientIdForMeeting, isLegacyLead);
-        // Extract just the date part, or use placeholder
-        if (dateTime) {
-          value = dateTime.split(' at ')[0] || dateTime;
+        if (staffMeeting && client?.meeting_date) {
+          value = sanitizeWhatsAppTemplateVariableText(String(client.meeting_date));
         } else {
-          value = 'your scheduled appointment';
+          const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+          const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
+          const dateTime = await getMeetingDateTime(clientIdForMeeting, isLegacyLead);
+          if (dateTime) {
+            value = dateTime.split(' at ')[0] || dateTime;
+          } else if (client?.meeting_date) {
+            value = sanitizeWhatsAppTemplateVariableText(String(client.meeting_date));
+          } else {
+            value = 'your scheduled appointment';
+          }
         }
         break;
       }
       case 'meeting_time': {
-        const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-        // Use lead_id if client is a contact, otherwise use client.id
-        const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
-        
-        // Use dedicated function to get meeting time directly from database
-        const { getMeetingTime } = await import('./whatsappTemplateParams');
-        const meetingTime = clientIdForMeeting ? await getMeetingTime(clientIdForMeeting, isLegacyLead) : '';
-        
-        // Use the time if available, otherwise use placeholder
-        value = meetingTime || 'your scheduled appointment';
+        if (staffMeeting && client?.meeting_time) {
+          value = sanitizeWhatsAppTemplateVariableText(String(client.meeting_time));
+        } else {
+          const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+          const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
+          const { getMeetingTime } = await import('./whatsappTemplateParams');
+          const meetingTime = clientIdForMeeting ? await getMeetingTime(clientIdForMeeting, isLegacyLead) : '';
+          value = meetingTime || client?.meeting_time || 'your scheduled appointment';
+        }
         break;
       }
       case 'meeting_location': {
-        const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-        // Use lead_id if client is a contact, otherwise use client.id
-        const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
-        value = clientIdForMeeting
-          ? await getMeetingLocation(clientIdForMeeting, isLegacyLead)
-          : '';
-        if ((!value || value === '-') && client?.meeting_location) {
+        if (staffMeeting && client?.meeting_location) {
           value = sanitizeWhatsAppTemplateVariableText(String(client.meeting_location));
+        } else {
+          const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+          const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
+          const preferEnglish =
+            client?.preferEnglishMeetingLocation === true ||
+            String(client?.templateLanguage || '')
+              .toLowerCase()
+              .split(/[-_]/)[0] === 'en';
+          value = clientIdForMeeting
+            ? await getMeetingLocation(clientIdForMeeting, isLegacyLead, client?.currentMeetingId ?? null, {
+                preferEnglish,
+              })
+            : '';
+          if ((!value || value === '-') && client?.meeting_location) {
+            value = sanitizeWhatsAppTemplateVariableText(String(client.meeting_location));
+          }
+        }
+        break;
+      }
+      case 'location': {
+        const rawInline =
+          client?.meeting_location_raw != null
+            ? String(client.meeting_location_raw).trim()
+            : '';
+        if (rawInline) {
+          value = sanitizeWhatsAppTemplateVariableText(rawInline);
+        } else if (staffMeeting && client?.meeting_location) {
+          value = sanitizeWhatsAppTemplateVariableText(String(client.meeting_location));
+        } else {
+          const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+          const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
+          const meetingId = client?.currentMeetingId ?? null;
+          value = clientIdForMeeting
+            ? await getMeetingLocationRaw(clientIdForMeeting, isLegacyLead, meetingId)
+            : '';
+        }
+        break;
+      }
+      case 'manual_address': {
+        const manualInline =
+          client?.manual_address != null ? String(client.manual_address).trim() : '';
+        if (manualInline) {
+          value = sanitizeWhatsAppTemplateVariableText(manualInline);
+        } else {
+          const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+          const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
+          const meetingId = client?.currentMeetingId ?? null;
+          value = clientIdForMeeting
+            ? await getMeetingManualAddress(clientIdForMeeting, isLegacyLead, meetingId)
+            : '';
         }
         break;
       }
       case 'meeting_link': {
-        const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-        // Use lead_id if client is a contact, otherwise use client.id
-        const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
-        value = await getMeetingLink(clientIdForMeeting, isLegacyLead);
+        if (staffMeeting) {
+          value = client?.meeting_link ? sanitizeWhatsAppTemplateVariableText(String(client.meeting_link)) : '';
+        } else {
+          const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+          const clientIdForMeeting = client?.isContact && client?.lead_id ? client.lead_id : client?.id;
+          value = await getMeetingLink(clientIdForMeeting, isLegacyLead);
+        }
         break;
       }
       case 'invoice_link':

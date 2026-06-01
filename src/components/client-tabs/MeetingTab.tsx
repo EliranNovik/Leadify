@@ -11,6 +11,8 @@ import {
   isMeetingLocationActive,
   isPhysicalMeetingLocation,
   normalizeMeetingLocationRow,
+  pickTenantMeetingLocationAddress,
+  preferEnglishMeetingTemplateLanguage,
   shouldIncludeMeetingJoinLink,
 } from '../../lib/meetingLocationUtils';
 import {
@@ -41,7 +43,8 @@ import {
   fetchEmailTemplatesAutomationCache,
   fetchMiscEmailTemplatesByIds,
   inferInvitationEmailTypeFromLocationName,
-  resolveMeetingEmailTemplateIds,
+  isStaffOrInternalMeeting,
+  resolveMeetingEmailTemplateIdsForNotify,
   resolveMeetingLocationId,
   type EmailAutomationCache,
 } from '../../lib/emailTemplatesAutomation';
@@ -57,6 +60,13 @@ import { meetingInvitationEmailTemplate } from '../Meetings';
 import MeetingSummaryComponent from '../MeetingSummary';
 import MeetingSummaryNotesModal from './MeetingSummaryNotesModal';
 import { replaceEmailTemplateParams, replaceEmailTemplateParamsSync } from '../../lib/emailTemplateParams';
+import { saveOutgoingEmailRecord } from '../../lib/saveOutgoingEmailRecord';
+import {
+  fetchInternalMeetingWhatsAppTemplateNames,
+  fillWhatsAppTemplateContent,
+  generateMeetingWhatsAppTemplateParameters,
+  selectReminderWhatsAppTemplate,
+} from '../../lib/meetingWhatsAppNotify';
 import TimePicker from '../TimePicker';
 
 const fakeNames = ['Anna Zh', 'Mindi', 'Sarah L', 'David K', '---'];
@@ -647,6 +657,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [rescheduleOption, setRescheduleOption] = useState<'cancel' | 'reschedule'>('cancel');
   const [rescheduleMeetings, setRescheduleMeetings] = useState<any[]>([]);
   const [isReschedulingMeeting, setIsReschedulingMeeting] = useState(false);
+  // Toggle for notifying client via email when scheduling a meeting
+  const [notifyClientOnSchedule, setNotifyClientOnSchedule] = useState(false);
   // Toggle for notifying client via email when rescheduling a meeting
   const [notifyClientOnReschedule, setNotifyClientOnReschedule] = useState(false);
 
@@ -906,6 +918,21 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     return location?.name ?? String(locationId);
   };
 
+  const resolveMeetingLocationTextForTemplate = (
+    meeting: { location?: string | number | null; custom_address?: string | null },
+    preferEnglish: boolean,
+  ): string => {
+    const custom = meeting.custom_address?.trim();
+    if (custom) return custom;
+    const locRow = resolveMeetingLocationRecord(meeting.location);
+    const name = getMeetingLocationName(meeting.location);
+    if (locRow && isPhysicalMeetingLocation(locRow)) {
+      const addr = pickTenantMeetingLocationAddress(locRow, preferEnglish);
+      if (addr) return addr;
+    }
+    return name;
+  };
+
   const openCustomLocationModal = (
     target: 'schedule' | 'reschedule' | 'edit',
     mode: 'link' | 'address',
@@ -1081,6 +1108,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       meetingTime?: string;
       meetingLocation?: string;
       meetingLink?: string;
+      templateLanguage?: string | null;
     }
   ): Promise<string> => {
     if (!template) return '';
@@ -1117,11 +1145,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         leadType: context.client?.lead_type || null,
         meetingDate: context.meetingDate || null,
         meetingTime: context.meetingTime || null,
-        meetingLocation: context.meetingLocation || null,
+        meetingLocationRaw: context.meeting
+          ? String(context.meeting.location ?? '').trim() || null
+          : null,
+        meetingId: context.meeting?.id ?? null,
         meetingLink: context.meetingLink || null,
         meetingAddress: context.meeting
           ? (context.meeting.manual_address?.trim() || '')
           : undefined,
+        templateLanguage: context.templateLanguage ?? null,
       };
 
       htmlBody = await replaceEmailTemplateParams(template, templateContext);
@@ -1197,7 +1229,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     const fetchMeetingLocations = async () => {
       const { data, error } = await supabase
         .from('tenants_meetinglocation')
-        .select('id, name, default_link, address, order, is_active, is_physical_location')
+        .select('id, name, default_link, address, address_en, order, is_active, is_physical_location')
         .order('order', { ascending: true });
 
       console.log('MeetingTab: Fetched meeting locations:', { data, error });
@@ -1208,12 +1240,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     };
 
     const fetchReminderTemplates = async () => {
-      // Fetch both reminder_of_a_meeting and missed_appointment templates
-      // Fetch all languages and normalize in code, since DB might have 'he_IL', 'en_US', etc.
       const { data, error } = await supabase
         .from('whatsapp_templates_v2')
         .select('id, name, language, content, params, param_mapping')
-        .in('name', ['reminder_of_a_meeting', 'missed_appointment'])
+        .in('name', fetchInternalMeetingWhatsAppTemplateNames())
         .eq('active', true);
 
       if (!error && data) {
@@ -2186,8 +2216,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         const cache = emailAutomationCache ?? (await fetchEmailTemplatesAutomationCache());
         if (!emailAutomationCache) setEmailAutomationCache(cache);
 
-        const locationId = resolveMeetingLocationId(meeting.location, allMeetingLocations);
-        const templateIds = resolveMeetingEmailTemplateIds(cache, { locationId, emailType: type });
+        const templateIds = resolveMeetingEmailTemplateIdsForNotify(
+          cache,
+          meeting,
+          allMeetingLocations,
+          type,
+        );
 
         if (!templateIds.en && !templateIds.he) {
           toast.error(
@@ -2301,58 +2335,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     setShowWhatsAppDropdown(null); // Close dropdown
 
     try {
-      // Get the selected template based on reminder type and language
       const templateName = type === 'missed_appointment' ? 'missed_appointment' : 'reminder_of_a_meeting';
       const targetLanguage = selectedLanguage.toLowerCase();
-
-      // Helper function to normalize language code (e.g., 'he_IL' -> 'he', 'en_US' -> 'en')
-      const normalizeLanguageCode = (lang: string | null | undefined): string => {
-        if (!lang) return '';
-        return lang.split('_')[0].toLowerCase();
-      };
-
-      // Template ID mappings:
-      // reminder_of_a_meeting: HE = 1, EN = 2
-      // missed_appointment: EN = 16, HE = 15, RU = 15
-      let selectedTemplate;
-      if (type === 'missed_appointment') {
-        // Use template ID mapping for missed_appointment
-        const templateIdMap: Record<string, number> = {
-          'en': 16,
-          'he': 15,
-          'ru': 15
-        };
-        const templateId = templateIdMap[targetLanguage];
-
-        // Match by ID first (most reliable)
-        selectedTemplate = reminderTemplates.find(t => t.id === templateId);
-
-        // Fallback: match by name and normalized language
-        if (!selectedTemplate) {
-          selectedTemplate = reminderTemplates.find(t => {
-            const templateLangNormalized = normalizeLanguageCode(t.language);
-            return t.name === 'missed_appointment' && templateLangNormalized === targetLanguage;
-          });
-        }
-      } else {
-        // reminder_of_a_meeting: match by ID first
-        const templateIdMap: Record<string, number> = {
-          'he': 1,
-          'en': 2
-        };
-        const templateId = templateIdMap[targetLanguage];
-
-        // Match by ID first (most reliable)
-        selectedTemplate = reminderTemplates.find(t => t.id === templateId);
-
-        // Fallback: match by name and normalized language
-        if (!selectedTemplate) {
-          selectedTemplate = reminderTemplates.find(t => {
-            const templateLangNormalized = normalizeLanguageCode(t.language);
-            return t.name === 'reminder_of_a_meeting' && templateLangNormalized === targetLanguage;
-          });
-        }
-      }
+      const selectedTemplate = selectReminderWhatsAppTemplate(reminderTemplates, type, selectedLanguage, {
+        useExternalMeetingTemplates: isStaffOrInternalMeeting(meeting),
+      });
 
       if (!selectedTemplate) {
         console.error('📱 Template not found:', {
@@ -2360,7 +2347,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           targetLanguage,
           availableTemplates: reminderTemplates.map(t => ({ id: t.id, name: t.name, language: t.language }))
         });
-        toast.error(`Reminder template not found for ${selectedLanguage === 'he' ? 'Hebrew' : 'English'}. Please ensure templates with name "reminder_of_a_meeting" and language "${targetLanguage}" exist in the database.`);
+        toast.error(`Reminder template not found for ${selectedLanguage === 'he' ? 'Hebrew' : 'English'}. Please ensure templates with name "${templateName}" and language "${targetLanguage}" exist in the database.`);
         return;
       }
 
@@ -2426,99 +2413,39 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           ? (typeof client.id === 'string' ? client.id : `legacy_${client.id}`)
           : client.id;
 
-        // Generate template parameters - same approach as SchedulerWhatsAppModal
-        let templateParameters: Array<{ type: string; text: string }> = [];
         const paramCount = Number(selectedTemplate.params) || 0;
+        let templateParameters: Array<{ type: string; text: string }> = [];
 
         if (paramCount > 0) {
           try {
-            console.log('🔍 Getting template param definitions...');
-            const { getTemplateParamDefinitions, generateParamsFromDefinitions } = await import('../../lib/whatsappTemplateParamMapping');
-            const { generateTemplateParameters } = await import('../../lib/whatsappTemplateParams');
-
-            const paramDefinitions = await getTemplateParamDefinitions(selectedTemplate.id, selectedTemplate.name);
-
-            // Create a client object with meeting data for parameter generation
-            const currentMeeting = meeting;
-            const formatDate = (dateStr: string): string => {
-              const [year, month, day] = dateStr.split('-');
-              return `${day}/${month}/${year}`;
-            };
-            const formattedDate = formatDate(currentMeeting.date);
-            const formattedTime = currentMeeting.time ? currentMeeting.time.substring(0, 5) : '';
-
-            const clientForParams = {
-              ...client,
-              meeting_date: formattedDate,
-              meeting_time: formattedTime,
-              meeting_location: locationName,
-            };
-
-            if (paramDefinitions.length > 0) {
-              console.log('✅ Using template-specific param definitions');
-              templateParameters = await generateParamsFromDefinitions(paramDefinitions, clientForParams, contact?.id || null);
-            } else {
-              console.log('⚠️ No specific param definitions, using generic generation');
-              templateParameters = await generateTemplateParameters(paramCount, clientForParams, contact?.id || null);
-            }
-
-            // Override with meeting-specific data
-            // Note: mobile_number, phone_number, and email should use logged-in user's data (handled by helper functions)
-            // Only override meeting-specific parameters
-            if (paramDefinitions.length > 0) {
-              paramDefinitions.forEach((param: any, index: number) => {
-                if (templateParameters[index]) {
-                  let paramValue = templateParameters[index].text || '';
-
-                  switch (param.type) {
-                    case 'meeting_date':
-                      paramValue = formattedDate || '';
-                      break;
-                    case 'meeting_time':
-                      paramValue = formattedTime || '';
-                      break;
-                    case 'meeting_location':
-                      // generateParamsFromDefinitions already set this via getMeetingLocation (address vs name)
-                      paramValue = templateParameters[index].text || '';
-                      break;
-                    case 'meeting_link':
-                      // Same as meeting_location: use getMeetingLink from generateParamsFromDefinitions (DB + fetchTenantMeetingLocationRow)
-                      paramValue = templateParameters[index].text || '';
-                      break;
-                    // mobile_number, phone_number, and email are handled by helper functions
-                    // which correctly fetch the logged-in user's data from tenants_employee table
-                    default:
-                      // Keep the generated value (includes mobile_number, phone_number, email from helper functions)
-                      paramValue = templateParameters[index].text || '';
-                  }
-
-                  templateParameters[index].text = paramValue.trim();
-                }
-              });
-            }
-            // When paramDefinitions is empty, generateTemplateParameters already fills param 3–4 via
-            // getMeetingLocation / getMeetingLink (DB). Never replace param 4 with resolveMeetingLocationRecord's link.
-
-            // Ensure we have exactly the right number of parameters
-            while (templateParameters.length < paramCount) {
-              templateParameters.push({ type: 'text', text: '' });
-            }
-
-            // Backend will handle empty parameter replacement with 'N/A'
-            // Just ensure all parameters are strings (not null/undefined)
-            templateParameters = templateParameters.map((param) => ({
-              type: 'text',
-              text: (param.text || '').trim()
-            }));
-
-            if (templateParameters && templateParameters.length > 0) {
-              console.log(`✅ Template with ${paramCount} param(s) - auto-filled parameters:`, templateParameters);
-            } else {
+            const preferEnglishWhatsApp = preferEnglishMeetingTemplateLanguage(selectedLanguage);
+            templateParameters = await generateMeetingWhatsAppTemplateParameters(
+              selectedTemplate,
+              { ...client },
+              contact?.id || null,
+              {
+                formattedDate,
+                formattedTime,
+                locationName,
+                locationTextForTemplate: resolveMeetingLocationTextForTemplate(
+                  meeting,
+                  preferEnglishWhatsApp,
+                ),
+                meetingLocationRaw: String(meeting.location ?? '').trim(),
+                manualAddress: meeting.manual_address?.trim() ?? '',
+                meetingId: meeting.id,
+                joinLinkForTemplate: meeting.link?.trim() ?? '',
+                templateLanguage: selectedLanguage,
+              },
+              { leadlessStaff: false },
+            );
+            if (templateParameters.length === 0) {
               console.error('❌ Failed to generate template parameters');
               toast.error('Failed to generate template parameters. Please try again.');
               setSendingWhatsAppMeetingId(null);
               return;
             }
+            console.log(`✅ Template with ${paramCount} param(s) - auto-filled parameters:`, templateParameters);
           } catch (error) {
             console.error('❌ Error generating template parameters:', error);
             toast.error(`Error generating template parameters: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -2527,15 +2454,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           }
         }
 
-        // Generate filled template content for display (backend requires message field for templates with params)
-        let filledContent = selectedTemplate.content || '';
-        if (templateParameters && templateParameters.length > 0) {
-          templateParameters.forEach((param, index) => {
-            if (param && param.text) {
-              filledContent = filledContent.replace(new RegExp(`\\{\\{${index + 1}\\}\\}`, 'g'), param.text);
-            }
-          });
-        }
+        const filledContent = fillWhatsAppTemplateContent(selectedTemplate.content || '', templateParameters);
 
         const messagePayload: any = {
           leadId: normalizedLeadId,
@@ -2893,8 +2812,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           meeting,
           meetingDate: formattedDate,
           meetingTime: formattedTime,
-          meetingLocation: locationName,
           meetingLink: joinLink,
+          templateLanguage: languageToUse,
         });
       } else {
         // Fallback to default template if no template found
@@ -2914,8 +2833,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           meeting,
           meetingDate: formattedDate,
           meetingTime: formattedTime,
-          meetingLocation: locationName,
           meetingLink: joinLink,
+          templateLanguage: languageToUse,
         });
       }
 
@@ -3007,170 +2926,25 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       };
       toast.success(emailTypeMessages[currentEmailType]);
 
-      // --- Optimistic upsert to emails table ---
-      // For Outlook calendar invites, the email is sent automatically by Exchange
-      // For non-Outlook, we send the email with ICS attachment
-      // Note: We wrap this in try-catch so database errors don't affect the email sending success
-      try {
-        const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-        const legacyId = isLegacyLead
-          ? (() => {
-            const numeric = parseInt(String(client.id).replace('legacy_', ''), 10);
-            return Number.isNaN(numeric) ? null : numeric;
-          })()
-          : null;
+      const recipientEmailArrayForContact = Array.isArray(recipientEmail) ? recipientEmail : [recipientEmail];
+      const contactByEmail =
+        recipientEmailArrayForContact.length > 0
+          ? contacts.find((c) => c.email === recipientEmailArrayForContact[0])
+          : undefined;
+      const contactId = contactByEmail && contactByEmail.id > 0 ? contactByEmail.id : null;
+      const senderEmail = account.username || account.name || 'noreply@lawoffice.org.il';
 
-        // Find contact_id from recipient email if available
-        let contactId: number | null = null;
-        const recipientEmailArrayForContact = Array.isArray(recipientEmail) ? recipientEmail : [recipientEmail];
-        if (recipientEmailArrayForContact.length > 0) {
-          const contactByEmail = contacts.find(c => c.email === recipientEmailArrayForContact[0]);
-          if (contactByEmail) {
-            contactId = contactByEmail.id;
-          }
-        }
-
-        // Ensure we have a valid sender email (required by database NOT NULL constraint)
-        const senderEmail = account.username || account.name || 'noreply@lawoffice.org.il';
-        if (!senderEmail || senderEmail.trim() === '') {
-          throw new Error('Sender email is required but could not be determined from account');
-        }
-
-        const emailRecord: any = {
-          message_id: `optimistic_${now.getTime()}`,
-          thread_id: null,
-          sender_name: senderName,
-          sender_email: senderEmail,
-          recipient_list: Array.isArray(recipientEmail) ? recipientEmail.join(', ') : recipientEmail,
-          subject,
-          body_html: htmlBody,
-          body_preview: htmlBody.substring(0, 500),
-          sent_at: now.toISOString(),
-          direction: 'outgoing',
-          attachments: null,
-        };
-
-        // Set either client_id OR legacy_id, not both
-        if (isLegacyLead) {
-          emailRecord.legacy_id = legacyId;
-          emailRecord.client_id = null;
-        } else {
-          emailRecord.client_id = client.id;
-          emailRecord.legacy_id = null;
-        }
-
-        // Add contact_id if available
-        if (contactId) {
-          emailRecord.contact_id = contactId;
-        }
-
-        // Use insert since we're using a unique optimistic message_id
-        // The unique constraint is on (message_id, client_id, legacy_id, contact_id)
-        // Since message_id is unique per timestamp, this should always be a new record
-        const { data: insertedData, error: insertError } = await supabase
-          .from('emails')
-          .insert([emailRecord])
-          .select();
-
-        // Debug: Log the insert attempt
-        console.log('📧 MeetingTab email insert attempt:', {
-          emailRecord: {
-            message_id: emailRecord.message_id,
-            client_id: emailRecord.client_id,
-            legacy_id: emailRecord.legacy_id,
-            contact_id: emailRecord.contact_id,
-            sender_email: emailRecord.sender_email,
-            subject: emailRecord.subject,
-            direction: emailRecord.direction,
-            recipient_list: emailRecord.recipient_list,
-            sent_at: emailRecord.sent_at,
-          },
-        });
-
-        if (insertError) {
-          console.error('❌ Failed to insert email record:', {
-            error: insertError,
-            code: insertError.code,
-            message: insertError.message,
-            details: insertError.details,
-            hint: insertError.hint,
-          });
-
-          // If it's a unique constraint violation, try upsert as fallback
-          if (insertError.code === '23505' || insertError.message?.includes('unique') || insertError.message?.includes('duplicate')) {
-            console.log('🔄 Unique constraint violation detected, attempting upsert...');
-            const { data: upsertedData, error: upsertError } = await supabase
-              .from('emails')
-              .upsert([emailRecord], {
-                onConflict: 'message_id',
-                ignoreDuplicates: false
-              })
-              .select();
-
-            if (upsertError) {
-              console.error('❌ Failed to upsert email record:', upsertError);
-              // Don't throw - email was sent successfully, just log the error
-              toast.error('Email sent but failed to save record. It will appear after sync.');
-            } else {
-              console.log('✅ Email record upserted successfully:', upsertedData);
-            }
-          } else if (insertError.code === '42501' && insertError.message?.includes('pending_stage_evaluations')) {
-            // Permission denied for trigger - this is a database configuration issue
-            // The trigger function trigger_stage_evaluation_on_email() needs to be created with SECURITY DEFINER
-            // to run with elevated privileges. This is a backend/database admin issue that needs to be fixed.
-            // 
-            // Workaround: Try inserting without client_id/legacy_id first (trigger won't fire), then update
-            // Note: The update will also trigger the same trigger, so this might still fail, but it's worth trying
-            console.log('🔄 Permission denied for trigger, attempting workaround...');
-            console.warn('⚠️ Database trigger permission issue detected. The trigger function should be created with SECURITY DEFINER.');
-            const emailRecordWithoutContext = { ...emailRecord };
-            delete emailRecordWithoutContext.client_id;
-            delete emailRecordWithoutContext.legacy_id;
-            delete emailRecordWithoutContext.contact_id;
-
-            const { data: insertedWithoutContext, error: insertWithoutContextError } = await supabase
-              .from('emails')
-              .insert([emailRecordWithoutContext])
-              .select();
-
-            if (!insertWithoutContextError && insertedWithoutContext && insertedWithoutContext.length > 0) {
-              // Now try to update with the context
-              const { error: updateError } = await supabase
-                .from('emails')
-                .update({
-                  client_id: emailRecord.client_id,
-                  legacy_id: emailRecord.legacy_id,
-                  contact_id: emailRecord.contact_id,
-                })
-                .eq('message_id', emailRecord.message_id);
-
-              if (updateError) {
-                console.error('❌ Failed to update email record with context:', updateError);
-                toast.error('Email sent but failed to save record. It will appear after sync.');
-              } else {
-                console.log('✅ Email record saved with workaround (insert then update)');
-              }
-            } else {
-              console.error('❌ Workaround also failed:', insertWithoutContextError);
-              toast.error('Email sent but failed to save record. It will appear after sync.');
-            }
-          } else {
-            // For other errors, log but don't throw - email was sent successfully
-            console.error('❌ Database insert failed but email was sent:', insertError);
-            toast.error('Email sent but failed to save record. It will appear after sync.');
-          }
-        } else {
-          console.log('✅ Email record inserted successfully:', insertedData);
-          if (!insertedData || insertedData.length === 0) {
-            console.warn('⚠️ Insert succeeded but no data returned');
-          }
-        }
-      } catch (dbError) {
-        // Database errors should not prevent the success message or refresh
-        // The email was already sent successfully
-        console.error('❌ Error saving email record to database (email was sent successfully):', dbError);
-        toast.error('Email sent but failed to save record. It will appear after sync.');
-      }
+      await saveOutgoingEmailRecord({
+        client,
+        subject,
+        htmlBody,
+        senderName,
+        senderEmail,
+        recipientList: recipientEmail,
+        contactId,
+        sentAt: now,
+        messageId: `meeting_${currentEmailType}_${now.getTime()}`,
+      });
 
       // Stage evaluation is handled automatically by database triggers
       // Note: The email is sent via Graph API directly, so the backend's recordOutgoingEmail is not called
@@ -3904,6 +3678,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         if (result) {
           toast.success('Internal meeting created with external participants.');
           setShowScheduleDrawer(false);
+          setNotifyClientOnSchedule(false);
           setScheduleMeetingFormData({
             date: '',
             time: '09:00',
@@ -3933,59 +3708,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         return;
       }
 
-      // Get current user's employee_id and display_name from database using auth_id
-      let currentUserFullName = '';
-      let currentUserEmployeeId: number | null = null;
-      try {
-        // First get auth_id from Supabase auth
-        const { data: { user: authUser } } = await supabase.auth.getUser();
-        if (authUser?.id) {
-          // Get employee_id from users table using auth_id
-          const { data: userData } = await supabase
-            .from('users')
-            .select(`
-              full_name,
-              employee_id,
-              tenants_employee!employee_id(
-                id,
-                display_name
-              )
-            `)
-            .eq('auth_id', authUser.id)
-            .single();
-
-          if (userData) {
-            // Prefer display_name from tenants_employee if available, otherwise use full_name
-            const employee = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
-            currentUserFullName = employee?.display_name || userData.full_name || '';
-            currentUserEmployeeId = userData.employee_id || null;
-          }
-        }
-
-        // Fallback to email-based lookup if auth_id lookup fails
-        if (!currentUserFullName && account.username) {
-          const { data: userDataByEmail } = await supabase
-            .from('users')
-            .select(`
-              full_name,
-              employee_id,
-              tenants_employee!employee_id(
-                id,
-                display_name
-              )
-            `)
-            .eq('email', account.username)
-            .single();
-
-          if (userDataByEmail) {
-            const employee = Array.isArray(userDataByEmail.tenants_employee) ? userDataByEmail.tenants_employee[0] : userDataByEmail.tenants_employee;
-            currentUserFullName = employee?.display_name || userDataByEmail.full_name || '';
-            currentUserEmployeeId = userDataByEmail.employee_id || null;
-          }
-        }
-      } catch (error) {
-        console.log('Could not fetch user data:', error);
-      }
+      const editorDisplayName = await resolveEditorDisplayName();
 
       let teamsMeetingUrl = '';
       const selectedLocation = allMeetingLocations.find(
@@ -4140,6 +3863,17 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
       const legacyId = isLegacyLead ? client.id.toString().replace('legacy_', '') : null;
 
+      let meetingSchedulerDisplayName = '---';
+      if (isLegacyLead) {
+        const schedulerName = getEmployeeDisplayName(client.meeting_scheduler_id);
+        if (schedulerName && schedulerName !== '--') {
+          meetingSchedulerDisplayName = schedulerName;
+        }
+      } else if (client.scheduler) {
+        const schedulerName = getEmployeeDisplayName(client.scheduler);
+        meetingSchedulerDisplayName = schedulerName !== '--' ? schedulerName : String(client.scheduler);
+      }
+
       const meetingData = {
         client_id: isLegacyLead ? null : client.id,
         legacy_lead_id: isLegacyLead ? legacyId : null,
@@ -4156,9 +3890,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         attendance_probability: scheduleMeetingFormData.attendance_probability,
         complexity: scheduleMeetingFormData.complexity,
         car_number: scheduleMeetingFormData.car_number || '',
-        scheduler: currentUserFullName,
+        scheduler: meetingSchedulerDisplayName,
         last_edited_timestamp: new Date().toISOString(),
-        last_edited_by: currentUserFullName,
+        last_edited_by: editorDisplayName,
         calendar_type: scheduleMeetingFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
         custom_link: selectedLocationId === CUSTOM_LINK_LOCATION_ID ? customLinkValue : null,
         custom_address: selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID ? customAddressValue : null,
@@ -4203,38 +3937,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const managerEmployeeId = getEmployeeIdFromDisplayName(scheduleMeetingFormData.manager);
       const helperEmployeeId = getEmployeeIdFromDisplayName(scheduleMeetingFormData.helper);
 
-      // Resolve scheduler employee ID - use employee_id directly if available (most reliable)
-      let schedulerEmployeeId: number | null = null;
-      if (currentUserEmployeeId !== null) {
-        // Verify the employee exists in allEmployees
-        const employee = allEmployees.find((emp: any) => emp.id === currentUserEmployeeId);
-        if (employee) {
-          schedulerEmployeeId = currentUserEmployeeId;
-          console.log('✅ Found scheduler by employee_id:', schedulerEmployeeId, employee.display_name);
-        } else {
-          console.warn(`⚠️ Employee ID ${currentUserEmployeeId} not found in allEmployees, falling back to display_name matching`);
-          // Fallback to display_name matching
-          schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
-        }
-      } else {
-        // Fallback to display_name matching if employee_id is not available
-        schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
-        if (schedulerEmployeeId === null && currentUserFullName) {
-          console.warn(`⚠️ Could not resolve scheduler employee ID for "${currentUserFullName}" - employee_id was not available and display_name did not match`);
-        }
-      }
-
       // Resolve expert employee ID
       const expertEmployeeId = getEmployeeIdFromDisplayName(client.expert);
 
       // Update client/lead record with roles (but NOT stage - as per user requirement)
       if (isLegacyLead) {
         const updatePayload: any = {};
-
-        // Update scheduler for legacy leads (must be numeric employee ID, not display name)
-        if (schedulerEmployeeId !== null) {
-          updatePayload.meeting_scheduler_id = schedulerEmployeeId;
-        }
 
         // Update manager and helper for legacy leads
         if (managerEmployeeId !== null) {
@@ -4264,11 +3972,6 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       } else {
         const updatePayload: any = {};
 
-        // Update scheduler for new leads
-        if (schedulerEmployeeId !== null) {
-          updatePayload.scheduler = currentUserFullName; // New leads use display name
-        }
-
         // Update manager and helper for new leads (as employee IDs)
         if (managerEmployeeId !== null) {
           updatePayload.manager = managerEmployeeId;
@@ -4293,8 +3996,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         }
       }
 
-      // Automatically send the appropriate meeting invitation email
+      // Send meeting invitation email only when notify toggle is on
       console.log('📧 Checking if we can send automatic invitation:', {
+        notifyClientOnSchedule,
         hasInsertedData: !!insertedData,
         insertedDataLength: insertedData?.length,
         hasClient: !!client,
@@ -4303,7 +4007,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         meetingData: insertedData?.[0]
       });
 
-      if (insertedData && insertedData.length > 0 && client.email) {
+      if (notifyClientOnSchedule && insertedData && insertedData.length > 0 && client.email) {
         const newMeeting: Meeting = {
           id: insertedData[0].id,
           client_id: insertedData[0].client_id,
@@ -4314,7 +4018,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           currency: insertedData[0].meeting_currency,
           amount: insertedData[0].meeting_amount,
           brief: insertedData[0].meeting_brief,
-          scheduler: insertedData[0].scheduler || currentUserFullName,
+          scheduler: insertedData[0].scheduler || meetingSchedulerDisplayName,
           helper: insertedData[0].helper,
           expert: insertedData[0].expert,
           link: insertedData[0].teams_meeting_url || '',
@@ -4352,8 +4056,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       }
 
       // Update UI
+      toast.success(notifyClientOnSchedule ? 'Meeting scheduled and client notified.' : 'Meeting scheduled.');
       setShowScheduleDrawer(false);
       setIsSchedulingMeeting(false);
+      setNotifyClientOnSchedule(false);
 
       // Reset form
       setScheduleMeetingFormData({
@@ -4512,12 +4218,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           console.log('✅ Using cancellation email template');
 
           // Use template with parameter replacement
+          const cancelTemplateLang = clientLanguageId === 2 ? 'he' : 'en';
           emailBody = await formatEmailBody(templateContent, client.name, {
             client,
             meeting: canceledMeeting as any,
             meetingDate: formattedDate,
             meetingTime: formattedTime,
             meetingLocation: locationName,
+            templateLanguage: cancelTemplateLang,
           });
         } else {
           console.warn('⚠️ Using fallback hardcoded email template for cancellation');
@@ -4544,6 +4252,18 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           subject,
           body: emailBody,
           skipSignature: true // Don't include user signature in template emails
+        });
+
+        const cancelSentAt = new Date();
+        await saveOutgoingEmailRecord({
+          client,
+          subject,
+          htmlBody: emailBody,
+          senderName: account?.name || 'Your Team',
+          senderEmail: account.username || 'noreply@lawoffice.org.il',
+          recipientList: client.email,
+          sentAt: cancelSentAt,
+          messageId: `meeting_cancellation_${cancelSentAt.getTime()}`,
         });
       }
 
@@ -4717,31 +4437,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         console.log('ℹ️ No upcoming meetings found to cancel (this is a new meeting, not a reschedule)');
       }
 
-      // Get current user's full_name and employee_id from database
-      let currentUserFullName = '';
-      let currentUserEmployeeId: number | null = null;
-      try {
-        const { data: userData } = await supabase
-          .from('users')
-          .select(`
-            full_name,
-            employee_id,
-            tenants_employee!employee_id(
-              id,
-              display_name
-            )
-          `)
-          .eq('email', account.username)
-          .single();
-        if (userData) {
-          // Prefer display_name from tenants_employee if available, otherwise use full_name
-          const employee = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
-          currentUserFullName = employee?.display_name || userData.full_name || '';
-          currentUserEmployeeId = userData.employee_id || null;
-        }
-      } catch (error) {
-        console.log('Could not fetch user data:', error);
-      }
+      const editorDisplayName = await resolveEditorDisplayName();
 
       // Create the new meeting
       let teamsMeetingUrl = '';
@@ -4891,6 +4587,19 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       }
 
       // Use the isLegacyLead and legacyId already declared at the start of the function (line 2605-2606)
+      let meetingSchedulerDisplayName = '---';
+      if (canceledMeeting?.scheduler && canceledMeeting.scheduler !== '---') {
+        meetingSchedulerDisplayName = canceledMeeting.scheduler;
+      } else if (isLegacyLead) {
+        const schedulerName = getEmployeeDisplayName(client.meeting_scheduler_id);
+        if (schedulerName && schedulerName !== '--') {
+          meetingSchedulerDisplayName = schedulerName;
+        }
+      } else if (client.scheduler) {
+        const schedulerName = getEmployeeDisplayName(client.scheduler);
+        meetingSchedulerDisplayName = schedulerName !== '--' ? schedulerName : String(client.scheduler);
+      }
+
       const meetingData = {
         client_id: isLegacyLead ? null : client.id,
         legacy_lead_id: isLegacyLead ? legacyId : null,
@@ -4907,9 +4616,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         attendance_probability: rescheduleFormData.attendance_probability,
         complexity: rescheduleFormData.complexity,
         car_number: rescheduleFormData.car_number || '',
-        scheduler: currentUserFullName,
+        scheduler: meetingSchedulerDisplayName,
         last_edited_timestamp: new Date().toISOString(),
-        last_edited_by: currentUserFullName,
+        last_edited_by: editorDisplayName,
         calendar_type: 'active_client', // Always active_client for MeetingTab
         custom_link: selectedLocationId === CUSTOM_LINK_LOCATION_ID ? customLinkValue : null,
         custom_address: selectedLocationId === CUSTOM_ADDRESS_LOCATION_ID ? customAddressValue : null,
@@ -5071,12 +4780,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           console.log('✅ Using rescheduled email template');
           // Use template with parameter replacement
           // For rescheduled, we pass both old and new meeting details
+          const rescheduleTemplateLang = clientLanguageId === 2 ? 'he' : 'en';
           emailBody = await formatEmailBody(templateContent, client.name, {
             client,
             meetingDate: formattedNewDate,
             meetingTime: formattedNewTime,
             meetingLocation: newLocationName,
             meetingLink: meetingLink || undefined,
+            templateLanguage: rescheduleTemplateLang,
           });
         } else {
           console.warn('⚠️ Using fallback hardcoded email template for rescheduled meeting');
@@ -5165,6 +4876,18 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             skipSignature: true // Don't include user signature in template emails
           });
         }
+
+        const rescheduleSentAt = new Date();
+        await saveOutgoingEmailRecord({
+          client,
+          subject: emailSubject,
+          htmlBody: emailBody,
+          senderName: userName,
+          senderEmail: account.username || 'noreply@lawoffice.org.il',
+          recipientList: client.email,
+          sentAt: rescheduleSentAt,
+          messageId: `meeting_reschedule_${rescheduleSentAt.getTime()}`,
+        });
       }
 
       toast.success(notifyClientOnReschedule ? 'Meeting rescheduled and client notified.' : 'Meeting rescheduled.');
@@ -5793,7 +5516,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 <div className="absolute right-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-50">
                   {/* Conditional Meeting Invitation based on location */}
                   {(() => {
-                    const location = (meeting.location || '').toLowerCase();
+                    const locationRaw = String(meeting.location ?? '').trim();
+                    const location = (
+                      isStaffOrInternalMeeting(meeting) && locationRaw
+                        ? locationRaw
+                        : getMeetingLocationName(meeting.location)
+                    ).toLowerCase();
 
                     if (location.includes('jrslm') || location.includes('jerusalem')) {
                       return (
@@ -8067,6 +7795,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               setShowAuthRedirectOption(false);
               authRedirectParamsRef.current = null;
               setShowScheduleDrawer(false);
+              setNotifyClientOnSchedule(false);
               setScheduleMeetingFormData({
                 date: '',
                 time: '09:00',
@@ -8111,6 +7840,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 setShowAuthRedirectOption(false);
                 authRedirectParamsRef.current = null;
                 setShowScheduleDrawer(false);
+                setNotifyClientOnSchedule(false);
                 setScheduleMeetingFormData({
                   date: '',
                   time: '09:00',
@@ -8132,6 +7862,17 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
             {/* Scrollable Content */}
             <div className="flex-1 overflow-y-auto p-8 pt-4">
+              {/* Notify Client Toggle */}
+              <div className="mb-6 flex items-center justify-between">
+                <label className="block font-semibold text-base">Notify Client</label>
+                <input
+                  type="checkbox"
+                  className="toggle toggle-primary"
+                  checked={notifyClientOnSchedule}
+                  onChange={(e) => setNotifyClientOnSchedule(e.target.checked)}
+                />
+              </div>
+
               <div className="flex flex-col gap-4">
                 {/* Location */}
                 <div>

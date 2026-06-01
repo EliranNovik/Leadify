@@ -89,7 +89,7 @@ async function resolvePelecardChargeAmount(payment) {
     };
   }
 
-  // Same as proforma/PaymentPage: BOI rows with created_at <= checkout moment (not calendar day).
+  // Latest BOI rows in DB at checkout (created_at <= now) — matches PaymentPage summary + Pelecard init.
   const lockedAt = new Date().toISOString();
   const rates = await boiExchangeRatesService.getRatesAsOf(lockedAt);
   const row = rates.find(

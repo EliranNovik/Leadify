@@ -20,6 +20,7 @@ import CalendarLeadRecentInteractions from './calendar/CalendarLeadRecentInterac
 import { fetchStageNames, getStageName, refreshStageNames, getStageColour } from '../lib/stageUtils';
 import TeamsMeetingModal from './TeamsMeetingModal';
 import StaffMeetingEditModal from './StaffMeetingEditModal';
+import MeetingNotifyControls from './MeetingNotifyControls';
 import DepartmentList from './DepartmentList';
 import SchedulerWhatsAppModal from './SchedulerWhatsAppModal';
 import SchedulerEmailThreadModal from './SchedulerEmailThreadModal';
@@ -754,6 +755,7 @@ const CalendarPage: React.FC = () => {
   const [selectedStaffMeetingForParticipants, setSelectedStaffMeetingForParticipants] = useState<any>(null);
   const [staffParticipantsLoading, setStaffParticipantsLoading] = useState(false);
   const [staffParticipants, setStaffParticipants] = useState<any[]>([]);
+  const [staffMeetingDbId, setStaffMeetingDbId] = useState<number | null>(null);
   const [staffParticipantSegment, setStaffParticipantSegment] = useState<'all' | 'staff' | 'firm' | 'extern'>('all');
   const [staffParticipantSearch, setStaffParticipantSearch] = useState('');
   const [participantRowActionMenuId, setParticipantRowActionMenuId] = useState<string | null>(null);
@@ -768,6 +770,7 @@ const CalendarPage: React.FC = () => {
       setParticipantRowActionMenuId(null);
       setRemovingParticipantId(null);
       setStaffParticipants([]);
+      setStaffMeetingDbId(null);
       setStaffParticipantsLoading(true);
 
       const outlookEventId = m?.teams_meeting_id || m?.teams_id || (typeof m?.id === 'string' && m.id.startsWith('staff-') ? m.id.replace('staff-', '') : null);
@@ -829,7 +832,9 @@ const CalendarPage: React.FC = () => {
       if (typeof dbMeetingId === 'number') {
         const { data: mtMeta } = await supabase
           .from('meetings')
-          .select('internal_meeting_type_id, internal_meeting_types ( id, code, label )')
+          .select(
+            'internal_meeting_type_id, meeting_location, manual_address, custom_address, custom_link, meeting_brief, calendar_type, internal_meeting_types ( id, code, label )',
+          )
           .eq('id', dbMeetingId)
           .maybeSingle();
         if (mtMeta) {
@@ -837,6 +842,12 @@ const CalendarPage: React.FC = () => {
             prev
               ? {
                   ...prev,
+                  calendar_type: mtMeta.calendar_type ?? prev.calendar_type ?? 'staff',
+                  meeting_location: mtMeta.meeting_location ?? prev.meeting_location,
+                  manual_address: mtMeta.manual_address ?? prev.manual_address,
+                  custom_address: mtMeta.custom_address ?? prev.custom_address,
+                  custom_link: mtMeta.custom_link ?? prev.custom_link,
+                  meeting_brief: mtMeta.meeting_brief ?? prev.meeting_brief,
                   internal_meeting_type_id: mtMeta.internal_meeting_type_id ?? prev.internal_meeting_type_id,
                   internal_meeting_types: mtMeta.internal_meeting_types ?? prev.internal_meeting_types,
                 }
@@ -844,6 +855,8 @@ const CalendarPage: React.FC = () => {
           );
         }
       }
+
+      setStaffMeetingDbId(dbMeetingId);
 
       if (!dbMeetingId) {
         // Best-effort: just show the already-rendered attendee names
@@ -2659,7 +2672,7 @@ const CalendarPage: React.FC = () => {
         const meetingsSelect = `
           id, created_at, meeting_date, meeting_time,
           meeting_subject, meeting_brief,
-          meeting_manager, helper, meeting_location,
+          meeting_manager, helper, meeting_location, manual_address,
           teams_id, teams_meeting_url, custom_link, custom_address,
           meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
           attendance_probability, complexity, car_number, calendar_type, extern1, extern2,
@@ -9032,6 +9045,55 @@ const CalendarPage: React.FC = () => {
                       </div>
 
                       <div className="flex flex-shrink-0 items-center gap-1">
+                        <MeetingNotifyControls
+                          variant="toolbar"
+                          modalZIndexClass="z-[60]"
+                          alwaysShow
+                          dbMeetingId={staffMeetingDbId}
+                          meeting={{
+                            id: staffMeetingDbId ?? m.id,
+                            date: String(m.meeting_date || '').trim(),
+                            time: String(m.meeting_time || '').slice(0, 5),
+                            location: m.meeting_location ?? m.location ?? null,
+                            link: m.teams_meeting_url || null,
+                            brief: m.description || m.meeting_brief || null,
+                            calendar_type: 'staff',
+                            custom_link: m.custom_link ?? null,
+                            custom_address: m.custom_address ?? null,
+                            manual_address: m.manual_address ?? null,
+                          }}
+                          client={(() => {
+                            const lead = m.lead;
+                            const hasRealLead =
+                              lead &&
+                              lead.id != null &&
+                              String(lead.id) !== '' &&
+                              !String(lead.id).startsWith('staff-') &&
+                              lead.email !== '--';
+                            if (hasRealLead) {
+                              return {
+                                id: lead.id,
+                                name: lead.name || m.meeting_subject || 'Client',
+                                email: lead.email || undefined,
+                                phone: lead.phone || undefined,
+                                mobile: lead.mobile || undefined,
+                                lead_number: lead.lead_number || undefined,
+                                lead_type: lead.lead_type || undefined,
+                                language: lead.language || undefined,
+                                language_id: lead.language_id ?? undefined,
+                              };
+                            }
+                            return {
+                              id: 'staff-meeting',
+                              isStaffMeeting: true,
+                              name: String(m.meeting_subject || m.lead?.name || 'Internal meeting').trim(),
+                              email: undefined,
+                              phone: undefined,
+                              mobile: undefined,
+                              lead_number: undefined,
+                            };
+                          })()}
+                        />
                         <button
                           type="button"
                           className="btn btn-ghost btn-sm font-medium text-gray-700"

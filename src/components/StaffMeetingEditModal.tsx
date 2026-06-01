@@ -4,6 +4,11 @@ import { supabase } from '../lib/supabase';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { toast } from 'react-hot-toast';
+import {
+  buildStaffMeetingWindow,
+  isOutlookEventNotFoundError,
+  updateStaffCalendarEvent,
+} from '../lib/graph';
 
 interface StaffMeetingEditModalProps {
   isOpen: boolean;
@@ -38,6 +43,15 @@ type FreeParticipant = {
 
 type InternalMeetingTypeRow = { id: number; code: string; label: string; sort_order: number | null };
 
+type MeetingLocationOption = {
+  id: number;
+  name: string;
+  default_link?: string | null;
+  address?: string | null;
+  is_physical_location?: boolean | null;
+  order?: number | null;
+};
+
 const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
   isOpen,
   onClose,
@@ -65,6 +79,7 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
   const [freeDraft, setFreeDraft] = useState<FreeParticipant>({ name: '', email: '', phone: '', notes: '' });
   const [resolvedDbMeetingId, setResolvedDbMeetingId] = useState<number | null>(null);
   const [internalMeetingTypes, setInternalMeetingTypes] = useState<InternalMeetingTypeRow[]>([]);
+  const [meetingLocations, setMeetingLocations] = useState<MeetingLocationOption[]>([]);
   const [formData, setFormData] = useState({
     subject: '',
     date: '',
@@ -72,6 +87,7 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
     duration: '60',
     description: '',
     location: 'Teams Meeting',
+    manualAddress: '',
     internalMeetingTypeId: null as number | null,
   });
 
@@ -86,9 +102,54 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
       fetchEmployees();
       fetchFirmContacts();
       fetchInternalMeetingTypes();
+      fetchMeetingLocations();
       fetchMeetingData();
     }
   }, [isOpen, meeting]);
+
+  const fetchMeetingLocations = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('tenants_meetinglocation')
+        .select('id, name, default_link, address, is_physical_location, order')
+        .order('order', { ascending: true, nullsFirst: false });
+      if (error) throw error;
+      const next = (data || [])
+        .filter((r: { name?: string | null }) => r?.name)
+        .map((r: any) => ({
+          id: Number(r.id),
+          name: String(r.name).trim(),
+          default_link: r.default_link ?? null,
+          address: r.address ?? null,
+          is_physical_location: r.is_physical_location ?? null,
+          order: r.order ?? null,
+        }))
+        .filter((r) => Number.isFinite(r.id) && r.name);
+      setMeetingLocations(next);
+    } catch {
+      setMeetingLocations([]);
+    }
+  };
+
+  const locationSelectOptions = useMemo(() => {
+    const current = formData.location?.trim() || '';
+    const catalogNames = new Set(meetingLocations.map((l) => l.name));
+    const inCatalog =
+      !current ||
+      catalogNames.has(current) ||
+      meetingLocations.some((l) => l.name.toLowerCase() === current.toLowerCase());
+    if (!current || inCatalog) return meetingLocations;
+    return [{ id: 0, name: current, address: null }, ...meetingLocations];
+  }, [meetingLocations, formData.location]);
+
+  const selectedLocationRow = useMemo(() => {
+    const key = formData.location?.trim() || '';
+    return (
+      meetingLocations.find((l) => l.name === key) ||
+      meetingLocations.find((l) => l.name.toLowerCase() === key.toLowerCase()) ||
+      null
+    );
+  }, [meetingLocations, formData.location]);
 
   const fetchInternalMeetingTypes = async () => {
     try {
@@ -133,13 +194,31 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
         nested?.id ??
         (meeting as any).internal_meeting_type?.id;
       const typeIdParsed = typeIdRaw != null && String(typeIdRaw).trim() !== '' ? Number(typeIdRaw) : null;
+      const timeRaw = String(meeting.meeting_time || '').trim();
+      const timeForForm = timeRaw.length >= 5 ? timeRaw.slice(0, 5) : timeRaw;
+      let durationMinutes = 60;
+      const durFromRow = Number((meeting as any).meeting_duration_minutes);
+      if (Number.isFinite(durFromRow) && durFromRow > 0) {
+        durationMinutes = Math.round(durFromRow);
+      } else {
+        const isoStart = (meeting as any).staff_event_start_iso;
+        const isoEnd = (meeting as any).staff_event_end_iso;
+        if (isoStart && isoEnd) {
+          const diff = Math.round(
+            (new Date(isoEnd).getTime() - new Date(isoStart).getTime()) / 60000
+          );
+          if (Number.isFinite(diff) && diff > 0) durationMinutes = diff;
+        }
+      }
+
       setFormData({
         subject: meeting.meeting_subject || meeting.lead?.name || meeting.subject || '',
         date: meeting.meeting_date || '',
-        time: meeting.meeting_time || '',
-        duration: '60',
+        time: timeForForm,
+        duration: String(durationMinutes),
         description: meeting.meeting_brief || meeting.description || '',
         location: meeting.meeting_location || meeting.location || 'Teams Meeting',
+        manualAddress: meeting.manual_address != null ? String(meeting.manual_address).trim() : '',
         internalMeetingTypeId: Number.isFinite(typeIdParsed as number) ? (typeIdParsed as number) : null,
       });
     }
@@ -198,6 +277,7 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
             meeting_location: location || null,
             meeting_subject: subject,
             meeting_brief: (meeting.meeting_brief || meeting.description || '') || null,
+            manual_address: meeting.manual_address?.trim() || null,
             calendar_type: 'staff',
             internal_meeting_type_id:
               typeof meeting.internal_meeting_type_id === 'number' && Number.isFinite(meeting.internal_meeting_type_id)
@@ -216,6 +296,22 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
       const dbMeetingId = await resolveOrCreateDbMeetingId();
       if (!dbMeetingId) return;
       setResolvedDbMeetingId(dbMeetingId);
+
+      const { data: meetingRow } = await supabase
+        .from('meetings')
+        .select('manual_address, meeting_brief')
+        .eq('id', dbMeetingId)
+        .maybeSingle();
+      if (meetingRow) {
+        setFormData((prev) => ({
+          ...prev,
+          manualAddress:
+            meetingRow.manual_address != null
+              ? String(meetingRow.manual_address).trim()
+              : prev.manualAddress,
+          description: prev.description || (meetingRow.meeting_brief ? String(meetingRow.meeting_brief) : ''),
+        }));
+      }
 
       // Load participants from meeting_participants (staff / firm_contacts / free)
       const { data: partData, error: partErr } = await supabase
@@ -454,22 +550,37 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
         throw new Error('Failed to acquire token');
       }
 
-      // Update the meeting in Outlook (staff shared calendar)
-      // Keep it best-effort (sometimes older rows won't have the event id).
       const outlookEventId = meeting?.teams_meeting_id || meeting?.teams_id || meeting?.outlook_event_id;
+      const durationMin = parseInt(formData.duration, 10) || 60;
+      const { start, end, graphStart, graphEnd } = buildStaffMeetingWindow(
+        formData.date,
+        formData.time,
+        durationMin
+      );
+      const startIso = start.toISOString();
+      const endIso = end.toISOString();
+
+      let outlookUpdateSkipped = false;
       if (outlookEventId) {
-        await updateOutlookMeeting(tokenResponse.accessToken, String(outlookEventId), {
-        subject: formData.subject,
-        startDateTime: new Date(`${formData.date}T${formData.time}`).toISOString(),
-        endDateTime: new Date(`${formData.date}T${formData.time}`).toISOString(),
-        description: formData.description,
-        location: formData.location
-      });
+        try {
+          await updateStaffCalendarEvent(tokenResponse.accessToken, String(outlookEventId), {
+            subject: formData.subject,
+            startDateTime: graphStart,
+            endDateTime: graphEnd,
+            description: formData.description,
+            locationName: formData.location,
+          });
+        } catch (outlookErr) {
+          if (isOutlookEventNotFoundError(outlookErr)) {
+            outlookUpdateSkipped = true;
+            console.warn('Outlook event not found; continuing with database update:', outlookErr);
+          } else {
+            throw outlookErr;
+          }
+        }
       }
 
       // Update the meeting in our database tables
-      const startIso = new Date(`${formData.date}T${formData.time}`).toISOString();
-      const endIso = new Date(`${formData.date}T${formData.time}`).toISOString();
 
       const { error: metaUpdateError } = await supabase
         .from('outlook_teams_meetings')
@@ -517,6 +628,7 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
                 meeting_location: location || null,
                 meeting_subject: subject,
                 meeting_brief: formData.description || null,
+                manual_address: formData.manualAddress.trim() || null,
                 calendar_type: 'staff',
                 internal_meeting_type_id: formData.internalMeetingTypeId,
                 teams_meeting_url: meeting?.teams_meeting_url || null,
@@ -540,6 +652,7 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
             meeting_time: formData.time,
             meeting_location: formData.location,
             meeting_brief: formData.description || null,
+            manual_address: formData.manualAddress.trim() || null,
             internal_meeting_type_id: formData.internalMeetingTypeId,
             last_edited_timestamp: new Date().toISOString(),
             ...(outlookEventId ? { teams_id: String(outlookEventId) } : {}),
@@ -598,7 +711,11 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
         return;
       }
 
-      toast.success('Internal meeting updated successfully!');
+      if (outlookUpdateSkipped) {
+        toast.success('Saved in app. Outlook event was missing or already deleted.', { duration: 8000 });
+      } else {
+        toast.success('Internal meeting updated successfully!');
+      }
       // Clear draft so it won't be re-added on next update.
       setFreeDraft({ name: '', email: '', phone: '', notes: '' });
       onUpdate();
@@ -742,7 +859,7 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
 
   const deleteOutlookMeeting = async (accessToken: string, meetingId: string) => {
     const staffCalendarEmail = 'shared-staffcalendar@lawoffice.org.il';
-    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(staffCalendarEmail)}/calendar/events/${meetingId}`;
+    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(staffCalendarEmail)}/calendar/events/${encodeURIComponent(meetingId)}`;
     
     const response = await fetch(url, {
       method: 'DELETE',
@@ -759,49 +876,6 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
       const error = await response.json();
       throw new Error(error.error?.message || `Failed to delete meeting: ${response.status}`);
     }
-  };
-
-  const updateOutlookMeeting = async (accessToken: string, meetingId: string, meetingDetails: any) => {
-    // Update the meeting in the shared staff calendar, not the user's personal calendar
-    const staffCalendarEmail = 'shared-staffcalendar@lawoffice.org.il';
-    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(staffCalendarEmail)}/calendar/events/${meetingId}`;
-    console.log('🔧 Updating meeting in Outlook:', url);
-    console.log('🔧 Meeting ID:', meetingId);
-    console.log('🔧 Meeting details:', meetingDetails);
-    
-    const response = await fetch(url, {
-      method: 'PATCH',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        subject: meetingDetails.subject,
-        start: {
-          dateTime: meetingDetails.startDateTime,
-          timeZone: 'UTC'
-        },
-        end: {
-          dateTime: meetingDetails.endDateTime,
-          timeZone: 'UTC'
-        },
-        body: {
-          content: meetingDetails.description,
-          contentType: 'text'
-        },
-        location: {
-          displayName: meetingDetails.location
-        }
-      })
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('❌ Outlook update failed:', response.status, response.statusText, errorText);
-      throw new Error(`Failed to update meeting in Outlook: ${errorText}`);
-    }
-
-    return response.json();
   };
 
   if (!isOpen) return null;
@@ -880,13 +954,41 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Location
             </label>
-            <input
-              type="text"
+            <select
+              className="select select-bordered w-full"
               value={formData.location}
-              onChange={(e) => setFormData(prev => ({ ...prev, location: e.target.value }))}
-              className="input input-bordered w-full"
-              placeholder="Enter meeting location"
+              onChange={(e) => setFormData((prev) => ({ ...prev, location: e.target.value }))}
+              disabled={locationSelectOptions.length === 0}
+            >
+              {locationSelectOptions.length === 0 ? (
+                <option value={formData.location}>{formData.location || '—'}</option>
+              ) : (
+                locationSelectOptions.map((loc) => (
+                  <option key={`${loc.id}-${loc.name}`} value={loc.name}>
+                    {loc.name}
+                  </option>
+                ))
+              )}
+            </select>
+            {selectedLocationRow?.address ? (
+              <p className="text-xs text-gray-500 mt-1 truncate">{String(selectedLocationRow.address)}</p>
+            ) : null}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Manual address
+            </label>
+            <textarea
+              value={formData.manualAddress}
+              onChange={(e) => setFormData((prev) => ({ ...prev, manualAddress: e.target.value }))}
+              className="textarea textarea-bordered w-full min-h-[72px]"
+              placeholder="Street, city, floor, parking instructions…"
+              rows={2}
             />
+            <p className="text-xs text-gray-500 mt-1">
+              Optional. Used in email and WhatsApp notify templates when set.
+            </p>
           </div>
 
           <div>

@@ -392,7 +392,6 @@ const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({ isOpen, onClose, le
                   setIsDuplicateDropdownOpen={() => {}}
                   isDuplicateDropdownOpen={false}
                   setShowSubLeadDrawer={() => {}}
-                  openEditLeadDrawer={() => {}}
                   handleActivation={handleActivation}
                   setShowUnactivationModal={() => {}}
                   renderStageBadge={getStageBadge}

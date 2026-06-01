@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { createPelecardPaymentSession, fetchPaymentStatus } from '../lib/pelecardPaymentApi';
@@ -13,7 +13,7 @@ import {
   currencyInputFromLegacyProforma,
   currencyInputFromNewPayment,
   fetchProformaExchangeRateInfo,
-  lockedBoiChargeFromPaymentLinkRaw,
+  lockedBoiChargeFromPaymentLinkRow,
   type ProformaExchangeRateInfo,
 } from '../lib/proformaExchangeRate';
 import { isLegacyPaymentLinkRow } from '../lib/paymentLinkLeadRef';
@@ -84,6 +84,7 @@ interface PaymentLink {
     phone?: string;
   };
   paid_at?: string | null;
+  rate?: number | string | null;
   pelecard_raw_response?: {
     pelecardCharge?: {
       rateToIls?: number;
@@ -222,18 +223,18 @@ function PaymentDoneStamp({ paidAt }: { paidAt: string | null }) {
 function CheckoutSecuredStamp({ iconOnly = false }: { iconOnly?: boolean }) {
   return (
     <div
-      className={`inline-flex items-center justify-center rounded-md bg-emerald-600 shadow-sm ring-1 ring-emerald-700/10 ${
+      className={`inline-flex items-center justify-center rounded-full bg-white ${
         iconOnly ? 'p-2' : 'gap-1.5 px-3 py-1.5'
       }`}
       role="img"
       aria-label="Secured checkout"
     >
       <ShieldCheckIcon
-        className={`shrink-0 text-white ${iconOnly ? 'h-5 w-5' : 'h-4 w-4'}`}
+        className={`shrink-0 text-emerald-600 ${iconOnly ? 'h-5 w-5' : 'h-4 w-4'}`}
         strokeWidth={2}
       />
       {!iconOnly && (
-        <span className="text-xs font-semibold text-white tracking-wide">Secured</span>
+        <span className="text-xs font-medium text-gray-700">Secured</span>
       )}
     </div>
   );
@@ -417,17 +418,16 @@ const PaymentPage: React.FC = () => {
     fetchPaymentLink();
   }, [token]);
 
-  useEffect(() => {
-    if (!paymentLink) {
-      setExchangeInfo(null);
-      return;
-    }
+  const loadCheckoutExchange = useCallback(
+    async (options?: { forceBoiRefresh?: boolean }) => {
+      if (!paymentLink) {
+        setExchangeInfo(null);
+        return;
+      }
 
-    let cancelled = false;
-    const loadExchange = async () => {
+      const paid = isPaymentComplete(paymentLink);
       setExchangeLoading(true);
       try {
-        const lockedBoiCharge = lockedBoiChargeFromPaymentLinkRaw(paymentLink.pelecard_raw_response);
         const info = await fetchProformaExchangeRateInfo({
           currency: isLegacyPaymentLink(paymentLink)
             ? currencyInputFromLegacyProforma({
@@ -443,28 +443,30 @@ const PaymentPage: React.FC = () => {
                 },
                 paymentLink.payment_plans?.currency,
               ),
-          paid: isPaymentComplete(paymentLink),
+          paid,
           paidAt: getPaymentPaidAt(paymentLink),
           subtotal: Number(paymentLink.amount) || 0,
           vat: Number(paymentLink.vat_amount) || 0,
           total: Number(paymentLink.total_amount) || 0,
-          paymentPlanId: paymentLink.payment_plan_id,
-          lockedBoiCharge,
+          paymentPlanId: paid ? paymentLink.payment_plan_id : null,
+          lockedBoiCharge: paid ? lockedBoiChargeFromPaymentLinkRow(paymentLink) : null,
+          useLatestBoiForUnpaid: !paid,
+          forceLatestBoiRefresh: options?.forceBoiRefresh ?? !paid,
         });
-        if (!cancelled) setExchangeInfo(info);
+        setExchangeInfo(info);
       } catch (err) {
         console.error('[PaymentPage] exchange rate:', err);
-        if (!cancelled) setExchangeInfo(null);
+        setExchangeInfo(null);
       } finally {
-        if (!cancelled) setExchangeLoading(false);
+        setExchangeLoading(false);
       }
-    };
+    },
+    [paymentLink],
+  );
 
-    void loadExchange();
-    return () => {
-      cancelled = true;
-    };
-  }, [paymentLink]);
+  useEffect(() => {
+    void loadCheckoutExchange();
+  }, [loadCheckoutExchange]);
 
   const isAlreadyPaid = paymentLink ? isPaymentComplete(paymentLink) : false;
   const paidAt = paymentLink ? getPaymentPaidAt(paymentLink) : null;
@@ -491,6 +493,8 @@ const PaymentPage: React.FC = () => {
         throw new Error(result.error || 'Failed to create payment session');
       }
       setPaymentUrl(result.paymentUrl);
+      // Pelecard session was built with fresh BOI — refresh summary NIS to match iframe charge.
+      await loadCheckoutExchange({ forceBoiRefresh: true });
     } catch (error) {
       console.error('[Pelecard] Session error:', error);
       const raw = error instanceof Error ? error.message : 'Could not start payment';
@@ -617,12 +621,13 @@ const PaymentPage: React.FC = () => {
 
   return (
     <div className="min-h-screen lg:h-screen flex flex-col lg:flex-row overflow-x-hidden lg:overflow-hidden bg-white">
-      <aside
-        className="hidden lg:flex lg:w-[42%] lg:max-w-[520px] lg:shrink-0 flex-col text-white relative overflow-y-auto"
-        style={SUMMARY_GRADIENT_STYLE}
-      >
-        <PaymentSummaryGradientDecor />
-        <div className="relative flex flex-col min-h-full p-10 xl:p-12 z-[1]">
+      <div className="hidden lg:flex lg:w-[42%] lg:max-w-[520px] lg:shrink-0 lg:min-h-0 lg:self-stretch p-1 xl:p-1.5 box-border">
+        <aside
+          className="relative flex flex-1 flex-col w-full min-h-0 text-white overflow-hidden overflow-y-auto rounded-3xl"
+          style={SUMMARY_GRADIENT_STYLE}
+        >
+          <PaymentSummaryGradientDecor />
+          <div className="relative flex flex-col min-h-full p-10 xl:p-12 z-[1]">
           <div className="flex-1">
             <CheckoutSummaryHeading
               summary={summaryData}
@@ -647,15 +652,16 @@ const PaymentPage: React.FC = () => {
           <p className="text-[11px] text-white/50 leading-relaxed max-w-xs shrink-0">
             Processed securely by Pelecard. Card details are not stored on our servers.
           </p>
-        </div>
-      </aside>
+          </div>
+        </aside>
+      </div>
 
       <main className="relative flex-1 flex flex-col w-full max-lg:overflow-visible lg:min-h-0 lg:overflow-y-auto lg:overflow-hidden bg-white">
         <div className="pointer-events-none absolute top-8 right-12 xl:right-16 z-20 hidden lg:block">
           <CheckoutSecuredStamp />
         </div>
         <div
-          className="lg:hidden shrink-0 relative overflow-x-hidden text-white px-5 pt-8 pb-8"
+          className="lg:hidden shrink-0 relative mx-1.5 mt-1.5 mb-0.5 overflow-hidden rounded-3xl text-white px-5 pt-8 pb-8"
           style={SUMMARY_GRADIENT_STYLE}
         >
           <PaymentSummaryGradientDecor />

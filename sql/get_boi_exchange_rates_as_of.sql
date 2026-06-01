@@ -101,12 +101,13 @@ AS $$
     'pelecard_charge', pl.pelecard_raw_response -> 'pelecardCharge',
     'link_paid_at', pl.paid_at,
     'link_updated_at', pl.updated_at,
-    'locked_at', pl.pelecard_raw_response -> 'pelecardCharge' -> 'lockedAt'
+    'locked_at', pl.pelecard_raw_response -> 'pelecardCharge' -> 'lockedAt',
+    'stored_rate', pl.rate
   )
   FROM public.payment_links pl
   WHERE pl.payment_plan_id = p_payment_plan_id
     AND pl.status IN ('processing', 'paid')
-  ORDER BY (pl.pelecard_raw_response ? 'pelecardCharge') DESC, pl.updated_at DESC
+  ORDER BY (pl.rate IS NOT NULL) DESC, (pl.pelecard_raw_response ? 'pelecardCharge') DESC, pl.updated_at DESC
   LIMIT 1;
 $$;
 
@@ -134,12 +135,17 @@ AS $$
         'pelecard_charge', pl.pelecard_raw_response -> 'pelecardCharge',
         'link_paid_at', pl.paid_at,
         'link_updated_at', pl.updated_at,
-        'locked_at', pl.pelecard_raw_response -> 'pelecardCharge' -> 'lockedAt'
+        'locked_at', pl.pelecard_raw_response -> 'pelecardCharge' -> 'lockedAt',
+        'stored_rate', pl.rate
       ) AS ctx
     FROM public.payment_links pl
     WHERE pl.payment_plan_id = ANY (p_payment_plan_ids)
       AND pl.status IN ('processing', 'paid')
-    ORDER BY pl.payment_plan_id, (pl.pelecard_raw_response ? 'pelecardCharge') DESC, pl.updated_at DESC
+    ORDER BY
+      pl.payment_plan_id,
+      (pl.rate IS NOT NULL) DESC,
+      (pl.pelecard_raw_response ? 'pelecardCharge') DESC,
+      pl.updated_at DESC
   ) sub;
 $$;
 

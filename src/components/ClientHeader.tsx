@@ -78,6 +78,7 @@ import { caseProbabilityFromFactors, type ProbabilitySlidersValues } from './cli
 import DocumentModal from './DocumentModal';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
 import ClientHeaderTotalInNis from './ClientHeaderTotalInNis';
+import EditLeadDrawer from './EditLeadDrawer';
 
 // Lightweight in-memory caches to avoid refetching static dropdown data on mobile.
 let cachedLeadSources: Array<{ id: string; name: string }> | null = null;
@@ -155,7 +156,10 @@ interface ClientHeaderProps {
     setIsDuplicateDropdownOpen: (isOpen: boolean) => void;
     isDuplicateDropdownOpen: boolean;
     setShowSubLeadDrawer: (show: boolean) => void;
-    openEditLeadDrawer: () => void;
+    /** @deprecated Use built-in edit drawer; kept for pages that host their own drawer */
+    openEditLeadDrawer?: () => void;
+    /** Notifies parent when the header-hosted edit drawer opens/closes */
+    onEditLeadDrawerOpenChange?: (open: boolean) => void;
     handleActivation: () => void;
     setShowUnactivationModal: (show: boolean) => void;
     renderStageBadge: (anchor?: 'badge' | 'mobile' | 'desktop') => React.ReactNode;
@@ -227,7 +231,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     setIsDuplicateDropdownOpen,
     isDuplicateDropdownOpen,
     setShowSubLeadDrawer,
-    openEditLeadDrawer,
+    openEditLeadDrawer: openEditLeadDrawerProp,
+    onEditLeadDrawerOpenChange,
     handleActivation,
     setShowUnactivationModal,
     renderStageBadge,
@@ -271,6 +276,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [isLoadingLeadSubEfforts, setIsLoadingLeadSubEfforts] = useState(false);
     const [isSubEffortsModalOpen, setIsSubEffortsModalOpen] = useState(false);
     const [subEffortsModalRowId, setSubEffortsModalRowId] = useState<string | number | null>(null);
+    const [editLeadDrawerOpen, setEditLeadDrawerOpen] = useState(false);
+
+    const setEditLeadDrawerOpenState = useCallback(
+        (open: boolean) => {
+            setEditLeadDrawerOpen(open);
+            onEditLeadDrawerOpenChange?.(open);
+        },
+        [onEditLeadDrawerOpenChange],
+    );
+
+    const handleOpenEditLeadDrawer = useCallback(() => {
+        if (openEditLeadDrawerProp) {
+            openEditLeadDrawerProp();
+        } else {
+            setEditLeadDrawerOpenState(true);
+        }
+    }, [openEditLeadDrawerProp, setEditLeadDrawerOpenState]);
+
     const [isEditingCategory, setIsEditingCategory] = useState(false);
     /** Unpaid finance plan totals by currency (from payment_plans / finances_paymentplanrow, excludes paid rows). */
     const [unpaidByCurrency, setUnpaidByCurrency] = useState<UnpaidByCurrencyMap | null>(null);
@@ -2169,7 +2192,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     <li>
                         <a
                             onClick={() => {
-                                openEditLeadDrawer();
+                                handleOpenEditLeadDrawer();
                                 blurDropdown();
                             }}
                         >
@@ -5142,6 +5165,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         </div>,
                         document.body
                     )}
+            {!openEditLeadDrawerProp && selectedClient && (
+                <EditLeadDrawer
+                    isOpen={editLeadDrawerOpen}
+                    onClose={() => setEditLeadDrawerOpenState(false)}
+                    lead={selectedClient}
+                    onSave={() => refreshClientData(selectedClient.id)}
+                />
+            )}
         </div>
     );
 };

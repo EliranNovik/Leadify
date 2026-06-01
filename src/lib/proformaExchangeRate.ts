@@ -1,8 +1,9 @@
 /**
  * Proforma / payment NIS conversion — bulletproof rules:
- * 1) Unpaid / checkout preview → pelecardCharge lock when session exists
- * 2) Paid → BOI rows with created_at <= payment instant (link_paid_at / paid_at)
- * 3) Paid + lock rateDate matches payment-time BOI → use chargeTotalNis for exact Pelecard total
+ * 1) Paid with payment_links.rate (or pelecardCharge lock) → use stored rate
+ * 2) Unpaid / checkout preview → pelecardCharge lock when session exists
+ * 3) Paid without stored rate → BOI rows with created_at <= payment instant (fallback)
+ * 4) Paid + lock rateDate matches payment-time BOI → use chargeTotalNis for exact Pelecard total
  */
 import { supabase } from './supabase';
 import {
@@ -70,12 +71,21 @@ export type FetchProformaExchangeRateParams = {
   preloadedExchangeContext?: PaymentPlanExchangeContext | null;
   /** When set, skips live BOI lookup and uses the checkout charge snapshot. */
   lockedBoiCharge?: LockedBoiChargeSnapshot | null;
+  /**
+   * Public payment checkout: always use latest BOI in DB (ignore payment_links lock / rate).
+   * Paid rows are unchanged.
+   */
+  useLatestBoiForUnpaid?: boolean;
+  /** Bust BOI as-of cache so a new sync is picked up immediately. */
+  forceLatestBoiRefresh?: boolean;
 };
 
 export type PaymentPlanExchangeContext = {
   pelecardCharge: LockedBoiChargeSnapshot | null;
   linkPaidAt: string | null;
   lockedAt: string | null;
+  /** payment_links.rate — ILS per 1 unit of foreign currency */
+  storedRate: number | null;
 };
 
 function toDateOnly(iso: string | null | undefined): string | null {
@@ -120,6 +130,50 @@ export function lockedBoiChargeFromPaymentLinkRaw(
   return parseLockedBoiCharge(raw.pelecardCharge);
 }
 
+/** Prefer payment_links.rate, then pelecardCharge JSON (PaymentPage direct row load). */
+export function lockedBoiChargeFromPaymentLinkRow(row: {
+  rate?: number | string | null;
+  paid_at?: string | null;
+  pelecard_raw_response?: unknown;
+}): LockedBoiChargeSnapshot | null {
+  const fromJson = lockedBoiChargeFromPaymentLinkRaw(row.pelecard_raw_response);
+  const rateNum = row.rate != null ? Number(row.rate) : NaN;
+  if (Number.isFinite(rateNum) && rateNum > 0) {
+    if (fromJson) return { ...fromJson, rateToIls: rateNum };
+    if (row.paid_at) {
+      return {
+        rateToIls: rateNum,
+        rateDate: getJerusalemDateFromTimestamp(row.paid_at),
+      };
+    }
+  }
+  return fromJson;
+}
+
+function parseStoredRate(raw: unknown): number | null {
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function mergeStoredRateIntoCharge(
+  ctx: PaymentPlanExchangeContext | null,
+): LockedBoiChargeSnapshot | null {
+  if (!ctx) return null;
+  const storedRate = ctx.storedRate;
+  const charge = ctx.pelecardCharge;
+  if (storedRate != null && storedRate > 0) {
+    if (charge) return { ...charge, rateToIls: storedRate };
+    if (ctx.linkPaidAt) {
+      return {
+        rateToIls: storedRate,
+        rateDate: getJerusalemDateFromTimestamp(ctx.linkPaidAt),
+      };
+    }
+  }
+  return charge;
+}
+
 function parsePaymentPlanId(raw: number | string | null | undefined): number | null {
   if (raw == null || raw === '') return null;
   const id = typeof raw === 'number' ? raw : parseInt(String(raw), 10);
@@ -137,6 +191,7 @@ function parsePaymentPlanExchangeContext(raw: unknown): PaymentPlanExchangeConte
         : null,
     lockedAt:
       obj.locked_at != null && String(obj.locked_at).trim() ? String(obj.locked_at) : null,
+    storedRate: parseStoredRate(obj.stored_rate ?? obj.storedRate),
   };
 }
 
@@ -163,7 +218,7 @@ async function fetchPaymentPlanExchangeContextDirect(
 ): Promise<PaymentPlanExchangeContext | null> {
   const { data: rows, error: directError } = await supabase
     .from('payment_links')
-    .select('paid_at, pelecard_raw_response, updated_at')
+    .select('paid_at, rate, pelecard_raw_response, updated_at')
     .eq('payment_plan_id', planId)
     .in('status', ['processing', 'paid'])
     .order('updated_at', { ascending: false })
@@ -171,15 +226,21 @@ async function fetchPaymentPlanExchangeContextDirect(
 
   if (directError || !rows?.length) return null;
 
+  const withStoredRate = rows.find((row) => {
+    const r = row.rate != null ? Number(row.rate) : NaN;
+    return Number.isFinite(r) && r > 0;
+  });
   const withCharge = rows.find((row) =>
     Boolean(lockedBoiChargeFromPaymentLinkRaw(row.pelecard_raw_response)),
   );
-  const row = withCharge ?? rows[0];
-  const charge = lockedBoiChargeFromPaymentLinkRaw(row.pelecard_raw_response);
+  const row = withStoredRate ?? withCharge ?? rows[0];
+  const charge = lockedBoiChargeFromPaymentLinkRow(row);
+  const storedRate = parseStoredRate(row.rate);
   return enrichExchangeContextWithLockedCharge(planId, {
     pelecardCharge: charge,
     linkPaidAt: row.paid_at ?? null,
     lockedAt: charge?.lockedAt ?? null,
+    storedRate,
   });
 }
 
@@ -339,15 +400,14 @@ async function resolveLockedBoiChargeForParams(
   exchangeCtx: PaymentPlanExchangeContext | null,
 ): Promise<LockedBoiChargeSnapshot | null> {
   if (params.lockedBoiCharge) return params.lockedBoiCharge;
-  if (exchangeCtx?.pelecardCharge) return exchangeCtx.pelecardCharge;
-  return null;
+  return mergeStoredRateIntoCharge(exchangeCtx);
 }
 
 export async function fetchLockedBoiChargeForPaymentPlan(
   paymentPlanId: number | string,
 ): Promise<LockedBoiChargeSnapshot | null> {
   const ctx = await fetchPaymentPlanExchangeContext(paymentPlanId);
-  return ctx?.pelecardCharge ?? null;
+  return mergeStoredRateIntoCharge(ctx);
 }
 
 export async function fetchLockedBoiChargesByPaymentPlanIds(
@@ -356,7 +416,8 @@ export async function fetchLockedBoiChargesByPaymentPlanIds(
   const contexts = await fetchPaymentPlanExchangeContexts(paymentPlanIds);
   const map = new Map<number, LockedBoiChargeSnapshot>();
   for (const [planId, ctx] of contexts) {
-    if (ctx.pelecardCharge) map.set(planId, ctx.pelecardCharge);
+    const merged = mergeStoredRateIntoCharge(ctx);
+    if (merged) map.set(planId, merged);
   }
   return map;
 }
@@ -446,6 +507,31 @@ export async function fetchProformaExchangeRateInfo(
     };
   }
 
+  if (params.useLatestBoiForUnpaid && !paid) {
+    const conv = await convertUnpaidToNisBoiToday(
+      currency,
+      subtotal,
+      vat,
+      undefined,
+      params.forceLatestBoiRefresh,
+    );
+    return {
+      isoCode,
+      displaySymbol: meta.displaySymbol,
+      rateToIls: conv.rateToIls,
+      rateDate: conv.rateDate,
+      rateLabel: 'today',
+      rateSource: 'boi',
+      isLocalCurrency: false,
+      paid: false,
+      paidAt: null,
+      subtotalNis: conv.subtotalNis,
+      vatNis: conv.vatNis,
+      totalNis: conv.totalNis,
+      usedLegacyFallback: conv.usedLegacyFallback,
+    };
+  }
+
   const planId = parsePaymentPlanId(paymentPlanId);
   const exchangeCtx =
     params.preloadedExchangeContext !== undefined
@@ -463,6 +549,11 @@ export async function fetchProformaExchangeRateInfo(
   const payDate = paid && paidAt ? toDateOnly(paidAt) : null;
 
   if (paid) {
+    // Primary: rate saved on payment_links at checkout / payment (payment_links.rate).
+    if (lockedBoiCharge) {
+      return buildInfoFromLockedCharge(params, isoCode, meta.displaySymbol, lockedBoiCharge);
+    }
+
     if (payDate) {
       const boiStart = await getBoiCoverageStartDate();
       if (boiStart && payDate >= boiStart) {
@@ -550,6 +641,7 @@ export async function convertUnpaidToNisBoiToday(
   subtotal: number,
   vat = 0,
   preloadedSnapshot?: BoiRatesSnapshot,
+  forceBoiRefresh = false,
 ): Promise<{
   subtotalNis: number;
   vatNis: number;
@@ -575,7 +667,8 @@ export async function convertUnpaidToNisBoiToday(
     };
   }
 
-  const snap = preloadedSnapshot ?? (await loadBoiExchangeRatesAsOf(new Date()));
+  const snap =
+    preloadedSnapshot ?? (await loadBoiExchangeRatesAsOf(new Date(), forceBoiRefresh));
   const subConv = convertToNISWithMeta(subtotal, currency, snap);
   const vatConv = convertToNISWithMeta(vat, currency, snap);
   const totalConv = convertToNISWithMeta(total, currency, snap);

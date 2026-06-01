@@ -38,6 +38,7 @@ interface MeetingFormData {
   attendees: string[]; // staff emails (for Teams invite); participants saved separately by id/contact/free
   description: string;
   location: string;
+  manualAddress: string;
   isRecurring: boolean;
   recurrencePattern: 'daily' | 'weekly' | 'monthly';
   recurrenceInterval: number;
@@ -98,6 +99,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
     attendees: [],
     description: '',
     location: 'Teams',
+    manualAddress: '',
     isRecurring: false,
     recurrencePattern: 'weekly',
     recurrenceInterval: 1,
@@ -597,6 +599,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
           meeting_location: formData.location,
           meeting_subject: formData.subject,
           meeting_brief: formData.description || null,
+          manual_address: formData.manualAddress.trim() || null,
           calendar_type: 'staff',
           internal_meeting_type_id: selectedInternalMeetingTypeId,
           // Always persist the Outlook event id so edit modal can resolve deterministically.
@@ -685,6 +688,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
           attendees: [],
           description: '',
           location: 'Teams',
+          manualAddress: '',
           isRecurring: false,
           recurrencePattern: 'weekly',
           recurrenceInterval: 1,
@@ -931,6 +935,21 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
                 if (!addr) return null;
                 return <div className="text-xs text-gray-500 mt-1 truncate">{addr}</div>;
               })()}
+            </div>
+            <div className="form-control md:col-span-2">
+              <label className="label">
+                <span className="label-text font-semibold">Manual address</span>
+              </label>
+              <textarea
+                className="textarea textarea-bordered w-full min-h-[72px]"
+                value={formData.manualAddress}
+                onChange={(e) => handleInputChange('manualAddress', e.target.value)}
+                placeholder="Street, city, floor, parking instructions…"
+                rows={2}
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Optional. Overrides catalog address in notify templates when set.
+              </p>
             </div>
           </div>
 
@@ -1223,21 +1242,6 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
               onChange={(e) => handleInputChange('description', e.target.value)}
               className="textarea textarea-bordered w-full h-24"
               placeholder="Enter meeting description..."
-            />
-          </div>
-
-          {/* Location */}
-          <div className="form-control">
-            <label className="label">
-              <span className="label-text font-semibold">Location</span>
-            </label>
-            <input
-              type="text"
-              id="location"
-              value={formData.location}
-              onChange={(e) => handleInputChange('location', e.target.value)}
-              className="input input-bordered w-full"
-              placeholder="Teams Meeting"
             />
           </div>
 

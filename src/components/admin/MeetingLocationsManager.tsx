@@ -68,6 +68,21 @@ const MeetingLocationsManager: React.FC = () => {
         typeof value === 'string' ? stripHtml(value) : ''
     },
     {
+      name: 'address_en',
+      label: 'Address (English)',
+      type: 'textarea' as const,
+      required: false,
+      placeholder: 'English address for EN email/WhatsApp templates',
+      formatValue: (value: unknown) => (
+        <span className="block max-w-xs whitespace-pre-wrap text-sm text-gray-700">
+          {buildAddressPreview(value)}
+        </span>
+      ),
+      prepareValueForForm: (value: unknown) => stripHtml(value),
+      prepareValueForSave: (value: unknown) =>
+        typeof value === 'string' ? stripHtml(value) : ''
+    },
+    {
       name: 'is_physical_location',
       label: 'Physical Location',
       type: 'boolean' as const,

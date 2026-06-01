@@ -6,6 +6,7 @@
  */
 
 import { supabase } from './supabase';
+import { preferEnglishMeetingTemplateLanguage } from './meetingLocationUtils';
 
 export interface EmailTemplateContext {
   // Client/Contact info
@@ -20,10 +21,19 @@ export interface EmailTemplateContext {
   // Meeting info (can be provided directly or fetched from DB)
   meetingDate?: string | null;
   meetingTime?: string | null;
+  /** @deprecated Prefer meetingLocationRaw — raw meetings.meeting_location for {{location}} */
   meetingLocation?: string | null;
+  /** Raw meetings.meeting_location column → {{location}} */
+  meetingLocationRaw?: string | null;
+  /** Resolved address / place → {{meeting_location}} (same as WhatsApp meeting_location param) */
+  meetingLocationResolved?: string | null;
   meetingLink?: string | null;
   /** meetings.manual_address — replaces {{address}} / {address} in templates */
   meetingAddress?: string | null;
+  /** meetings.id — prefer this row when resolving location / address / link */
+  meetingId?: number | string | null;
+  /** When English (en), use tenants_meetinglocation.address_en for {{meeting_location}} when set */
+  templateLanguage?: string | null;
 }
 
 /**
@@ -76,17 +86,35 @@ async function getMeetingTime(clientId: string | null, isLegacyLead: boolean): P
 /**
  * Fetch meeting location from the database
  */
-async function getMeetingLocation(clientId: string | null, isLegacyLead: boolean): Promise<string> {
-  if (!clientId) return '';
-  
+async function getMeetingLocationResolved(
+  clientId: string | null,
+  isLegacyLead: boolean,
+  meetingId?: number | string | null,
+  preferEnglish = false,
+): Promise<string> {
+  if (!clientId && meetingId == null) return '';
+
   try {
-    const {
-      getMeetingLocation
-    } = await import('./whatsappTemplateParams');
-    
-    return await getMeetingLocation(clientId, isLegacyLead);
+    const { getMeetingLocation } = await import('./whatsappTemplateParams');
+    return await getMeetingLocation(clientId || '', isLegacyLead, meetingId, { preferEnglish });
   } catch (error) {
-    console.error('Error fetching meeting location:', error);
+    console.error('Error fetching resolved meeting location:', error);
+    return '';
+  }
+}
+
+async function getMeetingLocationRaw(
+  clientId: string | null,
+  isLegacyLead: boolean,
+  meetingId?: number | string | null,
+): Promise<string> {
+  if (!clientId && meetingId == null) return '';
+
+  try {
+    const { getMeetingLocationRaw: fetchRaw } = await import('./whatsappTemplateParams');
+    return await fetchRaw(clientId || '', isLegacyLead, meetingId);
+  } catch (error) {
+    console.error('Error fetching raw meeting_location:', error);
     return '';
   }
 }
@@ -109,16 +137,27 @@ async function getMeetingLink(clientId: string | null, isLegacyLead: boolean): P
   }
 }
 
-async function getMeetingManualAddress(clientId: string | null, isLegacyLead: boolean): Promise<string> {
-  if (!clientId) return '';
+async function getMeetingManualAddress(
+  clientId: string | null,
+  isLegacyLead: boolean,
+  meetingId?: number | string | null,
+): Promise<string> {
+  if (!clientId && meetingId == null) return '';
 
   try {
     const { getMeetingManualAddress: fetchManualAddress } = await import('./whatsappTemplateParams');
-    return await fetchManualAddress(clientId, isLegacyLead);
+    return await fetchManualAddress(clientId || '', isLegacyLead, meetingId);
   } catch (error) {
     console.error('Error fetching meeting manual_address:', error);
     return '';
   }
+}
+
+function isValidClientIdForMeetingFetch(clientId: string | null | undefined): boolean {
+  if (!clientId) return false;
+  const s = String(clientId).trim();
+  if (!s || s === 'staff-meeting' || s.startsWith('staff-')) return false;
+  return true;
 }
 
 /**
@@ -130,7 +169,8 @@ async function getMeetingManualAddress(clientId: string | null, isLegacyLead: bo
  * - {lead_type} - Lead type (legacy/new)
  * - {date} or {{date}} - Meeting date
  * - {time} or {{time}} - Meeting time
- * - {location} or {{location}} or {{meeting_location}} - Meeting location
+ * - {location} or {{location}} - Raw meetings.meeting_location column
+ * - {{meeting_location}} - Resolved address / place (catalog + custom_address; same as WhatsApp)
  * - {link} or {{link}} - Meeting link
  * - {address} or {{address}} - meetings.manual_address
  * 
@@ -159,10 +199,12 @@ function applyMeetingTimeReplacements(result: string, value: string): string {
   return applyTemplateParam(result, 'time', value);
 }
 
-function applyMeetingLocationReplacements(result: string, value: string): string {
-  let out = applyTemplateParam(result, 'location', value);
-  out = applyTemplateParam(out, 'meeting_location', value);
-  return out;
+function applyLocationReplacements(result: string, rawValue: string): string {
+  return applyTemplateParam(result, 'location', rawValue);
+}
+
+function applyMeetingLocationResolvedReplacements(result: string, resolvedValue: string): string {
+  return applyTemplateParam(result, 'meeting_location', resolvedValue);
 }
 
 function applyMeetingLinkReplacements(result: string, linkValue: string): string {
@@ -227,65 +269,81 @@ export async function replaceEmailTemplateParams(
   // Check if any meeting parameters need to be replaced
   const hasDate = templateHasParam(result, 'date');
   const hasTime = templateHasParam(result, 'time');
-  const hasLocation =
-    templateHasParam(result, 'location') || templateHasParam(result, 'meeting_location');
+  const hasLocation = templateHasParam(result, 'location');
+  const hasMeetingLocation = templateHasParam(result, 'meeting_location');
   const hasLink = templateHasParam(result, 'link');
   const hasAddress = templateHasParam(result, 'address');
-  
-  // If meeting info is provided directly, use it
-  if (context.meetingDate !== undefined || context.meetingTime !== undefined || 
-      context.meetingLocation !== undefined || context.meetingLink !== undefined) {
+
+  const meetingId = context.meetingId ?? null;
+  const { clientIdForMeeting, isLegacyLead } = resolveClientIdForMeetingFetch(context);
+  const clientIdForFetch = isValidClientIdForMeetingFetch(clientIdForMeeting) ? clientIdForMeeting : null;
+  const canFetchMeeting =
+    Boolean(meetingId) || Boolean(clientIdForFetch) || context.legacyId != null;
+  const preferEnglish = preferEnglishMeetingTemplateLanguage(context.templateLanguage);
+
+  if (context.meetingDate !== undefined) {
     result = applyMeetingDateReplacements(result, context.meetingDate || '');
+  }
+  if (context.meetingTime !== undefined) {
     result = applyMeetingTimeReplacements(result, context.meetingTime || '');
-    result = applyMeetingLocationReplacements(result, context.meetingLocation || '');
+  }
+  if (context.meetingLink !== undefined) {
     result = applyMeetingLinkReplacements(result, context.meetingLink || '');
-  } 
-  // Otherwise, fetch from database if any meeting parameters are present
-  else if ((hasDate || hasTime || hasLocation || hasLink) && (context.clientId || context.legacyId)) {
-    try {
-      const { clientIdForMeeting, isLegacyLead } = resolveClientIdForMeetingFetch(context);
-      
-      if (clientIdForMeeting) {
-        // Fetch meeting data in parallel (only fetch what's needed)
-        const [meetingDate, meetingTime, meetingLocation, meetingLink] = await Promise.all([
-          hasDate ? getMeetingDate(clientIdForMeeting, isLegacyLead) : Promise.resolve(''),
-          hasTime ? getMeetingTime(clientIdForMeeting, isLegacyLead) : Promise.resolve(''),
-          hasLocation ? getMeetingLocation(clientIdForMeeting, isLegacyLead) : Promise.resolve(''),
-          hasLink ? getMeetingLink(clientIdForMeeting, isLegacyLead) : Promise.resolve(''),
-        ]);
-        
-        result = applyMeetingDateReplacements(result, meetingDate || '');
-        result = applyMeetingTimeReplacements(result, meetingTime || '');
-        result = applyMeetingLocationReplacements(result, meetingLocation || '');
-        result = applyMeetingLinkReplacements(result, meetingLink || '');
-      } else {
-        // No valid client ID, replace with empty strings
-        result = applyMeetingDateReplacements(result, '');
-        result = applyMeetingTimeReplacements(result, '');
-        result = applyMeetingLocationReplacements(result, '');
-        result = applyMeetingLinkReplacements(result, '');
-      }
-    } catch (error) {
-      console.error('Error fetching meeting data for template:', error);
-      // On error, replace with empty strings
-      result = applyMeetingDateReplacements(result, '');
-      result = applyMeetingTimeReplacements(result, '');
-      result = applyMeetingLocationReplacements(result, '');
-      result = applyMeetingLinkReplacements(result, '');
+  }
+
+  let locationRaw =
+    context.meetingLocationRaw !== undefined
+      ? context.meetingLocationRaw || ''
+      : context.meetingLocation !== undefined
+        ? context.meetingLocation || ''
+        : undefined;
+
+  let locationResolved =
+    context.meetingLocationResolved !== undefined ? context.meetingLocationResolved || '' : undefined;
+
+  if (canFetchMeeting) {
+    if (hasDate && context.meetingDate === undefined) {
+      const meetingDate = clientIdForFetch
+        ? await getMeetingDate(clientIdForFetch, isLegacyLead)
+        : '';
+      result = applyMeetingDateReplacements(result, meetingDate || '');
     }
+    if (hasTime && context.meetingTime === undefined) {
+      const meetingTime = clientIdForFetch
+        ? await getMeetingTime(clientIdForFetch, isLegacyLead)
+        : '';
+      result = applyMeetingTimeReplacements(result, meetingTime || '');
+    }
+    if (hasLink && context.meetingLink === undefined && clientIdForFetch) {
+      const meetingLink = await getMeetingLink(clientIdForFetch, isLegacyLead);
+      result = applyMeetingLinkReplacements(result, meetingLink || '');
+    }
+    if (hasLocation && locationRaw === undefined) {
+      locationRaw = await getMeetingLocationRaw(clientIdForFetch, isLegacyLead, meetingId);
+    }
+    if (hasMeetingLocation && locationResolved === undefined) {
+      locationResolved = await getMeetingLocationResolved(
+        clientIdForFetch,
+        isLegacyLead,
+        meetingId,
+        preferEnglish,
+      );
+    }
+  }
+
+  if (hasLocation) {
+    result = applyLocationReplacements(result, locationRaw ?? '');
+  }
+  if (hasMeetingLocation) {
+    result = applyMeetingLocationResolvedReplacements(result, locationResolved ?? '');
   }
 
   if (context.meetingAddress !== undefined) {
     result = applyMeetingAddressReplacements(result, context.meetingAddress || '');
-  } else if (hasAddress && (context.clientId || context.legacyId)) {
+  } else if (hasAddress && canFetchMeeting) {
     try {
-      const { clientIdForMeeting, isLegacyLead } = resolveClientIdForMeetingFetch(context);
-      if (clientIdForMeeting) {
-        const meetingAddress = await getMeetingManualAddress(clientIdForMeeting, isLegacyLead);
-        result = applyMeetingAddressReplacements(result, meetingAddress || '');
-      } else {
-        result = applyMeetingAddressReplacements(result, '');
-      }
+      const meetingAddress = await getMeetingManualAddress(clientIdForFetch, isLegacyLead, meetingId);
+      result = applyMeetingAddressReplacements(result, meetingAddress || '');
     } catch (error) {
       console.error('Error fetching meeting manual_address for template:', error);
       result = applyMeetingAddressReplacements(result, '');
@@ -313,7 +371,14 @@ export function replaceEmailTemplateParamsSync(
   result = applyTemplateParam(result, 'lead_type', context.leadType || '');
   result = applyMeetingDateReplacements(result, context.meetingDate || '');
   result = applyMeetingTimeReplacements(result, context.meetingTime || '');
-  result = applyMeetingLocationReplacements(result, context.meetingLocation || '');
+  result = applyLocationReplacements(
+    result,
+    context.meetingLocationRaw ?? context.meetingLocation ?? '',
+  );
+  result = applyMeetingLocationResolvedReplacements(
+    result,
+    context.meetingLocationResolved ?? context.meetingLocation ?? '',
+  );
   result = applyMeetingLinkReplacements(result, context.meetingLink || '');
   result = applyMeetingAddressReplacements(result, context.meetingAddress || '');
   return result;

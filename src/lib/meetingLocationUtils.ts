@@ -11,6 +11,48 @@ type MeetingLocationPhysicalFlag = {
   is_phisical_location?: unknown;
 };
 
+/** Row fields from tenants_meetinglocation used in template address resolution. */
+export type MeetingLocationAddressFields = MeetingLocationPhysicalFlag & {
+  address?: string | null;
+  address_en?: string | null;
+  name?: string | null;
+};
+
+/** True when template content is English (en, en_US, english, etc.). */
+export function preferEnglishMeetingTemplateLanguage(lang: string | null | undefined): boolean {
+  if (lang == null || String(lang).trim() === '') return false;
+  const norm = String(lang).trim().toLowerCase().split(/[-_]/)[0];
+  return norm === 'en' || norm === 'english';
+}
+
+/**
+ * Physical/catalog address for templates: address_en when English template and address_en is set; else address.
+ */
+export function pickTenantMeetingLocationAddress(
+  row: MeetingLocationAddressFields,
+  preferEnglish: boolean,
+): string {
+  const addressHe = row.address != null ? String(row.address).trim() : '';
+  const addressEn = row.address_en != null ? String(row.address_en).trim() : '';
+  if (preferEnglish && addressEn) return addressEn;
+  return addressHe;
+}
+
+/** Resolved meeting_location text from catalog row (physical → address, virtual → name). */
+export function resolveCatalogMeetingLocationText(
+  locRow: MeetingLocationAddressFields,
+  rawLocFallback: string,
+  preferEnglish: boolean,
+): string {
+  const name = locRow.name != null ? String(locRow.name).trim() : '';
+  const addr = pickTenantMeetingLocationAddress(locRow, preferEnglish);
+  if (isPhysicalMeetingLocation(locRow)) {
+    if (addr) return addr;
+    return name || rawLocFallback || '-';
+  }
+  return name || rawLocFallback;
+}
+
 /** Physical offices / custom address — no Teams or Zoom link in calendar invites. */
 export function isPhysicalMeetingLocation(
   loc: MeetingLocationPhysicalFlag | null | undefined

@@ -79,12 +79,18 @@ async function createPaymentSession(req, res) {
 
     const session = await pelecardService.createPaymentSession(payment, paymentId);
 
+    const sessionRate =
+      session.charge?.rateToIls != null && Number.isFinite(Number(session.charge.rateToIls))
+        ? Number(session.charge.rateToIls)
+        : null;
+
     const { error: updateError } = await supabase
       .from('payment_links')
       .update({
         status: 'processing',
         pelecard_session_url: session.paymentUrl,
         pelecard_confirmation_key: session.confirmationKey,
+        ...(sessionRate != null ? { rate: sessionRate } : {}),
         pelecard_raw_response: {
           init: session.rawResponse,
           pelecardCharge: session.charge,

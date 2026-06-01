@@ -79,6 +79,7 @@ import {
   emailInteractionVisibleOnTimeline,
   EMAIL_MODAL_SELECT,
 } from '../../lib/interactions/emailFilters';
+import { INTERACTIONS_TIMELINE_INVALIDATE_EVENT } from '../../lib/interactionsTimelineInvalidation';
 import { processWhatsAppTemplateMessage } from '../../lib/interactions/whatsappTimeline';
 import { replaceEmailTemplateParams } from '../../lib/emailTemplateParams';
 import {
@@ -4624,6 +4625,27 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fetch once per lead per session; avoid loop when cache updates
   }, [client?.id]);
+
+  // Refetch when another tab saves an outgoing email (e.g. MeetingTab notify).
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const leadId = (event as CustomEvent<{ leadId?: string }>).detail?.leadId;
+      const currentClientId = client?.id?.toString();
+      if (!leadId || !currentClientId || leadId !== currentClientId) return;
+
+      serverTimelineHydratedClients.delete(currentClientId);
+      if (moduleLastInteractionsLeadId === currentClientId) {
+        moduleLastInteractionsLeadId = null;
+      }
+      interactionsFetchInFlight.delete(currentClientId);
+      interactionsFetchInFlight.delete(`${currentClientId}:quiet`);
+
+      void fetchInteractions({ bypassCache: true, quiet: false });
+    };
+
+    window.addEventListener(INTERACTIONS_TIMELINE_INVALIDATE_EVENT, handler);
+    return () => window.removeEventListener(INTERACTIONS_TIMELINE_INVALIDATE_EVENT, handler);
+  }, [client?.id, fetchInteractions]);
 
   // Fetch contacts when client changes
   useEffect(() => {

@@ -332,6 +332,7 @@ const AppContentInner: React.FC = () => {
           total_base: legacyLead.total_base !== null && legacyLead.total_base !== undefined ? legacyLead.total_base : existingClient?.total_base,
           total: legacyLead.total !== null && legacyLead.total !== undefined ? legacyLead.total : existingClient?.total,
           subcontractor_fee: legacyLead.subcontractor_fee !== null && legacyLead.subcontractor_fee !== undefined ? legacyLead.subcontractor_fee : existingClient?.subcontractor_fee,
+          external_firm_id: legacyLead.external_firm_id ?? existingClient?.external_firm_id ?? null,
           master_id: legacyLead.master_id !== null && legacyLead.master_id !== undefined ? legacyLead.master_id : existingClient?.master_id,
         };
 
@@ -486,6 +487,7 @@ const AppContentInner: React.FC = () => {
             currency_id: data.currency_id,
             proposal_total: data.proposal_total,
             subcontractor_fee: data.subcontractor_fee,
+            external_firm_id: data.external_firm_id ?? null,
             potential_total: data.potential_total,
             vat: data.vat,
             vat_value: data.vat_value,

@@ -1,5 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { QuestionMarkCircleIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import GenericCRUDManager from './GenericCRUDManager';
+import { EMAIL_TEMPLATE_PARAM_CODES } from '../../lib/emailTemplateParamCodes';
 
 const CLEAN_TOKEN_REGEX = /\b(delta|ops|insert|attributes|underline|bold|italic|direction|align|list|background|color|font|size|script)\b\s*[:=]\s*[^,]+,?/gi;
 const HTML_PREFIX_REGEX = /html\s*:\s*/i;
@@ -170,8 +172,61 @@ const buildPreview = (text: string): string => {
   return normalized;
 };
 
+const EmailTemplateParamCodesHelpModal: React.FC<{
+  open: boolean;
+  onClose: () => void;
+}> = ({ open, onClose }) => {
+  if (!open) return null;
+
+  return (
+    <div className="modal modal-open z-50">
+      <div className="modal-box max-w-lg max-h-[85vh] flex flex-col p-0">
+        <div className="flex items-start justify-between gap-3 border-b border-base-200 px-6 py-4">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Template parameters</h3>
+            <p className="mt-1 text-sm text-gray-600">
+              Use these codes in the email body. They are replaced when sending from Meeting tab,
+              Calendar, or interactions.
+            </p>
+          </div>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm btn-circle shrink-0"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            <XMarkIcon className="h-5 w-5" />
+          </button>
+        </div>
+        <ul className="space-y-3 overflow-y-auto px-6 py-4 text-sm text-gray-800">
+          {EMAIL_TEMPLATE_PARAM_CODES.map((param) => (
+            <li key={param.code} className="border-b border-gray-100 pb-3 last:border-0 last:pb-0">
+              <code className="rounded bg-base-200 px-1.5 py-0.5 text-xs font-semibold text-primary">
+                {param.code}
+              </code>
+              <span className="ml-2 font-medium">{param.label}</span>
+              <p className="mt-1 text-xs text-gray-600">{param.description}</p>
+            </li>
+          ))}
+        </ul>
+        <div className="modal-action border-t border-base-200 px-6 py-3">
+          <button type="button" className="btn btn-primary" onClick={onClose}>
+            Got it
+          </button>
+        </div>
+      </div>
+      <button
+        type="button"
+        className="modal-backdrop bg-black/50"
+        onClick={onClose}
+        aria-label="Close dialog"
+      />
+    </div>
+  );
+};
+
 const EmailTemplatesManager: React.FC = () => {
-  // Placement options are now loaded automatically via foreignKey configuration
+  const [paramHelpOpen, setParamHelpOpen] = useState(false);
 
   const fields = [
     {
@@ -256,15 +311,29 @@ const EmailTemplatesManager: React.FC = () => {
   ];
 
   return (
-    <GenericCRUDManager
-      tableName="misc_emailtemplate"
-      fields={fields}
-      title="Email Templates"
-      description="Manage reusable email templates"
-      sortColumn="id"
-      pageSize={20}
-      hideDeleteButton={true}
-    />
+    <>
+      <EmailTemplateParamCodesHelpModal open={paramHelpOpen} onClose={() => setParamHelpOpen(false)} />
+      <GenericCRUDManager
+        tableName="misc_emailtemplate"
+        fields={fields}
+        title="Email Templates"
+        description="Manage reusable email templates"
+        sortColumn="id"
+        pageSize={20}
+        hideDeleteButton={true}
+        headerExtra={
+          <button
+            type="button"
+            className="btn btn-ghost btn-circle btn-sm text-primary hover:bg-primary/10"
+            title="Template parameters"
+            aria-label="Template parameters help"
+            onClick={() => setParamHelpOpen(true)}
+          >
+            <QuestionMarkCircleIcon className="h-7 w-7" />
+          </button>
+        }
+      />
+    </>
   );
 };
 

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
-import { ChevronDownIcon, ChevronRightIcon, ChartBarIcon, UserGroupIcon, BuildingOfficeIcon, SpeakerWaveIcon, CurrencyDollarIcon, PencilIcon, CheckIcon, XMarkIcon, GlobeAltIcon, FlagIcon, BriefcaseIcon, HomeIcon, AcademicCapIcon, RocketLaunchIcon, MapPinIcon, DocumentTextIcon, ScaleIcon, ShieldCheckIcon, BanknotesIcon, CogIcon, HeartIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, UsersIcon, Squares2X2Icon, MagnifyingGlassIcon, LinkIcon, InformationCircleIcon } from '@heroicons/react/24/outline';
+import { ChevronDownIcon, ChevronRightIcon, ChartBarIcon, UserGroupIcon, BuildingOfficeIcon, SpeakerWaveIcon, CurrencyDollarIcon, PencilIcon, CheckIcon, XMarkIcon, GlobeAltIcon, FlagIcon, BriefcaseIcon, HomeIcon, AcademicCapIcon, RocketLaunchIcon, MapPinIcon, DocumentTextIcon, ScaleIcon, ShieldCheckIcon, BanknotesIcon, CogIcon, HeartIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, UsersIcon, Squares2X2Icon, MagnifyingGlassIcon, LinkIcon, InformationCircleIcon, TrophyIcon } from '@heroicons/react/24/outline';
 import EmployeeRoleLeadsModal from '../components/EmployeeRoleLeadsModal';
 import EmployeeFieldAssignmentsModal from '../components/EmployeeFieldAssignmentsModal';
 import DynamicIsland from '../components/DynamicIsland';
@@ -465,6 +465,10 @@ const computeDateBounds = (fromDate?: string, toDate?: string) => {
   return { startIso, endIso };
 };
 
+/** Sticky thead — vertical scroll is on `.app-main-scroll`; do not wrap table in `overflow-x-auto`. */
+const SC_TABLE_THEAD_STICKY =
+  '[&_th]:sticky [&_th]:top-0 [&_th]:z-[30] [&_th]:border-b [&_th]:border-base-300 [&_th]:align-middle [&_th]:bg-white dark:[&_th]:bg-base-100';
+
 const SalesContributionPage = () => {
   const navigate = useNavigate();
 
@@ -522,6 +526,11 @@ const SalesContributionPage = () => {
   const [employeeSearchTerm, setEmployeeSearchTerm] = usePersistedState('salesContribution_employeeSearchTerm', '', {
     storage: 'sessionStorage',
   });
+  const [filterTrophyBadgeEmployeesOnly, setFilterTrophyBadgeEmployeesOnly] = usePersistedState(
+    'salesContribution_filterTrophyBadgeEmployeesOnly',
+    false,
+    { storage: 'sessionStorage' }
+  );
 
   // Salary filter state (defaults to previous month/year)
   const [salaryFilter, setSalaryFilter] = usePersistedState('salesContribution_salaryFilter', {
@@ -1356,6 +1365,35 @@ const SalesContributionPage = () => {
     return (marketingFixedDeductedByEmployee.get(4) ?? 0) + (marketingFixedDeductedByEmployee.get(1) ?? 0);
   }, [marketingFixedDeductedByEmployee]);
 
+  /** Preset reports span multiple months; top summary badges show monthly averages (same month count as avg. salary). */
+  const summaryMonthlyDivisor = useMemo(() => {
+    if (periodPreset === 'custom') return 1;
+    if (filters.fromDate && filters.toDate) {
+      const n = enumerateMonthsFromRange(filters.fromDate, filters.toDate).length;
+      return n > 0 ? n : 1;
+    }
+    const n = getPresetMonthCount(periodPreset);
+    return n > 0 ? n : 1;
+  }, [periodPreset, filters.fromDate, filters.toDate]);
+
+  const hasPositiveMaxIncentives = useCallback((emp: EmployeeData) => {
+    const periodScale = periodPreset === 'custom' ? 1 : summaryMonthlyDivisor;
+    const maxIncentives = ((emp.salaryBudget ?? 0) / periodScale) - (emp.totalSalaryCost ?? 0);
+    return maxIncentives > 0;
+  }, [periodPreset, summaryMonthlyDivisor]);
+
+  const employeeMatchesRowFilters = useCallback((emp: EmployeeData) => {
+    if (filterTrophyBadgeEmployeesOnly && !hasPositiveMaxIncentives(emp)) {
+      return false;
+    }
+    if (!employeeSearchTerm.trim()) return true;
+    const searchLower = employeeSearchTerm.toLowerCase().trim();
+    return (
+      emp.employeeName.toLowerCase().includes(searchLower) ||
+      (emp.department ?? '').toLowerCase().includes(searchLower)
+    );
+  }, [filterTrophyBadgeEmployeesOnly, hasPositiveMaxIncentives, employeeSearchTerm]);
+
   /**
    * Same number as summing each department table’s Total row “Total salary cost” (employee view only).
    * Mirrors `renderTable` → `filteredEmployeesForCorrection` + reduce (field view tables use empty filter for totals → 0).
@@ -1369,14 +1407,7 @@ const SalesContributionPage = () => {
     for (const deptName of departmentNames) {
       const deptData = departmentData.get(deptName);
       if (!deptData) continue;
-      const filteredEmployeesForCorrection = deptData.employees.filter((emp) => {
-        if (!employeeSearchTerm.trim()) return true;
-        const searchLower = employeeSearchTerm.toLowerCase().trim();
-        return (
-          emp.employeeName.toLowerCase().includes(searchLower) ||
-          (emp.department ?? '').toLowerCase().includes(searchLower)
-        );
-      });
+      const filteredEmployeesForCorrection = deptData.employees.filter(employeeMatchesRowFilters);
       sum += filteredEmployeesForCorrection.reduce(
         (s, emp) => s + (emp.totalSalaryCost ?? 0),
         0
@@ -1384,20 +1415,9 @@ const SalesContributionPage = () => {
     }
     return sum;
     // departmentNames is constant list; omit from deps to avoid new [] reference each render
-  }, [departmentData, employeeSearchTerm, viewMode]);
+  }, [departmentData, employeeMatchesRowFilters, viewMode]);
 
   const displayTotalCostForTopBadge = totalCostVisibleEmployees;
-
-  /** Preset reports span multiple months; top summary badges show monthly averages (same month count as avg. salary). */
-  const summaryMonthlyDivisor = useMemo(() => {
-    if (periodPreset === 'custom') return 1;
-    if (filters.fromDate && filters.toDate) {
-      const n = enumerateMonthsFromRange(filters.fromDate, filters.toDate).length;
-      return n > 0 ? n : 1;
-    }
-    const n = getPresetMonthCount(periodPreset);
-    return n > 0 ? n : 1;
-  }, [periodPreset, filters.fromDate, filters.toDate]);
 
   // Sum of salary budget across all employees in all departments
   const totalSalaryBudgetAllEmployees = useMemo(() => {
@@ -1488,13 +1508,43 @@ const SalesContributionPage = () => {
   const EmployeeAvatar: React.FC<{
     employeeId: number;
     size?: 'sm' | 'md' | 'lg';
-  }> = ({ employeeId, size = 'md' }) => {
+    showPositiveMaxIncentiveBadge?: boolean;
+    maxIncentivesTooltip?: string;
+  }> = ({ employeeId, size = 'md', showPositiveMaxIncentiveBadge = false, maxIncentivesTooltip }) => {
     const [imageError, setImageError] = useState(false);
     const employee = employeeMap.get(employeeId);
 
+    const badgeSizeClasses =
+      size === 'sm'
+        ? 'h-3.5 min-w-3.5 -top-0.5 -right-1'
+        : size === 'md'
+          ? 'h-4 min-w-4 -top-0.5 -right-1'
+          : 'h-[1.125rem] min-w-[1.125rem] -top-0.5 -right-1.5';
+
+    const badgeIconSizeClasses =
+      size === 'sm'
+        ? 'h-2.5 w-2.5'
+        : size === 'md'
+          ? 'h-3 w-3'
+          : 'h-4 w-4';
+
+    const wrapAvatar = (avatarNode: React.ReactNode) => (
+      <span className="relative inline-flex flex-shrink-0">
+        {avatarNode}
+        {showPositiveMaxIncentiveBadge && (
+          <span
+            className={`absolute z-[1] flex items-center justify-center rounded-full bg-gradient-to-br from-yellow-400 via-amber-500 to-orange-500 p-0.5 text-white ${badgeSizeClasses}`}
+            title={maxIncentivesTooltip || 'Positive max incentives'}
+          >
+            <TrophyIcon className={`${badgeIconSizeClasses} shrink-0 stroke-[2.5]`} aria-hidden="true" />
+          </span>
+        )}
+      </span>
+    );
+
     if (!employee) {
       const sizeClasses = size === 'sm' ? 'w-8 h-8' : size === 'md' ? 'w-10 h-10' : 'w-12 h-12';
-      return (
+      return wrapAvatar(
         <div className={`${sizeClasses} rounded-full flex items-center justify-center bg-gray-200 text-gray-500 text-xs font-semibold`}>
           --
         </div>
@@ -1511,7 +1561,7 @@ const SalesContributionPage = () => {
 
     // If we know there's no photo URL or we have a cached error, show initials immediately
     if (hasError || !photoUrl) {
-      return (
+      return wrapAvatar(
         <div className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold`}>
           {initials}
         </div>
@@ -1519,12 +1569,12 @@ const SalesContributionPage = () => {
     }
 
     // Try to render image
-    return (
+    return wrapAvatar(
       <img
         src={photoUrl}
         alt={employee.display_name}
         className={`${sizeClasses} rounded-full object-cover`}
-        onError={(e) => {
+        onError={() => {
           // Cache the error to prevent flickering on re-renders
           imageErrorCache.current.set(employeeId, true);
           setImageError(true);
@@ -6277,14 +6327,7 @@ const SalesContributionPage = () => {
     // Sum row totalSalaryCost like the table Total row (not dept.totals — can be stale vs rows after scaling)
     const totalCost =
       deptData?.employees
-        .filter((emp) => {
-          if (!employeeSearchTerm.trim()) return true;
-          const searchLower = employeeSearchTerm.toLowerCase().trim();
-          return (
-            emp.employeeName.toLowerCase().includes(searchLower) ||
-            (emp.department ?? '').toLowerCase().includes(searchLower)
-          );
-        })
+        .filter(employeeMatchesRowFilters)
         .reduce((s, emp) => s + (emp.totalSalaryCost ?? 0), 0) ?? 0;
 
     const monthlyIncome = (totalIncome || 0) / summaryMonthlyDivisor;
@@ -6524,7 +6567,39 @@ const SalesContributionPage = () => {
 
   const renderTable = (deptData: DepartmentData, hideTitle?: boolean) => {
     const isFieldView = hideTitle === true;
-    const colSpanValue = isFieldView ? 9 : 12; // Updated for field view: 9 columns
+    const colSpanValue = isFieldView ? 8 : 10;
+
+    const renderSignedWithNormTooltip = (signed: number, signedNormalized: number) => (
+      <span
+        className="tooltip tooltip-top cursor-help"
+        data-tip={`Signed norm: ${formatCurrency(scalePeriodSum(signedNormalized || 0))}`}
+      >
+        {formatCurrency(scalePeriodSum(signed))}
+      </span>
+    );
+
+    const renderDueWithNormTooltip = (due: number, dueNormalized: number) => (
+      <span
+        className="tooltip tooltip-top cursor-help"
+        data-tip={`Due norm: ${formatCurrency(scalePeriodSum(dueNormalized || 0))}`}
+      >
+        {formatCurrency(scalePeriodSum(due || 0))}
+      </span>
+    );
+
+    const getEmployeeMaxIncentivesDisplay = (emp: EmployeeData) =>
+      scalePeriodSum(emp.salaryBudget ?? 0) - (emp.totalSalaryCost ?? 0);
+
+    const getPositiveMaxIncentiveBadgeProps = (emp: EmployeeData) => {
+      const maxIncentives = getEmployeeMaxIncentivesDisplay(emp);
+      if (maxIncentives <= 0) {
+        return { showPositiveMaxIncentiveBadge: false as const, maxIncentivesTooltip: undefined };
+      }
+      return {
+        showPositiveMaxIncentiveBadge: true as const,
+        maxIncentivesTooltip: `Max incentives: ${formatCurrency(maxIncentives)}`,
+      };
+    };
 
     const salaryColumnCaption =
       periodPreset !== 'custom' ? (
@@ -6549,11 +6624,7 @@ const SalesContributionPage = () => {
     const linkedToHandlersShareByEmployee = (() => {
       const map = new Map<number, number>();
       if (deptData.departmentName !== 'Handlers' || (linkedContributionForHandlers ?? 0) <= 0) return map;
-      const employees = isFieldView ? [] : deptData.employees.filter((emp) => {
-        if (!employeeSearchTerm.trim()) return true;
-        const searchLower = employeeSearchTerm.toLowerCase().trim();
-        return emp.employeeName.toLowerCase().includes(searchLower) || emp.department.toLowerCase().includes(searchLower);
-      });
+      const employees = isFieldView ? [] : deptData.employees.filter(employeeMatchesRowFilters);
       const totalBase = employees.reduce((s, emp) => {
         const orig = emp.contribution ?? 0;
         const toSales = contributionToSalesByEmployee.get(emp.employeeId) ?? 0;
@@ -6593,11 +6664,7 @@ const SalesContributionPage = () => {
     const employeeCount = deptData.employees.length;
     const perEmployeeCorrection = 0;
 
-    const filteredEmployeesForCorrection = isFieldView ? [] : deptData.employees.filter((emp) => {
-      if (!employeeSearchTerm.trim()) return true;
-      const searchLower = employeeSearchTerm.toLowerCase().trim();
-      return emp.employeeName.toLowerCase().includes(searchLower) || emp.department.toLowerCase().includes(searchLower);
-    });
+    const filteredEmployeesForCorrection = isFieldView ? [] : deptData.employees.filter(employeeMatchesRowFilters);
 
     const linkedFixedDeductedForDisplayed = 0;
     // Amount of contribution fixed deducted (moved to Marketing) for displayed employees 1 and 4 in this department.
@@ -6676,9 +6743,9 @@ const SalesContributionPage = () => {
     const contributionTotalScaledForRow = scalePeriodSum(contributionTotalForPercentagesDisplay);
 
     return (
-      <div key={deptData.departmentName} className="mb-8">
-{!hideTitle && (
-        <h2 className="text-2xl font-bold mb-4 flex items-center gap-3 flex-wrap">
+      <div key={deptData.departmentName} className="mb-8 -mx-4">
+        {!hideTitle && (
+          <div className="mb-3 flex flex-wrap items-center gap-3 px-4 text-2xl font-bold">
             <span>{deptData.departmentName}</span>
             {contributionAmount > 0 && (
               <span className="text-lg font-semibold text-green-800 dark:text-green-600 tabular-nums">
@@ -6718,18 +6785,16 @@ const SalesContributionPage = () => {
                 Link contribution
               </button>
             )}
-          </h2>
+          </div>
         )}
-        <div className="overflow-x-auto">
-          <table className="table w-full min-w-[800px] md:min-w-0 md:table-fixed">
-            <thead>
+        <table className="sc-contribution-table table w-full min-w-[800px] md:min-w-0 md:table-fixed">
+            <thead className={SC_TABLE_THEAD_STICKY}>
               <tr>
                 {isFieldView ? (
                   <>
                     <th className="w-[20%] text-xs md:text-sm whitespace-nowrap">Field (Category)</th>
                     <th className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">Signed</th>
                     <th className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">Due</th>
-                    <th className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">Due Norm</th>
                     <th className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">Field Salary Budget</th>
                     <th className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">Actual Salary Budget</th>
                     <th className="text-right w-[10.5%] text-xs md:text-sm whitespace-nowrap">
@@ -6747,15 +6812,8 @@ const SalesContributionPage = () => {
                     </th>
                     <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Signed</th>
                     <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Due</th>
-                    <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Signed Norm</th>
-                    <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Due Norm</th>
                     <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Contribution</th>
-                    <th className="text-right w-[10%] text-xs md:text-sm">
-                      <div className="flex flex-col items-end">
-                        <span>Contribution</span>
-                        <span>Fixed</span>
-                      </div>
-                    </th>
+                    <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">C. Fixed</th>
                     <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Salary Budget</th>
                     <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
                       Salary (B)
@@ -6765,21 +6823,14 @@ const SalesContributionPage = () => {
                       Total Cost
                       {salaryColumnCaption}
                     </th>
-                    <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Max Incentives</th>
+                    <th className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">Incentives</th>
                   </>
                 )}
               </tr>
             </thead>
             <tbody>
               {deptData.employees
-                .filter((emp) => {
-                  // Filter by search term (case-insensitive search on name and department)
-                  if (!employeeSearchTerm.trim()) return true;
-                  const searchLower = employeeSearchTerm.toLowerCase().trim();
-                  const nameMatch = emp.employeeName.toLowerCase().includes(searchLower);
-                  const deptMatch = emp.department.toLowerCase().includes(searchLower);
-                  return nameMatch || deptMatch;
-                })
+                .filter(employeeMatchesRowFilters)
                 .map((emp) => {
                   // Use employeeName as key in field view, employeeId in employee view
                   const employeeKey = isFieldView ? emp.employeeName : `${emp.employeeId}`;
@@ -6815,9 +6866,12 @@ const SalesContributionPage = () => {
                                 <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">{emp.employeeName}</span>
                               </div>
                             </td>
-                            <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum(emp.signed))}</td>
-                            <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum(emp.due || 0))}</td>
-                            <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum(emp.dueNormalized || 0))}</td>
+                            <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">
+                              {renderSignedWithNormTooltip(emp.signed, emp.signedNormalized || 0)}
+                            </td>
+                            <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap">
+                              {renderDueWithNormTooltip(emp.due || 0, emp.dueNormalized || 0)}
+                            </td>
                             <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum((emp.dueNormalized || 0) * 0.4))}</td>
                             <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
                             <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
@@ -6835,11 +6889,12 @@ const SalesContributionPage = () => {
                                       ? variableToFixedAttributionByGiverHandlers.get(emp.employeeId)
                                       : null;
                                 const hasFixedPopover = fixedAttributionRows && fixedAttributionRows.length > 0;
+                                const maxIncentiveBadgeProps = getPositiveMaxIncentiveBadgeProps(emp);
                                 if (!hasFixedPopover) {
                                   return (
                                     <div className="flex items-center gap-1 md:gap-2 whitespace-nowrap min-w-0">
                                       <div className="flex-shrink-0">
-                                        <EmployeeAvatar employeeId={emp.employeeId} size="lg" />
+                                        <EmployeeAvatar employeeId={emp.employeeId} size="lg" {...maxIncentiveBadgeProps} />
                                       </div>
                                       <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">{emp.employeeName}</span>
                                     </div>
@@ -6858,7 +6913,7 @@ const SalesContributionPage = () => {
                                         title="Hover to see who receives fixed contribution on your behalf"
                                         onClick={(e) => e.stopPropagation()}
                                       >
-                                        <EmployeeAvatar employeeId={emp.employeeId} size="lg" />
+                                        <EmployeeAvatar employeeId={emp.employeeId} size="lg" {...maxIncentiveBadgeProps} />
                                       </div>
                                       <div
                                         tabIndex={0}
@@ -6902,30 +6957,30 @@ const SalesContributionPage = () => {
                                 {emp.department}
                               </div>
                             </td>
-                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum(emp.signed))}</td>
-                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum(emp.due || 0))}</td>
-                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum(emp.signedNormalized || 0))}</td>
-                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">{formatCurrency(scalePeriodSum(emp.dueNormalized || 0))}</td>
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
+                              {renderSignedWithNormTooltip(emp.signed, emp.signedNormalized || 0)}
+                            </td>
+                            <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
+                              {renderDueWithNormTooltip(emp.due || 0, emp.dueNormalized || 0)}
+                            </td>
                             <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
                               {(() => {
                                 const originalContribution = emp.contribution ?? 0;
                                 const linkedDeducted = getLinkedContributionDeducted(emp.employeeId);
                                 const effectiveRelocated = Math.min(linkedDeducted, originalContribution);
                                 const wasCapped = linkedDeducted > originalContribution;
+                                const relocatedTip = effectiveRelocated > 0
+                                  ? wasCapped
+                                    ? `−${formatCurrency(scalePeriodSum(effectiveRelocated))} relocated to link modal(s). Display capped to original contribution (calculated relocated was ${formatCurrency(linkedDeducted)}).`
+                                    : `−${formatCurrency(scalePeriodSum(effectiveRelocated))} relocated to Sales or Handlers link modal(s).`
+                                  : undefined;
                                 return (
-                                  <div className="flex flex-col items-end gap-0.5">
-                                    <span>{formatCurrency(scalePeriodSum(originalContribution))}</span>
-                                    {effectiveRelocated > 0 && (
-                                      <span
-                                        className="tooltip tooltip-top text-xs font-medium tabular-nums text-blue-600 dark:text-blue-400 cursor-help"
-                                        data-tip={wasCapped
-                                          ? `Contribution relocated to link modal(s). Display capped to original contribution (calculated relocated was ${formatCurrency(linkedDeducted)}).`
-                                          : 'Contribution relocated to Sales or Handlers link modal(s).'}
-                                      >
-                                        −{formatCurrency(scalePeriodSum(effectiveRelocated))} relocated
-                                      </span>
-                                    )}
-                                  </div>
+                                  <span
+                                    className={relocatedTip ? 'tooltip tooltip-top cursor-help' : undefined}
+                                    data-tip={relocatedTip}
+                                  >
+                                    {formatCurrency(scalePeriodSum(originalContribution))}
+                                  </span>
                                 );
                               })()}
                             </td>
@@ -6933,18 +6988,16 @@ const SalesContributionPage = () => {
                               {(() => {
                                 const marketingDeducted = marketingFixedDeductedByEmployee.get(emp.employeeId) ?? 0;
                                 const fullFixed = emp.contributionFixed ?? 0;
+                                const fixedTip = marketingDeducted > 0
+                                  ? `−${formatCurrency(scalePeriodSum(marketingDeducted))} reallocated to Marketing (Link contribution to Marketing).`
+                                  : undefined;
                                 return (
-                                  <div className="flex flex-col items-end gap-0.5">
-                                    <span>{formatCurrency(scalePeriodSum(fullFixed))}</span>
-                                    {marketingDeducted > 0 && (
-                                      <span
-                                        className="tooltip tooltip-top text-xs text-amber-600 dark:text-amber-400 font-medium cursor-help"
-                                        data-tip="Part of this employee's fixed contribution is reallocated to Marketing (Link contribution to Marketing)."
-                                      >
-                                        −{formatCurrency(scalePeriodSum(marketingDeducted))}
-                                      </span>
-                                    )}
-                                  </div>
+                                  <span
+                                    className={fixedTip ? 'tooltip tooltip-top cursor-help' : undefined}
+                                    data-tip={fixedTip}
+                                  >
+                                    {formatCurrency(scalePeriodSum(fullFixed))}
+                                  </span>
                                 );
                               })()}
                             </td>
@@ -6990,9 +7043,7 @@ const SalesContributionPage = () => {
                             </td>
                             <td className="text-right w-[10%] text-xs md:text-sm whitespace-nowrap">
                               {(() => {
-                                const salaryBudget = emp.salaryBudget ?? 0;
-                                const totalSalaryCost = emp.totalSalaryCost ?? 0;
-                                const maxIncentives = scalePeriodSum(salaryBudget) - totalSalaryCost;
+                                const maxIncentives = getEmployeeMaxIncentivesDisplay(emp);
                                 return (
                                   <span className={maxIncentives >= 0 ? 'text-green-500' : 'text-red-500'}>
                                     {formatCurrency(maxIncentives)}
@@ -7182,7 +7233,6 @@ const SalesContributionPage = () => {
                                         </td>
                                         <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                           {!isExpanded && formatCurrency(totalActualSalaryBudget)}
@@ -7238,7 +7288,6 @@ const SalesContributionPage = () => {
                                           </td>
                                           <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                             {(() => {
@@ -7285,7 +7334,6 @@ const SalesContributionPage = () => {
                                             {isExpanded ? '▼' : '▶'} Handlers
                                           </span>
                                         </td>
-                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
@@ -7343,7 +7391,6 @@ const SalesContributionPage = () => {
                                           </td>
                                           <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                             {(() => {
@@ -7390,7 +7437,6 @@ const SalesContributionPage = () => {
                                             {isExpanded ? '▼' : '▶'} Partners
                                           </span>
                                         </td>
-                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
@@ -7448,7 +7494,6 @@ const SalesContributionPage = () => {
                                           </td>
                                           <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                             {(() => {
@@ -7495,7 +7540,6 @@ const SalesContributionPage = () => {
                                             {isExpanded ? '▼' : '▶'} Marketing
                                           </span>
                                         </td>
-                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
@@ -7553,7 +7597,6 @@ const SalesContributionPage = () => {
                                           </td>
                                           <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
-                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                             {(() => {
@@ -7600,7 +7643,6 @@ const SalesContributionPage = () => {
                                             {isExpanded ? '▼' : '▶'} Finance
                                           </span>
                                         </td>
-                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
@@ -7656,7 +7698,6 @@ const SalesContributionPage = () => {
                                               <span className="truncate max-w-[80px] md:max-w-none text-xs md:text-sm">{employee.display_name}</span>
                                             </div>
                                           </td>
-                                          <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                           <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
@@ -7731,7 +7772,6 @@ const SalesContributionPage = () => {
                                         </td>
                                         <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
-                                        <td className="text-right w-[12%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap"></td>
                                         <td className="text-right w-[11%] text-xs md:text-sm whitespace-nowrap">
                                           {(() => {
@@ -7761,16 +7801,12 @@ const SalesContributionPage = () => {
                     </React.Fragment>
                   );
                 })}
-              {deptData.employees.filter((emp) => {
-                if (!employeeSearchTerm.trim()) return true;
-                const searchLower = employeeSearchTerm.toLowerCase().trim();
-                const nameMatch = emp.employeeName.toLowerCase().includes(searchLower);
-                const deptMatch = emp.department.toLowerCase().includes(searchLower);
-                return nameMatch || deptMatch;
-              }).length === 0 && (
+              {deptData.employees.filter(employeeMatchesRowFilters).length === 0 && (
                   <tr>
                     <td colSpan={colSpanValue} className="text-center text-gray-500">
-                      {employeeSearchTerm.trim() ? 'No employees found matching your search' : 'No employees found'}
+                      {employeeSearchTerm.trim() || filterTrophyBadgeEmployeesOnly
+                        ? 'No employees found matching your filters'
+                        : 'No employees found'}
                     </td>
                   </tr>
                 )}
@@ -7779,7 +7815,6 @@ const SalesContributionPage = () => {
                 {isFieldView ? (
                   <>
                     <td className="w-[20%] text-xs md:text-sm">Total</td>
-                    <td className="text-right w-[12%] text-xs md:text-sm"></td>
                     <td className="text-right w-[12%] text-xs md:text-sm"></td>
                     <td className="text-right w-[12%] text-xs md:text-sm"></td>
                     <td className="text-right w-[11%] text-xs md:text-sm">
@@ -7878,63 +7913,66 @@ const SalesContributionPage = () => {
                     <td className="w-[15%] text-xs md:text-sm"></td>
                     <td className="text-right w-[10%] text-xs md:text-sm"></td>
                     <td className="text-right w-[10%] text-xs md:text-sm"></td>
-                    <td className="text-right w-[10%] text-xs md:text-sm"></td>
-                    <td className="text-right w-[10%] text-xs md:text-sm"></td>
                     <td className="text-right w-[10%] text-xs md:text-sm">
-                      <div className="flex flex-col items-end">
-                        <span>
-                          {formatCurrency(scalePeriodSum(totalRowContribution))}
-                        </span>
-                        {(deptData.departmentName === 'Sales' && linkedContributionForSales != null && linkedContributionForSales > 0) || (deptData.departmentName === 'Handlers' && linkedContributionForHandlers != null && linkedContributionForHandlers > 0) ? (
+                      {(() => {
+                        const linkAmount = deptData.departmentName === 'Sales'
+                          ? (linkedContributionForSales ?? 0)
+                          : (linkedContributionForHandlers ?? 0);
+                        const hasLink = (deptData.departmentName === 'Sales' && linkedContributionForSales != null && linkedContributionForSales > 0)
+                          || (deptData.departmentName === 'Handlers' && linkedContributionForHandlers != null && linkedContributionForHandlers > 0);
+                        const linkTip = hasLink
+                          ? deptData.departmentName === 'Sales'
+                            ? `+${formatCurrency(scalePeriodSum(linkAmount))} from link — Contribution from employees in Handlers, Partners and Finance who have Closer / Helper Closer / Meeting Manager / Scheduler roles (Link contribution to Sales).`
+                            : `+${formatCurrency(scalePeriodSum(linkAmount))} from link — Contribution from employees in Sales, Partners and Finance who have the Handler role (Link contribution to Handlers).`
+                          : undefined;
+                        return (
                           <span
-                            className="tooltip tooltip-top text-xs text-blue-600 dark:text-blue-400 font-medium cursor-help"
-                            data-tip={deptData.departmentName === 'Sales'
-                              ? 'Contribution from employees in Handlers, Partners and Finance who have Closer / Helper Closer / Meeting Manager / Scheduler roles (Link contribution to Sales).'
-                              : 'Contribution from employees in Sales, Partners and Finance who have the Handler role (Link contribution to Handlers).'}
+                            className={linkTip ? 'tooltip tooltip-top cursor-help' : undefined}
+                            data-tip={linkTip}
                           >
-                            +{formatCurrency(scalePeriodSum(deptData.departmentName === 'Sales' ? (linkedContributionForSales ?? 0) : (linkedContributionForHandlers ?? 0)))} from link
+                            {formatCurrency(scalePeriodSum(totalRowContribution))}
                           </span>
-                        ) : null}
-                      </div>
+                        );
+                      })()}
                     </td>
                     <td className="text-right w-[10%] text-xs md:text-sm">
-                      <div className="flex flex-col items-end">
-                        <span>
-                          {formatCurrency(scalePeriodSum(totalRowContributionFixed))}
-                        </span>
-                        {deptData.departmentName === 'Sales' && linkedContributionFixedForSales > 0 ? (
+                      {(() => {
+                        const fixedTipParts: string[] = [];
+                        if (deptData.departmentName === 'Sales' && linkedContributionFixedForSales > 0) {
+                          fixedTipParts.push(
+                            `+${formatCurrency(scalePeriodSum(linkedContributionFixedForSales))} from link — 50% of fixed contribution from linked Handlers/Partners/Finance employees (Link contribution to Sales).`
+                          );
+                        }
+                        if (deptData.departmentName === 'Marketing' && linkedContributionForMarketing > 0) {
+                          fixedTipParts.push(
+                            `+${formatCurrency(scalePeriodSum(linkedContributionForMarketing))} from link — Contribution fixed from employees Irina and Joshua (Link contribution to Marketing).`
+                          );
+                        }
+                        if (
+                          (deptData.departmentName === 'Handlers'
+                            || deptData.departmentName === 'Partners'
+                            || deptData.departmentName === 'Finance')
+                          && linkedFixedDeductedForDisplayed > 0
+                        ) {
+                          fixedTipParts.push(
+                            `−${formatCurrency(scalePeriodSum(linkedFixedDeductedForDisplayed))} — 50% of fixed contribution from employees in this table reallocated to the Sales table (Link contribution to Sales).`
+                          );
+                        }
+                        if (linkedMarketingFixedDeductedForDisplayed > 0) {
+                          fixedTipParts.push(
+                            `−${formatCurrency(scalePeriodSum(linkedMarketingFixedDeductedForDisplayed))} — Part of fixed contribution from employees reallocated to Marketing (Link contribution to Marketing).`
+                          );
+                        }
+                        const fixedTip = fixedTipParts.length > 0 ? fixedTipParts.join(' ') : undefined;
+                        return (
                           <span
-                            className="tooltip tooltip-top text-xs text-green-600 dark:text-green-400 font-medium cursor-help"
-                            data-tip="50% of fixed contribution from linked Handlers/Partners/Finance employees (Link contribution to Sales)."
+                            className={fixedTip ? 'tooltip tooltip-top cursor-help' : undefined}
+                            data-tip={fixedTip}
                           >
-                            +{formatCurrency(scalePeriodSum(linkedContributionFixedForSales))} from link
+                            {formatCurrency(scalePeriodSum(totalRowContributionFixed))}
                           </span>
-                        ) : null}
-                        {deptData.departmentName === 'Marketing' && linkedContributionForMarketing > 0 ? (
-                          <span
-                            className="tooltip tooltip-top text-xs text-orange-600 dark:text-orange-400 font-medium cursor-help"
-                            data-tip="Contribution fixed from employees Irina and Joshua (Link contribution to Marketing)."
-                          >
-                            +{formatCurrency(scalePeriodSum(linkedContributionForMarketing))} from link
-                          </span>
-                        ) : null}
-                        {(deptData.departmentName === 'Handlers' || deptData.departmentName === 'Partners' || deptData.departmentName === 'Finance') && linkedFixedDeductedForDisplayed > 0 ? (
-                          <span
-                            className="tooltip tooltip-top text-xs text-amber-600 dark:text-amber-400 font-medium cursor-help"
-                            data-tip="50% of fixed contribution from employees in this table reallocated to the Sales table (Link contribution to Sales)."
-                          >
-                            −{formatCurrency(scalePeriodSum(linkedFixedDeductedForDisplayed))}
-                          </span>
-                        ) : null}
-                        {linkedMarketingFixedDeductedForDisplayed > 0 ? (
-                          <span
-                            className="tooltip tooltip-top text-xs text-amber-600 dark:text-amber-400 font-medium cursor-help"
-                            data-tip="Part of fixed contribution from employees reallocated to Marketing (Link contribution to Marketing)."
-                          >
-                            −{formatCurrency(scalePeriodSum(linkedMarketingFixedDeductedForDisplayed))}
-                          </span>
-                        ) : null}
-                      </div>
+                        );
+                      })()}
                     </td>
                     <td className="text-right w-[10%] text-xs md:text-sm">
                       <div className="flex flex-col items-end">
@@ -7976,7 +8014,6 @@ const SalesContributionPage = () => {
               </tr>
             </tbody>
           </table>
-        </div>
       </div>
     );
   };
@@ -8173,8 +8210,8 @@ const SalesContributionPage = () => {
               <ul className="list-disc list-inside space-y-1">
                 <li><span className="text-green-600 dark:text-green-400 font-medium">Green (+amount)</span> — added so the table total matches the department target when the sum of rows is below target.</li>
                 <li><span className="text-red-600 dark:text-red-400 font-medium">Red (−amount)</span> — deducted so the total matches the target when the sum of rows is above target.</li>
-                <li><span className="text-blue-600 dark:text-blue-400 font-medium">Blue (−amount relocated)</span> — part of this employee’s contribution was reallocated to the Sales or Handlers link modal; the total row already reflects this.</li>
-                <li><span className="text-orange-600 dark:text-orange-400 font-medium">Orange</span> — contribution fixed reallocated to Marketing (from the Marketing link modal). In employee rows: amount deducted from this employee’s fixed contribution and moved to Marketing. In the Marketing table total: amount added from the link.</li>
+                <li>Hover the contribution amount when a relocation applies — part of this employee’s contribution was reallocated to the Sales or Handlers link modal; the total row already reflects this.</li>
+                <li>Hover the contribution fixed amount when a reallocation applies — fixed contribution moved to or from Marketing / Sales link modals (employee rows show deductions; Marketing total shows amounts added from the link).</li>
               </ul>
               <p className="mt-3 text-base-content/70">The main number in each row is the original contribution; the total row shows the actual total after corrections and reallocations.</p>
             </div>
@@ -8235,17 +8272,36 @@ const SalesContributionPage = () => {
       <div className="card bg-base-100 shadow-xl mb-6 md:-mt-4" data-filters-section>
         <div className="card-body md:py-4">
           <div className="mb-3 md:mb-4 flex flex-col items-start gap-1 w-fit max-w-full">
-            <span className="text-xs md:text-base font-semibold text-base-content">Report period</span>
-            <select
-              className="select select-bordered select-sm md:select-md w-max max-w-full md:text-base"
-              value={periodPreset}
-              onChange={(e) => handlePeriodPresetChange(e.target.value as SalesContributionPeriodPreset)}
-            >
-              <option value="custom">Custom</option>
-              <option value="last3months">Last 3 months</option>
-              <option value="last6months">Last 6 months</option>
-              <option value="last12months">One year</option>
-            </select>
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="flex flex-col items-start gap-1">
+                <span className="text-xs md:text-base font-semibold text-base-content">Report period</span>
+                <select
+                  className="select select-bordered select-sm md:select-md w-max max-w-full md:text-base"
+                  value={periodPreset}
+                  onChange={(e) => handlePeriodPresetChange(e.target.value as SalesContributionPeriodPreset)}
+                >
+                  <option value="custom">Custom</option>
+                  <option value="last3months">Last 3 months</option>
+                  <option value="last6months">Last 6 months</option>
+                  <option value="last12months">One year</option>
+                </select>
+              </div>
+              {viewMode === 'employee' && (
+                <label
+                  className="flex items-center gap-2 cursor-pointer pb-0.5"
+                  title="Show employees with positive max incentives only"
+                >
+                  <TrophyIcon className="h-4 w-4 text-amber-500 shrink-0" aria-hidden="true" />
+                  <input
+                    type="checkbox"
+                    className="toggle toggle-sm toggle-warning"
+                    checked={filterTrophyBadgeEmployeesOnly}
+                    onChange={(e) => setFilterTrophyBadgeEmployeesOnly(e.target.checked)}
+                    aria-label="Show employees with positive max incentives only"
+                  />
+                </label>
+              )}
+            </div>
             {periodFiltersLocked && (
               <p className="text-xs text-base-content/60 mt-1">
                 From / To dates and salary month/year follow this preset. Switch to Custom to edit them.
@@ -8408,16 +8464,11 @@ const SalesContributionPage = () => {
                 const deptData = departmentData.get(deptName);
                 if (!deptData) return false;
 
-                // If there's a search term, only show departments with matching employees
-                if (employeeSearchTerm.trim()) {
-                  const searchLower = employeeSearchTerm.toLowerCase().trim();
-                  return deptData.employees.some(emp => {
-                    const nameMatch = emp.employeeName.toLowerCase().includes(searchLower);
-                    const deptMatch = emp.department.toLowerCase().includes(searchLower);
-                    return nameMatch || deptMatch;
-                  });
+                // If filters are active, only show departments with matching employees
+                if (employeeSearchTerm.trim() || filterTrophyBadgeEmployeesOnly) {
+                  return deptData.employees.some(employeeMatchesRowFilters);
                 }
-                // If no search term, show all departments
+                // If no filters, show all departments
                 return true;
               })
               .map(deptName => {

@@ -249,7 +249,6 @@ const ExternalUserLeadDetailsModal: React.FC<ExternalUserLeadDetailsModalProps> 
                   setIsDuplicateDropdownOpen={() => {}}
                   isDuplicateDropdownOpen={false}
                   setShowSubLeadDrawer={() => {}}
-                  openEditLeadDrawer={() => {}}
                   handleActivation={handleActivation}
                   setShowUnactivationModal={() => {}}
                   renderStageBadge={() => getStageBadge(normalizedLead.stage)}

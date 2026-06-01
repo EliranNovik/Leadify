@@ -76,7 +76,11 @@ export async function fetchLeadContacts(
     } else {
       // For new leads, use newlead_id in lead_leadcontact
       const newLeadId = typeof leadId === 'string' ? leadId : String(leadId);
-      
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(newLeadId)) {
+        return [];
+      }
+
       // Get contact relationships
       const { data: leadContacts, error: leadContactsError } = await supabase
         .from('lead_leadcontact')
