@@ -13,6 +13,7 @@ import {
   ChatBubbleLeftRightIcon,
   MagnifyingGlassIcon,
   HomeIcon,
+  ReceiptPercentIcon,
 } from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
 import UsersManager from './UsersManager';
@@ -46,6 +47,10 @@ import EmailTemplatesAutomationManager from './EmailTemplatesAutomationManager';
 import PublicMessagesManager from './PublicMessagesManager';
 import WebhookSettingsManager from './WebhookSettingsManager';
 import SourceMediaExpensesManager from './SourceMediaExpensesManager';
+import EmployeeSalariesManager from './EmployeeSalariesManager';
+import OfficeRentExpensesManager from './OfficeRentExpensesManager';
+import PartnerDrawsManager from './PartnerDrawsManager';
+import FirmManagementCostsManager from './FirmManagementCostsManager';
 import BoiExchangeRatesTestPage from '../../pages/BoiExchangeRatesTestPage';
 import EmployeeFieldAssignmentsManager from './EmployeeFieldAssignmentsManager';
 import { useAdminRole } from '../../hooks/useAdminRole';
@@ -93,7 +98,7 @@ const ADMIN_TABS: AdminTab[] = [
   {
     label: 'Marketing',
     icon: ChartBarIcon,
-    subcategories: ['Marketing expenses', 'Marketing suppliers', 'Sales team expenses'],
+    subcategories: ['Sales team expenses'],
     requiresAdmin: true,
   },
   {
@@ -141,6 +146,18 @@ const ADMIN_TABS: AdminTab[] = [
     label: 'Whatsapp',
     icon: ChatBubbleLeftRightIcon,
     subcategories: ['Whatsapp numbers', 'Whats app templates'],
+    requiresAdmin: true,
+  },
+  {
+    label: 'All Expenses',
+    icon: ReceiptPercentIcon,
+    subcategories: [
+      'Office Expenses',
+      'Marketing Expenses',
+      'Rent',
+      'Partner Draws',
+      'Salaries',
+    ],
     requiresAdmin: true,
   },
 ];
@@ -1652,9 +1669,21 @@ const AdminPage: React.FC = () => {
                 ) : selectedTab?.label === 'Whatsapp' &&
                   selectedTab?.subcategories[selected.sub] === 'Whats app templates' ? (
                   <div className="w-full"><WhatsAppTemplatesManager /></div>
-                ) : selectedTab?.label === 'Marketing' &&
-                  selectedTab?.subcategories[selected.sub] === 'Marketing expenses' ? (
-                  <div className="w-full"><SourceMediaExpensesManager /></div>
+                ) : selectedTab?.label === 'All Expenses' &&
+                  selectedTab?.subcategories[selected.sub] === 'Marketing Expenses' ? (
+                  <div className="w-full flex flex-col gap-12">
+                    <SourceMediaExpensesManager />
+                    <FirmManagementCostsManager />
+                  </div>
+                ) : selectedTab?.label === 'All Expenses' &&
+                  selectedTab?.subcategories[selected.sub] === 'Salaries' ? (
+                  <div className="w-full"><EmployeeSalariesManager /></div>
+                ) : selectedTab?.label === 'All Expenses' &&
+                  selectedTab?.subcategories[selected.sub] === 'Rent' ? (
+                  <div className="w-full"><OfficeRentExpensesManager /></div>
+                ) : selectedTab?.label === 'All Expenses' &&
+                  selectedTab?.subcategories[selected.sub] === 'Partner Draws' ? (
+                  <div className="w-full"><PartnerDrawsManager /></div>
                 ) : (
                   <div className="flex items-center justify-center text-xl font-semibold text-primary">
                     {`${selectedTab?.label} / ${selectedTab?.subcategories[selected.sub]}`}
@@ -1739,6 +1768,38 @@ const AdminPage: React.FC = () => {
 
           html.dark .admin-page-shell table tbody tr:hover td {
             background: rgba(255, 255, 255, 0.10) !important;
+          }
+
+          .admin-page-shell table tfoot tr {
+            background: transparent !important;
+            border-radius: 18px !important;
+            overflow: hidden !important;
+            box-shadow: none !important;
+          }
+
+          .admin-page-shell table tfoot td {
+            border: none !important;
+            border-bottom: none !important;
+            background: #ffffff !important;
+            box-shadow: none !important;
+            vertical-align: middle;
+            font-weight: 600;
+          }
+
+          .admin-page-shell table tfoot td:first-child {
+            border-top-left-radius: 18px !important;
+            border-bottom-left-radius: 18px !important;
+            padding-left: 1.1rem !important;
+          }
+
+          .admin-page-shell table tfoot td:last-child {
+            border-top-right-radius: 18px !important;
+            border-bottom-right-radius: 18px !important;
+            padding-right: 1.1rem !important;
+          }
+
+          html.dark .admin-page-shell table tfoot td {
+            background: rgba(255, 255, 255, 0.06) !important;
           }
 
           .admin-page-shell input[type='search'],

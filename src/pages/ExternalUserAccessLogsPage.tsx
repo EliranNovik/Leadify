@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowLeftIcon } from '@heroicons/react/24/solid';
 import ExternalUserAccessLogs from '../components/ExternalUserAccessLogs';
+import { EXTERNAL_USER_PAGE_INNER } from '../lib/externalUserLayout';
 import { supabase } from '../lib/supabase';
 
 const ExternalUserAccessLogsPage = () => {
@@ -19,7 +20,7 @@ const ExternalUserAccessLogsPage = () => {
 
   return (
     <div className="min-h-screen bg-white pt-16">
-      <div className="container mx-auto px-4 py-6">
+      <div className={EXTERNAL_USER_PAGE_INNER}>
         <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <h1 className="text-3xl font-bold text-gray-900">Access Logs</h1>
           <Link to="/external-home" className="btn btn-ghost btn-sm self-start sm:self-auto">

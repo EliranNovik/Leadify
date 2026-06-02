@@ -41,6 +41,7 @@ import RMQMessagesPage from '../pages/RMQMessagesPage';
 import HighlightsPanel from './HighlightsPanel';
 import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
 import { getRecentLeads, addRecentLead, type RecentLead } from '../lib/recentSearchStorage';
+import { EXTERNAL_USER_HEADER_PADDING } from '../lib/externalUserLayout';
 import { useExternalUser, shouldDeferInternalChrome } from '../hooks/useExternalUser';
 import { useAuthContext } from '../contexts/AuthContext';
 import { runMailboxCatchUpSync } from '../lib/mailboxApi';
@@ -7352,11 +7353,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       <>
         <div
           data-mobile-header={isMobile ? 'floating' : undefined}
-          className="navbar navbar-safe-x relative md:px-0 h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b md:border-base-200 md:dark:border-base-300 pt-safe pb-1.5 md:pb-0 md:pt-0"
+          className={`navbar navbar-safe-x relative h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b md:border-base-200 md:dark:border-base-300 pt-safe pb-1.5 md:pb-0 md:pt-0 ${EXTERNAL_USER_HEADER_PADDING}`}
         >
           {/* Left: Logo */}
           <div className="flex-1 justify-start flex items-center">
-            <div className="flex h-11 md:h-12 items-center gap-2 md:gap-3 px-1 md:px-0">
+            <div className="flex h-11 md:h-12 items-center gap-2 md:gap-3 px-1">
               <Link to="/external-home" className="flex items-center gap-2">
                 <span
                   className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight"

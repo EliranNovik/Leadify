@@ -520,6 +520,31 @@ const getContrastingTextColor = (hexColor?: string | null) => {
   return luminance > 0.6 ? '#111827' : '#ffffff';
 };
 
+const getSoftStageBadgeStyle = (hexColor?: string | null) => {
+  const fallback = '#3f28cd';
+  const color = hexColor || fallback;
+  let sanitized = color.trim();
+  if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+  if (sanitized.length === 3) {
+    sanitized = sanitized.split('').map(char => char + char).join('');
+  }
+  if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+    return {
+      backgroundColor: 'rgba(63, 40, 205, 0.12)',
+      borderColor: 'rgba(63, 40, 205, 0.28)',
+      color: fallback,
+    };
+  }
+  const r = parseInt(sanitized.slice(0, 2), 16);
+  const g = parseInt(sanitized.slice(2, 4), 16);
+  const b = parseInt(sanitized.slice(4, 6), 16);
+  return {
+    backgroundColor: `rgba(${r}, ${g}, ${b}, 0.14)`,
+    borderColor: `rgba(${r}, ${g}, ${b}, 0.32)`,
+    color: `#${sanitized}`,
+  };
+};
+
 // Table View Component
 const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], selectedColumns: string[], onLeadClick: (lead: Lead | string, event?: React.MouseEvent) => void }) => {
   // Helper function to get currency symbol
@@ -3172,35 +3197,36 @@ const ExternalUserLeadSearchPage: React.FC = () => {
   }, [isSearching, results.length, searchPerformed]);
 
   const getStageBadge = (stage: string | number | null | undefined) => {
-    if (!stage && stage !== 0) return <span className="badge badge-outline">No Stage</span>;
-    
-    // Convert stage to string for getStageName/getStageColour (handles both numeric IDs and stage names)
+    if (!stage && stage !== 0) {
+      return (
+        <span className="badge stage-badge rounded-full shrink-0 text-xs px-2.5 py-0.5 max-w-full bg-gray-100 text-gray-600 border-gray-200">
+          No Stage
+        </span>
+      );
+    }
+
     const stageStr = String(stage);
-    
-    // Get stage name and color from stageUtils
     const stageName = getStageName(stageStr);
     const stageColour = getStageColour(stageStr);
-    const badgeTextColour = getContrastingTextColor(stageColour);
-    
-    // Use dynamic color if available, otherwise fallback to default purple
-    const backgroundColor = stageColour || '#3f28cd';
-    const textColor = stageColour ? badgeTextColour : '#ffffff';
-    
-    return <span 
-      className="badge stage-badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
-      style={{
-        backgroundColor: backgroundColor,
-        borderColor: backgroundColor,
-        color: textColor,
-        whiteSpace: 'nowrap',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        display: 'inline-block'
-      }}
-      title={stageName}
-    >
-      {stageName}
-    </span>;
+    const softBadgeStyle = getSoftStageBadgeStyle(stageColour);
+
+    return (
+      <span
+        className="badge stage-badge rounded-full shrink-0 hover:opacity-90 transition-opacity duration-200 text-xs px-2.5 py-0.5 max-w-full border"
+        style={{
+          backgroundColor: softBadgeStyle.backgroundColor,
+          borderColor: softBadgeStyle.borderColor,
+          color: softBadgeStyle.color,
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          display: 'inline-block',
+        }}
+        title={stageName}
+      >
+        {stageName}
+      </span>
+    );
   };
 
   const renderResultCard = (lead: Lead) => {
@@ -3233,7 +3259,7 @@ const ExternalUserLeadSearchPage: React.FC = () => {
       // Inactive card: light grey background, all text black; stage badges grey with black text
       isInactive
         ? 'bg-gray-200 border-gray-300 [&_.card-title]:!text-black [&_p]:!text-black [&_span]:!text-black [&_svg]:!text-black [&_.divider]:!border-gray-400 [&_.stage-badge]:!bg-gray-300 [&_.stage-badge]:!border-gray-400 [&_.stage-badge]:![color:black]'
-        : 'bg-base-100 border-base-200',
+        : 'bg-gray-50 border-base-200',
     ].join(' ');
 
     // Ensure category is always shown as "Subcategory (Main Category)" when possible
@@ -3264,48 +3290,55 @@ const ExternalUserLeadSearchPage: React.FC = () => {
           handleLeadClick(lead, e);
         }}
       >
-        <div className="card-body p-5 relative">
+        <div className="card-body p-3 sm:p-4 relative">
           {isInactive && (
             <span className="badge badge-xs absolute top-1 left-3 bg-white border-gray-500 text-gray-700 shadow-sm">
               Not active
             </span>
           )}
-        <div className="flex justify-between items-start mb-2">
-            <div className="flex items-center gap-2">
-            <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors">
+        <div className="flex justify-between items-start mb-1 gap-2">
+            <div className="min-w-0">
+            <h2 className="card-title text-base sm:text-lg font-bold leading-tight group-hover:text-primary transition-colors truncate">
               {lead.name}
             </h2>
+            <div className="-mt-0.5">
+              <span className="text-[11px] sm:text-xs font-mono font-semibold text-gray-500 truncate">
+                #{(lead as any).display_lead_number || lead.lead_number || lead.id}
+              </span>
+            </div>
             </div>
             {getStageBadge(lead.stage)}
         </div>
         
-        <p className="text-sm text-base-content/60 font-mono mb-4">
-          #{(lead as any).display_lead_number || lead.lead_number || lead.id}
-        </p>
-
-        <div className="divider my-0"></div>
-
-        <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
-          <div className="flex items-center gap-2" title="Date Created">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-            <span className="font-medium">{new Date(lead.created_at).toLocaleDateString()}</span>
-          </div>
-          <div className="flex items-center gap-2" title="Category">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
-            <span>{displayCategory || 'N/A'}</span>
-          </div>
-          <div className="flex items-center gap-2" title="Source">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-            <span>{lead.source || 'N/A'}</span>
-          </div>
-          <div className="flex items-center gap-2" title="Language">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" /></svg>
-            <span>{lead.language || 'N/A'}</span>
+        <div className="mt-2 rounded-xl bg-gray-100/90 px-2.5 py-2 relative">
+          <div
+            className="pointer-events-none absolute inset-y-2 left-1/2 w-px -translate-x-1/2 bg-gray-300/80"
+            aria-hidden
+          />
+          <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-[12px] sm:text-sm">
+            <div className="flex items-center gap-2" title="Date Created">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+              <span className="font-medium truncate">{new Date(lead.created_at).toLocaleDateString()}</span>
+            </div>
+            <div className="flex items-center gap-2" title="Category">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+              <span className="truncate">{displayCategory || 'N/A'}</span>
+            </div>
+            <div className="flex items-center gap-2" title="Source">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+              <span className="truncate">{lead.source || 'N/A'}</span>
+            </div>
+            <div className="flex items-center gap-2" title="Language">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" /></svg>
+              <span className="truncate">{lead.language || 'N/A'}</span>
+            </div>
           </div>
         </div>
 
-        <div className="mt-4 pt-4 border-t border-base-200/50">
-          <p className="text-sm font-semibold text-base-content/80">{lead.topic || 'No topic specified'}</p>
+        <div className="mt-2 pt-1 flex justify-start">
+          <span className="inline-flex max-w-full items-center rounded-full bg-gray-100 px-2.5 py-1 text-[11px] sm:text-xs font-medium text-gray-700 truncate">
+            {lead.topic || 'No topic specified'}
+          </span>
         </div>
 
       </div>

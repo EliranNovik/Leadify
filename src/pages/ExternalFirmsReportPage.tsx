@@ -1229,7 +1229,7 @@ export default function ExternalFirmsReportPage() {
 
   return (
     <div className="min-h-[calc(100vh-3rem)] bg-base-100 px-4 py-6 md:px-10 md:py-8 [zoom:1.075]">
-      <div className="mx-auto w-full max-w-6xl space-y-5">
+      <div className="w-full space-y-5">
 
         {/* ── Page Header ──────────────────────────────────────────────────── */}
         <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">

@@ -6,6 +6,7 @@ import { loginRequest } from '../msalConfig';
 import { toast } from 'react-hot-toast';
 import {
   buildStaffMeetingWindow,
+  getAccessTokenWithFallback,
   isOutlookEventNotFoundError,
   updateStaffCalendarEvent,
 } from '../lib/graph';
@@ -531,23 +532,20 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
     setFreeParticipants(prev => prev.filter((_, i) => i !== idx));
   };
 
+  const acquireGraphAccessToken = async (): Promise<string | null> => {
+    const account = accounts[0];
+    if (!account) return null;
+    return getAccessTokenWithFallback(instance, loginRequest, account);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
 
     try {
-      const account = accounts[0];
-      if (!account) {
-        throw new Error('No active account');
-      }
-
-      const tokenResponse = await instance.acquireTokenSilent({
-        ...loginRequest,
-        account
-      });
-
-      if (!tokenResponse) {
-        throw new Error('Failed to acquire token');
+      const accessToken = await acquireGraphAccessToken();
+      if (!accessToken) {
+        throw new Error('Microsoft sign-in is required to update Outlook calendar events');
       }
 
       const outlookEventId = meeting?.teams_meeting_id || meeting?.teams_id || meeting?.outlook_event_id;
@@ -563,7 +561,7 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
       let outlookUpdateSkipped = false;
       if (outlookEventId) {
         try {
-          await updateStaffCalendarEvent(tokenResponse.accessToken, String(outlookEventId), {
+          await updateStaffCalendarEvent(accessToken, String(outlookEventId), {
             subject: formData.subject,
             startDateTime: graphStart,
             endDateTime: graphEnd,
@@ -732,82 +730,47 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
     setIsDeleting(true);
 
     try {
-      console.log('🗑️ Deleting meeting - full object:', meeting);
-      console.log('🗑️ Meeting ID type:', typeof meeting.id, 'Value:', meeting.id);
-      console.log('🗑️ Teams meeting ID:', meeting.teams_meeting_id);
-
-      const account = accounts[0];
-      if (!account) {
-        throw new Error('No active account');
-      }
-
-      const tokenResponse = await instance.acquireTokenSilent({
-        ...loginRequest,
-        account: account,
-      });
-
-      // Delete from Outlook first (if it exists there)
-      if (meeting.teams_meeting_id) {
-        try {
-          await deleteOutlookMeeting(tokenResponse.accessToken, meeting.teams_meeting_id);
-        } catch (outlookError) {
-          console.warn('Meeting not found in Outlook, continuing with database deletion:', outlookError);
-          // Continue with database deletion even if Outlook deletion fails
-        }
-      }
-
-      // Delete from database (both meta table and internal meetings table)
-      // Extract the actual database ID (remove prefix if present)
-      let dbId = meeting.id;
-      if (typeof meeting.id === 'string' && meeting.id.includes('-')) {
-        // If it's a prefixed ID like "staff-AAMk...", we need to find the actual database record
-        console.log('🔍 Looking for database record with prefixed ID:', meeting.id);
-        
-        // Try to find by teams_meeting_id first
-        if (meeting.teams_meeting_id) {
-          const { data: existingMeeting, error: findError } = await supabase
-            .from('outlook_teams_meetings')
-            .select('id')
-            .eq('teams_meeting_id', meeting.teams_meeting_id)
-            .single();
-          
-          if (existingMeeting && !findError) {
-            dbId = existingMeeting.id;
-            console.log('✅ Found by teams_meeting_id:', dbId);
-          }
-        }
-        
-        // If still not found, try by subject and date
-        if (dbId === meeting.id && formData.subject) {
-          const meetingDate = formData.date;
-          const { data: existingMeeting, error: findError } = await supabase
-            .from('outlook_teams_meetings')
-            .select('id')
-            .eq('subject', formData.subject)
-            .gte('start_date_time', `${meetingDate}T00:00:00`)
-            .lte('start_date_time', `${meetingDate}T23:59:59`)
-            .single();
-          
-          if (existingMeeting && !findError) {
-            dbId = existingMeeting.id;
-            console.log('✅ Found by subject and date:', dbId);
-          }
-        }
-      }
-
-      console.log('🗑️ Using database ID for deletion:', dbId);
-
-      const { error: deleteError } = await supabase
-        .from('outlook_teams_meetings')
-        .delete()
-        .eq('id', dbId);
-
-      if (deleteError) throw deleteError;
-
-      // Also delete the internal meeting row from public.meetings so it won't stay as a ghost in the UI.
-      // Prefer matching by teams_id (Outlook event id), then fall back to date/time/subject/location.
       const outlookEventId = meeting?.teams_meeting_id || meeting?.teams_id || meeting?.outlook_event_id;
-      let meetingsDbId: number | null = null;
+      let outlookDeleteSkipped = false;
+
+      // Delete from Outlook when possible; DB cleanup proceeds even if Graph auth fails.
+      if (outlookEventId) {
+        const accessToken = await acquireGraphAccessToken();
+        if (accessToken) {
+          try {
+            await deleteOutlookMeeting(accessToken, String(outlookEventId));
+          } catch (outlookError) {
+            console.warn('Meeting not found in Outlook, continuing with database deletion:', outlookError);
+          }
+        } else {
+          outlookDeleteSkipped = true;
+          console.warn('No Graph access token; skipping Outlook deletion and removing database rows only');
+        }
+      }
+
+      // Remove outlook_teams_meetings meta (prefer stable Outlook event id over UI-prefixed ids).
+      if (outlookEventId) {
+        const { error: metaDeleteError } = await supabase
+          .from('outlook_teams_meetings')
+          .delete()
+          .eq('teams_meeting_id', String(outlookEventId));
+        if (metaDeleteError) {
+          console.warn('Failed deleting outlook_teams_meetings row (non-fatal):', metaDeleteError);
+        }
+      } else if (formData.subject && formData.date) {
+        const { error: metaDeleteError } = await supabase
+          .from('outlook_teams_meetings')
+          .delete()
+          .eq('subject', formData.subject)
+          .gte('start_date_time', `${formData.date}T00:00:00`)
+          .lte('start_date_time', `${formData.date}T23:59:59`);
+        if (metaDeleteError) {
+          console.warn('Failed deleting outlook_teams_meetings by subject/date (non-fatal):', metaDeleteError);
+        }
+      }
+
+      // Delete internal meeting row from public.meetings so it does not remain as a ghost in the UI.
+      let meetingsDbId: number | null = resolvedDbMeetingId;
       if (outlookEventId) {
         const byTeams = await supabase
           .from('meetings')
@@ -818,7 +781,10 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
         const id = byTeams.data?.[0]?.id;
         if (typeof id === 'number') meetingsDbId = id;
       }
-      if (!meetingsDbId) {
+      if (meetingsDbId == null && typeof meeting?.id === 'number') {
+        meetingsDbId = meeting.id;
+      }
+      if (meetingsDbId == null) {
         const date = formData.date;
         const time = formData.time;
         const subject = formData.subject;
@@ -839,13 +805,20 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
         }
       }
       if (meetingsDbId != null) {
+        await supabase.from('meeting_participants').delete().eq('meeting_id', meetingsDbId);
         const { error: meetingsDelErr } = await supabase.from('meetings').delete().eq('id', meetingsDbId);
         if (meetingsDelErr) {
           console.warn('Failed deleting meetings row (non-fatal):', meetingsDelErr);
         }
       }
 
-      toast.success('Internal meeting deleted successfully!');
+      if (outlookDeleteSkipped) {
+        toast.success('Removed from calendar in app. Sign in to Microsoft to delete from Outlook.', {
+          duration: 8000,
+        });
+      } else {
+        toast.success('Internal meeting deleted successfully!');
+      }
       if (onDelete) onDelete();
       onClose();
     } catch (error) {

@@ -14,6 +14,7 @@ import {
   FunnelIcon,
   ChevronDownIcon,
   XMarkIcon,
+  AdjustmentsHorizontalIcon,
 } from '@heroicons/react/24/outline';
 import { Search, Loader2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
@@ -28,6 +29,9 @@ import {
 } from '../lib/leadDateFilters';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import { useTheme } from '../hooks/useTheme';
+import LeadSearchCardActions from '../components/LeadSearchCardActions';
+import LeadSearchRolesModal from '../components/LeadSearchRolesModal';
+import { buildLeadClientPath } from '../lib/leadClientRoute';
 
 // Static dropdown options - moved outside component to prevent re-creation on every render
 const REASON_OPTIONS = ["Inquiry", "Follow-up", "Complaint", "Consultation", "Other"];
@@ -64,6 +68,49 @@ const MOBILE_FILTER_CHIPS = [
 ] as const;
 
 type MobileFilterKey = (typeof MOBILE_FILTER_CHIPS)[number]['key'];
+
+const stripHtmlForDisplay = (html: string | null | undefined): string => {
+  if (html == null || typeof html !== 'string') return '';
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .trim();
+};
+
+const LANGUAGE_CODE_TO_DISPLAY_NAME: Record<string, string> = {
+  EN: 'English',
+  ENGLISH: 'English',
+  HE: 'Hebrew',
+  HEBREW: 'Hebrew',
+  DE: 'German',
+  GERMAN: 'German',
+  FR: 'French',
+  FRENCH: 'French',
+  ES: 'Spanish',
+  SPANISH: 'Spanish',
+  RU: 'Russian',
+  RUSSIAN: 'Russian',
+  AR: 'Arabic',
+  ARABIC: 'Arabic',
+  PT: 'Portuguese',
+  POR: 'Portuguese',
+  PORTUGUESE: 'Portuguese',
+};
+
+const getLeadLanguageDisplay = (language: string | null | undefined): string => {
+  if (language == null || String(language).trim() === '') return 'N/A';
+  const raw = String(language).trim();
+  const upper = raw.toUpperCase();
+  const fromCode = LANGUAGE_CODE_TO_DISPLAY_NAME[upper];
+  if (fromCode) return fromCode;
+  if (raw.length <= 3 && /^[a-zA-Z]+$/.test(raw)) {
+    return LANGUAGE_CODE_TO_DISPLAY_NAME[upper] ?? raw;
+  }
+  return raw;
+};
 
 const getLeadCountryDisplay = (anyLead: Record<string, unknown>, displayCategory: string | null): string => {
   const clientCountry = anyLead.client_country;
@@ -951,10 +998,9 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 
       return (
         <span
-          className="badge text-xs px-2 py-1"
+          className="badge border-0 text-xs px-2 py-1"
           style={{
             backgroundColor: backgroundColor,
-            borderColor: backgroundColor,
             color: textColor,
             whiteSpace: 'nowrap',
             overflow: 'hidden',
@@ -1001,7 +1047,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
             const isNewInactive = anyLead.lead_type === 'new' && anyLead.unactivated_at != null;
             const isInactive = isLegacyInactive || isNewInactive;
             const rowClasses = isInactive
-              ? 'bg-gray-200 text-black hover:bg-gray-300 cursor-pointer transition-colors duration-200 [&_.badge]:!bg-gray-300 [&_.badge]:!border-gray-400 [&_.badge]:![color:black]'
+              ? 'bg-gray-200 text-black hover:bg-gray-300 cursor-pointer transition-colors duration-200 [&_.badge]:!border-0 [&_.badge]:!bg-gray-300 [&_.badge]:![color:black]'
               : 'hover cursor-pointer transition-colors duration-200 hover:bg-blue-50 active:bg-blue-100';
             return (
               <tr
@@ -1077,6 +1123,11 @@ const LeadSearchPage: React.FC = () => {
   const [searchPerformed, setSearchPerformed] = usePersistedState('leadSearchPage_performed', false, {
     storage: 'sessionStorage',
   });
+  const [factsModalLead, setFactsModalLead] = useState<Lead | null>(null);
+  const [factsModalText, setFactsModalText] = useState('');
+  const [factsModalLoading, setFactsModalLoading] = useState(false);
+  const [openCardMenuLeadId, setOpenCardMenuLeadId] = useState<string | null>(null);
+  const [rolesModalLead, setRolesModalLead] = useState<Lead | null>(null);
   const [stageOptions, setStageOptions] = useState<string[]>([]);
 
   // Pre-fill content filter from ?q= param (e.g. from Header recent search)
@@ -1137,6 +1188,7 @@ const LeadSearchPage: React.FC = () => {
   });
   const [showColumnSelector, setShowColumnSelector] = useState(false);
   const [showFiltersPanel, setShowFiltersPanel] = useState(true);
+  const [mobileQuickBarOpen, setMobileQuickBarOpen] = useState(false);
   const [activeMobileFilter, setActiveMobileFilter] = useState<MobileFilterKey | null>(null);
   const navigate = useNavigate();
 
@@ -1175,58 +1227,63 @@ const LeadSearchPage: React.FC = () => {
     });
   }, [isSearching, results, viewMode]);
 
+  const closeFactsModal = useCallback(() => {
+    setFactsModalLead(null);
+    setFactsModalText('');
+    setFactsModalLoading(false);
+  }, []);
+
+  const openFactsModal = useCallback(async (lead: Lead, event?: React.MouseEvent) => {
+    event?.stopPropagation();
+    const anyLead = lead as unknown as Record<string, unknown>;
+    setFactsModalLead(lead);
+    setFactsModalText(String(anyLead.facts ?? anyLead.description ?? ''));
+    setFactsModalLoading(true);
+
+    try {
+      if (anyLead.lead_type === 'legacy') {
+        const rawId = String(anyLead.id ?? '').replace(/^legacy_/, '');
+        const legacyId = parseInt(rawId, 10);
+        if (Number.isFinite(legacyId)) {
+          const { data, error } = await supabase
+            .from('leads_lead')
+            .select('description')
+            .eq('id', legacyId)
+            .maybeSingle();
+          if (!error && data?.description != null) {
+            setFactsModalText(data.description);
+          }
+        }
+      } else if (anyLead.id != null) {
+        const { data, error } = await supabase
+          .from('leads')
+          .select('facts')
+          .eq('id', anyLead.id)
+          .maybeSingle();
+        if (!error && data?.facts != null) {
+          setFactsModalText(data.facts);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load lead facts:', err);
+      toast.error('Could not load lead facts');
+    } finally {
+      setFactsModalLoading(false);
+    }
+  }, []);
+
   // Handle lead click navigation
   // Uses the exact same logic as MasterLeadPage.tsx
   const handleLeadClick = (lead: Lead | string, event?: React.MouseEvent) => {
-    // Handle both string (legacy) and Lead object (new)
-    let leadNumber: string;
-    let manualId: string | null = null;
-    let leadType: 'new' | 'legacy' | undefined;
-    let leadId: string | null = null;
+    let path: string | null = null;
 
     if (typeof lead === 'string') {
-      // Legacy: just a lead number string
-      leadNumber = lead;
+      path = `/clients/${encodeURIComponent(lead)}`;
     } else {
-      // New: full lead object
-      const anyLead = lead as any;
-      leadNumber = anyLead.display_lead_number || anyLead.lead_number || lead.id?.toString() || '';
-      manualId = anyLead.manual_id || null;
-      leadType = anyLead.lead_type;
-      leadId = anyLead.id?.toString() || null;
+      path = buildLeadClientPath(lead);
     }
 
-    if (!leadNumber && !leadId) return;
-
-    // Build the URL using the exact same logic as MasterLeadPage
-    // MasterLeadPage uses subLead.route which is set to /clients/${lead.id} for legacy leads
-    // But for display, it should use manual_id if available (as user expects /clients/150926)
-    let path = '';
-
-    if (leadType === 'legacy') {
-      // Legacy leads: use numeric id from leads_lead table (same as MasterLeadPage route: /clients/${lead.id})
-      // MasterLeadPage uses subLead.route which is set to /clients/${lead.id} in masterLeadApi.ts
-      const identifier = leadId || '';
-      if (!identifier) return;
-      path = `/clients/${encodeURIComponent(identifier)}`;
-    } else {
-      // New leads: use buildClientRoute logic
-      // Check if it's a sublead (contains '/')
-      const isSubLead = leadNumber.includes('/');
-
-      if (isSubLead && manualId) {
-        // Sublead with manual_id: use query parameter format like /clients/2104625?lead=L210764%2F3
-        path = `/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(leadNumber)}`;
-      } else if (isSubLead && !manualId) {
-        // Sublead without manual_id: extract base from display_lead_number
-        const baseNumber = leadNumber.split('/')[0];
-        path = `/clients/${encodeURIComponent(baseNumber)}?lead=${encodeURIComponent(leadNumber)}`;
-      } else {
-        // Regular lead: use manual_id if available, otherwise use lead_number
-        const identifier = manualId || leadNumber || leadId || '';
-        path = `/clients/${encodeURIComponent(identifier)}`;
-      }
-    }
+    if (!path) return;
 
     if (event && (event.metaKey || event.ctrlKey)) {
       // Open in new tab if Cmd (Mac) or Ctrl (Windows/Linux) is pressed
@@ -4182,7 +4239,7 @@ const LeadSearchPage: React.FC = () => {
           display_lead_number: String(displayLeadNumber),
           category: formatCategoryDisplay(lead),
           source: leadAny.misc_leadsource?.name ?? lead.source,
-          language: leadAny.misc_language?.name ?? lead.language,
+          language: getLeadLanguageDisplay(leadAny.misc_language?.name ?? lead.language),
           roles: {
             scheduler: lead.scheduler || null,
             manager: lead.manager || null,
@@ -4329,11 +4386,13 @@ const LeadSearchPage: React.FC = () => {
       const languageFromJoinOrMap = (lead: any) => {
         const ml = lead.misc_language;
         const fromJoin = Array.isArray(ml) ? ml[0]?.name : ml?.name;
-        if (fromJoin && String(fromJoin).trim()) return String(fromJoin).trim();
+        if (fromJoin && String(fromJoin).trim()) return getLeadLanguageDisplay(String(fromJoin).trim());
         const lid = lead.language_id;
-        if (lid != null && languageIdToName.has(Number(lid))) return languageIdToName.get(Number(lid)) ?? null;
+        if (lid != null && languageIdToName.has(Number(lid))) {
+          return getLeadLanguageDisplay(languageIdToName.get(Number(lid)) ?? null);
+        }
         const text = lead.language;
-        if (text != null && String(text).trim()) return String(text).trim();
+        if (text != null && String(text).trim()) return getLeadLanguageDisplay(String(text).trim());
         return null;
       };
 
@@ -4665,7 +4724,7 @@ const LeadSearchPage: React.FC = () => {
   const getStageBadge = (stage: string | number | null | undefined) => {
     if (!stage && stage !== 0) {
       return (
-        <span className="badge stage-badge rounded-full shrink-0 text-xs px-2.5 py-0.5 max-w-full bg-gray-100 text-gray-600 border-gray-200">
+        <span className="badge stage-badge rounded-full shrink-0 border-0 text-xs px-2.5 py-0.5 max-w-full bg-gray-100 text-gray-600">
           No Stage
         </span>
       );
@@ -4677,10 +4736,9 @@ const LeadSearchPage: React.FC = () => {
     const softBadgeStyle = getSoftStageBadgeStyle(stageColour);
 
     return <span
-      className="badge stage-badge rounded-full shrink-0 hover:opacity-90 transition-opacity duration-200 text-xs px-2.5 py-0.5 max-w-full border"
+      className="badge stage-badge rounded-full shrink-0 border-0 hover:opacity-90 transition-opacity duration-200 text-xs px-2.5 py-0.5 max-w-full"
       style={{
         backgroundColor: softBadgeStyle.backgroundColor,
-        borderColor: softBadgeStyle.borderColor,
         color: softBadgeStyle.color,
         whiteSpace: 'nowrap',
         overflow: 'hidden',
@@ -4756,46 +4814,70 @@ const LeadSearchPage: React.FC = () => {
           handleLeadClick(lead, e);
         }}
       >
-        <div className="p-5">
-          {isInactive && (
-            <p className="text-center text-gray-600 font-medium text-xs mb-2">Inactive</p>
-          )}
-          <div className="flex items-start justify-between gap-3 mb-2.5">
-            <h2 className="text-base font-bold text-gray-900 leading-normal line-clamp-2 group-hover:text-[#6d28d9] transition-colors">
-              {lead.name}
-            </h2>
-            <div className={`shrink-0 max-w-[45%] ${isInactive ? '[&_.stage-badge]:!bg-gray-300 [&_.stage-badge]:!border-gray-400 [&_.stage-badge]:![color:black]' : ''}`}>
+        <div className="relative p-4 md:p-5">
+          <div className="absolute top-3 right-3 z-20">
+            <LeadSearchCardActions
+              lead={lead}
+              isOpen={openCardMenuLeadId === String(lead.id)}
+              onOpenChange={(open) => setOpenCardMenuLeadId(open ? String(lead.id) : null)}
+              onViewFacts={(l) => void openFactsModal(l)}
+              onViewRoles={(l) => setRolesModalLead(l)}
+            />
+          </div>
+          <div className="mb-4 flex items-start justify-between gap-2 pr-11">
+            <div className="min-w-0 flex-1">
+              <h2 className="text-lg font-bold text-gray-900 leading-snug line-clamp-2 group-hover:text-[#6d28d9] transition-colors">
+                {lead.name}
+              </h2>
+              <p className="mt-0.5 text-sm text-gray-500 font-mono font-medium">
+                #{leadNumber}
+              </p>
+            </div>
+            <div
+              className={`shrink-0 max-w-[42%] ${isInactive ? '[&_.stage-badge]:!border-0 [&_.stage-badge]:!bg-gray-300 [&_.stage-badge]:![color:black]' : ''}`}
+            >
               {getStageBadge(lead.stage)}
             </div>
           </div>
 
-          <p className="text-sm text-gray-500 mb-4 font-mono font-medium">
-            #{leadNumber}
-          </p>
-
-          <div className="flex items-center gap-2.5 rounded-lg bg-violet-50/40 border border-violet-100/50 px-3.5 py-2.5 mb-5 min-w-0">
-            <DocumentTextIcon className="h-4 w-4 text-violet-600/80 shrink-0" aria-hidden />
-            <span className="text-sm font-medium text-violet-700/90 truncate leading-relaxed">
+          <div className="mb-4 flex min-w-0 items-center gap-2">
+            <DocumentTextIcon className="h-4 w-4 shrink-0 text-violet-600/80" aria-hidden />
+            <span className="truncate text-sm font-medium text-violet-700 leading-relaxed">
               {lead.topic || 'No topic specified'}
             </span>
           </div>
 
-          <div className="grid grid-cols-2 gap-x-5 gap-y-3.5 text-sm text-gray-700">
-            <div className="flex items-center gap-2.5 min-w-0" title="Date Created">
-              <CalendarIcon className="h-4 w-4 text-gray-500 shrink-0" aria-hidden />
-              <span className="truncate font-medium">{new Date(lead.created_at).toLocaleDateString()}</span>
-            </div>
-            <div className="flex items-center gap-2.5 min-w-0" title="Country">
-              <GlobeAltIcon className="h-4 w-4 text-gray-500 shrink-0" aria-hidden />
-              <span className="truncate">{countryDisplay}</span>
-            </div>
-            <div className="flex items-center gap-2.5 min-w-0" title="Source">
-              <BoltIcon className="h-4 w-4 text-gray-500 shrink-0" aria-hidden />
-              <span className="truncate">{lead.source || 'N/A'}</span>
-            </div>
-            <div className="flex items-center gap-2.5 min-w-0" title="Language">
-              <LanguageIcon className="h-4 w-4 text-gray-500 shrink-0" aria-hidden />
-              <span className="truncate">{lead.language || 'N/A'}</span>
+          <div
+            className={`relative rounded-xl px-3.5 py-3 ${isInactive ? 'bg-gray-50/90' : 'bg-gray-50'}`}
+          >
+            <div
+              className="pointer-events-none absolute inset-y-2 left-1/2 w-px -translate-x-1/2 bg-gray-300/80"
+              aria-hidden
+            />
+            <div className="grid grid-cols-2 gap-x-5 gap-y-3.5 text-sm text-gray-700">
+              <div
+                className={`flex min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 ${
+                  isInactive ? 'bg-gray-300/70' : 'bg-gray-200'
+                }`}
+                title="Date Created"
+              >
+                <CalendarIcon className="h-4 w-4 shrink-0 text-gray-600" aria-hidden />
+                <span className="truncate text-sm font-medium text-gray-800">
+                  {new Date(lead.created_at).toLocaleDateString()}
+                </span>
+              </div>
+              <div className="flex items-center gap-2.5 min-w-0" title="Country">
+                <GlobeAltIcon className="h-4 w-4 text-gray-500 shrink-0" aria-hidden />
+                <span className="truncate">{countryDisplay}</span>
+              </div>
+              <div className="flex items-center gap-2.5 min-w-0" title="Source">
+                <BoltIcon className="h-4 w-4 text-gray-500 shrink-0" aria-hidden />
+                <span className="truncate">{lead.source || 'N/A'}</span>
+              </div>
+              <div className="flex items-center gap-2.5 min-w-0" title="Language">
+                <LanguageIcon className="h-4 w-4 text-gray-500 shrink-0" aria-hidden />
+                <span className="truncate">{getLeadLanguageDisplay(lead.language)}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -4804,24 +4886,155 @@ const LeadSearchPage: React.FC = () => {
   };
 
   return (
-    <div className="w-full max-w-full pt-6 pb-6 px-3 sm:px-4 md:px-8 md:py-8 min-w-0 bg-gray-100 dark:bg-base-300 min-h-full">
+    <div className="w-full max-w-full pt-4 pb-6 px-1.5 sm:px-4 md:px-8 md:py-8 min-w-0 bg-gray-100 dark:bg-base-300 min-h-full">
       {/* Quick search + view toolbar — bottom-right */}
       <div
         className="fixed right-3 md:right-8 z-[35] bottom-[max(4.5rem,calc(3.75rem+env(safe-area-inset-bottom,0px)+0.5rem))] md:bottom-8"
         role="toolbar"
         aria-label="Lead search quick filters"
       >
-        <div className="flex items-center gap-2 md:gap-3 rounded-2xl md:rounded-3xl border border-base-200/80 dark:border-base-content/12 bg-base-100/95 dark:bg-base-300/90 backdrop-blur-md shadow-lg md:shadow-xl px-2.5 py-2 md:px-4 md:py-3 pointer-events-auto">
+        {/* Mobile: collapsed FAB by default; panel expands above it */}
+        <div className="md:hidden flex flex-col items-end gap-2 pointer-events-auto">
+          {mobileQuickBarOpen && (
+            <div className="flex w-[min(calc(100vw-1.5rem),17.5rem)] flex-col items-stretch gap-2">
+              <div className="rounded-2xl border border-base-200/80 bg-base-100/95 px-3.5 py-3 shadow-lg backdrop-blur-md dark:border-base-content/12 dark:bg-base-300/90">
+                <p className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-base-content/55">Date range</p>
+                <div className="flex flex-col gap-3">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-sm font-medium text-base-content/70">From</span>
+                    <input
+                      type="date"
+                      className="input input-bordered h-12 min-h-[48px] w-full text-base"
+                      value={filters.fromDate}
+                      onChange={e => handleFilterChange('fromDate', e.target.value)}
+                      title="From date"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-sm font-medium text-base-content/70">To</span>
+                    <input
+                      type="date"
+                      className="input input-bordered h-12 min-h-[48px] w-full text-base"
+                      value={filters.toDate}
+                      onChange={e => handleFilterChange('toDate', e.target.value)}
+                      title="To date"
+                    />
+                  </label>
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 rounded-2xl border border-base-200/80 bg-base-100/95 px-3 py-2.5 shadow-lg backdrop-blur-md dark:border-base-content/12 dark:bg-base-300/90">
+                {searchPerformed && (
+                  <button
+                    type="button"
+                    className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-colors ${
+                      showFiltersPanel
+                        ? (isAltTheme ? 'border-[#505d57] bg-[#505d57] text-white' : 'border-primary bg-primary text-primary-content')
+                        : 'border-base-300/60 bg-base-100 text-base-content/70 hover:bg-base-200/80'
+                    }`}
+                    onClick={() => setShowFiltersPanel(v => !v)}
+                    title={showFiltersPanel ? 'Hide filters' : 'Show filters'}
+                    aria-pressed={showFiltersPanel}
+                    aria-label={showFiltersPanel ? 'Hide filters' : `Show filters (${appliedAdvancedFilterCount} applied)`}
+                  >
+                    <FunnelIcon className="h-5 w-5" aria-hidden />
+                    {appliedAdvancedFilterCount > 0 && (
+                      <span className="absolute -top-1 -right-1 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
+                        {appliedAdvancedFilterCount > 9 ? '9+' : appliedAdvancedFilterCount}
+                      </span>
+                    )}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-base-300/60 bg-base-100 shadow-sm transition-colors ${
+                    isAltTheme ? 'text-white hover:bg-[#505d57]/95' : 'text-primary hover:bg-base-200/80'
+                  } ${isSearching ? 'cursor-wait opacity-95' : ''} disabled:opacity-70`}
+                  style={
+                    isAltTheme
+                      ? { background: isSearching ? 'rgba(80, 93, 87, 0.85)' : 'rgba(80, 93, 87, 0.92)' }
+                      : undefined
+                  }
+                  onClick={handleSearch}
+                  disabled={isSearching}
+                  title="Search"
+                  aria-busy={isSearching}
+                  aria-label={isSearching ? 'Searching…' : 'Search'}
+                >
+                  {isSearching ? (
+                    <Loader2 className={`h-5 w-5 animate-spin ${isAltTheme ? 'text-white' : 'text-primary'}`} aria-hidden />
+                  ) : (
+                    <Search className={`h-5 w-5 ${isAltTheme ? 'text-white' : ''}`} strokeWidth={2.25} />
+                  )}
+                </button>
+                <div className="mx-0.5 h-9 w-px shrink-0 bg-base-300/60" aria-hidden />
+                <button
+                  type="button"
+                  className={`btn btn-circle btn-sm min-h-[44px] min-w-[44px] h-11 w-11 border-0 transition-all duration-300 ${
+                    viewMode === 'cards'
+                      ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
+                      : 'btn-ghost'
+                  }`}
+                  onClick={() => setViewMode('cards')}
+                  title="Cards view"
+                  aria-pressed={viewMode === 'cards'}
+                >
+                  <Squares2X2Icon className="h-5 w-5" />
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-circle btn-sm min-h-[44px] min-w-[44px] h-11 w-11 border-0 transition-all duration-300 ${
+                    viewMode === 'table'
+                      ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
+                      : 'btn-ghost'
+                  }`}
+                  onClick={() => setViewMode('table')}
+                  title="Table view"
+                  aria-pressed={viewMode === 'table'}
+                >
+                  <TableCellsIcon className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+          )}
+          <button
+            type="button"
+            className={`relative flex h-14 w-14 shrink-0 items-center justify-center rounded-full border-2 border-white/30 shadow-xl transition-colors ${
+              mobileQuickBarOpen
+                ? 'bg-base-100 text-base-content ring-2 ring-base-300/80'
+                : isAltTheme
+                  ? 'bg-[#505d57] text-white hover:bg-[#3d4743]'
+                  : 'bg-primary text-primary-content hover:brightness-110'
+            }`}
+            onClick={() => setMobileQuickBarOpen(open => !open)}
+            title={mobileQuickBarOpen ? 'Close quick actions' : 'Quick actions'}
+            aria-expanded={mobileQuickBarOpen}
+            aria-label={mobileQuickBarOpen ? 'Close quick actions' : 'Open quick actions'}
+          >
+            {mobileQuickBarOpen ? (
+              <XMarkIcon className="h-6 w-6" aria-hidden />
+            ) : (
+              <AdjustmentsHorizontalIcon className="h-6 w-6" aria-hidden />
+            )}
+            {!mobileQuickBarOpen && appliedAdvancedFilterCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
+                {appliedAdvancedFilterCount > 9 ? '9+' : appliedAdvancedFilterCount}
+              </span>
+            )}
+          </button>
+        </div>
+
+        {/* Desktop: always-visible toolbar */}
+        <div className="hidden md:flex items-center gap-3 rounded-3xl border border-base-200/80 dark:border-base-content/12 bg-base-100/95 dark:bg-base-300/90 backdrop-blur-md shadow-xl px-4 py-3 pointer-events-auto">
           <input
             type="date"
-            className="input input-sm md:input-md input-bordered w-[6.75rem] md:w-36 h-9 md:h-11 min-h-[36px] md:min-h-[44px] text-xs md:text-sm shrink-0"
+            className="input input-md input-bordered w-36 h-11 min-h-[44px] text-sm shrink-0"
             value={filters.fromDate}
             onChange={e => handleFilterChange('fromDate', e.target.value)}
             title="From date"
           />
           <input
             type="date"
-            className="input input-sm md:input-md input-bordered w-[6.75rem] md:w-36 h-9 md:h-11 min-h-[36px] md:min-h-[44px] text-xs md:text-sm shrink-0"
+            className="input input-md input-bordered w-36 h-11 min-h-[44px] text-sm shrink-0"
             value={filters.toDate}
             onChange={e => handleFilterChange('toDate', e.target.value)}
             title="To date"
@@ -4829,7 +5042,7 @@ const LeadSearchPage: React.FC = () => {
           {searchPerformed && (
             <button
               type="button"
-              className={`relative flex h-9 w-9 md:h-11 md:w-11 shrink-0 items-center justify-center rounded-full border transition-colors ${
+              className={`relative flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-colors ${
                 showFiltersPanel
                   ? (isAltTheme ? 'border-[#505d57] bg-[#505d57] text-white' : 'border-primary bg-primary text-primary-content')
                   : 'border-base-300/60 bg-base-100 text-base-content/70 hover:bg-base-200/80'
@@ -4839,9 +5052,9 @@ const LeadSearchPage: React.FC = () => {
               aria-pressed={showFiltersPanel}
               aria-label={showFiltersPanel ? 'Hide filters' : `Show filters (${appliedAdvancedFilterCount} applied)`}
             >
-              <FunnelIcon className="h-4 w-4 md:h-5 md:w-5" aria-hidden />
+              <FunnelIcon className="h-5 w-5" aria-hidden />
               {appliedAdvancedFilterCount > 0 && (
-                <span className="absolute -top-1 -right-1 flex h-4 min-w-[1rem] md:h-5 md:min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] md:text-xs font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
+                <span className="absolute -top-1 -right-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold leading-none text-white ring-2 ring-white dark:ring-base-100">
                   {appliedAdvancedFilterCount > 9 ? '9+' : appliedAdvancedFilterCount}
                 </span>
               )}
@@ -4849,10 +5062,8 @@ const LeadSearchPage: React.FC = () => {
           )}
           <button
             type="button"
-            className={`flex h-9 w-9 md:h-11 md:w-11 shrink-0 items-center justify-center rounded-full border border-base-300/60 bg-base-100 shadow-sm transition-colors ${
-              isAltTheme
-                ? 'text-white hover:bg-[#505d57]/95'
-                : 'text-primary hover:bg-base-200/80'
+            className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border border-base-300/60 bg-base-100 shadow-sm transition-colors ${
+              isAltTheme ? 'text-white hover:bg-[#505d57]/95' : 'text-primary hover:bg-base-200/80'
             } ${isSearching ? 'cursor-wait opacity-95' : ''} disabled:opacity-70`}
             style={
               isAltTheme
@@ -4866,16 +5077,16 @@ const LeadSearchPage: React.FC = () => {
             aria-label={isSearching ? 'Searching…' : 'Search'}
           >
             {isSearching ? (
-              <Loader2 className={`h-4 w-4 md:h-5 md:w-5 animate-spin ${isAltTheme ? 'text-white' : 'text-primary'}`} aria-hidden />
+              <Loader2 className={`h-5 w-5 animate-spin ${isAltTheme ? 'text-white' : 'text-primary'}`} aria-hidden />
             ) : (
-              <Search className={`h-4 w-4 md:h-5 md:w-5 ${isAltTheme ? 'text-white' : ''}`} strokeWidth={2.25} />
+              <Search className={`h-5 w-5 ${isAltTheme ? 'text-white' : ''}`} strokeWidth={2.25} />
             )}
           </button>
-          <div className="w-px h-8 md:h-10 bg-base-300/60 shrink-0" aria-hidden />
-          <div className="flex items-center gap-1 md:gap-1.5 shrink-0">
+          <div className="w-px h-10 bg-base-300/60 shrink-0" aria-hidden />
+          <div className="flex items-center gap-1.5 shrink-0">
             <button
               type="button"
-              className={`btn btn-circle btn-sm md:btn-md min-w-[36px] min-h-[36px] w-9 h-9 md:min-w-[44px] md:min-h-[44px] md:w-11 md:h-11 border-0 transition-all duration-300 ${
+              className={`btn btn-circle btn-md min-w-[44px] min-h-[44px] w-11 h-11 border-0 transition-all duration-300 ${
                 viewMode === 'cards'
                   ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
                   : 'btn-ghost'
@@ -4884,11 +5095,11 @@ const LeadSearchPage: React.FC = () => {
               title="Cards view"
               aria-pressed={viewMode === 'cards'}
             >
-              <Squares2X2Icon className="w-4 h-4 md:w-5 md:h-5" />
+              <Squares2X2Icon className="w-5 h-5" />
             </button>
             <button
               type="button"
-              className={`btn btn-circle btn-sm md:btn-md min-w-[36px] min-h-[36px] w-9 h-9 md:min-w-[44px] md:min-h-[44px] md:w-11 md:h-11 border-0 transition-all duration-300 ${
+              className={`btn btn-circle btn-md min-w-[44px] min-h-[44px] w-11 h-11 border-0 transition-all duration-300 ${
                 viewMode === 'table'
                   ? (isAltTheme ? 'bg-[#505d57] text-white shadow-sm hover:bg-[#3d4743]' : 'btn-primary shadow-sm')
                   : 'btn-ghost'
@@ -4897,7 +5108,7 @@ const LeadSearchPage: React.FC = () => {
               title="Table view"
               aria-pressed={viewMode === 'table'}
             >
-              <TableCellsIcon className="w-4 h-4 md:w-5 md:h-5" />
+              <TableCellsIcon className="w-5 h-5" />
             </button>
           </div>
         </div>
@@ -5347,7 +5558,7 @@ const LeadSearchPage: React.FC = () => {
                   ) : (
                     <div
                       ref={cardsGridRef}
-                      className="grid w-full min-w-0 max-md:max-w-lg max-md:mx-auto md:mx-0 grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 md:gap-4"
+                      className="grid w-full min-w-0 grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2 md:gap-4"
                     >
                       {results.map(renderResultCard)}
                     </div>
@@ -5364,6 +5575,81 @@ const LeadSearchPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {factsModalLead &&
+        createPortal(
+          <div className="fixed inset-0 z-[110] flex items-center justify-center p-4" role="presentation">
+            <div className="absolute inset-0 bg-black/50" onClick={closeFactsModal} aria-hidden />
+            <div
+              className="relative z-10 flex w-full max-w-lg max-h-[min(85vh,640px)] flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="lead-facts-modal-title"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between gap-3 border-b border-gray-200 p-5">
+                <div className="min-w-0 pr-2">
+                  <h3 id="lead-facts-modal-title" className="truncate text-lg font-bold text-gray-900">
+                    {factsModalLead.name}
+                  </h3>
+                  <p className="mt-0.5 font-mono text-sm text-gray-500">
+                    #{(factsModalLead as { display_lead_number?: string }).display_lead_number ||
+                      factsModalLead.lead_number ||
+                      factsModalLead.id}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-circle btn-sm shrink-0"
+                  onClick={closeFactsModal}
+                  aria-label="Close"
+                >
+                  <XMarkIcon className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto p-5">
+                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+                  Facts of case
+                </h4>
+                {factsModalLoading ? (
+                  <div className="flex justify-center py-8">
+                    <span className="loading loading-spinner loading-md text-primary" />
+                  </div>
+                ) : (
+                  <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-gray-700" dir="auto">
+                    {stripHtmlForDisplay(factsModalText) || (
+                      <span className="italic text-gray-400">No facts provided</span>
+                    )}
+                  </p>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-2 border-t border-gray-200 p-4">
+                <button type="button" className="btn btn-ghost btn-sm" onClick={closeFactsModal}>
+                  Close
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={(e) => {
+                    handleLeadClick(factsModalLead, e);
+                    closeFactsModal();
+                  }}
+                >
+                  Open lead
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
+
+      <LeadSearchRolesModal
+        lead={rolesModalLead}
+        isOpen={rolesModalLead != null}
+        onClose={() => setRolesModalLead(null)}
+      />
 
     </div>
   );

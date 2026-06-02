@@ -106,6 +106,7 @@ import {
 import HomeEntryPage from './pages/HomeEntryPage';
 import { AuthProvider, useAuthContext } from './contexts/AuthContext';
 import { captureRefreshPathnameOnce } from './hooks/usePersistedState';
+import { useExternalUser } from './hooks/useExternalUser';
 
 function RouteSuspense({ children }: { children: React.ReactNode }) {
   return <Suspense fallback={<PageLoader />}>{children}</Suspense>;
@@ -140,6 +141,7 @@ const AppContentInner: React.FC = () => {
 
   // Get auth state from context
   const { user, userFullName, userInitials, isLoading, isInitialized } = useAuthContext();
+  const { isExternalUser, isLoading: isLoadingExternal } = useExternalUser();
 
   // Memoize computed props for Header/Sidebar to prevent unnecessary re-renders
   const sidebarUserName = useMemo(() => userFullName || userName, [userFullName, userName]);
@@ -147,6 +149,24 @@ const AppContentInner: React.FC = () => {
   const showBottomNav = useMemo(
     () => !isContractPage && !isCaseManagerPage && !isReportsPage,
     [isContractPage, isCaseManagerPage, isReportsPage]
+  );
+  const useStaffSidebarInset = useMemo(
+    () =>
+      !isAdminPage &&
+      !isReportsPage &&
+      !isSignedSalesPage &&
+      !isCaseManagerPage &&
+      !isContractPage &&
+      !(isExternalUser && !isLoadingExternal),
+    [
+      isAdminPage,
+      isReportsPage,
+      isSignedSalesPage,
+      isCaseManagerPage,
+      isContractPage,
+      isExternalUser,
+      isLoadingExternal,
+    ],
   );
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -902,7 +922,7 @@ const AppContentInner: React.FC = () => {
                 />
               </div>
               <div
-                className={`flex min-h-0 flex-1 flex-col overflow-hidden ${isDashboardPage ? 'bg-transparent' : 'bg-base-100'} ${!isAdminPage && !isReportsPage && !isSignedSalesPage && !isCaseManagerPage && !isContractPage ? 'md:pl-24' : ''}`}
+                className={`flex min-h-0 flex-1 flex-col overflow-hidden ${isDashboardPage ? 'bg-transparent' : 'bg-base-100'} ${useStaffSidebarInset ? 'md:pl-24' : ''}`}
               >
                 <Header
                   onMenuClick={handleMenuClick}

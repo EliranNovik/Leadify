@@ -28,7 +28,12 @@ interface Role {
 // Will be replaced by real users from DB
 const defaultAssignees = ['---'];
 
-const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmployees: allEmployeesProp = [] }) => {
+const RolesTab: React.FC<ClientTabProps> = ({
+  client,
+  onClientUpdate,
+  allEmployees: allEmployeesProp = [],
+  readOnly = false,
+}) => {
   const navigate = useNavigate();
   const [allUsers, setAllUsers] = useState<{ full_name: string; role: string }[]>([]);
   // Use employees from prop (loaded in parent) or fallback to local state
@@ -932,12 +937,17 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
               )}
             </div>
             <p className="text-sm text-gray-500">
-              {isRolesLocked ? 'Roles are locked and cannot be modified' : 'Manage team roles and assignments'}
+              {readOnly
+                ? 'Team roles and assignments'
+                : isRolesLocked
+                  ? 'Roles are locked and cannot be modified'
+                  : 'Manage team roles and assignments'}
             </p>
           </div>
         </div>
 
         {/* Action Buttons */}
+        {!readOnly && (
         <div className="flex flex-row gap-2 sm:gap-4 flex-wrap">
           {/* Lock Button - Only visible for superusers */}
           {isSuperuser && (
@@ -961,6 +971,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
           )}
 
         </div>
+        )}
       </div>
 
       <div className="w-full min-w-0">
@@ -1008,7 +1019,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
                         )}
 
                         <div className="flex-1 relative min-w-0">
-                          {isEditingRow && !isRolesLocked && !roleUiDisabled ? (
+                          {!readOnly && isEditingRow && !isRolesLocked && !roleUiDisabled ? (
                             <div className="relative">
                               <input
                                 type="text"
@@ -1043,7 +1054,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate, allEmploye
                           )}
                         </div>
 
-                        {!isRolesLocked && !roleUiDisabled && (
+                        {!readOnly && !isRolesLocked && !roleUiDisabled && (
                           isEditingRow ? (
                             <button
                               className="btn btn-ghost btn-sm flex-shrink-0"

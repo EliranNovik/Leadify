@@ -66,17 +66,16 @@ async function fetchCurrentUserFullName() {
   return data?.full_name ?? null;
 }
 
-// Helper to acquire token, falling back to popup if needed
+// Helper to acquire token, falling back to popup/redirect if silent auth fails
 const acquireToken = async (instance: any, account: any) => {
-  try {
-    return await instance.acquireTokenSilent({ ...loginRequest, account });
-  } catch (error) {
-    if (error instanceof Error && error.name === 'InteractionRequiredAuthError') {
-      toast('Your session has expired. Please sign in again.', { icon: '🔑' });
-      return await instance.acquireTokenPopup({ ...loginRequest, account });
-    }
-    throw error;
+  const { getAccessTokenWithFallback } = await import('../lib/graph');
+  const accessToken = await getAccessTokenWithFallback(instance, loginRequest, account, () => {
+    toast('Your session has expired. Please sign in again.', { icon: '🔑' });
+  });
+  if (!accessToken) {
+    throw new Error('Microsoft sign-in is required');
   }
+  return { accessToken };
 };
 
 // Microsoft Graph API: Send email

@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ClipboardDocumentCheckIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, ArrowLeftIcon, InformationCircleIcon, RectangleStackIcon, DocumentTextIcon, MegaphoneIcon } from '@heroicons/react/24/solid';
-import { XMarkIcon, ArrowDownTrayIcon, ScaleIcon, GlobeAltIcon, HomeIcon, ShieldCheckIcon, UsersIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, BuildingOfficeIcon, HeartIcon, CogIcon, CalendarIcon, CurrencyDollarIcon as CurrencyDollarIconOutline, TagIcon, CloudArrowUpIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, ArrowDownTrayIcon, ScaleIcon, GlobeAltIcon, HomeIcon, ShieldCheckIcon, UsersIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, BuildingOfficeIcon, HeartIcon, CogIcon, CalendarIcon, CurrencyDollarIcon as CurrencyDollarIconOutline, TagIcon, CloudArrowUpIcon, ReceiptPercentIcon } from '@heroicons/react/24/outline';
 import * as XLSX from 'xlsx';
 import { toast } from 'react-hot-toast';
 import FullSearchReport from './FullSearchReport';
@@ -8,6 +8,7 @@ import MarketingDashboardReport from './MarketingDashboardReport';
 import BadLeadsGoogleSheetExportReport from './BadLeadsGoogleSheetExportReport';
 import QLeadsGoogleSheetExportReport from './QLeadsGoogleSheetExportReport';
 import HQLeadsGoogleSheetExportReport from './HQLeadsGoogleSheetExportReport';
+import AllExpensesReport from '../components/reports/AllExpensesReport';
 import { supabase } from '../lib/supabase';
 import EmployeeLeadDrawer, {
   EmployeeLeadDrawerItem,
@@ -8297,6 +8298,17 @@ const reports: ReportSection[] = [
       { label: 'Collection Due', icon: BanknotesIcon, route: '/reports/collection-due' },
     ],
   },
+  {
+    category: 'Expenses',
+    items: [
+      {
+        label: 'All expenses',
+        icon: ReceiptPercentIcon,
+        component: AllExpensesReport,
+        superuserOnly: true,
+      },
+    ],
+  },
   // {
   //   category: 'Cases',
   //   items: [
@@ -8886,23 +8898,9 @@ export default function ReportsPage() {
         </>
       ) : (
         <div className="px-4 md:px-0">
-          {/* Report Content */}
-          {/*
-            Some reports (e.g. Marketing dashboard) render their own cards/tables.
-            For those, we avoid wrapping everything in one big white container.
-          */}
-          <div
-            className={
-              selectedReport?.label === 'Marketing dashboard'
-                ? 'p-0 border-0 shadow-none bg-transparent'
-                : 'bg-white rounded-xl shadow-lg p-8 border border-base-200'
-            }
-          >
-            <div
-              className={`flex items-start justify-between flex-wrap gap-4 ${
-                selectedReport?.label === 'Marketing dashboard' ? 'mb-4' : 'mb-6'
-              }`}
-            >
+          {/* Report Content — no outer white card; each report supplies its own sections */}
+          <div className="border-0 bg-transparent p-0 shadow-none">
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-4">
               <div className="min-w-0 flex-1">
                 {selectedReport.shellTitle ? (
                   <selectedReport.shellTitle />
@@ -8965,14 +8963,16 @@ export default function ReportsPage() {
                   )}
                 </div>
                 <button
+                  type="button"
                   onClick={() => {
                     setSelectedReport(null);
                     setSearchQuery('');
                   }}
-                  className="btn btn-outline btn-primary flex items-center gap-2"
+                  className="btn btn-outline btn-primary btn-square shrink-0 sm:btn-md sm:gap-2 sm:px-4"
+                  aria-label="Back to Reports"
                 >
-                  <ArrowLeftIcon className="w-5 h-5" />
-                  Back to Reports
+                  <ArrowLeftIcon className="h-5 w-5" />
+                  <span className="hidden sm:inline">Back to Reports</span>
                 </button>
               </div>
             </div>

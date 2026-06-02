@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase, isExpectedNoSessionError } from '../lib/supabase';
+import { EXTERNAL_USER_PAGE_INNER } from '../lib/externalUserLayout';
 import ExternalUserLeadSearch from './ExternalUserLeadSearch';
 import ExternalUserLeadsGraph, { buildLeadSourcesOrFilter, parseExternSourceIds } from './ExternalUserLeadsGraph';
 import ExternalUserAccessLogs from './ExternalUserAccessLogs';
@@ -322,7 +323,7 @@ const ExternalUserDashboard: React.FC<ExternalUserDashboardProps> = ({ userName,
 
     return (
         <div className="min-h-screen bg-white pt-16">
-            <div className="container mx-auto px-4 py-6">
+            <div className={EXTERNAL_USER_PAGE_INNER}>
                 {/* Welcome Message */}
                 <div className="mb-6">
                     <div className="flex items-center gap-3 mb-2">

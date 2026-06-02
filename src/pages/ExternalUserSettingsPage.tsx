@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpTrayIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { EXTERNAL_USER_PAGE_INNER } from '../lib/externalUserLayout';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
 
@@ -221,8 +222,8 @@ export default function ExternalUserSettingsPage() {
   };
 
   return (
-    <div className="min-h-[calc(100vh-3rem)] bg-base-100 px-4 py-6 md:px-10 md:py-10">
-      <div className="mx-auto max-w-3xl">
+    <div className="min-h-[calc(100vh-3rem)] bg-base-100">
+      <div className={EXTERNAL_USER_PAGE_INNER}>
         <div className="mb-6">
           <h1 className="text-3xl font-bold tracking-tight">External settings</h1>
           <p className="mt-1 text-sm text-base-content/60">Update your profile and contact details.</p>

@@ -232,9 +232,9 @@ const BadLeadsGoogleSheetExportReport: React.FC = () => {
       )}
 
       <div className="overflow-x-auto rounded-xl border border-base-300 bg-base-100">
-        <table className="table table-zebra table-sm">
+        <table className="table w-full border-0 text-base [&_td]:border-0 [&_th]:border-0">
           <thead>
-            <tr className="text-xs uppercase text-base-content/50">
+            <tr className="text-sm uppercase text-base-content/50">
               <th>Sent at</th>
               <th>Lead</th>
               <th>GCLID</th>
@@ -258,7 +258,7 @@ const BadLeadsGoogleSheetExportReport: React.FC = () => {
             ) : (
               rows.map((r) => (
                 <tr key={r.id}>
-                  <td className="whitespace-nowrap text-sm">{formatDt(r.created_at)}</td>
+                  <td className="whitespace-nowrap">{formatDt(r.created_at)}</td>
                   <td>
                     {r.lead_number ? (
                       <Link
@@ -273,19 +273,19 @@ const BadLeadsGoogleSheetExportReport: React.FC = () => {
                       '—'
                     )}
                     {r.lead_name ? (
-                      <div className="text-xs text-base-content/50">{r.lead_name}</div>
+                      <div className="text-sm text-base-content/50">{r.lead_name}</div>
                     ) : null}
                   </td>
-                  <td className="max-w-[14rem] truncate font-mono text-xs" title={r.gclid}>
+                  <td className="max-w-[14rem] truncate" title={r.gclid}>
                     {r.gclid}
                   </td>
-                  <td className="text-sm">
+                  <td>
                     {r.conversion_name}{' '}
                     <span className="text-base-content/40">
                       ({r.conversion_value} {r.conversion_currency})
                     </span>
                   </td>
-                  <td className="whitespace-nowrap text-xs text-base-content/60">{formatDt(r.conversion_time)}</td>
+                  <td className="whitespace-nowrap text-base-content/60">{formatDt(r.conversion_time)}</td>
                 </tr>
               ))
             )}

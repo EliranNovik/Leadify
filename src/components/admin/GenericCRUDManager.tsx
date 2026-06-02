@@ -66,6 +66,8 @@ interface GenericCRUDManagerProps {
   queryModifier?: (query: any) => any;
   /** Change this value to refetch when queryModifier inputs change */
   queryModifierKey?: unknown;
+  /** Called after each successful list fetch (e.g. refresh parent totals). */
+  onRecordsLoaded?: () => void;
 }
 
 interface Record {
@@ -102,6 +104,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   headerExtra,
   queryModifier,
   queryModifierKey,
+  onRecordsLoaded,
 }) => {
   const [records, setRecords] = useState<Record[]>([]);
   const [loading, setLoading] = useState(true);
@@ -209,6 +212,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         if (tableName === 'tenants_employee' && fields.some(f => f.name === 'preferred_category')) {
           await fetchPreferredCategoryData(transformedData);
         }
+        onRecordsLoaded?.();
       }
     } catch (error) {
       console.error(`Error fetching ${tableName}:`, error);
@@ -697,7 +701,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     const allowedFieldNames = new Set(fields.map((f) => f.name));
     const sanitizedRecord: Partial<Record> = {};
     Object.keys(record as object).forEach((key) => {
-      if (allowedFieldNames.has(key)) {
+      if (allowedFieldNames.has(key) && !key.startsWith('_')) {
         (sanitizedRecord as any)[key] = (record as any)[key];
       }
     });
@@ -1056,6 +1060,12 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             ...updateData
           } = record;
 
+          Object.keys(updateData).forEach(key => {
+            if (key.startsWith('_')) {
+              delete (updateData as any)[key];
+            }
+          });
+
           // users.password_hash is managed by auth/backend — never PATCH from this form
           if (tableName === 'users') {
             delete (updateData as any).password_hash;
@@ -1209,7 +1219,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           // Also validate and truncate field lengths during construction
           const finalInsertRecord: any = {};
           Object.keys(cleanInsertRecord).forEach(key => {
-            if (key !== 'id') {
+            if (key !== 'id' && !key.startsWith('_')) {
               let value = cleanInsertRecord[key];
               
               // Validate and truncate text fields during construction
