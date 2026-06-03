@@ -43,6 +43,16 @@ import {
   fetchWhatsAppThreadNewerThan,
   fetchWhatsAppThreadPage,
 } from '../lib/whatsappChatMessages';
+import {
+  WHATSAPP_OUTGOING_BUBBLE_CLASS,
+  WHATSAPP_OUTGOING_MESSAGE_GRADIENT,
+  WHATSAPP_OUTGOING_TEXT_COLOR,
+  WHATSAPP_OUTGOING_VOICE_PLAYER_CLASS,
+  type WhatsAppMessageLinkStyle,
+  whatsAppMessageLinkColor,
+  whatsAppMessageLinkFontWeight,
+  WHATSAPP_MESSAGE_BOLD_FONT_WEIGHT,
+} from '../lib/whatsappOutgoingMessageStyle';
 import { generateSearchVariants } from '../lib/transliteration';
 import EmojiPicker from 'emoji-picker-react';
 import {
@@ -751,8 +761,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
   // Helper function to detect if message contains only emojis
   // Helper function to convert URLs, email addresses, and bold formatting in text
-  // neonGreenLinks: true = outgoing (team) messages get neon green links; false = incoming (client) messages get normal link styling
-  const renderTextWithLinks = (text: string, neonGreenLinks: boolean = true): React.ReactNode => {
+  const renderTextWithLinks = (text: string, linkStyle: WhatsAppMessageLinkStyle = 'default'): React.ReactNode => {
     if (!text) return text;
 
     // Process links (URLs and emails)
@@ -813,15 +822,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             rel={href.startsWith('mailto:') ? undefined : 'noopener noreferrer'}
             className="hover:underline break-all"
             style={{
-              color: neonGreenLinks ? '#39ff14' : '#2563eb',
+              color: whatsAppMessageLinkColor(linkStyle),
               wordBreak: 'break-all',
               overflowWrap: 'anywhere',
               hyphens: 'auto',
               maxWidth: '100%',
               whiteSpace: 'normal',
               display: 'inline',
-              fontWeight: neonGreenLinks ? 600 : 400,
-              lineBreak: 'anywhere'
+              fontWeight: whatsAppMessageLinkFontWeight(linkStyle),
+              lineBreak: 'anywhere',
             }}
           >
             {displayText}
@@ -865,14 +874,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         if (processedBold.length === 1 && typeof processedBold[0] === 'string') {
           // No links in bold, just make it bold
           parts.push(
-            <strong key={`bold-${keyCounter++}`} style={{ fontWeight: 900 }}>
+            <strong key={`bold-${keyCounter++}`} style={{ fontWeight: WHATSAPP_MESSAGE_BOLD_FONT_WEIGHT }}>
               {boldContent}
             </strong>
           );
         } else {
           // Has links in bold, wrap in strong
           parts.push(
-            <strong key={`bold-${keyCounter++}`} style={{ fontWeight: 900 }}>
+            <strong key={`bold-${keyCounter++}`} style={{ fontWeight: WHATSAPP_MESSAGE_BOLD_FONT_WEIGHT }}>
               {processedBold}
             </strong>
           );
@@ -1288,19 +1297,19 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     switch (effectiveStatus) {
       case 'sent':
         return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#667781' }}>
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         );
       case 'delivered':
         return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#667781' }}>
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         );
       case 'read':
         return (
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || '#1d6fb8' }}>
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || '#b3e5fc' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -5850,10 +5859,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                         maxWidth: '100%',
                                         minWidth: 0,
                                         height: 'auto',
-                                        color: message.direction === 'out' ? '#111827' : undefined
+                                        color: message.direction === 'out' ? WHATSAPP_OUTGOING_TEXT_COLOR : undefined
                                       }}
                                     >
-                                      {renderTextWithLinks(message.caption, false)}
+                                      {renderTextWithLinks(message.caption, 'outgoing')}
                                     </p>
                                   )}
 
@@ -5875,7 +5884,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                               ) : (
                                 <div
                                   className={`group ${message.direction === 'out' ? 'max-w-[75%] md:max-w-[35%] lg:max-w-[30%]' : 'max-w-[75%] md:max-w-[70%]'} rounded-2xl px-3 py-2 shadow-sm relative ${message.direction === 'out'
-                                    ? 'bg-[#d9fdd3] text-gray-900 border border-[#c5f0b8]'
+                                    ? WHATSAPP_OUTGOING_BUBBLE_CLASS
                                     : 'bg-white text-gray-900 border border-gray-200'
                                     }`}
                                   style={{
@@ -5885,6 +5894,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                     minWidth: 0,
                                     maxWidth: '100%',
                                     height: 'auto',
+                                    ...(message.direction === 'out'
+                                      ? { background: WHATSAPP_OUTGOING_MESSAGE_GRADIENT }
+                                      : {}),
                                   }}
                                 >
                                   {/* Edit input or message content */}
@@ -5898,7 +5910,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                         e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
                                       }}
                                       className={`w-full bg-transparent border-none outline-none resize-none overflow-y-auto ${message.direction === 'out'
-                                        ? 'text-gray-900 placeholder-gray-500'
+                                        ? 'text-white placeholder-white/70'
                                         : 'text-gray-900 placeholder-gray-500'
                                         }`}
                                       autoFocus
@@ -5935,10 +5947,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             maxWidth: '100%',
                                             minWidth: 0,
                                             height: 'auto',
-                                            color: message.direction === 'out' ? '#111827' : undefined
+                                            color: message.direction === 'out' ? WHATSAPP_OUTGOING_TEXT_COLOR : undefined
                                           }}
                                         >
-                                          {renderTextWithLinks(message.message, false)}
+                                          {renderTextWithLinks(message.message, 'outgoing')}
                                         </p>
                                       )}
 
@@ -6075,10 +6087,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             maxWidth: '100%',
                                             minWidth: 0,
                                             height: 'auto',
-                                            color: message.direction === 'out' ? '#111827' : undefined
+                                            color: message.direction === 'out' ? WHATSAPP_OUTGOING_TEXT_COLOR : undefined
                                           }}
                                         >
-                                          {renderTextWithLinks(message.caption, false)}
+                                          {renderTextWithLinks(message.caption, 'outgoing')}
                                         </p>
                                       )}
                                     </div>
@@ -6090,7 +6102,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                         audioUrl={(message.media_url || message.media_id || '').startsWith('http')
                                           ? (message.media_url || message.media_id || '')
                                           : buildApiUrl(`/api/whatsapp/media/${message.media_url || message.media_id}`)}
-                                        className={message.direction === 'out' ? 'bg-green-50' : 'bg-gray-50'}
+                                        className={message.direction === 'out' ? WHATSAPP_OUTGOING_VOICE_PLAYER_CLASS : 'bg-gray-50'}
                                         senderName={message.sender_name || 'Unknown'}
                                         profilePictureUrl={message.profile_picture_url}
                                         showAvatar={message.direction === 'out'}
@@ -6105,10 +6117,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             maxWidth: '100%',
                                             minWidth: 0,
                                             height: 'auto',
-                                            color: message.direction === 'out' ? '#111827' : undefined
+                                            color: message.direction === 'out' ? WHATSAPP_OUTGOING_TEXT_COLOR : undefined
                                           }}
                                         >
-                                          {renderTextWithLinks(message.caption, false)}
+                                          {renderTextWithLinks(message.caption, 'outgoing')}
                                         </p>
                                       )}
                                       {!message.caption && message.message && message.message !== 'Voice message' && (
@@ -6121,10 +6133,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             maxWidth: '100%',
                                             minWidth: 0,
                                             height: 'auto',
-                                            color: message.direction === 'out' ? '#111827' : undefined
+                                            color: message.direction === 'out' ? WHATSAPP_OUTGOING_TEXT_COLOR : undefined
                                           }}
                                         >
-                                          {renderTextWithLinks(message.message, false)}
+                                          {renderTextWithLinks(message.message, 'outgoing')}
                                         </p>
                                       )}
                                     </div>
@@ -6171,10 +6183,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                             maxWidth: '100%',
                                             minWidth: 0,
                                             height: 'auto',
-                                            color: message.direction === 'out' ? '#111827' : undefined
+                                            color: message.direction === 'out' ? WHATSAPP_OUTGOING_TEXT_COLOR : undefined
                                           }}
                                         >
-                                          {renderTextWithLinks(message.caption, false)}
+                                          {renderTextWithLinks(message.caption, 'outgoing')}
                                         </p>
                                       )}
                                     </div>
