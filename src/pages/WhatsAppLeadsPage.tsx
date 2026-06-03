@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
+import { usePersistedState } from '../hooks/usePersistedState';
+import type { WhatsAppReadFilter } from '../lib/whatsappPageLoadHelpers';
 import { buildApiUrl } from '../lib/api';
 import { normalizeMessageUrlsForLinkify } from '../lib/normalizeMessageUrlsForLinkify';
 import {
@@ -17,6 +19,11 @@ import {
   resolveOutgoingTemplateDisplayMessage,
   sortWhatsAppMessagesBySentAt,
 } from '../lib/whatsappOptimisticMessage';
+import {
+  archiveWhatsAppLeadPhone,
+  fetchArchivedWhatsAppLeadPhones,
+  unarchiveWhatsAppLeadPhone,
+} from '../lib/whatsappLeadsArchive';
 import {
   WHATSAPP_OUTGOING_BUBBLE_CLASS,
   WHATSAPP_OUTGOING_MESSAGE_GRADIENT,
@@ -41,7 +48,6 @@ import {
   ChatBubbleLeftRightIcon,
   ClockIcon,
   ExclamationTriangleIcon,
-  CheckCircleIcon,
   DocumentTextIcon,
   PhotoIcon,
   FilmIcon,
@@ -54,11 +60,19 @@ import {
   LinkIcon,
   MicrophoneIcon,
   Squares2X2Icon,
+  Cog6ToothIcon,
+  EnvelopeIcon,
+  InboxIcon,
+  ArchiveBoxIcon,
+  ArchiveBoxArrowDownIcon,
 } from '@heroicons/react/24/outline';
 import EmojiPicker from 'emoji-picker-react';
 import { FaWhatsapp } from 'react-icons/fa';
 import VoiceMessagePlayer from '../components/whatsapp/VoiceMessagePlayer';
 import VoiceMessageRecorder from '../components/whatsapp/VoiceMessageRecorder';
+import WhatsAppDoubleCheckIcon from '../components/whatsapp/WhatsAppDoubleCheckIcon';
+import WhatsAppAvatar from '../components/whatsapp/WhatsAppAvatar';
+import WhatsAppLeadInfoPanel from '../components/whatsapp/WhatsAppLeadInfoPanel';
 
 interface WhatsAppLead {
   id: number;
@@ -112,6 +126,21 @@ const getMessageMediaWidthClass = (direction: 'in' | 'out') =>
     ? 'w-fit max-w-xs sm:max-w-sm md:max-w-md self-end ml-auto'
     : 'w-fit max-w-xs sm:max-w-sm md:max-w-md self-start';
 
+const leadMatchesReadFilter = (lead: WhatsAppLead, filter: WhatsAppReadFilter): boolean => {
+  if (filter === 'all') return true;
+  const unread = lead.unread_count || 0;
+  if (filter === 'unread') return unread > 0;
+  return unread === 0 && !!lead.last_message_at;
+};
+
+const leadHasSidebarDisplayName = (lead: WhatsAppLead): boolean => {
+  const name = (lead.sender_name || '').trim();
+  return !!name && name !== lead.phone_number && !/^\d+$/.test(name);
+};
+
+const getLeadSidebarTitle = (lead: WhatsAppLead): string =>
+  leadHasSidebarDisplayName(lead) ? (lead.sender_name || '').trim() : 'Unknown contact';
+
 const WhatsAppLeadsPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -119,6 +148,19 @@ const WhatsAppLeadsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
+  const [readFilter, setReadFilter] = usePersistedState<WhatsAppReadFilter>(
+    'whatsapp_leads_readFilter',
+    'all',
+  );
+  const [showArchivedView, setShowArchivedView] = usePersistedState(
+    'whatsapp_leads_showArchived',
+    false,
+  );
+  const [archivedPhones, setArchivedPhones] = useState<Set<string>>(new Set());
+  const [archivedPhonesLoading, setArchivedPhonesLoading] = useState(true);
+  const [showSidePanelSettingsMenu, setShowSidePanelSettingsMenu] = useState(false);
+  const sidePanelSettingsRef = useRef<HTMLDivElement>(null);
+  const [showLeadInfoPanel, setShowLeadInfoPanel] = useState(false);
   const [selectedLead, setSelectedLead] = useState<WhatsAppLead | null>(null);
   const [isSwitchingChat, setIsSwitchingChat] = useState(false);
   const [messages, setMessages] = useState<any[]>([]);
@@ -443,6 +485,31 @@ const WhatsAppLeadsPage: React.FC = () => {
     };
 
     loadTemplates();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadArchivedPhones = async () => {
+      try {
+        setArchivedPhonesLoading(true);
+        const phones = await fetchArchivedWhatsAppLeadPhones();
+        if (!cancelled) {
+          setArchivedPhones(phones);
+        }
+      } catch {
+        if (!cancelled) {
+          toast.error('Failed to load archived conversations');
+        }
+      } finally {
+        if (!cancelled) {
+          setArchivedPhonesLoading(false);
+        }
+      }
+    };
+    void loadArchivedPhones();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Helper function to process messages and create leads map
@@ -831,15 +898,147 @@ const WhatsAppLeadsPage: React.FC = () => {
   }, [messages]);
 
 
-  // Filter leads based on search term and sort by latest message
-  const filteredLeads = leads.filter(lead =>
-    lead.phone_number?.includes(searchTerm) ||
-    lead.sender_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    lead.message.toLowerCase().includes(searchTerm.toLowerCase())
-  ).sort((a, b) => {
-    // Sort by last_message_at (descending - most recent first)
-    return new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime();
-  });
+  const leadIsArchived = useCallback(
+    (lead: WhatsAppLead) =>
+      !!lead.phone_number && archivedPhones.has(lead.phone_number),
+    [archivedPhones],
+  );
+
+  const filteredLeads = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    return leads
+      .filter((lead) => {
+        const archived = leadIsArchived(lead);
+        return showArchivedView ? archived : !archived;
+      })
+      .filter((lead) => leadMatchesReadFilter(lead, readFilter))
+      .filter(
+        (lead) =>
+          !term ||
+          lead.phone_number?.includes(searchTerm) ||
+          lead.sender_name.toLowerCase().includes(term) ||
+          lead.message.toLowerCase().includes(term),
+      )
+      .sort(
+        (a, b) =>
+          new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime(),
+      );
+  }, [leads, readFilter, searchTerm, showArchivedView, leadIsArchived]);
+
+  const inboxLeadCount = useMemo(
+    () => leads.filter((lead) => !leadIsArchived(lead)).length,
+    [leads, leadIsArchived],
+  );
+
+  const archivedLeadCount = useMemo(
+    () => leads.filter((lead) => leadIsArchived(lead)).length,
+    [leads, leadIsArchived],
+  );
+
+  const handleArchiveConversation = useCallback(async () => {
+    if (!selectedLead?.phone_number) {
+      toast.error('Select a conversation first');
+      return;
+    }
+    setShowActionDropdown(false);
+
+    const phone = selectedLead.phone_number;
+    try {
+      await archiveWhatsAppLeadPhone(phone);
+      setArchivedPhones((prev) => new Set(prev).add(phone));
+      setSelectedLead(null);
+      setShowChat(false);
+      setMessages([]);
+      toast.success('Conversation archived');
+    } catch {
+      toast.error('Failed to archive conversation');
+    }
+  }, [selectedLead]);
+
+  const handleUnarchiveConversation = useCallback(async () => {
+    if (!selectedLead?.phone_number) {
+      toast.error('Select a conversation first');
+      return;
+    }
+    setShowActionDropdown(false);
+
+    const phone = selectedLead.phone_number;
+    try {
+      await unarchiveWhatsAppLeadPhone(phone);
+      setArchivedPhones((prev) => {
+        const next = new Set(prev);
+        next.delete(phone);
+        return next;
+      });
+      setSelectedLead(null);
+      setShowChat(false);
+      setMessages([]);
+      toast.success('Conversation restored to inbox');
+    } catch {
+      toast.error('Failed to restore conversation');
+    }
+  }, [selectedLead]);
+
+  useEffect(() => {
+    if (!selectedLead?.phone_number) return;
+    const archived = archivedPhones.has(selectedLead.phone_number);
+    const visibleInList = showArchivedView ? archived : !archived;
+    if (!visibleInList) {
+      setSelectedLead(null);
+      setShowChat(false);
+      setMessages([]);
+    }
+  }, [showArchivedView, archivedPhones, selectedLead?.phone_number]);
+
+  const handleMarkConversationAsUnread = useCallback(async () => {
+    if (!selectedLead?.phone_number) {
+      toast.error('Select a conversation first');
+      return;
+    }
+    setShowSidePanelSettingsMenu(false);
+
+    const phone = selectedLead.phone_number;
+    const latestIncoming = [...messages]
+      .filter((msg) => msg.direction === 'in' && msg.phone_number === phone)
+      .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0];
+
+    if (!latestIncoming?.id) {
+      toast.error('No incoming message to mark as unread');
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('whatsapp_messages')
+        .update({
+          is_read: false,
+          read_at: null,
+          read_by: null,
+        })
+        .eq('id', latestIncoming.id);
+
+      if (error) {
+        throw error;
+      }
+
+      const patchLeadUnread = (lead: WhatsAppLead) =>
+        lead.phone_number === phone ? { ...lead, unread_count: 1 } : lead;
+
+      setLeads((prev) => prev.map(patchLeadUnread));
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === latestIncoming.id ? { ...msg, is_read: false } : msg,
+        ),
+      );
+      setSelectedLead((prev) =>
+        prev && prev.phone_number === phone ? { ...prev, unread_count: 1 } : prev,
+      );
+
+      toast.success('Marked as unread');
+    } catch {
+      toast.error('Failed to mark as unread');
+    }
+  }, [selectedLead, messages]);
 
   // Handle edit message
   const handleEditMessage = async (messageId: number, newText: string) => {
@@ -1724,6 +1923,12 @@ const WhatsAppLeadsPage: React.FC = () => {
   useEffect(() => {
     fetchConnectedLeadsAndContacts();
   }, [fetchConnectedLeadsAndContacts]);
+
+  useEffect(() => {
+    if (!selectedLead) {
+      setShowLeadInfoPanel(false);
+    }
+  }, [selectedLead?.id, selectedLead?.phone_number]);
 
   // Check connections for all leads when leads list changes
   useEffect(() => {
@@ -2736,10 +2941,17 @@ const WhatsAppLeadsPage: React.FC = () => {
     }
   }, [newMessage, selectedTemplate, aiSuggestions, isMobile]);
 
-  // Handle click outside to reset input focus on mobile
+  // Handle click outside (settings menu, mobile input blur)
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
+
+      if (showSidePanelSettingsMenu) {
+        if (sidePanelSettingsRef.current && !sidePanelSettingsRef.current.contains(target)) {
+          setShowSidePanelSettingsMenu(false);
+        }
+      }
+
       if (isMobile && isInputFocused && textareaRef.current) {
         if (!target.closest('textarea') && !target.closest('form')) {
           setIsInputFocused(false);
@@ -2752,7 +2964,140 @@ const WhatsAppLeadsPage: React.FC = () => {
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isMobile, isInputFocused]);
+  }, [isMobile, isInputFocused, showSidePanelSettingsMenu]);
+
+  const sidePanelIconBtnClass = (active: boolean) =>
+    `btn btn-ghost btn-circle w-11 h-11 min-h-11 min-w-11 border-0 flex-shrink-0 ${
+      active ? 'bg-gray-300 text-gray-900 hover:bg-gray-400' : 'text-gray-600 hover:bg-gray-300/70'
+    }`;
+
+  const sidePanelFilterBtnClass = (active: boolean) =>
+    `flex flex-col items-center justify-center gap-0.5 w-full py-1.5 rounded-lg border-0 outline-none ring-0 transition-colors ${
+      active ? 'bg-gray-300 text-gray-900' : 'text-gray-600 hover:bg-gray-300/70'
+    }`;
+
+  const renderLeadsReadFiltersHorizontal = () => (
+    <div className="flex gap-2">
+      {(['all', 'unread', 'read'] as const).map((filter) => {
+        const label = filter === 'all' ? 'All' : filter === 'unread' ? 'Unread' : 'Read';
+        const isActive = readFilter === filter;
+        return (
+          <button
+            key={filter}
+            type="button"
+            onClick={() => setReadFilter(filter)}
+            className={`flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all border-0 outline-none ring-0 ${
+              isActive
+                ? 'bg-gray-200 text-gray-800 font-semibold'
+                : 'bg-transparent text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+            }`}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const renderLeadActionsMenuItems = () => (
+    <>
+      <li>
+        <button
+          type="button"
+          onClick={() => {
+            if (showArchivedView) {
+              void handleUnarchiveConversation();
+            } else {
+              void handleArchiveConversation();
+            }
+          }}
+          className="flex items-center gap-2 w-full text-left"
+        >
+          {showArchivedView ? (
+            <>
+              <ArchiveBoxArrowDownIcon className="w-4 h-4" />
+              <span>Restore from archive</span>
+            </>
+          ) : (
+            <>
+              <ArchiveBoxIcon className="w-4 h-4" />
+              <span>Archive conversation</span>
+            </>
+          )}
+        </button>
+      </li>
+      <li>
+        <button
+          type="button"
+          onClick={() => {
+            setShowActionDropdown(false);
+            handleConvertToLead(selectedLead!);
+          }}
+          className="flex items-center gap-2 w-full text-left"
+        >
+          <UserPlusIcon className="w-4 h-4" />
+          <span>Convert to Lead</span>
+        </button>
+      </li>
+      <li>
+        <button
+          type="button"
+          onClick={() => {
+            setShowActionDropdown(false);
+            setActionType('sublead');
+            setShowLeadSearchModal(true);
+            setLeadSearchQuery('');
+            setLeadSearchResults([]);
+          }}
+          className="flex items-center gap-2 w-full text-left"
+        >
+          <UserGroupIcon className="w-4 h-4" />
+          <span>Create a Sublead</span>
+        </button>
+      </li>
+      <li>
+        <button
+          type="button"
+          onClick={() => {
+            setShowActionDropdown(false);
+            setActionType('contact');
+            setShowLeadSearchModal(true);
+            setLeadSearchQuery('');
+            setLeadSearchResults([]);
+          }}
+          className="flex items-center gap-2 w-full text-left"
+        >
+          <LinkIcon className="w-4 h-4" />
+          <span>Add as Contact to Lead</span>
+        </button>
+      </li>
+    </>
+  );
+
+  const renderLeadsReadFiltersSidePanel = () => (
+    <>
+      {(
+        [
+          { filter: 'all' as const, label: 'All', Icon: ChatBubbleLeftRightIcon },
+          { filter: 'unread' as const, label: 'Unread', Icon: InboxIcon },
+          { filter: 'read' as const, label: 'Read', Icon: WhatsAppDoubleCheckIcon },
+        ] as const
+      ).map(({ filter, label, Icon }) => (
+        <button
+          key={filter}
+          type="button"
+          title={`${label} conversations`}
+          aria-label={`${label} conversations`}
+          aria-pressed={readFilter === filter}
+          onClick={() => setReadFilter(filter)}
+          className={sidePanelFilterBtnClass(readFilter === filter)}
+        >
+          <Icon className="w-6 h-6 flex-shrink-0" />
+          <span className="text-[10px] font-medium leading-none">{label}</span>
+        </button>
+      ))}
+    </>
+  );
 
   return (
     <div className="fixed inset-0 bg-gray-100 z-[9999] overflow-hidden">
@@ -2763,32 +3108,37 @@ const WhatsAppLeadsPage: React.FC = () => {
             <FaWhatsapp className="w-6 h-6 md:w-7 md:h-7 text-green-600 flex-shrink-0" />
             <h2 className="text-lg md:text-xl font-bold text-gray-900 flex-shrink-0">WhatsApp Leads</h2>
             <span className="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-0.5 rounded-full whitespace-nowrap">
-              {leads.length} Leads
+              {showArchivedView
+                ? `${archivedLeadCount} Archived`
+                : `${inboxLeadCount} Leads`}
             </span>
           </div>
 
           {!isMobile && selectedLead && (
             <>
               <div className="flex items-center gap-3 min-w-0 flex-1">
-                <div className="w-9 h-9 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
-                  {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
-                    <span className="text-green-600 font-semibold text-base">
-                      {selectedLead.sender_name.charAt(0).toUpperCase()}
-                    </span>
-                  ) : (
-                    <PhoneIcon className="w-4 h-4 text-green-600" />
-                  )}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowLeadInfoPanel((prev) => !prev)}
+                  title="Lead details"
+                  aria-label="Lead details"
+                  aria-pressed={showLeadInfoPanel}
+                  className={`flex-shrink-0 rounded-full ring-2 transition-all ${
+                    showLeadInfoPanel ? 'ring-green-500' : 'ring-transparent hover:ring-gray-200'
+                  }`}
+                >
+                  <WhatsAppAvatar
+                    name={leadHasSidebarDisplayName(selectedLead) ? getLeadSidebarTitle(selectedLead) : '?'}
+                    profilePictureUrl={selectedLead.profile_picture_url}
+                    size="md"
+                    colorSeed={String(selectedLead.phone_number ?? selectedLead.id)}
+                  />
+                </button>
                 <div className="min-w-0 flex-1">
                   <h3 className="font-semibold text-gray-900 truncate text-sm md:text-base">
-                    {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/)
-                      ? selectedLead.sender_name
-                      : selectedLead.phone_number || 'Unknown Number'}
+                    {getLeadSidebarTitle(selectedLead)}
                   </h3>
                   <p className="text-xs text-gray-500 truncate">
-                    {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/)
-                      ? `${selectedLead.phone_number} · `
-                      : ''}
                     {selectedLead.message_count} messages · Last {formatTime(selectedLead.last_message_at)}
                   </p>
                 </div>
@@ -2797,7 +3147,7 @@ const WhatsAppLeadsPage: React.FC = () => {
               <div className="flex items-center gap-2 flex-shrink-0">
                 {timeLeft && (
                   <div
-                    className={`flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium whitespace-nowrap ${isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap ${isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
                       }`}
                   >
                     {isLocked ? (
@@ -2902,13 +3252,12 @@ const WhatsAppLeadsPage: React.FC = () => {
                 <div className="relative">
                   <button
                     type="button"
-                    className="btn btn-primary btn-sm"
+                    className="btn btn-sm rounded-xl border-0 bg-gray-200 text-gray-800 hover:bg-gray-300 font-medium min-h-9 h-9"
                     onClick={(e) => {
                       e.stopPropagation();
                       setShowActionDropdown(!showActionDropdown);
                       setShowConnectedLeadsDropdown(false);
                     }}
-                    style={{ background: '#000000', borderColor: 'transparent' }}
                   >
                     <UserPlusIcon className="w-4 h-4 mr-1" />
                     Actions
@@ -2924,51 +3273,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                         className="absolute right-0 top-full mt-2 menu p-2 shadow-lg bg-base-100 rounded-box w-64 z-50 border border-gray-200"
                         onClick={(e) => e.stopPropagation()}
                       >
-                        <li>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setShowActionDropdown(false);
-                              handleConvertToLead(selectedLead);
-                            }}
-                            className="flex items-center gap-2 w-full text-left"
-                          >
-                            <UserPlusIcon className="w-4 h-4" />
-                            <span>Convert to Lead</span>
-                          </button>
-                        </li>
-                        <li>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setShowActionDropdown(false);
-                              setActionType('sublead');
-                              setShowLeadSearchModal(true);
-                              setLeadSearchQuery('');
-                              setLeadSearchResults([]);
-                            }}
-                            className="flex items-center gap-2 w-full text-left"
-                          >
-                            <UserGroupIcon className="w-4 h-4" />
-                            <span>Create a Sublead</span>
-                          </button>
-                        </li>
-                        <li>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setShowActionDropdown(false);
-                              setActionType('contact');
-                              setShowLeadSearchModal(true);
-                              setLeadSearchQuery('');
-                              setLeadSearchResults([]);
-                            }}
-                            className="flex items-center gap-2 w-full text-left"
-                          >
-                            <LinkIcon className="w-4 h-4" />
-                            <span>Add as Contact to Lead</span>
-                          </button>
-                        </li>
+                        {renderLeadActionsMenuItems()}
                       </ul>
                     </>
                   )}
@@ -2988,35 +3293,121 @@ const WhatsAppLeadsPage: React.FC = () => {
           </button>
         </div>
 
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex overflow-hidden min-h-0">
+          {/* Desktop: grey icon rail with settings */}
+          {!isMobile && (
+            <div className="flex-shrink-0 w-[4.5rem] bg-gray-50 border-r border-gray-200 flex flex-col items-center min-h-0">
+              <div className="flex flex-col items-stretch gap-2 pt-4 px-1 w-full">
+                {renderLeadsReadFiltersSidePanel()}
+              </div>
+              <div className="flex-1 min-h-0" />
+              <div className="relative flex flex-col items-center gap-2 pb-4 px-1" ref={sidePanelSettingsRef}>
+                <button
+                  type="button"
+                  title="Archived conversations"
+                  aria-label="Archived conversations"
+                  aria-pressed={showArchivedView}
+                  onClick={() => {
+                    setShowArchivedView((prev) => !prev);
+                    setShowSidePanelSettingsMenu(false);
+                  }}
+                  className={sidePanelFilterBtnClass(showArchivedView)}
+                >
+                  <ArchiveBoxIcon className="w-6 h-6 flex-shrink-0" />
+                  <span className="text-[10px] font-medium leading-none">Archive</span>
+                </button>
+                <button
+                  type="button"
+                  title="Settings"
+                  aria-label="Settings"
+                  aria-expanded={showSidePanelSettingsMenu}
+                  onClick={() => setShowSidePanelSettingsMenu((prev) => !prev)}
+                  className={`btn btn-ghost btn-circle w-11 h-11 min-h-11 min-w-11 border-0 flex-shrink-0 ${
+                    showSidePanelSettingsMenu
+                      ? 'bg-gray-300 text-gray-900 hover:bg-gray-400'
+                      : 'text-gray-600 hover:bg-gray-300/70'
+                  }`}
+                >
+                  <Cog6ToothIcon className="w-6 h-6" />
+                </button>
+                {showSidePanelSettingsMenu && (
+                  <div
+                    className="absolute left-full bottom-0 ml-2 z-30 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[200px] pointer-events-auto"
+                    role="menu"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={!selectedLead}
+                      onClick={() => void handleMarkConversationAsUnread()}
+                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors disabled:opacity-50 disabled:cursor-not-allowed rounded-lg"
+                    >
+                      <EnvelopeIcon className="w-5 h-5 text-gray-600 flex-shrink-0" />
+                      <span className="text-sm text-gray-700 whitespace-nowrap">Mark as unread</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Left Panel - Leads List */}
-          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col bg-white ${isMobile && showChat ? 'hidden' : ''}`}>
-            {/* Search Bar */}
-            <div className="p-3 border-b border-gray-200">
-              <div className="relative">
+          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col min-h-0 bg-white ${isMobile && showChat ? 'hidden' : ''}`}>
+            <div className={`flex-none px-3 pb-3 ${isMobile ? 'pt-3 border-b border-gray-200' : 'pt-3'} bg-white`}>
+              <div className="relative search-container">
                 <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
                 <input
                   type="text"
-                  placeholder="Search by phone number or message..."
+                  placeholder="Search by phone or message..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                  className="w-full pl-10 pr-4 py-2.5 bg-gray-100 border-0 rounded-full outline-none ring-0 focus:outline-none focus:ring-0 focus:border-0 placeholder:text-gray-500"
                 />
               </div>
+              {isMobile && (
+                <div className="mt-3 space-y-2">
+                  {renderLeadsReadFiltersHorizontal()}
+                  <button
+                    type="button"
+                    aria-pressed={showArchivedView}
+                    onClick={() => setShowArchivedView((prev) => !prev)}
+                    className={`w-full flex items-center justify-center gap-2 px-2 py-2 rounded-lg text-xs font-medium transition-all border-0 outline-none ring-0 ${
+                      showArchivedView
+                        ? 'bg-gray-200 text-gray-800 font-semibold'
+                        : 'bg-transparent text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+                    }`}
+                  >
+                    <ArchiveBoxIcon className="w-4 h-4 flex-shrink-0" />
+                    {showArchivedView ? 'Showing archived' : 'Archive'}
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Leads List */}
             <div ref={leadsListRef} className="flex-1 overflow-y-auto">
-              {loading ? (
+              {loading || archivedPhonesLoading ? (
                 <div className="flex items-center justify-center h-32">
                   <div className="loading loading-spinner loading-lg text-green-600"></div>
                 </div>
               ) : filteredLeads.length === 0 ? (
                 <div className="p-8 text-center text-gray-500">
-                  <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                  <p className="text-lg font-medium">No WhatsApp leads found</p>
+                  {showArchivedView ? (
+                    <ArchiveBoxIcon className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                  ) : (
+                    <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                  )}
+                  <p className="text-lg font-medium">
+                    {showArchivedView ? 'No archived conversations' : 'No WhatsApp leads found'}
+                  </p>
                   <p className="text-sm">
-                    {searchTerm ? 'No leads match your search criteria' : 'New leads will appear here when potential clients message your WhatsApp number'}
+                    {showArchivedView
+                      ? searchTerm || readFilter !== 'all'
+                        ? 'No archived conversations match your filters'
+                        : 'Archived conversations will appear here'
+                      : searchTerm || readFilter !== 'all'
+                        ? 'No leads match your filters'
+                        : 'New leads will appear here when potential clients message your WhatsApp number'}
                   </p>
                 </div>
               ) : (
@@ -3033,19 +3424,21 @@ const WhatsAppLeadsPage: React.FC = () => {
                           setShowChat(true);
                         }
                       }}
-                      className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors overflow-hidden ${isSelected ? 'bg-green-50 border-l-4 border-l-green-500' : ''
+                      className={`${isMobile ? 'p-4' : 'p-3 md:p-4'} border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors overflow-hidden ${isSelected ? 'bg-green-50 border-l-4 border-l-green-500' : ''
                         }`}
                     >
-                      <div className="flex items-start gap-3">
+                      <div className={`flex items-start ${isMobile ? 'gap-3.5' : 'gap-3'}`}>
                         {/* Avatar */}
-                        <div className="w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center flex-shrink-0 relative border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)] dark:bg-white/15 dark:border-white/30 dark:text-white dark:shadow-[0_4px_12px_rgba(0,0,0,0.35)]">
-                          {lead.sender_name && lead.sender_name !== lead.phone_number && !lead.sender_name.match(/^\d+$/) ? (
-                            <span className="font-semibold text-sm md:text-lg text-green-700 dark:text-white dark:drop-shadow">
-                              {lead.sender_name.charAt(0).toUpperCase()}
-                            </span>
-                          ) : (
-                            <PhoneIcon className="w-5 h-5 md:w-6 md:h-6 text-green-700 dark:text-white" />
-                          )}
+                        <div className="flex-shrink-0 relative pt-0.5">
+                          <div className={isMobile ? 'w-14 h-14' : 'w-12 h-12'}>
+                            <WhatsAppAvatar
+                              name={leadHasSidebarDisplayName(lead) ? getLeadSidebarTitle(lead) : '?'}
+                              profilePictureUrl={lead.profile_picture_url}
+                              size={isMobile ? 'xl' : 'lg'}
+                              className="w-full h-full"
+                              colorSeed={String(lead.phone_number ?? lead.id)}
+                            />
+                          </div>
                           {/* Connection indicator icon */}
                           {leadsWithConnections.get(String(lead.id)) && !locked && (
                             <div className="absolute -bottom-1 -right-1 w-5 h-5 md:w-6 md:h-6 rounded-full border-2 border-white flex items-center justify-center shadow-sm" style={{ backgroundColor: '#4218cc' }}>
@@ -3070,30 +3463,37 @@ const WhatsAppLeadsPage: React.FC = () => {
                         <div className="flex-1 min-w-0 overflow-hidden">
                           <div className="flex items-center justify-between gap-2 mb-1">
                             <div className="flex flex-col min-w-0 flex-1">
-                              <h3 className="font-semibold text-gray-900 truncate">
-                                {lead.sender_name && lead.sender_name !== lead.phone_number && !lead.sender_name.match(/^\d+$/)
-                                  ? lead.sender_name
-                                  : lead.phone_number || 'Unknown Number'}
+                              <h3
+                                className={`font-semibold text-gray-900 truncate ${isMobile ? 'text-lg' : 'text-base'}`}
+                              >
+                                {getLeadSidebarTitle(lead)}
                               </h3>
-                              {lead.sender_name && lead.sender_name !== lead.phone_number && !lead.sender_name.match(/^\d+$/) && (
-                                <p className="text-xs text-gray-500 truncate">
-                                  {lead.phone_number}
-                                </p>
-                              )}
                             </div>
-                            <div className="flex items-center gap-1 flex-shrink-0">
-                              <span className="text-xs text-gray-500 whitespace-nowrap">
+                            <div className={`flex items-center flex-shrink-0 ${isMobile ? 'gap-1.5' : 'gap-1'}`}>
+                              <span
+                                className={`text-gray-500 whitespace-nowrap ${isMobile ? 'text-sm' : 'text-xs'}`}
+                              >
                                 {formatTime(lead.last_message_at)}
                               </span>
                               {lead.unread_count && lead.unread_count > 0 && (
-                                <span className="bg-cyan-500 text-white text-xs rounded-full px-1.5 py-0.5 min-w-[16px] text-center shadow-[0_4px_12px_rgba(6,182,212,0.35)] flex-shrink-0">
+                                <span
+                                  className={`bg-cyan-500 text-white rounded-full text-center shadow-[0_4px_12px_rgba(6,182,212,0.35)] flex-shrink-0 font-semibold ${
+                                    isMobile
+                                      ? 'text-sm min-w-[26px] min-h-[26px] px-2 py-1 flex items-center justify-center leading-none'
+                                      : 'text-xs px-1.5 py-0.5 min-w-[16px]'
+                                  }`}
+                                >
                                   {lead.unread_count}
                                 </span>
                               )}
                             </div>
                           </div>
 
-                          <p className="text-sm text-gray-600 truncate mb-2">
+                          <p
+                            className={`truncate leading-snug ${isMobile ? 'text-base mt-1' : 'text-sm mt-0.5'} ${
+                              (lead.unread_count ?? 0) > 0 ? 'text-gray-800 font-medium' : 'text-gray-600'
+                            }`}
+                          >
                             {getMessagePreview(lead.message)}
                           </p>
 
@@ -3107,9 +3507,14 @@ const WhatsAppLeadsPage: React.FC = () => {
           </div>
 
           {/* Right Panel - Chat */}
-          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-gray-50 relative ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : {}}>
+          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-gray-50 relative min-h-0 ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : { overflow: 'hidden' }}>
             {selectedLead ? (
-              <>
+              <div
+                className={`flex flex-1 min-h-0 min-w-0 w-full ${
+                  showLeadInfoPanel && !isMobile ? 'overflow-visible' : ''
+                }`}
+              >
+                <div className="flex flex-col flex-1 min-h-0 min-w-0 relative">
                 {/* Loading overlay when switching between chats */}
                 {isSwitchingChat && (
                   <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-white/95 backdrop-blur-sm">
@@ -3131,32 +3536,32 @@ const WhatsAppLeadsPage: React.FC = () => {
                       </svg>
                     </button>
                     <div className="flex items-center gap-2 flex-1 min-w-0">
-                      {/* Avatar - lock as simple icon on top of circle when locked (same as WhatsAppPage) */}
-                      <div className="w-8 h-8 rounded-full flex items-center justify-center relative flex-shrink-0 bg-green-100">
-                        {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
-                          <span className="text-green-600 font-semibold text-sm">
-                            {selectedLead.sender_name.charAt(0).toUpperCase()}
-                          </span>
-                        ) : (
-                          <PhoneIcon className="w-4 h-4 text-green-600" />
-                        )}
+                      <button
+                        type="button"
+                        onClick={() => setShowLeadInfoPanel((prev) => !prev)}
+                        className={`relative flex-shrink-0 rounded-full ring-2 transition-all ${
+                          showLeadInfoPanel ? 'ring-green-500' : 'ring-transparent'
+                        }`}
+                        title="Lead details"
+                        aria-label="Lead details"
+                        aria-pressed={showLeadInfoPanel}
+                      >
+                        <WhatsAppAvatar
+                          name={leadHasSidebarDisplayName(selectedLead) ? getLeadSidebarTitle(selectedLead) : '?'}
+                          profilePictureUrl={selectedLead.profile_picture_url}
+                          size="sm"
+                          colorSeed={String(selectedLead.phone_number ?? selectedLead.id)}
+                        />
                         {isLocked && (
-                          <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40">
+                          <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 pointer-events-none">
                             <LockClosedIcon className="w-3.5 h-3.5 text-white" />
                           </div>
                         )}
-                      </div>
+                      </button>
                       <div className="min-w-0 flex-1">
                         <h3 className="font-semibold text-gray-900 text-sm truncate">
-                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/)
-                            ? selectedLead.sender_name
-                            : selectedLead.phone_number || 'Unknown Number'}
+                          {getLeadSidebarTitle(selectedLead)}
                         </h3>
-                        <p className="text-xs text-gray-500 truncate">
-                          {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/)
-                            ? selectedLead.phone_number
-                            : ''}
-                        </p>
                         <p className="text-xs text-gray-500 truncate">
                           {selectedLead.message_count} messages
                         </p>
@@ -3166,13 +3571,12 @@ const WhatsAppLeadsPage: React.FC = () => {
                     <div className="relative flex-shrink-0">
                       <button
                         type="button"
-                        className="btn btn-primary btn-sm"
+                        className="btn btn-sm rounded-xl border-0 bg-gray-200 text-gray-800 hover:bg-gray-300 font-medium min-h-9 h-9"
                         onClick={(e) => {
                           e.stopPropagation();
                           setShowActionDropdown(!showActionDropdown);
                           setShowConnectedLeadsDropdown(false);
                         }}
-                        style={{ background: '#000000', borderColor: 'transparent' }}
                       >
                         <UserPlusIcon className="w-4 h-4" />
                         <ChevronDownIcon className="w-4 h-4 ml-1" />
@@ -3187,48 +3591,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                             className="absolute right-0 top-full mt-2 menu p-2 shadow-lg bg-base-100 rounded-box w-64 z-50 border border-gray-200"
                             onClick={(e) => e.stopPropagation()}
                           >
-                            <li>
-                              <button
-                                onClick={() => {
-                                  setShowActionDropdown(false);
-                                  handleConvertToLead(selectedLead);
-                                }}
-                                className="flex items-center gap-2 w-full text-left"
-                              >
-                                <UserPlusIcon className="w-4 h-4" />
-                                <span>Convert to Lead</span>
-                              </button>
-                            </li>
-                            <li>
-                              <button
-                                onClick={() => {
-                                  setShowActionDropdown(false);
-                                  setActionType('sublead');
-                                  setShowLeadSearchModal(true);
-                                  setLeadSearchQuery('');
-                                  setLeadSearchResults([]);
-                                }}
-                                className="flex items-center gap-2 w-full text-left"
-                              >
-                                <UserGroupIcon className="w-4 h-4" />
-                                <span>Create a Sublead</span>
-                              </button>
-                            </li>
-                            <li>
-                              <button
-                                onClick={() => {
-                                  setShowActionDropdown(false);
-                                  setActionType('contact');
-                                  setShowLeadSearchModal(true);
-                                  setLeadSearchQuery('');
-                                  setLeadSearchResults([]);
-                                }}
-                                className="flex items-center gap-2 w-full text-left"
-                              >
-                                <LinkIcon className="w-4 h-4" />
-                                <span>Add as Contact to Lead</span>
-                              </button>
-                            </li>
+                            {renderLeadActionsMenuItems()}
                           </ul>
                         </>
                       )}
@@ -3254,10 +3617,10 @@ const WhatsAppLeadsPage: React.FC = () => {
                         <React.Fragment key={message.id || index}>
                           {/* Date Separator */}
                           {showDateSeparator && (
-                            <div className="flex justify-center my-4 w-full">
-                              <div className="text-sm font-medium px-3 py-1.5 rounded-full bg-gray-200 text-gray-900 border border-gray-300">
+                            <div className="w-full text-center my-3 shrink-0">
+                              <span className="text-sm font-medium text-gray-500">
                                 {formatDateSeparator(message.sent_at)}
-                              </div>
+                              </span>
                             </div>
                           )}
 
@@ -3568,11 +3931,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                                     </span>
                                   )}
                                 </div>
-                              </div>
-                            )}
-                            {message.direction === 'in' && (
-                              <div className="flex-shrink-0 w-6 h-6 rounded-full bg-green-100 border border-green-200 flex items-center justify-center text-green-700 text-xs font-semibold mt-1 ml-2">
-                                {(message.sender_name || '?').charAt(0).toUpperCase()}
                               </div>
                             )}
                           </div>
@@ -4077,7 +4435,31 @@ const WhatsAppLeadsPage: React.FC = () => {
                     </div>
                   </form>
                 </div>
-              </>
+                </div>
+                {!isMobile && showLeadInfoPanel && (
+                  <WhatsAppLeadInfoPanel
+                    key={String(selectedLead.id)}
+                    lead={selectedLead}
+                    displayName={getLeadSidebarTitle(selectedLead)}
+                    hasDisplayName={leadHasSidebarDisplayName(selectedLead)}
+                    connectedLeads={connectedLeads}
+                    connectedContacts={connectedContacts}
+                    loadingConnections={isLoadingConnections}
+                    messages={messages}
+                    isLocked={isLocked}
+                    timeLeft={timeLeft}
+                    getMessagePreview={getMessagePreview}
+                    onClose={() => setShowLeadInfoPanel(false)}
+                    onOpenLead={(leadNumber, openInNewTab) => {
+                      const syntheticEvent = {
+                        ctrlKey: openInNewTab,
+                        metaKey: openInNewTab,
+                      } as React.MouseEvent;
+                      handleNavigateToClient(leadNumber, syntheticEvent);
+                    }}
+                  />
+                )}
+              </div>
             ) : (
               /* No lead selected */
               <div className="flex-1 flex items-center justify-center">
@@ -4091,6 +4473,32 @@ const WhatsAppLeadsPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Mobile: lead details full-screen overlay */}
+      {isMobile && showLeadInfoPanel && selectedLead && (
+        <WhatsAppLeadInfoPanel
+          key={String(selectedLead.id)}
+          lead={selectedLead}
+          displayName={getLeadSidebarTitle(selectedLead)}
+          hasDisplayName={leadHasSidebarDisplayName(selectedLead)}
+          connectedLeads={connectedLeads}
+          connectedContacts={connectedContacts}
+          loadingConnections={isLoadingConnections}
+          messages={messages}
+          isLocked={isLocked}
+          timeLeft={timeLeft}
+          getMessagePreview={getMessagePreview}
+          onClose={() => setShowLeadInfoPanel(false)}
+          onOpenLead={(leadNumber, openInNewTab) => {
+            const syntheticEvent = {
+              ctrlKey: openInNewTab,
+              metaKey: openInNewTab,
+            } as React.MouseEvent;
+            handleNavigateToClient(leadNumber, syntheticEvent);
+          }}
+          className="fixed inset-0 z-[110] w-full max-w-none h-[100dvh] min-h-[100dvh] border-0 shadow-none"
+        />
+      )}
 
       {/* Media Modal */}
       {selectedMedia && (

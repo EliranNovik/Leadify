@@ -81,10 +81,13 @@ import {
   Squares2X2Icon,
   Cog6ToothIcon,
   ShareIcon,
+  ChatBubbleLeftRightIcon,
+  InboxIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import WhatsAppAvatar from '../components/whatsapp/WhatsAppAvatar';
 import WhatsAppShareLeadRmqModal from '../components/whatsapp/WhatsAppShareLeadRmqModal';
+import WhatsAppDoubleCheckIcon from '../components/whatsapp/WhatsAppDoubleCheckIcon';
 import WhatsAppClientInfoPanel from '../components/whatsapp/WhatsAppClientInfoPanel';
 import { getStageColour, getStageName } from '../lib/stageUtils';
 import VoiceMessagePlayer from '../components/whatsapp/VoiceMessagePlayer';
@@ -417,6 +420,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const [isSearchHiddenMobile, setIsSearchHiddenMobile] = useState(false);
   const lastScrollTopRef = useRef(0);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
+  const pendingInstantScrollRef = useRef(false);
   const [isChatHeaderGlass, setIsChatHeaderGlass] = useState(false);
   const [isChatFooterGlass, setIsChatFooterGlass] = useState(false);
 
@@ -2794,6 +2798,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               setMessages((prev) => [...sortedProcessedMessages, ...prev]);
             } else {
               setMessages(sortedProcessedMessages);
+              pendingInstantScrollRef.current = true;
+              setShouldAutoScroll(true);
+              setIsFirstLoad(true);
             }
             setLoadingMessages(false);
           } else {
@@ -2921,6 +2928,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             setMessages((prev) => [...sortedMessages, ...prev]);
           } else {
             setMessages(sortedMessages);
+            pendingInstantScrollRef.current = true;
             setShouldAutoScroll(true);
             setIsFirstLoad(true);
           }
@@ -3016,14 +3024,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           }
         }
 
-        // Only trigger auto-scroll on initial load, not during polling
-        if (!isPolling && isFirstLoad && shouldAutoScroll) {
-          setTimeout(() => {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-            setShouldAutoScroll(false);
-            setIsFirstLoad(false);
-          }, 200);
-        }
       } catch (error) {
         console.error('Error fetching messages:', error);
         toast.error('Failed to load messages');
@@ -3345,6 +3345,20 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     setAllContactsSelectedClient,
   ]);
 
+  const scrollChatToBottom = useCallback((smooth = false) => {
+    const apply = () => {
+      const el = chatMessagesRef.current;
+      if (!el) return;
+      if (smooth) {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+      } else {
+        el.scrollTop = el.scrollHeight;
+      }
+    };
+    apply();
+    requestAnimationFrame(apply);
+  }, []);
+
   const clearClientUnreadImmediately = useCallback((client: Client) => {
     const idx = conversationIndexRef.current;
     if (idx) {
@@ -3372,6 +3386,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       setMessages([]);
       setLoadingMessages(true);
       setSelectedClient({ ...client, unreadCount: 0 });
+      pendingInstantScrollRef.current = true;
       setShouldAutoScroll(true);
       setIsFirstLoad(true);
 
@@ -3515,15 +3530,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     }
   };
 
-  useEffect(() => {
-    if (shouldAutoScroll && messages.length > 0) {
-      // Add a small delay to ensure messages are rendered
-      setTimeout(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-        setShouldAutoScroll(false);
-      }, 100);
-    }
-  }, [messages, shouldAutoScroll]);
+  useLayoutEffect(() => {
+    if (!shouldAutoScroll || loadingMessages) return;
+
+    const useSmooth = !pendingInstantScrollRef.current;
+    scrollChatToBottom(useSmooth);
+    pendingInstantScrollRef.current = false;
+    setShouldAutoScroll(false);
+    setIsFirstLoad(false);
+  }, [messages, loadingMessages, shouldAutoScroll, scrollChatToBottom]);
 
   // Expand textarea when template or AI content is added (both desktop and mobile)
   useEffect(() => {
@@ -5432,7 +5447,17 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     );
   };
 
-  const renderContactsReadFilters = () => (
+  const sidePanelIconBtnClass = (active: boolean) =>
+    `btn btn-ghost btn-circle w-11 h-11 min-h-11 min-w-11 border-0 flex-shrink-0 ${
+      active ? 'bg-gray-300 text-gray-900 hover:bg-gray-400' : 'text-gray-600 hover:bg-gray-300/70'
+    }`;
+
+  const sidePanelFilterBtnClass = (active: boolean) =>
+    `flex flex-col items-center justify-center gap-0.5 w-full py-1.5 rounded-lg border-0 outline-none ring-0 transition-colors ${
+      active ? 'bg-gray-300 text-gray-900' : 'text-gray-600 hover:bg-gray-300/70'
+    }`;
+
+  const renderContactsReadFiltersHorizontal = () => (
     <div className="flex gap-2">
       {(['all', 'unread', 'read'] as const).map((filter) => {
         const label = filter === 'all' ? 'All' : filter === 'unread' ? 'Unread' : 'Read';
@@ -5455,6 +5480,31 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     </div>
   );
 
+  const renderContactsReadFiltersSidePanel = () => (
+    <>
+      {(
+        [
+          { filter: 'all' as const, label: 'All', Icon: ChatBubbleLeftRightIcon },
+          { filter: 'unread' as const, label: 'Unread', Icon: InboxIcon },
+          { filter: 'read' as const, label: 'Read', Icon: WhatsAppDoubleCheckIcon },
+        ] as const
+      ).map(({ filter, label, Icon }) => (
+        <button
+          key={filter}
+          type="button"
+          title={`${label} conversations`}
+          aria-label={`${label} conversations`}
+          aria-pressed={readFilter === filter}
+          onClick={() => setReadFilter(filter)}
+          className={sidePanelFilterBtnClass(readFilter === filter)}
+        >
+          <Icon className="w-6 h-6 flex-shrink-0" />
+          <span className="text-[10px] font-medium leading-none">{label}</span>
+        </button>
+      ))}
+    </>
+  );
+
   const renderContactsSearch = () => (
     <div className="relative search-container">
       <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -5471,7 +5521,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const renderContactsFiltersAndSearch = () => (
     <>
       {renderContactsSearch()}
-      <div className="mt-3">{renderContactsReadFilters()}</div>
+      <div className="mt-3">{renderContactsReadFiltersHorizontal()}</div>
     </>
   );
 
@@ -5490,8 +5540,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         <div className="flex-1 flex min-h-0 overflow-hidden">
           {/* Desktop: grey icon rail (All / My / New message + Settings) */}
           {!isMobile && (
-            <div className="flex-shrink-0 w-14 bg-gray-50 border-r border-gray-200 flex flex-col items-center min-h-0">
-              <div className="flex flex-col items-center gap-4 pt-4 px-1">
+            <div className="flex-shrink-0 w-[4.5rem] bg-gray-50 border-r border-gray-200 flex flex-col items-center min-h-0">
+              <div className="flex flex-col items-center gap-4 pt-4 px-1 w-full">
                 {(isSuperuser === true || isCollection === true) && (
                   <>
                     <button
@@ -5559,6 +5609,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 >
                   <ShareIcon className="w-6 h-6" />
                 </button>
+                <div className="flex flex-col items-stretch gap-2 w-full">
+                  {renderContactsReadFiltersSidePanel()}
+                </div>
               </div>
               <div className="flex-1 min-h-0" />
               <div className="relative flex flex-col items-center pb-4 px-1" ref={sidePanelSettingsRef}>
@@ -5607,10 +5660,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 </div>
               </div>
             )}
-            {/* Desktop: search + filters below header */}
+            {/* Desktop: search only (read filters live in left icon rail) */}
             {!isMobile && (
               <div className="flex-none px-3 pb-3 pt-1 bg-white">
-                {renderContactsFiltersAndSearch()}
+                {renderContactsSearch()}
               </div>
             )}
 
@@ -7580,7 +7633,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
                     const displayName = result.contactName || result.name || '';
                     const displayEmail = result.email || '';
-                    const displayPhone = result.phone || result.mobile || '';
 
                     return (
                       <button
@@ -7603,11 +7655,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                             </div>
                             {displayEmail && (
                               <p className="text-sm text-gray-600 truncate">{displayEmail}</p>
-                            )}
-                            {displayPhone && (
-                              <p className="text-xs text-gray-500 truncate">
-                                {displayPhone}
-                              </p>
                             )}
                           </div>
                           <FaWhatsapp className="w-5 h-5 text-green-600 flex-shrink-0" />
