@@ -60,6 +60,8 @@ interface GenericCRUDManagerProps {
   booleanStorage?: 'native' | 'char';
   /** Optional filter controls rendered beside the search bar */
   filterBar?: React.ReactNode;
+  /** Optional content rendered beside the search input (e.g. period totals) */
+  searchBarExtra?: React.ReactNode;
   /** Optional control rendered beside the page title (e.g. help button) */
   headerExtra?: React.ReactNode;
   /** Apply extra filters to the list query (e.g. month/year) */
@@ -101,6 +103,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   auditUserIdSource = 'auth',
   booleanStorage = 'char',
   filterBar,
+  searchBarExtra,
   headerExtra,
   queryModifier,
   queryModifierKey,
@@ -1945,9 +1948,9 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       )}
 
       {/* Search and Filters */}
-      <div className="mb-4 flex flex-col sm:flex-row gap-4">
+      <div className="mb-4 flex flex-col sm:flex-row gap-4 sm:items-center">
         {/* Search Input */}
-        <div className="flex-1">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
           <input
             type="text"
             placeholder={`Search ${title}...`}
@@ -1955,6 +1958,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
           />
+          {searchBarExtra}
         </div>
         
         {/* Filters */}

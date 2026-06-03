@@ -1,5 +1,12 @@
 import React from 'react';
 import GenericCRUDManager from './GenericCRUDManager';
+import FirmColumnDocumentCell from './FirmColumnDocumentCell';
+import {
+  FirmContract1Field,
+  FirmContract2Field,
+  FirmInvoicesField,
+  FirmOtherDocsField,
+} from './FirmColumnDocumentField';
 import FirmLeadSourcesField from './FirmLeadSourcesField';
 
 const FirmsManager: React.FC = () => {
@@ -53,26 +60,60 @@ const FirmsManager: React.FC = () => {
     {
       name: 'contract',
       label: 'Contract',
-      type: 'textarea' as const,
+      type: 'custom' as const,
       required: false,
-      placeholder: 'URL, storage path, or notes',
       hideInTable: true,
+      customComponent: FirmContract1Field,
+      formatValue: (value: unknown) => (
+        <FirmColumnDocumentCell
+          storagePath={typeof value === 'string' ? value : null}
+          column="contract"
+        />
+      ),
+    },
+    {
+      name: 'contract_2',
+      label: 'Contract 2',
+      type: 'custom' as const,
+      required: false,
+      hideInTable: true,
+      customComponent: FirmContract2Field,
+      formatValue: (value: unknown) => (
+        <FirmColumnDocumentCell
+          storagePath={typeof value === 'string' ? value : null}
+          column="contract_2"
+        />
+      ),
     },
     {
       name: 'invoices',
       label: 'Invoices',
-      type: 'textarea' as const,
+      type: 'custom' as const,
       required: false,
-      placeholder: 'URL, storage path, or notes',
       hideInTable: true,
+      customComponent: FirmInvoicesField,
+      formatValue: (value: unknown) => (
+        <FirmColumnDocumentCell
+          storagePath={typeof value === 'string' ? value : null}
+          column="invoices"
+          linkLabel="Invoices"
+        />
+      ),
     },
     {
       name: 'other_docs',
       label: 'Other documents',
-      type: 'textarea' as const,
+      type: 'custom' as const,
       required: false,
-      placeholder: 'URL, storage path, or notes',
       hideInTable: true,
+      customComponent: FirmOtherDocsField,
+      formatValue: (value: unknown) => (
+        <FirmColumnDocumentCell
+          storagePath={typeof value === 'string' ? value : null}
+          column="other_docs"
+          linkLabel="Other documents"
+        />
+      ),
     },
     {
       name: 'notes',

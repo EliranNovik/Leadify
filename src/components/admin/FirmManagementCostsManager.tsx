@@ -348,55 +348,49 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
     [formatInvoiceColumn, loadAuxData],
   );
 
-  const totalFormatted = new Intl.NumberFormat('he-IL', {
-    style: 'currency',
-    currency: 'ILS',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(Math.round(totals.totalNis));
+  const searchBarExtra = totalsLoading ? (
+    <span className="loading loading-spinner loading-sm text-primary" />
+  ) : (
+    <span className="text-sm text-base-content">
+      <span className="font-semibold">Total: </span>
+      <span className="font-bold tabular-nums">
+        {formatFirmManagementAmount(totals.totalNis, FIRM_MANAGEMENT_DEFAULT_CURRENCY)}
+      </span>
+      <span className="ml-1 text-base-content/55">
+        · {periodLabel}
+        {totals.rowCount > 0 && (
+          <>
+            {' '}
+            · {totals.rowCount} {totals.rowCount === 1 ? 'entry' : 'entries'}
+            {totals.firmCount > 0 && (
+              <>
+                {' '}
+                · {totals.firmCount} {totals.firmCount === 1 ? 'firm' : 'firms'}
+              </>
+            )}
+          </>
+        )}
+      </span>
+    </span>
+  );
 
   return (
-    <div className="w-full min-w-0 space-y-6">
-      <div className="rounded-2xl border border-base-200 bg-white dark:bg-base-100 p-5 shadow-sm">
-        <p className="text-sm font-medium text-base-content/60 uppercase tracking-wide">
-          Total management costs (all firms)
-        </p>
-        <p className="text-3xl font-bold text-base-content mt-1 tabular-nums">
-          {totalsLoading ? (
-            <span className="loading loading-spinner loading-md align-middle" />
-          ) : (
-            totalFormatted
-          )}
-        </p>
-        <p className="text-sm text-base-content/70 mt-2">
-          <span className="font-medium text-base-content">{periodLabel}</span>
-          {!totalsLoading && (
-            <>
-              {' · '}
-              {totals.rowCount} {totals.rowCount === 1 ? 'entry' : 'entries'}
-              {' · '}
-              {totals.firmCount} {totals.firmCount === 1 ? 'firm' : 'firms'}
-            </>
-          )}
-        </p>
-      </div>
-
-      <GenericCRUDManager
-        tableName="firm_management_costs"
-        fields={fields}
-        title="Firm Management Cost"
-        description="Monthly management costs per media supplier firm"
-        pageSize={20}
-        sortColumn="billing_month"
-        sortAscending={false}
-        skipIdAssignment
-        filterBar={filterBar}
-        queryModifier={queryModifier}
-        queryModifierKey={`${filterYear}-${filterMonth}`}
-        onRecordsLoaded={loadAuxData}
-        booleanStorage="native"
-      />
-    </div>
+    <GenericCRUDManager
+      tableName="firm_management_costs"
+      fields={fields}
+      title="Firm Management Cost"
+      description="Monthly management costs per media supplier firm"
+      pageSize={20}
+      sortColumn="billing_month"
+      sortAscending={false}
+      skipIdAssignment
+      filterBar={filterBar}
+      searchBarExtra={searchBarExtra}
+      queryModifier={queryModifier}
+      queryModifierKey={`${filterYear}-${filterMonth}`}
+      onRecordsLoaded={loadAuxData}
+      booleanStorage="native"
+    />
   );
 };
 

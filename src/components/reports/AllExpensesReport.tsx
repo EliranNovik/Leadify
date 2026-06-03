@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   BanknotesIcon,
-  BuildingOffice2Icon,
   ChartBarIcon,
   ChevronDownIcon,
   HomeModernIcon,
@@ -43,13 +42,24 @@ import {
 import { usePersistedFilters } from '../../hooks/usePersistedState';
 import AllExpensesTotalDetailModal from './expenses/AllExpensesTotalDetailModal';
 import EmployeeSalariesDetailModal from './expenses/EmployeeSalariesDetailModal';
-import FirmManagementCostsDetailModal from './expenses/FirmManagementCostsDetailModal';
+import MarketingExpensesDetailModal from './expenses/MarketingExpensesDetailModal';
 import OfficeExpensesDetailModal from './expenses/OfficeExpensesDetailModal';
 import OfficeRentExpensesDetailModal from './expenses/OfficeRentExpensesDetailModal';
 import PartnerDrawsDetailModal from './expenses/PartnerDrawsDetailModal';
-import SourceMediaExpensesDetailModal from './expenses/SourceMediaExpensesDetailModal';
 
-type OpenExpenseDetailModal = ExpenseCategoryKey | 'total' | null;
+type SummaryDisplayKey = 'marketing' | ExpenseCategoryKey;
+
+type OpenExpenseDetailModal = SummaryDisplayKey | 'total' | null;
+
+const MARKETING_SUMMARY_COLOR = '#8b5cf6';
+
+const SUMMARY_DISPLAY_ORDER: SummaryDisplayKey[] = [
+  'marketing',
+  'rent',
+  'partner_draws',
+  'salaries',
+  'office',
+];
 
 const MONTH_OPTIONS = [
   { value: '', label: 'All months' },
@@ -101,7 +111,7 @@ type SummaryBoxTheme = {
   Icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
 };
 
-const SUMMARY_BOX_THEMES: Record<ExpenseCategoryKey | 'total', SummaryBoxTheme> = {
+const SUMMARY_BOX_THEMES: Record<SummaryDisplayKey | 'total', SummaryBoxTheme> = {
   total: {
     bg: 'bg-[#f4ecff]',
     border: 'border-[#eadbff]',
@@ -110,21 +120,13 @@ const SUMMARY_BOX_THEMES: Record<ExpenseCategoryKey | 'total', SummaryBoxTheme> 
     icon: 'text-[#8a63d2]',
     Icon: BanknotesIcon,
   },
-  source_media: {
+  marketing: {
     bg: 'bg-[#f4ecff]',
     border: 'border-[#eadbff]',
     title: 'text-[#342b56]',
     subtitle: 'text-[#6d6791]',
     icon: 'text-[#8a63d2]',
     Icon: MegaphoneIcon,
-  },
-  firm_management: {
-    bg: 'bg-[#efeafd]',
-    border: 'border-[#ddd2fb]',
-    title: 'text-[#3d2f72]',
-    subtitle: 'text-[#6d57a8]',
-    icon: 'text-[#6d57be]',
-    Icon: BuildingOffice2Icon,
   },
   rent: {
     bg: 'bg-[#eaf0ff]',
@@ -342,27 +344,47 @@ const AllExpensesReport: React.FC = () => {
     [categoryTotals],
   );
 
-  const summaryRows = useMemo(
-    () =>
-      EXPENSE_CATEGORY_ORDER.map(key => ({
+  const marketingAmount = useMemo(
+    () => categoryTotals.source_media + categoryTotals.firm_management,
+    [categoryTotals],
+  );
+
+  const summaryDisplayRows = useMemo(() => {
+    const rows: {
+      key: SummaryDisplayKey;
+      label: string;
+      amount: number;
+      share: number;
+      color: string;
+    }[] = [
+      {
+        key: 'marketing',
+        label: 'Marketing',
+        amount: marketingAmount,
+        share: grandTotal > 0 ? (marketingAmount / grandTotal) * 100 : 0,
+        color: MARKETING_SUMMARY_COLOR,
+      },
+      ...SUMMARY_DISPLAY_ORDER.filter(k => k !== 'marketing').map(key => ({
         key,
         label: EXPENSE_CATEGORY_LABELS[key],
         amount: categoryTotals[key],
         share: grandTotal > 0 ? (categoryTotals[key] / grandTotal) * 100 : 0,
+        color: CHART_COLORS[key],
       })),
-    [categoryTotals, grandTotal],
-  );
+    ];
+    return rows;
+  }, [categoryTotals, grandTotal, marketingAmount]);
 
   const categoryBarData = useMemo(
     () =>
-      summaryRows
+      summaryDisplayRows
         .filter(r => r.amount > 0 || r.key !== 'office')
         .map(r => ({
           name: r.label,
           amount: r.amount,
-          fill: CHART_COLORS[r.key],
+          fill: r.color,
         })),
-    [summaryRows],
+    [summaryDisplayRows],
   );
 
   const monthlyTrendData = useMemo(
@@ -464,7 +486,7 @@ const AllExpensesReport: React.FC = () => {
           </div>
         </div>
 
-        <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7">
+        <div className="mb-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-6">
           <ExpenseSummaryBox
             label="Total"
             amount={grandTotal}
@@ -472,7 +494,7 @@ const AllExpensesReport: React.FC = () => {
             theme={SUMMARY_BOX_THEMES.total}
             onClick={() => setOpenDetailModal('total')}
           />
-          {summaryRows.map(row => (
+          {summaryDisplayRows.map(row => (
             <ExpenseSummaryBox
               key={row.key}
               label={row.label}
@@ -496,12 +518,12 @@ const AllExpensesReport: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {summaryRows.map(row => (
+                {summaryDisplayRows.map(row => (
                   <tr key={row.key} className="text-base">
                     <td>
                       <span
                         className="mr-2 inline-block h-2.5 w-2.5 rounded-full"
-                        style={{ backgroundColor: CHART_COLORS[row.key] }}
+                        style={{ backgroundColor: row.color }}
                       />
                       {row.label}
                       {row.key === 'office' && (
@@ -653,17 +675,10 @@ const AllExpensesReport: React.FC = () => {
         year={filters.year}
         month={filters.month}
         grandTotal={grandTotal}
-        rows={summaryRows}
-        chartColors={CHART_COLORS}
+        rows={summaryDisplayRows}
       />
-      <SourceMediaExpensesDetailModal
-        open={openDetailModal === 'source_media'}
-        onClose={() => setOpenDetailModal(null)}
-        year={filters.year}
-        month={filters.month}
-      />
-      <FirmManagementCostsDetailModal
-        open={openDetailModal === 'firm_management'}
+      <MarketingExpensesDetailModal
+        open={openDetailModal === 'marketing'}
         onClose={() => setOpenDetailModal(null)}
         year={filters.year}
         month={filters.month}

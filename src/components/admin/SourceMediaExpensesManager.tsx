@@ -259,11 +259,53 @@ const SourceMediaExpensesManager: React.FC<ExpenseManagerEmbedProps> = ({
     () => initialMonth ?? String(now.getMonth() + 1).padStart(2, '0'),
   );
   const [filterYear, setFilterYear] = useState(() => initialYear ?? String(now.getFullYear()));
+  const [periodTotalNis, setPeriodTotalNis] = useState(0);
+  const [periodRowCount, setPeriodRowCount] = useState(0);
+  const [periodTotalLoading, setPeriodTotalLoading] = useState(false);
 
   useEffect(() => {
     if (initialYear != null) setFilterYear(initialYear);
     if (initialMonth !== undefined) setFilterMonth(initialMonth);
   }, [initialYear, initialMonth]);
+
+  const periodLabel = useMemo(() => {
+    if (filterYear && filterMonth) {
+      const d = new Date(`${filterYear}-${filterMonth}-01T12:00:00`);
+      return d.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    }
+    if (filterYear) return filterYear;
+    return 'All periods';
+  }, [filterMonth, filterYear]);
+
+  const loadPeriodTotal = useCallback(async () => {
+    setPeriodTotalLoading(true);
+    try {
+      let q = supabase.from('source_media_expense').select('amount');
+      q = applyExpenseMonthFilter(q, filterMonth, filterYear);
+      const { data, error } = await q;
+      if (error) throw error;
+
+      const rows = data || [];
+      let total = 0;
+      rows.forEach((row: { amount: unknown }) => {
+        const n = Number(row.amount);
+        if (Number.isFinite(n)) total += n;
+      });
+      setPeriodTotalNis(total);
+      setPeriodRowCount(rows.length);
+    } catch (err) {
+      console.error('Failed to load source media expense total:', err);
+      setPeriodTotalNis(0);
+      setPeriodRowCount(0);
+    } finally {
+      setPeriodTotalLoading(false);
+    }
+  }, [filterMonth, filterYear]);
+
+  useEffect(() => {
+    void loadPeriodTotal();
+  }, [loadPeriodTotal]);
+
   const [sourceChannelById, setSourceChannelById] = useState<Record<string, string>>({});
   const [sourceFirmById, setSourceFirmById] = useState<Record<string, string>>({});
   const [creatorByAuthId, setCreatorByAuthId] = useState<Record<string, CreatorInfo>>({});
@@ -425,6 +467,24 @@ const SourceMediaExpensesManager: React.FC<ExpenseManagerEmbedProps> = ({
     />
   );
 
+  const searchBarExtra = periodTotalLoading ? (
+    <span className="loading loading-spinner loading-sm text-primary" />
+  ) : (
+    <span className="text-sm text-base-content">
+      <span className="font-semibold">Total: </span>
+      <span className="font-bold tabular-nums">{formatAmount(periodTotalNis)}</span>
+      <span className="ml-1 text-base-content/55">
+        · {periodLabel}
+        {periodRowCount > 0 && (
+          <>
+            {' '}
+            · {periodRowCount} {periodRowCount === 1 ? 'entry' : 'entries'}
+          </>
+        )}
+      </span>
+    </span>
+  );
+
   const fields = useMemo(
     () => [
     {
@@ -512,8 +572,10 @@ const SourceMediaExpensesManager: React.FC<ExpenseManagerEmbedProps> = ({
       sortColumn="expense_month"
       sortAscending={false}
       filterBar={filterBar}
+      searchBarExtra={searchBarExtra}
       queryModifier={queryModifier}
       queryModifierKey={`${filterYear}-${filterMonth}`}
+      onRecordsLoaded={loadPeriodTotal}
     />
   );
 };

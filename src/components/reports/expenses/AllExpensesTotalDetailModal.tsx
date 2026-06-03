@@ -1,23 +1,19 @@
 import React from 'react';
-import {
-  EXPENSE_CATEGORY_LABELS,
-  type ExpenseCategoryKey,
-  formatNis,
-} from '../../../lib/allExpensesReport';
+import { formatNis } from '../../../lib/allExpensesReport';
 import ExpenseCategoryDetailModal from './ExpenseCategoryDetailModal';
 import type { ExpenseDetailModalProps } from './expenseDetailTypes';
 
 type SummaryRow = {
-  key: ExpenseCategoryKey;
+  key: string;
   label: string;
   amount: number;
   share: number;
+  color: string;
 };
 
 type AllExpensesTotalDetailModalProps = ExpenseDetailModalProps & {
   grandTotal: number;
   rows: SummaryRow[];
-  chartColors: Record<ExpenseCategoryKey, string>;
 };
 
 const AllExpensesTotalDetailModal: React.FC<AllExpensesTotalDetailModalProps> = ({
@@ -25,7 +21,6 @@ const AllExpensesTotalDetailModal: React.FC<AllExpensesTotalDetailModalProps> = 
   onClose,
   grandTotal,
   rows,
-  chartColors,
 }) => (
   <ExpenseCategoryDetailModal open={open} onClose={onClose}>
     <div className="overflow-x-auto">
@@ -43,9 +38,9 @@ const AllExpensesTotalDetailModal: React.FC<AllExpensesTotalDetailModalProps> = 
               <td>
                 <span
                   className="mr-2 inline-block h-2.5 w-2.5 rounded-full"
-                  style={{ backgroundColor: chartColors[row.key] }}
+                  style={{ backgroundColor: row.color }}
                 />
-                {EXPENSE_CATEGORY_LABELS[row.key]}
+                {row.label}
               </td>
               <td className="text-right">{formatNis(row.amount)}</td>
               <td className="text-right">

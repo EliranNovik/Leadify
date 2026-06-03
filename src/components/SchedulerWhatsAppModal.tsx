@@ -837,19 +837,19 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     switch (effectiveStatus) {
       case 'sent':
         return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#667781' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         );
       case 'delivered':
         return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#667781' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         );
       case 'read':
         return (
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#39ff14' }}>
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#1d6fb8' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -1831,8 +1831,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const clientLocked = lastIncomingMessage ? isClientLocked(lastIncomingMessage.sent_at) : false;
 
   return createPortal(
-    <div className="fixed inset-0 bg-gray-100 z-[9999] overflow-hidden">
-      <div className="h-full flex flex-col relative">
+    <div className="fixed inset-0 bg-gray-50 z-[9999] overflow-hidden">
+      <div className="h-full flex flex-col relative bg-gray-50">
         {/* Header */}
         <div className="flex-none flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
           <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
@@ -1892,8 +1892,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               return (
                 <React.Fragment key={message.id || index}>
                   {showDateSeparator && (
-                    <div className="flex justify-center my-4">
-                      <div className="text-sm font-medium px-3 py-1.5 rounded-full border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)]">
+                    <div className="flex justify-center my-4 w-full">
+                      <div className="text-sm font-medium px-3 py-1.5 rounded-full bg-gray-200 text-gray-900 border border-gray-300">
                         {formatDateSeparator(message.sent_at)}
                       </div>
                     </div>
@@ -1947,10 +1947,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                               maxWidth: '100%',
                               minWidth: 0,
                               height: 'auto',
-                              color: message.direction === 'out' ? 'white' : undefined
+                              color: message.direction === 'out' ? '#111827' : undefined
                             }}
                           >
-                            {renderTextWithLinks(message.caption, message.direction === 'out')}
+                            {renderTextWithLinks(message.caption, false)}
                           </p>
                         )}
 
@@ -1972,7 +1972,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                     ) : (
                       <div
                         className={`group ${message.direction === 'out' ? 'max-w-[85%] md:max-w-[35%] lg:max-w-[30%]' : 'max-w-[85%] md:max-w-[70%]'} rounded-2xl px-3 py-2 shadow-sm ${message.direction === 'out'
-                          ? 'text-white border border-transparent'
+                          ? 'bg-[#d9fdd3] text-gray-900 border border-[#c5f0b8]'
                           : 'bg-white text-gray-900 border border-gray-200'
                           }`}
                         style={{
@@ -1982,10 +1982,6 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           minWidth: 0,
                           maxWidth: '100%',
                           height: 'auto',
-                          ...(message.direction === 'out' ? {
-                            background: 'linear-gradient(to bottom right, #047857, #0f766e)',
-                            borderColor: 'transparent'
-                          } : {})
                         }}
                       >
                         {message.message_type === 'text' && (
@@ -2000,10 +1996,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                               maxWidth: '100%',
                               minWidth: 0,
                               height: 'auto',
-                              color: message.direction === 'out' ? 'white' : undefined
+                              color: message.direction === 'out' ? '#111827' : undefined
                             }}
                           >
-                            {renderTextWithLinks(message.message, message.direction === 'out')}
+                            {renderTextWithLinks(message.message, false)}
                           </p>
                         )}
 
@@ -2062,10 +2058,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                                   maxWidth: '100%',
                                   minWidth: 0,
                                   height: 'auto',
-                                  color: message.direction === 'out' ? 'white' : undefined
+                                  color: message.direction === 'out' ? '#111827' : undefined
                                 }}
                               >
-                                {renderTextWithLinks(message.caption, message.direction === 'out')}
+                                {renderTextWithLinks(message.caption, false)}
                               </p>
                             )}
                             {!message.caption && message.message && (
@@ -2078,10 +2074,10 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                                   maxWidth: '100%',
                                   minWidth: 0,
                                   height: 'auto',
-                                  color: message.direction === 'out' ? 'white' : undefined
+                                  color: message.direction === 'out' ? '#111827' : undefined
                                 }}
                               >
-                                {renderTextWithLinks(message.message, message.direction === 'out')}
+                                {renderTextWithLinks(message.message, false)}
                               </p>
                             )}
                           </div>

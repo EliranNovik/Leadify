@@ -16,6 +16,14 @@ let cachedRefreshCheckResult: boolean | null = null;
 // so that navigating to another page after a refresh doesn't wipe that page's stored state.
 let pathnameWhenRefreshDetected: string | null = null;
 
+const DEBUG_PERSISTED_STATE =
+  typeof import.meta !== 'undefined' &&
+  String(import.meta.env?.VITE_DEBUG_PERSISTED_STATE || '').toLowerCase() === 'true';
+
+const logPersisted = (...args: unknown[]) => {
+  if (DEBUG_PERSISTED_STATE) console.log(...args);
+};
+
 // Capture pathname at reload time as soon as module loads, so we don't depend on which
 // component runs usePersistedState first. If the first hook run happens after client-side
 // navigation (e.g. user refreshed on page A, then navigated to page B), we'd otherwise
@@ -74,7 +82,7 @@ function isPageRefresh(): boolean {
   
   // Check if we've already determined refresh status in this page load (using module-level cache)
   if (cachedRefreshCheckResult !== null) {
-    console.log(`[usePersistedState] Using cached refresh check result: ${cachedRefreshCheckResult}`);
+    logPersisted(`[usePersistedState] Using cached refresh check result: ${cachedRefreshCheckResult}`);
     return cachedRefreshCheckResult;
   }
   
@@ -83,11 +91,11 @@ function isPageRefresh(): boolean {
     const navEntries = performance.getEntriesByType('navigation') as PerformanceNavigationTiming[];
     if (navEntries.length > 0) {
       const navigationType = navEntries[0].type;
-      console.log(`[usePersistedState] Navigation type: ${navigationType}`);
+      logPersisted(`[usePersistedState] Navigation type: ${navigationType}`);
       
       // 'reload' definitely means refresh - clear state only for this route
       if (navigationType === 'reload') {
-        console.log(`[usePersistedState] Page refresh detected via Navigation Timing API (reload)`);
+        logPersisted(`[usePersistedState] Page refresh detected via Navigation Timing API (reload)`);
         // Only set if not already set at module load (so we keep the path that was actually refreshed)
         if (pathnameWhenRefreshDetected === null) {
           pathnameWhenRefreshDetected = typeof window !== 'undefined' ? window.location.pathname : null;
@@ -104,7 +112,7 @@ function isPageRefresh(): boolean {
       
       // 'back_forward' means browser back/forward navigation - preserve state
       if (navigationType === 'back_forward') {
-        console.log(`[usePersistedState] Back/forward navigation detected via Navigation Timing API - preserving state`);
+        logPersisted(`[usePersistedState] Back/forward navigation detected via Navigation Timing API - preserving state`);
         try {
           sessionStorage.removeItem(PAGE_UNLOADING_KEY);
           sessionStorage.removeItem(NAVIGATION_FLAG_KEY); // Clear any stale flags
@@ -118,7 +126,7 @@ function isPageRefresh(): boolean {
       // 'navigate' means normal navigation (React Router or initial load)
       // We'll check flags below, but if a flag exists, it's likely navigation
       if (navigationType === 'navigate') {
-        console.log(`[usePersistedState] Navigation type is 'navigate' - will check flags`);
+        logPersisted(`[usePersistedState] Navigation type is 'navigate' - will check flags`);
       }
     }
   } catch (e) {
@@ -135,35 +143,35 @@ function isPageRefresh(): boolean {
     const unloadingMarker = sessionStorage.getItem(PAGE_UNLOADING_KEY);
     if (unloadingMarker) {
       const unloadingTime = parseInt(unloadingMarker, 10);
-      console.log(`[usePersistedState] PAGE_UNLOADING_KEY marker found, unloaded at: ${unloadingTime}`);
+      logPersisted(`[usePersistedState] PAGE_UNLOADING_KEY marker found, unloaded at: ${unloadingTime}`);
       
       const flagValue = sessionStorage.getItem(NAVIGATION_FLAG_KEY);
       if (flagValue) {
         const flagTime = parseInt(flagValue, 10);
         const timeSinceUnloading = now - unloadingTime;
         
-        console.log(`[usePersistedState] Navigation flag found, set at: ${flagTime}, unloading at: ${unloadingTime}, diff: ${unloadingTime - flagTime}ms`);
+        logPersisted(`[usePersistedState] Navigation flag found, set at: ${flagTime}, unloading at: ${unloadingTime}, diff: ${unloadingTime - flagTime}ms`);
         
         // Key check: Was flag set BEFORE unloading? (flagTime < unloadingTime)
         // If yes, it was set during navigation in the same session
         // If no (or flagTime >= unloadingTime), flag is from previous session or invalid
         if (flagTime < unloadingTime && (unloadingTime - flagTime) < 5000) {
           // Flag was set before unloading (within 5 seconds) → navigation
-          console.log(`[usePersistedState] Navigation flag was set BEFORE unloading → navigation`);
+          logPersisted(`[usePersistedState] Navigation flag was set BEFORE unloading → navigation`);
           sessionStorage.removeItem(NAVIGATION_FLAG_KEY);
           sessionStorage.removeItem(PAGE_UNLOADING_KEY);
           cachedRefreshCheckResult = false; // Cache as navigation
           return false;
         } else {
           // Flag was set after unloading or way before (different session) → refresh
-          console.log(`[usePersistedState] Navigation flag timing invalid (flag: ${flagTime}, unloading: ${unloadingTime}) → refresh`);
+          logPersisted(`[usePersistedState] Navigation flag timing invalid (flag: ${flagTime}, unloading: ${unloadingTime}) → refresh`);
           sessionStorage.removeItem(NAVIGATION_FLAG_KEY);
         }
       }
       
       // No valid navigation flag → refresh
       sessionStorage.removeItem(PAGE_UNLOADING_KEY);
-      console.log(`[usePersistedState] PAGE_UNLOADING_KEY found without valid navigation flag → refresh`);
+      logPersisted(`[usePersistedState] PAGE_UNLOADING_KEY found without valid navigation flag → refresh`);
       pathnameWhenRefreshDetected = typeof window !== 'undefined' ? window.location.pathname : null;
       cachedRefreshCheckResult = true; // Cache as refresh
       return true;
@@ -180,7 +188,7 @@ function isPageRefresh(): boolean {
       const flagTime = parseInt(flagValue, 10);
       const timeDiff = now - flagTime;
       
-      console.log(`[usePersistedState] Found navigation flag (no unloading marker), age: ${timeDiff}ms`);
+      logPersisted(`[usePersistedState] Found navigation flag (no unloading marker), age: ${timeDiff}ms`);
       
       // Check Navigation Timing API type to decide how strict to be
       let navigationType = 'unknown';
@@ -196,7 +204,7 @@ function isPageRefresh(): boolean {
       // If Navigation Timing API says 'navigate' and flag exists (even if a bit old), treat as navigation
       // This handles React Router navigation where flags might persist
       if (navigationType === 'navigate' && timeDiff < 10000) { // 10 seconds window for navigate type
-        console.log(`[usePersistedState] Navigation type 'navigate' with flag (age: ${timeDiff}ms) → navigation`);
+        logPersisted(`[usePersistedState] Navigation type 'navigate' with flag (age: ${timeDiff}ms) → navigation`);
         sessionStorage.removeItem(NAVIGATION_FLAG_KEY);
         cachedRefreshCheckResult = false; // Cache as navigation
         return false;
@@ -205,12 +213,12 @@ function isPageRefresh(): boolean {
       // Otherwise, use strict timeout check
       if (timeDiff < NAVIGATION_FLAG_TIMEOUT) {
         sessionStorage.removeItem(NAVIGATION_FLAG_KEY);
-        console.log(`[usePersistedState] Recent navigation flag found, treating as navigation`);
+        logPersisted(`[usePersistedState] Recent navigation flag found, treating as navigation`);
         cachedRefreshCheckResult = false; // Cache as navigation
         return false;
       } else {
         // Flag is stale, clear it
-        console.log(`[usePersistedState] Stale navigation flag found (${timeDiff}ms old), treating as refresh`);
+        logPersisted(`[usePersistedState] Stale navigation flag found (${timeDiff}ms old), treating as refresh`);
         sessionStorage.removeItem(NAVIGATION_FLAG_KEY);
       }
     }
@@ -221,7 +229,7 @@ function isPageRefresh(): boolean {
   // Default: no unloading marker → we did not refresh (page never unloaded).
   // Preserve state so that SPA back/forward (e.g. CloserSuperPipeline → lead → back) restores correctly.
   // We only clear when we had PAGE_UNLOADING_KEY (actual reload) and no valid navigation flag.
-  console.log(`[usePersistedState] No unloading marker found, preserving state (treat as navigation)`);
+  logPersisted(`[usePersistedState] No unloading marker found, preserving state (treat as navigation)`);
   cachedRefreshCheckResult = false; // Preserve state
   return false;
 }
@@ -269,12 +277,15 @@ export function usePersistedState<T>(
     storage?: 'localStorage' | 'sessionStorage' | 'url' | 'both';
     syncWithUrl?: boolean; // If true, syncs with URL query params
     urlKey?: string; // Key for URL query param (defaults to 'key' parameter)
+    /** Keep session/local storage on browser refresh (still clears on true navigation away). */
+    retainOnPageRefresh?: boolean;
   } = {}
 ): [T, (value: T | ((prev: T) => T)) => void, () => void] {
   const {
     storage = 'sessionStorage',
     syncWithUrl = false,
     urlKey = key,
+    retainOnPageRefresh = false,
   } = options;
 
   const location = useLocation();
@@ -316,9 +327,9 @@ export function usePersistedState<T>(
       wasRefresh &&
       (pathnameWhenRefreshDetected === null || pathnameWhenRefreshDetected === currentPath);
 
-    if (shouldClearForThisRoute) {
+    if (shouldClearForThisRoute && !retainOnPageRefresh) {
       // This route was the one refreshed - clear persisted state for this key
-      console.log(`[usePersistedState] Page refresh on this route, clearing state for key: ${key}`);
+      logPersisted(`[usePersistedState] Page refresh on this route, clearing state for key: ${key}`);
       if (storage === 'localStorage' || storage === 'both') {
         try {
           localStorage.removeItem(storageKey);
@@ -358,7 +369,7 @@ export function usePersistedState<T>(
         const item = localStorage.getItem(storageKey);
         if (item) {
           const parsed = JSON.parse(item);
-          console.log(`[usePersistedState] Loaded state from localStorage for key: ${key}`, parsed);
+          logPersisted(`[usePersistedState] Loaded state from localStorage for key: ${key}`, parsed);
           return parsed;
         }
       } catch (e) {
@@ -371,7 +382,9 @@ export function usePersistedState<T>(
         const item = sessionStorage.getItem(storageKey);
         if (item) {
           const parsed = JSON.parse(item);
-          console.log(`[usePersistedState] Loaded state from sessionStorage for key: ${key}`, parsed);
+          if (String(import.meta.env.VITE_DEBUG_PERSISTED_STATE || '').toLowerCase() === 'true') {
+            logPersisted(`[usePersistedState] Loaded state from sessionStorage for key: ${key}`, parsed);
+          }
           return parsed;
         }
       } catch (e) {

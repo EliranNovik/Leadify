@@ -2407,19 +2407,19 @@ const WhatsAppLeadsPage: React.FC = () => {
     switch (effectiveStatus) {
       case 'sent':
         return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#667781' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         );
       case 'delivered':
         return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#ffffff' }}>
+          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#667781' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
           </svg>
         );
       case 'read':
         return (
-          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || '#39ff14' }}>
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: readColor || '#1d6fb8' }}>
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
@@ -3099,7 +3099,7 @@ const WhatsAppLeadsPage: React.FC = () => {
           </div>
 
           {/* Right Panel - Chat */}
-          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-gray-100 relative ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : {}}>
+          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-gray-50 relative ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : {}}>
             {selectedLead ? (
               <>
                 {/* Loading overlay when switching between chats */}
@@ -3246,8 +3246,8 @@ const WhatsAppLeadsPage: React.FC = () => {
                         <React.Fragment key={message.id || index}>
                           {/* Date Separator */}
                           {showDateSeparator && (
-                            <div className="flex justify-center my-4">
-                              <div className="bg-gray-100 text-gray-600 text-sm font-medium px-3 py-1.5 rounded-full">
+                            <div className="flex justify-center my-4 w-full">
+                              <div className="text-sm font-medium px-3 py-1.5 rounded-full bg-gray-200 text-gray-900 border border-gray-300">
                                 {formatDateSeparator(message.sent_at)}
                               </div>
                             </div>
@@ -3340,16 +3340,16 @@ const WhatsAppLeadsPage: React.FC = () => {
                                       maxWidth: '100%',
                                       minWidth: 0,
                                       height: 'auto',
-                                      color: message.direction === 'out' ? 'white' : undefined
+                                      color: message.direction === 'out' ? '#111827' : undefined
                                     }}
                                   >
-                                    {renderTextWithLinks(message.caption, message.direction === 'out')}
+                                    {renderTextWithLinks(message.caption, false)}
                                   </p>
                                 )}
 
                                 {/* Timestamp and read receipts at bottom of image/emoji */}
                                 <div className={`flex items-center gap-1 mt-1 ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
-                                  <span className={`text-xs ${message.direction === 'out' ? 'text-white' : 'text-gray-500'}`}>
+                                  <span className="text-xs text-gray-500">
                                     {new Date(message.sent_at).toLocaleTimeString([], {
                                       hour: '2-digit',
                                       minute: '2-digit'
@@ -3365,11 +3365,10 @@ const WhatsAppLeadsPage: React.FC = () => {
                             ) : (
                               <div
                                 className={`group ${getMessageBubbleWidthClass(message.direction)} rounded-2xl px-4 py-2.5 shadow-sm relative ${message.direction === 'out'
-                                  ? 'text-white'
+                                  ? 'bg-[#d9fdd3] text-gray-900 border border-[#c5f0b8]'
                                   : 'bg-white text-gray-900 border border-gray-200'
                                   }`}
                                 style={{
-                                  background: message.direction === 'out' ? 'linear-gradient(to bottom right, #047857, #0f766e)' : undefined,
                                   wordBreak: 'break-word',
                                   overflowWrap: 'break-word',
                                 }}
@@ -3384,7 +3383,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                       e.target.style.height = 'auto';
                                       e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
                                     }}
-                                    className="w-full bg-transparent border-none outline-none resize-none overflow-y-auto text-white placeholder-white/70"
+                                    className="w-full bg-transparent border-none outline-none resize-none overflow-y-auto text-gray-900 placeholder-gray-500"
                                     autoFocus
                                     style={{
                                       minHeight: '20px',
@@ -3412,10 +3411,10 @@ const WhatsAppLeadsPage: React.FC = () => {
                                         dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
                                         style={{
                                           textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
-                                          color: message.direction === 'out' ? 'white' : undefined,
+                                          color: message.direction === 'out' ? '#111827' : undefined,
                                         }}
                                       >
-                                        {renderTextWithLinks(message.message, message.direction === 'out')}
+                                        {renderTextWithLinks(message.message, false)}
                                       </p>
                                     )}
 
@@ -3463,10 +3462,10 @@ const WhatsAppLeadsPage: React.FC = () => {
                                           maxWidth: '100%',
                                           minWidth: 0,
                                           height: 'auto',
-                                          color: message.direction === 'out' ? 'white' : undefined
+                                          color: message.direction === 'out' ? '#111827' : undefined
                                         }}
                                       >
-                                        {renderTextWithLinks(message.caption, message.direction === 'out')}
+                                        {renderTextWithLinks(message.caption, false)}
                                       </p>
                                     )}
                                     {!message.caption && message.message && (
@@ -3481,10 +3480,10 @@ const WhatsAppLeadsPage: React.FC = () => {
                                           maxWidth: '100%',
                                           minWidth: 0,
                                           height: 'auto',
-                                          color: message.direction === 'out' ? 'white' : undefined
+                                          color: message.direction === 'out' ? '#111827' : undefined
                                         }}
                                       >
-                                        {renderTextWithLinks(message.message, message.direction === 'out')}
+                                        {renderTextWithLinks(message.message, false)}
                                       </p>
                                     )}
                                   </div>
@@ -3536,7 +3535,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                                 )}
 
                                 <div className={`flex items-center gap-1 mt-1 ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
-                                  <span className={`text-xs ${message.direction === 'out' ? 'text-white' : 'text-gray-500'}`}>
+                                  <span className="text-xs text-gray-500">
                                     {new Date(message.sent_at).toLocaleTimeString([], {
                                       hour: '2-digit',
                                       minute: '2-digit'
