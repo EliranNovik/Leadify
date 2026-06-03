@@ -3888,8 +3888,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => setShowMobileDropdown(!showMobileDropdown)}
-                            className={`btn btn-circle text-white shadow-md hover:shadow-lg transition-shadow flex-shrink-0 ${isMobile ? 'w-12 h-12' : 'w-10 h-10'}`}
-                            style={{ background: '#000000', borderColor: 'transparent' }}
+                            className={`btn btn-ghost btn-circle flex-shrink-0 text-gray-600 hover:text-gray-900 hover:bg-gray-100 border-none shadow-none transition-colors ${isMobile ? 'w-12 h-12 min-h-12 min-w-12' : 'w-10 h-10 min-h-10 min-w-10'}`}
                             title={isLocked ? 'Messaging window expired — use templates' : 'Message tools'}
                           >
                             <Squares2X2Icon className={isMobile ? 'w-6 h-6' : 'w-5 h-5'} />

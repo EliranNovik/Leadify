@@ -230,6 +230,38 @@ export function isSameWhatsAppSidebarClient(
   return clientConversationEntityKey(a) === clientConversationEntityKey(b);
 }
 
+/** Sets sidebar unread count for one conversation (optimistic mark-as-unread). */
+export function markUnreadForClientInIndex(
+  index: WhatsAppConversationIndexState,
+  client: WhatsAppSidebarSortableClient & { lead_id?: unknown },
+  count = 1,
+): void {
+  const n = Math.max(1, count);
+  if (client.isContact && client.contact_id != null) {
+    index.unreadByContactId.set(Number(client.contact_id), n);
+    return;
+  }
+  if (client.lead_type === 'legacy' || String(client.id ?? '').startsWith('legacy_')) {
+    const raw = String(client.id ?? '').replace('legacy_', '') || String(client.lead_id ?? '');
+    const lid = Number(raw);
+    if (!Number.isNaN(lid)) {
+      index.unreadByLegacyId.set(lid, n);
+    }
+    for (const k of leadIndexLookupKeys(raw)) {
+      index.unreadByLeadId.set(k, n);
+      const nk = normalizeUuidKey(k);
+      if (nk && nk !== k) index.unreadByLeadId.set(nk, n);
+    }
+    return;
+  }
+  const leadKey = String(client.lead_id || client.id || '');
+  for (const k of leadIndexLookupKeys(leadKey)) {
+    index.unreadByLeadId.set(k, n);
+    const nk = normalizeUuidKey(k);
+    if (nk && nk !== k) index.unreadByLeadId.set(nk, n);
+  }
+}
+
 /** Clears sidebar unread counts for one conversation (optimistic, before DB mark-read completes). */
 export function clearUnreadForClientInIndex(
   index: WhatsAppConversationIndexState,

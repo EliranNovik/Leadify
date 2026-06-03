@@ -25,6 +25,7 @@ import {
   sortClientsForSidebar,
   clientMatchesReadFilter,
   clearUnreadForClientInIndex,
+  markUnreadForClientInIndex,
   incomingMessageBelongsToSidebarClient,
   isSameWhatsAppSidebarClient,
   formatWhatsAppMessagePreview,
@@ -78,9 +79,13 @@ import {
   EllipsisVerticalIcon,
   CheckIcon,
   Squares2X2Icon,
+  Cog6ToothIcon,
+  ShareIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import WhatsAppAvatar from '../components/whatsapp/WhatsAppAvatar';
+import WhatsAppShareLeadRmqModal from '../components/whatsapp/WhatsAppShareLeadRmqModal';
+import WhatsAppClientInfoPanel from '../components/whatsapp/WhatsAppClientInfoPanel';
 import { getStageColour, getStageName } from '../lib/stageUtils';
 import VoiceMessagePlayer from '../components/whatsapp/VoiceMessagePlayer';
 import VoiceMessageRecorder from '../components/whatsapp/VoiceMessageRecorder';
@@ -381,6 +386,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
   // New Message Modal state
   const [isNewMessageModalOpen, setIsNewMessageModalOpen] = useState(false);
+  const [isShareLeadRmqModalOpen, setIsShareLeadRmqModalOpen] = useState(false);
+  const [showSidePanelSettingsMenu, setShowSidePanelSettingsMenu] = useState(false);
+  const sidePanelSettingsRef = useRef<HTMLDivElement>(null);
+  const [showClientInfoPanel, setShowClientInfoPanel] = useState(false);
   const [newMessageSearchTerm, setNewMessageSearchTerm] = useState('');
   const [newMessageSearchResults, setNewMessageSearchResults] = useState<CombinedLead[]>([]);
   const [isNewMessageSearching, setIsNewMessageSearching] = useState(false);
@@ -3243,6 +3252,99 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     }
   }, [searchParams, setShowMyContactsOnly]);
 
+  useEffect(() => {
+    if (!selectedClient) {
+      setShowClientInfoPanel(false);
+    }
+  }, [selectedClient?.id]);
+
+  const handleMarkConversationAsUnread = useCallback(async () => {
+    if (!selectedClient) {
+      toast.error('Select a conversation first');
+      return;
+    }
+    setShowSidePanelSettingsMenu(false);
+
+    const belongsToClient = (msg: WhatsAppMessage) =>
+      incomingMessageBelongsToSidebarClient(msg, selectedClient);
+
+    const byId = new Map<number, WhatsAppMessage>();
+    for (const msg of messages) {
+      if (msg.direction === 'in' && belongsToClient(msg) && msg.id) {
+        byId.set(msg.id, msg);
+      }
+    }
+    for (const msg of allMessages) {
+      if (msg.direction === 'in' && belongsToClient(msg) && msg.id) {
+        byId.set(msg.id, msg);
+      }
+    }
+
+    const latestIncoming = [...byId.values()].sort(
+      (a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime(),
+    )[0];
+
+    if (!latestIncoming?.id) {
+      toast.error('No incoming message to mark as unread');
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('whatsapp_messages')
+        .update({
+          is_read: false,
+          read_at: null,
+          read_by: null,
+        })
+        .eq('id', latestIncoming.id);
+
+      if (error) {
+        throw error;
+      }
+
+      const idx = conversationIndexRef.current;
+      if (idx) {
+        markUnreadForClientInIndex(idx, selectedClient, 1);
+        bumpConversationIndex();
+      }
+
+      const patchClientUnread = (c: Client) =>
+        isSameWhatsAppSidebarClient(c, selectedClient) ? { ...c, unreadCount: 1 } : c;
+      setMyContactsClients((prev) => prev.map(patchClientUnread));
+      setAllContactsClients((prev) => prev.map(patchClientUnread));
+
+      const patchMessageUnread = (msg: WhatsAppMessage) =>
+        msg.id === latestIncoming.id ? { ...msg, is_read: false } : msg;
+      setAllMessages((prev) => prev.map(patchMessageUnread));
+      setMyContactsMessages((prev) => prev.map(patchMessageUnread));
+      setAllContactsMessages((prev) => prev.map(patchMessageUnread));
+
+      const patchSelectedUnread = (prev: Client | null) =>
+        prev && isSameWhatsAppSidebarClient(prev, selectedClient)
+          ? { ...prev, unreadCount: 1 }
+          : prev;
+      setMyContactsSelectedClient(patchSelectedUnread);
+      setAllContactsSelectedClient(patchSelectedUnread);
+
+      toast.success('Marked as unread');
+    } catch {
+      toast.error('Failed to mark as unread');
+    }
+  }, [
+    selectedClient,
+    messages,
+    allMessages,
+    bumpConversationIndex,
+    setMyContactsClients,
+    setAllContactsClients,
+    setAllMessages,
+    setMyContactsMessages,
+    setAllContactsMessages,
+    setMyContactsSelectedClient,
+    setAllContactsSelectedClient,
+  ]);
+
   const clearClientUnreadImmediately = useCallback((client: Client) => {
     const idx = conversationIndexRef.current;
     if (idx) {
@@ -3475,6 +3577,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         }
       }
 
+      if (showSidePanelSettingsMenu) {
+        if (sidePanelSettingsRef.current && !sidePanelSettingsRef.current.contains(target)) {
+          setShowSidePanelSettingsMenu(false);
+        }
+      }
+
       // Close template selector if clicking outside
       if (showTemplateSelector && templateSelectorRef.current && !templateSelectorRef.current.contains(target)) {
         // Don't close if clicking on the template button itself
@@ -3496,7 +3604,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isEmojiPickerOpen, showMobileDropdown, showDesktopTools, isMobile, isInputFocused, showTemplateSelector]);
+  }, [isEmojiPickerOpen, showMobileDropdown, showDesktopTools, showSidePanelSettingsMenu, isMobile, isInputFocused, showTemplateSelector]);
 
   // Handle search input changes - now only filters fetched clients (no API calls)
   // Removed the searchLeads API call - search now only filters through existing clients
@@ -5324,38 +5432,46 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     );
   };
 
+  const renderContactsReadFilters = () => (
+    <div className="flex gap-2">
+      {(['all', 'unread', 'read'] as const).map((filter) => {
+        const label = filter === 'all' ? 'All' : filter === 'unread' ? 'Unread' : 'Read';
+        const isActive = readFilter === filter;
+        return (
+          <button
+            key={filter}
+            type="button"
+            onClick={() => setReadFilter(filter)}
+            className={`flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all border-0 outline-none ring-0 ${
+              isActive
+                ? 'bg-gray-200 text-gray-800 font-semibold'
+                : 'bg-transparent text-gray-500 hover:bg-gray-100 hover:text-gray-700'
+            }`}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const renderContactsSearch = () => (
+    <div className="relative search-container">
+      <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+      <input
+        type="text"
+        placeholder="Search conversations..."
+        value={searchTerm}
+        onChange={(e) => setSearchTerm(e.target.value)}
+        className="w-full pl-10 pr-4 py-2.5 bg-gray-100 border-0 rounded-full outline-none ring-0 focus:outline-none focus:ring-0 focus:border-0 placeholder:text-gray-500"
+      />
+    </div>
+  );
+
   const renderContactsFiltersAndSearch = () => (
     <>
-      <div className="flex gap-2 mb-3">
-        {(['all', 'unread', 'read'] as const).map((filter) => {
-          const label = filter === 'all' ? 'All' : filter === 'unread' ? 'Unread' : 'Read';
-          const isActive = readFilter === filter;
-          return (
-            <button
-              key={filter}
-              type="button"
-              onClick={() => setReadFilter(filter)}
-              className={`flex-1 px-2 py-1.5 rounded-lg text-xs font-medium transition-all border-0 outline-none ring-0 ${
-                isActive
-                  ? 'bg-gray-200 text-gray-800 font-semibold'
-                  : 'bg-transparent text-gray-500 hover:bg-gray-100 hover:text-gray-700'
-              }`}
-            >
-              {label}
-            </button>
-          );
-        })}
-      </div>
-      <div className="relative search-container">
-        <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
-        <input
-          type="text"
-          placeholder="Search conversations..."
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          className="w-full pl-10 pr-4 py-2.5 bg-gray-100 border-0 rounded-full outline-none ring-0 focus:outline-none focus:ring-0 focus:border-0 placeholder:text-gray-500"
-        />
-      </div>
+      {renderContactsSearch()}
+      <div className="mt-3">{renderContactsReadFilters()}</div>
     </>
   );
 
@@ -5372,6 +5488,115 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     <div className="fixed inset-0 bg-gray-100 z-[9999]" style={{ overflow: 'visible' }}>
       <div className="h-full flex flex-col" style={{ height: '100vh', maxHeight: '100vh', overflow: 'visible' }}>
         <div className="flex-1 flex min-h-0 overflow-hidden">
+          {/* Desktop: grey icon rail (All / My / New message + Settings) */}
+          {!isMobile && (
+            <div className="flex-shrink-0 w-14 bg-gray-50 border-r border-gray-200 flex flex-col items-center min-h-0">
+              <div className="flex flex-col items-center gap-4 pt-4 px-1">
+                {(isSuperuser === true || isCollection === true) && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setShowMyContactsOnly(false)}
+                      title="All Contacts"
+                      aria-label="All Contacts"
+                      aria-pressed={!showMyContactsOnly}
+                      className={`btn btn-ghost btn-circle w-11 h-11 min-h-11 min-w-11 border-0 flex-shrink-0 ${
+                        !showMyContactsOnly
+                          ? 'bg-gray-300 text-gray-900 hover:bg-gray-400'
+                          : 'text-gray-600 hover:bg-gray-300/70'
+                      }`}
+                    >
+                      <UserGroupIcon className="w-6 h-6" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowMyContactsOnly(true)}
+                      title="My Contacts"
+                      aria-label="My Contacts"
+                      aria-pressed={showMyContactsOnly}
+                      className={`btn btn-ghost btn-circle w-11 h-11 min-h-11 min-w-11 border-0 flex-shrink-0 ${
+                        showMyContactsOnly
+                          ? 'bg-gray-300 text-gray-900 hover:bg-gray-400'
+                          : 'text-gray-600 hover:bg-gray-300/70'
+                      }`}
+                    >
+                      <UserIcon className="w-6 h-6" />
+                    </button>
+                  </>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setIsNewMessageModalOpen(true)}
+                  title="New message"
+                  aria-label="New message"
+                  className="btn btn-ghost btn-circle w-11 h-11 min-h-11 min-w-11 border-0 flex-shrink-0 bg-gray-300 text-gray-900 hover:bg-gray-400"
+                >
+                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!selectedClient) {
+                      toast.error('Select a conversation first');
+                      return;
+                    }
+                    if (!currentUser?.id) {
+                      toast.error('Sign in to share via RMQ');
+                      return;
+                    }
+                    setIsShareLeadRmqModalOpen(true);
+                  }}
+                  title={selectedClient ? 'Share lead via RMQ' : 'Select a conversation to share'}
+                  aria-label="Share lead via RMQ"
+                  disabled={!selectedClient}
+                  className={`btn btn-ghost btn-circle w-11 h-11 min-h-11 min-w-11 border-0 flex-shrink-0 ${
+                    selectedClient
+                      ? 'text-gray-700 hover:bg-gray-300/70'
+                      : 'text-gray-400 opacity-50 cursor-not-allowed'
+                  }`}
+                >
+                  <ShareIcon className="w-6 h-6" />
+                </button>
+              </div>
+              <div className="flex-1 min-h-0" />
+              <div className="relative flex flex-col items-center pb-4 px-1" ref={sidePanelSettingsRef}>
+                <button
+                  type="button"
+                  title="Settings"
+                  aria-label="Settings"
+                  aria-expanded={showSidePanelSettingsMenu}
+                  onClick={() => setShowSidePanelSettingsMenu((prev) => !prev)}
+                  className={`btn btn-ghost btn-circle w-11 h-11 min-h-11 min-w-11 border-0 flex-shrink-0 ${
+                    showSidePanelSettingsMenu
+                      ? 'bg-gray-300 text-gray-900 hover:bg-gray-400'
+                      : 'text-gray-600 hover:bg-gray-300/70'
+                  }`}
+                >
+                  <Cog6ToothIcon className="w-6 h-6" />
+                </button>
+                {showSidePanelSettingsMenu && (
+                  <div
+                    className="absolute left-full bottom-0 ml-2 z-30 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[200px] pointer-events-auto"
+                    role="menu"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={!selectedClient}
+                      onClick={() => void handleMarkConversationAsUnread()}
+                      className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors disabled:opacity-50 disabled:cursor-not-allowed rounded-lg"
+                    >
+                      <EnvelopeIcon className="w-5 h-5 text-gray-600 flex-shrink-0" />
+                      <span className="text-sm text-gray-700 whitespace-nowrap">Mark as unread</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Left Panel - Client List */}
           <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col min-h-0 bg-white ${isMobile && showChat ? 'hidden' : ''}`}>
             {!isMobile && (
@@ -5382,15 +5607,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 </div>
               </div>
             )}
-            {/* Desktop: filters + search stay above the scrollable list */}
+            {/* Desktop: search + filters below header */}
             {!isMobile && (
-              <div className="px-3 pb-3 pt-1 border-b border-gray-200 flex-shrink-0">
+              <div className="flex-none px-3 pb-3 pt-1 bg-white">
                 {renderContactsFiltersAndSearch()}
               </div>
             )}
 
-            {/* Client List Container - Flex column to separate scrollable area from fixed button */}
-            <div className="flex flex-col flex-1 min-h-0">
+            {/* Client List Container */}
+            <div className={`flex flex-col flex-1 min-h-0 ${isMobile ? 'relative' : ''}`}>
               {/* Scrollable Client List */}
               <div
                 ref={contactListRef}
@@ -5405,6 +5630,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   }
                 }}
                 className="flex-1 overflow-y-auto min-h-0"
+                style={
+                  isMobile
+                    ? {
+                        paddingBottom:
+                          'max(5.5rem, calc(env(safe-area-inset-bottom, 0px) + 88px))',
+                      }
+                    : undefined
+                }
               >
                 {isMobile && (
                   <>
@@ -5422,7 +5655,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         <XMarkIcon className="w-5 h-5" />
                       </button>
                     </div>
-                    <div className="p-3 pt-0 border-b border-gray-200 bg-white">
+                    <div className="p-3 pt-0 bg-white">
                       {renderContactsFiltersAndSearch()}
                     </div>
                   </>
@@ -5567,70 +5800,78 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 )}
               </div>
 
-              {/* Bottom actions: contact scope toggles + new message */}
-              <div
-                className="flex-none pt-3 px-3 border-t border-gray-200 bg-white"
-                style={isMobile ? { paddingBottom: 'max(1rem, calc(env(safe-area-inset-bottom, 0px) + 56px))' } : { paddingBottom: '0.75rem' }}
-              >
-                <div className="flex items-center gap-3">
-                  {(isSuperuser === true || isCollection === true) && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => setShowMyContactsOnly(false)}
-                        title="All Contacts"
-                        aria-label="All Contacts"
-                        aria-pressed={!showMyContactsOnly}
-                        className={`btn h-12 min-h-12 rounded-full border-none shadow-sm transition-all flex-shrink-0 flex items-center gap-2 px-4 ${
-                          !showMyContactsOnly
-                            ? 'bg-gray-300 text-gray-900 hover:bg-gray-400'
-                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}
-                      >
-                        <UserGroupIcon className="w-5 h-5 flex-shrink-0" />
-                        <span className="text-sm font-semibold whitespace-nowrap">All</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setShowMyContactsOnly(true)}
-                        title="My Contacts"
-                        aria-label="My Contacts"
-                        aria-pressed={showMyContactsOnly}
-                        className={`btn h-12 min-h-12 rounded-full border-none shadow-sm transition-all flex-shrink-0 flex items-center gap-2 px-4 ${
-                          showMyContactsOnly
-                            ? 'bg-gray-300 text-gray-900 hover:bg-gray-400'
-                            : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                        }`}
-                      >
-                        <UserIcon className="w-5 h-5 flex-shrink-0" />
-                        <span className="text-sm font-semibold whitespace-nowrap">My Contacts</span>
-                      </button>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setIsNewMessageModalOpen(true)}
-                    title="New message"
-                    aria-label="New message"
-                    className="btn btn-circle w-12 h-12 min-h-12 min-w-12 border-none shadow-sm hover:shadow-md transition-all flex-shrink-0 bg-gray-300 text-gray-900 hover:bg-gray-400"
-                  >
-                    <svg
-                      className="w-5 h-5"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
+              {/* Mobile: floating oval glass pill over the list (desktop uses left icon rail) */}
+              {isMobile && (
+                <div
+                  className="absolute inset-x-0 bottom-0 z-20 flex justify-center px-4 pointer-events-none"
+                  style={{ paddingBottom: 'max(0.75rem, calc(env(safe-area-inset-bottom, 0px) + 56px))' }}
+                >
+                  <div className="pointer-events-auto flex items-center gap-2 sm:gap-3 px-3 py-2.5 rounded-full bg-white/55 backdrop-blur-xl supports-[backdrop-filter]:bg-white/45 border border-white/70 shadow-[0_8px_32px_rgba(0,0,0,0.12)] ring-1 ring-black/5">
+                    {(isSuperuser === true || isCollection === true) && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setShowMyContactsOnly(false)}
+                          title="All Contacts"
+                          aria-label="All Contacts"
+                          aria-pressed={!showMyContactsOnly}
+                          className={`btn h-11 min-h-11 rounded-full border-none shadow-sm transition-all flex-shrink-0 flex items-center gap-2 px-3.5 ${
+                            !showMyContactsOnly
+                              ? 'bg-gray-300 text-gray-900 hover:bg-gray-400'
+                              : 'bg-transparent text-gray-600 hover:bg-white/35'
+                          }`}
+                        >
+                          <UserGroupIcon className="w-5 h-5 flex-shrink-0" />
+                          <span className="text-sm font-semibold whitespace-nowrap">All</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowMyContactsOnly(true)}
+                          title="My Contacts"
+                          aria-label="My Contacts"
+                          aria-pressed={showMyContactsOnly}
+                          className={`btn h-11 min-h-11 rounded-full border-none shadow-sm transition-all flex-shrink-0 flex items-center gap-2 px-3.5 ${
+                            showMyContactsOnly
+                              ? 'bg-gray-300 text-gray-900 hover:bg-gray-400'
+                              : 'bg-transparent text-gray-600 hover:bg-white/35'
+                          }`}
+                        >
+                          <UserIcon className="w-5 h-5 flex-shrink-0" />
+                          <span className="text-sm font-semibold whitespace-nowrap">My Contacts</span>
+                        </button>
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setIsNewMessageModalOpen(true)}
+                      title="New message"
+                      aria-label="New message"
+                      className="btn btn-circle w-11 h-11 min-h-11 min-w-11 border-none shadow-sm hover:shadow-md transition-all flex-shrink-0 bg-white/75 text-gray-900 hover:bg-white/90"
                     >
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                    </svg>
-                  </button>
+                      <svg
+                        className="w-5 h-5"
+                        fill="none"
+                        viewBox="0 0 24 24"
+                        stroke="currentColor"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
 
           {/* Right Panel - Chat */}
           <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-gray-50 min-h-0 relative ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : { overflow: 'hidden' }}>
             {selectedClient ? (
+              <div
+                className={`flex flex-1 min-h-0 min-w-0 w-full ${
+                  showClientInfoPanel && !isMobile ? 'overflow-visible' : ''
+                }`}
+              >
+                <div className="flex flex-col flex-1 min-h-0 min-w-0">
               <>
                 {/* Desktop chat header: lead data + identity (WhatsApp Web layout) */}
                 {!isMobile && (
@@ -5642,12 +5883,31 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         {renderSelectedClientLeadToolbar(selectedClient)}
                       </div>
                       <div className="flex items-center gap-2 md:gap-3 flex-shrink-0 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => setShowClientInfoPanel((prev) => !prev)}
+                          title="Client details"
+                          aria-label="Client details"
+                          aria-pressed={showClientInfoPanel}
+                          className={`flex-shrink-0 rounded-full ring-2 transition-all ${
+                            showClientInfoPanel
+                              ? 'ring-green-500'
+                              : 'ring-transparent hover:ring-gray-200'
+                          }`}
+                        >
+                          <WhatsAppAvatar
+                            name={selectedClient.name}
+                            profilePictureUrl={selectedClient.whatsapp_profile_picture_url}
+                            size="md"
+                            colorSeed={String(selectedClient.contact_id ?? selectedClient.id)}
+                          />
+                        </button>
                         <div
                           className="flex items-center min-w-0 cursor-pointer hover:opacity-80 transition-opacity rounded-lg px-2 py-1 hover:bg-gray-50"
                           onClick={() => handleNavigateToClient(selectedClient)}
                           title="View Client Page"
                         >
-                          {leadHeaderIdentity(selectedClient)}
+                          {leadHeaderIdentity(selectedClient, 'md', true, false)}
                         </div>
                         {timeLeft && (
                           <div
@@ -5695,7 +5955,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           </svg>
                         </button>
 
-                        <div className="relative flex-shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setShowClientInfoPanel((prev) => !prev)}
+                          className={`relative flex-shrink-0 rounded-full ring-2 transition-all ${
+                            showClientInfoPanel
+                              ? 'ring-green-500'
+                              : 'ring-transparent'
+                          }`}
+                          title="Client details"
+                          aria-label="Client details"
+                          aria-pressed={showClientInfoPanel}
+                        >
                           <WhatsAppAvatar
                             name={selectedClient.name}
                             profilePictureUrl={selectedClient.whatsapp_profile_picture_url}
@@ -5703,11 +5974,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                             colorSeed={String(selectedClient.contact_id ?? selectedClient.id)}
                           />
                           {(isLocked || messages.length === 0) && (
-                            <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40">
+                            <div className="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 pointer-events-none">
                               <LockClosedIcon className="w-3.5 h-3.5 text-white" />
                             </div>
                           )}
-                        </div>
+                        </button>
 
                         <div
                           className="min-w-0 cursor-pointer hover:opacity-80 transition-opacity"
@@ -5774,6 +6045,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         <span className="ml-2 text-sm text-gray-500">Loading older messages…</span>
                       </div>
                     )}
+                    <div className="flex w-full max-w-full flex-col">
                     {messages.map((message, index) => {
                       // Check if we need to show a date separator
                       const showDateSeparator = index === 0 ||
@@ -5783,15 +6055,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         <React.Fragment key={message.id || index}>
                           {/* Date Separator */}
                           {showDateSeparator && (
-                            <div className="flex justify-center my-4 w-full">
-                              <div className="text-sm font-medium px-3 py-1.5 rounded-full bg-gray-200 text-gray-900 border border-gray-300">
+                            <div className="w-full text-center my-3 shrink-0">
+                              <span className="text-sm font-medium text-gray-500">
                                 {formatDateSeparator(message.sent_at)}
-                              </div>
+                              </span>
                             </div>
                           )}
 
                           <div
-                            className={`flex gap-2 ${message.direction === 'out' ? 'flex-row-reverse' : 'flex-row'}`}
+                            className={`flex w-full gap-2 ${message.direction === 'out' ? 'flex-row-reverse' : 'flex-row'}`}
                             style={{ maxWidth: '100%', minWidth: 0 }}
                           >
                             <div className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'} flex-1`} style={{ maxWidth: '100%', minWidth: 0 }}>
@@ -6249,6 +6521,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         </React.Fragment>
                       );
                     })}
+                    </div>
                     </>
                   )}
                   <div ref={messagesEndRef} />
@@ -6270,10 +6543,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       {/* Consolidated Tools Button */}
                       <div className="relative" ref={desktopToolsRef} style={{ overflow: 'visible' }}>
                         <button
+                          type="button"
                           onClick={() => setShowDesktopTools(prev => !prev)}
                           disabled={sending || uploadingMedia}
-                          className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow"
-                          style={{ background: '#000000', borderColor: 'transparent' }}
+                          className="btn btn-ghost btn-circle w-12 h-12 min-h-12 min-w-12 text-gray-600 hover:text-gray-900 hover:bg-gray-100 border-none shadow-none disabled:opacity-50 transition-colors"
                           title="Message tools"
                         >
                           <Squares2X2Icon className="w-6 h-6" />
@@ -6667,9 +6940,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       <div className="flex items-center gap-2">
                         <div className="relative" ref={mobileToolsRef} style={{ overflow: 'visible' }}>
                           <button
+                            type="button"
                             onClick={() => setShowMobileDropdown(!showMobileDropdown)}
-                            className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow"
-                            style={{ background: '#000000', borderColor: 'transparent' }}
+                            className="btn btn-ghost btn-circle w-12 h-12 min-h-12 min-w-12 text-gray-600 hover:text-gray-900 hover:bg-gray-100 border-none shadow-none disabled:opacity-50 transition-colors"
                             title="Message tools"
                           >
                             <Squares2X2Icon className="w-6 h-6" />
@@ -7023,6 +7296,16 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   </div>
                 )}
               </>
+                </div>
+                {!isMobile && showClientInfoPanel && (
+                  <WhatsAppClientInfoPanel
+                    key={String(selectedClient.id)}
+                    client={selectedClient}
+                    leadContacts={leadContacts}
+                    onClose={() => setShowClientInfoPanel(false)}
+                  />
+                )}
+              </div>
             ) : (
               <>
                 {!isMobile && (
@@ -7049,6 +7332,17 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           </div>
         </div>
       </div>
+
+      {/* Mobile: client details full-screen overlay */}
+      {isMobile && showClientInfoPanel && selectedClient && (
+        <WhatsAppClientInfoPanel
+          key={String(selectedClient.id)}
+          client={selectedClient}
+          leadContacts={leadContacts}
+          onClose={() => setShowClientInfoPanel(false)}
+          className="fixed inset-0 z-[110] w-full max-w-none h-[100dvh] min-h-[100dvh] border-0 shadow-none"
+        />
+      )}
 
       {/* Media Modal */}
       {selectedMedia && (
@@ -7214,6 +7508,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           </div>
         </div>
       )}
+
+      <WhatsAppShareLeadRmqModal
+        isOpen={isShareLeadRmqModalOpen}
+        onClose={() => setIsShareLeadRmqModalOpen(false)}
+        client={selectedClient}
+        currentUserId={currentUser?.id ?? null}
+      />
 
       {/* New Message Modal */}
       {isNewMessageModalOpen && (

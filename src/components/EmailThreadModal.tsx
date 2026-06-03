@@ -19,6 +19,15 @@ import { searchLeads } from '../lib/legacyLeadsApi';
 import type { CombinedLead } from '../lib/legacyLeadsApi';
 import { generateSearchVariants } from '../lib/transliteration';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
+import {
+  buildEmailFilterClauses,
+  collectClientEmails,
+  EMAIL_THREAD_MODAL_SELECT,
+  fetchLeadEmailsForTimeline,
+  normalizeEmailForFilter as normalizeEmailForFilterShared,
+} from '../lib/interactions/emailFilters';
+
+const EMAIL_THREAD_FETCH_LIMIT = 200;
 
 const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
@@ -2480,67 +2489,64 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         }
       }
 
-      // Build a comprehensive query that matches emails in multiple ways
-      // This ensures we catch all emails regardless of how they were saved
-      let emailQuery = supabase
-        .from('emails')
-        .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, client_id, legacy_id, contact_id, is_read')
-        .order('sent_at', { ascending: true });
-
-      // Build query conditions that match emails by:
-      // 1. client_id/legacy_id (main identifier)
-      // 2. contact_id (if available)
-      // 3. email address (fallback for emails without contact_id)
-
       const contactEmail = sanitizeEmailForFilter(normalizeEmailForFilter(selectedContact.email));
-      const queryConditions: string[] = [];
 
-      // Always include client_id/legacy_id match
-      if (legacyId !== null) {
-        queryConditions.push(`legacy_id.eq.${legacyId}`);
-        console.log(`📧 Querying emails with legacy_id=${legacyId}`);
+      const addressEmails = collectClientEmails(selectedContact);
+      if (contactEmail && !addressEmails.includes(contactEmail)) {
+        addressEmails.push(contactEmail);
       }
-      if (clientUuid) {
-        queryConditions.push(`client_id.eq.${clientUuid}`);
-        console.log(`📧 Querying emails with client_id=${clientUuid}`);
-      }
+      leadContacts.forEach((c) => {
+        const n = normalizeEmailForFilterShared(c.email);
+        if (n && !addressEmails.includes(n)) {
+          addressEmails.push(n);
+        }
+      });
 
-      // Also match by contact_id if we have it
-      if (contactId) {
-        queryConditions.push(`contact_id.eq.${contactId}`);
-        console.log(`📧 Querying emails with contact_id=${contactId}`);
-      }
+      const emailFilters = buildEmailFilterClauses({
+        clientId: clientUuid,
+        legacyId,
+        emails: addressEmails,
+      });
 
-      // Also match by email address in recipient_list or sender_email
-      // This catches emails that might not have contact_id set yet
-      if (contactEmail) {
-        queryConditions.push(`recipient_list.ilike.%${contactEmail}%`);
-        queryConditions.push(`sender_email.ilike.${contactEmail}`);
-        console.log(`📧 Querying emails with email=${contactEmail}`);
-      }
-
-      if (queryConditions.length === 0) {
+      if (!clientUuid && legacyId == null && emailFilters.length === 0) {
         console.warn('📧 No valid identifiers for email fetch', {
           selectedContact,
           clientUuid,
           legacyId,
           contactId,
-          contactEmail
+          contactEmail,
         });
         setEmailThread([]);
         setIsLoading(false);
         return;
       }
 
-      // Use OR to match any of these conditions
-      // Then we'll filter in memory to ensure proper matching
-      emailQuery = emailQuery.or(queryConditions.join(','));
+      console.log('📧 Fetching email thread via indexed lead lookup', {
+        clientUuid,
+        legacyId,
+        contactId,
+        contactEmail: contactEmail || null,
+      });
 
-      let { data, error } = await emailQuery;
+      let { data, error } = await fetchLeadEmailsForTimeline(supabase, {
+        isLegacyLead: isLegacyContact,
+        legacyId,
+        clientId: clientUuid,
+        emailFilters,
+        limit: EMAIL_THREAD_FETCH_LIMIT,
+        select: EMAIL_THREAD_MODAL_SELECT,
+        matchByAddress: addressEmails.length > 0,
+      });
 
       if (error) {
         console.error('📧 Error querying emails:', error);
         throw error;
+      }
+
+      if (data?.length) {
+        data = [...data].sort(
+          (a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime(),
+        );
       }
 
       // Filter results in memory to ensure proper matching

@@ -17,6 +17,9 @@ export const EMAIL_TIMELINE_SELECT = EMAIL_SELECT_CORE;
 export const EMAIL_MODAL_SELECT =
   'id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, contact_id, client_id, legacy_id';
 
+/** EmailThreadModal thread load (includes read state for mark-as-read). */
+export const EMAIL_THREAD_MODAL_SELECT = `${EMAIL_MODAL_SELECT}, is_read`;
+
 export const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
 

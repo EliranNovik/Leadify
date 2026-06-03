@@ -100,6 +100,48 @@ export const processEmailHtmlWithInlineImages = (html: string, attachments: any[
   return processedHtml;
 };
 
+/** Plain-text snippet for email lists (strips HTML from preview/html bodies). */
+export function formatEmailPlainTextPreview(
+  preview?: string | null,
+  html?: string | null,
+  maxLength = 200,
+): string | null {
+  const raw = (preview || html || '').trim();
+  if (!raw) return null;
+
+  let text = raw;
+  if (/<[a-z][\s\S]*>/i.test(text)) {
+    text = text
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<\/div>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ');
+  }
+
+  if (typeof document !== 'undefined') {
+    const textarea = document.createElement('textarea');
+    textarea.innerHTML = text;
+    text = textarea.value;
+  } else {
+    text = text
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'");
+  }
+
+  text = text.replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  if (text.length > maxLength) {
+    return `${text.slice(0, maxLength - 1)}…`;
+  }
+  return text;
+}
+
 export const formatEmailHtmlForDisplay = (html: string | null | undefined): string => {
   if (!html) return '';
 
