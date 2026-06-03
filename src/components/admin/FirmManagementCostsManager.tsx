@@ -14,6 +14,12 @@ import {
 } from '../../lib/firmManagementCosts';
 import FirmInvoiceDocumentsCell from './FirmInvoiceDocumentsCell';
 import FirmManagementCostInvoiceField from './FirmManagementCostInvoiceField';
+import FirmManagementCostDocumentCell from './FirmManagementCostDocumentCell';
+import {
+  FirmManagementCostPaymentConfirmationField,
+  FirmManagementCostTaxReceiptField,
+} from './FirmManagementCostDocumentField';
+import type { FirmManagementCostDocColumn } from '../../lib/firmManagementCostDocuments';
 import type { ExpenseManagerEmbedProps } from '../reports/expenses/expenseDetailTypes';
 
 const MONTH_OPTIONS = [
@@ -248,6 +254,18 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
     [invoicesByKey],
   );
 
+  const formatCostDocumentColumn = useCallback(
+    (column: FirmManagementCostDocColumn, label: string) =>
+      (value: unknown) => (
+        <FirmManagementCostDocumentCell
+          storagePath={typeof value === 'string' ? value : null}
+          column={column}
+          linkLabel={label}
+        />
+      ),
+    [],
+  );
+
   const queryModifier = useCallback(
     (query: any) => applyBillingMonthFilter(query, filterMonth, filterYear),
     [filterMonth, filterYear],
@@ -287,6 +305,17 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
         prepareValueForSave: (value: unknown) => toBillingMonthStart(value),
       },
       {
+        name: 'expense_type_id',
+        label: 'Expense type',
+        type: 'select' as const,
+        required: true,
+        foreignKey: {
+          table: 'expense_types',
+          valueField: 'id',
+          displayField: 'label',
+        },
+      },
+      {
         name: 'amount',
         label: 'Amount',
         type: 'number' as const,
@@ -310,6 +339,24 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
         hideInTable: true,
         customComponent: FirmManagementCostInvoiceField,
         customProps: { onInvoiceChanged: loadAuxData },
+      },
+      {
+        name: 'payment_confirmation',
+        label: 'Payment confirmation',
+        type: 'custom' as const,
+        required: false,
+        hideInAdd: true,
+        customComponent: FirmManagementCostPaymentConfirmationField,
+        formatValue: formatCostDocumentColumn('payment_confirmation', 'Payment confirmation'),
+      },
+      {
+        name: 'tax_receipt',
+        label: 'Tax receipt',
+        type: 'custom' as const,
+        required: false,
+        hideInAdd: true,
+        customComponent: FirmManagementCostTaxReceiptField,
+        formatValue: formatCostDocumentColumn('tax_receipt', 'Tax receipt'),
       },
       {
         name: 'currency',
@@ -345,7 +392,7 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
         hideInEdit: true,
       },
     ],
-    [formatInvoiceColumn, loadAuxData],
+    [formatInvoiceColumn, formatCostDocumentColumn, loadAuxData],
   );
 
   const searchBarExtra = totalsLoading ? (

@@ -8,6 +8,8 @@ import {
   FirmOtherDocsField,
 } from './FirmColumnDocumentField';
 import FirmLeadSourcesField from './FirmLeadSourcesField';
+import FirmFirmTypesField from './FirmFirmTypesField';
+import FirmTypeBadge from '../FirmTypeBadge';
 
 const FirmsManager: React.FC = () => {
   const fields = [
@@ -19,15 +21,28 @@ const FirmsManager: React.FC = () => {
       placeholder: 'Organization name',
     },
     {
-      name: 'firm_type_id',
-      label: 'Firm type',
-      type: 'select' as const,
+      name: 'firm_type_ids',
+      label: 'Firm types',
+      type: 'custom' as const,
       required: false,
-      searchableSelect: true,
-      foreignKey: {
-        table: 'firm_types',
-        valueField: 'id',
-        displayField: 'label',
+      customComponent: FirmFirmTypesField,
+      defaultValue: () => [] as string[],
+      formatValue: (_value: unknown, record: { _firm_type_labels?: string[]; firm_type_ids?: string[] } & Record<string, unknown>) => {
+        const labels = record._firm_type_labels;
+        const typeIds = record.firm_type_ids;
+        if (!labels?.length) return <span className="text-base-content/40">—</span>;
+        return (
+          <div className="flex flex-wrap gap-1">
+            {labels.map((label, i) => (
+              <FirmTypeBadge
+                key={`${typeIds?.[i] ?? label}-${i}`}
+                label={label}
+                typeId={typeIds?.[i]}
+                size="sm"
+              />
+            ))}
+          </div>
+        );
       },
     },
     {

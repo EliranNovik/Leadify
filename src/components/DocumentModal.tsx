@@ -637,6 +637,311 @@ function DocumentUploaderAttribution({ doc }: { doc: Document }) {
   );
 }
 
+export type DocumentPreviewItem = {
+  id: string;
+  name: string;
+  downloadUrl: string;
+  fileType: string;
+  lastModified?: string;
+};
+
+function formatDocumentPreviewDate(dateString: string) {
+  const d = new Date(dateString);
+  if (Number.isNaN(d.getTime())) return dateString;
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yy = String(d.getFullYear()).slice(-2);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  return `${dd}.${mm}.${yy}, ${hh}:${min}`;
+}
+
+export type DocumentPreviewModalProps = {
+  isOpen: boolean;
+  onClose: () => void;
+  documents: DocumentPreviewItem[];
+  initialIndex?: number;
+};
+
+/** Full-screen document preview (same UI as the gallery inside DocumentModal). */
+export function DocumentPreviewModal({
+  isOpen,
+  onClose,
+  documents,
+  initialIndex = 0,
+}: DocumentPreviewModalProps) {
+  const documentsRef = useRef(documents);
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    documentsRef.current = documents;
+  }, [documents]);
+
+  useEffect(() => {
+    if (!isOpen || documents.length === 0) {
+      setPreviewIndex(null);
+      return;
+    }
+    setPreviewIndex(Math.min(Math.max(0, initialIndex), documents.length - 1));
+  }, [isOpen, documents, initialIndex]);
+
+  const previewDocument =
+    previewIndex !== null && documents[previewIndex] != null ? documents[previewIndex] : null;
+
+  useEffect(() => {
+    if (previewIndex === null) return;
+    if (documents.length === 0) {
+      setPreviewIndex(null);
+      return;
+    }
+    if (previewIndex >= documents.length) {
+      setPreviewIndex(documents.length - 1);
+    }
+  }, [documents.length, previewIndex]);
+
+  const previewGoPrev = useCallback(() => {
+    setPreviewIndex((i) => {
+      if (i === null) return null;
+      const len = documentsRef.current.length;
+      if (len === 0) return null;
+      return (i - 1 + len) % len;
+    });
+  }, []);
+
+  const previewGoNext = useCallback(() => {
+    setPreviewIndex((i) => {
+      if (i === null) return null;
+      const len = documentsRef.current.length;
+      if (len === 0) return null;
+      return (i + 1) % len;
+    });
+  }, []);
+
+  const previewActiveId =
+    previewIndex !== null && documents[previewIndex] != null ? String(documents[previewIndex].id) : null;
+
+  useEffect(() => {
+    if (previewIndex === null || !previewActiveId) return;
+    const id = `doc-preview-thumb-${previewActiveId}`;
+    requestAnimationFrame(() => {
+      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    });
+  }, [previewIndex, previewActiveId]);
+
+  const lastPreviewWheelNavRef = useRef(0);
+  const handlePreviewStageWheel = useCallback(
+    (e: React.WheelEvent<HTMLDivElement>) => {
+      if (!previewDocument?.fileType.includes('image/')) return;
+      if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+      if (Math.abs(e.deltaX) < 12) return;
+      const now = Date.now();
+      if (now - lastPreviewWheelNavRef.current < 400) return;
+      lastPreviewWheelNavRef.current = now;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.deltaX > 0) previewGoNext();
+      else previewGoPrev();
+    },
+    [previewDocument, previewGoNext, previewGoPrev],
+  );
+
+  const handleClose = useCallback(() => {
+    setPreviewIndex(null);
+    onClose();
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!isOpen || previewIndex === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        handleClose();
+        return;
+      }
+      if (documents.length <= 1) return;
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        previewGoPrev();
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        previewGoNext();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, previewIndex, documents.length, handleClose, previewGoPrev, previewGoNext]);
+
+  if (!isOpen || !previewDocument || previewIndex === null) {
+    return null;
+  }
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[1200] flex flex-col bg-base-100"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Document preview"
+    >
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-base-300 bg-base-100 px-4 py-3 md:px-6">
+        <div className="min-w-0 flex-1">
+          {previewDocument.lastModified ? (
+            <p className="text-xs text-base-content/55 tabular-nums">
+              Uploaded {formatDocumentPreviewDate(previewDocument.lastModified)}
+            </p>
+          ) : null}
+          <h2 className="mt-0.5 truncate text-lg font-semibold md:text-xl">{previewDocument.name}</h2>
+          {documents.length > 1 ? (
+            <p className="mt-0.5 text-xs text-base-content/60 tabular-nums">
+              {previewIndex + 1} / {documents.length}
+            </p>
+          ) : null}
+        </div>
+        <button
+          type="button"
+          className="btn btn-ghost btn-circle shrink-0"
+          onClick={handleClose}
+          aria-label="Close preview"
+        >
+          <XMarkIcon className="h-6 w-6" />
+        </button>
+      </header>
+
+      <div className="flex min-h-0 flex-1 items-stretch">
+        {documents.length > 1 ? (
+          <button
+            type="button"
+            className="hidden w-12 shrink-0 items-center justify-center border-r border-base-300 bg-base-200/70 text-base-content hover:bg-base-300/80 md:flex lg:w-16"
+            aria-label="Previous file"
+            onClick={previewGoPrev}
+          >
+            <ChevronLeftIcon className="h-9 w-9 lg:h-10 lg:w-10" />
+          </button>
+        ) : null}
+
+        <div
+          className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-neutral-900"
+          onWheel={handlePreviewStageWheel}
+        >
+          <div
+            className={`flex min-h-0 w-full flex-1 p-3 md:p-6 ${
+              previewDocument.fileType.includes('pdf')
+                ? 'min-h-0 flex-col overflow-hidden'
+                : 'items-center justify-center overflow-auto'
+            }`}
+          >
+            {previewDocument.fileType.includes('image/') ? (
+              <img
+                src={previewDocument.downloadUrl}
+                alt={previewDocument.name}
+                className="max-h-full max-w-full object-contain"
+              />
+            ) : previewDocument.fileType.includes('pdf') ? (
+              <iframe
+                src={previewDocument.downloadUrl}
+                className="min-h-0 w-full flex-1 border-0"
+                title={previewDocument.name}
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center gap-3 px-4 text-center text-neutral-200">
+                <DocumentIcon className="h-16 w-16 shrink-0 opacity-80" />
+                <p className="text-sm">Preview not available for this file type.</p>
+                <a
+                  href={previewDocument.downloadUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-sm btn-primary"
+                >
+                  <ArrowDownTrayIcon className="h-4 w-4" />
+                  Download
+                </a>
+              </div>
+            )}
+          </div>
+          {documents.length > 1 ? (
+            <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center gap-3 md:hidden">
+              <button
+                type="button"
+                className="pointer-events-auto btn btn-circle btn-neutral btn-sm shadow-lg"
+                aria-label="Previous file"
+                onClick={previewGoPrev}
+              >
+                <ChevronLeftIcon className="h-6 w-6" />
+              </button>
+              <button
+                type="button"
+                className="pointer-events-auto btn btn-circle btn-neutral btn-sm shadow-lg"
+                aria-label="Next file"
+                onClick={previewGoNext}
+              >
+                <ChevronRightIcon className="h-6 w-6" />
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        {documents.length > 1 ? (
+          <button
+            type="button"
+            className="hidden w-12 shrink-0 items-center justify-center border-l border-base-300 bg-base-200/70 text-base-content hover:bg-base-300/80 md:flex lg:w-16"
+            aria-label="Next file"
+            onClick={previewGoNext}
+          >
+            <ChevronRightIcon className="h-9 w-9 lg:h-10 lg:w-10" />
+          </button>
+        ) : null}
+      </div>
+
+      {documents.length > 1 ? (
+        <footer className="shrink-0 border-t border-base-300 bg-base-200/50 px-2 py-3 dark:bg-base-300/30">
+          <div
+            className="mx-auto flex max-w-[100vw] gap-2 overflow-x-auto overflow-y-hidden pb-1 [-webkit-overflow-scrolling:touch]"
+            onWheel={(e) => {
+              if (!e.shiftKey) return;
+              e.currentTarget.scrollLeft += e.deltaY;
+              e.preventDefault();
+            }}
+          >
+            {documents.map((d, i) => {
+              const isActive = i === previewIndex;
+              const isImg = d.fileType.includes('image/');
+              return (
+                <button
+                  key={d.id}
+                  id={`doc-preview-thumb-${d.id}`}
+                  type="button"
+                  onClick={() => setPreviewIndex(i)}
+                  title={d.name}
+                  className={`shrink-0 rounded-lg border-2 p-0.5 transition ${
+                    isActive
+                      ? 'border-primary shadow-md ring-2 ring-primary/40'
+                      : 'border-transparent opacity-75 hover:opacity-100'
+                  }`}
+                >
+                  {isImg ? (
+                    <img
+                      src={d.downloadUrl}
+                      alt=""
+                      className="h-16 w-16 rounded-md object-cover md:h-20 md:w-20"
+                      loading="lazy"
+                      draggable={false}
+                    />
+                  ) : (
+                    <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-md bg-base-300 md:h-20 md:w-20">
+                      <div className="flex origin-center scale-[0.42] items-center justify-center">
+                        <DocumentFileGlyph fileType={d.fileType} fileName={d.name} />
+                      </div>
+                    </div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </footer>
+      ) : null}
+    </div>,
+    document.body,
+  );
+}
+
 function DocumentFileGlyph({ fileType, fileName }: { fileType: string; fileName: string }) {
   const kind = inferDocumentFileKind(fileType, fileName);
   const cn = 'h-11 w-11 shrink-0 sm:h-12 sm:w-12';

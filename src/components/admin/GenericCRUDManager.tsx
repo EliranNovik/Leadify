@@ -215,6 +215,12 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         if (tableName === 'tenants_employee' && fields.some(f => f.name === 'preferred_category')) {
           await fetchPreferredCategoryData(transformedData);
         }
+
+        if (tableName === 'firms' && fields.some((f) => f.name === 'firm_type_ids')) {
+          await enrichFirmTypesForRecords(transformedData);
+          setRecords([...transformedData]);
+        }
+
         onRecordsLoaded?.();
       }
     } catch (error) {
@@ -542,6 +548,103 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       .filter((n) => Number.isFinite(n) && n >= 1 && n <= MAX && n === Math.floor(n));
   };
 
+  const FIRM_TYPE_UUID_RE =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+  const normalizeFirmTypeIds = (raw: unknown[]): string[] => {
+    return raw
+      .map((x) => String(x).trim())
+      .filter((id) => FIRM_TYPE_UUID_RE.test(id));
+  };
+
+  const syncFirmFirmTypes = async (firmId: string, typeIds: string[]) => {
+    try {
+      if (!firmId) return;
+      const { error: deleteError } = await supabase.from('firm_firm_type').delete().eq('firm_id', firmId);
+      if (deleteError) {
+        console.error('Error clearing firm_firm_type:', deleteError);
+        throw deleteError;
+      }
+      const clean = normalizeFirmTypeIds(typeIds || []);
+      if (!clean.length) return;
+      const rows = clean.map((firm_type_id) => ({ firm_id: firmId, firm_type_id }));
+      const { error: insertError } = await supabase.from('firm_firm_type').insert(rows);
+      if (insertError) {
+        console.error('Error inserting firm_firm_type:', insertError);
+        throw insertError;
+      }
+    } catch (error) {
+      console.error('syncFirmFirmTypes:', error);
+      toast.error('Firm saved, but linking firm types failed. Check permissions on firm_firm_type.');
+    }
+  };
+
+  const enrichFirmTypesForRecords = async (firmRecords: Record[]) => {
+    const firmIds = firmRecords.map((r) => r.id).filter(Boolean) as string[];
+    if (!firmIds.length) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('firm_firm_type')
+        .select('firm_id, firm_type_id, firm_types ( label )')
+        .in('firm_id', firmIds);
+      if (error) {
+        console.error('Error fetching firm_firm_type:', error);
+        return;
+      }
+
+      const byFirm = new Map<string, { ids: string[]; labels: string[] }>();
+      (data || []).forEach((row: any) => {
+        const firmId = String(row.firm_id);
+        if (!byFirm.has(firmId)) byFirm.set(firmId, { ids: [], labels: [] });
+        const entry = byFirm.get(firmId)!;
+        if (row.firm_type_id) entry.ids.push(String(row.firm_type_id));
+        const nested = row.firm_types;
+        const label =
+          (Array.isArray(nested) ? nested[0]?.label : nested?.label)?.trim() || '';
+        if (label) entry.labels.push(label);
+      });
+
+      const primaryOnlyTypeIds = new Set<string>();
+      firmRecords.forEach((r) => {
+        const entry = byFirm.get(String(r.id));
+        if (entry?.ids.length) {
+          (r as any).firm_type_ids = entry.ids;
+          (r as any)._firm_type_labels = entry.labels;
+        } else if (r.firm_type_id && FIRM_TYPE_UUID_RE.test(String(r.firm_type_id))) {
+          const tid = String(r.firm_type_id);
+          (r as any).firm_type_ids = [tid];
+          (r as any)._firm_type_labels = [];
+          primaryOnlyTypeIds.add(tid);
+        } else {
+          (r as any).firm_type_ids = [];
+          (r as any)._firm_type_labels = [];
+        }
+      });
+
+      if (primaryOnlyTypeIds.size > 0) {
+        const { data: typeRows } = await supabase
+          .from('firm_types')
+          .select('id, label')
+          .in('id', [...primaryOnlyTypeIds]);
+        const labelById = new Map(
+          (typeRows || []).map((t: { id: string; label: string | null }) => [
+            String(t.id),
+            t.label?.trim() || 'Unnamed type',
+          ])
+        );
+        firmRecords.forEach((r) => {
+          if ((r as any)._firm_type_labels?.length) return;
+          const tid = r.firm_type_id ? String(r.firm_type_id) : '';
+          const label = labelById.get(tid);
+          if (label) (r as any)._firm_type_labels = [label];
+        });
+      }
+    } catch (error) {
+      console.error('enrichFirmTypesForRecords:', error);
+    }
+  };
+
   const syncFirmLeadSources = async (firmId: string, sourceIds: number[]) => {
     try {
       if (!firmId) return;
@@ -753,6 +856,19 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         );
       }
       delete (record as any).lead_source_ids;
+    }
+
+    let firmFirmTypeIds: string[] | undefined;
+    if (tableName === 'firms' && 'firm_type_ids' in record) {
+      const raw = (record as any).firm_type_ids;
+      const rawArr = Array.isArray(raw) ? raw : [];
+      firmFirmTypeIds = normalizeFirmTypeIds(rawArr);
+      if (rawArr.length !== firmFirmTypeIds.length) {
+        toast('Some firm type ids were invalid and were ignored.', { duration: 5000 });
+      }
+      (record as any).firm_type_id = firmFirmTypeIds[0] ?? null;
+      delete (record as any).firm_type_ids;
+      delete (record as any)._firm_type_labels;
     }
 
     // Handle array fields for Postgres
@@ -1060,6 +1176,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             user_permissions, 
             updated_by,
             preferred_category, // Remove preferred_category as it's stored in separate table
+            lead_source_ids,
+            firm_type_ids,
             ...updateData
           } = record;
 
@@ -1201,7 +1319,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           // Regular create for other tables
           // Remove preferred_category from the insert as it's stored in separate table
           // Also remove id for new records - let database auto-generate it for identity columns
-          const { preferred_category, lead_source_ids, id, ...insertRecord } = record;
+          const { preferred_category, lead_source_ids, firm_type_ids, id, ...insertRecord } = record;
           
           // Explicitly ensure id is not included (even if it was undefined/null in destructuring)
           // Use multiple methods to ensure id is completely removed
@@ -1365,6 +1483,14 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         const targetFirmId = editingRecord?.id ? String(editingRecord.id) : String((result as any)?.id);
         if (targetFirmId) {
           await syncFirmLeadSources(targetFirmId, firmLeadSourceIds);
+          await fetchRecords();
+        }
+      }
+
+      if (tableName === 'firms' && firmFirmTypeIds !== undefined) {
+        const targetFirmId = editingRecord?.id ? String(editingRecord.id) : String((result as any)?.id);
+        if (targetFirmId) {
+          await syncFirmFirmTypes(targetFirmId, firmFirmTypeIds);
           await fetchRecords();
         }
       }
@@ -1549,6 +1675,29 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       } catch (error) {
         console.error('Error fetching sources_firms:', error);
       }
+
+      try {
+        const { data: typeLinks, error: typeErr } = await supabase
+          .from('firm_firm_type')
+          .select('firm_type_id')
+          .eq('firm_id', record.id);
+        if (typeErr) {
+          console.error('Error fetching firm_firm_type:', typeErr);
+        } else {
+          const ids = (typeLinks || [])
+            .map((r: { firm_type_id: string }) => String(r.firm_type_id))
+            .filter((id) => FIRM_TYPE_UUID_RE.test(id));
+          if (ids.length) {
+            (record as any).firm_type_ids = ids;
+          } else if (record.firm_type_id && FIRM_TYPE_UUID_RE.test(String(record.firm_type_id))) {
+            (record as any).firm_type_ids = [String(record.firm_type_id)];
+          } else {
+            (record as any).firm_type_ids = [];
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching firm_firm_type:', error);
+      }
     }
     
     // If creating new record, initialize with default values from fields
@@ -1567,6 +1716,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           defaultRecord[field.name] = [];
         } else if (tableName === 'firms' && field.name === 'lead_source_ids') {
           defaultRecord[field.name] = [];
+        } else if (tableName === 'firms' && field.name === 'firm_type_ids') {
+          defaultRecord[field.name] = [];
         }
       });
       // Explicitly ensure id is not set
@@ -1581,6 +1732,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           transformedRecord[field.name] = (record as any).preferred_category || [];
         } else if (tableName === 'firms' && field.name === 'lead_source_ids') {
           transformedRecord[field.name] = (record as any).lead_source_ids || [];
+        } else if (tableName === 'firms' && field.name === 'firm_type_ids') {
+          transformedRecord[field.name] = (record as any).firm_type_ids || [];
         }
         // Ensure required fields with defaults are initialized if missing
         if (field.required && field.defaultValue !== undefined && (transformedRecord[field.name] === null || transformedRecord[field.name] === undefined || transformedRecord[field.name] === '')) {
