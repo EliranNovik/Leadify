@@ -3737,7 +3737,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                               <div
                                 className={`group ${getMessageBubbleWidthClass(message.direction)} rounded-2xl px-4 py-2.5 shadow-sm relative ${message.direction === 'out'
                                   ? WHATSAPP_OUTGOING_BUBBLE_CLASS
-                                  : 'bg-white text-gray-900 border border-gray-200'
+                                  : 'bg-white text-gray-900'
                                   }`}
                                 style={{
                                   wordBreak: 'break-word',

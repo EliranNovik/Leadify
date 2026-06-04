@@ -108,6 +108,26 @@ import {
   type RmqMessageLeadFlagWithPreview,
 } from '../../lib/rmqMessageLeadFlags';
 import FlagTypeFlagButton from '../FlagTypeFlagButton';
+import {
+  dedupeManualInteractionRecords,
+  fetchLeadManualInteractionsMerged,
+  generateManualInteractionId,
+  insertLeadManualInteraction,
+  normalizeManualInteractionId,
+  replaceLeadManualInteractions,
+} from '../../lib/leadManualInteractions';
+import {
+  fetchLegacyLeadInteractionRow,
+  insertLegacyLeadInteraction,
+  isLegacyManualInteractionKind,
+  isLegacyTimelineInteractionId,
+  legacyInteractionNumericKey,
+  legacyInteractionTimelineId,
+  mapLegacyDbKindToUiKind,
+  parseLegacyInteractionTimelineId,
+  stripLegacyDescriptionPrefix,
+  updateLegacyLeadInteraction,
+} from '../../lib/legacyLeadInteractions';
 
 const leadFieldFlagLabel = (key: string): string => {
   const map: Record<string, string> = {
@@ -701,7 +721,7 @@ const TruncatedContent: React.FC<{
   
   return (
     <div 
-      className="text-sm sm:text-base text-gray-700 break-words mb-4"
+      className="text-base sm:text-base text-gray-700 break-words mb-4"
       dir="auto"
       style={{ 
         lineHeight: '1.6'
@@ -838,9 +858,12 @@ function readInitialInteractionsFromStorage(
       ? ((interactionsCache.interactions || []) as Interaction[])
       : [];
 
-  const fromProp = Array.isArray(clientManualInteractions)
-    ? (clientManualInteractions as Interaction[])
-    : [];
+  const isLegacyClientId =
+    clientId != null && String(clientId).startsWith('legacy_');
+  const fromProp =
+    !isLegacyClientId && Array.isArray(clientManualInteractions)
+      ? (clientManualInteractions as Interaction[])
+      : [];
 
   let best: Interaction[] = [];
   if (fromSession.length > 0 && fromCache.length > 0) {
@@ -882,6 +905,34 @@ function mapManualInteractionsQuick(
   }));
 }
 
+const CLIENT_INITIALS_AVATAR_BACKGROUNDS = [
+  'bg-emerald-500',
+  'bg-teal-500',
+  'bg-sky-500',
+  'bg-indigo-500',
+  'bg-violet-600',
+  'bg-fuchsia-600',
+  'bg-rose-500',
+  'bg-orange-500',
+  'bg-amber-600',
+  'bg-cyan-600',
+  'bg-blue-600',
+  'bg-lime-600',
+] as const;
+
+function hashStringForAvatar(key: string): number {
+  let h = 0;
+  for (let i = 0; i < key.length; i++) {
+    h = (Math.imul(31, h) + key.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h);
+}
+
+function getClientInitialsAvatarBg(stableKey: string): string {
+  const idx = hashStringForAvatar(stableKey.trim() || '?') % CLIENT_INITIALS_AVATAR_BACKGROUNDS.length;
+  return CLIENT_INITIALS_AVATAR_BACKGROUNDS[idx];
+}
+
 // Helper component to handle employee avatar with image error fallback
 const EmployeeAvatar: React.FC<{ photo: string | null; name: string; initials: string; avatarBg: string }> = ({ photo, name, initials, avatarBg }) => {
   const [imageError, setImageError] = React.useState(false);
@@ -891,14 +942,14 @@ const EmployeeAvatar: React.FC<{ photo: string | null; name: string; initials: s
       <img
         src={photo}
         alt={name}
-        className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full object-cover shadow-lg ring-2 ring-white`}
+        className="w-11 h-11 sm:w-12 sm:h-12 md:w-14 md:h-14 rounded-full object-cover shadow-md"
         onError={() => setImageError(true)}
       />
     );
   }
   
   return (
-    <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-bold shadow-lg ring-2 ring-white ${avatarBg} text-white text-sm sm:text-base`}>
+    <div className={`w-11 h-11 sm:w-12 sm:h-12 md:w-14 md:h-14 rounded-full flex items-center justify-center font-bold shadow-md ${avatarBg} text-white text-base sm:text-lg`}>
       {initials}
     </div>
   );
@@ -1391,6 +1442,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   // Paint manual interactions from client prop before first paint when nothing else is cached yet
   useLayoutEffect(() => {
     if (!client?.id) return;
+    if (isLegacyLead) return;
     const manual = (client as any)?.manual_interactions;
     if (!Array.isArray(manual) || manual.length === 0) return;
     if (interactions.length > 0) return;
@@ -1399,7 +1451,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       setInteractions(quick);
       setInteractionsLoading(false);
     }
-  }, [client?.id, client?.name, (client as any)?.manual_interactions, interactions.length, currentUserFullName]);
+  }, [client?.id, client?.name, isLegacyLead, (client as any)?.manual_interactions, interactions.length, currentUserFullName]);
   
   // Track optimistic updates for manual interactions to prevent overwrites
   const optimisticUpdatesRef = useRef<Map<string | number, {
@@ -3238,8 +3290,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         };
 
         const fetchManualInteractionsSource = async (): Promise<any[]> => {
-          let manualInteractionsSource = client.manual_interactions || [];
-          if (!isLegacyLead && client.id) {
+          // Legacy manuals live in leads_leadinteractions (fetchLegacyInteractions), not leads.manual_interactions JSON
+          if (isLegacyLead) {
+            return [];
+          }
+
+          let jsonSource = client.manual_interactions || [];
+          if (client.id) {
             try {
               const { data: latestClientData, error: fetchError } = await supabase
                 .from('leads')
@@ -3247,13 +3304,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 .eq('id', client.id)
                 .single();
               if (!fetchError && latestClientData?.manual_interactions) {
-                manualInteractionsSource = latestClientData.manual_interactions;
+                jsonSource = latestClientData.manual_interactions;
               }
-            } catch {
-              /* use client prop */
+              return await fetchLeadManualInteractionsMerged(client.id, jsonSource);
+            } catch (err) {
+              interactionsDevWarn('[InteractionsTab] manual interactions merge fetch failed:', err);
+              return dedupeManualInteractionRecords(jsonSource);
             }
           }
-          return manualInteractionsSource;
+          return dedupeManualInteractionRecords(jsonSource);
         };
 
         // Phase 1: fastest sources — paint timeline before slow call logs / legacy / emails
@@ -4169,6 +4228,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         
         // Process legacy interactions to set recipient_name correctly (similar to manual interactions)
         const processedLegacyInteractions = (legacyInteractions || []).map((i: any) => {
+          const interactionId = i.id;
+          const optimisticUpdate =
+            optimisticUpdatesRef.current.get(interactionId) ||
+            optimisticUpdatesRef.current.get(String(interactionId));
+          if (optimisticUpdate) {
+            i.date = optimisticUpdate.date;
+            i.time = optimisticUpdate.time;
+            i.raw_date = optimisticUpdate.raw_date;
+          }
+
           // Normalize content for email_manual and whatsapp_manual interactions
           let normalizedContent = i.content;
           if ((i.kind === 'email_manual' || i.kind === 'whatsapp_manual') && i.content) {
@@ -4258,13 +4327,25 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           filteredOutDetails: filteredOutDetails.slice(0, 20) // First 20 for debugging
         });
         
-        // Deduplicate interactions - remove exact duplicates by id
-        const duplicateIds = new Set();
-        const uniqueById = validInteractions.filter((interaction: any, index: number, self: any[]) => {
-          const firstIndex = self.findIndex((i: any) => i.id === interaction.id);
-          if (firstIndex !== index) {
-            duplicateIds.add(interaction.id);
+        // Deduplicate interactions — normalize ids only for MANUAL interactions (legacy JSON stored
+        // bare numeric timestamps that must dedupe against `manual_<ts>` rows).
+        // IMPORTANT: real DB rows (whatsapp/email/call) often have numeric ids too — we must NOT
+        // rewrite those to `manual_*`, otherwise the click handler treats them as manual entries
+        // and opens the edit drawer instead of the WhatsApp/email modal.
+        const duplicateIds = new Set<string>();
+        const seenNormalizedIds = new Set<string>();
+        const uniqueById = validInteractions.filter((interaction: any) => {
+          const rawId = interaction.id != null ? String(interaction.id) : '';
+          const isManualRow = rawId.startsWith('manual_') || interaction.editable === true;
+          const normId = isManualRow ? normalizeManualInteractionId(rawId) : rawId;
+          if (!normId) return true;
+          if (seenNormalizedIds.has(normId)) {
+            duplicateIds.add(normId);
             return false;
+          }
+          seenNormalizedIds.add(normId);
+          if (isManualRow && normId !== rawId) {
+            interaction.id = normId;
           }
           return true;
         });
@@ -4276,7 +4357,29 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           duplicatesRemoved: validInteractions.length - uniqueById.length,
           duplicateIds: Array.from(duplicateIds).slice(0, 20) // First 20 for debugging
         });
-        
+
+        // Legacy: drop stale manual_* JSON rows when legacy_<same id> already loaded from DB
+        let interactionsAfterLegacyManualDedup = uniqueById;
+        if (isLegacyLead) {
+          const legacyNumericKeys = new Set(
+            uniqueById
+              .filter((i) => String(i.id).startsWith('legacy_'))
+              .map((i) => legacyInteractionNumericKey(i.id))
+              .filter((k): k is string => Boolean(k)),
+          );
+          interactionsAfterLegacyManualDedup = uniqueById.filter((i) => {
+            const sid = String(i.id ?? '');
+            if (!sid.startsWith('manual_')) return true;
+            const num = legacyInteractionNumericKey(sid);
+            return !num || !legacyNumericKeys.has(num);
+          });
+          if (interactionsAfterLegacyManualDedup.length !== uniqueById.length) {
+            interactionsDevLog(
+              `📊 [InteractionsTab] Removed ${uniqueById.length - interactionsAfterLegacyManualDedup.length} duplicate manual_* JSON rows on legacy lead`,
+            );
+          }
+        }
+
         // For emails, deduplicate by message_id - keep the one with most content
         // Also filter out emails that only have a subject (no actual content)
         const emailMap = new Map<string, any>();
@@ -4284,7 +4387,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         const emailsFilteredOut: Array<{id: any, reason: string, isLegacy?: boolean, hasBodyHtml?: boolean, hasBodyPreview?: boolean, hasContentField?: boolean, contentLength?: number, subject?: string}> = [];
         const emailsDeduplicated: Array<{id: any, keptId: any}> = [];
         
-        uniqueById.forEach((interaction: any) => {
+        interactionsAfterLegacyManualDedup.forEach((interaction: any) => {
           if (interaction.kind === 'email' && interaction.id) {
             // Check if this is a manual interaction (by ID prefix) - always include manual interactions
             const isManualInteraction = interaction.id?.toString().startsWith('manual_');
@@ -4372,16 +4475,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         
         interactionsDevLog(`📊 [InteractionsTab] After email deduplication for lead ${clientLeadId}:`, {
           leadId: clientLeadId,
-          beforeEmailDedup: uniqueById.length,
+          beforeEmailDedup: interactionsAfterLegacyManualDedup.length,
           emailsFilteredOut: emailsFilteredOut.length,
           emailsDeduplicated: emailsDeduplicated.length,
           afterEmailDedup: Array.from(emailMap.values()).length + nonEmailInteractions.length,
           emailsFilteredOutDetails: emailsFilteredOut, // Show all filtered emails
           emailsDeduplicatedDetails: emailsDeduplicated.slice(0, 20),
           emailBreakdown: {
-            totalEmails: uniqueById.filter((i: any) => i.kind === 'email').length,
-            legacyEmails: uniqueById.filter((i: any) => i.kind === 'email' && i.id?.toString().startsWith('legacy_')).length,
-            newEmails: uniqueById.filter((i: any) => i.kind === 'email' && !i.id?.toString().startsWith('legacy_')).length
+            totalEmails: interactionsAfterLegacyManualDedup.filter((i: any) => i.kind === 'email').length,
+            legacyEmails: interactionsAfterLegacyManualDedup.filter((i: any) => i.kind === 'email' && i.id?.toString().startsWith('legacy_')).length,
+            newEmails: interactionsAfterLegacyManualDedup.filter((i: any) => i.kind === 'email' && !i.id?.toString().startsWith('legacy_')).length
           }
         });
         
@@ -4414,11 +4517,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           return dateB - dateA;
         });
 
-        // Merge in optimistic new-lead manual rows if this fetch started before they were persisted (stale read)
-        const sortedIds = new Set(sorted.map((i: Interaction) => String(i.id)));
+        // Merge optimistic rows only when absent (legacy: legacy_*; new leads: manual_*)
+        const sortedIds = new Set(
+          sorted.map((i: Interaction) => {
+            const sid = String(i.id ?? '');
+            if (isLegacyLead) {
+              return sid.startsWith('legacy_') ? sid : normalizeManualInteractionId(i.id);
+            }
+            return normalizeManualInteractionId(i.id);
+          }),
+        );
         const orphanManuals = interactionsRef.current.filter((i: Interaction) => {
-          const sid = String(i.id);
-          return sid.startsWith('manual_') && !sortedIds.has(sid);
+          const sid = String(i.id ?? '');
+          if (isLegacyLead) {
+            if (sid.startsWith('manual_') || sid.startsWith('legacy_pending_')) return false;
+            return sid.startsWith('legacy_') && !sortedIds.has(sid);
+          }
+          const normId = normalizeManualInteractionId(i.id);
+          return normId.startsWith('manual_') && !sortedIds.has(normId);
         });
         const merged =
           orphanManuals.length > 0
@@ -5926,17 +6042,43 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     const row = sortedInteractions[idx];
     if (!row) return;
     let latestRow = row;
-    if (row.id && row.id.toString().startsWith('manual_')) {
+    const rowIdStr = row.id != null ? String(row.id) : '';
+    if (rowIdStr.startsWith('manual_') && !isLegacyLead) {
       const { data, error } = await supabase
         .from('leads')
         .select('manual_interactions')
         .eq('id', client.id)
         .single();
       if (!error && data?.manual_interactions) {
-        const found = data.manual_interactions.find((i: any) => i.id === row.id || i.id === Number(row.id));
+        const found = data.manual_interactions.find(
+          (i: any) =>
+            normalizeManualInteractionId(i.id) === normalizeManualInteractionId(row.id),
+        );
         if (found) {
           latestRow = { ...row, ...found };
         }
+      }
+    } else if (rowIdStr.startsWith('legacy_') && isLegacyLead) {
+      try {
+        const dbRow = await fetchLegacyLeadInteractionRow(row.id);
+        if (dbRow) {
+          const uiKind = mapLegacyDbKindToUiKind(
+            String(dbRow.kind ?? ''),
+            dbRow.description as string | null,
+          );
+          latestRow = {
+            ...row,
+            kind: uiKind,
+            content: (dbRow.content as string) || row.content,
+            observation: stripLegacyDescriptionPrefix(dbRow.description as string | null),
+            date: row.date,
+            time: row.time,
+            direction: dbRow.direction === 'o' ? 'out' : 'in',
+            length: dbRow.minutes ? `${dbRow.minutes}m` : row.length,
+          };
+        }
+      } catch (err) {
+        interactionsDevWarn('[InteractionsTab] Failed to load legacy interaction for edit:', err);
       }
     }
     setActiveInteraction(latestRow);
@@ -6000,11 +6142,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const handleSave = async () => {
     if (!activeInteraction) return;
     
-    const isManual = activeInteraction.id.toString().startsWith('manual_');
+    const activeIdStr = activeInteraction.id.toString();
+    const isNewLeadManual = activeIdStr.startsWith('manual_') && !isLegacyLead;
+    const isLegacyManual =
+      isLegacyLead &&
+      isLegacyTimelineInteractionId(activeInteraction.id) &&
+      isLegacyManualInteractionKind(activeInteraction.kind);
     const manualMessageKindSave =
       activeInteraction.kind === 'email_manual' ||
       activeInteraction.kind === 'whatsapp_manual' ||
-      (isManual &&
+      ((isNewLeadManual || isLegacyManual) &&
         (activeInteraction.kind === 'email' || activeInteraction.kind === 'whatsapp'));
     
     // Convert plain text content back to HTML format for manual email/WhatsApp interactions
@@ -6106,15 +6253,42 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         });
       }
     }
+    const legacyDbId = parseLegacyInteractionTimelineId(optimisticId);
+    if (legacyDbId != null) {
+      optimisticUpdatesRef.current.set(`legacy_${legacyDbId}`, {
+        date: optimisticDate,
+        time: optimisticTime,
+        raw_date: optimisticRawDate,
+      });
+    }
 
     try {
-      if (isManual) {
+      if (isLegacyManual) {
+        const lengthMinutes = editData.length
+          ? parseInt(editData.length.replace(/[^0-9]/g, ''), 10) || null
+          : null;
+        await updateLegacyLeadInteraction({
+          timelineId: activeInteraction.id,
+          uiKind: activeInteraction.kind,
+          direction: editData.direction as 'in' | 'out',
+          date: editData.date,
+          time: editData.time,
+          rawDate,
+          content: contentToSave,
+          observation: editData.observation,
+          lengthMinutes,
+        });
+        interactionsDevLog('✅ [InteractionsTab] Legacy interaction updated in leads_leadinteractions');
+      } else if (isNewLeadManual) {
         const updatedManualInteraction = sortedInteractions.find(i => i.id === activeInteraction.id);
         if (updatedManualInteraction) {
-          const allManualInteractions = sortedInteractions.filter(i => i.id.toString().startsWith('manual_'));
-          
-          // Update manual_interactions and latest_interaction timestamp for new leads
-          if (!isLegacyLead) {
+          const allManualInteractions = dedupeManualInteractionRecords(
+            sortedInteractions
+              .filter((i) => normalizeManualInteractionId(i.id).startsWith('manual_'))
+              .map((i) => ({ ...i, id: normalizeManualInteractionId(i.id) })),
+          );
+
+          {
             // Prepare manual interactions for database (remove fields that shouldn't be stored)
             const interactionsToSave = allManualInteractions.map((i: any) => {
               const { renderedContent, renderedContentFallback, ...interactionToSave } = i;
@@ -6180,28 +6354,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               }
             }
             
-            const { error } = await supabase
-              .from('leads')
-              .update({ 
-                manual_interactions: interactionsToSave,
-                latest_interaction: new Date().toISOString()
-              })
-              .eq('id', client.id);
-            if (error) throw error;
-            
-            // Verify the save was successful
+            await replaceLeadManualInteractions(client.id, interactionsToSave);
+
             interactionsDevLog('✅ [InteractionsTab] Manual interactions saved successfully');
-          } else {
-            // For legacy leads, manual interactions are stored in leads_leadinteractions
-            // We need to find the interaction ID and update it
-            // Since we're editing an existing interaction, we need to find its database ID
-            // For now, we'll update the local state and let the refresh handle the database sync
-            // Note: Editing legacy interactions in leads_leadinteractions requires the database ID
-            // which we don't have in the Interaction interface. This is a limitation.
-            // The interaction will be updated on the next fetch, but we should ideally store the DB ID.
-            interactionsDevWarn('Editing legacy manual interactions requires database ID. Changes may not persist until refresh.');
-            // For legacy leads, we can't easily update individual interactions without the DB ID
-            // The optimistic update will show the change, but it may revert on refresh
           }
         }
       } else {
@@ -6218,83 +6373,61 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       // The optimistic update already shows the correct values, and we've saved to the database
       // Refreshing would overwrite the optimistic update with potentially stale data
       // Only refresh client data to sync other fields (like latest_interaction timestamp)
-      if (onClientUpdate && !isManual) {
-        // Only refresh for non-manual interactions (emails, etc.)
+      if (onClientUpdate && !isNewLeadManual && !isLegacyManual) {
         await onClientUpdate();
-      } else if (isManual) {
-        // For manual interactions, verify the database save was successful
-        // but DO NOT refresh interactions - keep the optimistic update
+      } else if (isLegacyManual && onClientUpdate) {
+        await onClientUpdate();
+      } else if (isNewLeadManual) {
         setTimeout(async () => {
           try {
-            // Verify the database has the correct values (but don't refresh interactions)
             const verifyClient = await supabase
               .from('leads')
               .select('manual_interactions')
               .eq('id', client.id)
               .single();
-            
+
             if (verifyClient.data?.manual_interactions) {
-              const savedInteraction = verifyClient.data.manual_interactions.find(
-                (i: any) => i.id === optimisticId || i.id === Number(optimisticId)
+              const normOptimisticId = normalizeManualInteractionId(optimisticId);
+              const merged = await fetchLeadManualInteractionsMerged(
+                client.id,
+                verifyClient.data.manual_interactions,
               );
-              
+              const savedInteraction = merged.find(
+                (i) => normalizeManualInteractionId(i.id) === normOptimisticId,
+              );
+
               if (savedInteraction) {
-                // Check if the saved values match our optimistic update
                 const savedDate = savedInteraction.date;
                 const savedTime = savedInteraction.time;
                 const savedRawDate = savedInteraction.raw_date;
-                
-                // If the database has different date/time/raw_date than what we saved, update it
-                if (savedDate !== optimisticDate || savedTime !== optimisticTime || savedRawDate !== optimisticRawDate) {
-                  interactionsDevWarn('⚠️ [InteractionsTab] Database has different date/time/raw_date than saved. Updating database with correct values.', {
-                    optimistic: { date: optimisticDate, time: optimisticTime, raw_date: optimisticRawDate },
-                    database: { date: savedDate, time: savedTime, raw_date: savedRawDate }
-                  });
-                  
-                  // Update the interaction in the database with the correct values
-                  const allManualInteractions = verifyClient.data.manual_interactions.map((i: any) => {
-                    if (i.id === optimisticId || i.id === Number(optimisticId)) {
-                      return {
-                        ...i,
-                        date: optimisticDate,
-                        time: optimisticTime,
-                        raw_date: optimisticRawDate,
-                      };
-                    }
-                    return i;
-                  });
-                  
-                  await supabase
-                    .from('leads')
-                    .update({ 
-                      manual_interactions: allManualInteractions,
-                      latest_interaction: new Date().toISOString()
-                    })
-                    .eq('id', client.id);
-                  
-                  interactionsDevLog('✅ [InteractionsTab] Database updated with correct date/time/raw_date');
-                } else {
-                  interactionsDevLog('✅ [InteractionsTab] Database has correct date/time/raw_date');
+
+                if (
+                  savedDate !== optimisticDate ||
+                  savedTime !== optimisticTime ||
+                  savedRawDate !== optimisticRawDate
+                ) {
+                  const patched = merged.map((i) =>
+                    normalizeManualInteractionId(i.id) === normOptimisticId
+                      ? {
+                          ...i,
+                          date: optimisticDate,
+                          time: optimisticTime,
+                          raw_date: optimisticRawDate,
+                        }
+                      : i,
+                  );
+                  await replaceLeadManualInteractions(client.id, patched);
                 }
               } else {
                 interactionsDevWarn('⚠️ [InteractionsTab] Saved interaction not found in database after save');
               }
             }
-            
-            // Refresh client data (this might trigger fetchInteractions via useEffect)
-            // But fetchInteractions will now check optimisticUpdatesRef and use those values
+
             if (onClientUpdate) {
               await onClientUpdate();
             }
-            
-            // Note: The optimistic update is stored in optimisticUpdatesRef
-            // If fetchInteractions is called (via useEffect), it will check this ref
-            // and use the optimistic values instead of database values
-            // This ensures the timeline always shows what the user edited
-            
           } catch (refreshError) {
             console.error('Error verifying save:', refreshError);
-            // Keep the optimistic update on error - it's already correct
           }
         }, 200);
       }
@@ -6458,8 +6591,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     // Normalize method: convert 'call_log' to 'call' for consistency
     const normalizedMethod = newContact.method === 'call_log' ? 'call' : newContact.method;
     
+    const pendingLegacyId = `legacy_pending_${now.getTime()}`;
     const newInteraction: Interaction = {
-      id: `manual_${now.getTime()}`,
+      id: isLegacyLead ? pendingLegacyId : generateManualInteractionId(),
       date: newContact.date || now.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
       time: newContact.time || now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
       raw_date: now.toISOString(),
@@ -6485,261 +6619,65 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     try {
       // Check if this is a legacy lead
       if (isLegacyLead) {
-        // For legacy leads, save to leads_leadinteractions table
         const legacyId = client.id.toString().replace('legacy_', '');
         const numericLegacyId = parseInt(legacyId, 10);
-        
+
         if (isNaN(numericLegacyId)) {
           throw new Error(`Invalid legacy lead ID: ${legacyId}`);
         }
 
-        // Map interaction kind to database format (use normalizedMethod for consistency)
-        const kindMap: Record<string, string> = {
-          'email': 'e',
-          'call': 'c',
-          'call_log': 'c', // Backwards compatibility: map call_log to 'c' as well
-          'whatsapp': 'w', // WhatsApp interactions use 'w' kind
-          'sms': 'EMPTY', // SMS interactions use 'EMPTY' kind (same as notes)
-          'office': 'EMPTY', // Office interactions use 'EMPTY' kind (same as notes)
-          'note': 'EMPTY',
-          'meeting': 'EMPTY',
-        };
-        const dbKind = kindMap[normalizedMethod] || 'EMPTY';
+        const minutes = newContact.length
+          ? parseInt(newContact.length.replace(/[^0-9]/g, ''), 10) || null
+          : null;
 
-        // Map direction to database format
-        const dbDirection = newContact.direction === 'out' ? 'o' : 'i';
-
-        // Parse minutes from length string (e.g., "5m" -> 5)
-        const minutes = newContact.length ? parseInt(newContact.length.replace(/[^0-9]/g, ''), 10) || null : null;
-
-        // Format date and time for database
-        // Convert date from "DD.MM.YY" format to ISO format (YYYY-MM-DD)
-        let interactionDate: string;
-        if (newContact.date) {
-          // Parse DD.MM.YY format
-          const dateParts = newContact.date.split('.');
-          if (dateParts.length === 3) {
-            const day = dateParts[0].padStart(2, '0');
-            const month = dateParts[1].padStart(2, '0');
-            const year = dateParts[2].length === 2 ? `20${dateParts[2]}` : dateParts[2];
-            interactionDate = `${year}-${month}-${day}`;
-          } else {
-            // If parsing fails, use current date
-            interactionDate = now.toISOString().split('T')[0];
-          }
-        } else {
-          interactionDate = now.toISOString().split('T')[0];
-        }
-        
-        // Format time (convert from HH:MM to HH:MM:SS format for database)
-        let interactionTime: string;
-        if (newContact.time) {
-          // If time is in HH:MM format, append :00 for seconds
-          if (newContact.time.match(/^\d{2}:\d{2}$/)) {
-            interactionTime = `${newContact.time}:00`;
-          } else if (newContact.time.match(/^\d{2}:\d{2}:\d{2}$/)) {
-            // Already in HH:MM:SS format
-            interactionTime = newContact.time;
-          } else {
-            // Invalid format, use current time
-            interactionTime = now.toTimeString().split(' ')[0];
-          }
-        } else {
-          interactionTime = now.toTimeString().split(' ')[0]; // HH:MM:SS format
-        }
-
-        // Get the next available ID for leads_leadinteractions
-        const { data: maxIdData, error: maxIdError } = await supabase
-          .from('leads_leadinteractions')
-          .select('id')
-          .order('id', { ascending: false })
-          .limit(1)
-          .single();
-
-        if (maxIdError && maxIdError.code !== 'PGRST116') { // PGRST116 = no rows returned
-          throw maxIdError;
-        }
-
-        const nextId = maxIdData?.id ? maxIdData.id + 1 : 1;
-
-        // Prepare description - prefix with METHOD: to preserve the kind when fetching
-        // Format: "METHOD:office|observation text" or "METHOD:sms|observation text"
-        let descriptionValue = newContact.observation || null;
-        if (normalizedMethod === 'sms') {
-          descriptionValue = descriptionValue ? `METHOD:sms|${descriptionValue}` : 'METHOD:sms|';
-        } else if (normalizedMethod === 'office') {
-          descriptionValue = descriptionValue ? `METHOD:office|${descriptionValue}` : 'METHOD:office|';
-        }
-        
-        // Insert into leads_leadinteractions table
-        // Only include contact_id if a specific contact was selected (not the main lead with id -1)
-        const insertPayload: any = {
-          id: nextId,
-          cdate: now.toISOString(),
-          udate: now.toISOString(),
-          kind: dbKind,
-          date: interactionDate,
-          time: interactionTime,
-          minutes: minutes,
-          content: newContact.content || '',
-          creator_id: employeeId ? String(employeeId) : null,
-          lead_id: numericLegacyId,
-          direction: dbDirection,
-          description: descriptionValue,
-          employee_id: employeeId ? String(employeeId) : null,
-        };
-        
-        // Add contact_id if a specific contact was selected (not -1 which represents the main lead)
-        // Note: newContact.contact_id is leads_contact.id, but we need lead_leadcontact.id for the foreign key
-        if (newContact.contact_id && newContact.contact_id !== -1) {
-          // Look up the lead_leadcontact.id from leads_contact.id and lead_id
-          const { data: leadContactData, error: leadContactError } = await supabase
-            .from('lead_leadcontact')
-            .select('id')
-            .eq('lead_id', numericLegacyId)
-            .eq('contact_id', newContact.contact_id)
-            .single();
-          
-          if (!leadContactError && leadContactData?.id) {
-            insertPayload.contact_id = leadContactData.id;
-          } else {
-            interactionsDevWarn('⚠️ Could not find lead_leadcontact.id for contact_id:', newContact.contact_id, 'lead_id:', numericLegacyId);
-          }
-        }
-        
-        interactionsDevLog('💾 Inserting legacy interaction:', {
-          method: normalizedMethod,
-          dbKind,
-          payload: insertPayload,
+        const { dbId, row } = await insertLegacyLeadInteraction({
+          leadId: numericLegacyId,
+          uiKind: normalizedMethod,
+          direction: newContact.direction as 'in' | 'out',
+          date: newContact.date,
+          time: newContact.time,
+          content: newContact.content,
+          observation: newContact.observation,
+          lengthMinutes: minutes,
+          employeeId,
+          leadsContactId: newContact.contact_id ?? null,
         });
 
-        const { error: insertError, data: insertData } = await supabase
-          .from('leads_leadinteractions')
-          .insert(insertPayload)
-          .select();
-
-        if (insertError) {
-          console.error('❌ Error inserting legacy interaction:', {
-            error: insertError,
-            code: insertError.code,
-            message: insertError.message,
-            details: insertError.details,
-            hint: insertError.hint,
-            method: normalizedMethod,
-            dbKind,
-            payload: insertPayload,
-          });
-          throw insertError;
-        }
-        
-        // Verify that the insert actually succeeded by checking insertData
-        if (!insertData || insertData.length === 0) {
-          console.error('❌ Insert returned no data - interaction may not have been saved:', {
-            method: normalizedMethod,
-            dbKind,
-            payload: insertPayload,
-          });
-          throw new Error('Insert returned no data - interaction may not have been saved');
-        }
-        
-        interactionsDevLog('✅ Legacy interaction saved successfully:', { 
-          id: nextId, 
-          kind: dbKind, 
-          lead_id: numericLegacyId,
-          method: normalizedMethod,
-          insertedData: insertData,
-        });
-        // Stage evaluation is handled automatically by database triggers
-        // NOTE: Manual email interactions should NOT be saved to emails table - only to leads_leadinteractions
-      } else {
-        // For new leads, save to manual_interactions JSONB column
-        // CRITICAL: Fetch the latest client data from DB to ensure we have all existing interactions
-        // This prevents missing interactions that were saved in a previous session
-        const { data: latestClientData, error: fetchError } = await supabase
-          .from('leads')
-          .select('manual_interactions')
-          .eq('id', client.id)
-          .single();
-
-        if (fetchError) {
-          console.error('Error fetching latest client data:', fetchError);
-          throw fetchError;
-        }
-
-        // Use the latest interactions from the database, not from the stale client prop
-        const existingInteractions = latestClientData?.manual_interactions || [];
-        
-        // Debug: Log what we're working with
-        interactionsDevLog('💾 [InteractionsTab] Saving new manual interaction:', {
-          existingCount: existingInteractions.length,
-          newInteractionId: newInteraction.id,
-          newInteractionKind: newInteraction.kind,
-          existingIds: existingInteractions.map((i: any) => i.id)
-        });
-
-        // Check if this interaction ID already exists (shouldn't happen, but safety check)
-        const existingIndex = existingInteractions.findIndex(
-          (i: any) => i.id === newInteraction.id || i.id === Number(newInteraction.id)
+        const timelineId = legacyInteractionTimelineId(dbId);
+        const uiKind = mapLegacyDbKindToUiKind(
+          String(row.kind ?? ''),
+          row.description as string | null,
         );
-        
-        let updatedInteractions;
-        if (existingIndex >= 0) {
-          // If it already exists, replace it (shouldn't happen for new interactions)
-          interactionsDevWarn('⚠️ [InteractionsTab] Interaction ID already exists, replacing:', newInteraction.id);
-          updatedInteractions = [...existingInteractions];
-          updatedInteractions[existingIndex] = newInteraction;
-        } else {
-          // Add the new interaction
-          updatedInteractions = [...existingInteractions, newInteraction];
-        }
 
-        // Update manual_interactions and latest_interaction timestamp
-        const { error: updateError } = await supabase
-          .from('leads')
-          .update({ 
-            manual_interactions: updatedInteractions,
-            latest_interaction: now.toISOString()
-          })
-          .eq('id', client.id);
+        setInteractions((prev) =>
+          prev
+            .map((item) =>
+              item.id === pendingLegacyId
+                ? {
+                    ...item,
+                    id: timelineId,
+                    kind: uiKind,
+                    observation: stripLegacyDescriptionPrefix(row.description as string | null),
+                  }
+                : item,
+            )
+            .sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime()),
+        );
 
-        if (updateError) {
-          console.error('Error updating new lead interaction:', updateError);
-          throw updateError;
-        }
-        
-        // Verify the save by fetching back
-        const { data: verifyData, error: verifyError } = await supabase
-          .from('leads')
-          .select('manual_interactions')
-          .eq('id', client.id)
-          .single();
-        
-        if (verifyError) {
-          console.error('Error verifying save:', verifyError);
-        } else {
-          const savedInteraction = verifyData?.manual_interactions?.find(
-            (i: any) => i.id === newInteraction.id || i.id === Number(newInteraction.id)
-          );
-          if (!savedInteraction) {
-            console.error('❌ [InteractionsTab] New interaction not found after save:', {
-              interactionId: newInteraction.id,
-              savedCount: verifyData?.manual_interactions?.length || 0,
-              savedIds: verifyData?.manual_interactions?.map((i: any) => i.id)
-            });
-          } else {
-            interactionsDevLog('✅ [InteractionsTab] New interaction verified in database:', {
-              interactionId: newInteraction.id,
-              kind: savedInteraction.kind,
-              date: savedInteraction.date,
-              time: savedInteraction.time
-            });
-          }
-        }
-        
-        interactionsDevLog('✅ New lead interaction saved successfully:', { 
-          kind: normalizedMethod,
-          client_id: client.id,
-          totalInteractions: updatedInteractions.length
+        interactionsDevLog('✅ Legacy interaction saved successfully:', {
+          id: timelineId,
+          dbId,
+          lead_id: numericLegacyId,
+          method: normalizedMethod,
+        });
+      } else {
+        const { renderedContent, renderedContentFallback, ...interactionPayload } = newInteraction as any;
+        const updatedInteractions = await insertLeadManualInteraction(client.id, interactionPayload);
+
+        interactionsDevLog('💾 [InteractionsTab] Saved new manual interaction:', {
+          newInteractionId: newInteraction.id,
+          totalStored: updatedInteractions.length,
+          storedIds: updatedInteractions.map((i) => i.id),
         });
         // Stage evaluation is handled automatically by database triggers
       }
@@ -6784,16 +6722,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               return;
             }
             
-            // Check if our new interaction is in the database
-            const savedInteraction = verifyData?.manual_interactions?.find(
-              (i: any) => i.id === newInteraction.id || i.id === Number(newInteraction.id)
+            const normNewId = normalizeManualInteractionId(newInteraction.id);
+            const mergedManuals = await fetchLeadManualInteractionsMerged(
+              client.id,
+              verifyData?.manual_interactions,
             );
-            
+            const savedInteraction = mergedManuals.find(
+              (i) => normalizeManualInteractionId(i.id) === normNewId,
+            );
+
             if (savedInteraction) {
               interactionsDevLog('✅ [InteractionsTab] New interaction confirmed in DB, refreshing interactions');
-              // Use ref — stale closure on `interactions` would skip refresh after optimistic add
               const hasInteraction = interactionsRef.current.some(
-                (i: any) => i.id === newInteraction.id || i.id === Number(newInteraction.id)
+                (i) => normalizeManualInteractionId(i.id) === normNewId,
               );
               
               if (!hasInteraction) {
@@ -6878,18 +6819,51 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
   }, [isWhatsAppOpen, client.id]); // Removed whatsAppMessages dependency
 
-  // Effect: when WhatsApp modal opens and activeWhatsAppId is set, scroll to and highlight the message
+  // Effect: when WhatsApp modal opens and activeWhatsAppId is set, scroll to and highlight the message.
+  // Messages load async and the modal auto-scrolls to bottom (at 100/300/500ms), so poll until the
+  // target element exists, then jump to it after the auto-scroll settles.
   React.useEffect(() => {
-    if (isWhatsAppOpen && activeWhatsAppId) {
-      setTimeout(() => {
-        const el = document.querySelector(`[data-whatsapp-id="${activeWhatsAppId}"]`);
-        if (el) {
+    if (!isWhatsAppOpen || !activeWhatsAppId) return;
+
+    let cancelled = false;
+    let attempts = 0;
+    const maxAttempts = 40; // ~6s at 150ms intervals
+    let highlightTimeout: ReturnType<typeof setTimeout> | undefined;
+
+    const tryScroll = () => {
+      if (cancelled) return;
+      attempts += 1;
+      const el = document.querySelector(
+        `[data-whatsapp-id="${CSS.escape(String(activeWhatsAppId))}"]`
+      ) as HTMLElement | null;
+
+      if (el) {
+        // Wait past the modal's last auto-scroll-to-bottom (fires up to ~500ms after open)
+        highlightTimeout = setTimeout(() => {
+          if (cancelled) return;
           el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          (el.firstChild as HTMLElement)?.classList?.add('ring-2', 'ring-primary');
-          setTimeout(() => (el.firstChild as HTMLElement)?.classList?.remove('ring-2', 'ring-primary'), 1200);
-        }
-      }, 300);
-    }
+          const bubble = (el.firstChild as HTMLElement) || el;
+          bubble.classList?.add('ring-2', 'ring-primary', 'rounded-lg');
+          setTimeout(
+            () => bubble.classList?.remove('ring-2', 'ring-primary', 'rounded-lg'),
+            1600
+          );
+        }, 250);
+        return;
+      }
+
+      if (attempts < maxAttempts) {
+        setTimeout(tryScroll, 150);
+      }
+    };
+
+    const initial = setTimeout(tryScroll, 350);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(initial);
+      if (highlightTimeout) clearTimeout(highlightTimeout);
+    };
   }, [isWhatsAppOpen, activeWhatsAppId]);
 
   // Fetch employees for autocomplete when compose modal opens
@@ -7085,7 +7059,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   }, [composeTemplateDropdownOpen]);
 
   return (
-    <div className="p-4 md:p-6 lg:p-8 flex flex-col xl:flex-row gap-6 md:gap-8 lg:gap-12 items-start min-h-screen w-full max-w-7xl mx-auto">
+    <div className="px-1 py-2 md:p-6 lg:p-8 flex flex-col xl:flex-row gap-6 md:gap-8 lg:gap-12 items-start min-h-screen w-full max-w-7xl mx-auto">
       <div className="relative w-full flex-1 min-w-0">
         {/* Loading indicator — only block UI when timeline is completely empty */}
         {interactionsLoading && sortedInteractions.length === 0 ? (
@@ -7131,25 +7105,37 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 </ul>
               </div>
               
-              {/* Desktop: Individual Buttons */}
-              <div className="hidden lg:flex gap-4">
-                <button 
-                  className="btn btn-outline btn-primary flex items-center gap-2"
+              {/* Desktop: Individual Buttons — icon in a coloured rounded badge, label below */}
+              <div className="hidden lg:flex gap-5">
+                <button
+                  type="button"
+                  className="group flex flex-col items-center gap-2 focus:outline-none"
                   onClick={() => setShowContactSelectorForEmail(true)}
                 >
-                  <EnvelopeIcon className="w-5 h-5" /> Email
+                  <span className="flex h-14 w-14 items-center justify-center rounded-full bg-white text-blue-500 shadow-md transition-all group-hover:shadow-lg group-hover:-translate-y-0.5">
+                    <EnvelopeIcon className="w-6 h-6" />
+                  </span>
+                  <span className="rounded-full bg-base-200 px-3 py-0.5 text-xs font-semibold text-base-content">Email</span>
                 </button>
-                <button 
-                  className="btn btn-outline btn-primary flex items-center gap-2"
+                <button
+                  type="button"
+                  className="group flex flex-col items-center gap-2 focus:outline-none"
                   onClick={() => setShowContactSelector(true)}
                 >
-                  <FaWhatsapp className="w-5 h-5" /> WhatsApp
+                  <span className="flex h-14 w-14 items-center justify-center rounded-full bg-white text-green-500 shadow-md transition-all group-hover:shadow-lg group-hover:-translate-y-0.5">
+                    <FaWhatsapp className="w-6 h-6" />
+                  </span>
+                  <span className="rounded-full bg-base-200 px-3 py-0.5 text-xs font-semibold text-base-content">WhatsApp</span>
                 </button>
-                <button 
-                  className="btn btn-outline btn-primary flex items-center gap-2"
+                <button
+                  type="button"
+                  className="group flex flex-col items-center gap-2 focus:outline-none"
                   onClick={openContactDrawer}
                 >
-                  <ChatBubbleLeftRightIcon className="w-5 h-5" /> Manual Entry
+                  <span className="flex h-14 w-14 items-center justify-center rounded-full bg-white text-purple-500 shadow-md transition-all group-hover:shadow-lg group-hover:-translate-y-0.5">
+                    <ChatBubbleLeftRightIcon className="w-6 h-6" />
+                  </span>
+                  <span className="rounded-full bg-base-200 px-3 py-0.5 text-xs font-semibold text-base-content">Manual Entry</span>
                 </button>
               </div>
 
@@ -7194,7 +7180,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             {/* Timeline container with improved spacing */}
             <div className="relative max-w-5xl w-full">
               {/* Timeline line */}
-              <div className="absolute left-8 sm:left-12 md:left-16 top-0 bottom-0 w-1 bg-gradient-to-b from-primary via-accent to-secondary shadow-lg" style={{ zIndex: 0 }} />
+              <div className="hidden sm:block absolute left-8 sm:left-12 md:left-16 top-0 bottom-0 w-0.5 bg-base-300" style={{ zIndex: 0 }} />
               
               <div className="space-y-8 md:space-y-10 lg:space-y-12">
               {renderedInteractions
@@ -7275,8 +7261,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 const year = dateObj.getFullYear();
                 const time = dateObj.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
               
-              // Icon and color
-              let icon, iconBg, cardBg, textGradient, avatarBg;
+              // Icon and styling (neutral cards — no coloured gradient outlines)
+              let icon, iconBg, textGradient;
+              const iconBgNeutral = 'bg-white shadow-md';
+              const textNeutral = 'text-base-content';
               // Check if this is a call interaction (including manual calls and call_log for backwards compatibility)
               const isCall = row.kind === 'call' || row.kind === 'call_log' || (row.editable && (row.kind === 'call' || row.kind === 'call_log'));
               
@@ -7284,7 +7272,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 // Employee (Outgoing)
                 if (row.kind === 'sms') {
                   icon = <ChatBubbleLeftRightIcon className="w-4 h-4 md:w-5 md:h-5 !text-purple-600 drop-shadow-sm" style={{color: '#9333ea'}} />;
-                  iconBg = 'bg-white shadow-lg border-2 border-purple-200';
+                  iconBg = iconBgNeutral;
                 } else if (isCall) {
                   // All calls use same color, show direction with icon (including manual calls)
                   const DirectionIcon = row.direction === 'out' ? ArrowUpIcon : ArrowDownIcon;
@@ -7294,43 +7282,34 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       <DirectionIcon className="w-3 h-3 md:w-3.5 md:h-3.5 !text-blue-600 absolute -bottom-0.5 -right-0.5 bg-white rounded-full" style={{color: '#2563eb'}} />
                     </div>
                   );
-                  iconBg = 'bg-white shadow-lg border-2 border-blue-200';
+                  iconBg = iconBgNeutral;
                 } else if (row.kind === 'whatsapp_manual') {
                   // Legacy WhatsApp interactions are manual interactions but still show WhatsApp icon
                   icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 !text-green-600 drop-shadow-sm" style={{color: '#16a34a'}} />;
-                  iconBg = 'bg-white shadow-lg border-2 border-green-200';
+                  iconBg = iconBgNeutral;
                 } else if (row.kind === 'whatsapp') {
                   icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 !text-green-600 drop-shadow-sm" style={{color: '#16a34a'}} />;
-                  iconBg = 'bg-white shadow-lg border-2 border-green-200';
+                  iconBg = iconBgNeutral;
                 } else if (row.kind === 'email_manual') {
                   // Legacy email interactions are manual interactions but still show email icon
                   icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 !text-blue-600 drop-shadow-sm" style={{color: '#2563eb'}} />;
-                  iconBg = 'bg-white shadow-lg border-2 border-blue-200';
+                  iconBg = iconBgNeutral;
                 } else if (row.kind === 'email') {
                   icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 !text-blue-600 drop-shadow-sm" style={{color: '#2563eb'}} />;
-                  iconBg = 'bg-white shadow-lg border-2 border-blue-200';
+                  iconBg = iconBgNeutral;
                 } else if (row.kind === 'office') {
                   icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 !text-orange-600 drop-shadow-sm" style={{color: '#ea580c'}} />;
-                  iconBg = 'bg-white shadow-lg border-2 border-orange-200';
+                  iconBg = iconBgNeutral;
                 } else {
                   icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 !text-gray-600 drop-shadow-sm" style={{color: '#4b5563'}} />;
-                  iconBg = 'bg-white shadow-lg border-2 border-gray-200';
+                  iconBg = iconBgNeutral;
                 }
-                // Use same color for all calls regardless of direction (including manual calls)
-                if (isCall) {
-                  cardBg = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600';
-                  textGradient = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600 bg-clip-text text-transparent';
-                  avatarBg = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600 text-white';
-                } else {
-                  cardBg = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600';
-                  textGradient = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 bg-clip-text text-transparent';
-                  avatarBg = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white';
-                }
+                textGradient = textNeutral;
               } else {
                 // Client (Ingoing)
                 if (row.kind === 'sms') {
                   icon = <ChatBubbleLeftRightIcon className="w-4 h-4 md:w-5 md:h-5 !text-indigo-600 drop-shadow-sm" style={{color: '#4f46e5'}} />;
-                  iconBg = 'bg-white shadow-lg border-2 border-indigo-200';
+                  iconBg = iconBgNeutral;
                 } else if (isCall) {
                   // All calls use same color, show direction with icon (inbound direction = 'in', including manual calls)
                   const DirectionIcon = ArrowDownIcon;
@@ -7340,38 +7319,29 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       <DirectionIcon className="w-3 h-3 md:w-3.5 md:h-3.5 !text-blue-600 absolute -bottom-0.5 -right-0.5 bg-white rounded-full" style={{color: '#2563eb'}} />
                     </div>
                   );
-                  iconBg = 'bg-white shadow-lg border-2 border-blue-200';
+                  iconBg = iconBgNeutral;
                 } else if (row.kind === 'whatsapp_manual') {
                   // Legacy WhatsApp interactions are manual interactions but still show WhatsApp icon
                   icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 !text-green-600 drop-shadow-sm" style={{color: '#16a34a'}} />;
-                  iconBg = 'bg-white shadow-lg border-2 border-green-200';
+                  iconBg = iconBgNeutral;
                 } else if (row.kind === 'whatsapp') {
                   icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 !text-green-600 drop-shadow-sm" style={{color: '#16a34a'}} />;
-                  iconBg = 'bg-white shadow-lg border-2 border-green-200';
+                  iconBg = iconBgNeutral;
                 } else if (row.kind === 'email_manual') {
                   // Legacy email interactions are manual interactions but still show email icon
                   icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 !text-cyan-600 drop-shadow-sm" style={{color: '#0891b2'}} />;
-                  iconBg = 'bg-white shadow-lg border-2 border-cyan-200';
+                  iconBg = iconBgNeutral;
                 } else if (row.kind === 'email') {
                   icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 !text-cyan-600 drop-shadow-sm" style={{color: '#0891b2'}} />;
-                  iconBg = 'bg-white shadow-lg border-2 border-cyan-200';
+                  iconBg = iconBgNeutral;
                 } else if (row.kind === 'office') {
                   icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 !text-amber-600 drop-shadow-sm" style={{color: '#d97706'}} />;
-                  iconBg = 'bg-white shadow-lg border-2 border-amber-200';
+                  iconBg = iconBgNeutral;
                 } else {
                   icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 !text-slate-600 drop-shadow-sm" style={{color: '#475569'}} />;
-                  iconBg = 'bg-white shadow-lg border-2 border-slate-200';
+                  iconBg = iconBgNeutral;
                 }
-                // Use same color for all calls regardless of direction (including manual calls)
-                if (isCall) {
-                  cardBg = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600';
-                  textGradient = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600 bg-clip-text text-transparent';
-                  avatarBg = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600 text-white';
-                } else {
-                  cardBg = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400';
-                  textGradient = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 bg-clip-text text-transparent';
-                  avatarBg = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white';
-                }
+                textGradient = textNeutral;
               }
               
               // Get employee photo if available
@@ -7395,6 +7365,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               // Initials - handle case where employee name might be missing or short
               const employeeNameForInitials = row.employee || 'Unknown';
               const initials = employeeNameForInitials.split(' ').map(n => n[0]).join('').toUpperCase() || '?';
+
+              const useClientInitialsColors = row.direction === 'in' && !employeePhoto;
+              const avatarBg = useClientInitialsColors
+                ? getClientInitialsAvatarBg(employeeNameForInitials)
+                : 'bg-slate-600 text-white';
+              const isSentByUs = row.direction === 'out';
               
               // Debug: Log employee name for calls to verify it's correct
               if (row.kind === 'call' && idx < 3) {
@@ -7414,12 +7390,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 <div
                   key={row.id}
                   ref={idx === lastEmailIdx ? lastEmailRef : null}
-                  className="relative pl-16 sm:pl-20 md:pl-24 cursor-pointer group"
+                  className="relative pl-0 pr-0 sm:pl-20 sm:pr-0 md:pl-24 cursor-pointer group"
                   data-interaction-flag-key={flagTarget ? encodeURIComponent(conversationFlagKey(flagTarget)) : undefined}
                   onClick={() => handleInteractionClick(row, idx)}
                 >
-                  {/* Timeline dot and icon, large, left-aligned */}
-                  <div className="absolute -left-6 sm:-left-8 md:-left-10 top-0" style={{ zIndex: 2 }}>
+                  {/* Timeline dot and icon, large, left-aligned (desktop only) */}
+                  <div className="hidden sm:block absolute -left-6 sm:-left-8 md:-left-10 top-0" style={{ zIndex: 2 }}>
                     <div className={`w-10 h-10 sm:w-12 sm:h-12 md:w-14 md:h-14 rounded-full flex items-center justify-center shadow-xl ring-4 ring-white ${iconBg}`}>
                       {React.cloneElement(icon, { className: 'w-5 h-5 sm:w-6 sm:h-6 md:w-8 md:h-8' })}
                     </div>
@@ -7428,24 +7404,47 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   {/* Main content container with better spacing */}
                   <div className="flex flex-col lg:flex-row lg:items-start gap-4 lg:gap-6">
                     {/* Timestamp and metadata */}
-                    <div className="flex-shrink-0 lg:w-32">
-                      <div className="text-sm md:text-base font-semibold text-gray-700 mb-1">{day} {month} {year}</div>
-                      <div className="text-xs md:text-sm text-gray-500">{time}</div>
-                      {row.length && row.length !== 'm' && (
-                        <div className="text-xs text-gray-400 mt-1">{row.length}</div>
-                      )}
+                    <div className="flex-shrink-0 lg:w-32 flex items-center justify-between gap-2 sm:block">
+                      <div>
+                        <div className="text-sm md:text-base font-semibold text-gray-700 mb-1">{day} {month} {year}</div>
+                        <div className="text-xs md:text-sm text-gray-500">{time}</div>
+                        {row.length && row.length !== 'm' && (
+                          <div className="text-xs text-gray-400 mt-1">{row.length}</div>
+                        )}
+                      </div>
+                      {/* Mobile: message type icon aligned with the date */}
+                      <div className="sm:hidden flex-shrink-0">
+                        <div className={`flex h-9 w-9 items-center justify-center rounded-full ring-2 ring-white shadow-md ${iconBg}`}>
+                          {React.cloneElement(icon, { className: 'w-5 h-5' })}
+                        </div>
+                      </div>
                     </div>
                     
                     {/* Main content card */}
                     <div className="flex-1 min-w-0">
-                      <div className={`p-[2px] rounded-2xl ${cardBg} shadow-xl hover:shadow-2xl transition-all duration-300 group-hover:scale-[1.02]`}>
-                        <div className="bg-white rounded-2xl p-4 sm:p-5 md:p-6">
+                      <div className="relative rounded-2xl border border-base-200 bg-white p-4 shadow-md transition-all duration-300 hover:shadow-lg group-hover:scale-[1.01] sm:p-5 md:p-6">
+                          <div
+                            className={`absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full shadow-sm sm:right-4 sm:top-4 sm:h-9 sm:w-9 ${
+                              isSentByUs
+                                ? 'bg-blue-100 text-blue-600'
+                                : 'bg-emerald-100 text-emerald-600'
+                            }`}
+                            title={isSentByUs ? 'Sent by us' : 'Received from client'}
+                            aria-label={isSentByUs ? 'Sent by us' : 'Received from client'}
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {isSentByUs ? (
+                              <ArrowUpIcon className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.5} />
+                            ) : (
+                              <ArrowDownIcon className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.5} />
+                            )}
+                          </div>
                           {/* Header section with employee info and status */}
-                          <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4">
+                          <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4 pr-10 sm:pr-12">
                             <div className="flex items-center gap-3">
                               <EmployeeAvatar photo={employeePhoto} name={row.employee} initials={initials} avatarBg={avatarBg} />
-                              <div className="flex flex-col gap-1">
-                                <div className={`font-semibold text-sm sm:text-base md:text-lg ${textGradient}`}>
+                              <div className="flex flex-col gap-0">
+                                <div className={`font-semibold leading-tight text-base sm:text-base md:text-lg ${textGradient}`}>
                                   {row.employee}
                                 </div>
                                 {/* Show recipient for call and manual interactions (excluding email/whatsapp which have their own logic) */}
@@ -7459,7 +7458,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                     if (!recipientName) return null;
                                     
                                     return (
-                                      <div className="text-xs text-gray-500 flex flex-col gap-0.5 mt-1">
+                                      <div className="text-sm sm:text-xs text-gray-500 flex flex-col gap-0.5">
                                         <div className="flex items-center gap-1">
                                           <span>To:</span>
                                           <span className="font-medium text-gray-700">{recipientName}</span>
@@ -7475,7 +7474,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                     if (!recipientName) return null;
                                     
                                     return (
-                                      <div className="text-xs text-gray-500 flex flex-col gap-0.5 mt-1">
+                                      <div className="text-sm sm:text-xs text-gray-500 flex flex-col gap-0.5">
                                         <div className="flex items-center gap-1">
                                           <span>To:</span>
                                           <span className="font-medium text-gray-700">{recipientName}</span>
@@ -7495,7 +7494,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                   // For manual interactions, use recipient_name set during processing
                                   if (row.editable && (row as any).recipient_name) {
                                     return (
-                                      <div className="text-xs text-gray-500 flex items-center gap-1">
+                                      <div className="text-sm sm:text-xs text-gray-500 flex items-center gap-1">
                                         <span>To:</span>
                                         <span className="font-medium text-gray-700">{(row as any).recipient_name}</span>
                                       </div>
@@ -7571,7 +7570,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                     }
                                     
                                     return recipientName ? (
-                                      <div className="text-xs text-gray-500 flex items-center gap-1">
+                                      <div className="text-sm sm:text-xs text-gray-500 flex items-center gap-1">
                                         <span>To:</span>
                                         <span className="font-medium text-gray-700">{recipientName}</span>
                                       </div>
@@ -7583,7 +7582,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                     const employeeRecipientName = (row as any).employee_recipient_name || 'Team';
                                     
                                     return (
-                                      <div className="text-xs text-gray-500 flex items-center gap-1">
+                                      <div className="text-sm sm:text-xs text-gray-500 flex items-center gap-1">
                                         <span>To:</span>
                                         <span className="font-medium text-gray-700">{employeeRecipientName}</span>
                                       </div>
@@ -7597,7 +7596,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                             <div className="flex flex-wrap gap-2">
                               {/* Show status badge for WhatsApp and Call interactions */}
                               {row.kind === 'whatsapp' && row.status && (
-                                <span className={`px-3 py-1 rounded-full font-medium shadow-sm ${cardBg} text-white text-xs ${row.status.toLowerCase().includes('not') ? 'opacity-80' : ''}`}>
+                                <span className={`px-3 py-1 rounded-full font-medium shadow-sm bg-base-200 text-base-content text-sm sm:text-xs ${row.status.toLowerCase().includes('not') ? 'opacity-80' : ''}`}>
                                   {row.status}
                                 </span>
                               )}
@@ -7606,7 +7605,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                row.status !== 'unread' && 
                                row.status.toLowerCase() !== 'unknown' && 
                                row.status.toLowerCase() !== 'sent' && (
-                                <span className={`px-3 py-1 rounded-full font-medium shadow-sm text-xs ${
+                                <span className={`px-3 py-1 rounded-full font-medium shadow-sm text-sm sm:text-xs ${
                                   row.status.toLowerCase() === 'answered' ? 'bg-green-500 text-white' :
                                   (row.status.toLowerCase() === 'no+answer' || row.status.toLowerCase() === 'no answer') ? 'bg-red-500 text-white' :
                                   row.status.toLowerCase() === 'failed' ? 'bg-red-500 text-white' :
@@ -7621,7 +7620,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                row.status !== 'unread' && 
                                row.status.toLowerCase() !== 'unknown' && 
                                row.status.toLowerCase() !== 'sent' && (
-                                <span className={`px-3 py-1 rounded-full font-medium shadow-sm text-xs ${
+                                <span className={`px-3 py-1 rounded-full font-medium shadow-sm text-sm sm:text-xs ${
                                   row.status.toLowerCase() === 'answered' ? 'bg-green-500 text-white' :
                                   (row.status.toLowerCase() === 'no+answer' || row.status.toLowerCase() === 'no answer') ? 'bg-red-500 text-white' :
                                   row.status.toLowerCase() === 'failed' ? 'bg-red-500 text-white' :
@@ -7632,7 +7631,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                 </span>
                               )}
                               {row.length && row.length !== 'm' && (
-                                <span className={`px-3 py-1 rounded-full font-medium shadow-sm ${cardBg} text-white text-xs`}>
+                                <span className="px-3 py-1 rounded-full bg-base-200 text-base-content text-sm sm:text-xs font-medium shadow-sm">
                                   {row.length}
                                 </span>
                               )}
@@ -7642,7 +7641,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                 <div className="flex items-center gap-1">
                                   {renderMessageStatus(row.status, (row as any).error_message)}
                                   {row.status === 'failed' && (
-                                    <span className="px-2 py-1 rounded-full font-medium shadow-sm bg-red-100 text-red-700 text-xs">
+                                    <span className="px-2 py-1 rounded-full font-medium shadow-sm bg-red-100 text-red-700 text-sm sm:text-xs">
                                       Failed
                                     </span>
                                   )}
@@ -7717,7 +7716,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                               <div className="flex items-center justify-between mb-4">
                                 <div className="flex items-center gap-2">
                                   <SpeakerWaveIcon className="w-5 h-5 text-gray-500" />
-                                  <span className="text-sm font-medium text-gray-700">
+                                  <span className="text-base sm:text-sm font-medium text-gray-700">
                                     {row.recording_url ? 'Call Recording' : 'Recording not available'}
                                   </span>
                                 </div>
@@ -7732,7 +7731,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                           handlePlayRecording(row.recording_url!, row.id.toString());
                                         }
                                       }}
-                                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-base sm:text-sm font-medium transition-all duration-200 ${
                                         playingAudioId === row.id
                                           ? 'bg-red-500 text-white hover:bg-red-600 shadow-md'
                                           : 'bg-purple-500 text-white hover:bg-purple-600 shadow-md'
@@ -7758,18 +7757,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
                           {/* Observation/Notes */}
                           {row.observation && row.observation !== 'call-ended' && (
-                            <div className="bg-purple-50 border-l-4 border-purple-400 p-3 rounded-r-lg">
+                            <div className="bg-base-200/40 border-l-4 border-base-300 p-3 rounded-r-lg">
                               <div className="flex items-start gap-2">
-                                <div className="w-2 h-2 bg-purple-400 rounded-full mt-2 flex-shrink-0"></div>
+                                <div className="w-2 h-2 bg-base-content/30 rounded-full mt-2 flex-shrink-0"></div>
                                 <div>
-                                  <div className="text-sm font-medium text-purple-900 mb-1">Note</div>
-                                  <div className="text-sm text-purple-800 break-words">{row.observation}</div>
+                                  <div className="text-base sm:text-sm font-medium text-base-content mb-1">Note</div>
+                                  <div className="text-base sm:text-sm text-base-content/80 break-words">{row.observation}</div>
                                 </div>
                               </div>
                             </div>
                           )}
                         </div>
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -8536,6 +8534,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         } : undefined}
         selectedContact={selectedContactForWhatsApp || selectedContactForWhatsAppRef.current}
         hideContactSelector={true}
+        showContactSidebar={true}
         onClientUpdate={async () => {
           // Refresh interactions when WhatsApp messages are updated
           if (onClientUpdate) {

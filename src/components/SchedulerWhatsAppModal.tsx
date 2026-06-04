@@ -85,9 +85,10 @@ interface SchedulerWhatsAppModalProps {
   } | null;
   onClientUpdate?: () => Promise<void>;
   hideContactSelector?: boolean; // Hide contact selector dropdown
+  showContactSidebar?: boolean; // Show a left sidebar listing all of the lead's contacts (WhatsApp-page style)
 }
 
-const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen, onClose, client, selectedContact: propSelectedContact, onClientUpdate, hideContactSelector = false }) => {
+const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen, onClose, client, selectedContact: propSelectedContact, onClientUpdate, hideContactSelector = false, showContactSidebar = false }) => {
   const navigate = useNavigate();
 
   // Debug: Log when propSelectedContact changes
@@ -140,6 +141,13 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   // State for lead contacts (all contacts associated with the client)
   const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
   const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
+
+  // Sidebar: all of the lead's contacts (loaded independently of leadContacts which may be a single
+  // prop-selected contact) + the contact the user clicked in the sidebar (overrides propSelectedContact).
+  const [sidebarContacts, setSidebarContacts] = useState<ContactInfo[]>([]);
+  const [activeContactOverride, setActiveContactOverride] = useState<ContactInfo | null>(null);
+  // Per-contact last message preview for the sidebar: contactId -> { text, time }
+  const [contactLastMessages, setContactLastMessages] = useState<Record<number, { text: string; time: string }>>({});
 
   // Mobile detection
   const [isMobile, setIsMobile] = useState(false);
@@ -400,6 +408,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       // IMPORTANT: Always use propSelectedContact when it's available, clear any previous selection
       setSelectedContactId(propSelectedContact.contact.id);
       setLeadContacts([propSelectedContact.contact]);
+      // A freshly clicked interaction should reset the sidebar's active contact to it
+      setActiveContactOverride(propSelectedContact.contact);
       // Clear messages when contact changes to force refetch
       setMessages([]);
     } else if (isOpen && hideContactSelector) {
@@ -409,8 +419,100 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     } else if (!isOpen) {
       // Only clear if modal is closed
       setSelectedContactId(null);
+      setActiveContactOverride(null);
     }
   }, [propSelectedContact, isOpen, hideContactSelector]);
+
+  // Sidebar: load ALL of the lead's contacts (independent of the single prop-selected contact)
+  useEffect(() => {
+    if (!showContactSidebar || !isOpen || !client) {
+      setSidebarContacts([]);
+      return;
+    }
+    let cancelled = false;
+    const loadSidebarContacts = async () => {
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      const leadId = isLegacyLead
+        ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+        : client.id;
+      try {
+        const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+        if (cancelled) return;
+        setSidebarContacts(contacts);
+
+        // Build per-contact last-message preview from this lead's WhatsApp messages
+        let msgQuery = supabase
+          .from('whatsapp_messages')
+          .select('message, caption, message_type, sent_at, direction, contact_id, phone_number');
+        if (isLegacyLead) {
+          msgQuery = msgQuery.eq('legacy_id', parseInt(String(client.id).replace('legacy_', '')));
+        } else {
+          msgQuery = msgQuery.eq('lead_id', client.id);
+        }
+        const { data: allMsgs } = await msgQuery.order('sent_at', { ascending: true });
+        if (cancelled) return;
+
+        const normalizePhone = (phone: string) => (phone || '').replace(/\D/g, '');
+        const previews: Record<number, { text: string; time: string }> = {};
+        (allMsgs || []).forEach((msg: any) => {
+          const matched = contacts.find((c) => {
+            if (msg.contact_id != null && c.id === msg.contact_id) return true;
+            const cPhone = normalizePhone(c.phone || c.mobile || '');
+            const mPhone = normalizePhone(msg.phone_number || '');
+            if (!cPhone || !mPhone) return false;
+            if (cPhone === mPhone) return true;
+            return cPhone.length >= 4 && mPhone.length >= 4 && cPhone.slice(-4) === mPhone.slice(-4);
+          });
+          if (!matched) return;
+          const rawText =
+            msg.message_type === 'image'
+              ? (msg.caption || '📷 Photo')
+              : msg.message_type === 'audio' || msg.message_type === 'voice'
+                ? '🎤 Voice message'
+                : (msg.message || '');
+          const prefix = msg.direction === 'out' ? 'You: ' : '';
+          previews[matched.id] = {
+            text: `${prefix}${rawText}`.trim(),
+            time: msg.sent_at,
+          };
+        });
+        setContactLastMessages(previews);
+      } catch (e) {
+        console.warn('[SchedulerWhatsAppModal] failed to load sidebar contacts:', e);
+        if (!cancelled) {
+          setSidebarContacts([]);
+          setContactLastMessages({});
+        }
+      }
+    };
+    loadSidebarContacts();
+    return () => {
+      cancelled = true;
+    };
+  }, [showContactSidebar, isOpen, client?.id, client?.lead_type]);
+
+  const formatSidebarTimestamp = (iso: string): string => {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    if (sameDay) {
+      return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    }
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' });
+  };
+
+  const handleSidebarContactSelect = (contact: ContactInfo) => {
+    setActiveContactOverride(contact);
+    setSelectedContactId(contact.id);
+    setMessages([]);
+    setShouldAutoScroll(true);
+    setIsFirstLoad(true);
+  };
 
   // Fetch contacts for the client (only if no propSelectedContact)
   useEffect(() => {
@@ -958,7 +1060,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
       // If hideContactSelector is true and we're expecting a propSelectedContact but don't have it yet, wait
       // This prevents fetching messages with client's phone when a contact should be selected
-      if (hideContactSelector && !propSelectedContact && !selectedContactId && !isPolling) {
+      if (hideContactSelector && !propSelectedContact && !activeContactOverride && !selectedContactId && !isPolling) {
         console.log('⏳ Waiting for propSelectedContact to be set...', {
           hideContactSelector,
           hasPropSelectedContact: !!propSelectedContact,
@@ -970,15 +1072,20 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       try {
         // CRITICAL: If hideContactSelector is true, we MUST use propSelectedContact
         // Don't fall back to selectedContactId or leadContacts if propSelectedContact is not available yet
-        if (hideContactSelector && !propSelectedContact && !isPolling) {
+        // (unless the user explicitly picked a contact in the sidebar — activeContactOverride)
+        if (hideContactSelector && !propSelectedContact && !activeContactOverride && !isPolling) {
           console.log('⏳ Waiting for propSelectedContact (hideContactSelector=true)...');
           return;
         }
 
-        // ALWAYS prioritize propSelectedContact if it's provided (from contact selector)
-        // This ensures we use the correct contact even if state hasn't updated yet
-        const selectedContact = propSelectedContact?.contact || (selectedContactId ? leadContacts.find(c => c.id === selectedContactId) : null);
-        const contactId = propSelectedContact?.contact.id || selectedContactId || null;
+        // Priority: sidebar override > propSelectedContact > selectedContactId.
+        // activeContactOverride lets the left sidebar switch the conversation even when a
+        // propSelectedContact was provided by the parent.
+        const selectedContact =
+          activeContactOverride ||
+          propSelectedContact?.contact ||
+          (selectedContactId ? (sidebarContacts.find(c => c.id === selectedContactId) || leadContacts.find(c => c.id === selectedContactId)) : null);
+        const contactId = selectedContact?.id || null;
 
         console.log('🔍 fetchMessages called:', {
           isOpen,
@@ -1288,7 +1395,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         clearInterval(interval);
       };
     }
-  }, [isOpen, client?.id, currentUser, shouldAutoScroll, isFirstLoad, templates, selectedContactId, propSelectedContact, hideContactSelector]);
+  }, [isOpen, client?.id, currentUser, shouldAutoScroll, isFirstLoad, templates, selectedContactId, propSelectedContact, hideContactSelector, activeContactOverride]);
 
   // Auto-fix message statuses when messages are loaded (if status is "failed" but whatsapp_message_id exists)
   useEffect(() => {
@@ -1414,15 +1521,15 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     let phoneNumber: string | null = null;
     let contactId: number | null = null;
 
-    // Use propSelectedContact if available, otherwise use selectedContactId
-    const activeContactId = propSelectedContact?.contact.id || selectedContactId;
+    // Sidebar override > propSelectedContact > selectedContactId
+    const sendContact =
+      activeContactOverride ||
+      propSelectedContact?.contact ||
+      (selectedContactId ? (sidebarContacts.find(c => c.id === selectedContactId) || leadContacts.find(c => c.id === selectedContactId)) : null);
 
-    if (activeContactId) {
-      const selectedContact = propSelectedContact?.contact || leadContacts.find(c => c.id === activeContactId);
-      if (selectedContact) {
-        phoneNumber = selectedContact.phone || selectedContact.mobile || null;
-        contactId = selectedContact.id;
-      }
+    if (sendContact) {
+      phoneNumber = sendContact.phone || sendContact.mobile || null;
+      contactId = sendContact.id;
     }
 
     // Fallback to client's phone number
@@ -1830,8 +1937,11 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
   if (!isOpen) return null;
 
-  // Get the active contact (prioritize propSelectedContact, then use selectedContactId + leadContacts)
-  const activeContact = propSelectedContact?.contact || (selectedContactId ? leadContacts.find(c => c.id === selectedContactId) : null);
+  // Get the active contact (sidebar override > propSelectedContact > selectedContactId)
+  const activeContact =
+    activeContactOverride ||
+    propSelectedContact?.contact ||
+    (selectedContactId ? (sidebarContacts.find(c => c.id === selectedContactId) || leadContacts.find(c => c.id === selectedContactId)) : null);
   const displayName = activeContact?.name || client?.name || 'Unknown';
   const displayPhone = activeContact?.phone || activeContact?.mobile || client?.phone || client?.mobile || '';
 
@@ -1842,7 +1952,75 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
   return createPortal(
     <div className="fixed inset-0 bg-gray-50 z-[9999] overflow-hidden">
-      <div className="h-full flex flex-col relative bg-gray-50">
+      <div className="h-full flex">
+        {/* Left contacts sidebar (WhatsApp-page style) — lists all of the lead's contacts */}
+        {showContactSidebar && !isMobile && (
+          <div className="w-80 flex-none border-r border-gray-200 flex flex-col min-h-0 bg-white">
+            <div className="flex-none px-4 pt-4 pb-3">
+              <div className="flex items-center gap-3">
+                <FaWhatsapp className="w-7 h-7 text-green-600 flex-shrink-0" />
+                <h1 className="text-xl font-semibold text-gray-900 tracking-tight">Contacts</h1>
+              </div>
+              {client && (
+                <p className="mt-1 text-xs text-gray-500 truncate">
+                  {client.name} ({client.lead_number})
+                </p>
+              )}
+            </div>
+            <div className="flex-1 overflow-y-auto min-h-0">
+              {sidebarContacts.length === 0 ? (
+                <div className="p-6 text-center text-gray-400 text-sm">No contacts found</div>
+              ) : (
+                sidebarContacts.map((contact) => {
+                  const isActive = activeContact?.id === contact.id;
+                  const lastMessage = contactLastMessages[contact.id];
+                  const initials = (contact.name || '?')
+                    .trim()
+                    .split(/\s+/)
+                    .map((p) => p[0])
+                    .join('')
+                    .slice(0, 2)
+                    .toUpperCase() || '?';
+                  return (
+                    <button
+                      key={contact.id}
+                      type="button"
+                      onClick={() => handleSidebarContactSelect(contact)}
+                      className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors border-l-4 ${
+                        isActive
+                          ? 'bg-green-50 border-green-500'
+                          : 'border-transparent hover:bg-gray-50'
+                      }`}
+                    >
+                      <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-full bg-green-500 text-white font-semibold shadow-sm">
+                        {initials}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate font-medium text-gray-900">{contact.name}</span>
+                          {contact.isMain && (
+                            <span className="flex-none rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700">
+                              Main
+                            </span>
+                          )}
+                          {lastMessage?.time && (
+                            <span className="ml-auto flex-none text-[10px] text-gray-400">
+                              {formatSidebarTimestamp(lastMessage.time)}
+                            </span>
+                          )}
+                        </div>
+                        <div className="truncate text-xs text-gray-500">
+                          {lastMessage?.text || 'No messages yet'}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        )}
+      <div className="h-full flex-1 min-w-0 flex flex-col relative bg-gray-50">
         {/* Header */}
         <div className="flex-none flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
           <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
@@ -1909,7 +2087,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                     </div>
                   )}
 
-                  <div className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`} style={{ maxWidth: '100%', minWidth: 0 }}>
+                  <div data-whatsapp-id={message.id} className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`} style={{ maxWidth: '100%', minWidth: 0 }}>
                     {message.direction === 'out' && (
                       <div className="flex items-center gap-2 mb-1 mr-2">
                         <span className="text-sm text-gray-600 font-medium">
@@ -1983,7 +2161,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       <div
                         className={`group ${message.direction === 'out' ? 'max-w-[85%] md:max-w-[35%] lg:max-w-[30%]' : 'max-w-[85%] md:max-w-[70%]'} rounded-2xl px-3 py-2 shadow-sm ${message.direction === 'out'
                           ? WHATSAPP_OUTGOING_BUBBLE_CLASS
-                          : 'bg-white text-gray-900 border border-gray-200'
+                          : 'bg-white text-gray-900'
                           }`}
                         style={{
                           wordBreak: 'break-word',
@@ -2662,6 +2840,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             </button>
           </div>
         </div>
+      </div>
       </div>
     </div>,
     document.body

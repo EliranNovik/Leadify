@@ -2871,7 +2871,7 @@ export default function ExternalFirmsReportPage() {
           document.body,
         )}
 
-      <div className="flex min-w-0 flex-1 flex-col px-4 pb-6 pt-2 md:px-10 md:pb-8 md:pt-4 [zoom:1.075]">
+      <div className="flex min-w-0 flex-1 flex-col px-4 pb-[max(2.5rem,env(safe-area-inset-bottom,0px))] pt-2 md:px-10 md:pb-12 md:pt-4 max-lg:[zoom:1] lg:[zoom:1.075]">
       <div className="w-full space-y-5">
 
         {/* ── Page Header: mobile title left + back right; desktop centred title ── */}
@@ -2918,7 +2918,7 @@ export default function ExternalFirmsReportPage() {
           )}
         </div>
 
-        <div className="min-w-0 space-y-5 lg:max-h-[calc(100dvh-8rem)] lg:overflow-y-auto lg:overscroll-contain lg:pr-1">
+        <div className="min-w-0 space-y-5 pb-6 md:pb-8">
         {/* ── Toolbar: search + stats (firms list only) ────────────────── */}
         {view === 'firms' && (
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -3088,7 +3088,7 @@ export default function ExternalFirmsReportPage() {
               />
             ) : (
               // ── Firms table ─────────────────────────────────────────────
-              <div className="-mx-4 overflow-x-auto md:mx-0 py-2">
+              <div className="-mx-4 overflow-x-auto md:mx-0 py-2 pb-8">
                 <table className="table external-firms-firms-table w-full min-w-[36rem] text-base">
                   <thead>
                     <tr className="md:sticky md:top-0 z-20">

@@ -2388,7 +2388,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     return (
         <div className="w-full min-w-0">
                 {/* Header card — rounded (boxed by Clients.tsx container). */}
-                <div className="mb-0 mt-3 flex w-full flex-col gap-5 rounded-2xl border border-base-200/80 bg-white px-4 py-4 shadow-sm dark:border-base-300/55 dark:bg-base-100 dark:shadow-none sm:px-5 sm:py-5 md:mb-0 md:mt-4 md:gap-4 md:px-6 md:py-5">
+                <div className="mb-0 mt-5 flex w-full flex-col gap-5 rounded-2xl border border-base-200/80 bg-white px-4 py-4 shadow-sm dark:border-base-300/55 dark:bg-base-100 dark:shadow-none sm:px-5 sm:py-5 md:mb-0 md:mt-7 md:gap-4 md:px-6 md:py-5">
                     {/* Mobile: SaaS header — identity, contact card, stage + chips */}
                     <div className="flex w-full flex-col gap-5 md:hidden">
                         <header className="relative z-0 flex w-full min-w-0 flex-col gap-0">
@@ -3217,62 +3217,58 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         </div>
                     </div>
 
-                    {/* Case unactivated Badge - Between client name and stage badge */}
-                    {(() => {
-                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                        const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
-                        if (!isUnactivated) return null;
+                </div>
 
-                        // Get unactivation reason
-                        let unactivationReason = selectedClient?.unactivation_reason;
-                        if (isLegacy && !unactivationReason) {
-                            const reasonId = (selectedClient as any)?.reason_id;
-                            if (reasonId) {
-                                const reasonFromId = getUnactivationReasonFromId(reasonId);
-                                if (reasonFromId) {
-                                    unactivationReason = reasonFromId;
-                                }
+                {/* Case inactive — single-line bar under the header white box */}
+                {(() => {
+                    const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                    const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
+                    if (!isUnactivated) return null;
+
+                    // Get unactivation reason
+                    let unactivationReason = selectedClient?.unactivation_reason;
+                    if (isLegacy && !unactivationReason) {
+                        const reasonId = (selectedClient as any)?.reason_id;
+                        if (reasonId) {
+                            const reasonFromId = getUnactivationReasonFromId(reasonId);
+                            if (reasonFromId) {
+                                unactivationReason = reasonFromId;
                             }
                         }
+                    }
 
-                        return (
-                            <div className="flex flex-col items-center gap-2.5">
-                                <div className="bg-red-100 text-red-800 rounded-lg px-4 py-3 border border-red-300">
-                                    <div className="whitespace-nowrap text-base">
-                                        Case inactive
-                                        {unactivationReason && (
-                                            <span className="ml-2 text-sm font-normal">
-                                                ({unactivationReason})
-                                            </span>
-                                        )}
-                                    </div>
-                                </div>
-                                {(selectedClient as any)?.deactivate_notes && (
-                                    <div className="text-sm font-normal break-words max-w-full px-3 leading-relaxed text-gray-700">
-                                        {(selectedClient as any).deactivate_notes}
-                                    </div>
+                    return (
+                        <div className="mt-2 flex w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-red-300 bg-red-100 px-4 py-2 text-red-800 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-200">
+                            <span className="inline-flex items-center gap-1.5 whitespace-nowrap font-semibold">
+                                <NoSymbolIcon className="h-4 w-4" />
+                                Case inactive
+                                {unactivationReason && (
+                                    <span className="font-normal">({unactivationReason})</span>
                                 )}
-                                {(selectedClient?.unactivated_by || selectedClient?.unactivated_at) && (
-                                    <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 dark:border-gray-700 dark:bg-gray-800">
-                                        <div className="text-xs font-normal text-center text-gray-700 dark:text-gray-300">
-                                            by {selectedClient.unactivated_by || '---'}
-                                            {selectedClient.unactivated_by && selectedClient.unactivated_at && ' / '}
-                                            {selectedClient.unactivated_at && (
-                                                <>at {new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
-                                                    year: 'numeric',
-                                                    month: 'short',
-                                                    day: 'numeric',
-                                                    hour: '2-digit',
-                                                    minute: '2-digit'
-                                                })}</>
-                                            )}
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        );
-                    })()}
-                </div>
+                            </span>
+                            {(selectedClient as any)?.deactivate_notes && (
+                                <span className="min-w-0 truncate text-sm font-normal text-red-900/80 dark:text-red-200/80">
+                                    {(selectedClient as any).deactivate_notes}
+                                </span>
+                            )}
+                            {(selectedClient?.unactivated_by || selectedClient?.unactivated_at) && (
+                                <span className="ml-auto whitespace-nowrap text-xs font-normal text-red-900/70 dark:text-red-200/70">
+                                    by {selectedClient.unactivated_by || '---'}
+                                    {selectedClient.unactivated_by && selectedClient.unactivated_at && ' / '}
+                                    {selectedClient.unactivated_at && (
+                                        <>at {new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
+                                            year: 'numeric',
+                                            month: 'short',
+                                            day: 'numeric',
+                                            hour: '2-digit',
+                                            minute: '2-digit'
+                                        })}</>
+                                    )}
+                                </span>
+                            )}
+                        </div>
+                    );
+                })()}
 
                 {/* Stage Logic Buttons - Mobile: Below timeline/history/stage badge row (btn-md + text-base for tap targets) */}
                 <div className="flex md:hidden items-center gap-4 flex-wrap mt-7">

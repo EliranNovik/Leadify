@@ -6210,7 +6210,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                 <div
                                   className={`group ${message.direction === 'out' ? 'max-w-[75%] md:max-w-[35%] lg:max-w-[30%]' : 'max-w-[75%] md:max-w-[70%]'} rounded-2xl px-3 py-2 shadow-sm relative ${message.direction === 'out'
                                     ? WHATSAPP_OUTGOING_BUBBLE_CLASS
-                                    : 'bg-white text-gray-900 border border-gray-200'
+                                    : 'bg-white text-gray-900'
                                     }`}
                                   style={{
                                     wordBreak: 'break-word',

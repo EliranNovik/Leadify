@@ -717,9 +717,13 @@ const CollectionFinancesReport: React.FC = () => {
     setFilters(prev => ({ ...prev, currencyId: [] }));
   };
 
-const loadPayments = async () => {
-    setLoading(true);
-    setError(null);
+const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
+    // Silent reloads (live updates) keep the table mounted and only diff rows in,
+    // so the page never visibly "refreshes" — React reconciles changed/added/removed rows by id.
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       console.log(`🔍 [loadPayments] Starting with filters:`, filters);
       const [modern, legacy] = await Promise.all([fetchModernPayments(filters), fetchLegacyPayments(filters)]);
@@ -1100,11 +1104,65 @@ const loadPayments = async () => {
       setRows(rowsToSet);
     } catch (err) {
       console.error(err);
-      setError(err instanceof Error ? err.message : 'Failed to load collection data.');
+      // On a silent (background) reload, keep the current rows visible instead of
+      // swapping the whole table for an error screen.
+      if (!silent) {
+        setError(err instanceof Error ? err.message : 'Failed to load collection data.');
+      }
     } finally {
-      setLoading(false);
+      if (!silent) {
+        setLoading(false);
+      }
     }
   };
+
+  // Keep a ref to the latest loadPayments so freshness listeners always use current filters
+  const loadPaymentsRef = useRef(loadPayments);
+  loadPaymentsRef.current = loadPayments;
+
+  // Freshness: initial load on mount + auto-refresh so users never see stale cached results.
+  // The persisted (sessionStorage) rows render instantly, then we refetch in the background and
+  // subscribe to live changes so updates appear without a full page refresh.
+  useEffect(() => {
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    // Live updates always run silently: no spinner, table stays mounted, only rows diff in/out.
+    const triggerReload = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        void loadPaymentsRef.current({ silent: true });
+      }, 400);
+    };
+
+    // Initial load: show the spinner only when there are no cached rows to display yet;
+    // otherwise refresh silently in the background so the cached table doesn't flash.
+    void loadPaymentsRef.current({ silent: rows.length > 0 });
+
+    const handleFocus = () => triggerReload();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') triggerReload();
+    };
+    const handlePaymentPlanChanged = () => triggerReload();
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('paymentPlan:changed', handlePaymentPlanChanged as EventListener);
+
+    // Live subscription: any insert/update/delete on the payment tables refetches the report
+    const channel = supabase
+      .channel('collection-finances-report-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payment_plans' }, triggerReload)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'finances_paymentplanrow' }, triggerReload)
+      .subscribe();
+
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('paymentPlan:changed', handlePaymentPlanChanged as EventListener);
+      supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1740,7 +1798,7 @@ const loadPayments = async () => {
           </div>
         </div>
         <div className="mt-6 flex flex-wrap items-center gap-4">
-          <button className="btn btn-primary" onClick={loadPayments} disabled={loading}>
+          <button className="btn btn-primary" onClick={() => loadPayments()} disabled={loading}>
             {loading ? <ArrowPathIcon className="w-5 h-5 animate-spin" /> : 'Show'}
           </button>
           {error && <span className="text-error">{error}</span>}

@@ -204,7 +204,14 @@ const transformLegacyInteraction = (
     length,
     content,
     observation: cleanLegacyText((interaction.description || '').replace(/^METHOD:(sms|office)\|/, '')), // Remove METHOD: prefix from observation
-    editable: kind === 'email_manual' || kind === 'whatsapp_manual', // Legacy email and WhatsApp interactions are manual and editable
+    editable:
+      kind === 'email_manual' ||
+      kind === 'whatsapp_manual' ||
+      kind === 'call' ||
+      kind === 'sms' ||
+      kind === 'office' ||
+      kind === 'note' ||
+      kind === 'meeting',
     status: interactionStatus,
     subject: cleanLegacyText((interaction.description || '').replace(/^METHOD:(sms|office)\|/, '')), // Remove METHOD: prefix from subject
     recipient_name: recipientName, // Set recipient_name for "To:" display

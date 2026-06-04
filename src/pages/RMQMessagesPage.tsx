@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, startTransition } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
@@ -44,7 +44,10 @@ import {
   BookmarkIcon,
   ChevronRightIcon,
   ArrowUturnLeftIcon,
-  FlagIcon
+  FlagIcon,
+  Cog6ToothIcon,
+  PencilSquareIcon,
+  UserPlusIcon
 } from '@heroicons/react/24/outline';
 import { format, isToday, isYesterday, isSameWeek, formatDistanceToNow } from 'date-fns';
 import EmployeeModal from '../components/EmployeeModal';
@@ -225,7 +228,7 @@ const RMQ_CHAT = {
   recvLinkColor: '#4F5C47',
   /** Links inside own (sent) bubbles — same sky as “Leave a Comment” on group messages (`text-sky-200`). */
   linkOwn: 'underline font-semibold text-sky-200 hover:text-sky-100',
-  recv: 'bg-[#F5F5F5] text-[#111827]',
+  recv: 'bg-white text-[#111827]',
   /** Per-message column: full width on lg+ desktop; on smaller viewports cap width (chat bubble), L/R via parent flex. */
   bubbleMax:
     'min-w-0 max-w-[min(100%,48rem)] max-lg:max-w-[min(88%,24rem)] max-lg:w-fit lg:w-full',
@@ -387,6 +390,42 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
   const [showMobileGroupMembers, setShowMobileGroupMembers] = useState(false);
   const [showDesktopGroupMembers, setShowDesktopGroupMembers] = useState(false);
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
+  const [showRailSettingsMenu, setShowRailSettingsMenu] = useState(false);
+  const railSettingsRef = useRef<HTMLDivElement>(null);
+  const [showRailPinnedMenu, setShowRailPinnedMenu] = useState(false);
+  const railPinnedRef = useRef<HTMLDivElement>(null);
+  const sidebarSearchInputRef = useRef<HTMLInputElement>(null);
+  // New direct message: modal that searches ALL users (not just employees)
+  const [showNewDirectModal, setShowNewDirectModal] = useState(false);
+  const [newDirectSearch, setNewDirectSearch] = useState('');
+  const [newDirectAllUsers, setNewDirectAllUsers] = useState<User[]>([]);
+  const [newDirectLoading, setNewDirectLoading] = useState(false);
+  const newDirectSearchRef = useRef<HTMLInputElement>(null);
+  // Composer preference: send on Enter (desktop). Persisted across sessions.
+  const [enterToSend, setEnterToSend] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    return localStorage.getItem('rmq:enterToSend') !== 'false';
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem('rmq:enterToSend', enterToSend ? 'true' : 'false');
+    } catch {
+      /* ignore storage errors */
+    }
+  }, [enterToSend]);
+  useEffect(() => {
+    if (!showRailSettingsMenu && !showRailPinnedMenu) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (showRailSettingsMenu && railSettingsRef.current && !railSettingsRef.current.contains(e.target as Node)) {
+        setShowRailSettingsMenu(false);
+      }
+      if (showRailPinnedMenu && railPinnedRef.current && !railPinnedRef.current.contains(e.target as Node)) {
+        setShowRailPinnedMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showRailSettingsMenu, showRailPinnedMenu]);
   const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
   const [newGroupTitle, setNewGroupTitle] = useState('');
   const [newGroupDescription, setNewGroupDescription] = useState('');
@@ -5229,7 +5268,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     // Check if mobile (window width < 1024px for lg breakpoint)
     const isMobile = typeof window !== 'undefined' && window.innerWidth < 1024;
 
-    if (e.key === 'Enter' && !e.shiftKey) {
+    // When "Send with Enter" is off, Enter always inserts a newline (send via the button instead).
+    if (e.key === 'Enter' && !e.shiftKey && enterToSend) {
       e.preventDefault();
       // On mobile, only allow new line, don't send message
       if (isMobile) {
@@ -5693,6 +5733,61 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       setIsSending(false);
     }
   };
+
+  // New direct message: load ALL users (employees + non-employees) for the picker modal
+  const openNewDirectModal = useCallback(async () => {
+    setShowNewDirectModal(true);
+    setNewDirectSearch('');
+    requestAnimationFrame(() => newDirectSearchRef.current?.focus());
+    if (!currentUser) return;
+    setNewDirectLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select(`
+          id,
+          full_name,
+          email,
+          employee_id,
+          is_active,
+          tenants_employee!employee_id(
+            display_name,
+            bonuses_role,
+            photo_url
+          )
+        `)
+        .neq('id', currentUser.id)
+        .order('full_name', { ascending: true })
+        .limit(1000);
+      if (error) throw error;
+      setNewDirectAllUsers((data || []) as unknown as User[]);
+    } catch (e) {
+      console.error('[RMQ] new direct message: failed to load users', e);
+      toast.error('Failed to load users');
+      setNewDirectAllUsers([]);
+    } finally {
+      setNewDirectLoading(false);
+    }
+  }, [currentUser]);
+
+  const newDirectFilteredUsers = useMemo(() => {
+    const getEmp = (u: User) =>
+      Array.isArray(u.tenants_employee) ? u.tenants_employee[0] : u.tenants_employee;
+    const getName = (u: User) => getEmp(u)?.display_name || u.full_name || u.email || '';
+    const t = newDirectSearch.trim().toLowerCase();
+    let list = newDirectAllUsers;
+    if (t) {
+      list = list.filter(u => {
+        const emp = getEmp(u);
+        return (
+          (u.full_name || '').toLowerCase().includes(t) ||
+          (u.email || '').toLowerCase().includes(t) ||
+          (emp?.display_name || '').toLowerCase().includes(t)
+        );
+      });
+    }
+    return [...list].sort((a, b) => getName(a).localeCompare(getName(b)));
+  }, [newDirectAllUsers, newDirectSearch]);
 
   // Start direct conversation with a user
   const startDirectConversation = async (userId: string) => {
@@ -6308,6 +6403,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     return { countByParent, firstReplyIdByParent };
   }, [messages]);
 
+  /** Group chat: the current user's own messages that have received comments (for the header dropdown). */
+  const myCommentedMessages = useMemo(() => {
+    if (!currentUser?.id) return [] as { message: Message; count: number }[];
+    return messages
+      .filter(m => !m.is_deleted && m.sender_id === currentUser.id && (rmqMessageCommentCounts[m.id] ?? 0) > 0)
+      .map(m => ({ message: m, count: rmqMessageCommentCounts[m.id] ?? 0 }))
+      .sort((a, b) => new Date(b.message.sent_at).getTime() - new Date(a.message.sent_at).getTime());
+  }, [messages, rmqMessageCommentCounts, currentUser?.id]);
+
   /** Attached to the message bubble: optional thread-reply strip + (group chats only) “Leave a Comment”. */
   const renderMessageCommentFooter = useCallback(
     (message: Message, tone: 'media' | 'textOwn' | 'textOther') => {
@@ -6473,6 +6577,38 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       });
     }
   }, [isLoadingMessages, isPreloadingImages]);
+
+  /**
+   * Robust initial-entry scroll: when opening a conversation we want the thread pinned to the
+   * very bottom (last message sitting right above the input bar) regardless of late layout/media
+   * reflow. A single scrollToBottom() often runs before images/layout settle, so we keep pinning
+   * the container to its bottom across a short window. Stops early if the user scrolls.
+   */
+  const pinInitialScrollToBottom = useCallback(() => {
+    const getActiveContainer = (): HTMLDivElement | null => {
+      const isMobileViewport = typeof window !== 'undefined' && window.innerWidth < 1024;
+      if (isMobileViewport && mobileMessagesContainerRef.current?.offsetParent) return mobileMessagesContainerRef.current;
+      if (!isMobileViewport && desktopMessagesContainerRef.current?.offsetParent) return desktopMessagesContainerRef.current;
+      if (desktopMessagesContainerRef.current?.offsetParent) return desktopMessagesContainerRef.current;
+      if (mobileMessagesContainerRef.current?.offsetParent) return mobileMessagesContainerRef.current;
+      return messagesContainerRef.current;
+    };
+
+    const start = Date.now();
+    const PIN_DURATION_MS = 1200;
+    const tick = () => {
+      // Abort if the user took over scrolling or auto-scroll was disabled.
+      if (isUserScrollingRef.current || !shouldAutoScrollRef.current) return;
+      const container = getActiveContainer();
+      if (container) {
+        container.scrollTop = container.scrollHeight;
+      }
+      if (Date.now() - start < PIN_DURATION_MS) {
+        requestAnimationFrame(tick);
+      }
+    };
+    requestAnimationFrame(tick);
+  }, []);
 
   /** After sending: jump to bottom immediately (double rAF so layout includes new bubble) */
   const bumpScrollAfterOutgoingSend = useCallback(() => {
@@ -6696,9 +6832,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
     // Only scroll if:
     // 1. It's an initial load (conversation changed)
     // 2. We have messages
-    if (isInitialLoad && hasMessages && selectedConversation) {
+    // Only run the entry scroll once messages are fully loaded AND images preloaded, otherwise we
+    // would land mid-thread. Critically we do NOT mark the conversation as "scrolled" until we
+    // actually scroll — and this effect re-runs when loading/preloading settle (see deps) so a
+    // thread with media still gets scrolled to the bottom on entry.
+    if (isInitialLoad && hasMessages && selectedConversation && !isLoadingMessages && !isPreloadingImages) {
 
-      // Mark as loaded and scrolled IMMEDIATELY to prevent duplicate attempts
+      // Mark as loaded and scrolled now that we are actually performing the entry scroll.
       initialLoadRef.current = selectedConversation.id;
       hasScrolledForConversationRef.current = selectedConversation.id;
 
@@ -6708,21 +6848,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
 
-      // Single scroll to bottom after one delay; stabilization period prevents further programmatic scroll when media loads
-      if (!isLoadingMessages && !isPreloadingImages) {
+      // When opening straight to a specific (e.g. flagged) message, let that handler do the scrolling.
+      const openingToSpecificMessage =
+        initialScrollToMessageId != null && initialConversationId === selectedConversation.id;
+
+      // Pin to the very bottom on entry (last message above the input bar) and keep it pinned
+      // across the short window while images/layout settle. Stabilization period prevents the
+      // ResizeObserver from also firing during this time.
+      if (!openingToSpecificMessage) {
         const isMobileViewport = typeof window !== 'undefined' && window.innerWidth < 1024;
         const STABILIZATION_MS = isMobileViewport ? 9000 : 5000;
-        const INITIAL_SCROLL_DELAY_MS = isMobileViewport ? 500 : 250;
         scrollStabilizationUntilRef.current = Date.now() + STABILIZATION_MS;
-        const tid = window.setTimeout(() => {
-          if (isUserScrollingRef.current || !shouldAutoScrollRef.current) {
-            initialScrollTimeoutRef.current = null;
-            return;
-          }
-          scrollToBottom('instant');
-          initialScrollTimeoutRef.current = null;
-        }, INITIAL_SCROLL_DELAY_MS);
-        initialScrollTimeoutRef.current = tid as number;
+        // Pin immediately (synchronously in this layout effect) then keep pinning for ~1.2s.
+        const container = desktopMessagesContainerRef.current?.offsetParent ? desktopMessagesContainerRef.current :
+          mobileMessagesContainerRef.current?.offsetParent ? mobileMessagesContainerRef.current :
+            messagesContainerRef.current;
+        if (container) container.scrollTop = container.scrollHeight;
+        pinInitialScrollToBottom();
       }
     }
 
@@ -6736,7 +6878,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
         resizeObserver.disconnect();
       }
     };
-  }, [messages.length, selectedConversation?.id, scrollToBottom]);
+  }, [messages.length, selectedConversation?.id, scrollToBottom, pinInitialScrollToBottom, initialScrollToMessageId, initialConversationId, isLoadingMessages, isPreloadingImages]);
 
   // Reset scroll tracking and fetch messages when conversation changes
   useEffect(() => {
@@ -6993,8 +7135,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
   // Handle message input change — keep state update non-blocking and throttle typing indicator for fast typing
   const handleMessageInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const value = e.target.value;
-    // Defer state update so the input stays responsive (avoids blocking the main thread on every keystroke)
-    startTransition(() => setNewMessage(value));
+    // Update synchronously so the controlled textarea keeps the caret in place when editing mid-text.
+    // (Deferring this via startTransition made React reset the cursor to the end on each keystroke.)
+    setNewMessage(value);
     adjustTextareaHeight(e.target);
     if (e.target !== messageInputRef.current) {
       adjustTextareaHeight(messageInputRef.current);
@@ -7560,7 +7703,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       );
   }, [conversations, searchQuery, currentUser]);
 
-  const filteredUsers = allUsers.filter(user => {
+  // Employees (allUsers) plus any external (non-employee) users we already have a direct chat with,
+  // so external contacts show up in the panel (with an "Extern" badge).
+  const allContactUsers = useMemo(() => {
+    if (!currentUser) return allUsers;
+    const byId = new Map<string, User>();
+    for (const u of allUsers) byId.set(u.id, u);
+    for (const conv of conversations) {
+      if (conv.type !== 'direct') continue;
+      const other = conv.participants?.find(p => p.user_id !== currentUser.id);
+      const ou = other?.user as User | undefined;
+      if (ou && ou.id && !byId.has(ou.id)) {
+        byId.set(ou.id, ou);
+      }
+    }
+    return Array.from(byId.values());
+  }, [allUsers, conversations, currentUser]);
+
+  const filteredUsers = allContactUsers.filter(user => {
     const userName = (user.tenants_employee?.display_name || user.full_name || '').toLowerCase();
     const userRole = (user.tenants_employee?.bonuses_role || '').toLowerCase();
     const userDept = (user.tenants_employee?.tenant_departement?.name || '').toLowerCase();
@@ -7658,6 +7818,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
   );
   const sidebarGroupsRecent = useMemo(
     () => filteredGroupConversations.filter(c => (c.unread_count || 0) === 0),
+    [filteredGroupConversations]
+  );
+  /** Total unread messages per tab for the Chats / Groups switcher badges. */
+  const chatsUnreadTotal = useMemo(
+    () => contactsWithLastMessage.reduce((sum, c) => sum + (c.unreadCount || 0), 0),
+    [contactsWithLastMessage]
+  );
+  const groupsUnreadTotal = useMemo(
+    () => filteredGroupConversations.reduce((sum, c) => sum + (c.unread_count || 0), 0),
     [filteredGroupConversations]
   );
 
@@ -7969,22 +8138,235 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
+      {/* Desktop: left icon rail (create / new DM / edit group / pinned / background + settings) */}
+      <div className="hidden lg:flex w-[4.5rem] flex-shrink-0 flex-col items-center border-r border-base-300 bg-base-200/60 min-h-0">
+        <div className="flex w-full flex-col items-center gap-3 px-1 pt-4">
+          <button
+            type="button"
+            onClick={() => setShowCreateGroupModal(true)}
+            title="Create group"
+            aria-label="Create group"
+            className="btn btn-ghost btn-circle h-11 min-h-11 w-11 min-w-11 flex-shrink-0 border-0 text-base-content/70 hover:bg-base-300/70"
+          >
+            <PlusIcon className="h-6 w-6" style={{ color: '#3E28CD' }} />
+          </button>
+          <button
+            type="button"
+            onClick={() => void openNewDirectModal()}
+            title="New direct message"
+            aria-label="New direct message"
+            className="btn btn-ghost btn-circle h-11 min-h-11 w-11 min-w-11 flex-shrink-0 border-0 text-base-content/70 hover:bg-base-300/70"
+          >
+            <UserPlusIcon className="h-6 w-6" />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const conv = selectedConversation;
+              if (!conv || conv.type !== 'group') {
+                toast.error('Select a group to edit');
+                return;
+              }
+              if (isGroupLocked(conv) && !isSuperUser) {
+                toast.error('This group is locked. Only superusers can edit locked groups.');
+                return;
+              }
+              setGroupTitle(conv.title || '');
+              setGroupDescription(conv.description || '');
+              setGroupNotes(conv.notes || '');
+              setGroupIconUrl(conv.icon_url || null);
+              setShowGroupInfoModal(true);
+            }}
+            disabled={!selectedConversation || selectedConversation.type !== 'group'}
+            title={selectedConversation?.type === 'group' ? 'Edit group' : 'Select a group to edit'}
+            aria-label="Edit group"
+            className={`btn btn-ghost btn-circle h-11 min-h-11 w-11 min-w-11 flex-shrink-0 border-0 ${
+              selectedConversation?.type === 'group'
+                ? 'text-base-content/70 hover:bg-base-300/70'
+                : 'text-base-content/30 opacity-50 cursor-not-allowed'
+            }`}
+          >
+            <PencilSquareIcon className="h-6 w-6" />
+          </button>
+          <div className="relative flex flex-col items-center" ref={railPinnedRef}>
+            <button
+              type="button"
+              onClick={() => setShowRailPinnedMenu(prev => !prev)}
+              disabled={!selectedConversation || rmqPinnedRows.length === 0}
+              aria-expanded={showRailPinnedMenu}
+              title={
+                !selectedConversation
+                  ? 'Open a chat to see pinned messages'
+                  : rmqPinnedRows.length === 0
+                    ? 'No pinned messages'
+                    : 'Pinned messages'
+              }
+              aria-label="Pinned messages"
+              className={`btn btn-ghost btn-circle relative h-11 min-h-11 w-11 min-w-11 flex-shrink-0 border-0 ${
+                selectedConversation && rmqPinnedRows.length > 0
+                  ? showRailPinnedMenu
+                    ? 'bg-base-300 text-amber-600 hover:bg-base-300'
+                    : 'text-base-content/70 hover:bg-base-300/70'
+                  : 'text-base-content/30 opacity-50 cursor-not-allowed'
+              }`}
+            >
+              <BookmarkIcon className="h-6 w-6" />
+              {rmqPinnedRows.length > 0 && (
+                <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-bold text-white">
+                  {rmqPinnedRows.length > 99 ? '99+' : rmqPinnedRows.length}
+                </span>
+              )}
+            </button>
+            {showRailPinnedMenu && rmqPinnedRows.length > 0 && (
+              <div
+                className="absolute top-0 left-full z-[320] ml-2 max-h-80 w-72 overflow-y-auto rounded-lg border border-base-300 bg-base-100 p-1.5 shadow-lg"
+                role="menu"
+              >
+                <div className="flex items-center gap-2 px-2 py-1.5">
+                  <BookmarkIcon className="h-4 w-4 shrink-0 text-amber-500" />
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-base-content/55">
+                    Pinned messages
+                  </span>
+                </div>
+                {rmqPinnedRows.map(row => {
+                  const sender =
+                    row.message.sender?.tenants_employee?.display_name ||
+                    row.message.sender?.full_name ||
+                    'User';
+                  const preview = (() => {
+                    const t = (row.message.content || '').trim();
+                    if (t) return t.length > 90 ? `${t.slice(0, 90)}…` : t;
+                    if (row.message.message_type === 'album' && row.message.media_attachments?.length) {
+                      return `🖼️ ${row.message.media_attachments.length} media`;
+                    }
+                    if (row.message.message_type === 'image') return '📷 Image';
+                    if (row.message.message_type === 'voice') return '🎤 Voice message';
+                    if (row.message.attachment_name) return `📎 ${row.message.attachment_name}`;
+                    return 'Message';
+                  })();
+                  return (
+                    <div key={row.pinRowId} className="flex items-start gap-1.5 rounded-lg px-1.5 py-1.5 hover:bg-base-200">
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 text-left"
+                        onClick={() => {
+                          setShowRailPinnedMenu(false);
+                          scrollToMessageInChat(row.message.id);
+                        }}
+                      >
+                        <span className="block text-[11px] font-medium text-base-content/60">{sender}</span>
+                        <span className="block truncate text-sm text-base-content">{preview}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-xs btn-circle shrink-0"
+                        title="Unpin"
+                        onClick={() => togglePinMessage(row.message)}
+                      >
+                        <XMarkIcon className="h-4 w-4" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (!selectedConversation) {
+                toast.error('Open a chat to set its background');
+                return;
+              }
+              backgroundImageInputRef.current?.click();
+            }}
+            disabled={!selectedConversation || isUploadingBackground}
+            title={selectedConversation ? 'Change chat background' : 'Open a chat to set its background'}
+            aria-label="Change chat background"
+            className={`btn btn-ghost btn-circle h-11 min-h-11 w-11 min-w-11 flex-shrink-0 border-0 ${
+              selectedConversation
+                ? 'text-base-content/70 hover:bg-base-300/70'
+                : 'text-base-content/30 opacity-50 cursor-not-allowed'
+            }`}
+          >
+            {isUploadingBackground ? (
+              <span className="loading loading-spinner loading-sm" />
+            ) : (
+              <PhotoIcon className="h-6 w-6" />
+            )}
+          </button>
+        </div>
+        <div className="min-h-0 flex-1" />
+        <div className="relative flex flex-col items-center px-1 pb-4" ref={railSettingsRef}>
+          <button
+            type="button"
+            onClick={() => setShowRailSettingsMenu(prev => !prev)}
+            title="Settings"
+            aria-label="Settings"
+            aria-expanded={showRailSettingsMenu}
+            className={`btn btn-ghost btn-circle h-11 min-h-11 w-11 min-w-11 flex-shrink-0 border-0 ${
+              showRailSettingsMenu
+                ? 'bg-base-300 text-base-content hover:bg-base-300'
+                : 'text-base-content/70 hover:bg-base-300/70'
+            }`}
+          >
+            <Cog6ToothIcon className="h-6 w-6" />
+          </button>
+          {showRailSettingsMenu && (
+            <div
+              className="absolute bottom-0 left-full z-[320] ml-2 min-w-[240px] rounded-lg border border-base-300 bg-base-100 p-1.5 shadow-lg"
+              role="menu"
+            >
+              <div className="px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wide text-base-content/45">
+                Settings
+              </div>
+              <button
+                type="button"
+                role="menuitemcheckbox"
+                aria-checked={enterToSend}
+                onClick={() => setEnterToSend(prev => !prev)}
+                className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-base-200"
+              >
+                <span className="flex items-center gap-3">
+                  <PaperAirplaneIcon className="h-5 w-5 flex-shrink-0 text-base-content/70" />
+                  <span className="whitespace-nowrap text-sm text-base-content">Send with Enter</span>
+                </span>
+                <span
+                  className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors ${
+                    enterToSend ? 'bg-[#3E28CD]' : 'bg-base-300'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                      enterToSend ? 'translate-x-4' : 'translate-x-0.5'
+                    }`}
+                  />
+                </span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!chatBackgroundImageUrl || isUploadingBackground}
+                onClick={() => {
+                  setShowRailSettingsMenu(false);
+                  resetBackgroundToDefault();
+                }}
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-base-200 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <ArrowPathIcon className="h-5 w-5 flex-shrink-0 text-base-content/70" />
+                <span className="whitespace-nowrap text-sm text-base-content">Reset chat background</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* Sidebar - Desktop */}
       <div className="hidden lg:flex w-96 bg-base-100 border-r border-base-300 flex-col shadow-lg">
         {/* Header + Chats / Groups segmented control (grey, inset track + raised active pill) */}
-        <div className="bg-base-100 px-4 pt-4 pb-3 border-b border-base-300/60">
+        <div className="bg-base-100 px-4 pt-4 pb-3">
           <div className="mb-3 flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-3">
-              {activeTab === 'groups' && (
-                <button
-                  type="button"
-                  onClick={() => setShowCreateGroupModal(true)}
-                  className="btn btn-ghost btn-circle btn-sm shrink-0 text-base-content/70 hover:bg-base-200"
-                  title="Create Group"
-                >
-                  <PlusIcon className="w-6 h-6" style={{ color: '#3E28CD' }} />
-                </button>
-              )}
               <ChatBubbleLeftRightIcon className="h-8 w-8 shrink-0" style={{ color: '#3E28CD' }} />
               <h1 className="min-w-0 truncate text-xl font-bold text-base-content">RMQ Messages</h1>
             </div>
@@ -8011,6 +8393,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
               >
                 {allUsers.length}
               </span>
+              {chatsUnreadTotal > 0 && (
+                <span className="flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-none text-white">
+                  {chatsUnreadTotal > 99 ? '99+' : chatsUnreadTotal}
+                </span>
+              )}
             </button>
             <button
               type="button"
@@ -8031,12 +8418,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                   {filteredGroupConversations.length}
                 </span>
               ) : null}
+              {groupsUnreadTotal > 0 && (
+                <span className="flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-none text-white">
+                  {groupsUnreadTotal > 99 ? '99+' : groupsUnreadTotal}
+                </span>
+              )}
             </button>
           </div>
         </div>
 
         {/* Search */}
-        <div className="px-4 pt-1 pb-2 border-b border-base-300 bg-base-100">
+        <div className="px-4 pt-1 pb-2 bg-base-100">
           <div className="relative">
             <MagnifyingGlassIcon
               className="pointer-events-none absolute left-3 top-1/2 z-10 h-5 w-5 -translate-y-1/2 text-base-content/60"
@@ -8044,9 +8436,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
               aria-hidden
             />
             <input
+              ref={sidebarSearchInputRef}
               type="search"
               placeholder="Search"
-              className="input input-bordered relative z-0 w-full pl-10 input-sm"
+              className="input input-sm relative z-0 w-full rounded-full border-none bg-gray-100 pl-10 focus:outline-none dark:bg-base-300/60"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               aria-label="Search"
@@ -8104,7 +8497,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                   <div
                     key={user.id}
                     onClick={() => startDirectConversation(user.id)}
-                    className={`min-h-[72px] px-4 py-3 cursor-pointer transition-all duration-150 ${
+                    className={`relative min-h-[72px] px-4 py-3 cursor-pointer transition-all duration-150 after:pointer-events-none after:absolute after:bottom-0 after:right-0 after:left-[64px] after:h-px after:bg-gray-200 after:content-[''] dark:after:bg-base-300/60 ${
                       isSelectedContact
                         ? `${RMQ_SEL_ROW} hover:brightness-[0.99]`
                         : 'bg-base-100 hover:bg-base-200 hover:shadow-sm dark:hover:bg-base-300/55'
@@ -8132,13 +8525,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
 
                       <div className="min-w-0 flex-1 py-0.5">
                         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-0.5">
-                          <span
-                            className={`min-w-0 truncate text-sm font-semibold ${isSelectedContact ? RMQ_SEL_TITLE : 'text-base-content'}`}
-                            title={contactListTitle}
-                            dir={nameDir}
-                            style={contactSidebarTextStyle(nameDir, userName || '')}
-                          >
-                            {userName || `User ${user.id.slice(-4)}`}
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span
+                              className={`min-w-0 truncate text-sm font-semibold ${isSelectedContact ? RMQ_SEL_TITLE : 'text-base-content'}`}
+                              title={contactListTitle}
+                              dir={nameDir}
+                              style={contactSidebarTextStyle(nameDir, userName || '')}
+                            >
+                              {userName || `User ${user.id.slice(-4)}`}
+                            </span>
+                            {!user.employee_id && (
+                              <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                                Extern
+                              </span>
+                            )}
                           </span>
                           <span
                             className={`shrink-0 text-right text-[11px] tabular-nums whitespace-nowrap ${isSelectedContact ? RMQ_SEL_TIME : 'text-base-content/45'}`}
@@ -8265,7 +8665,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
 
       {/* Mobile Sidebar: header + search stay fixed; tabs + list scroll together */}
       <div className={`lg:hidden ${showMobileConversations ? 'flex' : 'hidden'} flex-1 min-h-0 w-full flex-col bg-base-100`}>
-        <div className="shrink-0 border-b border-base-300/60 bg-white px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
+        <div className="shrink-0 bg-white px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
           <div className="flex items-start justify-between gap-2">
             <div className="flex min-w-0 flex-1 items-center gap-2">
               {activeTab === 'groups' && (
@@ -8292,7 +8692,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
           </div>
         </div>
 
-        <div className="shrink-0 border-b border-base-300 bg-base-100 px-4 pt-1 pb-2">
+        <div className="shrink-0 bg-base-100 px-4 pt-1 pb-2">
           <div className="relative">
             <MagnifyingGlassIcon
               className="pointer-events-none absolute left-3 top-1/2 z-10 h-5 w-5 -translate-y-1/2 text-base-content/60"
@@ -8302,7 +8702,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
             <input
               type="search"
               placeholder="Search"
-              className="input input-bordered input-md relative z-0 w-full pl-10 text-base"
+              className="input input-md relative z-0 w-full rounded-full border-none bg-gray-100 pl-10 text-base focus:outline-none dark:bg-base-300/60"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               aria-label="Search"
@@ -8334,6 +8734,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                 >
                   {allUsers.length}
                 </span>
+                {chatsUnreadTotal > 0 && (
+                  <span className="flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-none text-white">
+                    {chatsUnreadTotal > 99 ? '99+' : chatsUnreadTotal}
+                  </span>
+                )}
               </button>
               <button
                 type="button"
@@ -8354,6 +8759,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                     {filteredGroupConversations.length}
                   </span>
                 ) : null}
+                {groupsUnreadTotal > 0 && (
+                  <span className="flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-bold leading-none text-white">
+                    {groupsUnreadTotal > 99 ? '99+' : groupsUnreadTotal}
+                  </span>
+                )}
               </button>
             </div>
           </div>
@@ -8407,7 +8817,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                   <div
                     key={user.id}
                     onClick={() => startDirectConversation(user.id)}
-                    className={`min-h-[84px] px-4 py-3.5 cursor-pointer transition-colors ${
+                    className={`relative min-h-[84px] px-4 py-3.5 cursor-pointer transition-colors after:pointer-events-none after:absolute after:bottom-0 after:right-0 after:left-[72px] after:h-px after:bg-gray-200 after:content-[''] dark:after:bg-base-300/60 ${
                       isSelectedContact ? `${RMQ_SEL_ROW} hover:brightness-[0.99]` : 'bg-base-100 hover:bg-base-200/70 active:bg-base-200'
                     }`}
                   >
@@ -8433,13 +8843,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
 
                       <div className="min-w-0 flex-1 py-0.5">
                         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-2 gap-y-0.5">
-                          <span
-                            className={`min-w-0 truncate text-base font-semibold leading-tight ${isSelectedContact ? RMQ_SEL_TITLE : 'text-base-content'}`}
-                            title={contactListTitle}
-                            dir={nameDirM}
-                            style={contactSidebarTextStyle(nameDirM, userName || '')}
-                          >
-                            {userName || `User ${user.id.slice(-4)}`}
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span
+                              className={`min-w-0 truncate text-base font-semibold leading-tight ${isSelectedContact ? RMQ_SEL_TITLE : 'text-base-content'}`}
+                              title={contactListTitle}
+                              dir={nameDirM}
+                              style={contactSidebarTextStyle(nameDirM, userName || '')}
+                            >
+                              {userName || `User ${user.id.slice(-4)}`}
+                            </span>
+                            {!user.employee_id && (
+                              <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-px text-[10px] font-bold uppercase tracking-wide text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                                Extern
+                              </span>
+                            )}
                           </span>
                           <span
                             className={`shrink-0 text-right text-xs tabular-nums whitespace-nowrap ${isSelectedContact ? RMQ_SEL_TIME : 'text-base-content/45'}`}
@@ -8678,6 +9095,48 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                   />
                 </div>
                 <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end justify-self-end min-w-0">
+                  {/* Group chat: comments on the current user's own messages */}
+                  {selectedConversation.type !== 'direct' && myCommentedMessages.length > 0 && (
+                    <div className="dropdown dropdown-end">
+                      <label tabIndex={0} className="btn btn-ghost btn-sm btn-circle relative text-sky-600 hover:bg-sky-500/15" title="Comments on your messages">
+                        <ChatBubbleBottomCenterTextIcon className="w-5 h-5" />
+                        <span className="absolute -top-0.5 -right-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-sky-600 px-1 text-[10px] font-bold text-white">
+                          {myCommentedMessages.length > 99 ? '99+' : myCommentedMessages.length}
+                        </span>
+                      </label>
+                      <ul
+                        tabIndex={0}
+                        className="dropdown-content z-[300] menu max-h-72 min-w-[16rem] overflow-y-auto rounded-box border border-base-300 bg-base-100 p-2 shadow-lg"
+                      >
+                        <li className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-base-content/50">
+                          Comments on your messages
+                        </li>
+                        {myCommentedMessages.map(({ message, count }) => (
+                          <li key={message.id} className="py-0.5">
+                            <button
+                              type="button"
+                              className="flex items-start gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-base-200"
+                              onClick={() => {
+                                (document.activeElement as HTMLElement | null)?.blur();
+                                scrollToMessage(message.id, 'smooth');
+                                openRmqMessageCommentsModal(message);
+                              }}
+                            >
+                              <ChatBubbleBottomCenterTextIcon className="mt-0.5 h-4 w-4 shrink-0 text-sky-600" />
+                              <span className="min-w-0">
+                                <span className="block truncate text-sm text-base-content">
+                                  {(message.content?.trim() || '[attachment]').slice(0, 60)}
+                                </span>
+                                <span className="block text-[11px] text-base-content/55">
+                                  {count} {count === 1 ? 'comment' : 'comments'}
+                                </span>
+                              </span>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                   <div className="dropdown dropdown-end">
                     <label tabIndex={0} className="btn btn-ghost btn-sm btn-circle relative text-amber-700 hover:bg-amber-500/15" title="Flags on this chat">
                       <FlagIcon className="w-5 h-5" />
@@ -8726,19 +9185,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                       )}
                     </ul>
                   </div>
-                  {/* Background Image Upload Button */}
-                  <button
-                    onClick={() => backgroundImageInputRef.current?.click()}
-                    disabled={isUploadingBackground}
-                    className="btn btn-ghost btn-sm btn-circle text-base-content/70 hover:bg-base-200"
-                    title="Upload chat background image"
-                  >
-                    {isUploadingBackground ? (
-                      <div className="loading loading-spinner loading-sm"></div>
-                    ) : (
-                      <PhotoIcon className="w-5 h-5" />
-                    )}
-                  </button>
+                  {/* Background image upload moved to the desktop left rail; input + reset kept here */}
                   {chatBackgroundImageUrl && (
                     <button
                       onClick={resetBackgroundToDefault}
@@ -8869,10 +9316,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
             <div
               ref={desktopMessagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-2 sm:p-4 pb-4 space-y-2 relative rmq-messages-area"
+              className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain p-2 sm:p-4 pb-4 space-y-2 relative rmq-messages-area"
               style={{
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
-                backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#ffffff'),
+                backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#f3f4f6'),
                 backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
                 backgroundPosition: chatBackgroundImageUrl ? 'center' : 'auto',
                 backgroundRepeat: chatBackgroundImageUrl ? 'no-repeat' : 'repeat',
@@ -9637,7 +10084,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                       setShouldAutoScroll(true);
                       scrollToBottom('smooth');
                     }}
-                    className="rounded-full border border-base-300/90 bg-base-100/95 p-2.5 text-base-content/70 shadow-md backdrop-blur-sm transition-colors hover:bg-base-200 hover:text-base-content"
+                    className="rounded-full border border-gray-200 bg-white p-2.5 text-black shadow-md transition-colors hover:bg-gray-50"
                     title="Scroll to bottom"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -10202,6 +10649,47 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                         {getConversationTitle(selectedConversation)}
                       </h2>
                     </div>
+                    {myCommentedMessages.length > 0 && (
+                      <div className="dropdown dropdown-end shrink-0">
+                        <label tabIndex={0} className="btn btn-ghost btn-sm btn-circle relative h-9 min-h-9 text-sky-600">
+                          <ChatBubbleBottomCenterTextIcon className="h-5 w-5" />
+                          <span className="absolute -top-0.5 -right-0.5 flex h-3.5 min-w-[0.875rem] items-center justify-center rounded-full bg-sky-600 px-0.5 text-[9px] font-bold leading-none text-white">
+                            {myCommentedMessages.length > 99 ? '99+' : myCommentedMessages.length}
+                          </span>
+                        </label>
+                        <ul
+                          tabIndex={0}
+                          className="dropdown-content z-[300] menu max-h-72 min-w-[14rem] overflow-y-auto rounded-box border border-base-300 bg-base-100 p-2 shadow-lg"
+                        >
+                          <li className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-base-content/50">
+                            Comments on your messages
+                          </li>
+                          {myCommentedMessages.map(({ message, count }) => (
+                            <li key={message.id} className="py-0.5">
+                              <button
+                                type="button"
+                                className="flex items-start gap-2 rounded-lg px-1.5 py-1.5 text-left hover:bg-base-200"
+                                onClick={() => {
+                                  (document.activeElement as HTMLElement | null)?.blur();
+                                  scrollToMessage(message.id, 'smooth');
+                                  openRmqMessageCommentsModal(message);
+                                }}
+                              >
+                                <ChatBubbleBottomCenterTextIcon className="mt-0.5 h-4 w-4 shrink-0 text-sky-600" />
+                                <span className="min-w-0">
+                                  <span className="block truncate text-xs text-base-content">
+                                    {(message.content?.trim() || '[attachment]').slice(0, 50)}
+                                  </span>
+                                  <span className="block text-[10px] text-base-content/55">
+                                    {count} {count === 1 ? 'comment' : 'comments'}
+                                  </span>
+                                </span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                     <div className="dropdown dropdown-end shrink-0">
                       <label tabIndex={0} className="btn btn-ghost btn-sm btn-circle relative h-9 min-h-9 text-amber-700">
                         <FlagIcon className="h-5 w-5" />
@@ -10400,11 +10888,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
             <div
               ref={mobileMessagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 overflow-y-auto min-h-0 overscroll-contain relative rmq-messages-area pb-[calc(7.25rem+env(safe-area-inset-bottom,0px))] bg-white p-2 sm:p-4 space-y-2"
+              className="flex-1 overflow-y-auto overflow-x-hidden min-h-0 overscroll-contain relative rmq-messages-area pb-[calc(7.25rem+env(safe-area-inset-bottom,0px))] bg-gray-100 p-2 sm:p-4 space-y-2"
               style={{
                 WebkitOverflowScrolling: 'touch',
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
-                backgroundColor: chatBackgroundImageUrl ? 'transparent' : '#ffffff',
+                backgroundColor: chatBackgroundImageUrl ? 'transparent' : '#f3f4f6',
                 backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
                 backgroundPosition: chatBackgroundImageUrl ? 'center' : 'auto',
                 backgroundRepeat: chatBackgroundImageUrl ? 'no-repeat' : 'repeat',
@@ -11169,7 +11657,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
                       setShouldAutoScroll(true);
                       scrollToBottom('smooth');
                     }}
-                    className="rounded-full border border-base-300/90 bg-base-100/95 p-2.5 text-base-content/70 shadow-md backdrop-blur-sm transition-colors hover:bg-base-200 hover:text-base-content"
+                    className="rounded-full border border-gray-200 bg-white p-2.5 text-black shadow-md transition-colors hover:bg-gray-50"
                     title="Scroll to bottom"
                   >
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -11573,6 +12061,99 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({
 
 
       {/* Create Group Modal */}
+      {/* New Direct Message modal — search across ALL users (not just employees) */}
+      {showNewDirectModal && (
+        <div
+          className="fixed inset-0 z-[330] flex items-center justify-center bg-black/50 p-4"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setShowNewDirectModal(false);
+          }}
+        >
+          <div className="flex max-h-[80vh] w-full max-w-md flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
+            <div className="flex items-center justify-between gap-2 border-b border-gray-200 p-4">
+              <h3 className="text-lg font-bold text-gray-900">New direct message</h3>
+              <button
+                type="button"
+                onClick={() => setShowNewDirectModal(false)}
+                className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                aria-label="Close"
+              >
+                <XMarkIcon className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="border-b border-gray-100 p-3">
+              <div className="relative">
+                <MagnifyingGlassIcon
+                  className="pointer-events-none absolute left-3 top-1/2 z-10 h-5 w-5 -translate-y-1/2 text-gray-400"
+                  aria-hidden
+                />
+                <input
+                  ref={newDirectSearchRef}
+                  type="search"
+                  value={newDirectSearch}
+                  onChange={(e) => setNewDirectSearch(e.target.value)}
+                  placeholder="Search all users by name or email"
+                  className="w-full rounded-full border border-gray-200 bg-gray-100 py-2 pl-10 pr-4 text-sm text-gray-900 outline-none focus:bg-white focus:ring-2 focus:ring-[#3E28CD]/30"
+                />
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-2">
+              {newDirectLoading ? (
+                <div className="flex flex-col items-center justify-center gap-2 py-10 text-gray-500">
+                  <span className="loading loading-spinner loading-md" />
+                  <span className="text-sm">Loading users…</span>
+                </div>
+              ) : newDirectFilteredUsers.length === 0 ? (
+                <div className="py-10 text-center text-sm text-gray-500">
+                  {newDirectSearch.trim() ? 'No users match your search' : 'No users found'}
+                </div>
+              ) : (
+                newDirectFilteredUsers.map((user) => {
+                  const emp = Array.isArray(user.tenants_employee) ? user.tenants_employee[0] : user.tenants_employee;
+                  const displayName = emp?.display_name || user.full_name || user.email || 'User';
+                  const subtitle = emp?.bonuses_role
+                    ? getRoleDisplayName(emp.bonuses_role)
+                    : (user.email || (emp ? 'Employee' : 'User'));
+                  return (
+                    <button
+                      key={user.id}
+                      type="button"
+                      onClick={() => {
+                        setShowNewDirectModal(false);
+                        void startDirectConversation(user.id);
+                      }}
+                      className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-gray-50"
+                    >
+                      {renderUserAvatar({
+                        userId: user.id,
+                        name: displayName,
+                        photoUrl: emp?.photo_url,
+                        sizeClass: 'w-10 h-10',
+                        borderClass: '',
+                        textClass: 'text-sm',
+                      })}
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1.5">
+                          <span className="min-w-0 truncate text-sm font-semibold text-gray-900">{displayName}</span>
+                          {!user.employee_id && (
+                            <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-px text-[9px] font-bold uppercase tracking-wide text-amber-700">
+                              Extern
+                            </span>
+                          )}
+                        </span>
+                        {subtitle && (
+                          <span className="block truncate text-xs text-gray-500">{subtitle}</span>
+                        )}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {showCreateGroupModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 max-h-[90vh] flex flex-col">
