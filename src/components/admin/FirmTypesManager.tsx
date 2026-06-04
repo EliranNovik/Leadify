@@ -1,7 +1,8 @@
 import React from 'react';
 import GenericCRUDManager from './GenericCRUDManager';
+import type { AdminCrudEmbedProps } from './FirmsManager';
 
-const FirmTypesManager: React.FC = () => {
+const FirmTypesManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) => {
   const fields = [
     {
       name: 'code',
@@ -46,7 +47,14 @@ const FirmTypesManager: React.FC = () => {
       description="Classifications used on firms (e.g. Service provider, Ref in, Ref out)"
       pageSize={20}
       sortColumn="sort_order"
+      sortAscending
       skipIdAssignment
+      listHidden={Boolean(embed)}
+      hideTitle={Boolean(embed)}
+      hideAddButton={Boolean(embed)}
+      externalAddOpen={embed?.addDrawerOpen}
+      onExternalAddOpenChange={embed?.onAddDrawerOpenChange}
+      onRecordCreated={embed?.onRecordCreated}
     />
   );
 };

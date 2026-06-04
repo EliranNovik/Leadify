@@ -20,6 +20,7 @@ import {
   PhoneIcon,
   UserIcon,
   DocumentChartBarIcon,
+  BuildingOffice2Icon,
   CalendarIcon,
   ArrowRightOnRectangleIcon,
   UserGroupIcon,
@@ -551,6 +552,28 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             navigate(tab.path || '/');
           },
         });
+        if (tab.path === '/reports') {
+          items.push({
+            id: 'report_external_firms',
+            label: 'External Firms',
+            description: '/reports/external-firms',
+            keywords: [
+              'External Firms',
+              'external firms',
+              'external',
+              'firms',
+              'reports',
+              'marketing',
+              'partners',
+              'tenants',
+            ],
+            icon: BuildingOffice2Icon,
+            onSelect: () => {
+              setShowQuickActionsDropdown(false);
+              navigate('/reports/external-firms');
+            },
+          });
+        }
       });
 
     // Keep hamburger search aligned with Sidebar pages (including grouped sub-items).
@@ -577,6 +600,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       { label: 'Email Leads', path: '/email-leads', keywords: ['email', 'mail'] },
       { label: 'Calls Ledger', path: '/calls-ledger', keywords: ['calls', 'phone'] },
       { label: 'Reports', path: '/reports' },
+      {
+        label: 'External Firms',
+        path: '/reports/external-firms',
+        keywords: ['external', 'firms', 'marketing', 'partners', 'tenants'],
+      },
       { label: 'Settings', path: '/settings' },
       ...(currentUser?.extern ? [{ label: 'External settings', path: '/external-settings', keywords: ['external', 'profile', 'firm'] }] : []),
       { label: 'Admin Panel', path: '/admin', keywords: ['admin'] },
@@ -696,6 +724,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
 
     const reportSearchItems = [
+      { label: 'External firms', category: 'Marketing', route: '/reports/external-firms' },
       { label: 'Sources pie', category: 'Marketing' },
       { label: 'Category & source', category: 'Marketing' },
       { label: 'Convertion', category: 'Marketing' },

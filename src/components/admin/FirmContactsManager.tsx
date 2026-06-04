@@ -1,7 +1,15 @@
 import React from 'react';
 import GenericCRUDManager from './GenericCRUDManager';
 
-const FirmContactsManager: React.FC = () => {
+import type { AdminCrudEmbedProps } from './FirmsManager';
+
+const FirmContactsManager: React.FC<{
+  embed?: AdminCrudEmbedProps & { createDefaults?: Record<string, unknown> };
+  /** Render inside connect-contact overlay; edit drawer stacks above modal. */
+  elevatedDrawer?: boolean;
+  browseFirmId?: string;
+  onRecordSaved?: (record: { id: string; firm_id?: string; [key: string]: unknown }) => void;
+}> = ({ embed, elevatedDrawer = false, browseFirmId, onRecordSaved }) => {
   const fields = [
     {
       name: 'firm_id',
@@ -95,6 +103,8 @@ const FirmContactsManager: React.FC = () => {
     },
   ];
 
+  const firmFilter = browseFirmId?.trim() || embed?.browseFirmId?.trim();
+
   return (
     <GenericCRUDManager
       tableName="firm_contacts"
@@ -104,6 +114,18 @@ const FirmContactsManager: React.FC = () => {
       pageSize={15}
       sortColumn="name"
       skipIdAssignment
+      listHidden={Boolean(embed) && !elevatedDrawer}
+      hideTitle={Boolean(embed) && !elevatedDrawer}
+      hideAddButton={Boolean(embed) && !elevatedDrawer}
+      externalAddOpen={embed?.addDrawerOpen}
+      onExternalAddOpenChange={embed?.onAddDrawerOpenChange}
+      createDefaults={embed?.createDefaults}
+      onRecordCreated={onRecordSaved ?? embed?.onRecordCreated}
+      elevatedDrawer={elevatedDrawer}
+      queryModifier={
+        firmFilter ? (query) => query.eq('firm_id', firmFilter) : undefined
+      }
+      queryModifierKey={firmFilter ?? undefined}
     />
   );
 };

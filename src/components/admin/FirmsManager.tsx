@@ -11,7 +11,15 @@ import FirmLeadSourcesField from './FirmLeadSourcesField';
 import FirmFirmTypesField from './FirmFirmTypesField';
 import FirmTypeBadge from '../FirmTypeBadge';
 
-const FirmsManager: React.FC = () => {
+export type AdminCrudEmbedProps = {
+  addDrawerOpen: boolean;
+  onAddDrawerOpenChange: (open: boolean) => void;
+  onRecordCreated?: (record: { id: string; [key: string]: unknown }) => void;
+  /** When set, pre-filters browse lists that support firm_id (e.g. create contact). */
+  browseFirmId?: string;
+};
+
+const FirmsManager: React.FC<{ embed?: AdminCrudEmbedProps }> = ({ embed }) => {
   const fields = [
     {
       name: 'name',
@@ -164,6 +172,12 @@ const FirmsManager: React.FC = () => {
       pageSize={15}
       sortColumn="name"
       skipIdAssignment
+      listHidden={Boolean(embed)}
+      hideTitle={Boolean(embed)}
+      hideAddButton={Boolean(embed)}
+      externalAddOpen={embed?.addDrawerOpen}
+      onExternalAddOpenChange={embed?.onAddDrawerOpenChange}
+      onRecordCreated={embed?.onRecordCreated}
     />
   );
 };

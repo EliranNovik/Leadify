@@ -56,6 +56,7 @@ import EmployeeFieldAssignmentsManager from './EmployeeFieldAssignmentsManager';
 import { useAdminRole } from '../../hooks/useAdminRole';
 import { useNavigate } from 'react-router-dom';
 import { supabase, isExpectedNoSessionError } from '../../lib/supabase';
+import { consumeAdminPendingNav } from '../../lib/adminPendingNav';
 
 interface AdminTab {
   label: string;
@@ -367,6 +368,18 @@ const AdminPage: React.FC = () => {
   const filteredAdminTabs = useMemo(() => {
     return ADMIN_TABS.filter(tab => !tab.requiresAdmin || isAdmin);
   }, [isAdmin]);
+
+  useEffect(() => {
+    if (isLoading) return;
+    const pending = consumeAdminPendingNav();
+    if (!pending) return;
+    const tabIndex = filteredAdminTabs.findIndex((t) => t.label === pending.tabLabel);
+    if (tabIndex < 0) return;
+    const subIndex = filteredAdminTabs[tabIndex].subcategories.indexOf(pending.subLabel);
+    if (subIndex < 0) return;
+    setOpenTab(tabIndex);
+    setSelected({ tab: tabIndex, sub: subIndex });
+  }, [isLoading, filteredAdminTabs]);
 
   const activeTopTabIndex = useMemo(() => {
     if (selected.tab != null) return selected.tab;

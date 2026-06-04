@@ -70,6 +70,18 @@ interface GenericCRUDManagerProps {
   queryModifierKey?: unknown;
   /** Called after each successful list fetch (e.g. refresh parent totals). */
   onRecordsLoaded?: () => void;
+  /** Hide table/search UI; only show add/edit drawer (controlled by externalAddOpen). */
+  listHidden?: boolean;
+  /** When true, opens the add drawer (use with listHidden). */
+  externalAddOpen?: boolean;
+  /** Called when the drawer closes (save, cancel, or overlay). */
+  onExternalAddOpenChange?: (open: boolean) => void;
+  /** Pre-fill fields when opening the add drawer. */
+  createDefaults?: Partial<Record>;
+  /** After a successful create while listHidden. */
+  onRecordCreated?: (record: Record) => void;
+  /** Stack edit drawer above host overlays (e.g. connect-contact modal). */
+  elevatedDrawer?: boolean;
 }
 
 interface Record {
@@ -108,6 +120,12 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   queryModifier,
   queryModifierKey,
   onRecordsLoaded,
+  listHidden = false,
+  externalAddOpen = false,
+  onExternalAddOpenChange,
+  createDefaults,
+  onRecordCreated,
+  elevatedDrawer = false,
 }) => {
   const [records, setRecords] = useState<Record[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1494,7 +1512,12 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           await fetchRecords();
         }
       }
-      
+
+      const wasCreate = !editingRecord?.id;
+      if ((listHidden || elevatedDrawer) && result && onRecordCreated) {
+        onRecordCreated(result);
+      }
+
       closeModal();
     } catch (error) {
       console.error(`Error saving ${tableName}:`, error);
@@ -1700,8 +1723,10 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       }
     }
     
+    const isEdit = Boolean(record?.id);
+
     // If creating new record, initialize with default values from fields
-    if (!record) {
+    if (!isEdit) {
       const defaultRecord: any = {};
       fields.forEach(field => {
         // Don't include id field for new records - let database auto-generate it
@@ -1722,8 +1747,16 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       });
       // Explicitly ensure id is not set
       delete defaultRecord.id;
+      if (record) {
+        Object.assign(defaultRecord, record);
+        delete defaultRecord.id;
+      }
+      if (createDefaults) {
+        Object.assign(defaultRecord, createDefaults);
+        delete defaultRecord.id;
+      }
       setEditingRecord(defaultRecord);
-    } else {
+    } else if (record) {
       const transformedRecord: Record = { ...record };
       fields.forEach(field => {
         if (field.prepareValueForForm) {
@@ -1751,7 +1784,16 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   const closeModal = () => {
     setEditingRecord(null);
     setIsModalOpen(false);
+    onExternalAddOpenChange?.(false);
   };
+
+  useEffect(() => {
+    if (!listHidden || !externalAddOpen) return;
+    if (isModalOpen) return;
+    const seed = createDefaults ? ({ ...createDefaults } as Record) : undefined;
+    void openModal(seed);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- open when parent toggles externalAddOpen
+  }, [externalAddOpen, listHidden]);
 
   const openDeleteModal = (record: Record) => {
     setRecordToDelete(record);
@@ -2078,6 +2120,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           opacity: 1 !important;
         }
       `}</style>
+      {!listHidden && (
+      <>
       {/* Header */}
       {!hideTitle && (
         <div className="flex justify-between items-center mb-6">
@@ -2360,10 +2404,12 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             </>
           )}
       </div>
+      </>
+      )}
 
       {/* Add/Edit Drawer */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex">
+        <div className={`fixed inset-0 flex ${elevatedDrawer ? 'z-[110]' : listHidden ? 'z-[100]' : 'z-50'}`}>
           {/* Overlay */}
           <div className="fixed inset-0 bg-black/30 transition-opacity duration-300" onClick={closeModal} />
           {/* Drawer */}

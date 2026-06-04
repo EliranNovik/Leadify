@@ -38,7 +38,15 @@ import {
   PencilIcon,
   TrashIcon,
   CameraIcon,
+  Cog6ToothIcon,
+  UserPlusIcon,
+  ArrowDownTrayIcon,
+  ChartBarIcon,
+  Squares2X2Icon,
+  TagIcon,
 } from '@heroicons/react/24/outline';
+import { useNavigate } from 'react-router-dom';
+import { useAdminRole } from '../hooks/useAdminRole';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
 import {
@@ -63,7 +71,18 @@ import {
   type ExpenseTypeRow,
 } from '../lib/expenseTypes';
 import FirmTypeBadge from '../components/FirmTypeBadge';
+import FirmFirmTypesField from '../components/admin/FirmFirmTypesField';
+import {
+  enrichFirmsWithFirmTypes,
+  fetchFirmTypeIdsForFirm,
+  normalizeFirmTypeIds,
+  syncFirmFirmTypesWithToast,
+} from '../lib/firmFirmTypes';
 import { ChannelLabel } from '../components/ChannelLabel';
+import FirmsManager from '../components/admin/FirmsManager';
+import FirmContactsManager from '../components/admin/FirmContactsManager';
+import FirmTypesManager from '../components/admin/FirmTypesManager';
+import { setAdminPendingNav } from '../lib/adminPendingNav';
 import {
   extractFirmProfileImageObjectPath,
   removeFirmProfileImageFromStorage,
@@ -199,6 +218,8 @@ type FirmRow = {
   created_at: string | null;
   updated_at: string | null;
   firm_types?: FirmTypeRow | null;
+  firm_type_ids?: string[];
+  _firm_type_labels?: string[];
   firm_contacts?: FirmContactRow[] | null;
   firm_management_costs?: FirmManagementCostRow[] | null;
   firm_invoices?: FirmInvoiceRow[] | null;
@@ -211,6 +232,38 @@ function formatDate(v?: string | null) {
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return String(v);
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function getFirmTypeIds(firm: FirmRow): string[] {
+  if (firm.firm_type_ids?.length) return firm.firm_type_ids;
+  if (firm.firm_types?.id) return [firm.firm_types.id];
+  return [];
+}
+
+function getFirmTypeLabels(firm: FirmRow): string[] {
+  if (firm._firm_type_labels?.length) return firm._firm_type_labels;
+  if (firm.firm_types?.label) return [firm.firm_types.label];
+  return [];
+}
+
+function FirmTypesBadges({ firm, size = 'sm' }: { firm: FirmRow; size?: 'sm' | 'md' }) {
+  const ids = getFirmTypeIds(firm);
+  const labels = getFirmTypeLabels(firm);
+  if (!ids.length) {
+    return <span className="text-base-content/30">—</span>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {ids.map((id, i) => (
+        <FirmTypeBadge
+          key={`${id}-${i}`}
+          label={labels[i] ?? 'Type'}
+          typeId={id}
+          size={size}
+        />
+      ))}
+    </div>
+  );
 }
 
 type MissingDataRow = {
@@ -227,7 +280,9 @@ function collectMissingDataRows(firms: FirmRow[]): MissingDataRow[] {
   const rows: MissingDataRow[] = [];
   for (const firm of firms) {
     const firmMissing: string[] = [];
-    if (!firm.firm_types?.id) firmMissing.push('Firm type');
+    const typeIds =
+      firm.firm_type_ids ?? (firm.firm_types?.id ? [firm.firm_types.id] : []);
+    if (!typeIds.length) firmMissing.push('Firm type');
     if (!firm.vat_number?.trim()) firmMissing.push('VAT');
     if (!firm.website?.trim()) firmMissing.push('Website');
 
@@ -1160,7 +1215,7 @@ function Breadcrumb({
 }) {
   const isHeader = variant === 'header';
   const navCls = isHeader
-    ? 'flex flex-wrap items-center justify-center gap-1.5 tracking-tight'
+    ? 'flex flex-wrap items-center justify-start gap-1.5 tracking-tight md:justify-center'
     : 'flex items-center gap-1 text-sm';
   const sepCls = (i: number) =>
     isHeader
@@ -1223,7 +1278,17 @@ function Breadcrumb({
 //  Main page
 // ═══════════════════════════════════════════════════════════════════════════════
 
+type SettingsMenuItem = {
+  id: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  onClick: () => void;
+  disabled?: boolean;
+};
+
 export default function ExternalFirmsReportPage() {
+  const navigate = useNavigate();
+  const { isAdmin, isLoading: isAdminLoading } = useAdminRole();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [firms, setFirms] = useState<FirmRow[]>([]);
@@ -1250,6 +1315,7 @@ export default function ExternalFirmsReportPage() {
   
   // Editing state
   const [editingFirm, setEditingFirm] = useState<FirmRow | null>(null);
+  const [editingFirmTypeIds, setEditingFirmTypeIds] = useState<string[]>([]);
   const [editingContact, setEditingContact] = useState<FirmContactRow | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
 
@@ -1271,6 +1337,18 @@ export default function ExternalFirmsReportPage() {
   const [activeLogs, setActiveLogs] = useState<ActivityLog[]>([]);
   const [togglingContactKey, setTogglingContactKey] = useState<string | null>(null);
   const [profileImageUploadKey, setProfileImageUploadKey] = useState<string | null>(null);
+  const [firmCreateDrawerOpen, setFirmCreateDrawerOpen] = useState(false);
+  const [contactCreateDrawerOpen, setContactCreateDrawerOpen] = useState(false);
+  const [connectContactModalOpen, setConnectContactModalOpen] = useState(false);
+  const [firmTypeCreateDrawerOpen, setFirmTypeCreateDrawerOpen] = useState(false);
+  const [firmTypeOptions, setFirmTypeOptions] = useState<{ id: string; label: string }[]>([]);
+  const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
+  const settingsMenuRef = useRef<HTMLDivElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsMenuPanelRef = useRef<HTMLDivElement>(null);
+  const [settingsMenuAnchor, setSettingsMenuAnchor] = useState<{ left: number; bottom: number } | null>(
+    null,
+  );
   const [missingDataModalOpen, setMissingDataModalOpen] = useState(false);
   const [isLoadingLogs, setIsLoadingLogs] = useState(false);
 
@@ -1360,6 +1438,7 @@ export default function ExternalFirmsReportPage() {
 
       if (error) throw error;
       const nextFirms = (data as any as FirmRow[]) || [];
+      await enrichFirmsWithFirmTypes(nextFirms);
       setFirms(nextFirms);
 
       const sourceIds = Array.from(
@@ -1412,6 +1491,81 @@ export default function ExternalFirmsReportPage() {
     }
   };
 
+  const handleFirmContactRecordSaved = useCallback(
+    (record: { id: string; firm_id?: string; [key: string]: unknown }) => {
+      void fetchData(true);
+      const firmId = record?.firm_id ? String(record.firm_id) : selectedFirmId;
+      if (firmId) {
+        setSelectedFirmId(firmId);
+        if (record?.id) setSelectedContactId(String(record.id));
+      }
+    },
+    [selectedFirmId],
+  );
+
+  useEffect(() => {
+    if (!connectContactModalOpen) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [connectContactModalOpen]);
+
+  useLayoutEffect(() => {
+    if (!settingsMenuOpen) {
+      setSettingsMenuAnchor(null);
+      return;
+    }
+    const updateAnchor = () => {
+      const el = settingsButtonRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      setSettingsMenuAnchor({
+        left: rect.right + 8,
+        bottom: window.innerHeight - rect.bottom,
+      });
+    };
+    updateAnchor();
+    window.addEventListener('resize', updateAnchor);
+    window.addEventListener('scroll', updateAnchor, true);
+    return () => {
+      window.removeEventListener('resize', updateAnchor);
+      window.removeEventListener('scroll', updateAnchor, true);
+    };
+  }, [settingsMenuOpen]);
+
+  useEffect(() => {
+    if (!settingsMenuOpen) return;
+    let onPointerDown: ((e: PointerEvent) => void) | null = null;
+    const timerId = window.setTimeout(() => {
+      onPointerDown = (e: PointerEvent) => {
+        const target = e.target as Node;
+        if (settingsButtonRef.current?.contains(target)) return;
+        if (settingsMenuPanelRef.current?.contains(target)) return;
+        setSettingsMenuOpen(false);
+      };
+      document.addEventListener('pointerdown', onPointerDown, true);
+    }, 0);
+    return () => {
+      window.clearTimeout(timerId);
+      if (onPointerDown) {
+        document.removeEventListener('pointerdown', onPointerDown, true);
+      }
+    };
+  }, [settingsMenuOpen]);
+
+  const closeSettingsMenu = useCallback(() => setSettingsMenuOpen(false), []);
+
+  const goToAdmin = useCallback(
+    (tabLabel: string, subLabel: string) => {
+      setAdminPendingNav(tabLabel, subLabel);
+      navigate('/admin');
+      closeSettingsMenu();
+    },
+    [navigate, closeSettingsMenu],
+  );
+
   const fetchSavedViews = async () => {
     try {
       const { data, error } = await supabase
@@ -1450,9 +1604,28 @@ export default function ExternalFirmsReportPage() {
     }
   };
 
+  const fetchFirmTypeOptions = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('firm_types')
+        .select('id, label, sort_order')
+        .order('sort_order', { ascending: true });
+      if (error) throw error;
+      setFirmTypeOptions(
+        (data || []).map((row) => ({
+          id: String(row.id),
+          label: (row.label as string | null)?.trim() || 'Unknown',
+        })),
+      );
+    } catch (err) {
+      console.error('Failed to load firm types:', err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchData();
     fetchSavedViews();
+    void fetchFirmTypeOptions();
   }, []);
 
   useEffect(() => {
@@ -1461,13 +1634,39 @@ export default function ExternalFirmsReportPage() {
     }
   }, [selectedFirmId]);
 
+  useEffect(() => {
+    if (!editingFirm) {
+      setEditingFirmTypeIds([]);
+      return;
+    }
+    const loadTypeIds = async () => {
+      let ids = editingFirm.firm_type_ids;
+      if (!ids?.length) {
+        try {
+          ids = await fetchFirmTypeIdsForFirm(editingFirm.id);
+        } catch (err) {
+          console.error('Failed to load firm types for edit:', err);
+          ids = [];
+        }
+      }
+      if (!ids?.length && editingFirm.firm_type_id) {
+        ids = [String(editingFirm.firm_type_id)];
+      }
+      setEditingFirmTypeIds(normalizeFirmTypeIds(ids));
+    };
+    void loadTypeIds();
+  }, [editingFirm?.id]);
+
   const availableTypes = useMemo(() => {
     const typesMap = new Map<string, string>();
-    firms.forEach(f => {
+    firmTypeOptions.forEach((t) => typesMap.set(t.id, t.label));
+    firms.forEach((f) => {
       if (f.firm_types?.id) typesMap.set(f.firm_types.id, f.firm_types.label || 'Unknown');
     });
-    return Array.from(typesMap.entries()).map(([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label));
-  }, [firms]);
+    return Array.from(typesMap.entries())
+      .map(([id, label]) => ({ id, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [firms, firmTypeOptions]);
 
   const filtered = useMemo(() => {
     let result = firms;
@@ -1478,7 +1677,7 @@ export default function ExternalFirmsReportPage() {
       result = result.filter(f => f.is_active === wantActive);
     }
     if (typeFilter !== 'all') {
-      result = result.filter(f => f.firm_types?.id === typeFilter);
+      result = result.filter((f) => getFirmTypeIds(f).includes(typeFilter));
     }
 
     // Apply Search Query
@@ -1512,8 +1711,8 @@ export default function ExternalFirmsReportPage() {
       if (sortKey === 'name') {
         cmp = (a.name || '').localeCompare(b.name || '');
       } else if (sortKey === 'type') {
-        const typeA = a.firm_types?.label || '';
-        const typeB = b.firm_types?.label || '';
+        const typeA = getFirmTypeLabels(a).join(', ') || '';
+        const typeB = getFirmTypeLabels(b).join(', ') || '';
         cmp = typeA.localeCompare(typeB);
       } else if (sortKey === 'contacts') {
         const countA = a.firm_contacts?.length || 0;
@@ -1553,28 +1752,38 @@ export default function ExternalFirmsReportPage() {
     return (selectedFirm.firm_contacts || []).find((c) => c.id === selectedContactId) || null;
   }, [selectedFirm, selectedContactId]);
 
-  const handleUpdateFirm = async (formData: Partial<FirmRow>) => {
+  const handleUpdateFirm = async (
+    formData: Partial<FirmRow>,
+    firmTypeIds: string[],
+  ) => {
     if (!editingFirm) return;
     setIsUpdating(true);
     try {
+      const cleanTypeIds = normalizeFirmTypeIds(firmTypeIds);
+      const payload = {
+        ...formData,
+        firm_type_id: cleanTypeIds[0] ?? null,
+      };
+
       const { error } = await supabase
         .from('firms')
-        .update(formData)
+        .update(payload)
         .eq('id', editingFirm.id);
 
       if (error) throw error;
 
-      // Optimistic Update
-      setFirms(prev => prev.map(f => f.id === editingFirm.id ? { ...f, ...formData } : f));
+      await syncFirmFirmTypesWithToast(editingFirm.id, cleanTypeIds);
+
       toast.success('Firm updated successfully');
       setEditingFirm(null);
+      setEditingFirmTypeIds([]);
+      await fetchData(true);
 
-      // Log Activity
       logActivity({
         firm_id: editingFirm.id,
         contact_id: null,
         action_type: 'UPDATE_FIRM',
-        description: `Modified firm details via slide-over.`
+        description: `Modified firm details via slide-over.`,
       });
       fetchActivityLogs(editingFirm.id);
     } catch (err: any) {
@@ -2296,6 +2505,16 @@ export default function ExternalFirmsReportPage() {
     toast.success(`Applied view: ${view.view_name}`);
   };
 
+  const resetFiltersAndSort = useCallback(() => {
+    setQuery('');
+    setStatusFilter('all');
+    setTypeFilter('all');
+    setSortKey('name');
+    setSortDir('asc');
+    closeSettingsMenu();
+    toast.success('Filters and sort reset');
+  }, [closeSettingsMenu]);
+
   const view: 'firms' | 'firm' | 'contact' = selectedContactId
     ? 'contact'
     : selectedFirmId
@@ -2333,7 +2552,7 @@ export default function ExternalFirmsReportPage() {
       ...dataToExport.map(f => [
         `"${(f.name || '').replace(/"/g, '""')}"`,
         `"${(f.legal_name || '').replace(/"/g, '""')}"`,
-        `"${(f.firm_types?.label || '').replace(/"/g, '""')}"`,
+        `"${getFirmTypeLabels(f).join('; ').replace(/"/g, '""')}"`,
         `"${(f.vat_number || '').replace(/"/g, '""')}"`,
         `"${(f.website || '').replace(/"/g, '""')}"`,
         String(f.firm_contacts?.length || 0),
@@ -2383,31 +2602,297 @@ export default function ExternalFirmsReportPage() {
     return items;
   }, [view, selectedFirm, selectedContact]);
 
+  const settingsSections = useMemo(() => {
+    const section = (title: string, items: SettingsMenuItem[]) => ({ title, items });
+
+    const data = section('Data', [
+      {
+        id: 'refresh',
+        label: 'Refresh list',
+        icon: ArrowPathIcon,
+        onClick: () => {
+          void fetchData(true);
+          closeSettingsMenu();
+        },
+      },
+      {
+        id: 'missing-data',
+        label: 'Review missing data',
+        icon: ExclamationTriangleIcon,
+        onClick: () => {
+          setMissingDataModalOpen(true);
+          closeSettingsMenu();
+        },
+        disabled: stats.missingDataCount === 0,
+      },
+      {
+        id: 'export-csv',
+        label: 'Export firms (CSV)',
+        icon: ArrowDownTrayIcon,
+        onClick: () => {
+          handleExportCSV();
+          closeSettingsMenu();
+        },
+        disabled: filtered.length === 0,
+      },
+    ]);
+
+    const views = section('Views', [
+      {
+        id: 'save-view',
+        label: 'Save current view…',
+        icon: StarIcon,
+        onClick: () => {
+          void handleSaveView();
+          closeSettingsMenu();
+        },
+      },
+      ...savedViews.map((v) => ({
+        id: `saved-view-${v.id}`,
+        label: v.view_name,
+        icon: StarIcon,
+        onClick: () => {
+          applyView(v);
+          closeSettingsMenu();
+        },
+      })),
+    ]);
+
+    const reset = section('', [
+      {
+        id: 'reset-filters',
+        label: 'Reset filters & sort',
+        icon: ArrowPathIcon,
+        onClick: resetFiltersAndSort,
+      },
+    ]);
+
+    const admin: SettingsMenuItem[] = isAdmin
+      ? [
+          {
+            id: 'firm-types',
+            label: 'Firm types',
+            icon: TagIcon,
+            onClick: () => goToAdmin('Tenants', 'Firm types'),
+          },
+          {
+            id: 'firms',
+            label: 'Firms',
+            icon: BuildingOffice2Icon,
+            onClick: () => goToAdmin('Tenants', 'Firms'),
+          },
+          {
+            id: 'firm-contacts',
+            label: 'Firm contacts',
+            icon: UsersIcon,
+            onClick: () => goToAdmin('Tenants', 'Firm contacts'),
+          },
+          {
+            id: 'channels',
+            label: 'Channels',
+            icon: SignalIcon,
+            onClick: () => goToAdmin('Tenants', 'Channels'),
+          },
+          {
+            id: 'lead-sources',
+            label: 'Lead sources',
+            icon: FunnelIcon,
+            onClick: () => goToAdmin('Misc', 'Lead Sources'),
+          },
+          {
+            id: 'marketing-expenses',
+            label: 'Marketing expenses',
+            icon: BanknotesIcon,
+            onClick: () => goToAdmin('All Expenses', 'Marketing Expenses'),
+          },
+        ]
+      : [];
+
+    const navigation = section('Navigation', [
+      {
+        id: 'all-expenses-report',
+        label: 'All expenses report',
+        icon: ChartBarIcon,
+        onClick: () => {
+          navigate('/reports?report=All%20expenses');
+          closeSettingsMenu();
+        },
+      },
+      {
+        id: 'back-reports',
+        label: 'Back to Reports',
+        icon: Squares2X2Icon,
+        onClick: () => {
+          navigate('/reports');
+          closeSettingsMenu();
+        },
+      },
+      {
+        id: 'admin-home',
+        label: 'Open Admin home',
+        icon: Cog6ToothIcon,
+        onClick: () => {
+          navigate('/admin');
+          closeSettingsMenu();
+        },
+        disabled: !isAdmin || isAdminLoading,
+      },
+    ]);
+
+    const blocks: { title: string; items: SettingsMenuItem[] }[] = [data, views, reset];
+    if (admin.length > 0) blocks.push({ title: 'Admin', items: admin });
+    blocks.push(navigation);
+    return blocks;
+  }, [
+    savedViews,
+    stats.missingDataCount,
+    filtered.length,
+    isAdmin,
+    isAdminLoading,
+    closeSettingsMenu,
+    resetFiltersAndSort,
+    goToAdmin,
+    navigate,
+  ]);
+
   // ─────────────────────────────────────────────────────────────────────────
   //  Render
   // ─────────────────────────────────────────────────────────────────────────
 
+  const sidebarRailBtn =
+    'btn btn-ghost btn-circle w-11 h-11 min-h-11 min-w-11 border-0 flex-shrink-0';
+  const sidebarRailBtnActive = `${sidebarRailBtn} bg-gray-300 text-gray-900 hover:bg-gray-400`;
+  const sidebarRailBtnIdle = `${sidebarRailBtn} text-gray-600 hover:bg-gray-300/70`;
+
   return (
-    <div className="external-firms-page-shell min-h-[calc(100vh-3rem)] bg-[#ececec] px-4 py-6 md:px-10 md:py-8 [zoom:1.075]">
+    <div className="external-firms-page-shell min-h-[calc(100dvh-3.5rem)] bg-[#ececec] lg:pl-[4.5rem]">
+      {/* Desktop icon rail — fixed to viewport; does not scroll with page content */}
+      <aside
+        className="hidden lg:fixed lg:left-0 lg:bottom-0 lg:z-30 lg:flex lg:w-[4.5rem] lg:flex-col lg:items-center lg:overflow-visible lg:border-r lg:border-base-200 lg:bg-white lg:top-14 dark:lg:border-base-300 dark:lg:bg-base-100"
+        aria-label="External firms actions"
+      >
+        <div className="flex w-full shrink-0 flex-col items-center gap-4 px-1 pt-4">
+          <button
+            type="button"
+            title="Create firm"
+            aria-label="Create firm"
+            className={sidebarRailBtnActive}
+            onClick={() => setFirmCreateDrawerOpen(true)}
+          >
+            <PlusIcon className="h-6 w-6" />
+          </button>
+          <button
+            type="button"
+            title="Create contact"
+            aria-label="Create contact"
+            className={sidebarRailBtnIdle}
+            onClick={() => setContactCreateDrawerOpen(true)}
+          >
+            <UserPlusIcon className="h-6 w-6" />
+          </button>
+          <button
+            type="button"
+            title="Connect contact"
+            aria-label="Connect contact"
+            className={sidebarRailBtnIdle}
+            onClick={() => setConnectContactModalOpen(true)}
+          >
+            <LinkIcon className="h-6 w-6" />
+          </button>
+          <button
+            type="button"
+            title="Add firm type"
+            aria-label="Add firm type"
+            className={sidebarRailBtnIdle}
+            onClick={() => setFirmTypeCreateDrawerOpen(true)}
+          >
+            <TagIcon className="h-6 w-6" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 shrink" aria-hidden />
+        <div
+          ref={settingsMenuRef}
+          className="relative flex w-full shrink-0 flex-col items-center px-1 pb-[max(1rem,env(safe-area-inset-bottom,0px))]"
+        >
+          <button
+            ref={settingsButtonRef}
+            type="button"
+            title="Settings"
+            aria-label="Settings"
+            aria-expanded={settingsMenuOpen}
+            aria-haspopup="menu"
+            className={`${settingsMenuOpen ? sidebarRailBtnActive : sidebarRailBtnIdle} touch-manipulation`}
+            onClick={() => setSettingsMenuOpen((prev) => !prev)}
+          >
+            <Cog6ToothIcon className="h-6 w-6 pointer-events-none" />
+          </button>
+        </div>
+      </aside>
+
+      {settingsMenuOpen &&
+        settingsMenuAnchor &&
+        createPortal(
+          <div
+            ref={settingsMenuPanelRef}
+            role="menu"
+            className="fixed z-[60] min-w-[15.5rem] max-h-[min(70vh,32rem)] overflow-y-auto overscroll-contain rounded-lg border border-gray-200 bg-white py-1 shadow-lg [-webkit-overflow-scrolling:touch]"
+            style={{
+              left: settingsMenuAnchor.left,
+              bottom: settingsMenuAnchor.bottom,
+            }}
+          >
+            {settingsSections.map((block, blockIndex) => (
+              <div key={block.title || `block-${blockIndex}`}>
+                {blockIndex > 0 && <div className="my-1 border-t border-gray-100" aria-hidden />}
+                {block.title ? (
+                  <p className="px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-gray-400">
+                    {block.title}
+                  </p>
+                ) : null}
+                {block.items.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="menuitem"
+                      disabled={item.disabled}
+                      onClick={item.onClick}
+                      className="flex w-full touch-manipulation items-center gap-3 rounded-lg px-4 py-2.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 active:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Icon className="pointer-events-none h-5 w-5 shrink-0 text-gray-600" />
+                      <span className="min-w-0 truncate">{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>,
+          document.body,
+        )}
+
+      <div className="flex min-w-0 flex-1 flex-col px-4 pb-6 pt-2 md:px-10 md:pb-8 md:pt-4 [zoom:1.075]">
       <div className="w-full space-y-5">
 
-        {/* ── Page Header (title / path centred; actions top-right) ─────── */}
-        <div className="grid w-full grid-cols-1 gap-3 md:grid-cols-[1fr_auto_1fr] md:items-start md:gap-2">
+        {/* ── Page Header: mobile title left + back right; desktop centred title ── */}
+        <div
+          className={`scroll-mt-28 shrink-0 pt-3 md:pt-4 grid w-full items-start gap-2 md:gap-2 md:grid-cols-[1fr_auto_1fr] ${
+            view !== 'firms' ? 'grid-cols-[1fr_auto]' : 'grid-cols-1'
+          }`}
+        >
           <div className="hidden md:block" aria-hidden />
-          <div className="flex flex-col items-center text-center min-w-0 md:col-start-2 md:row-start-1">
+          <div className="col-start-1 row-start-1 flex min-w-0 flex-col items-start text-left md:col-start-2 md:items-center md:text-center">
             {view === 'firms' ? (
-              <>
-                <div className="flex items-center justify-center gap-2.5">
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
-                    <BuildingOffice2Icon className="h-5 w-5" />
-                  </div>
-                  <h1 className="text-2xl font-bold tracking-tight text-base-content/95">
-                    External Firms
-                  </h1>
+              <div className="flex items-center justify-start gap-2.5 md:justify-center">
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <BuildingOffice2Icon className="h-5 w-5" />
                 </div>
-              </>
+                <h1 className="text-2xl font-bold tracking-tight text-base-content/95">
+                  External Firms
+                </h1>
+              </div>
             ) : (
-              <div className="flex flex-wrap items-center justify-center gap-2.5 min-w-0 w-full">
+              <div className="flex w-full min-w-0 flex-wrap items-center justify-start gap-2.5 md:justify-center">
                 <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
                   <BuildingOffice2Icon className="h-5 w-5" />
                 </div>
@@ -2416,7 +2901,7 @@ export default function ExternalFirmsReportPage() {
             )}
           </div>
           {view !== 'firms' && (
-            <div className="flex items-center justify-center gap-2 md:col-start-3 md:justify-end md:row-start-1">
+            <div className="col-start-2 row-start-1 flex shrink-0 items-start justify-end md:col-start-3 md:row-start-1">
               <button
                 type="button"
                 className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50 transition-colors"
@@ -2433,12 +2918,12 @@ export default function ExternalFirmsReportPage() {
           )}
         </div>
 
+        <div className="min-w-0 space-y-5 lg:max-h-[calc(100dvh-8rem)] lg:overflow-y-auto lg:overscroll-contain lg:pr-1">
         {/* ── Toolbar: search + stats (firms list only) ────────────────── */}
         {view === 'firms' && (
-          <div className="-mx-4 px-4 py-3 md:-mx-10 md:px-10 md:sticky md:top-0 md:z-30 md:bg-[#ececec]/95 md:backdrop-blur flex flex-col gap-3 md:flex-row md:items-center md:justify-between border-b border-base-300/50 md:border-b-0">
-            {/* Search + Faceted Filters */}
-            <div className="flex flex-wrap flex-1 items-center gap-2">
-              <label className="flex items-center gap-2.5 rounded-lg border border-base-300 bg-base-100 px-3 py-2 w-full md:max-w-[20rem] focus-within:border-primary/60 focus-within:ring-1 focus-within:ring-primary/20 transition-all duration-150 cursor-text">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-wrap flex-1 items-center gap-2.5">
+              <label className="flex w-full min-h-[42px] cursor-text items-center gap-2.5 rounded-[18px] bg-white px-4 py-2 shadow-sm transition-all duration-150 focus-within:ring-2 focus-within:ring-primary/15 md:max-w-[20rem]">
                 <MagnifyingGlassIcon className="h-5 w-5 shrink-0 text-base-content/40" />
                 <input
                   value={query}
@@ -2458,84 +2943,110 @@ export default function ExternalFirmsReportPage() {
                 )}
               </label>
 
-              <select 
-                className="select select-bordered border-base-300 bg-base-100 font-medium text-sm h-[42px] min-h-[42px]"
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value as any)}
-              >
-                <option value="all">All Status</option>
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
-              </select>
+              <div className="rounded-[18px] bg-white px-3 py-1 shadow-sm">
+                <select
+                  className="select select-ghost h-[42px] min-h-[42px] w-full min-w-[9.5rem] border-0 bg-transparent px-0 text-sm font-medium focus:outline-none"
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value as 'all' | 'active' | 'inactive')}
+                >
+                  <option value="all">All Status</option>
+                  <option value="active">Active</option>
+                  <option value="inactive">Inactive</option>
+                </select>
+              </div>
 
-              <select 
-                className="select select-bordered border-base-300 bg-base-100 font-medium text-sm h-[42px] min-h-[42px]"
-                value={typeFilter}
-                onChange={(e) => setTypeFilter(e.target.value)}
-              >
-                <option value="all">All Types</option>
-                {availableTypes.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-              </select>
+              <div className="rounded-[18px] bg-white px-3 py-1 shadow-sm">
+                <select
+                  className="select select-ghost h-[42px] min-h-[42px] w-full min-w-[9.5rem] border-0 bg-transparent px-0 text-sm font-medium focus:outline-none"
+                  value={typeFilter}
+                  onChange={(e) => setTypeFilter(e.target.value)}
+                >
+                  <option value="all">All Types</option>
+                  {availableTypes.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-              <button 
-                className="btn btn-sm btn-outline gap-1.5 h-[42px] min-h-[42px] border-base-300 text-base-content/60 hover:text-primary hover:border-primary px-3"
-                onClick={handleSaveView}
-              >
-                <StarIcon className="h-4 w-4" />
-                Save View
-              </button>
-
-              {savedViews.length > 0 && (
-                <div className="dropdown dropdown-end">
-                  <div tabIndex={0} role="button" className="btn btn-sm btn-ghost h-[42px] border border-base-300 px-3 flex items-center gap-2">
-                    <span className="text-xs font-bold uppercase tracking-wider text-base-content/50">Views</span>
-                    <ChevronDownIcon className="h-4 w-4 opacity-50" />
-                  </div>
-                  <ul tabIndex={0} className="dropdown-content z-[100] menu p-2 shadow-2xl bg-base-100 rounded-box w-52 mt-1 border border-base-300">
-                    <li className="menu-title px-4 py-2 text-[10px] uppercase tracking-widest font-bold opacity-40">Your Presets</li>
-                    {savedViews.map(v => (
-                      <li key={v.id}>
-                        <button 
-                          type="button"
-                          onClick={() => applyView(v)} 
-                          className="flex items-center justify-between text-sm py-2.5 w-full hover:bg-base-200 px-3 rounded-lg"
-                        >
-                          {v.view_name}
-                          {v.is_default && <span className="bg-primary/10 text-primary text-[10px] px-1.5 py-0.5 rounded">Default</span>}
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
+              <div className="flex items-center gap-0.5 rounded-[18px] bg-white px-2 py-1 shadow-sm">
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm h-[38px] min-h-[38px] gap-1.5 px-3 text-base-content/70 hover:text-primary"
+                  onClick={handleSaveView}
+                >
+                  <StarIcon className="h-4 w-4" />
+                  Save View
+                </button>
+                {savedViews.length > 0 && (
+                  <>
+                    <div className="mx-0.5 h-6 w-px bg-base-content/10" aria-hidden />
+                    <div className="dropdown dropdown-end">
+                      <div
+                        tabIndex={0}
+                        role="button"
+                        className="btn btn-ghost btn-sm flex h-[38px] min-h-[38px] items-center gap-2 border-0 px-3"
+                      >
+                        <span className="text-xs font-bold uppercase tracking-wider text-base-content/50">
+                          Views
+                        </span>
+                        <ChevronDownIcon className="h-4 w-4 opacity-50" />
+                      </div>
+                      <ul
+                        tabIndex={0}
+                        className="dropdown-content menu z-[100] mt-1 w-52 rounded-box border border-base-300 bg-base-100 p-2 shadow-2xl"
+                      >
+                        <li className="menu-title px-4 py-2 text-[10px] font-bold uppercase tracking-widest opacity-40">
+                          Your Presets
+                        </li>
+                        {savedViews.map((v) => (
+                          <li key={v.id}>
+                            <button
+                              type="button"
+                              onClick={() => applyView(v)}
+                              className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-sm hover:bg-base-200"
+                            >
+                              {v.view_name}
+                              {v.is_default && (
+                                <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                                  Default
+                                </span>
+                              )}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
 
-            {/* Right side: stats + refresh */}
-            <div className="flex items-center gap-3">
-              {/* Compact stat chips */}
+            <div className="flex shrink-0 items-center gap-2 rounded-[18px] bg-white px-3 py-2 shadow-sm">
               {!loading && (
                 <div className="flex flex-wrap items-center justify-end gap-2 text-sm text-base-content/60">
                   <div className="flex items-center gap-2">
-                    <span className="flex items-center gap-1.5 rounded-md bg-base-200 px-3 py-1.5 font-semibold">
+                    <span className="flex items-center gap-1.5 rounded-md bg-base-200/80 px-3 py-1.5 font-semibold">
                       <BuildingOffice2Icon className="h-4 w-4" />
-                      {stats.firmsCount} 
+                      {stats.firmsCount}
                     </span>
-                    <span className="flex items-center gap-1.5 rounded-md bg-base-200 px-3 py-1.5 font-semibold">
+                    <span className="flex items-center gap-1.5 rounded-md bg-base-200/80 px-3 py-1.5 font-semibold">
                       <UsersIcon className="h-4 w-4" />
-                      {stats.contactsCount} 
+                      {stats.contactsCount}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
                     {stats.inactiveFirms > 0 && (
-                      <span className="flex items-center gap-1.5 rounded-md bg-red-500/10 text-red-600 px-3 py-1.5 font-semibold">
-                         <XCircleIcon className="h-4 w-4" />
-                         {stats.inactiveFirms} inactive
+                      <span className="flex items-center gap-1.5 rounded-md bg-red-500/10 px-3 py-1.5 font-semibold text-red-600">
+                        <XCircleIcon className="h-4 w-4" />
+                        {stats.inactiveFirms} inactive
                       </span>
                     )}
                     {stats.missingDataCount > 0 && (
                       <button
                         type="button"
-                        className="flex items-center gap-1.5 rounded-md bg-amber-500/10 text-amber-700 px-3 py-1.5 font-semibold hover:bg-amber-500/20 transition-colors"
+                        className="flex items-center gap-1.5 rounded-md bg-amber-500/10 px-3 py-1.5 font-semibold text-amber-700 transition-colors hover:bg-amber-500/20"
                         onClick={() => setMissingDataModalOpen(true)}
                       >
                         <ExclamationTriangleIcon className="h-4 w-4" />
@@ -2623,7 +3134,6 @@ export default function ExternalFirmsReportPage() {
                   </thead>
                   <tbody>
                     {filtered.map((firm) => {
-                      const firmTypeLabel = firm.firm_types?.label || null;
                       const contacts = firm.firm_contacts || [];
                       const isInactive = firm.is_active === false;
                       return (
@@ -2671,14 +3181,7 @@ export default function ExternalFirmsReportPage() {
                             </div>
                           </td>
                           <td className="px-5 py-4">
-                            {firmTypeLabel ? (
-                              <FirmTypeBadge
-                                label={firmTypeLabel}
-                                typeId={firm.firm_types?.id}
-                              />
-                            ) : (
-                              <span className="text-base-content/30">—</span>
-                            )}
+                            <FirmTypesBadges firm={firm} />
                           </td>
                           <td className="px-5 py-4 hidden md:table-cell">
                             <span className="text-sm text-base-content/55">{firm.vat_number || '—'}</span>
@@ -2774,13 +3277,7 @@ export default function ExternalFirmsReportPage() {
                               {selectedFirm.name}
                             </h2>
                             <div className="mt-1.5 flex flex-wrap items-center gap-2 text-sm text-base-content/55">
-                              {selectedFirm.firm_types?.label && (
-                                <FirmTypeBadge
-                                  label={selectedFirm.firm_types.label}
-                                  typeId={selectedFirm.firm_types.id}
-                                  size="sm"
-                                />
-                              )}
+                              <FirmTypesBadges firm={selectedFirm} size="sm" />
                               {selectedFirm.vat_number && (
                                 <span className="shrink-0">VAT {selectedFirm.vat_number}</span>
                               )}
@@ -3212,13 +3709,7 @@ export default function ExternalFirmsReportPage() {
                             </div>
                             <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-base-content/55">
                               <span className="font-medium text-base-content/70">{selectedFirm.name}</span>
-                              {selectedFirm.firm_types?.label && (
-                                <FirmTypeBadge
-                                  label={selectedFirm.firm_types.label}
-                                  typeId={selectedFirm.firm_types.id}
-                                  size="sm"
-                                />
-                              )}
+                              <FirmTypesBadges firm={selectedFirm} size="sm" />
                             </div>
                           </div>
                           <p className="hidden shrink-0 text-xs text-base-content/35 text-right whitespace-nowrap sm:block sm:self-start sm:pt-1">
@@ -3377,14 +3868,9 @@ export default function ExternalFirmsReportPage() {
                     <div className="flex items-center gap-2 px-0.5">
                       <BuildingOffice2Icon className="h-4 w-4 text-base-content/40" />
                       <span className="text-sm font-semibold text-base-content/75">Firm context</span>
-                      {selectedFirm.firm_types?.label && (
-                        <FirmTypeBadge
-                          className="ml-auto"
-                          label={selectedFirm.firm_types.label}
-                          typeId={selectedFirm.firm_types.id}
-                          size="sm"
-                        />
-                      )}
+                      <div className="ml-auto">
+                        <FirmTypesBadges firm={selectedFirm} size="sm" />
+                      </div>
                     </div>
 
                     {/* Mobile: each label paired with its value */}
@@ -3516,6 +4002,88 @@ export default function ExternalFirmsReportPage() {
           )}
         </div>
 
+        </div>
+
+        <FirmsManager
+          embed={{
+            addDrawerOpen: firmCreateDrawerOpen,
+            onAddDrawerOpenChange: setFirmCreateDrawerOpen,
+            onRecordCreated: (record) => {
+              void fetchData(true);
+              if (record?.id) setSelectedFirmId(String(record.id));
+            },
+          }}
+        />
+        <FirmContactsManager
+          embed={{
+            addDrawerOpen: contactCreateDrawerOpen,
+            onAddDrawerOpenChange: setContactCreateDrawerOpen,
+            createDefaults: selectedFirmId ? { firm_id: selectedFirmId } : undefined,
+            browseFirmId: selectedFirmId ?? undefined,
+            onRecordCreated: handleFirmContactRecordSaved,
+          }}
+        />
+        <FirmTypesManager
+          embed={{
+            addDrawerOpen: firmTypeCreateDrawerOpen,
+            onAddDrawerOpenChange: setFirmTypeCreateDrawerOpen,
+            onRecordCreated: () => {
+              void fetchFirmTypeOptions();
+              void fetchData(true);
+            },
+          }}
+        />
+
+        {connectContactModalOpen &&
+          createPortal(
+            <div className="fixed inset-0 z-[90] flex flex-col p-0 md:p-6">
+              <button
+                type="button"
+                className="absolute inset-0 bg-black/40"
+                aria-label="Close"
+                onClick={() => setConnectContactModalOpen(false)}
+              />
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="connect-contact-modal-title"
+                className="relative z-[1] mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col overflow-hidden bg-white md:max-h-[calc(100dvh-3rem)] md:rounded-2xl md:shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-5 py-4 md:px-6">
+                  <div className="min-w-0">
+                    <h2
+                      id="connect-contact-modal-title"
+                      className="text-lg font-bold text-gray-900 md:text-xl"
+                    >
+                      Connect contact
+                    </h2>
+                    <p className="mt-0.5 text-sm text-gray-500">
+                      Select a contact to view or edit details
+                      {selectedFirmId ? ' for the current firm' : ''}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-circle shrink-0"
+                    aria-label="Close"
+                    onClick={() => setConnectContactModalOpen(false)}
+                  >
+                    <XMarkIcon className="h-6 w-6" />
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-4 md:px-6">
+                  <FirmContactsManager
+                    elevatedDrawer
+                    browseFirmId={selectedFirmId ?? undefined}
+                    onRecordSaved={handleFirmContactRecordSaved}
+                  />
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )}
+
         {/* Floating Action Bar */}
         {selectedRowIds.size > 0 && view === 'firms' && (
           <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-4 rounded-xl bg-base-content px-5 py-3 text-base-100 shadow-2xl transition-all duration-300 transform animate-in slide-in-from-bottom-5">
@@ -3580,10 +4148,9 @@ export default function ExternalFirmsReportPage() {
                           website: String(formData.get('website')),
                           address: String(formData.get('address')),
                           notes: String(formData.get('notes')),
-                          firm_type_id: String(formData.get('firm_type_id')),
-                          is_active: formData.get('is_active') === 'on'
+                          is_active: formData.get('is_active') === 'on',
                         };
-                        await handleUpdateFirm(updates);
+                        await handleUpdateFirm(updates, editingFirmTypeIds);
                       }}
                       className="space-y-6"
                     >
@@ -3595,18 +4162,18 @@ export default function ExternalFirmsReportPage() {
                         <label className="text-[11px] font-bold uppercase tracking-wider text-base-content/40 ml-1">Legal Name</label>
                         <input name="legal_name" defaultValue={editingFirm.legal_name || ''} className="input input-bordered w-full bg-base-100" />
                       </div>
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-1">
-                          <label className="text-[11px] font-bold uppercase tracking-wider text-base-content/40 ml-1">VAT Number</label>
-                          <input name="vat_number" defaultValue={editingFirm.vat_number || ''} className="input input-bordered w-full font-mono bg-base-100" />
-                        </div>
-                        <div className="space-y-1">
-                          <label className="text-[11px] font-bold uppercase tracking-wider text-base-content/40 ml-1">Firm Type</label>
-                          <select name="firm_type_id" defaultValue={editingFirm.firm_type_id || ''} className="select select-bordered w-full bg-base-100">
-                            <option value="">Select Type</option>
-                            {availableTypes.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
-                          </select>
-                        </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold uppercase tracking-wider text-base-content/40 ml-1">
+                          Firm types
+                        </label>
+                        <FirmFirmTypesField
+                          value={editingFirmTypeIds}
+                          onChange={setEditingFirmTypeIds}
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[11px] font-bold uppercase tracking-wider text-base-content/40 ml-1">VAT Number</label>
+                        <input name="vat_number" defaultValue={editingFirm.vat_number || ''} className="input input-bordered w-full font-mono bg-base-100" />
                       </div>
                       <div className="space-y-1">
                         <label className="text-[11px] font-bold uppercase tracking-wider text-base-content/40 ml-1">Website URL</label>
@@ -4054,6 +4621,7 @@ export default function ExternalFirmsReportPage() {
             background-color: #ececec !important;
           }
         `}</style>
+      </div>
       </div>
     </div>
   );
