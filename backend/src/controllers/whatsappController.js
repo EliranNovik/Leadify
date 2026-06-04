@@ -1548,7 +1548,47 @@ const findStoredMediaFilePath = (mediaId) => {
   }
 };
 
-// Download and store media file (always persist so WhatsApp temporary IDs remain viewable later)
+// Durable storage for WhatsApp media. WhatsApp media IDs expire (~30 days) and the backend's
+// local disk is ephemeral, so media is copied into a private Supabase Storage bucket and served
+// from there indefinitely. Object keys are flat and equal to the stored filename / media_url.
+const WHATSAPP_MEDIA_BUCKET = process.env.WHATSAPP_MEDIA_BUCKET || 'whatsapp-media';
+
+/** Upload a media buffer to the durable bucket. Returns true on success (best-effort, never throws). */
+const uploadMediaToBucket = async (key, buffer, contentType) => {
+  if (!key || !buffer) return false;
+  try {
+    const { error } = await supabase.storage
+      .from(WHATSAPP_MEDIA_BUCKET)
+      .upload(key, buffer, { contentType: contentType || 'application/octet-stream', upsert: true });
+    if (error) {
+      console.warn(`⚠️ Supabase Storage upload failed for "${key}": ${error.message}`);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.warn(`⚠️ Supabase Storage upload threw for "${key}": ${e.message}`);
+    return false;
+  }
+};
+
+/** Download a media object from the durable bucket. Returns { buffer, contentType } or null. */
+const downloadMediaFromBucket = async (key) => {
+  if (!key) return null;
+  try {
+    const { data, error } = await supabase.storage.from(WHATSAPP_MEDIA_BUCKET).download(key);
+    if (error || !data) return null;
+    const arrayBuffer = await data.arrayBuffer();
+    return {
+      buffer: Buffer.from(arrayBuffer),
+      contentType: data.type || 'application/octet-stream',
+    };
+  } catch (e) {
+    return null;
+  }
+};
+
+// Download and store media file (persist to Supabase Storage + local cache so WhatsApp's
+// temporary media IDs remain viewable long after Meta drops them).
 const downloadAndStoreMedia = async (mediaId, type, leadId) => {
   if (!mediaId || !ACCESS_TOKEN) return null;
 
@@ -1566,26 +1606,30 @@ const downloadAndStoreMedia = async (mediaId, type, leadId) => {
 
     const fileResponse = await axios.get(mediaUrl, {
       headers: { Authorization: `Bearer ${ACCESS_TOKEN}` },
-      responseType: 'stream',
+      responseType: 'arraybuffer',
     });
 
-    const uploadsDir = getUploadsDir();
-    if (!fs.existsSync(uploadsDir)) {
-      fs.mkdirSync(uploadsDir, { recursive: true });
+    const contentType = fileResponse.headers['content-type'] || 'application/octet-stream';
+    const buffer = Buffer.from(fileResponse.data);
+    const fileName = `${leadId}_${Date.now()}_${mediaId}.${getFileExtension(contentType)}`;
+
+    // Primary: durable copy in Supabase Storage (survives redeploys & multiple instances).
+    const uploadedToBucket = await uploadMediaToBucket(fileName, buffer, contentType);
+
+    // Secondary: best-effort local cache so this instance can serve it without a round-trip.
+    try {
+      const uploadsDir = getUploadsDir();
+      if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+      }
+      fs.writeFileSync(path.join(uploadsDir, fileName), buffer);
+    } catch (diskError) {
+      console.warn(`⚠️ Could not write local media cache for ${fileName}: ${diskError.message}`);
     }
 
-    const fileName = `${leadId}_${Date.now()}_${mediaId}.${getFileExtension(fileResponse.headers['content-type'])}`;
-    const filePath = path.join(uploadsDir, fileName);
-
-    const writer = fs.createWriteStream(filePath);
-    fileResponse.data.pipe(writer);
-
-    await new Promise((resolve, reject) => {
-      writer.on('finish', resolve);
-      writer.on('error', reject);
-    });
-
-    console.log(`✅ Stored WhatsApp ${type} media: ${fileName}`);
+    console.log(
+      `✅ Stored WhatsApp ${type} media: ${fileName}${uploadedToBucket ? ' (bucket + local cache)' : ' (local cache only — bucket upload failed)'}`,
+    );
     return fileName;
   } catch (error) {
     console.error(`Error downloading ${type} media ${mediaId}:`, error.response?.data || error.message);
@@ -2377,6 +2421,46 @@ const uploadMedia = async (req, res) => {
   }
 };
 
+/**
+ * Recover the original WhatsApp Graph media id from the value stored in
+ * whatsapp_messages.media_url. That value can be:
+ *   - a raw WhatsApp media id (e.g. "1549564263545850"), or
+ *   - a locally-stored filename "{leadId}_{ts}_{whatsappMediaId}.{ext}" or
+ *     "legacy_{id}_{ts}_{whatsappMediaId}.{ext}" (the id is the trailing numeric segment), or
+ *   - some other filename, in which case we fall back to looking up media_id in the DB.
+ * This lets any backend instance re-fetch media from Meta even when the local
+ * file is missing (fresh dev box, redeploy on ephemeral disk, scaled-out instance).
+ */
+const resolveWhatsAppMediaId = async (mediaParam) => {
+  if (!mediaParam) return null;
+
+  // Already a raw WhatsApp media id
+  if (/^\d+$/.test(mediaParam)) return mediaParam;
+
+  // Stored filename: strip extension and take the trailing numeric segment
+  const base = mediaParam.replace(/\.[a-z0-9]+$/i, '');
+  const lastSegment = base.split('_').pop();
+  if (lastSegment && /^\d+$/.test(lastSegment)) return lastSegment;
+
+  // Fall back to the DB: media_id is preserved even when media_url holds a filename
+  try {
+    const { data } = await supabase
+      .from('whatsapp_messages')
+      .select('media_id')
+      .eq('media_url', mediaParam)
+      .not('media_id', 'is', null)
+      .limit(1)
+      .maybeSingle();
+    if (data?.media_id && /^\d+$/.test(String(data.media_id))) {
+      return String(data.media_id);
+    }
+  } catch (error) {
+    console.error('Error resolving WhatsApp media id from DB:', error.message);
+  }
+
+  return null;
+};
+
 // Get media from WhatsApp
 const getMedia = async (req, res) => {
   try {
@@ -2391,19 +2475,42 @@ const getMedia = async (req, res) => {
       return res.status(404).json({ error: 'Mock media not available in production' });
     }
 
+    // 1) Serve the persisted file when this instance has it on disk (fastest path)
     const storedPath = findStoredMediaFilePath(mediaId);
     if (storedPath) {
       return res.sendFile(storedPath);
     }
 
-    if (isDevelopmentMode) {
+    // 2) Serve from durable Supabase Storage (survives redeploys & works across instances)
+    const fromBucket = await downloadMediaFromBucket(mediaId);
+    if (fromBucket) {
+      res.setHeader('Content-Type', fromBucket.contentType);
+      res.setHeader('Content-Length', String(fromBucket.buffer.length));
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      return res.send(fromBucket.buffer);
+    }
+
+    // 3) Otherwise re-fetch from WhatsApp. The path param may be a stored filename,
+    //    so recover the original Graph media id before calling Meta.
+    if (!ACCESS_TOKEN) {
       return res.status(404).json({ error: 'Media not found' });
     }
 
-    // Fallback: fetch from WhatsApp (temporary IDs expire after ~30 days)
+    const graphMediaId = await resolveWhatsAppMediaId(mediaId);
+    if (!graphMediaId) {
+      console.log(`ℹ️  Could not resolve a WhatsApp media id for "${mediaId}" (no local file, no bucket object, no media_id in DB)`);
+      return res.status(404).json({ error: 'Media not found' });
+    }
+
+    // 4) Fetch from WhatsApp (temporary download URLs; media is retained by Meta for ~30 days)
     try {
         const mediaResponse = await axios.get(
-          `${WHATSAPP_API_URL}/${mediaId}`,
+          `${WHATSAPP_API_URL}/${graphMediaId}`,
           {
             headers: {
               'Authorization': `Bearer ${ACCESS_TOKEN}`
@@ -2413,37 +2520,53 @@ const getMedia = async (req, res) => {
 
         const mediaUrl = mediaResponse.data.url;
         
-        // Download and serve the media
+        // Download the media (buffered so we can both serve it and back-fill durable storage)
         const fileResponse = await axios.get(mediaUrl, {
           headers: {
             'Authorization': `Bearer ${ACCESS_TOKEN}`
           },
-          responseType: 'stream'
+          responseType: 'arraybuffer'
         });
 
+        const contentType = fileResponse.headers['content-type'] || 'application/octet-stream';
+        const buffer = Buffer.from(fileResponse.data);
+
+        // Back-fill the durable bucket under the requested key so future loads no longer
+        // depend on Meta's 30-day window. Fire-and-forget; never block the response.
+        void uploadMediaToBucket(mediaId, buffer, contentType);
+
         // Set appropriate headers
-        res.setHeader('Content-Type', fileResponse.headers['content-type'] || 'application/octet-stream');
-        res.setHeader('Content-Length', fileResponse.headers['content-length'] || '');
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Length', String(buffer.length));
         res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
         res.setHeader('Access-Control-Allow-Credentials', 'true');
         res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-        
-        // Pipe the file stream to response
-        fileResponse.data.pipe(res);
+
+        return res.send(buffer);
       } catch (error) {
         const errorData = error.response?.data;
         const errorCode = errorData?.error?.code;
         const errorSubcode = errorData?.error?.error_subcode;
         const statusCode = error.response?.status;
-        
-        // Handle Graph API errors (media expired, invalid, or missing permissions)
+
+        // Auth/token problems must NOT be reported as "media expired" — surface them clearly.
+        if (errorCode === 190 || errorData?.error?.type === 'OAuthException') {
+          console.error(
+            `❌ WhatsApp access token rejected (code ${errorCode}) while fetching media ${graphMediaId}: ${errorData?.error?.message}`,
+          );
+          return res.status(502).json({
+            error: 'WhatsApp access token invalid or expired',
+            message: errorData?.error?.message,
+            code: errorCode,
+          });
+        }
+
+        // Genuine "media no longer available" (older than Meta's ~30-day retention or invalid id)
         if (statusCode === 400 || statusCode === 404 || (errorCode === 100 && errorSubcode === 33)) {
-          // Media expired or doesn't exist - this is expected for old messages
-          // Log at info level, not error, since this is normal behavior
-          console.log(`ℹ️  Media ${mediaId} is no longer available (expired or invalid)`);
+          console.log(`ℹ️  Media ${graphMediaId} is no longer available on WhatsApp (expired or invalid)`);
           return res.status(404).json({ 
             error: 'Media not found or no longer available',
             message: 'This media has expired or is no longer accessible. WhatsApp media URLs are temporary.',
@@ -2452,7 +2575,7 @@ const getMedia = async (req, res) => {
           });
         }
         
-        // Log actual errors (network issues, auth problems, etc.)
+        // Log actual errors (network issues, etc.)
         console.error('Error getting media from WhatsApp API:', error.response?.data || error.message);
         return res.status(500).json({ 
           error: 'Failed to get media from WhatsApp',

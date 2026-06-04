@@ -1,6 +1,6 @@
 /** Outgoing message bubble — teal gradient aligned with WhatsApp avatar branding. */
 export const WHATSAPP_OUTGOING_MESSAGE_GRADIENT =
-  'linear-gradient(135deg, #40B5C1 0%, #1E7D84 100%)';
+  'linear-gradient(135deg, #2F9AA6 0%, #155F66 100%)';
 
 export const WHATSAPP_OUTGOING_BUBBLE_CLASS = 'text-white border border-transparent';
 

@@ -2065,7 +2065,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         </div>
 
         {/* Messages - Scrollable */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain" style={{ paddingBottom: isLocked ? '200px' : '120px', WebkitOverflowScrolling: 'touch', overflowX: 'hidden', maxWidth: '100%' }}>
+        <div className="flex-1 overflow-y-auto p-4 space-y-6 min-h-0 overscroll-contain" style={{ paddingBottom: isLocked ? '200px' : '120px', WebkitOverflowScrolling: 'touch', overflowX: 'hidden', maxWidth: '100%' }}>
           {messages.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
               <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />

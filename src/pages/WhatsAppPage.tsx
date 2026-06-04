@@ -6098,7 +6098,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         <span className="ml-2 text-sm text-gray-500">Loading older messages…</span>
                       </div>
                     )}
-                    <div className="flex w-full max-w-full flex-col">
+                    <div className="flex w-full max-w-full flex-col gap-6">
                     {messages.map((message, index) => {
                       // Check if we need to show a date separator
                       const showDateSeparator = index === 0 ||
@@ -6208,7 +6208,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                 </div>
                               ) : (
                                 <div
-                                  className={`group ${message.direction === 'out' ? 'max-w-[75%] md:max-w-[35%] lg:max-w-[30%]' : 'max-w-[75%] md:max-w-[70%]'} rounded-2xl px-3 py-2 shadow-sm relative ${message.direction === 'out'
+                                  className={`group ${message.direction === 'out' ? 'max-w-[80%] md:max-w-[65%]' : 'max-w-[80%] md:max-w-[65%]'} rounded-2xl px-3 py-2 shadow-sm relative ${message.direction === 'out'
                                     ? WHATSAPP_OUTGOING_BUBBLE_CLASS
                                     : 'bg-white text-gray-900'
                                     }`}
@@ -6217,7 +6217,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                     overflowWrap: 'break-word',
                                     overflow: 'visible',
                                     minWidth: 0,
-                                    maxWidth: '100%',
                                     height: 'auto',
                                     ...(message.direction === 'out'
                                       ? { background: WHATSAPP_OUTGOING_MESSAGE_GRADIENT }
@@ -6539,8 +6538,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                     </div>
                                   )}
 
-                                  {/* Message status and time */}
-                                  <div className="flex items-center justify-between -mt-1">
+                                  {/* Message status and time — align with the message's reading direction */}
+                                  <div className={`flex items-center -mt-1 ${/[\u0590-\u05FF]/.test(message.message || message.caption || '') ? 'justify-end' : 'justify-start'}`}>
                                     <div className="flex items-center gap-1 text-sm opacity-80">
                                       <span>
                                         {new Date(message.sent_at).toLocaleTimeString([], {

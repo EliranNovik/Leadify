@@ -11,7 +11,7 @@ import {
 } from '../lib/authBootstrap';
 
 const USER_DETAIL_SELECT =
-  'first_name, last_name, full_name, email, tenants_employee!employee_id(photo_url, photo)';
+  'first_name, last_name, full_name, email, is_active, tenants_employee!employee_id(photo_url, photo)';
 
 const DEBUG_AUTH = String(import.meta.env.VITE_DEBUG_AUTH || '').toLowerCase() === 'true';
 const debugLog = (...args: any[]) => {
@@ -59,6 +59,9 @@ function buildSyncInitialAuthState(): AuthState {
     sessionCheckComplete: false,
     supabaseSessionReady: false,
     sessionRefreshNonce: 0,
+    accountInactive: false,
+    inactiveUserName: null,
+    inactiveUserPhoto: null,
   };
   if (typeof window === 'undefined') return empty;
 
@@ -82,6 +85,9 @@ function buildSyncInitialAuthState(): AuthState {
       // Cache hydrate allows instant UI, but does not guarantee Supabase has attached JWT yet.
       supabaseSessionReady: false,
       sessionRefreshNonce: 0,
+      accountInactive: false,
+      inactiveUserName: null,
+      inactiveUserPhoto: null,
     };
   }
 
@@ -109,6 +115,12 @@ interface AuthState {
   supabaseSessionReady: boolean;
   /** Bumped after token refresh / visibility refresh so consumers (e.g. Header) refetch profile once. */
   sessionRefreshNonce: number;
+  /** True when the signed-in user's users-table row has is_active = false; they are blocked + shown a modal. */
+  accountInactive: boolean;
+  /** Display name of the blocked user (for the friendly inactive-account modal greeting). */
+  inactiveUserName: string | null;
+  /** Profile photo URL of the blocked user (for the inactive-account modal avatar). */
+  inactiveUserPhoto: string | null;
 }
 
 const AuthContext = createContext<AuthState | undefined>(undefined);
@@ -127,6 +139,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Refs must be set synchronously when we hydrate from localStorage so INITIAL_SESSION(null)
   // (can fire as soon as onAuthStateChange registers) never clears the user — fixes new tabs / Chrome.
   const processingRef = useRef(false);
+  const inactiveHandledRef = useRef(false);
   const lastUserIdRef = useRef<string | null>(null);
   const restoredFromStorageRef = useRef(false);
   const restoredFromCacheRef = useRef(false);
@@ -174,6 +187,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           data = userByEmail;
           error = null;
         }
+      }
+
+      // Blocked: a known user whose row is explicitly deactivated may not use the app.
+      if (!error && data && (data as any).is_active === false) {
+        if (!inactiveHandledRef.current) {
+          inactiveHandledRef.current = true;
+          if (user?.id) clearAuthDisplayCache(String(user.id));
+          const firstName = (data.first_name || '').trim();
+          const blockedName =
+            firstName ||
+            (data.full_name || '').trim() ||
+            (data.email || user.email || '').trim() ||
+            null;
+          const blockedPhoto = profilePhotoFromUsersRow(data as any);
+          setAuthState(prev => ({
+            ...prev,
+            accountInactive: true,
+            inactiveUserName: blockedName,
+            inactiveUserPhoto: blockedPhoto,
+          }));
+          // Tear down the session so they cannot proceed; the modal stays up across sign-out.
+          await supabase.auth.signOut().catch(() => {});
+        }
+        return;
       }
 
       if (!error && data) {
@@ -338,6 +375,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // This ensures sign-in works correctly
     if (event === 'SIGNED_IN') {
       debugLog('[AuthContext] Processing SIGNED_IN event, updating auth state');
+      // A new sign-in must re-evaluate active status (e.g. reactivated account / different user).
+      inactiveHandledRef.current = false;
+      setAuthState(prev =>
+        prev.accountInactive
+          ? { ...prev, accountInactive: false, inactiveUserName: null, inactiveUserPhoto: null }
+          : prev,
+      );
       // Ensure sessionStorage flag is set
       if (typeof window !== 'undefined' && session?.user) {
         sessionStorage.setItem('user_signed_in', 'true');
@@ -856,9 +900,56 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [handleAuthStateChange, updateAuthState, fetchUserDetails]);
 
+  const handleInactiveAcknowledge = useCallback(() => {
+    // Make sure the session is fully cleared, then send them back to the login screen.
+    supabase.auth.signOut().catch(() => {});
+    if (typeof window !== 'undefined') {
+      window.location.href = '/login';
+    }
+  }, []);
+
   return (
     <AuthContext.Provider value={authState}>
       {children}
+      {authState.accountInactive && (
+        <div
+          className="fixed inset-0 z-[100000] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="inactive-account-title"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-white p-7 text-center shadow-2xl dark:bg-base-100">
+            <div className="mx-auto mb-4 h-20 w-20">
+              {authState.inactiveUserPhoto ? (
+                <img
+                  src={authState.inactiveUserPhoto}
+                  alt={authState.inactiveUserName || 'Profile'}
+                  className="h-20 w-20 rounded-full object-cover shadow-md ring-2 ring-base-200"
+                />
+              ) : (
+                <div className="flex h-20 w-20 items-center justify-center rounded-full bg-primary/10 text-2xl font-semibold uppercase text-primary shadow-md ring-2 ring-base-200">
+                  {(authState.inactiveUserName || 'U').trim().charAt(0)}
+                </div>
+              )}
+            </div>
+            <h2 id="inactive-account-title" className="mb-2 text-xl font-bold text-gray-900 dark:text-base-content">
+              {authState.inactiveUserName ? `Hi ${authState.inactiveUserName} 👋` : 'Hi there 👋'}
+            </h2>
+            <p className="mb-6 text-sm leading-relaxed text-gray-600 dark:text-base-content/70">
+              It looks like your account isn’t active anymore, so we can’t sign you in right now.
+              If you think this is a mistake, please reach out to your administrator and they’ll be
+              happy to help get you back in.
+            </p>
+            <button
+              type="button"
+              onClick={handleInactiveAcknowledge}
+              className="btn btn-primary w-full"
+            >
+              Back to login
+            </button>
+          </div>
+        </div>
+      )}
     </AuthContext.Provider>
   );
 };
