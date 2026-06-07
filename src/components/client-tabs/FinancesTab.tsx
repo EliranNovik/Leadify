@@ -9,6 +9,7 @@ import {
 } from '../../lib/paymentLinkQueries';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
+import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../../msalConfig';
 import ReactDOM from 'react-dom';
@@ -143,6 +144,12 @@ interface FinancePlan {
   payments: PaymentPlan[];
 }
 
+type FinancesTabNisDisplays = {
+  contractTotalNisDisplay: { primary: string; secondary?: string; loading: boolean };
+  outstandingNisDisplay: { primary: string; loading: boolean };
+  contactTotalNisByName: Record<string, { primary: string; loading: boolean }>;
+};
+
 type FinancesTabCachedState = {
   financePlan: FinancePlan | null;
   contacts: any[];
@@ -151,7 +158,17 @@ type FinancesTabCachedState = {
   viewMode: 'table' | 'boxes';
   collapsedContacts: { [key: string]: boolean };
   paidMap: { [id: string]: boolean };
+  // Cached NIS conversions for the summary cards so they render instantly on re-entry instead of
+  // flashing back to a loading state while they are recomputed.
+  nisDisplays?: FinancesTabNisDisplays;
 };
+
+/** Stable signature of the payment rows that affect NIS totals — used to skip needless recomputes. */
+function financesNisSignature(payments?: PaymentPlan[]): string {
+  return JSON.stringify(
+    (payments ?? []).map((p) => [p.id, p.client, p.value, p.valueVat, p.paid, p.currency ?? '']),
+  );
+}
 
 function restoreFinancesTabCache(clientId: string | number): FinancesTabCachedState | null {
   try {
@@ -245,6 +262,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [contactTotalNisByName, setContactTotalNisByName] = useState<
     Record<string, { primary: string; loading: boolean }>
   >({});
+  // Signature of the payments the NIS displays were last computed for. Lets us skip recomputing
+  // (and the loading flash) when financePlan changes reference but the underlying values are the
+  // same — e.g. a silent background sync, a focus refetch, or restoring from cache.
+  const lastNisSigRef = useRef<string | null>(null);
   const [editingPaymentId, setEditingPaymentId] = useState<string | number | null>(null);
   const [editPaymentData, setEditPaymentData] = useState<any>({});
   const [isSavingPaymentRow, setIsSavingPaymentRow] = useState(false);
@@ -253,6 +274,38 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [collapsedContacts, setCollapsedContacts] = useState<{ [key: string]: boolean }>({});
   const [openDropdownPaymentId, setOpenDropdownPaymentId] = useState<string | number | null>(null);
   const dropdownButtonRefs = useRef<{ [key: string | number]: HTMLButtonElement | null }>({});
+
+  // Holds the latest silent reload so the realtime subscription below can call it without
+  // depending on declaration order (the reload function is defined further down in this component).
+  const refreshAllDataRef = useRef<(() => Promise<void> | void) | null>(null);
+
+  // Live updates: when this lead's payment plans / rows / proformas change in the database
+  // (another user, an automation, the public payment link, etc.) refresh the finances data in
+  // place. Cached finances render instantly; only the changed rows update — no full page reload.
+  useRealtimeRefresh({
+    channelName: `finances-tab-${client?.id ?? 'none'}`,
+    enabled: !!client?.id,
+    tables: (() => {
+      const leadIdRaw = String(client?.id ?? '');
+      const leadIdStripped = leadIdRaw.replace(/^legacy_/, '').toLowerCase();
+      const matchLead = (payload: RealtimeChangePayload) => {
+        const row = payload?.new ?? payload?.old;
+        if (!row) return true; // unknown row → refetch to be safe
+        const lid = (row as Record<string, unknown>).lead_id;
+        if (lid == null) return true;
+        const s = String(lid).toLowerCase();
+        return s === leadIdStripped || s === leadIdRaw.toLowerCase();
+      };
+      return [
+        { table: 'payment_plans', event: '*' as const, match: matchLead },
+        { table: 'finances_paymentplanrow', event: '*' as const, match: matchLead },
+        { table: 'proformainvoice', event: '*' as const, match: matchLead },
+      ];
+    })(),
+    onChange: () => {
+      void refreshAllDataRef.current?.();
+    },
+  });
 
   // Initialize all contacts as collapsed by default
   useEffect(() => {
@@ -271,12 +324,22 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   }, [financePlan]);
 
   useEffect(() => {
+    const signature = financesNisSignature(financePlan?.payments);
+
     if (!financePlan?.payments?.length) {
+      lastNisSigRef.current = signature;
       setContractTotalNisDisplay({ primary: '—', loading: false });
       setOutstandingNisDisplay({ primary: '—', loading: false });
       setContactTotalNisByName({});
       return;
     }
+
+    // Same payments as last computed (reference changed but values didn't) → keep the existing
+    // displays so the summary cards don't flash back to a loading state on re-entry / silent sync.
+    if (lastNisSigRef.current === signature) {
+      return;
+    }
+    lastNisSigRef.current = signature;
 
     const contactNames = [...new Set(financePlan.payments.map((p) => p.client))];
     let cancelled = false;
@@ -1554,6 +1617,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       setViewMode(cached.viewMode);
       setCollapsedContacts(cached.collapsedContacts);
       setPaidMap(cached.paidMap || {});
+      // Restore the NIS conversions too (instant render) and mark this payment set as already
+      // computed so the NIS effect doesn't flash them back to a loading state on mount. Only seed
+      // the signature when the cached values were settled (not mid-load), otherwise let it recompute.
+      if (cached.nisDisplays && !cached.nisDisplays.contractTotalNisDisplay?.loading) {
+        setContractTotalNisDisplay(cached.nisDisplays.contractTotalNisDisplay);
+        setOutstandingNisDisplay(cached.nisDisplays.outstandingNisDisplay);
+        setContactTotalNisByName(cached.nisDisplays.contactTotalNisByName || {});
+        lastNisSigRef.current = financesNisSignature(cached.financePlan?.payments);
+      }
       setIsLoadingFinancePlan(false);
       cacheRestoredRef.current = true;
       if (cached.contacts.length > 0) {
@@ -2134,8 +2206,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       viewMode,
       collapsedContacts,
       paidMap,
+      nisDisplays: {
+        contractTotalNisDisplay,
+        outstandingNisDisplay,
+        contactTotalNisByName,
+      },
     });
-  }, [client?.id, isLoadingFinancePlan, financePlan, contacts, contracts, availableCurrencies, viewMode, collapsedContacts, paidMap]);
+  }, [client?.id, isLoadingFinancePlan, financePlan, contacts, contracts, availableCurrencies, viewMode, collapsedContacts, paidMap, contractTotalNisDisplay, outstandingNisDisplay, contactTotalNisByName]);
 
   const fetchContracts = async () => {
     if (!client?.id || typeof client.id !== 'string' || client.id.length === 0) return;
@@ -2694,6 +2771,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const refreshAllData = async () => {
     await Promise.all([refreshPaymentPlans(), refreshContracts()]);
   };
+  // Expose the latest silent reload to the realtime subscription declared near the top.
+  refreshAllDataRef.current = refreshAllData;
 
   // Update client balance to match finance plan total
   const updateClientBalance = async (newBalance: number) => {

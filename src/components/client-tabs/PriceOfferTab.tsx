@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ClientTabProps } from '../../types/client';
 import { CurrencyDollarIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
+import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 
 interface PriceOfferHistoryEntry {
   id: string;
@@ -31,6 +32,36 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
     () => typeof client?.id === 'string' && client.id.startsWith('legacy_'),
     [client?.id]
   );
+
+  // Bumped by the realtime subscription below; the data effects depend on it so a DB change to this
+  // lead's offer emails (or the legacy lead total) silently refetches in place — no page reload.
+  const [realtimeNonce, setRealtimeNonce] = useState(0);
+
+  useRealtimeRefresh({
+    channelName: `price-offer-tab-${client?.id ?? 'none'}`,
+    enabled: !!client?.id,
+    tables: (() => {
+      const leadIdRaw = String(client?.id ?? '');
+      const leadIdStripped = leadIdRaw.replace(/^legacy_/, '').toLowerCase();
+      const matchLead = (payload: RealtimeChangePayload) => {
+        const row = payload?.new ?? payload?.old;
+        if (!row) return true;
+        const r = row as Record<string, unknown>;
+        const candidates = [r.lead_id, r.legacy_id, r.client_id, r.id];
+        if (candidates.every((c) => c == null)) return true;
+        return candidates.some((c) => {
+          if (c == null) return false;
+          const s = String(c).toLowerCase();
+          return s === leadIdStripped || s === leadIdRaw.toLowerCase();
+        });
+      };
+      return [
+        { table: 'emails', event: '*' as const, match: matchLead },
+        { table: isLegacyLead ? 'leads_lead' : 'leads', event: '*' as const, match: matchLead },
+      ];
+    })(),
+    onChange: () => setRealtimeNonce((n) => n + 1),
+  });
 
   // Use legacyTotal for legacy leads, otherwise use proposalTotal
   const total = isLegacyLead && legacyTotal !== null ? legacyTotal : proposalTotal;
@@ -106,7 +137,7 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
     };
 
     fetchLegacyData();
-  }, [client?.id, isLegacyLead, closer]);
+  }, [client?.id, isLegacyLead, closer, realtimeNonce]);
 
   const convertHtmlToPlainText = (html: string | null | undefined): string => {
     if (!html) return '';
@@ -214,7 +245,7 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
     };
 
     fetchHistory();
-  }, [client?.id, isLegacyLead, closerDisplayName, proposal, client?.last_stage_changed_at]);
+  }, [client?.id, isLegacyLead, closerDisplayName, proposal, client?.last_stage_changed_at, realtimeNonce]);
 
   const linkifyLine = (line: string, lineIndex: number): React.ReactNode => {
     const urlRegex = /(https?:\/\/[^\s]+)/gi;

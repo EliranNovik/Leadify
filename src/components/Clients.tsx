@@ -20,6 +20,7 @@ import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
 import { saveFollowUp } from '../lib/followUpsManager';
 import { displaySymbolForPaymentSave } from '../lib/paymentPlanCurrency';
 import { usePersistedState } from '../hooks/usePersistedState';
+import { useRealtimeRefresh, type RealtimeTableSubscription } from '../hooks/useRealtimeRefresh';
 import BalanceEditModal from './BalanceEditModal';
 import ProbabilityFactorsSliders, { type ProbabilityFactors } from './ProbabilityFactorsSliders';
 import {
@@ -156,6 +157,12 @@ const TAB_LOADERS: Record<string, () => Promise<any>> = {
 };
 // Set window.__CLIENTS_DEBUG__ = true to show verbose console logs (handler options, sub-leads, etc.)
 const CLIENTS_DEBUG = typeof window !== 'undefined' && (window as any).__CLIENTS_DEBUG__ === true;
+
+// Per-lead caches for the master / sub-lead header button, so the icon button + its count badge show
+// instantly when navigating back instead of popping in after the (async) sub-lead lookups resolve.
+// Keyed by selectedClient.id. Only resolved values are stored, so seeding them is accurate (not a guess).
+const masterChildrenCache = new Map<string, { isMasterLead: boolean; subLeads: any[] }>();
+const subLeadMasterCountCache = new Map<string, number>();
 /** Tag manager / saveLeadTags: VITE_DEBUG_TAGS=true, or window.__CLIENTS_TAG_DEBUG__ = true, or CLIENTS_DEBUG */
 const CLIENTS_TAG_DEBUG =
   import.meta.env.DEV ||
@@ -626,8 +633,6 @@ const Clients: React.FC<ClientsProps> = ({
   const [countryCodes, setCountryCodes] = useState<Array<{ code: string; country: string; name: string }>>([
     { code: '+972', country: 'IL', name: 'Israel' } // Default fallback
   ]);
-  // State to track if current user is a superuser
-  const [isSuperuser, setIsSuperuser] = useState<boolean>(false);
   // State to track if current lead is in highlights
   const [isInHighlightsState, setIsInHighlightsState] = useState<boolean>(false);
   // State to track if inactive badge is expanded
@@ -1555,7 +1560,7 @@ const Clients: React.FC<ClientsProps> = ({
   const { instance } = useMsal();
   const [showAuthRedirectOption, setShowAuthRedirectOption] = useState(false);
   const authRedirectParamsRef = useRef<{ request: any; account: any } | null>(null);
-  const { isAdmin, isLoading: isAdminLoading } = useAdminRole();
+  const { isAdmin, isSuperUser: isSuperuser, isLoading: isAdminLoading } = useAdminRole();
   const [isSchedulingMeeting, setIsSchedulingMeeting] = useState(false);
   const [isCreatingMeeting, setIsCreatingMeeting] = useState(false);
   const [showScheduleMeetingPanel, setShowScheduleMeetingPanel] = useState(false);
@@ -2010,64 +2015,6 @@ const Clients: React.FC<ClientsProps> = ({
     fetchAvailableStages();
   }, []);
 
-  // Fetch current user's superuser status
-  useEffect(() => {
-    const fetchSuperuserStatus = async () => {
-      try {
-        const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
-        let user = initialUser;
-        if (authError && isAuthError(authError)) {
-          const recovered = await tryRefreshThenExpire();
-          if (!recovered) {
-            setIsSuperuser(false);
-            return;
-          }
-          const { data: { user: retryUser } } = await supabase.auth.getUser();
-          user = retryUser;
-        }
-        if (!user) {
-          setIsSuperuser(false);
-          return;
-        }
-
-        // Try to find user by auth_id first
-        let { data: userData, error } = await supabase
-          .from('users')
-          .select('is_superuser')
-          .eq('auth_id', user.id)
-          .maybeSingle();
-
-        // If not found by auth_id, try by email
-        if (!userData && user.email) {
-          const { data: userByEmail, error: emailError } = await supabase
-            .from('users')
-            .select('is_superuser')
-            .eq('email', user.email)
-            .maybeSingle();
-
-          userData = userByEmail;
-          error = emailError;
-        }
-
-        if (!error && userData) {
-          // Check if user is superuser (handle boolean, string, or number)
-          const superuserStatus = userData.is_superuser === true ||
-            userData.is_superuser === 'true' ||
-            userData.is_superuser === 1;
-          setIsSuperuser(superuserStatus);
-        } else {
-          setIsSuperuser(false);
-        }
-      } catch (error) {
-        console.error('Error fetching superuser status:', error);
-        setIsSuperuser(false);
-      }
-    };
-
-    fetchSuperuserStatus();
-  }, []);
-
-
   const lastCategoryRefreshIds = useRef<Set<string>>(new Set());
   const isBalanceUpdatingRef = useRef<boolean>(false);
   const [isClientSyncing, setIsClientSyncing] = useState(false);
@@ -2098,6 +2045,46 @@ const Clients: React.FC<ClientsProps> = ({
     onRefetch: () => {
       if (selectedClient?.id) {
         return syncClientFromServer(selectedClient.id, { silent: true });
+      }
+    },
+  });
+
+  // Live subscription for the currently open lead: when its row changes anywhere (another user,
+  // another tab, an automation, etc.) we silently re-sync just this client's data instead of
+  // forcing a full page reload. Cached data keeps rendering; only the changed fields update.
+  // We subscribe table-wide and match the row client-side (server-side filters on postgres_changes
+  // are unreliable here due to UUID/RLS/replication — same approach as ClientHeader/CalendarPage).
+  // syncClientFromServer is in-flight guarded, so this coalesces with ClientHeader's own listener.
+  const selectedLeadRealtime = useMemo<{ channelName: string; tables: RealtimeTableSubscription[] }>(() => {
+    const id = selectedClient?.id;
+    if (!id) return { channelName: '', tables: [] };
+    const idStr = String(id);
+    const isLegacy = selectedClient?.lead_type === 'legacy' || idStr.startsWith('legacy_');
+    const table = isLegacy ? 'leads_lead' : 'leads';
+    const legacyNum = isLegacy ? idStr.replace(/^legacy_/, '') : null;
+    const canonicalNewId = !isLegacy ? idStr.toLowerCase() : null;
+    const match = (payload: { new?: Record<string, unknown> | null; old?: Record<string, unknown> | null }) => {
+      const rowId = payload?.new?.id ?? payload?.old?.id;
+      if (rowId == null) return false;
+      if (isLegacy) return String(rowId) === legacyNum;
+      return String(rowId).toLowerCase() === canonicalNewId;
+    };
+    return {
+      channelName: `clients-page-lead-${encodeURIComponent(idStr)}`,
+      tables: [{ table, event: '*', match }],
+    };
+  }, [selectedClient?.id, selectedClient?.lead_type]);
+
+  useRealtimeRefresh({
+    channelName: selectedLeadRealtime.channelName,
+    tables: selectedLeadRealtime.tables,
+    enabled: !!selectedClient?.id && !!selectedLeadRealtime.channelName,
+    // Focus/visibility refresh is already handled (throttled) by useRefetchOnVisible above; only
+    // react to real DB changes here so we don't double-sync and make the header jump on every focus.
+    refreshOnFocus: false,
+    onChange: () => {
+      if (selectedClient?.id) {
+        void syncClientFromServer(selectedClient.id, { silent: true });
       }
     },
   });
@@ -11383,11 +11370,17 @@ const Clients: React.FC<ClientsProps> = ({
 
   // Fetch master's sub-leads count when viewing a sub-lead
   useEffect(() => {
+    const cacheKey = selectedClient?.id?.toString() ?? null;
     const fetchMasterSubLeadsCount = async () => {
       if (!isSubLead || !masterLeadNumber || !selectedClient) {
         if (CLIENTS_DEBUG) console.log('🔍 fetchMasterSubLeadsCount - Early return:', { isSubLead, masterLeadNumber, hasSelectedClient: !!selectedClient });
         setMasterSubLeadsCount(0);
         return;
+      }
+
+      // Show the cached count instantly (if any) so the sub-lead count badge doesn't flicker from 0.
+      if (cacheKey && subLeadMasterCountCache.has(cacheKey)) {
+        setMasterSubLeadsCount(subLeadMasterCountCache.get(cacheKey)!);
       }
 
       if (CLIENTS_DEBUG) console.log('🔍 fetchMasterSubLeadsCount - Starting fetch:', {
@@ -11526,6 +11519,7 @@ const Clients: React.FC<ClientsProps> = ({
           }
         }
 
+        if (cacheKey) subLeadMasterCountCache.set(cacheKey, count);
         setMasterSubLeadsCount(count);
       } catch (error) {
         console.error('Error fetching master sub-leads count:', error);
@@ -11588,7 +11582,20 @@ const Clients: React.FC<ClientsProps> = ({
     }
 
     if (subLeadBase) {
-      fetchSubLeads(subLeadBase);
+      // Show the cached master/sub-leads instantly (if we've resolved this lead before) so the master
+      // icon button + count don't flicker in, then refresh in the background and update the cache.
+      const cacheKey = selectedClient?.id?.toString();
+      if (cacheKey && masterChildrenCache.has(cacheKey)) {
+        const cached = masterChildrenCache.get(cacheKey)!;
+        setSubLeads(cached.subLeads);
+        setIsMasterLead(cached.isMasterLead);
+      }
+      void fetchSubLeads(subLeadBase).then((leads) => {
+        if (cacheKey) {
+          const arr = leads || [];
+          masterChildrenCache.set(cacheKey, { isMasterLead: arr.length > 0, subLeads: arr });
+        }
+      });
     } else {
       setSubLeads([]);
       setIsMasterLead(false);

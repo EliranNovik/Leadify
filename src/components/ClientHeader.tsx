@@ -84,6 +84,17 @@ import EditLeadDrawer from './EditLeadDrawer';
 let cachedLeadSources: Array<{ id: string; name: string }> | null = null;
 let cachedLeadSourcesPromise: Promise<Array<{ id: string; name: string }>> | null = null;
 
+// Resolved { sourceId, name } per lead id. Lets us show a lead's source instantly when navigating
+// back and skip re-running the source_id DB fetch for a lead we've already resolved this session.
+type ResolvedLeadSource = { sourceId: string | null; name: string | null } | null;
+const resolvedLeadSourceCache = new Map<string, ResolvedLeadSource>();
+
+// Per-lead caches for the header's tag / flag count badges, so they render instantly when navigating
+// back instead of flickering up from empty/0 while their async fetches run.
+const leadTagsCache = new Map<string, string[]>();
+const leadFieldFlagMetaCache = new Map<string, Map<string, ContentFlagMeta>>();
+const rmqMessageFlagCountCache = new Map<string, number>();
+
 let cachedCurrencies: Array<{ id: number | string; name: string; iso_code: string | null }> | null = null;
 let cachedCurrenciesPromise: Promise<
   Array<{ id: number | string; name: string; iso_code: string | null }>
@@ -538,14 +549,23 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const { user, userFullName } = useAuthContext();
     const [publicUserId, setPublicUserId] = useState<string | null>(null);
     /** lead_field_key → metadata (own flags; RLS). */
-    const [leadFieldFlagMeta, setLeadFieldFlagMeta] = useState<Map<string, ContentFlagMeta>>(() => new Map());
+    const [leadFieldFlagMeta, setLeadFieldFlagMeta] = useState<Map<string, ContentFlagMeta>>(() => {
+        const id = selectedClient?.id?.toString();
+        return (id && leadFieldFlagMetaCache.get(id)) || new Map();
+    });
     const [flagTypes, setFlagTypes] = useState<FlagTypeRow[]>([]);
     const [tagsModalOpen, setTagsModalOpen] = useState(false);
     const [headerDocumentsModalOpen, setHeaderDocumentsModalOpen] = useState(false);
     const [headerSupabaseDocumentsCount, setHeaderSupabaseDocumentsCount] = useState<number>(0);
-    const [leadTags, setLeadTags] = useState<string[]>([]);
+    const [leadTags, setLeadTags] = useState<string[]>(() => {
+        const id = selectedClient?.id?.toString();
+        return (id && leadTagsCache.get(id)) || [];
+    });
     /** RMQ chat messages flagged to this lead (all users). */
-    const [rmqMessageFlagCount, setRmqMessageFlagCount] = useState(0);
+    const [rmqMessageFlagCount, setRmqMessageFlagCount] = useState(() => {
+        const id = selectedClient?.id?.toString();
+        return (id && rmqMessageFlagCountCache.get(id)) || 0;
+    });
 
     useEffect(() => {
         if (!user?.id) {
@@ -566,6 +586,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             setLeadFieldFlagMeta(new Map());
             return;
         }
+        const cacheKey = String(selectedClient.id);
+        // Show the cached flag set instantly (if any) so the badge doesn't flicker, then refresh.
+        const cached = leadFieldFlagMetaCache.get(cacheKey);
+        if (cached) setLeadFieldFlagMeta(cached);
         const isLegacy =
             selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
         const legacyId = isLegacy
@@ -577,6 +601,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             newLeadId: newUuid || undefined,
             legacyLeadId: legacyId != null && !Number.isNaN(legacyId) ? legacyId : undefined,
         }).then((map) => {
+            leadFieldFlagMetaCache.set(cacheKey, map);
             if (!cancelled) setLeadFieldFlagMeta(map);
         });
         return () => {
@@ -590,6 +615,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             return;
         }
         const rawId = String((selectedClient as any)?.id ?? '');
+        // Show the cached count instantly (if any) so the badge doesn't flicker from 0, then refresh.
+        const cachedCount = rmqMessageFlagCountCache.get(rawId);
+        if (cachedCount != null) setRmqMessageFlagCount(cachedCount);
         const isLegacy =
             (selectedClient as any)?.lead_type === 'legacy' ||
             rawId.startsWith('legacy_') ||
@@ -601,6 +629,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             newLeadId: newUuid || undefined,
             legacyLeadId: legacyId != null && !Number.isNaN(legacyId) ? legacyId : undefined,
         }).then((n) => {
+            rmqMessageFlagCountCache.set(rawId, n);
             if (!cancelled) setRmqMessageFlagCount(n);
         });
         return () => {
@@ -620,12 +649,22 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             (rawId !== '' && !rawId.includes('-') && /^\d+$/.test(rawId));
 
         let cancelled = false;
+        // Cache + apply so the tags badge stays put across navigation and only updates when it actually changes.
+        const applyTags = (tags: string[]) => {
+            leadTagsCache.set(rawId, tags);
+            if (!cancelled) setLeadTags(tags);
+        };
+
+        // Show cached tags instantly (if any) so the badge doesn't flicker from empty, then refresh.
+        const cachedTags = leadTagsCache.get(rawId);
+        if (cachedTags) setLeadTags(cachedTags);
+
         void (async () => {
             try {
                 if (isLegacy) {
                     const legacyId = parseInt(rawId.replace(/^legacy_/, ''), 10);
                     if (!legacyId || Number.isNaN(legacyId)) {
-                        if (!cancelled) setLeadTags([]);
+                        applyTags([]);
                         return;
                     }
                     const { data, error } = await supabase
@@ -639,7 +678,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 Array.isArray(r.misc_leadtag) ? r.misc_leadtag[0]?.name : r.misc_leadtag?.name
                             )
                             .filter(Boolean) ?? [];
-                    if (!cancelled) setLeadTags(tags);
+                    applyTags(tags);
                     return;
                 }
 
@@ -655,14 +694,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     Array.isArray(r.misc_leadtag) ? r.misc_leadtag[0]?.name : r.misc_leadtag?.name
                                 )
                                 .filter(Boolean) ?? [];
-                        if (!cancelled) setLeadTags(tags);
+                        applyTags(tags);
                         return;
                     }
                 }
 
-                if (!cancelled) setLeadTags(normalizeTagsValue((selectedClient as any)?.tags));
+                applyTags(normalizeTagsValue((selectedClient as any)?.tags));
             } catch {
-                if (!cancelled) setLeadTags(normalizeTagsValue((selectedClient as any)?.tags));
+                applyTags(normalizeTagsValue((selectedClient as any)?.tags));
             }
         })();
 
@@ -1315,12 +1354,54 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [showTopicModal, setShowTopicModal] = useState(false);
     const [topicInputValue, setTopicInputValue] = useState('');
     const [savingTopic, setSavingTopic] = useState(false);
-    const [allSources, setAllSources] = useState<Array<{ id: string; name: string }>>([]);
-    /** New leads: source_id + name from DB (not leads.source text) */
-    const [resolvedNewLeadSource, setResolvedNewLeadSource] = useState<{
-        sourceId: string | null;
-        name: string | null;
-    } | null>(null);
+    // Seed from the module-level cache so source names resolve synchronously on remount/navigation
+    // back, instead of flashing empty and falling through to a late `leads` DB fetch.
+    const [allSources, setAllSources] = useState<Array<{ id: string; name: string }>>(
+        () => cachedLeadSources ?? [],
+    );
+    // Bumped after a background source_id fetch writes the module cache, so the memo below recomputes.
+    const [sourceFetchNonce, setSourceFetchNonce] = useState(0);
+
+    /**
+     * New leads: { source_id, name } resolved SYNCHRONOUSLY during render (join → source_id+allSources
+     * → session cache), so the source badge appears in the same paint as the other meta chips instead
+     * of popping in a frame later. The async DB fetch below only runs when none of these can resolve it.
+     */
+    const resolvedNewLeadSource = useMemo<{ sourceId: string | null; name: string | null } | null>(() => {
+        void sourceFetchNonce; // re-run once a background fetch has populated the cache
+        const clientId = selectedClient?.id?.toString();
+        if (!clientId) return null;
+
+        const joinName = getSourceDisplayFromJoin(selectedClient);
+        const propSourceId = normalizeLeadSourceId(selectedClient?.source_id);
+
+        if (joinName) return { sourceId: propSourceId, name: joinName };
+        if (propSourceId) {
+            const name = lookupSourceNameById(propSourceId, allSources);
+            if (name) return { sourceId: propSourceId, name };
+        }
+        if (resolvedLeadSourceCache.has(clientId)) return resolvedLeadSourceCache.get(clientId)!;
+        return propSourceId ? { sourceId: propSourceId, name: null } : null;
+    }, [
+        selectedClient?.id,
+        selectedClient?.lead_type,
+        selectedClient?.source_id,
+        selectedClient?.misc_leadsource,
+        allSources,
+        sourceFetchNonce,
+    ]);
+
+    // Persist every resolved source into the session cache. This keeps the source visible across
+    // background syncs that briefly deliver a selectedClient object WITHOUT source_id: the memo above
+    // then falls back to this cache instead of momentarily showing '---'.
+    useEffect(() => {
+        const clientId = selectedClient?.id?.toString();
+        if (!clientId) return;
+        if (resolvedNewLeadSource && (resolvedNewLeadSource.name || resolvedNewLeadSource.sourceId)) {
+            resolvedLeadSourceCache.set(clientId, resolvedNewLeadSource);
+        }
+    }, [selectedClient?.id, resolvedNewLeadSource]);
+
     const [allCurrencies, setAllCurrencies] = useState<Array<{ id: number | string, name: string, iso_code: string | null }>>([]);
     const [showStageDropdown, setShowStageDropdown] = useState(false);
     const [isCallModalOpen, setIsCallModalOpen] = useState(false);
@@ -1340,11 +1421,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         if (!clientId) {
             setLegacyContactInfo({ email: null, phone: null });
             setCategoryInputValue('');
-            setResolvedNewLeadSource(null);
             legacyContactFetchRef.current = null;
             return;
         }
-        setResolvedNewLeadSource(null);
+        // (Source is derived synchronously via useMemo, so there's nothing to clear/flash here.)
         setLegacyContactInfo({ email: null, phone: null });
         setCategoryInputValue('');
         setShowCategoryDropdown(false);
@@ -1389,53 +1469,26 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         fetchSources();
     }, []);
 
-    // New leads: resolve display from source_id (+ misc_leadsource join), not leads.source text
+    // New leads: only when the source can't be resolved synchronously (no join, no source_id on the
+    // prop, and nothing cached yet) do we hit the DB once. The result is written to the module cache
+    // and a nonce bump makes the memo above pick it up — display stays flicker-free in every other case.
     useEffect(() => {
         const clientId = selectedClient?.id?.toString() ?? null;
-        if (!clientId) {
-            setResolvedNewLeadSource(null);
-            return;
-        }
+        if (!clientId) return;
 
         const isLegacyLead =
             selectedClient?.lead_type === 'legacy' || clientId.startsWith('legacy_');
+        if (isLegacyLead) return; // legacy leads resolve synchronously from their own join/source_id
 
         const joinName = getSourceDisplayFromJoin(selectedClient);
         const propSourceId = normalizeLeadSourceId(selectedClient?.source_id);
 
-        if (isLegacyLead) {
-            const name =
-                joinName ??
-                (propSourceId ? lookupSourceNameById(propSourceId, allSources) : null);
-            setResolvedNewLeadSource(
-                propSourceId || name
-                    ? { sourceId: propSourceId, name: name ?? null }
-                    : null,
-            );
-            return;
-        }
+        // Already resolvable synchronously (memo handles it) or already fetched this session → no DB call.
+        if (joinName) return;
+        if (propSourceId && lookupSourceNameById(propSourceId, allSources)) return;
+        if (resolvedLeadSourceCache.has(clientId)) return;
 
         let cancelled = false;
-
-        const applyResolved = (sourceId: string | null, name: string | null) => {
-            if (cancelled) return;
-            setResolvedNewLeadSource(
-                sourceId || name ? { sourceId, name } : null,
-            );
-        };
-
-        if (joinName && propSourceId) {
-            applyResolved(propSourceId, joinName);
-            return;
-        }
-
-        if (propSourceId && !joinName) {
-            const cachedName = lookupSourceNameById(propSourceId, allSources);
-            if (cachedName) {
-                applyResolved(propSourceId, cachedName);
-                return;
-            }
-        }
 
         (async () => {
             try {
@@ -1444,25 +1497,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     .select('source_id, misc_leadsource!fk_leads_source_id ( id, name )')
                     .eq('id', selectedClient.id)
                     .maybeSingle();
-
-                if (cancelled) return;
                 if (error) throw error;
 
                 const sourceId = normalizeLeadSourceId(data?.source_id);
                 const name =
                     getSourceDisplayFromJoin(data) ??
                     (sourceId ? lookupSourceNameById(sourceId, allSources) : null);
-                applyResolved(sourceId, name);
+                resolvedLeadSourceCache.set(clientId, sourceId || name ? { sourceId, name } : null);
             } catch (error) {
                 console.error('Error fetching lead source_id:', error);
-                if (!cancelled) {
-                    const fallbackName =
-                        joinName ??
-                        (propSourceId
-                            ? lookupSourceNameById(propSourceId, allSources)
-                            : null);
-                    applyResolved(propSourceId, fallbackName);
-                }
+                const fallbackName =
+                    joinName ??
+                    (propSourceId ? lookupSourceNameById(propSourceId, allSources) : null);
+                resolvedLeadSourceCache.set(
+                    clientId,
+                    propSourceId || fallbackName ? { sourceId: propSourceId, name: fallbackName } : null,
+                );
+            } finally {
+                if (!cancelled) setSourceFetchNonce((n) => n + 1);
             }
         })();
 
@@ -2409,15 +2461,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         <p className="font-mono text-sm font-semibold tabular-nums text-slate-500">
                                             {renderLeadNumber()}
                                         </p>
-                                        {isClientSyncing && (
-                                            <span
-                                                className="inline-flex items-center gap-1 text-xs font-medium text-base-content/50"
-                                                title="Syncing latest data from server"
-                                            >
-                                                <span className="loading loading-spinner loading-xs" aria-hidden />
-                                                Syncing
-                                            </span>
-                                        )}
                                         {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
                                             <button
                                                 onClick={() => {
@@ -2803,15 +2846,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 <span className="text-sm font-medium tabular-nums text-gray-500 dark:text-gray-400">
                                     {renderLeadNumber()}
                                 </span>
-                                {isClientSyncing && (
-                                    <span
-                                        className="inline-flex items-center gap-1 text-xs font-medium text-base-content/50"
-                                        title="Syncing latest data from server"
-                                    >
-                                        <span className="loading loading-spinner loading-xs" aria-hidden />
-                                        Syncing
-                                    </span>
-                                )}
                                 <h1 className="min-w-0 text-[1.375rem] font-semibold leading-snug tracking-tight text-gray-900 dark:text-white">
                                     {selectedClient.name || 'Unnamed Lead'}
                                 </h1>
@@ -4037,18 +4071,20 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                         return (
                             <div className="flex flex-wrap items-center justify-between w-full gap-6">
-                                {/* Assigned Team — all roles grouped in one white rounded card (sub-roles on the left, handler/retainer + toggle on the right) */}
-                                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-6 gap-y-4 rounded-2xl border border-base-200/80 bg-white px-5 py-4 shadow-sm dark:border-base-300/55 dark:bg-base-100">
+                                {/* Assigned Team — all roles grouped in one white rounded card (sub-roles on the left, handler/retainer + toggle on the right).
+                                    Keep a single horizontal row at every width (scroll if tight) so it never reflows between
+                                    horizontal and vertical layouts as the page width changes. */}
+                                <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-6 gap-y-4 overflow-x-auto rounded-2xl border border-base-200/80 bg-white px-5 py-4 shadow-sm dark:border-base-300/55 dark:bg-base-100">
                                     {/* Group 1: non-handler roles (Scheduler / Closer / Expert / …) */}
-                                    <div className="flex items-center gap-6 min-w-0 flex-wrap">
+                                    <div className="flex shrink-0 items-center gap-6 flex-nowrap">
                                         {Array.from(roleGroups.values()).map((group, index) => (
-                                            <div key={index} className="flex items-center gap-2">
+                                            <div key={index} className="flex shrink-0 items-center gap-2">
                                                 <EmployeeAvatar employeeId={group.id} size="md" />
-                                                <div className="flex flex-col min-w-0">
-                                                    <span className="text-[10px] text-gray-400 uppercase tracking-wide font-medium">
+                                                <div className="flex flex-col">
+                                                    <span className="whitespace-nowrap text-[10px] text-gray-400 uppercase tracking-wide font-medium">
                                                       {group.roles.join(', ')}
                                                     </span>
-                                                    <span className="text-sm font-medium text-gray-700 truncate">{formatRoleDisplay(group.display)}</span>
+                                                    <span className="whitespace-nowrap text-sm font-medium text-gray-700">{formatRoleDisplay(group.display)}</span>
                                                 </div>
                                             </div>
                                         ))}
@@ -4056,9 +4092,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                                     {/* Group 2: Handler + Retainer Handler + active-role segmented toggle */}
                                     {(hasHandlerRole || hasRetentionRole) && (
-                                        <div className="flex flex-wrap items-end justify-start gap-4 sm:gap-6">
+                                        <div className="flex shrink-0 flex-nowrap items-end justify-start gap-4 sm:gap-6">
                                         {hasHandlerRole && (
-                                            <div className="flex items-center gap-2 min-w-0">
+                                            <div className="flex shrink-0 items-center gap-2">
                                                 <div
                                                     className={`relative shrink-0 overflow-visible rounded-full p-0.5 transition-[box-shadow,opacity,ring-color] duration-500 ease-out ${
                                                         activeHandlerTypeForLead === 2
@@ -4082,11 +4118,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         </div>
                                                     )}
                                                 </div>
-                                                <div className="flex flex-col min-w-0">
-                                                    <span className="text-[10px] text-gray-400 uppercase tracking-wide font-medium">
+                                                <div className="flex flex-col">
+                                                    <span className="whitespace-nowrap text-[10px] text-gray-400 uppercase tracking-wide font-medium">
                                                         Handler
                                                     </span>
-                                                    <span className="text-sm font-medium text-gray-700 truncate">
+                                                    <span className="whitespace-nowrap text-sm font-medium text-gray-700">
                                                         {formatRoleDisplay(handlerDisplay)}
                                                     </span>
                                                 </div>
@@ -4143,7 +4179,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         )}
 
                                         {hasRetentionRole && (
-                                            <div className="flex items-center gap-2 min-w-0">
+                                            <div className="flex shrink-0 items-center gap-2">
                                                 <div
                                                     className={`relative shrink-0 overflow-visible rounded-full p-0.5 transition-[box-shadow,opacity,ring-color] duration-500 ease-out ${
                                                         activeHandlerTypeForLead === 1
@@ -4167,11 +4203,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                         </div>
                                                     )}
                                                 </div>
-                                                <div className="flex flex-col min-w-0">
-                                                    <span className="text-[10px] text-gray-400 uppercase tracking-wide font-medium">
+                                                <div className="flex flex-col">
+                                                    <span className="whitespace-nowrap text-[10px] text-gray-400 uppercase tracking-wide font-medium">
                                                         R-Handler
                                                     </span>
-                                                    <span className="text-sm font-medium text-gray-700 truncate">
+                                                    <span className="whitespace-nowrap text-sm font-medium text-gray-700">
                                                         {formatRoleDisplay(retentionHandlerDisplay)}
                                                     </span>
                                                 </div>
@@ -5008,6 +5044,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         setLeadTags(next);
                         const id = (selectedClient as any)?.id;
                         if (id != null) {
+                            leadTagsCache.set(String(id), next);
                             await refreshClientData(id);
                         }
                     }}

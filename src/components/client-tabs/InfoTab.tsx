@@ -18,6 +18,7 @@ import {
   UserIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
+import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import { toast } from 'react-hot-toast';
 import { useAuthContext } from '../../contexts/AuthContext';
 import {
@@ -262,6 +263,33 @@ const InfoTab: React.FC<ClientTabProps> = ({
   const [pendingProbabilityValues, setPendingProbabilityValues] = useState<ProbabilitySlidersValues | null>(null);
   const [highProbGateOpen, setHighProbGateOpen] = useState(false);
   const [flagChooserOpen, setFlagChooserOpen] = useState(false);
+
+  // Bumped by the realtime subscription below; the follow-up effect depends on it so a change to
+  // this lead's follow-ups (created elsewhere) silently refetches in place — no page reload.
+  const [realtimeNonce, setRealtimeNonce] = useState(0);
+
+  useRealtimeRefresh({
+    channelName: `info-tab-followups-${client?.id ?? 'none'}`,
+    enabled: !!client?.id,
+    tables: (() => {
+      const leadIdRaw = String(client?.id ?? '');
+      const leadIdStripped = leadIdRaw.replace(/^legacy_/, '').toLowerCase();
+      const matchLead = (payload: RealtimeChangePayload) => {
+        const row = payload?.new ?? payload?.old;
+        if (!row) return true;
+        const r = row as Record<string, unknown>;
+        const candidates = [r.lead_id, r.new_lead_id];
+        if (candidates.every((c) => c == null)) return true;
+        return candidates.some((c) => {
+          if (c == null) return false;
+          const s = String(c).toLowerCase();
+          return s === leadIdStripped || s === leadIdRaw.toLowerCase();
+        });
+      };
+      return [{ table: 'follow_ups', event: '*' as const, match: matchLead }];
+    })(),
+    onChange: () => setRealtimeNonce((n) => n + 1),
+  });
 
   useEffect(() => {
     if (!authUserId) {
@@ -838,7 +866,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
 
     fetchUserFollowup();
     return () => { cancelled = true; };
-  }, [client?.id]);
+  }, [client?.id, realtimeNonce]);
 
   const applyLeadFieldFlag = async (
     fieldKey: 'expert_notes' | 'handler_notes',

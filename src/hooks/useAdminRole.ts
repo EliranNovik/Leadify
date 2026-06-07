@@ -1,9 +1,70 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
+import { readCachedSupabaseSessionFromStorage } from '../lib/authBootstrap';
 
 function parseSuperuserFlag(v: unknown): boolean {
   return v === true || v === 'true' || v === 1;
+}
+
+type CachedUserRole = { isAdmin: boolean; isSuperUser: boolean };
+
+const USER_ROLE_CACHE_PREFIX = 'crm_user_role_v1_';
+const userRoleModuleCache = new Map<string, CachedUserRole>();
+
+function readCachedUserRole(userId: string): CachedUserRole | null {
+  if (userRoleModuleCache.has(userId)) return userRoleModuleCache.get(userId)!;
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(USER_ROLE_CACHE_PREFIX + userId);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CachedUserRole;
+    if (typeof parsed.isAdmin === 'boolean' && typeof parsed.isSuperUser === 'boolean') {
+      userRoleModuleCache.set(userId, parsed);
+      return parsed;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function writeCachedUserRole(userId: string, role: CachedUserRole): void {
+  userRoleModuleCache.set(userId, role);
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(USER_ROLE_CACHE_PREFIX + userId, JSON.stringify(role));
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearCachedUserRole(userId: string): void {
+  userRoleModuleCache.delete(userId);
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(USER_ROLE_CACHE_PREFIX + userId);
+  } catch {
+    /* ignore */
+  }
+}
+
+function readInitialCachedRole(): CachedUserRole {
+  const uid = readCachedSupabaseSessionFromStorage()?.user?.id;
+  if (uid) {
+    const cached = readCachedUserRole(String(uid));
+    if (cached) return cached;
+  }
+  return { isAdmin: false, isSuperUser: false };
+}
+
+function deriveRoleFromRow(
+  data: { role?: string | null; is_staff?: boolean | null; is_superuser?: unknown } | null,
+): CachedUserRole {
+  if (!data) return { isAdmin: false, isSuperUser: false };
+  const isSuperUser = parseSuperuserFlag(data.is_superuser);
+  const isAdmin = data.role === 'admin' || data.is_staff === true || isSuperUser;
+  return { isAdmin, isSuperUser };
 }
 
 /** Same session resolution as Header so MobileBottomNav / Sidebar match desktop chrome. */
@@ -62,27 +123,17 @@ async function fetchUsersRoleRow(user: User) {
   return { data: null, error: byAuth.error };
 }
 
-function applyRoleRow(
-  data: { role?: string | null; is_staff?: boolean | null; is_superuser?: unknown } | null,
-  setIsAdmin: (v: boolean) => void,
-  setIsSuperUser: (v: boolean) => void
-) {
-  if (!data) {
-    setIsAdmin(false);
-    setIsSuperUser(false);
-    return;
-  }
-  const superUserStatus = parseSuperuserFlag(data.is_superuser);
-  const adminStatus =
-    data.role === 'admin' || data.is_staff === true || superUserStatus;
-  setIsAdmin(adminStatus);
-  setIsSuperUser(superUserStatus);
-}
-
 export const useAdminRole = () => {
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [isSuperUser, setIsSuperUser] = useState(false);
+  const initialRole = readInitialCachedRole();
+  const [isAdmin, setIsAdmin] = useState(initialRole.isAdmin);
+  const [isSuperUser, setIsSuperUser] = useState(initialRole.isSuperUser);
   const [isLoading, setIsLoading] = useState(false);
+  const lastUserIdRef = useRef<string | null>(null);
+
+  const applyRole = useCallback((role: CachedUserRole) => {
+    setIsAdmin(role.isAdmin);
+    setIsSuperUser(role.isSuperUser);
+  }, []);
 
   const checkAdminRole = useCallback(async () => {
     try {
@@ -94,10 +145,18 @@ export const useAdminRole = () => {
         return;
       }
 
+      const uid = String(user.id);
+      lastUserIdRef.current = uid;
+      const cached = readCachedUserRole(uid);
+      // Show the cached role instantly (stage dropdown, nav, etc.) while we refresh in the background.
+      if (cached) applyRole(cached);
+
       const { data, error } = await fetchUsersRoleRow(user);
 
       if (!error && data) {
-        applyRoleRow(data, setIsAdmin, setIsSuperUser);
+        const role = deriveRoleFromRow(data);
+        writeCachedUserRole(uid, role);
+        applyRole(role);
         return;
       }
 
@@ -110,7 +169,9 @@ export const useAdminRole = () => {
         if (syncResult?.success && user.email) {
           const { data: retryData, error: retryError } = await fetchUsersRoleRow(user);
           if (!retryError && retryData) {
-            applyRoleRow(retryData, setIsAdmin, setIsSuperUser);
+            const role = deriveRoleFromRow(retryData);
+            writeCachedUserRole(uid, role);
+            applyRole(role);
             return;
           }
         }
@@ -118,13 +179,14 @@ export const useAdminRole = () => {
         /* non-fatal */
       }
 
-      setIsAdmin(false);
-      setIsSuperUser(false);
+      // Fetch failed — keep the cached role if we have one instead of flashing to false.
+      if (!cached) applyRole({ isAdmin: false, isSuperUser: false });
     } catch {
-      setIsAdmin(false);
-      setIsSuperUser(false);
+      const uid = readCachedSupabaseSessionFromStorage()?.user?.id;
+      const cached = uid ? readCachedUserRole(String(uid)) : null;
+      if (!cached) applyRole({ isAdmin: false, isSuperUser: false });
     }
-  }, []);
+  }, [applyRole]);
 
   const refreshAdminStatus = useCallback(async () => {
     try {
@@ -141,9 +203,16 @@ export const useAdminRole = () => {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event) => {
+      if (event === 'SIGNED_OUT') {
+        if (lastUserIdRef.current) {
+          clearCachedUserRole(lastUserIdRef.current);
+          lastUserIdRef.current = null;
+        }
+        applyRole({ isAdmin: false, isSuperUser: false });
+        return;
+      }
       if (
         event === 'SIGNED_IN' ||
-        event === 'SIGNED_OUT' ||
         event === 'TOKEN_REFRESHED' ||
         event === 'INITIAL_SESSION' ||
         event === 'USER_UPDATED'
@@ -153,7 +222,7 @@ export const useAdminRole = () => {
     });
 
     return () => subscription.unsubscribe();
-  }, [checkAdminRole]);
+  }, [checkAdminRole, applyRole]);
 
   return { isAdmin, isSuperUser, isLoading, refreshAdminStatus };
 };

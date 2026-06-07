@@ -1,5 +1,6 @@
 import React, { useState, useEffect, Fragment, useMemo, useRef, startTransition } from 'react';
 import { usePersistedState } from '../../hooks/usePersistedState';
+import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import { ClientTabProps } from '../../types/client';
 import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, MinusIcon, DocumentTextIcon, XMarkIcon, PencilSquareIcon, CheckIcon, TrashIcon, FolderOpenIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
@@ -384,6 +385,39 @@ const renderTiptapContent = (content: any, keyPrefix = '', asClient = false, sig
 
 const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const navigate = useNavigate();
+
+  // Holds the latest silent contacts reload so the realtime subscription can call it regardless of
+  // where fetchContacts is declared below.
+  const fetchContactsRef = useRef<(() => Promise<void> | void) | null>(null);
+
+  // Live updates: when a contact is linked/unlinked/reassigned for this lead, refresh the contacts
+  // list in place. Direct edits on leads_contact field values are also picked up on window focus
+  // (the hook refreshes on focus/visibility), keeping noise low without missing changes.
+  useRealtimeRefresh({
+    channelName: `contact-info-tab-${client?.id ?? 'none'}`,
+    enabled: !!client?.id,
+    tables: (() => {
+      const leadIdRaw = String(client?.id ?? '');
+      const leadIdStripped = leadIdRaw.replace(/^legacy_/, '').toLowerCase();
+      const matchLead = (payload: RealtimeChangePayload) => {
+        const row = payload?.new ?? payload?.old;
+        if (!row) return true;
+        const r = row as Record<string, unknown>;
+        const candidates = [r.lead_id, r.newlead_id];
+        if (candidates.every((c) => c == null)) return true;
+        return candidates.some((c) => {
+          if (c == null) return false;
+          const s = String(c).toLowerCase();
+          return s === leadIdStripped || s === leadIdRaw.toLowerCase();
+        });
+      };
+      return [{ table: 'lead_leadcontact', event: '*' as const, match: matchLead }];
+    })(),
+    onChange: () => {
+      void fetchContactsRef.current?.();
+    },
+  });
+
   const [contacts, setContacts] = useState<ContactEntry[]>([
     {
       id: 1,
@@ -1853,6 +1887,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
       // Don't initialize editedMainContact here - it will be set when Edit button is clicked
     };
+
+    // Expose the latest silent reload to the realtime subscription declared near the top.
+    fetchContactsRef.current = fetchContacts;
 
     fetchContacts();
   }, [client?.id]); // Only depend on client.id to prevent unnecessary re-fetches

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
+import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import {
   clearPendingMeetingRescheduleDrawer,
   clearPendingMeetingScheduleDrawer,
@@ -411,6 +412,38 @@ function OutlookIcon({ className = 'w-5 h-5' }: { className?: string }) {
 
 const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const { instance } = useMsal();
+
+  // Holds the latest silent meetings reload so the realtime subscription can call it regardless of
+  // where fetchMeetings is declared below.
+  const fetchMeetingsRef = useRef<(() => Promise<void> | void) | null>(null);
+
+  // Live updates: when a meeting for this lead is created/edited/cancelled anywhere, refresh the
+  // meetings list in place instead of reloading the page. Cached meetings render instantly.
+  useRealtimeRefresh({
+    channelName: `meeting-tab-${client?.id ?? 'none'}`,
+    enabled: !!client?.id,
+    tables: (() => {
+      const leadIdRaw = String(client?.id ?? '');
+      const leadIdStripped = leadIdRaw.replace(/^legacy_/, '').toLowerCase();
+      const matchLead = (payload: RealtimeChangePayload) => {
+        const row = payload?.new ?? payload?.old;
+        if (!row) return true;
+        const r = row as Record<string, unknown>;
+        const candidates = [r.client_id, r.legacy_lead_id, r.lead_id];
+        if (candidates.every((c) => c == null)) return true;
+        return candidates.some((c) => {
+          if (c == null) return false;
+          const s = String(c).toLowerCase();
+          return s === leadIdStripped || s === leadIdRaw.toLowerCase();
+        });
+      };
+      return [{ table: 'meetings', event: '*' as const, match: matchLead }];
+    })(),
+    onChange: () => {
+      void fetchMeetingsRef.current?.();
+    },
+  });
+
   const [showAuthRedirectOption, setShowAuthRedirectOption] = useState(false);
   const authRedirectParamsRef = useRef<{ request: any; account: any } | null>(null);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -1688,6 +1721,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       toast.error('Failed to load meetings.');
     }
   };
+  // Expose the latest silent reload to the realtime subscription declared near the top.
+  fetchMeetingsRef.current = fetchMeetings;
 
   const loadMeetingParticipants = useCallback(async (meetingId: number) => {
     setMeetingParticipantsById((prev) => ({

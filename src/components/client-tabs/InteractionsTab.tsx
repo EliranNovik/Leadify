@@ -32,6 +32,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
+import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import { toast } from 'react-hot-toast';
 import { createPortal } from 'react-dom';
 import AISummaryPanel from './AISummaryPanel';
@@ -1002,6 +1003,43 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const timelineHydratedFromServerRef = useRef(false);
   
   const previousHydrationClientIdRef = useRef<string | null>(null);
+
+  // Holds the latest silent timeline reload so the realtime subscription can call it regardless of
+  // where fetchInteractions is declared below.
+  const fetchInteractionsRef = useRef<((opts?: { bypassCache?: boolean; quiet?: boolean }) => Promise<void> | void) | null>(null);
+
+  // Live updates: when a new email / WhatsApp message / manual or legacy interaction lands for this
+  // lead, silently re-merge the timeline in place (quiet = no spinner). Cached interactions keep
+  // showing; only the new items appear — the page is never fully refreshed.
+  useRealtimeRefresh({
+    channelName: `interactions-tab-${client?.id ?? 'none'}`,
+    enabled: !!client?.id,
+    tables: (() => {
+      const leadIdRaw = String(client?.id ?? '');
+      const leadIdStripped = leadIdRaw.replace(/^legacy_/, '').toLowerCase();
+      const matchLead = (payload: RealtimeChangePayload) => {
+        const row = payload?.new ?? payload?.old;
+        if (!row) return true;
+        const r = row as Record<string, unknown>;
+        const candidates = [r.lead_id, r.legacy_id, r.client_id];
+        if (candidates.every((c) => c == null)) return true;
+        return candidates.some((c) => {
+          if (c == null) return false;
+          const s = String(c).toLowerCase();
+          return s === leadIdStripped || s === leadIdRaw.toLowerCase();
+        });
+      };
+      return [
+        { table: 'emails', event: '*' as const, match: matchLead },
+        { table: 'whatsapp_messages', event: '*' as const, match: matchLead },
+        { table: 'lead_manual_interactions', event: '*' as const, match: matchLead },
+        { table: 'leads_leadinteractions', event: '*' as const, match: matchLead },
+      ];
+    })(),
+    onChange: () => {
+      void fetchInteractionsRef.current?.({ bypassCache: true, quiet: true });
+    },
+  });
 
   // Reset hydration only when switching to a different lead (not on tab remount).
   useEffect(() => {
@@ -4663,6 +4701,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       // This prevents unnecessary re-creation of fetchInteractions when these change
     ]
   );
+  // Expose the latest silent reload to the realtime subscription declared near the top.
+  fetchInteractionsRef.current = fetchInteractions;
 
   // Use ref to track last client ID to prevent infinite loops
   const lastClientIdRef = useRef<string | null>(null);

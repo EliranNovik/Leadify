@@ -167,118 +167,24 @@ const ProformaLegacyViewPage: React.FC = () => {
         }
       }
 
-      // If view fetch succeeds, also fetch client data from the specific contact (client_id from payment plan)
+      // Resolve the billing contact the SAME way the create page does (resolvePaymentPlanContact).
+      // The raw client_id may be a real leads_contact id, the numeric lead id (legacy / sub-lead
+      // main-client rows), or missing. A naive `leads_contact.eq('id', client_id)` lookup would
+      // otherwise return an unrelated contact that happens to share that id (the "random contact" bug).
       if (!error && data && data.lead_id) {
         try {
-          // Use client_id from payment plan row if available
-          if (paymentPlanClientId) {
-            const { data: contactData, error: contactError } = await supabase
-              .from('leads_contact')
-              .select('name, email, phone, mobile')
-              .eq('id', paymentPlanClientId)
-              .single();
+          const resolvedContact = await resolvePaymentPlanContact({
+            leadId: data.lead_id,
+            clientId: paymentPlanClientId,
+            clientNameFallback: data.client_name,
+          });
 
-            if (!contactError && contactData) {
-              data.client_name = contactData.name || data.client_name || 'Client';
-              data.client_email = contactData.email || data.client_email || '';
-              data.client_phone =
-                pickWhatsAppPhoneFromContactFields(contactData.phone, contactData.mobile) ||
-                data.client_phone ||
-                '';
-            }
-          } else {
-            // Fallback: get main contact from lead_leadcontact (when proforma / ppr is missing client_id)
-            const { data: allContacts, error: allContactsError } = await supabase
-              .from('lead_leadcontact')
-              .select(`
-                main,
-                contact_id
-              `)
-              .eq('lead_id', data.lead_id);
-
-            // Try to get the main contact (try different main values)
-            let leadContacts = null;
-            let leadContactsError = null;
-
-            // Try with 'true' (string)
-            const { data: contactsTrue, error: errorTrue } = await supabase
-              .from('lead_leadcontact')
-              .select(`
-                main,
-                contact_id
-              `)
-              .eq('lead_id', data.lead_id)
-              .eq('main', 'true');
-
-            if (!errorTrue && contactsTrue && contactsTrue.length > 0) {
-              leadContacts = contactsTrue;
-              leadContactsError = errorTrue;
-            } else {
-              // Try with true (boolean)
-              const { data: contactsBool, error: errorBool } = await supabase
-                .from('lead_leadcontact')
-                .select(`
-                  main,
-                  contact_id
-                `)
-                .eq('lead_id', data.lead_id)
-                .eq('main', true);
-
-              if (!errorBool && contactsBool && contactsBool.length > 0) {
-                leadContacts = contactsBool;
-                leadContactsError = errorBool;
-              } else {
-                // Try with 1 (numeric)
-                const { data: contactsNum, error: errorNum } = await supabase
-                  .from('lead_leadcontact')
-                  .select(`
-                    main,
-                    contact_id
-                  `)
-                  .eq('lead_id', data.lead_id)
-                  .eq('main', 1);
-
-                leadContacts = contactsNum;
-                leadContactsError = errorNum;
-              }
-            }
-
-            if (!leadContactsError && leadContacts && leadContacts.length > 0) {
-              // Get the contact details from leads_contact table (including name)
-              const { data: contactData, error: contactError } = await supabase
-                .from('leads_contact')
-                .select('name, email, phone, mobile')
-                .eq('id', leadContacts[0].contact_id)
-                .single();
-
-              if (!contactError && contactData) {
-                data.client_name = contactData.name || data.client_name || 'Client';
-                data.client_email = contactData.email || data.client_email || '';
-                data.client_phone =
-                  pickWhatsAppPhoneFromContactFields(contactData.phone, contactData.mobile) ||
-                  data.client_phone ||
-                  '';
-              }
-            } else {
-              // Fallback: try to get any contact for this lead
-              if (allContacts && allContacts.length > 0) {
-                const { data: contactData, error: contactError } = await supabase
-                  .from('leads_contact')
-                  .select('name, email, phone, mobile')
-                  .eq('id', allContacts[0].contact_id)
-                  .single();
-
-                if (!contactError && contactData) {
-                  data.client_name = contactData.name || data.client_name || 'Client';
-                  data.client_email = contactData.email || data.client_email || '';
-                  data.client_phone =
-                    pickWhatsAppPhoneFromContactFields(contactData.phone, contactData.mobile) ||
-                    data.client_phone ||
-                    '';
-                }
-              }
-            }
-          }
+          data.client_name = resolvedContact.name || data.client_name || 'Client';
+          data.client_email = resolvedContact.email || data.client_email || '';
+          data.client_phone =
+            pickWhatsAppPhoneFromContactFields(resolvedContact.phone, '') ||
+            data.client_phone ||
+            '';
         } catch (contactError) {
           console.error('Error fetching contact data:', contactError);
           // Error handling - contact data will remain null
@@ -314,93 +220,18 @@ const ProformaLegacyViewPage: React.FC = () => {
         let clientPhone = '';
 
         if (directData.lead_id) {
-          // Try to get contact info from leads_contact via lead_leadcontact
+          // Resolve the billing contact via the shared helper so this fallback path matches both
+          // the create page and the primary path above (avoids the "random contact" id collision).
           try {
-            // First, let's check what contacts exist for this lead
-            const { data: allContacts, error: allContactsError } = await supabase
-              .from('lead_leadcontact')
-              .select(`
-                main,
-                contact_id
-              `)
-              .eq('lead_id', directData.lead_id);
+            const resolvedContact = await resolvePaymentPlanContact({
+              leadId: directData.lead_id,
+              clientId: paymentPlanClientId,
+            });
 
-            // Try to get the main contact (try different main values)
-            let leadContacts = null;
-            let leadContactsError = null;
-
-            // Try with 'true' (string)
-            const { data: contactsTrue, error: errorTrue } = await supabase
-              .from('lead_leadcontact')
-              .select(`
-                main,
-                contact_id
-              `)
-              .eq('lead_id', directData.lead_id)
-              .eq('main', 'true');
-
-            if (!errorTrue && contactsTrue && contactsTrue.length > 0) {
-              leadContacts = contactsTrue;
-              leadContactsError = errorTrue;
-            } else {
-              // Try with true (boolean)
-              const { data: contactsBool, error: errorBool } = await supabase
-                .from('lead_leadcontact')
-                .select(`
-                  main,
-                  contact_id
-                `)
-                .eq('lead_id', directData.lead_id)
-                .eq('main', true);
-
-              if (!errorBool && contactsBool && contactsBool.length > 0) {
-                leadContacts = contactsBool;
-                leadContactsError = errorBool;
-              } else {
-                // Try with 1 (numeric)
-                const { data: contactsNum, error: errorNum } = await supabase
-                  .from('lead_leadcontact')
-                  .select(`
-                    main,
-                    contact_id
-                  `)
-                  .eq('lead_id', directData.lead_id)
-                  .eq('main', 1);
-
-                leadContacts = contactsNum;
-                leadContactsError = errorNum;
-              }
-            }
-
-            if (!leadContactsError && leadContacts && leadContacts.length > 0) {
-              // Get the contact details from leads_contact table (including name)
-              const { data: contactData, error: contactError } = await supabase
-                .from('leads_contact')
-                .select('name, email, phone')
-                .eq('id', leadContacts[0].contact_id)
-                .single();
-
-              if (!contactError && contactData) {
-                clientName = contactData.name || 'Client';
-                clientEmail = contactData.email || '';
-                clientPhone = contactData.phone || '';
-              }
-            } else {
-              // Fallback: try to get any contact for this lead
-              if (allContacts && allContacts.length > 0) {
-                const { data: contactData, error: contactError } = await supabase
-                  .from('leads_contact')
-                  .select('name, email, phone')
-                  .eq('id', allContacts[0].contact_id)
-                  .single();
-
-                if (!contactError && contactData) {
-                  clientName = contactData.name || 'Client';
-                  clientEmail = contactData.email || '';
-                  clientPhone = contactData.phone || '';
-                }
-              }
-            }
+            clientName = resolvedContact.name || 'Client';
+            clientEmail = resolvedContact.email || '';
+            clientPhone =
+              pickWhatsAppPhoneFromContactFields(resolvedContact.phone, '') || '';
           } catch (contactError) {
             // Error handling - contact data will remain null
           }
