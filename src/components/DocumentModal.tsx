@@ -656,6 +656,18 @@ function formatDocumentPreviewDate(dateString: string) {
   return `${dd}.${mm}.${yy}, ${hh}:${min}`;
 }
 
+async function downloadPreviewFile(item: Pick<DocumentPreviewItem, 'downloadUrl' | 'name'>): Promise<void> {
+  const response = await fetch(item.downloadUrl);
+  if (!response.ok) throw new Error('Download failed');
+  const blob = await response.blob();
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = item.name;
+  link.click();
+  window.URL.revokeObjectURL(objectUrl);
+}
+
 export type DocumentPreviewModalProps = {
   isOpen: boolean;
   onClose: () => void;
@@ -672,6 +684,7 @@ export function DocumentPreviewModal({
 }: DocumentPreviewModalProps) {
   const documentsRef = useRef(documents);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
     documentsRef.current = documents;
@@ -750,6 +763,19 @@ export function DocumentPreviewModal({
     onClose();
   }, [onClose]);
 
+  const handleDownload = useCallback(async () => {
+    if (!previewDocument || downloading) return;
+    setDownloading(true);
+    try {
+      await downloadPreviewFile(previewDocument);
+    } catch (err) {
+      console.error('Download error:', err);
+      toast.error('Download failed. Please try again.');
+    } finally {
+      setDownloading(false);
+    }
+  }, [previewDocument, downloading]);
+
   useEffect(() => {
     if (!isOpen || previewIndex === null) return;
     const onKey = (e: KeyboardEvent) => {
@@ -795,14 +821,30 @@ export function DocumentPreviewModal({
             </p>
           ) : null}
         </div>
-        <button
-          type="button"
-          className="btn btn-ghost btn-circle shrink-0"
-          onClick={handleClose}
-          aria-label="Close preview"
-        >
-          <XMarkIcon className="h-6 w-6" />
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            className="btn btn-ghost btn-circle shrink-0"
+            onClick={() => void handleDownload()}
+            disabled={downloading}
+            aria-label={`Download ${previewDocument.name}`}
+            title="Download"
+          >
+            {downloading ? (
+              <span className="loading loading-spinner loading-sm" />
+            ) : (
+              <ArrowDownTrayIcon className="h-6 w-6" />
+            )}
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost btn-circle shrink-0"
+            onClick={handleClose}
+            aria-label="Close preview"
+          >
+            <XMarkIcon className="h-6 w-6" />
+          </button>
+        </div>
       </header>
 
       <div className="flex min-h-0 flex-1 items-stretch">
@@ -2508,14 +2550,30 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
                 {previewIndex + 1} / {documents.length}
               </p>
             </div>
-            <button
-              type="button"
-              className="btn btn-ghost btn-circle shrink-0"
-              onClick={() => setPreviewIndex(null)}
-              aria-label="Close preview"
-            >
-              <XMarkIcon className="h-6 w-6" />
-            </button>
+            <div className="flex shrink-0 items-center gap-1">
+              <button
+                type="button"
+                className="btn btn-ghost btn-circle shrink-0"
+                onClick={() => void handleDownload(previewDocument)}
+                disabled={downloading.includes(previewDocument.id)}
+                aria-label={`Download ${previewDocument.name}`}
+                title="Download"
+              >
+                {downloading.includes(previewDocument.id) ? (
+                  <span className="loading loading-spinner loading-sm" />
+                ) : (
+                  <ArrowDownTrayIcon className="h-6 w-6" />
+                )}
+              </button>
+              <button
+                type="button"
+                className="btn btn-ghost btn-circle shrink-0"
+                onClick={() => setPreviewIndex(null)}
+                aria-label="Close preview"
+              >
+                <XMarkIcon className="h-6 w-6" />
+              </button>
+            </div>
           </header>
 
           <div className="flex min-h-0 flex-1 items-stretch">

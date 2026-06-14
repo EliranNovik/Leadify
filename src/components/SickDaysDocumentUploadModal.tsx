@@ -13,6 +13,60 @@ interface SickDayRecord {
   created_at: string;
 }
 
+type EnrichedSickDay = SickDayRecord & {
+  effectiveDocumentUrl: string | null;
+  documentSource: SickDayRecord | null;
+};
+
+function periodEndDate(start: string, end: string | null): string {
+  return end || start;
+}
+
+/** True when [innerStart, innerEnd] lies entirely inside [outerStart, outerEnd]. */
+function isWithinPeriod(
+  innerStart: string,
+  innerEnd: string,
+  outerStart: string,
+  outerEnd: string,
+): boolean {
+  return innerStart >= outerStart && innerEnd <= outerEnd;
+}
+
+/** Own document, or one from another sick-day record whose period fully covers this entry. */
+function resolveEffectiveDocument(
+  record: SickDayRecord,
+  allRecords: SickDayRecord[],
+): { url: string | null; source: SickDayRecord | null } {
+  if (record.document_url) {
+    return { url: record.document_url, source: record };
+  }
+
+  const recordStart = record.start_date;
+  const recordEnd = periodEndDate(record.start_date, record.end_date);
+
+  for (const other of allRecords) {
+    if (other.id === record.id || !other.document_url) continue;
+    const otherStart = other.start_date;
+    const otherEnd = periodEndDate(other.start_date, other.end_date);
+    if (isWithinPeriod(recordStart, recordEnd, otherStart, otherEnd)) {
+      return { url: other.document_url, source: other };
+    }
+  }
+
+  return { url: null, source: null };
+}
+
+function enrichSickDays(records: SickDayRecord[]): EnrichedSickDay[] {
+  return records.map((record) => {
+    const { url, source } = resolveEffectiveDocument(record, records);
+    return {
+      ...record,
+      effectiveDocumentUrl: url,
+      documentSource: source?.id === record.id ? null : source,
+    };
+  });
+}
+
 interface SickDaysDocumentUploadModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -207,15 +261,18 @@ const SickDaysDocumentUploadModal: React.FC<SickDaysDocumentUploadModalProps> = 
     return parts[parts.length - 1] || url;
   };
 
+  // Enrich with documents inherited from covering sick-day periods
+  const enrichedSickDays = useMemo(() => enrichSickDays(sickDays), [sickDays]);
+
   // Filter sick days based on upload status and date range
   const filteredSickDays = useMemo(() => {
-    let filtered = [...sickDays];
+    let filtered = [...enrichedSickDays];
 
-    // Filter by upload status
+    // Filter by upload status (includes documents from covering periods)
     if (uploadFilter === 'uploaded') {
-      filtered = filtered.filter(day => day.document_url !== null);
+      filtered = filtered.filter((day) => day.effectiveDocumentUrl !== null);
     } else if (uploadFilter === 'not_uploaded') {
-      filtered = filtered.filter(day => day.document_url === null);
+      filtered = filtered.filter((day) => day.effectiveDocumentUrl === null);
     }
 
     // Filter by date range
@@ -235,7 +292,12 @@ const SickDaysDocumentUploadModal: React.FC<SickDaysDocumentUploadModalProps> = 
     }
 
     return filtered;
-  }, [sickDays, uploadFilter, fromDate, toDate]);
+  }, [enrichedSickDays, uploadFilter, fromDate, toDate]);
+
+  const selectedEnriched = useMemo(
+    () => (selectedSickDay ? enrichedSickDays.find((d) => d.id === selectedSickDay.id) ?? null : null),
+    [enrichedSickDays, selectedSickDay],
+  );
 
   // Handle file selection
   const handleFileSelect = (file: File) => {
@@ -470,16 +532,23 @@ const SickDaysDocumentUploadModal: React.FC<SickDaysDocumentUploadModalProps> = 
                           </div>
                         )}
                       </div>
-                      {sickDay.document_url ? (
+                      {sickDay.effectiveDocumentUrl ? (
                         <CheckCircleIcon className="w-5 h-5 text-green-500 flex-shrink-0 ml-2" />
                       ) : (
                         <XCircleIcon className="w-5 h-5 text-red-500 flex-shrink-0 ml-2" />
                       )}
                     </div>
-                    {sickDay.document_url ? (
-                      <div className="text-xs text-gray-500 mt-2 flex items-center gap-1">
-                        <DocumentIcon className="w-3 h-3" />
-                        <span className="truncate">{getDocumentName(sickDay.document_url)}</span>
+                    {sickDay.effectiveDocumentUrl ? (
+                      <div className="text-xs text-gray-500 mt-2 space-y-1">
+                        <div className="flex items-center gap-1">
+                          <DocumentIcon className="w-3 h-3 shrink-0" />
+                          <span className="truncate">{getDocumentName(sickDay.effectiveDocumentUrl)}</span>
+                        </div>
+                        {sickDay.documentSource && !sickDay.document_url && (
+                          <div className="text-green-600">
+                            Covered by {formatDateRange(sickDay.documentSource.start_date, sickDay.documentSource.end_date)}
+                          </div>
+                        )}
                       </div>
                     ) : (
                       <div className="text-xs text-red-500 mt-2 flex items-center gap-1">
@@ -499,14 +568,15 @@ const SickDaysDocumentUploadModal: React.FC<SickDaysDocumentUploadModalProps> = 
                     <h4 className="font-semibold text-gray-900">
                       Selected: {formatDateRange(selectedSickDay.start_date, selectedSickDay.end_date)}
                     </h4>
-                    {selectedSickDay.document_url && (
+                    {selectedEnriched?.effectiveDocumentUrl && (
                       <button
                         onClick={() => {
+                          const docRecord = selectedEnriched.documentSource ?? selectedSickDay!;
                           setSelectedDocument({
-                            url: selectedSickDay.document_url!,
-                            name: getDocumentName(selectedSickDay.document_url!),
-                            reason: selectedSickDay.sick_days_reason,
-                            uploadedAt: selectedSickDay.created_at
+                            url: selectedEnriched.effectiveDocumentUrl!,
+                            name: getDocumentName(selectedEnriched.effectiveDocumentUrl!),
+                            reason: docRecord.sick_days_reason,
+                            uploadedAt: docRecord.created_at,
                           });
                           setIsViewerOpen(true);
                         }}
@@ -518,6 +588,15 @@ const SickDaysDocumentUploadModal: React.FC<SickDaysDocumentUploadModalProps> = 
                       </button>
                     )}
                   </div>
+                  {selectedEnriched?.documentSource && !selectedSickDay.document_url && (
+                    <p className="text-sm text-green-600 mb-1">
+                      Document from period{' '}
+                      {formatDateRange(
+                        selectedEnriched.documentSource.start_date,
+                        selectedEnriched.documentSource.end_date,
+                      )}
+                    </p>
+                  )}
                   {selectedSickDay.sick_days_reason && (
                     <p className="text-sm text-gray-600">Reason: {selectedSickDay.sick_days_reason}</p>
                   )}
@@ -529,6 +608,11 @@ const SickDaysDocumentUploadModal: React.FC<SickDaysDocumentUploadModalProps> = 
                       Upload Document
                       {selectedSickDay.document_url && (
                         <span className="text-xs text-gray-500 ml-2">(will replace existing document)</span>
+                      )}
+                      {selectedEnriched?.effectiveDocumentUrl && !selectedSickDay.document_url && (
+                        <span className="text-xs text-gray-500 ml-2">
+                          (optional — already covered by another period)
+                        </span>
                       )}
                     </span>
                   </label>

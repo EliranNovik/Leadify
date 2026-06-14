@@ -264,6 +264,32 @@ function persistContactInfoCache(clientId: string | number, contacts: ContactEnt
   }
 }
 
+const TEMP_CONTACT_ID_THRESHOLD = 1_000_000_000_000;
+
+function isTempContactId(id: number): boolean {
+  return id > TEMP_CONTACT_ID_THRESHOLD;
+}
+
+/** Preserve unsaved drafts and in-progress edits when contacts are refetched from the server. */
+function mergeFetchedContactsWithLocalEdits(
+  serverContacts: ContactEntry[],
+  currentContacts: ContactEntry[],
+): ContactEntry[] {
+  const localEdits = currentContacts.filter((c) => c.isEditing);
+  if (localEdits.length === 0) return serverContacts;
+
+  const merged = serverContacts.map((serverContact) => {
+    const local = localEdits.find((c) => c.id === serverContact.id);
+    return local ?? serverContact;
+  });
+
+  const unsavedDrafts = localEdits.filter(
+    (c) => isTempContactId(c.id) && !merged.some((m) => m.id === c.id),
+  );
+
+  return unsavedDrafts.length > 0 ? [...merged, ...unsavedDrafts] : merged;
+}
+
 interface ContractTemplate {
   id: string;
   name: string;
@@ -1494,7 +1520,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             return a.id - b.id;
           });
 
-          setContacts(uniqueContacts);
+          setContacts((prev) => mergeFetchedContactsWithLocalEdits(uniqueContacts, prev));
 
         } catch (error) {
           console.error('❌ Error fetching legacy contacts:', error);
@@ -1507,7 +1533,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             email: client.email || '---',
             isMain: true,
           };
-          setContacts([mainContact]);
+          setContacts((prev) => mergeFetchedContactsWithLocalEdits([mainContact], prev));
         }
       } else {
         // For new leads, fetch contacts from leads_contact and lead_leadcontact tables using newlead_id
@@ -1550,7 +1576,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               email: client.email || '---',
               isMain: true,
             };
-            setContacts([mainContact]);
+            setContacts((prev) => mergeFetchedContactsWithLocalEdits([mainContact], prev));
             return;
           }
 
@@ -1868,7 +1894,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             return a.id - b.id;
           });
 
-          setContacts(uniqueContacts);
+          setContacts((prev) => mergeFetchedContactsWithLocalEdits(uniqueContacts, prev));
 
         } catch (error) {
           console.error('❌ Error fetching new lead contacts:', error);
@@ -1881,7 +1907,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             email: client.email || '---',
             isMain: true,
           };
-          setContacts([mainContact]);
+          setContacts((prev) => mergeFetchedContactsWithLocalEdits([mainContact], prev));
         }
       }
 
@@ -2115,7 +2141,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       email: '',
       isEditing: true,
     };
-    setContacts([...contacts, newContact]);
+    setContacts((prev) => {
+      if (prev.some((c) => isTempContactId(c.id) && c.isEditing)) {
+        return prev;
+      }
+      return [...prev, newContact];
+    });
   };
 
   const handleSaveMainContact = async () => {
@@ -2515,7 +2546,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     // Database IDs are typically much smaller than timestamps
     // Date.now() returns a timestamp in milliseconds (e.g., 1734567890123)
     // Database IDs are usually sequential numbers (1, 2, 3, etc.)
-    const isNewContact = contact.id > 1000000000000; // Roughly year 2001 in milliseconds
+    const isNewContact = isTempContactId(contact.id);
 
     if (isNewContact && contact.isEditing) {
       // This is a newly created contact that hasn't been saved, remove it from the list
@@ -4273,6 +4304,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     Create additional contacts for this client
                   </p>
                   <button
+                    type="button"
                     className="btn btn-primary btn-outline"
                     onClick={handleCreateNewContact}
                   >

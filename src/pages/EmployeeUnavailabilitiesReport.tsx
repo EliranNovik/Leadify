@@ -1,18 +1,82 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import * as XLSX from 'xlsx';
-import { 
-  MagnifyingGlassIcon, 
-  DocumentTextIcon,
+import {
+  MagnifyingGlassIcon,
   DocumentArrowUpIcon,
-  CalendarIcon,
   UserIcon,
-  ArrowDownTrayIcon
+  ArrowDownTrayIcon,
+  ClockIcon,
+  XMarkIcon,
+  PencilSquareIcon,
+  BoltIcon,
+  CalendarDaysIcon,
 } from '@heroicons/react/24/outline';
 import { usePersistedFilters } from '../hooks/usePersistedState';
-import DocumentViewerModal from '../components/DocumentViewerModal';
+import UnavailabilityTypeBadge from '../components/UnavailabilityTypeBadge';
+import {
+  aggregateClockInRecordsByDay,
+  buildMergedTimeAndUnavailabilityExportRows,
+  exportMergedTimeAndUnavailabilitiesToExcel,
+  fetchClockInRecordsInRange,
+  fetchEmployeeClockInRecords,
+  groupClockInTotalsByEmployee,
+  type ClockInExportRecord,
+} from '../lib/workingHoursExport';
+import {
+  sumClockDurations,
+  toDateInputValue,
+} from '../lib/employeeClockInFormat';
+import { formatClockInLocationDisplay } from '../lib/employeeClockInLocation';
+import {
+  expandUnavailabilitiesToDailyRows,
+  fetchEmployeeUnavailabilitiesInRange,
+  unavailabilityDateLabel,
+  unavailabilityReasonText,
+  unavailabilityTypeLabel,
+  type EmployeeUnavailabilityEntry,
+} from '../lib/employeeUnavailabilities';
+import type { DailyClockInSummary } from '../lib/workingHoursExport';
+
+function TimeListCell({ value }: { value: string }) {
+  const parts = value.split(', ').filter(Boolean);
+  if (parts.length === 0) return <span className="text-gray-400">—</span>;
+  return (
+    <div className="flex flex-col gap-0.5">
+      {parts.map((part, i) => (
+        <span key={`${part}-${i}`} className="text-sm whitespace-nowrap">
+          {part === 'Active' ? (
+            <span className="badge badge-sm bg-yellow-100/90 text-yellow-700 border-yellow-200/60">
+              Active
+            </span>
+          ) : (
+            part
+          )}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+type DetailClockInRow = DailyClockInSummary & {
+  kind: 'clock_in';
+  gpsIn: string;
+  gpsOut: string;
+};
+
+type DetailUnavailabilityRow = {
+  kind: 'unavailability';
+  rowKey: string;
+  dateKey: string;
+  date: string;
+  unavailabilityType: string;
+  typeLabel: string;
+  reason: string;
+};
+
+type DetailTableRow = DetailClockInRow | DetailUnavailabilityRow;
 
 interface EmployeeUnavailabilityData {
   employeeId: number;
@@ -23,6 +87,13 @@ interface EmployeeUnavailabilityData {
   vacationDays: number;
   generalDays: number;
   hasDocuments: boolean;
+  totalHours: string;
+  daysWorked: number;
+}
+
+function unwrapOne<T>(value: T | T[] | null | undefined): T | null {
+  if (value == null) return null;
+  return Array.isArray(value) ? value[0] ?? null : value;
 }
 
 interface DocumentData {
@@ -52,6 +123,11 @@ const EmployeeUnavailabilitiesReport = () => {
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [selectedDocument, setSelectedDocument] = useState<DocumentData | null>(null);
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
+  const [selectedEmployee, setSelectedEmployee] = useState<EmployeeUnavailabilityData | null>(null);
+  const [detailRecords, setDetailRecords] = useState<ClockInExportRecord[]>([]);
+  const [detailUnavailabilities, setDetailUnavailabilities] = useState<EmployeeUnavailabilityEntry[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailExporting, setDetailExporting] = useState(false);
 
   // Fetch employees for search
   useEffect(() => {
@@ -151,6 +227,8 @@ const EmployeeUnavailabilitiesReport = () => {
             vacationDays: 0,
             generalDays: 0,
             hasDocuments: false,
+            totalHours: '0h 0m',
+            daysWorked: 0,
           });
         }
 
@@ -189,16 +267,38 @@ const EmployeeUnavailabilitiesReport = () => {
         }
       });
 
-      // Filter by search term
-      let filteredData = Array.from(employeeMap.values());
-      if (filters.searchTerm.trim()) {
-        const searchLower = filters.searchTerm.toLowerCase();
-        filteredData = filteredData.filter(emp => 
-          emp.employeeName.toLowerCase().includes(searchLower)
-        );
+      const clockRecords = await fetchClockInRecordsInRange(filters.fromDate, filters.toDate);
+      const clockByEmployee = groupClockInTotalsByEmployee(clockRecords);
+
+      for (const [employeeId, { totals }] of clockByEmployee) {
+        if (employeeMap.has(employeeId)) {
+          const emp = employeeMap.get(employeeId)!;
+          emp.totalHours = totals.totalDuration;
+          emp.daysWorked = totals.daysWorked;
+        } else {
+          const first = clockRecords.find((r) => r.employee_id === employeeId);
+          const te = unwrapOne(first?.tenants_employee);
+          const dept = unwrapOne(te?.tenant_departement);
+          employeeMap.set(employeeId, {
+            employeeId,
+            employeeName: te?.display_name || 'Unknown',
+            photoUrl: te?.photo_url,
+            departmentName: dept?.name || '—',
+            sickDays: 0,
+            vacationDays: 0,
+            generalDays: 0,
+            hasDocuments: false,
+            totalHours: totals.totalDuration,
+            daysWorked: totals.daysWorked,
+          });
+        }
       }
 
-      setEmployeeData(filteredData);
+      const mergedData = Array.from(employeeMap.values()).sort((a, b) =>
+        a.employeeName.localeCompare(b.employeeName),
+      );
+
+      setEmployeeData(mergedData);
       setDocuments(documentsList);
     } catch (error) {
       console.error('Error fetching unavailability data:', error);
@@ -228,18 +328,135 @@ const EmployeeUnavailabilitiesReport = () => {
   };
 
   // Export employee summary to Excel
+  const displayedEmployees = useMemo(() => {
+    if (!filters.searchTerm.trim()) return employeeData;
+    const searchLower = filters.searchTerm.toLowerCase();
+    return employeeData.filter((emp) =>
+      emp.employeeName.toLowerCase().includes(searchLower),
+    );
+  }, [employeeData, filters.searchTerm]);
+
+  const openEmployeeDetail = useCallback(
+    async (emp: EmployeeUnavailabilityData) => {
+      setSelectedEmployee(emp);
+      setDetailRecords([]);
+      setDetailUnavailabilities([]);
+      setDetailLoading(true);
+      try {
+        const [records, unavailRows] = await Promise.all([
+          fetchEmployeeClockInRecords(emp.employeeId, filters.fromDate, filters.toDate),
+          fetchEmployeeUnavailabilitiesInRange(emp.employeeId, filters.fromDate, filters.toDate),
+        ]);
+        setDetailRecords(records);
+        setDetailUnavailabilities(unavailRows);
+      } catch (error) {
+        console.error('Error fetching working hours:', error);
+        toast.error('Failed to load working hours');
+        setSelectedEmployee(null);
+      } finally {
+        setDetailLoading(false);
+      }
+    },
+    [filters.fromDate, filters.toDate],
+  );
+
+  const closeEmployeeDetail = () => {
+    setSelectedEmployee(null);
+    setDetailRecords([]);
+    setDetailUnavailabilities([]);
+  };
+
+  const detailTableRows = useMemo((): DetailTableRow[] => {
+    const dailyClock = aggregateClockInRecordsByDay(detailRecords);
+    const clockRows: DetailClockInRow[] = dailyClock.map((row) => {
+      const daySessions = detailRecords
+        .filter((r) => toDateInputValue(new Date(r.clock_in_time)) === row.dateKey)
+        .sort(
+          (a, b) =>
+            new Date(a.clock_in_time).getTime() - new Date(b.clock_in_time).getTime(),
+        );
+      const first = daySessions[0];
+      const lastOut = [...daySessions].reverse().find((s) => s.clock_out_time);
+      return {
+        ...row,
+        kind: 'clock_in',
+        gpsIn: first ? formatClockInLocationDisplay(first, 'in') : '—',
+        gpsOut: lastOut ? formatClockInLocationDisplay(lastOut, 'out') : '—',
+      };
+    });
+
+    const unavailRows: DetailUnavailabilityRow[] = expandUnavailabilitiesToDailyRows(
+      detailUnavailabilities,
+      filters.fromDate,
+      filters.toDate,
+    ).map((row) => ({
+      kind: 'unavailability' as const,
+      rowKey: `${row.id}-${row.date}`,
+      dateKey: row.date,
+      date: unavailabilityDateLabel(row.date),
+      unavailabilityType: row.unavailability_type,
+      typeLabel: unavailabilityTypeLabel(row.unavailability_type),
+      reason: unavailabilityReasonText(row),
+    }));
+
+    const combined: DetailTableRow[] = [...clockRows, ...unavailRows];
+    combined.sort((a, b) => {
+      const dateCmp = b.dateKey.localeCompare(a.dateKey);
+      if (dateCmp !== 0) return dateCmp;
+      if (a.kind === b.kind) return 0;
+      return a.kind === 'unavailability' ? -1 : 1;
+    });
+    return combined;
+  }, [detailRecords, detailUnavailabilities, filters.fromDate, filters.toDate]);
+
+  const handleDetailExport = () => {
+    if (!selectedEmployee) {
+      toast.error('No employee selected');
+      return;
+    }
+    const mergedRows = buildMergedTimeAndUnavailabilityExportRows(
+      detailRecords,
+      detailUnavailabilities,
+      filters.fromDate,
+      filters.toDate,
+    );
+    if (mergedRows.length === 0) {
+      toast.error('No data to export');
+      return;
+    }
+    setDetailExporting(true);
+    try {
+      const periodTotal = sumClockDurations(detailRecords);
+      exportMergedTimeAndUnavailabilitiesToExcel(mergedRows, {
+        employeeName: selectedEmployee.employeeName,
+        dateFrom: filters.fromDate,
+        dateTo: filters.toDate,
+        periodTotal,
+        filenameSuffix: selectedEmployee.employeeName,
+      });
+      toast.success('Time and unavailabilities exported successfully');
+    } catch (error) {
+      console.error('Detail export error:', error);
+      toast.error('Failed to export');
+    } finally {
+      setDetailExporting(false);
+    }
+  };
+
   const exportEmployeeSummary = () => {
-    if (employeeData.length === 0) {
+    if (displayedEmployees.length === 0) {
       toast.error('No data to export');
       return;
     }
 
-    const excelData = employeeData.map(emp => ({
-      'Employee': emp.employeeName,
-      'Department': emp.departmentName || '—',
+    const excelData = displayedEmployees.map((emp) => ({
+      Employee: emp.employeeName,
+      Department: emp.departmentName || '—',
       'Sick Days': emp.sickDays,
-      'Vacation': emp.vacationDays,
-      'General': emp.generalDays
+      Vacation: emp.vacationDays,
+      General: emp.generalDays,
+      'Total Hours': emp.totalHours,
+      'Days Worked': emp.daysWorked,
     }));
 
     const ws = XLSX.utils.json_to_sheet(excelData);
@@ -316,11 +533,13 @@ const EmployeeUnavailabilitiesReport = () => {
         >
           ← Back to Reports
         </button>
-        <h1 className="text-3xl font-bold mb-6">Employee Unavailabilities Report</h1>
+        <h1 className="text-3xl font-bold">Employee Time &amp; Unavailabilities Report</h1>
+        <p className="text-gray-500 mt-1 mb-6">
+          Sick days, vacation, and clock-in totals — click an employee for full working hours
+        </p>
 
         {/* Filters */}
-        <div className="card bg-base-100 shadow-lg p-6 mb-6">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
             <div>
               <label className="label">
                 <span className="label-text">From Date</span>
@@ -358,7 +577,6 @@ const EmployeeUnavailabilitiesReport = () => {
                 />
               </div>
             </div>
-          </div>
         </div>
 
         {/* Employee Table */}
@@ -368,7 +586,7 @@ const EmployeeUnavailabilitiesReport = () => {
             <button
               onClick={exportEmployeeSummary}
               className="btn btn-sm btn-primary"
-              disabled={loading || employeeData.length === 0}
+              disabled={loading || displayedEmployees.length === 0}
               title="Download as Excel"
             >
               <ArrowDownTrayIcon className="w-5 h-5 mr-2" />
@@ -384,25 +602,32 @@ const EmployeeUnavailabilitiesReport = () => {
                   <th className="text-right">Sick Days</th>
                   <th className="text-right">Vacation</th>
                   <th className="text-right">General</th>
+                  <th className="text-right">Total Hours</th>
+                  <th className="text-right">Days Worked</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={5} className="text-center py-8">
+                    <td colSpan={7} className="text-center py-8">
                       <span className="loading loading-spinner loading-md"></span>
                       <span className="ml-2">Loading...</span>
                     </td>
                   </tr>
-                ) : employeeData.length === 0 ? (
+                ) : displayedEmployees.length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="text-center py-8 text-gray-500">
+                    <td colSpan={7} className="text-center py-8 text-gray-500">
                       No data found for the selected period
                     </td>
                   </tr>
                 ) : (
-                  employeeData.map((emp) => (
-                    <tr key={emp.employeeId} className="hover:bg-base-200">
+                  displayedEmployees.map((emp) => (
+                    <tr
+                      key={emp.employeeId}
+                      className="hover:bg-base-200 cursor-pointer"
+                      onClick={() => void openEmployeeDetail(emp)}
+                      title="View working hours"
+                    >
                       <td>
                         <div className="flex items-center gap-3">
                           {emp.photoUrl ? (
@@ -425,6 +650,8 @@ const EmployeeUnavailabilitiesReport = () => {
                       <td className="text-right font-semibold">{emp.sickDays}</td>
                       <td className="text-right font-semibold">{emp.vacationDays}</td>
                       <td className="text-right font-semibold">{emp.generalDays}</td>
+                      <td className="text-right font-semibold text-primary">{emp.totalHours}</td>
+                      <td className="text-right font-semibold">{emp.daysWorked}</td>
                     </tr>
                   ))
                 )}
@@ -507,6 +734,190 @@ const EmployeeUnavailabilitiesReport = () => {
           )}
         </div>
       </div>
+
+      {/* Working Hours Detail Modal */}
+      {selectedEmployee && (
+        <dialog className="modal modal-open">
+          <div className="modal-box max-w-6xl w-full">
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <div className="flex items-center gap-3 min-w-0">
+                {selectedEmployee.photoUrl ? (
+                  <img
+                    src={selectedEmployee.photoUrl}
+                    alt={selectedEmployee.employeeName}
+                    className="w-12 h-12 rounded-full object-cover shrink-0"
+                  />
+                ) : (
+                  <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
+                    <UserIcon className="w-7 h-7 text-primary" />
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <h3 className="font-bold text-xl truncate">{selectedEmployee.employeeName}</h3>
+                  <p className="text-sm text-gray-500 flex items-center gap-1.5">
+                    <ClockIcon className="w-4 h-4 shrink-0" />
+                    Working hours &amp; unavailabilities · {formatDate(filters.fromDate)} – {formatDate(filters.toDate)}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn btn-sm btn-circle btn-ghost shrink-0"
+                onClick={closeEmployeeDetail}
+                aria-label="Close"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <span className="text-base font-semibold text-primary">
+                Period total: {sumClockDurations(detailRecords)}
+              </span>
+              <button
+                type="button"
+                className="btn btn-sm btn-primary"
+                onClick={handleDetailExport}
+                disabled={detailLoading || detailExporting || detailTableRows.length === 0}
+              >
+                {detailExporting ? (
+                  <span className="loading loading-spinner loading-sm" />
+                ) : (
+                  <ArrowDownTrayIcon className="w-5 h-5 mr-2" />
+                )}
+                Export to Excel
+              </button>
+            </div>
+
+            <div className="overflow-x-auto max-h-[60vh]">
+              <table className="table table-sm w-full">
+                <thead className="sticky top-0 bg-base-200 z-10">
+                  <tr>
+                    <th>Date</th>
+                    <th>Clock in</th>
+                    <th>Clock out</th>
+                    <th>Duration</th>
+                    <th>Workplace (in)</th>
+                    <th>Workplace (out)</th>
+                    <th>GPS (in)</th>
+                    <th>GPS (out)</th>
+                    <th>Notes</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detailLoading ? (
+                    <tr>
+                      <td colSpan={9} className="text-center py-10">
+                        <span className="loading loading-spinner loading-md" />
+                      </td>
+                    </tr>
+                  ) : detailTableRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="text-center py-10 text-gray-500">
+                        No clock-in or unavailability records for this period
+                      </td>
+                    </tr>
+                  ) : (
+                    detailTableRows.map((row) =>
+                      row.kind === 'clock_in' ? (
+                        <tr key={`clock-${row.dateKey}`} className="hover:bg-base-200/50">
+                          <td className="whitespace-nowrap font-medium">
+                            <div className="flex items-center gap-1.5">
+                              <span>{row.date}</span>
+                              <div className="flex items-center gap-0.5 shrink-0">
+                                {row.hasManual && (
+                                  <span
+                                    className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-amber-100 text-amber-700 border border-amber-200"
+                                    title="Manual entry"
+                                  >
+                                    <PencilSquareIcon className="w-4 h-4" />
+                                  </span>
+                                )}
+                                {row.hasAutomatic && (
+                                  <span
+                                    className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-gray-100 text-gray-600 border border-gray-200"
+                                    title="Automatic entry"
+                                  >
+                                    <BoltIcon className="w-4 h-4" />
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                          <td>
+                            <TimeListCell value={row.clockIns} />
+                          </td>
+                          <td>
+                            <TimeListCell value={row.clockOuts} />
+                          </td>
+                          <td className="whitespace-nowrap font-medium text-primary">
+                            {row.totalDuration}
+                          </td>
+                          <td className="whitespace-nowrap text-sm">{row.workplacesIn}</td>
+                          <td className="whitespace-nowrap text-sm">{row.workplacesOut}</td>
+                          <td
+                            className="max-w-[120px] truncate text-sm text-gray-600"
+                            title={row.gpsIn}
+                          >
+                            {row.gpsIn}
+                          </td>
+                          <td
+                            className="max-w-[120px] truncate text-sm text-gray-600"
+                            title={row.gpsOut !== '—' ? row.gpsOut : undefined}
+                          >
+                            {row.gpsOut}
+                          </td>
+                          <td className="max-w-[140px] truncate text-sm text-gray-500">
+                            {row.notes}
+                          </td>
+                        </tr>
+                      ) : (
+                        <tr
+                          key={`unavail-${row.rowKey}`}
+                          className="hover:bg-base-200/50 bg-base-200/20"
+                        >
+                          <td className="whitespace-nowrap font-medium">
+                            <div className="flex items-center gap-1.5">
+                              <span>{row.date}</span>
+                              <span
+                                className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-gray-100 text-gray-600 border border-gray-200 shrink-0"
+                                title={row.typeLabel}
+                              >
+                                <CalendarDaysIcon className="w-4 h-4" />
+                              </span>
+                            </div>
+                          </td>
+                          <td className="text-gray-400">—</td>
+                          <td className="text-gray-400">—</td>
+                          <td>
+                            <UnavailabilityTypeBadge type={row.unavailabilityType} />
+                          </td>
+                          <td className="text-gray-400">—</td>
+                          <td className="text-gray-400">—</td>
+                          <td className="text-gray-400">—</td>
+                          <td className="text-gray-400">—</td>
+                          <td className="max-w-[200px] text-sm text-gray-600">
+                            {row.reason}
+                          </td>
+                        </tr>
+                      ),
+                    )
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="modal-action">
+              <button type="button" className="btn" onClick={closeEmployeeDetail}>
+                Close
+              </button>
+            </div>
+          </div>
+          <form method="dialog" className="modal-backdrop">
+            <button type="button" onClick={closeEmployeeDetail}>close</button>
+          </form>
+        </dialog>
+      )}
 
       {/* Document Viewer Modal */}
       {selectedDocument && (

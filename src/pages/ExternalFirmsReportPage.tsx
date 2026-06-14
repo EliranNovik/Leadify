@@ -61,8 +61,10 @@ import {
   bucketForManagementCostDocColumn,
   fileNameFromStoragePath,
   guessMimeTypeFromFileName,
+  removeFirmManagementCostDocument,
   uploadFirmManagementCostDocument,
   type FirmManagementCostDocColumn,
+  type FirmManagementCostDocument,
 } from '../lib/firmManagementCostDocuments';
 import {
   defaultMarketingExpenseTypeId,
@@ -70,6 +72,12 @@ import {
   fetchActiveExpenseTypes,
   type ExpenseTypeRow,
 } from '../lib/expenseTypes';
+import { managementCostLineKey } from '../lib/firmManagementCosts';
+import FirmManagementCostInvoiceField from '../components/admin/FirmManagementCostInvoiceField';
+import {
+  FirmManagementCostPaymentConfirmationField,
+  FirmManagementCostTaxReceiptField,
+} from '../components/admin/FirmManagementCostDocumentField';
 import FirmTypeBadge from '../components/FirmTypeBadge';
 import FirmFirmTypesField from '../components/admin/FirmFirmTypesField';
 import {
@@ -153,17 +161,21 @@ function resolveExpenseTypeDisplayName(cost: FirmManagementCostRow | null | unde
   return '—';
 }
 
-/** One table row per month: management cost + optional invoice for that month */
+/** One table row per management cost line (same month can have multiple rows). */
 type MergedManagementCostRow = {
+  rowKey: string;
   monthAnchor: string;
   cost: FirmManagementCostRow | null;
-  invoice: FirmInvoiceRow | null;
+  invoices: FirmInvoiceRow[];
+  paymentDocs: FirmManagementCostDocument[];
+  taxDocs: FirmManagementCostDocument[];
 };
 
 type FirmInvoiceRow = {
   id: string;
   firm_id: string;
   invoice_month: string;
+  firm_management_cost_id?: string | null;
   amount: number | string | null;
   currency: string | null;
   notes: string | null;
@@ -223,6 +235,7 @@ type FirmRow = {
   firm_contacts?: FirmContactRow[] | null;
   firm_management_costs?: FirmManagementCostRow[] | null;
   firm_invoices?: FirmInvoiceRow[] | null;
+  firm_management_cost_documents?: FirmManagementCostDocument[] | null;
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -372,31 +385,117 @@ function monthAnchorKey(isoDate?: string | null): string {
   return match ? `${match[1]}-${match[2]}-01` : s;
 }
 
+function costLineKey(
+  costId: string | null | undefined,
+  firmId?: string,
+  month?: unknown,
+): string {
+  return managementCostLineKey(costId, firmId, month);
+}
+
+function groupInvoicesByCostLine(invoices: FirmInvoiceRow[]): Map<string, FirmInvoiceRow[]> {
+  const map = new Map<string, FirmInvoiceRow[]>();
+  invoices.forEach((invoice) => {
+    const key = invoice.firm_management_cost_id
+      ? costLineKey(invoice.firm_management_cost_id)
+      : `orphan-month:${monthAnchorKey(invoice.invoice_month)}`;
+    const list = map.get(key) || [];
+    list.push(invoice);
+    map.set(key, list);
+  });
+  return map;
+}
+
+function groupDocumentsByCostLine(
+  documents: FirmManagementCostDocument[],
+  docType: 'payment_confirmation' | 'tax_receipt',
+): Map<string, FirmManagementCostDocument[]> {
+  const map = new Map<string, FirmManagementCostDocument[]>();
+  documents.forEach((doc) => {
+    if (doc.doc_type !== docType) return;
+    const key = doc.firm_management_cost_id
+      ? costLineKey(doc.firm_management_cost_id)
+      : `orphan-month:${monthAnchorKey(doc.billing_month)}`;
+    const list = map.get(key) || [];
+    list.push(doc);
+    map.set(key, list);
+  });
+  return map;
+}
+
 function buildMergedManagementRows(
   costs: FirmManagementCostRow[],
   invoices: FirmInvoiceRow[],
+  documents: FirmManagementCostDocument[] = [],
 ): MergedManagementCostRow[] {
-  const byMonth = new Map<string, MergedManagementCostRow>();
+  const invoicesByCost = groupInvoicesByCostLine(invoices);
+  const paymentByCost = groupDocumentsByCostLine(documents, 'payment_confirmation');
+  const taxByCost = groupDocumentsByCostLine(documents, 'tax_receipt');
 
-  costs.forEach((cost) => {
-    const key = monthAnchorKey(cost.billing_month);
-    if (!key) return;
-    const existing = byMonth.get(key);
-    byMonth.set(key, { monthAnchor: key, cost, invoice: existing?.invoice ?? null });
+  const rows: MergedManagementCostRow[] = [];
+  const costLineKeys = new Set<string>();
+
+  const sortedCosts = [...costs].sort((a, b) => {
+    const monthCmp = String(b.billing_month).localeCompare(String(a.billing_month));
+    if (monthCmp !== 0) return monthCmp;
+    return String(b.created_at || '').localeCompare(String(a.created_at || ''));
   });
 
-  invoices.forEach((invoice) => {
-    const key = monthAnchorKey(invoice.invoice_month);
-    if (!key) return;
-    const existing = byMonth.get(key);
-    if (existing) {
-      existing.invoice = invoice;
-    } else {
-      byMonth.set(key, { monthAnchor: key, cost: null, invoice });
+  sortedCosts.forEach((cost) => {
+    const monthKey = monthAnchorKey(cost.billing_month);
+    if (!monthKey) return;
+    const lineKey = costLineKey(cost.id);
+    costLineKeys.add(lineKey);
+
+    rows.push({
+      rowKey: cost.id,
+      monthAnchor: monthKey,
+      cost,
+      invoices: invoicesByCost.get(lineKey) || [],
+      paymentDocs: paymentByCost.get(lineKey) || [],
+      taxDocs: taxByCost.get(lineKey) || [],
+    });
+  });
+
+  const orphanKeys = new Set<string>();
+  invoicesByCost.forEach((_, key) => {
+    if (!costLineKeys.has(key)) orphanKeys.add(key);
+  });
+  paymentByCost.forEach((_, key) => {
+    if (!costLineKeys.has(key)) orphanKeys.add(key);
+  });
+  taxByCost.forEach((_, key) => {
+    if (!costLineKeys.has(key)) orphanKeys.add(key);
+  });
+
+  [...orphanKeys]
+    .sort((a, b) => {
+      const monthA = a.replace('orphan-month:', '');
+      const monthB = b.replace('orphan-month:', '');
+      return monthB.localeCompare(monthA);
+    })
+    .forEach((key) => {
+      const monthKey = key.replace('orphan-month:', '');
+      rows.push({
+        rowKey: `orphan-${key}`,
+        monthAnchor: monthKey,
+        cost: null,
+        invoices: invoicesByCost.get(key) || [],
+        paymentDocs: paymentByCost.get(key) || [],
+        taxDocs: taxByCost.get(key) || [],
+      });
+    });
+
+  return rows.sort((a, b) => {
+    const monthCmp = b.monthAnchor.localeCompare(a.monthAnchor);
+    if (monthCmp !== 0) return monthCmp;
+    if (a.cost && b.cost) {
+      return String(b.cost.created_at || '').localeCompare(String(a.cost.created_at || ''));
     }
+    if (a.cost) return -1;
+    if (b.cost) return 1;
+    return 0;
   });
-
-  return [...byMonth.values()].sort((a, b) => b.monthAnchor.localeCompare(a.monthAnchor));
 }
 
 function ManagementCostDocLink({
@@ -424,6 +523,62 @@ function ManagementCostDocLink({
       <DocumentTextIcon className="inline h-4 w-4 mr-1 align-text-bottom shrink-0" />
       <span className="truncate">{label}</span>
     </button>
+  );
+}
+
+function ManagementCostDocLinks({
+  documents,
+  onOpen,
+}: {
+  documents: FirmManagementCostDocument[];
+  onOpen: (storagePath: string, fileName: string) => void;
+}) {
+  const withFiles = documents.filter((doc) => doc.storage_path?.trim());
+  if (withFiles.length === 0) {
+    return <span className="text-base-content/35">—</span>;
+  }
+  return (
+    <div className="flex flex-col gap-1 items-start">
+      {withFiles.map((doc) => (
+        <ManagementCostDocLink
+          key={doc.id}
+          storagePath={doc.storage_path}
+          onOpen={onOpen}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ManagementCostInvoiceLinks({
+  invoices,
+  onOpen,
+}: {
+  invoices: FirmInvoiceRow[];
+  onOpen: (invoice: FirmInvoiceRow) => void;
+}) {
+  const withFiles = invoices.filter((inv) => inv.storage_path?.trim() && inv.file_name?.trim());
+  if (withFiles.length === 0) {
+    return <span className="text-base-content/35">—</span>;
+  }
+  return (
+    <div className="flex flex-col gap-1 items-start">
+      {withFiles.map((inv) => (
+        <button
+          key={inv.id}
+          type="button"
+          className="link link-primary text-sm max-w-[10rem] truncate inline-block"
+          title={inv.file_name || 'Invoice'}
+          onClick={(e) => {
+            e.stopPropagation();
+            onOpen(inv);
+          }}
+        >
+          <DocumentTextIcon className="inline h-4 w-4 mr-1 align-text-bottom" />
+          {inv.file_name}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -1423,6 +1578,7 @@ export default function ExternalFirmsReportPage() {
             id,
             firm_id,
             invoice_month,
+            firm_management_cost_id,
             amount,
             currency,
             notes,
@@ -1431,6 +1587,17 @@ export default function ExternalFirmsReportPage() {
             mime_type,
             created_at,
             updated_at
+          ),
+          firm_management_cost_documents(
+            id,
+            firm_id,
+            billing_month,
+            firm_management_cost_id,
+            doc_type,
+            storage_path,
+            file_name,
+            mime_type,
+            created_at
           )
         `,
         )
@@ -2069,6 +2236,7 @@ export default function ExternalFirmsReportPage() {
     patch: {
       firm_management_costs?: FirmManagementCostRow[];
       firm_invoices?: FirmInvoiceRow[];
+      firm_management_cost_documents?: FirmManagementCostDocument[];
     },
   ) => {
     setFirms((prev) =>
@@ -2078,6 +2246,9 @@ export default function ExternalFirmsReportPage() {
               ...f,
               ...(patch.firm_management_costs != null ? { firm_management_costs: patch.firm_management_costs } : {}),
               ...(patch.firm_invoices != null ? { firm_invoices: patch.firm_invoices } : {}),
+              ...(patch.firm_management_cost_documents != null
+                ? { firm_management_cost_documents: patch.firm_management_cost_documents }
+                : {}),
             }
           : f,
       ),
@@ -2089,6 +2260,37 @@ export default function ExternalFirmsReportPage() {
 
   const sortInvoiceRows = (rows: FirmInvoiceRow[]) =>
     [...rows].sort((a, b) => String(b.invoice_month).localeCompare(String(a.invoice_month)));
+
+  const sortCostDocumentRows = (rows: FirmManagementCostDocument[]) =>
+    [...rows].sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')));
+
+  const INVOICE_ROW_SELECT =
+    'id, firm_id, invoice_month, firm_management_cost_id, amount, currency, notes, storage_path, file_name, mime_type, created_at, updated_at';
+
+  const COST_DOC_SELECT =
+    'id, firm_id, billing_month, firm_management_cost_id, doc_type, storage_path, file_name, mime_type, created_at';
+
+  const refreshCostModalFirmDocs = useCallback(async (firmId: string) => {
+    const [{ data: invoices, error: invErr }, { data: documents, error: docErr }] = await Promise.all([
+      supabase.from('firm_invoices').select(INVOICE_ROW_SELECT).eq('firm_id', firmId),
+      supabase.from('firm_management_cost_documents').select(COST_DOC_SELECT).eq('firm_id', firmId),
+    ]);
+    if (invErr) throw invErr;
+    if (docErr) throw docErr;
+    mergeFirmChildRows(firmId, {
+      firm_invoices: sortInvoiceRows((invoices || []) as FirmInvoiceRow[]),
+      firm_management_cost_documents: sortCostDocumentRows((documents || []) as FirmManagementCostDocument[]),
+    });
+  }, []);
+
+  const costModalRecord = useMemo(() => {
+    if (!costModalFirmId) return null;
+    return {
+      id: costModalEditingId ?? undefined,
+      firm_id: costModalFirmId,
+      billing_month: monthInputToIsoFirstDay(costForm.month),
+    };
+  }, [costModalFirmId, costModalEditingId, costForm.month]);
 
   const resetCostModalFiles = () => {
     setInvoiceFile(null);
@@ -2119,19 +2321,19 @@ export default function ExternalFirmsReportPage() {
   };
 
   const openEditMergedCost = (firmId: string, merged: MergedManagementCostRow) => {
-    const { cost, invoice } = merged;
+    const { cost, invoices } = merged;
     setCostModalEditingId(cost?.id ?? null);
-    setCostModalInvoiceEditingId(invoice?.id ?? null);
+    setCostModalInvoiceEditingId(invoices[0]?.id ?? null);
     resetCostModalFiles();
     setCostForm({
-      month: isoFirstDayToMonthInput(cost?.billing_month ?? invoice?.invoice_month ?? merged.monthAnchor),
+      month: isoFirstDayToMonthInput(cost?.billing_month ?? invoices[0]?.invoice_month ?? merged.monthAnchor),
       amount:
         cost?.amount != null
           ? String(cost.amount)
-          : invoice?.amount != null
-            ? String(invoice.amount)
+          : invoices[0]?.amount != null
+            ? String(invoices[0].amount)
             : '',
-      notes: (cost?.notes || invoice?.notes || '').trim(),
+      notes: (cost?.notes || invoices[0]?.notes || '').trim(),
       expense_type_id: cost?.expense_type_id ?? defaultMarketingExpenseTypeId(expenseTypes) ?? '',
     });
     setCostModalFirmId(firmId);
@@ -2139,9 +2341,6 @@ export default function ExternalFirmsReportPage() {
 
   const COST_ROW_SELECT =
     'id, firm_id, billing_month, amount, currency, notes, payment_confirmation, tax_receipt, expense_type_id, expense_types ( label ), created_at, updated_at';
-
-  const INVOICE_ROW_SELECT =
-    'id, firm_id, invoice_month, amount, currency, notes, storage_path, file_name, mime_type, created_at, updated_at';
 
   const submitCostModal = async () => {
     if (!costModalFirmId) return;
@@ -2157,7 +2356,7 @@ export default function ExternalFirmsReportPage() {
       toast.error('Select an expense type.');
       return;
     }
-    const needsInvoiceRow = Boolean(invoiceFile || costModalInvoiceEditingId);
+    const needsInvoiceNotesUpdate = Boolean(costModalInvoiceEditingId && !invoiceFile);
 
     setIsUpdating(true);
     setCostModalUploading(true);
@@ -2166,6 +2365,7 @@ export default function ExternalFirmsReportPage() {
       let costRow: FirmManagementCostRow | null = null;
       const firm = firms.find((f) => f.id === costModalFirmId);
       let costs = [...(firm?.firm_management_costs || [])];
+      let documents = [...(firm?.firm_management_cost_documents || [])];
 
       if (costId) {
         const { error } = await supabase
@@ -2226,100 +2426,76 @@ export default function ExternalFirmsReportPage() {
         toast.success('Management cost added');
       }
 
-      if (costId && paymentConfirmationFile) {
-        const path = await uploadFirmManagementCostDocument(
-          costId,
+      if (paymentConfirmationFile && costId) {
+        const doc = await uploadFirmManagementCostDocument(
+          costModalFirmId,
+          billing_month,
           'payment_confirmation',
           paymentConfirmationFile,
+          costId,
         );
-        costs = sortCostRows(
-          costs.map((r) => (r.id === costId ? { ...r, payment_confirmation: path } : r)),
-        );
-        costRow = costs.find((r) => r.id === costId) ?? costRow;
+        documents = sortCostDocumentRows([...documents, doc]);
       }
 
-      if (costId && taxReceiptFile) {
-        const path = await uploadFirmManagementCostDocument(costId, 'tax_receipt', taxReceiptFile);
-        costs = sortCostRows(
-          costs.map((r) => (r.id === costId ? { ...r, tax_receipt: path } : r)),
+      if (taxReceiptFile && costId) {
+        const doc = await uploadFirmManagementCostDocument(
+          costModalFirmId,
+          billing_month,
+          'tax_receipt',
+          taxReceiptFile,
+          costId,
         );
-        costRow = costs.find((r) => r.id === costId) ?? costRow;
+        documents = sortCostDocumentRows([...documents, doc]);
       }
 
       let invoices = [...(firm?.firm_invoices || [])];
-      let invoiceId = costModalInvoiceEditingId;
 
-      if (needsInvoiceRow) {
-        if (!invoiceId) {
-          const { data, error } = await supabase
-            .from('firm_invoices')
-            .insert([
-              {
-                firm_id: costModalFirmId,
-                invoice_month: billing_month,
-                amount: null,
-                currency: FIRM_MONEY_CURRENCY,
-                notes,
-              },
-            ])
-            .select(INVOICE_ROW_SELECT)
-            .single();
-          if (error) throw error;
-          invoiceId = (data as FirmInvoiceRow).id;
-          invoices = sortInvoiceRows([...invoices, data as FirmInvoiceRow]);
-        } else {
-          const { error } = await supabase
-            .from('firm_invoices')
-            .update({ invoice_month: billing_month, notes })
-            .eq('id', invoiceId);
-          if (error) throw error;
-          invoices = sortInvoiceRows(
-            invoices.map((r) =>
-              r.id === invoiceId ? { ...r, invoice_month: billing_month, notes } : r,
-            ),
-          );
-        }
-
-        if (invoiceFile && invoiceId) {
-          const path = buildFirmInvoiceStoragePath(costModalFirmId, invoiceId, invoiceFile.name);
-          const { error: upErr } = await supabase.storage
-            .from(FIRM_INVOICE_DOCUMENTS_BUCKET)
-            .upload(path, invoiceFile, { contentType: invoiceFile.type || undefined, upsert: true });
-          if (upErr) throw upErr;
-          const { error: uErr } = await supabase
-            .from('firm_invoices')
-            .update({
-              storage_path: path,
-              file_name: invoiceFile.name,
-              mime_type: invoiceFile.type || null,
+      if (invoiceFile && costId) {
+        const { data: inserted, error: insErr } = await supabase
+          .from('firm_invoices')
+          .insert([
+            {
+              firm_id: costModalFirmId,
               invoice_month: billing_month,
-            })
-            .eq('id', invoiceId);
-          if (uErr) throw uErr;
-          invoices = sortInvoiceRows(
-            invoices.map((r) =>
-              r.id === invoiceId
-                ? {
-                    ...r,
-                    storage_path: path,
-                    file_name: invoiceFile.name,
-                    mime_type: invoiceFile.type || null,
-                    invoice_month: billing_month,
-                    notes,
-                  }
-                : r,
-            ),
-          );
-        }
-      } else if (invoiceId) {
+              firm_management_cost_id: costId,
+              amount: null,
+              currency: FIRM_MONEY_CURRENCY,
+              notes,
+            },
+          ])
+          .select(INVOICE_ROW_SELECT)
+          .single();
+        if (insErr) throw insErr;
+        const invoiceId = (inserted as FirmInvoiceRow).id;
+        const path = buildFirmInvoiceStoragePath(costModalFirmId, invoiceId, invoiceFile.name);
+        const { error: upErr } = await supabase.storage
+          .from(FIRM_INVOICE_DOCUMENTS_BUCKET)
+          .upload(path, invoiceFile, { contentType: invoiceFile.type || undefined, upsert: true });
+        if (upErr) throw upErr;
+        const { data: updatedInvoice, error: uErr } = await supabase
+          .from('firm_invoices')
+          .update({
+            storage_path: path,
+            file_name: invoiceFile.name,
+            mime_type: invoiceFile.type || null,
+            invoice_month: billing_month,
+            firm_management_cost_id: costId,
+            notes,
+          })
+          .eq('id', invoiceId)
+          .select(INVOICE_ROW_SELECT)
+          .single();
+        if (uErr) throw uErr;
+        invoices = sortInvoiceRows([...invoices, updatedInvoice as FirmInvoiceRow]);
+      } else if (needsInvoiceNotesUpdate && costModalInvoiceEditingId) {
         const { error } = await supabase
           .from('firm_invoices')
           .update({ invoice_month: billing_month, notes })
-          .eq('id', invoiceId);
+          .eq('id', costModalInvoiceEditingId);
         if (error) throw error;
         invoices = sortInvoiceRows(
           invoices.map((r) =>
-            r.id === invoiceId ? { ...r, invoice_month: billing_month, notes } : r,
+            r.id === costModalInvoiceEditingId ? { ...r, invoice_month: billing_month, notes } : r,
           ),
         );
       }
@@ -2327,6 +2503,7 @@ export default function ExternalFirmsReportPage() {
       mergeFirmChildRows(costModalFirmId, {
         firm_management_costs: costs,
         firm_invoices: invoices,
+        firm_management_cost_documents: documents,
       });
 
       if (costModalEditingId) {
@@ -2350,15 +2527,18 @@ export default function ExternalFirmsReportPage() {
   };
 
   const deleteMergedCostRow = async (firmId: string, merged: MergedManagementCostRow) => {
-    const hasFiles =
-      merged.invoice?.storage_path ||
-      merged.cost?.payment_confirmation ||
-      merged.cost?.tax_receipt;
-    if (
-      !window.confirm(
-        'Delete this month entry' + (hasFiles ? ' and any attached documents?' : '?'),
-      )
-    ) {
+    const hasLineFiles =
+      merged.invoices.some((inv) => inv.storage_path?.trim()) ||
+      merged.paymentDocs.length > 0 ||
+      merged.taxDocs.length > 0;
+    const deletingCostOnly = Boolean(merged.cost);
+    const confirmMessage = deletingCostOnly
+      ? hasLineFiles
+        ? 'Delete this expense line and its attached documents?'
+        : 'Delete this expense line?'
+      : 'Delete this entry' + (hasLineFiles ? ' and any attached documents?' : '?');
+
+    if (!window.confirm(confirmMessage)) {
       return;
     }
     setIsUpdating(true);
@@ -2366,24 +2546,32 @@ export default function ExternalFirmsReportPage() {
       const firm = firms.find((f) => f.id === firmId);
       let costs = [...(firm?.firm_management_costs || [])];
       let invoices = [...(firm?.firm_invoices || [])];
+      let documents = [...(firm?.firm_management_cost_documents || [])];
 
       if (merged.cost) {
-        if (merged.cost.payment_confirmation?.trim()) {
-          await supabase.storage
-            .from('firm-management-payment-confirmations')
-            .remove([merged.cost.payment_confirmation.trim()]);
+        const costId = merged.cost.id;
+        for (const inv of merged.invoices) {
+          if (inv.storage_path?.trim()) {
+            await supabase.storage
+              .from(FIRM_INVOICE_DOCUMENTS_BUCKET)
+              .remove([inv.storage_path.trim()]);
+          }
+          const { error: invErr } = await supabase.from('firm_invoices').delete().eq('id', inv.id);
+          if (invErr) throw invErr;
+          invoices = invoices.filter((r) => r.id !== inv.id);
         }
-        if (merged.cost.tax_receipt?.trim()) {
-          await supabase.storage
-            .from('firm-management-tax-receipts')
-            .remove([merged.cost.tax_receipt.trim()]);
+
+        for (const doc of [...merged.paymentDocs, ...merged.taxDocs]) {
+          await removeFirmManagementCostDocument(doc);
+          documents = documents.filter((r) => r.id !== doc.id);
         }
+
         const { error } = await supabase
           .from('firm_management_costs')
           .delete()
-          .eq('id', merged.cost.id);
+          .eq('id', costId);
         if (error) throw error;
-        costs = costs.filter((r) => r.id !== merged.cost!.id);
+        costs = costs.filter((r) => r.id !== costId);
         await logActivity({
           firm_id: firmId,
           contact_id: null,
@@ -2392,24 +2580,35 @@ export default function ExternalFirmsReportPage() {
         });
       }
 
-      if (merged.invoice) {
-        if (merged.invoice.storage_path?.trim()) {
-          await supabase.storage
-            .from(FIRM_INVOICE_DOCUMENTS_BUCKET)
-            .remove([merged.invoice.storage_path.trim()]);
+      if (!merged.cost && hasLineFiles) {
+        for (const inv of merged.invoices) {
+          if (inv.storage_path?.trim()) {
+            await supabase.storage
+              .from(FIRM_INVOICE_DOCUMENTS_BUCKET)
+              .remove([inv.storage_path.trim()]);
+          }
+          const { error } = await supabase.from('firm_invoices').delete().eq('id', inv.id);
+          if (error) throw error;
+          invoices = invoices.filter((r) => r.id !== inv.id);
+          await logActivity({
+            firm_id: firmId,
+            contact_id: null,
+            action_type: 'DELETE_INVOICE',
+            description: `Removed invoice (${formatMonthAnchor(merged.monthAnchor)}).`,
+          });
         }
-        const { error } = await supabase.from('firm_invoices').delete().eq('id', merged.invoice.id);
-        if (error) throw error;
-        invoices = invoices.filter((r) => r.id !== merged.invoice!.id);
-        await logActivity({
-          firm_id: firmId,
-          contact_id: null,
-          action_type: 'DELETE_INVOICE',
-          description: `Removed invoice (${formatMonthAnchor(merged.monthAnchor)}).`,
-        });
+
+        for (const doc of [...merged.paymentDocs, ...merged.taxDocs]) {
+          await removeFirmManagementCostDocument(doc);
+          documents = documents.filter((r) => r.id !== doc.id);
+        }
       }
 
-      mergeFirmChildRows(firmId, { firm_management_costs: costs, firm_invoices: invoices });
+      mergeFirmChildRows(firmId, {
+        firm_management_costs: costs,
+        firm_invoices: invoices,
+        firm_management_cost_documents: documents,
+      });
       toast.success('Deleted');
       if (selectedFirmId === firmId) await fetchActivityLogs(firmId);
     } catch (err: any) {
@@ -3463,6 +3662,7 @@ export default function ExternalFirmsReportPage() {
                   const mergedRows = buildMergedManagementRows(
                     selectedFirm.firm_management_costs || [],
                     selectedFirm.firm_invoices || [],
+                    selectedFirm.firm_management_cost_documents || [],
                   );
                   return (
                     <div>
@@ -3529,11 +3729,9 @@ export default function ExternalFirmsReportPage() {
                             </thead>
                             <tbody>
                               {mergedRows.map((merged) => {
-                                const rowKey = merged.cost?.id ?? merged.invoice?.id ?? merged.monthAnchor;
-                                const notes =
-                                  merged.cost?.notes?.trim() || merged.invoice?.notes?.trim() || '';
+                                const notes = merged.cost?.notes?.trim() || merged.invoices[0]?.notes?.trim() || '';
                                 return (
-                                  <tr key={rowKey}>
+                                  <tr key={merged.rowKey}>
                                     <td className="px-5 py-3 text-base-content/90">
                                       {formatMonthAnchor(merged.monthAnchor)}
                                     </td>
@@ -3553,34 +3751,22 @@ export default function ExternalFirmsReportPage() {
                                         : '—'}
                                     </td>
                                     <td className="px-5 py-3 hidden md:table-cell">
-                                      {merged.invoice?.storage_path && merged.invoice?.file_name ? (
-                                        <button
-                                          type="button"
-                                          className="link link-primary text-sm max-w-[10rem] truncate inline-block"
-                                          title={merged.invoice.file_name}
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            openInvoiceFileInPreview(merged.invoice!);
-                                          }}
-                                        >
-                                          <DocumentTextIcon className="inline h-4 w-4 mr-1 align-text-bottom" />
-                                          {merged.invoice.file_name}
-                                        </button>
-                                      ) : (
-                                        <span className="text-base-content/35">—</span>
-                                      )}
+                                      <ManagementCostInvoiceLinks
+                                        invoices={merged.invoices}
+                                        onOpen={openInvoiceFileInPreview}
+                                      />
                                     </td>
                                     <td className="px-5 py-3 hidden lg:table-cell">
-                                      <ManagementCostDocLink
-                                        storagePath={merged.cost?.payment_confirmation}
+                                      <ManagementCostDocLinks
+                                        documents={merged.paymentDocs}
                                         onOpen={(path, name) =>
                                           openManagementCostDocPreview('payment_confirmation', path, name)
                                         }
                                       />
                                     </td>
                                     <td className="px-5 py-3 hidden lg:table-cell">
-                                      <ManagementCostDocLink
-                                        storagePath={merged.cost?.tax_receipt}
+                                      <ManagementCostDocLinks
+                                        documents={merged.taxDocs}
                                         onOpen={(path, name) =>
                                           openManagementCostDocPreview('tax_receipt', path, name)
                                         }
@@ -4366,6 +4552,29 @@ export default function ExternalFirmsReportPage() {
                     onChange={(e) => setCostForm((f) => ({ ...f, notes: e.target.value }))}
                   />
                 </div>
+                {costModalEditingId && costModalRecord ? (
+                  <div className="space-y-3 border-t border-base-300 pt-3">
+                    <FirmManagementCostInvoiceField
+                      value={null}
+                      onChange={() => {}}
+                      record={costModalRecord}
+                      onInvoiceChanged={() => void refreshCostModalFirmDocs(costModalFirmId)}
+                    />
+                    <FirmManagementCostPaymentConfirmationField
+                      value={null}
+                      onChange={() => {}}
+                      record={costModalRecord}
+                      onDocumentsChanged={() => void refreshCostModalFirmDocs(costModalFirmId)}
+                    />
+                    <FirmManagementCostTaxReceiptField
+                      value={null}
+                      onChange={() => {}}
+                      record={costModalRecord}
+                      onDocumentsChanged={() => void refreshCostModalFirmDocs(costModalFirmId)}
+                    />
+                  </div>
+                ) : (
+                  <>
                 <div className="space-y-1">
                   <label className="text-xs font-semibold uppercase tracking-wide text-base-content/50">
                     Invoice (PDF, image, office)
@@ -4376,15 +4585,6 @@ export default function ExternalFirmsReportPage() {
                     accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,.xls,.xlsx"
                     onChange={(e) => setInvoiceFile(e.target.files?.[0] ?? null)}
                   />
-                  {costModalInvoiceEditingId && !invoiceFile ? (
-                    <p className="text-xs text-base-content/50">
-                      Current:{' '}
-                      {(firms.find((x) => x.id === costModalFirmId)?.firm_invoices || []).find(
-                        (r) => r.id === costModalInvoiceEditingId,
-                      )?.file_name || 'file'}{' '}
-                      — upload a new file to replace.
-                    </p>
-                  ) : null}
                 </div>
                 <div className="space-y-1">
                   <label className="text-xs font-semibold uppercase tracking-wide text-base-content/50">
@@ -4396,13 +4596,6 @@ export default function ExternalFirmsReportPage() {
                     accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,.xls,.xlsx"
                     onChange={(e) => setPaymentConfirmationFile(e.target.files?.[0] ?? null)}
                   />
-                  {costModalEditingId &&
-                  !paymentConfirmationFile &&
-                  (firms.find((x) => x.id === costModalFirmId)?.firm_management_costs || []).find(
-                    (r) => r.id === costModalEditingId,
-                  )?.payment_confirmation ? (
-                    <p className="text-xs text-base-content/50">A file is on record — upload to replace.</p>
-                  ) : null}
                 </div>
                 <div className="space-y-1">
                   <label className="text-xs font-semibold uppercase tracking-wide text-base-content/50">
@@ -4414,14 +4607,9 @@ export default function ExternalFirmsReportPage() {
                     accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,.xls,.xlsx"
                     onChange={(e) => setTaxReceiptFile(e.target.files?.[0] ?? null)}
                   />
-                  {costModalEditingId &&
-                  !taxReceiptFile &&
-                  (firms.find((x) => x.id === costModalFirmId)?.firm_management_costs || []).find(
-                    (r) => r.id === costModalEditingId,
-                  )?.tax_receipt ? (
-                    <p className="text-xs text-base-content/50">A file is on record — upload to replace.</p>
-                  ) : null}
                 </div>
+                  </>
+                )}
               </div>
               <div className="modal-action">
                 <button

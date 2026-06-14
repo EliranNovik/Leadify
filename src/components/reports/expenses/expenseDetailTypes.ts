@@ -12,4 +12,6 @@ export type ExpenseDetailModalProps = ExpenseDetailModalPeriod & {
 export type ExpenseManagerEmbedProps = {
   initialYear?: string;
   initialMonth?: string;
+  /** Scope firm management costs to a single expense_types.code (e.g. rent, marketing_expense). */
+  expenseTypeCode?: string;
 };

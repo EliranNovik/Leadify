@@ -804,7 +804,7 @@ const AppContentInner: React.FC = () => {
                 onOpenMessaging={() => setIsMessagingOpen(true)}
                 isMenuOpen={isSidebarOpen}
               />
-<main className="app-main-scroll min-h-0 w-full min-w-0 flex-1 overflow-y-auto overflow-x-auto bg-white pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14">
+<main className="app-main-scroll min-h-0 w-full min-w-0 flex-1 overflow-y-auto overflow-x-hidden md:overflow-x-auto bg-white pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14">
               <RouteSuspense>
                 <LazyCallsLedgerPage />
               </RouteSuspense>
@@ -836,7 +836,7 @@ const AppContentInner: React.FC = () => {
                 onOpenMessaging={handleOpenMessaging}
                 isMenuOpen={isSidebarOpen}
               />
-              <main className="app-main-scroll min-h-0 w-full min-w-0 flex-1 overflow-y-auto overflow-x-auto bg-white pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14">
+              <main className="app-main-scroll min-h-0 w-full min-w-0 flex-1 overflow-y-auto overflow-x-hidden md:overflow-x-auto bg-white pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14">
                 <RouteSuspense>
                   <LazyMyProfilePage />
                 </RouteSuspense>
@@ -943,7 +943,7 @@ const AppContentInner: React.FC = () => {
                   className={`app-main-scroll min-h-0 w-full min-w-0 flex-1 ${
                     isCalendarPage
                       ? 'max-md:overflow-x-hidden max-md:overflow-y-auto md:overflow-hidden md:flex md:flex-col'
-                      : 'overflow-y-auto overflow-x-auto'
+                      : 'overflow-y-auto overflow-x-hidden md:overflow-x-auto'
                   } pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14 ${showBottomNav ? 'main-with-bottom-nav-padding' : ''} ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : ''}`}
                 >
                   <Routes>

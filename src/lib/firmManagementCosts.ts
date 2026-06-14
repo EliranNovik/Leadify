@@ -9,6 +9,7 @@ export type FirmInvoiceDoc = {
   id: string;
   firm_id: string;
   invoice_month: string;
+  firm_management_cost_id?: string | null;
   file_name: string | null;
   storage_path: string | null;
   mime_type: string | null;
@@ -17,6 +18,17 @@ export type FirmInvoiceDoc = {
 export const managementCostInvoiceKey = (firmId: string, month: unknown): string => {
   const anchor = toBillingMonthStart(month) || String(month ?? '').trim().slice(0, 10);
   return `${firmId}|${anchor}`;
+};
+
+/** Prefer cost line id; fall back to legacy firm+month key. */
+export const managementCostLineKey = (
+  costId: string | null | undefined,
+  firmId?: string,
+  month?: unknown,
+): string => {
+  if (costId?.trim()) return `cost:${costId.trim()}`;
+  if (firmId) return `legacy:${managementCostInvoiceKey(firmId, month)}`;
+  return 'legacy:unknown';
 };
 
 export const toBillingMonthStart = (value: unknown): string | null => {
@@ -83,7 +95,7 @@ export async function fetchFirmInvoicesIndex(
 ): Promise<Map<string, FirmInvoiceDoc[]>> {
   let q = supabase
     .from('firm_invoices')
-    .select('id, firm_id, invoice_month, file_name, storage_path, mime_type');
+    .select('id, firm_id, invoice_month, firm_management_cost_id, file_name, storage_path, mime_type');
   q = applyMonthAnchorFilter(q, 'invoice_month', month, year);
   const { data, error } = await q;
   if (error) {
@@ -92,12 +104,29 @@ export async function fetchFirmInvoicesIndex(
 
   const index = new Map<string, FirmInvoiceDoc[]>();
   (data || []).forEach((row: FirmInvoiceDoc) => {
-    const key = managementCostInvoiceKey(row.firm_id, row.invoice_month);
+    const key = managementCostLineKey(row.firm_management_cost_id, row.firm_id, row.invoice_month);
     const list = index.get(key) || [];
     list.push(row);
     index.set(key, list);
   });
   return index;
+}
+
+export async function fetchInvoicesForCostLine(
+  costId: string,
+  firmId?: string,
+  billingMonth?: unknown,
+): Promise<FirmInvoiceDoc[]> {
+  if (!costId?.trim()) return fetchInvoicesForFirmMonth(firmId || '', billingMonth);
+
+  const { data, error } = await supabase
+    .from('firm_invoices')
+    .select('id, firm_id, invoice_month, firm_management_cost_id, file_name, storage_path, mime_type')
+    .eq('firm_management_cost_id', costId)
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  return (data || []) as FirmInvoiceDoc[];
 }
 
 export async function fetchInvoicesForFirmMonth(
@@ -109,7 +138,7 @@ export async function fetchInvoicesForFirmMonth(
 
   const { data, error } = await supabase
     .from('firm_invoices')
-    .select('id, firm_id, invoice_month, file_name, storage_path, mime_type')
+    .select('id, firm_id, invoice_month, firm_management_cost_id, file_name, storage_path, mime_type')
     .eq('firm_id', firmId)
     .eq('invoice_month', anchor)
     .order('created_at', { ascending: false });
@@ -122,33 +151,30 @@ export async function uploadInvoiceForFirmMonth(
   firmId: string,
   billingMonth: unknown,
   file: File,
+  firmManagementCostId?: string | null,
 ): Promise<FirmInvoiceDoc> {
   const invoice_month = toBillingMonthStart(billingMonth);
   if (!firmId || !invoice_month) {
     throw new Error('Select firm and month before uploading an invoice');
   }
 
-  const existing = await fetchInvoicesForFirmMonth(firmId, invoice_month);
-  let rowId = existing.find(inv => inv.storage_path?.trim())?.id ?? existing[0]?.id;
+  const { data: inserted, error: insErr } = await supabase
+    .from('firm_invoices')
+    .insert([
+      {
+        firm_id: firmId,
+        invoice_month,
+        firm_management_cost_id: firmManagementCostId?.trim() || null,
+        amount: null,
+        currency: FIRM_MANAGEMENT_DEFAULT_CURRENCY,
+        notes: null,
+      },
+    ])
+    .select('id, firm_id, invoice_month, firm_management_cost_id, file_name, storage_path, mime_type')
+    .single();
+  if (insErr) throw insErr;
 
-  if (!rowId) {
-    const { data, error } = await supabase
-      .from('firm_invoices')
-      .insert([
-        {
-          firm_id: firmId,
-          invoice_month,
-          amount: null,
-          currency: FIRM_MANAGEMENT_DEFAULT_CURRENCY,
-          notes: null,
-        },
-      ])
-      .select('id, firm_id, invoice_month, file_name, storage_path, mime_type')
-      .single();
-    if (error) throw error;
-    rowId = data.id;
-  }
-
+  const rowId = inserted.id;
   const path = buildFirmInvoiceStoragePath(firmId, rowId, file.name);
   const { error: upErr } = await supabase.storage
     .from(FIRM_INVOICE_DOCUMENTS_BUCKET)
@@ -162,9 +188,10 @@ export async function uploadInvoiceForFirmMonth(
       file_name: file.name,
       mime_type: file.type || null,
       invoice_month,
+      firm_management_cost_id: firmManagementCostId?.trim() || null,
     })
     .eq('id', rowId)
-    .select('id, firm_id, invoice_month, file_name, storage_path, mime_type')
+    .select('id, firm_id, invoice_month, firm_management_cost_id, file_name, storage_path, mime_type')
     .single();
 
   if (uErr) throw uErr;

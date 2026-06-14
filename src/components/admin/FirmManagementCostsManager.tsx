@@ -8,19 +8,29 @@ import {
   formatBillingMonthLabel,
   formatFirmManagementAmount,
   managementAmountToNis,
-  managementCostInvoiceKey,
+  managementCostLineKey,
   toBillingMonthStart,
   type FirmInvoiceDoc,
 } from '../../lib/firmManagementCosts';
 import FirmInvoiceDocumentsCell from './FirmInvoiceDocumentsCell';
 import FirmManagementCostInvoiceField from './FirmManagementCostInvoiceField';
-import FirmManagementCostDocumentCell from './FirmManagementCostDocumentCell';
+import { FirmManagementCostDocumentsCell } from './FirmManagementCostDocumentCell';
 import {
   FirmManagementCostPaymentConfirmationField,
   FirmManagementCostTaxReceiptField,
 } from './FirmManagementCostDocumentField';
 import type { FirmManagementCostDocColumn } from '../../lib/firmManagementCostDocuments';
+import {
+  fetchFirmManagementCostDocumentsIndex,
+  type FirmManagementCostDocument,
+} from '../../lib/firmManagementCostDocuments';
 import type { ExpenseManagerEmbedProps } from '../reports/expenses/expenseDetailTypes';
+import {
+  expenseTypeIdByCode,
+  expenseTypeLabelByCode,
+  fetchActiveExpenseTypes,
+  type ExpenseTypeRow,
+} from '../../lib/expenseTypes';
 
 const MONTH_OPTIONS = [
   { value: '01', label: 'January' },
@@ -173,20 +183,54 @@ type TotalsSummary = {
 const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
   initialYear,
   initialMonth,
+  expenseTypeCode,
 }) => {
   const now = new Date();
   const [filterMonth, setFilterMonth] = useState(
     () => initialMonth ?? String(now.getMonth() + 1).padStart(2, '0'),
   );
   const [filterYear, setFilterYear] = useState(() => initialYear ?? String(now.getFullYear()));
+  const [expenseTypes, setExpenseTypes] = useState<ExpenseTypeRow[]>([]);
 
   useEffect(() => {
     if (initialYear != null) setFilterYear(initialYear);
     if (initialMonth !== undefined) setFilterMonth(initialMonth);
   }, [initialYear, initialMonth]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchActiveExpenseTypes()
+      .then(types => {
+        if (!cancelled) setExpenseTypes(types);
+      })
+      .catch(err => {
+        console.error('Failed to load expense types:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const lockedExpenseTypeId = useMemo(
+    () => (expenseTypeCode ? expenseTypeIdByCode(expenseTypes, expenseTypeCode) : null),
+    [expenseTypeCode, expenseTypes],
+  );
+
+  const lockedExpenseTypeLabel = useMemo(
+    () => (expenseTypeCode ? expenseTypeLabelByCode(expenseTypes, expenseTypeCode) : null),
+    [expenseTypeCode, expenseTypes],
+  );
+
+  const isExpenseTypeScoped = Boolean(expenseTypeCode);
   const [totals, setTotals] = useState<TotalsSummary>({ totalNis: 0, rowCount: 0, firmCount: 0 });
   const [totalsLoading, setTotalsLoading] = useState(false);
   const [invoicesByKey, setInvoicesByKey] = useState<Map<string, FirmInvoiceDoc[]>>(new Map());
+  const [paymentDocsByKey, setPaymentDocsByKey] = useState<Map<string, FirmManagementCostDocument[]>>(
+    new Map(),
+  );
+  const [taxDocsByKey, setTaxDocsByKey] = useState<Map<string, FirmManagementCostDocument[]>>(
+    new Map(),
+  );
 
   const periodLabel = useMemo(() => {
     if (filterYear && filterMonth) {
@@ -202,6 +246,9 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
     try {
       let q = supabase.from('firm_management_costs').select('firm_id, amount, currency');
       q = applyBillingMonthFilter(q, filterMonth, filterYear);
+      if (lockedExpenseTypeId) {
+        q = q.eq('expense_type_id', lockedExpenseTypeId);
+      }
       const { data, error } = await q;
       if (error) throw error;
 
@@ -224,7 +271,7 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
     } finally {
       setTotalsLoading(false);
     }
-  }, [filterMonth, filterYear]);
+  }, [filterMonth, filterYear, lockedExpenseTypeId]);
 
   const loadInvoices = useCallback(async () => {
     try {
@@ -236,18 +283,33 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
     }
   }, [filterMonth, filterYear]);
 
+  const loadCostDocuments = useCallback(async () => {
+    try {
+      const { paymentByKey, taxByKey } = await fetchFirmManagementCostDocumentsIndex(
+        filterMonth,
+        filterYear,
+      );
+      setPaymentDocsByKey(paymentByKey);
+      setTaxDocsByKey(taxByKey);
+    } catch (err) {
+      console.error('Failed to load management cost documents:', err);
+      setPaymentDocsByKey(new Map());
+      setTaxDocsByKey(new Map());
+    }
+  }, [filterMonth, filterYear]);
+
   const loadAuxData = useCallback(async () => {
-    await Promise.all([loadTotals(), loadInvoices()]);
-  }, [loadTotals, loadInvoices]);
+    await Promise.all([loadTotals(), loadInvoices(), loadCostDocuments()]);
+  }, [loadTotals, loadInvoices, loadCostDocuments]);
 
   useEffect(() => {
     void loadAuxData();
   }, [loadAuxData]);
 
   const formatInvoiceColumn = useCallback(
-    (_value: unknown, record: { firm_id?: string; billing_month?: string }) => {
+    (_value: unknown, record: { id?: string; firm_id?: string; billing_month?: string }) => {
       if (!record.firm_id || !record.billing_month) return '—';
-      const key = managementCostInvoiceKey(record.firm_id, record.billing_month);
+      const key = managementCostLineKey(record.id, record.firm_id, record.billing_month);
       const invoices = invoicesByKey.get(key) || [];
       return <FirmInvoiceDocumentsCell invoices={invoices} />;
     },
@@ -255,20 +317,28 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
   );
 
   const formatCostDocumentColumn = useCallback(
-    (column: FirmManagementCostDocColumn, label: string) =>
-      (value: unknown) => (
-        <FirmManagementCostDocumentCell
-          storagePath={typeof value === 'string' ? value : null}
-          column={column}
-          linkLabel={label}
-        />
-      ),
+    (column: FirmManagementCostDocColumn, label: string, docsByKey: Map<string, FirmManagementCostDocument[]>) =>
+      (_value: unknown, record: { id?: string; firm_id?: string; billing_month?: string }) => {
+        if (!record.firm_id || !record.billing_month) return '—';
+        const key = managementCostLineKey(record.id, record.firm_id, record.billing_month);
+        const docs = docsByKey.get(key) || [];
+        return <FirmManagementCostDocumentsCell documents={docs} column={column} linkLabel={label} />;
+      },
     [],
   );
 
   const queryModifier = useCallback(
-    (query: any) => applyBillingMonthFilter(query, filterMonth, filterYear),
-    [filterMonth, filterYear],
+    (query: any) => {
+      let q = applyBillingMonthFilter(query, filterMonth, filterYear);
+      if (expenseTypeCode && !lockedExpenseTypeId) {
+        return q.eq('expense_type_id', '00000000-0000-0000-0000-000000000000');
+      }
+      if (lockedExpenseTypeId) {
+        q = q.eq('expense_type_id', lockedExpenseTypeId);
+      }
+      return q;
+    },
+    [filterMonth, filterYear, lockedExpenseTypeId, expenseTypeCode],
   );
 
   const filterBar = (
@@ -309,6 +379,9 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
         label: 'Expense type',
         type: 'select' as const,
         required: true,
+        hideInAdd: isExpenseTypeScoped,
+        hideInEdit: isExpenseTypeScoped,
+        hideInTable: isExpenseTypeScoped,
         foreignKey: {
           table: 'expense_types',
           valueField: 'id',
@@ -341,22 +414,28 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
         customProps: { onInvoiceChanged: loadAuxData },
       },
       {
-        name: 'payment_confirmation',
+        name: '_payment_confirmation_docs',
         label: 'Payment confirmation',
         type: 'custom' as const,
         required: false,
         hideInAdd: true,
         customComponent: FirmManagementCostPaymentConfirmationField,
-        formatValue: formatCostDocumentColumn('payment_confirmation', 'Payment confirmation'),
+        customProps: { onDocumentsChanged: loadAuxData },
+        formatValue: formatCostDocumentColumn(
+          'payment_confirmation',
+          'Payment confirmation',
+          paymentDocsByKey,
+        ),
       },
       {
-        name: 'tax_receipt',
+        name: '_tax_receipt_docs',
         label: 'Tax receipt',
         type: 'custom' as const,
         required: false,
         hideInAdd: true,
         customComponent: FirmManagementCostTaxReceiptField,
-        formatValue: formatCostDocumentColumn('tax_receipt', 'Tax receipt'),
+        customProps: { onDocumentsChanged: loadAuxData },
+        formatValue: formatCostDocumentColumn('tax_receipt', 'Tax receipt', taxDocsByKey),
       },
       {
         name: 'currency',
@@ -392,8 +471,21 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
         hideInEdit: true,
       },
     ],
-    [formatInvoiceColumn, formatCostDocumentColumn, loadAuxData],
+    [formatInvoiceColumn, formatCostDocumentColumn, loadAuxData, isExpenseTypeScoped, paymentDocsByKey, taxDocsByKey],
   );
+
+  const createDefaults = useMemo(
+    () => (lockedExpenseTypeId ? { expense_type_id: lockedExpenseTypeId } : undefined),
+    [lockedExpenseTypeId],
+  );
+
+  const managerTitle = lockedExpenseTypeLabel
+    ? `Firm Management Cost (${lockedExpenseTypeLabel})`
+    : 'Firm Management Cost';
+
+  const managerDescription = lockedExpenseTypeLabel
+    ? `Monthly firm costs for ${lockedExpenseTypeLabel.toLowerCase()}`
+    : 'Monthly management costs per media supplier firm';
 
   const searchBarExtra = totalsLoading ? (
     <span className="loading loading-spinner loading-sm text-primary" />
@@ -425,8 +517,8 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
     <GenericCRUDManager
       tableName="firm_management_costs"
       fields={fields}
-      title="Firm Management Cost"
-      description="Monthly management costs per media supplier firm"
+      title={managerTitle}
+      description={managerDescription}
       pageSize={20}
       sortColumn="billing_month"
       sortAscending={false}
@@ -434,9 +526,10 @@ const FirmManagementCostsManager: React.FC<ExpenseManagerEmbedProps> = ({
       filterBar={filterBar}
       searchBarExtra={searchBarExtra}
       queryModifier={queryModifier}
-      queryModifierKey={`${filterYear}-${filterMonth}`}
+      queryModifierKey={`${filterYear}-${filterMonth}-${lockedExpenseTypeId ?? 'all'}`}
       onRecordsLoaded={loadAuxData}
       booleanStorage="native"
+      createDefaults={createDefaults}
     />
   );
 };

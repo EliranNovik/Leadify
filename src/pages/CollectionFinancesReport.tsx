@@ -1,8 +1,42 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { BanknotesIcon, MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
-import { PencilSquareIcon, XMarkIcon, ArrowLeftIcon, XCircleIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { PencilSquareIcon, XMarkIcon, ArrowLeftIcon, XCircleIcon, ExclamationTriangleIcon, PaperAirplaneIcon, DocumentTextIcon, Cog6ToothIcon, ArrowDownTrayIcon, CheckIcon, CalendarDaysIcon, ViewColumnsIcon, FunnelIcon as FunnelIconOutline } from '@heroicons/react/24/outline';
+import { PhoneIcon as PhoneIconSolid } from '@heroicons/react/24/solid';
+import { FaWhatsapp, FaEnvelope } from 'react-icons/fa';
+import * as XLSX from 'xlsx';
+import toast from 'react-hot-toast';
+import ProformaSendLanguageModal from '../components/proforma/ProformaSendLanguageModal';
+import MultiLeadContactSelectorModal, {
+  type ContactPickerMode,
+  type MultiLeadContactSelectorLead,
+} from '../components/MultiLeadContactSelectorModal';
+import CollectionViewInvoicePickerModal from '../components/collection/CollectionViewInvoicePickerModal';
+import SchedulerWhatsAppModal from '../components/SchedulerWhatsAppModal';
+import { useMailboxReconnect } from '../contexts/MailboxReconnectContext';
+import {
+  buildFinancesTabPathForRow,
+  buildInteractionsTabPathForRow,
+  buildInvoicePickerOptionsForRows,
+  buildSendInvoiceInputForRow,
+  buildWhatsAppClientSliceForRow,
+  uniqueLeadsFromRows,
+  type CollectionInvoicePickerOption,
+} from '../lib/collectionFinancesRowActions';
+import {
+  buildProformaSendSuccessMessage,
+  collectProformaSendPartialErrors,
+  sendProformaInvoiceBundle,
+} from '../lib/proformaSendInvoice';
+import type { ProformaSendLanguage } from '../lib/proformaSendLanguage';
+import {
+  normalizeLeadIdForCompare,
+  setInteractionsCommunicationPreset,
+  type SelectedLeadContact,
+} from '../lib/interactionsCommunicationPreset';
+import type { ContactInfo } from '../lib/contactHelpers';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import {
   convertToNISWithMeta,
@@ -113,7 +147,167 @@ export const formatCurrency = (value: number, currency: string) => {
   }
 };
 
+function collectedStatusLabel(row: PaymentRow): string {
+  if (row.collected) {
+    return row.hasProforma ? 'Collected - With Proforma' : 'Collected - Without Proforma';
+  }
+  return row.hasProforma ? 'Pending (Proforma)' : 'Pending';
+}
+
+function formatRowAmount(row: PaymentRow): string {
+  if (row.vat > 0) {
+    return `${formatCurrency(row.value, row.currency)} + ${formatCurrency(row.vat, row.currency)}`;
+  }
+  return formatCurrency(row.value, row.currency);
+}
+
+function formatRowDate(value: string | null | undefined): string {
+  if (!value) return '—';
+  return new Date(value).toLocaleDateString();
+}
+
 const todayIso = new Date().toISOString().split('T')[0];
+
+const DEFAULT_FILTERS: Filters = {
+  fromDate: todayIso,
+  toDate: todayIso,
+  paymentFromDate: '',
+  paymentToDate: '',
+  collected: [],
+  categoryId: [],
+  order: [],
+  currencyId: [],
+  due: 'ignore',
+};
+
+const SAVED_VIEWS_STORAGE_KEY = 'collectionFinancesReport_savedViews';
+const MAX_SAVED_VIEWS = 8;
+
+type DisplayFilter = 'all' | 'uncollected' | 'with_proforma';
+
+type SavedCollectionView = {
+  id: string;
+  name: string;
+  filters: Filters;
+  showPaidDateColumn: boolean;
+  showNisColumn: boolean;
+  showProformaDateColumn: boolean;
+  showClientColumn: boolean;
+  showHandlerColumn: boolean;
+  showNotesColumn: boolean;
+  displayFilter: DisplayFilter;
+  savedAt: string;
+};
+
+type SettingsMenuItem = {
+  id: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  onClick: () => void;
+  disabled?: boolean;
+  checked?: boolean;
+};
+
+function isoDateLocal(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function getTodayDateRange(): Pick<Filters, 'fromDate' | 'toDate'> {
+  const t = isoDateLocal(new Date());
+  return { fromDate: t, toDate: t };
+}
+
+function getWeekDateRange(): Pick<Filters, 'fromDate' | 'toDate'> {
+  const now = new Date();
+  const day = now.getDay();
+  const mondayOffset = day === 0 ? -6 : 1 - day;
+  const monday = new Date(now);
+  monday.setDate(now.getDate() + mondayOffset);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  return { fromDate: isoDateLocal(monday), toDate: isoDateLocal(sunday) };
+}
+
+function getMonthDateRange(): Pick<Filters, 'fromDate' | 'toDate'> {
+  const now = new Date();
+  const first = new Date(now.getFullYear(), now.getMonth(), 1);
+  const last = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  return { fromDate: isoDateLocal(first), toDate: isoDateLocal(last) };
+}
+
+function loadSavedViews(): SavedCollectionView[] {
+  try {
+    const raw = localStorage.getItem(SAVED_VIEWS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistSavedViews(views: SavedCollectionView[]) {
+  localStorage.setItem(SAVED_VIEWS_STORAGE_KEY, JSON.stringify(views.slice(0, MAX_SAVED_VIEWS)));
+}
+
+function applyDisplayFilterToRows(rows: PaymentRow[], displayFilter: DisplayFilter): PaymentRow[] {
+  if (displayFilter === 'uncollected') return rows.filter((row) => !row.collected);
+  if (displayFilter === 'with_proforma') return rows.filter((row) => row.hasProforma);
+  return rows;
+}
+
+/** Payment dates use Israel calendar day (paid_at at 01:00 should count for that local day, not UTC). */
+const REPORT_TIMEZONE = 'Asia/Jerusalem';
+
+function isDateOnlyString(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value.trim());
+}
+
+function toReportCalendarDate(value: string | Date): string | null {
+  const date = typeof value === 'string' ? new Date(value.trim()) : value;
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: REPORT_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+/** UTC ISO instant for a wall-clock time on a calendar day in Asia/Jerusalem. */
+function jerusalemDayToUtcIso(ymd: string, time: '00:00:00' | '23:59:59'): string {
+  const [year, month, day] = ymd.split('-').map(Number);
+  const [hours, minutes, seconds] = time.split(':').map(Number);
+  const assumedUTC = Date.UTC(year, month - 1, day, hours, minutes, seconds);
+  const testDate = new Date(assumedUTC);
+  const tzFormatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: REPORT_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+  const tzDisplay = tzFormatter.format(testDate);
+  const [, tzTimeStr] = tzDisplay.split(',');
+  const [tzHour, tzMin, tzSec] = (tzTimeStr ?? '00:00:00').split(':').map(Number);
+  const displayedTime = Date.UTC(year, month - 1, day, tzHour, tzMin, tzSec);
+  const desiredTime = Date.UTC(year, month - 1, day, hours, minutes, seconds);
+  const offset = displayedTime - desiredTime;
+  return new Date(assumedUTC - offset).toISOString();
+}
+
+function paymentDateForFilter(collectedDate: string | null | undefined): string | null {
+  if (!collectedDate) return null;
+  const trimmed = collectedDate.trim();
+  if (isDateOnlyString(trimmed)) return trimmed;
+  return toReportCalendarDate(trimmed);
+}
 
 /** When fromDate > toDate (e.g. Nov–Mar), treat as cross-year range: include dates >= fromDate OR <= toDate */
 function isCrossYearRange(fromDate: string, toDate: string): boolean {
@@ -147,10 +341,16 @@ function applyPaymentDateRangeToQuery(
   query = query.not(column, 'is', null);
   if (column === 'paid_at') {
     if (isCrossYearRange(fromDate, toDate)) {
-      return query.or(`paid_at.gte.${fromDate}T00:00:00,paid_at.lte.${toDate}T23:59:59.999`);
+      const start = fromDate ? jerusalemDayToUtcIso(fromDate, '00:00:00') : null;
+      const end = toDate ? jerusalemDayToUtcIso(toDate, '23:59:59') : null;
+      const parts: string[] = [];
+      if (start) parts.push(`paid_at.gte.${start}`);
+      if (end) parts.push(`paid_at.lte.${end}`);
+      if (parts.length) return query.or(parts.join(','));
+      return query;
     }
-    if (fromDate) query = query.gte('paid_at', `${fromDate}T00:00:00`);
-    if (toDate) query = query.lte('paid_at', `${toDate}T23:59:59.999`);
+    if (fromDate) query = query.gte('paid_at', jerusalemDayToUtcIso(fromDate, '00:00:00'));
+    if (toDate) query = query.lte('paid_at', jerusalemDayToUtcIso(toDate, '23:59:59'));
     return query;
   }
   if (isCrossYearRange(fromDate, toDate)) {
@@ -235,9 +435,9 @@ function getCollectionRowFilterReason(row: PaymentRow, filters: Filters): string
     if (!row.collectedDate) {
       return `payment date: no collectedDate/paid_at (filter ${filters.paymentFromDate ?? ''} – ${filters.paymentToDate ?? ''})`;
     }
-    const paymentDateStr = row.collectedDate.split('T')[0];
-    if (!dateInRange(paymentDateStr, filters.paymentFromDate ?? '', filters.paymentToDate ?? '')) {
-      return `payment date: collectedDate=${paymentDateStr} outside ${filters.paymentFromDate ?? ''} – ${filters.paymentToDate ?? ''}`;
+    const paymentDateStr = paymentDateForFilter(row.collectedDate);
+    if (!paymentDateStr || !dateInRange(paymentDateStr, filters.paymentFromDate ?? '', filters.paymentToDate ?? '')) {
+      return `payment date: collectedDate=${paymentDateStr ?? row.collectedDate} outside ${filters.paymentFromDate ?? ''} – ${filters.paymentToDate ?? ''}`;
     }
   } else if (filters.fromDate || filters.toDate) {
     const usesPlanDate = filters.due === 'ignore' && row.leadType === 'legacy';
@@ -510,19 +710,113 @@ const reports: ReportSection[] = [
   },
 ];
 
+type HandlerEmployee = {
+  id: number;
+  display_name: string;
+  photo_url: string | null;
+  photo: string | null;
+};
+
+function handlerInitials(name: string): string {
+  if (!name || name === '—') return '—';
+  return name
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2);
+}
+
+const HandlerAvatar: React.FC<{
+  employee: HandlerEmployee | null;
+  name: string;
+}> = ({ employee, name }) => {
+  const [imageError, setImageError] = useState(false);
+  const photoUrl = employee?.photo_url || employee?.photo;
+  const displayName = employee?.display_name || name;
+  const isValidPhotoUrl =
+    typeof photoUrl === 'string' &&
+    photoUrl.trim() !== '' &&
+    (photoUrl.startsWith('http') || photoUrl.startsWith('data:') || photoUrl.startsWith('/'));
+
+  if (!isValidPhotoUrl || imageError) {
+    return (
+      <div
+        className="w-8 h-8 rounded-full flex items-center justify-center bg-green-100 text-green-700 text-xs font-semibold shrink-0"
+        title={displayName}
+      >
+        {handlerInitials(displayName)}
+      </div>
+    );
+  }
+
+  return (
+    <img
+      src={photoUrl}
+      alt={displayName}
+      className="w-8 h-8 rounded-full object-cover shrink-0"
+      title={displayName}
+      onError={() => setImageError(true)}
+    />
+  );
+};
+
+const SidebarRailAction: React.FC<{
+  label: string;
+  title: string;
+  onClick: () => void;
+  disabled?: boolean;
+  active?: boolean;
+  hideLabel?: boolean;
+  btnClassNameActive: string;
+  btnClassNameIdle: string;
+  btnClassNameDisabled: string;
+  children: React.ReactNode;
+}> = ({
+  label,
+  title,
+  onClick,
+  disabled = false,
+  active = false,
+  hideLabel = true,
+  btnClassNameActive,
+  btnClassNameIdle,
+  btnClassNameDisabled,
+  children,
+}) => {
+  const buttonClass = disabled
+    ? btnClassNameDisabled
+    : active
+      ? btnClassNameActive
+      : btnClassNameIdle;
+
+  return (
+    <div className="flex w-full flex-col items-center gap-1">
+      <button
+        type="button"
+        title={title}
+        aria-label={title}
+        aria-pressed={active || undefined}
+        className={buttonClass}
+        onClick={onClick}
+        disabled={disabled}
+      >
+        {children}
+      </button>
+      {!hideLabel ? (
+        <span className="max-w-full px-0.5 text-center text-[10px] font-medium leading-tight text-gray-600">
+          {label}
+        </span>
+      ) : null}
+    </div>
+  );
+};
+
 const CollectionFinancesReport: React.FC = () => {
   const navigate = useNavigate();
-  const [filters, setFilters] = usePersistedFilters<Filters>('collectionFinancesReport_filters', {
-    fromDate: todayIso,
-    toDate: todayIso,
-    paymentFromDate: '',
-    paymentToDate: '',
-    collected: [], // Multi-select
-    categoryId: [], // Changed to empty array for multi-select
-    order: [], // Changed to empty array for multi-select
-    currencyId: [], // Multi-select: accounting_currencies.id
-    due: 'ignore',
-  }, {
+  const { showReconnectModal } = useMailboxReconnect();
+  const [filters, setFilters] = usePersistedFilters<Filters>('collectionFinancesReport_filters', DEFAULT_FILTERS, {
     storage: 'sessionStorage',
   });
   const [categories, setCategories] = useState<MainCategory[]>([]);
@@ -534,6 +828,7 @@ const CollectionFinancesReport: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [handlerOptions, setHandlerOptions] = useState<{ id: number; name: string }[]>([]);
+  const [handlerEmployees, setHandlerEmployees] = useState<HandlerEmployee[]>([]);
   const [handlerEdit, setHandlerEdit] = useState<{ rowId: string; value: string } | null>(null);
   const [notesEdit, setNotesEdit] = useState<{ rowId: string; value: string } | null>(null);
   const [savingHandler, setSavingHandler] = useState(false);
@@ -545,6 +840,73 @@ const CollectionFinancesReport: React.FC = () => {
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [showOrderDropdown, setShowOrderDropdown] = useState(false);
   const [showCurrencyDropdown, setShowCurrencyDropdown] = useState(false);
+  const [showPaidDateColumn, setShowPaidDateColumn] = usePersistedState<boolean>(
+    'collectionFinancesReport_showPaidDateColumn',
+    false,
+    { storage: 'sessionStorage' },
+  );
+  const [showNisColumn, setShowNisColumn] = usePersistedState<boolean>(
+    'collectionFinancesReport_showNisColumn',
+    true,
+    { storage: 'sessionStorage' },
+  );
+  const [showProformaDateColumn, setShowProformaDateColumn] = usePersistedState<boolean>(
+    'collectionFinancesReport_showProformaDateColumn',
+    true,
+    { storage: 'sessionStorage' },
+  );
+  const [showClientColumn, setShowClientColumn] = usePersistedState<boolean>(
+    'collectionFinancesReport_showClientColumn',
+    true,
+    { storage: 'sessionStorage' },
+  );
+  const [showHandlerColumn, setShowHandlerColumn] = usePersistedState<boolean>(
+    'collectionFinancesReport_showHandlerColumn',
+    true,
+    { storage: 'sessionStorage' },
+  );
+  const [showNotesColumn, setShowNotesColumn] = usePersistedState<boolean>(
+    'collectionFinancesReport_showNotesColumn',
+    true,
+    { storage: 'sessionStorage' },
+  );
+  const [displayFilter, setDisplayFilter] = usePersistedState<DisplayFilter>(
+    'collectionFinancesReport_displayFilter',
+    'all',
+    { storage: 'sessionStorage' },
+  );
+  const [savedViews, setSavedViews] = useState<SavedCollectionView[]>(() => loadSavedViews());
+  const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
+  const settingsMenuRef = useRef<HTMLDivElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsMenuPanelRef = useRef<HTMLDivElement>(null);
+  const [settingsMenuAnchor, setSettingsMenuAnchor] = useState<{ left: number; bottom: number } | null>(null);
+  const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
+  const [sendInvoiceModalOpen, setSendInvoiceModalOpen] = useState(false);
+  const [sendInvoiceRows, setSendInvoiceRows] = useState<PaymentRow[]>([]);
+  const [sendingInvoice, setSendingInvoice] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [contactPickerOpen, setContactPickerOpen] = useState(false);
+  const [contactPickerMode, setContactPickerMode] = useState<ContactPickerMode>('email');
+  const [contactPickerLeads, setContactPickerLeads] = useState<MultiLeadContactSelectorLead[]>([]);
+  const [contactPickerRows, setContactPickerRows] = useState<PaymentRow[]>([]);
+  const [whatsAppModalOpen, setWhatsAppModalOpen] = useState(false);
+  const [whatsAppClient, setWhatsAppClient] = useState<{
+    id: string;
+    name: string;
+    lead_number: string;
+    phone?: string;
+    mobile?: string;
+    lead_type?: string;
+  } | null>(null);
+  const [whatsAppSelectedContact, setWhatsAppSelectedContact] = useState<{
+    contact: ContactInfo;
+    leadId: string | number;
+    leadType: 'legacy' | 'new';
+  } | null>(null);
+  const [viewInvoiceModalOpen, setViewInvoiceModalOpen] = useState(false);
+  const [viewInvoiceOptions, setViewInvoiceOptions] = useState<CollectionInvoicePickerOption[]>([]);
+  const [viewInvoiceLoading, setViewInvoiceLoading] = useState(false);
   const dropdownTouchHandledRef = useRef(0); // ignore synthetic click after touch (iOS Safari)
 
   // Filter reports based on search query
@@ -566,6 +928,29 @@ const CollectionFinancesReport: React.FC = () => {
       .filter((section) => section.items.length > 0);
   }, [searchQuery]);
 
+  const handlerEmployeeById = useMemo(() => {
+    const map = new Map<number, HandlerEmployee>();
+    for (const emp of handlerEmployees) {
+      map.set(emp.id, emp);
+    }
+    return map;
+  }, [handlerEmployees]);
+
+  const getHandlerEmployee = useCallback(
+    (handlerId?: number | null, handlerName?: string): HandlerEmployee | null => {
+      if (handlerId != null && !Number.isNaN(handlerId)) {
+        const byId = handlerEmployeeById.get(handlerId);
+        if (byId) return byId;
+      }
+      if (handlerName && handlerName !== '—') {
+        const lower = handlerName.trim().toLowerCase();
+        return handlerEmployees.find((e) => e.display_name.trim().toLowerCase() === lower) ?? null;
+      }
+      return null;
+    },
+    [handlerEmployeeById, handlerEmployees],
+  );
+
   useEffect(() => {
     const fetchCategories = async () => {
       const { data, error } = await supabase.from('misc_maincategory').select('id, name').order('name', { ascending: true });
@@ -578,15 +963,25 @@ const CollectionFinancesReport: React.FC = () => {
 
     fetchCategories();
     const fetchHandlers = async () => {
-      const { data, error } = await supabase.from('tenants_employee').select('id, display_name').order('display_name', { ascending: true });
+      const { data, error } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name, photo_url, photo')
+        .order('display_name', { ascending: true });
       if (error) {
         console.error('Failed to load handlers', error);
         return;
       }
+      const employees = (data || []).map((emp) => ({
+        id: emp.id,
+        display_name: emp.display_name || `Employee #${emp.id}`,
+        photo_url: emp.photo_url ?? null,
+        photo: emp.photo ?? null,
+      }));
+      setHandlerEmployees(employees);
       setHandlerOptions(
-        (data || []).map((emp) => ({
+        employees.map((emp) => ({
           id: emp.id,
-          name: emp.display_name || `Employee #${emp.id}`,
+          name: emp.display_name,
         })),
       );
     };
@@ -633,6 +1028,74 @@ const CollectionFinancesReport: React.FC = () => {
       };
     }
   }, [showCollectedDropdown, showCategoryDropdown, showOrderDropdown, showCurrencyDropdown]);
+
+  const closeSettingsMenu = useCallback(() => setSettingsMenuOpen(false), []);
+
+  useLayoutEffect(() => {
+    if (!settingsMenuOpen) {
+      setSettingsMenuAnchor(null);
+      return;
+    }
+    const updateAnchor = () => {
+      const el = settingsButtonRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      setSettingsMenuAnchor({
+        left: rect.right + 8,
+        bottom: window.innerHeight - rect.bottom,
+      });
+    };
+    updateAnchor();
+    window.addEventListener('resize', updateAnchor);
+    window.addEventListener('scroll', updateAnchor, true);
+    return () => {
+      window.removeEventListener('resize', updateAnchor);
+      window.removeEventListener('scroll', updateAnchor, true);
+    };
+  }, [settingsMenuOpen]);
+
+  useEffect(() => {
+    if (!settingsMenuOpen) return;
+    let onPointerDown: ((e: PointerEvent) => void) | null = null;
+    const timerId = window.setTimeout(() => {
+      onPointerDown = (e: PointerEvent) => {
+        const target = e.target as Node;
+        if (settingsButtonRef.current?.contains(target)) return;
+        if (settingsMenuPanelRef.current?.contains(target)) return;
+        setSettingsMenuOpen(false);
+      };
+      document.addEventListener('pointerdown', onPointerDown, true);
+    }, 0);
+    return () => {
+      window.clearTimeout(timerId);
+      if (onPointerDown) {
+        document.removeEventListener('pointerdown', onPointerDown, true);
+      }
+    };
+  }, [settingsMenuOpen]);
+
+  const visibleRows = useMemo(
+    () => applyDisplayFilterToRows(rows, displayFilter),
+    [rows, displayFilter],
+  );
+
+  const tableColumnCount = useMemo(() => {
+    let count = 8;
+    if (showClientColumn) count += 1;
+    if (showNisColumn) count += 1;
+    if (showProformaDateColumn) count += 1;
+    if (showPaidDateColumn) count += 1;
+    if (showHandlerColumn) count += 1;
+    if (showNotesColumn) count += 1;
+    return count;
+  }, [
+    showClientColumn,
+    showNisColumn,
+    showProformaDateColumn,
+    showPaidDateColumn,
+    showHandlerColumn,
+    showNotesColumn,
+  ]);
 
   const handleFilterChange = (field: keyof Filters, value: string) => {
     setFilters((prev) => ({ ...prev, [field]: value }));
@@ -919,8 +1382,8 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
             if (isDanielGranot) logDanielGranotDebug('Client filter: payment date — no collectedDate', summarizeRowForDebug(row));
             return false;
           }
-          const paymentDateStr = row.collectedDate.split('T')[0];
-          if (!dateInRange(paymentDateStr, filters.paymentFromDate ?? '', filters.paymentToDate ?? '')) {
+          const paymentDateStr = paymentDateForFilter(row.collectedDate);
+          if (!paymentDateStr || !dateInRange(paymentDateStr, filters.paymentFromDate ?? '', filters.paymentToDate ?? '')) {
             if (isDanielGranot) {
               logDanielGranotDebug('Client filter: payment date out of range', {
                 row: summarizeRowForDebug(row),
@@ -1244,26 +1707,611 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
   }, [rows]);
 
   const totals = useMemo(() => {
-    // Match CollectionDueReport logic: convert value (without VAT) to NIS
-    const estimated = rows.reduce((sum, row) => {
-      return sum + (nisByRowId[row.id]?.valueNis ?? 0);
-    }, 0);
-    const collected = rows.reduce((sum, row) => {
+    let estimatedWithVat = 0;
+    let estimatedWithoutVat = 0;
+    let collectedWithVat = 0;
+    let collectedWithoutVat = 0;
+
+    for (const row of visibleRows) {
+      const nis = nisByRowId[row.id];
+      if (!nis) continue;
+      estimatedWithVat += nis.totalNis;
+      estimatedWithoutVat += nis.valueNis;
       if (row.collected) {
-        return sum + (nisByRowId[row.id]?.valueNis ?? 0);
+        collectedWithVat += nis.totalNis;
+        collectedWithoutVat += nis.valueNis;
       }
-      return sum;
-    }, 0);
+    }
+
     return {
-      estimated,
-      collected,
+      estimatedWithVat,
+      estimatedWithoutVat,
+      collectedWithVat,
+      collectedWithoutVat,
     };
-  }, [rows, nisByRowId]);
+  }, [visibleRows, nisByRowId]);
 
   const nisReady = useMemo(() => {
-    if (rows.length === 0) return true;
-    return rows.every((r) => Boolean(nisByRowId[r.id]));
-  }, [rows, nisByRowId]);
+    if (visibleRows.length === 0) return true;
+    return visibleRows.every((r) => Boolean(nisByRowId[r.id]));
+  }, [visibleRows, nisByRowId]);
+
+  const handleExportToExcel = useCallback(() => {
+    if (visibleRows.length === 0) {
+      toast.error('No data to export');
+      return;
+    }
+
+    try {
+      const excelData = visibleRows.map((row) => {
+        const nis = nisByRowId[row.id];
+        const displayDate = row.dueDate ?? row.planDate;
+        const rowData: Record<string, string | number> = {
+          'Lead Name': row.leadName,
+          Amount: formatRowAmount(row),
+          Order: row.orderLabel || '—',
+          Collected: collectedStatusLabel(row),
+          Date: formatRowDate(displayDate),
+        };
+        if (showClientColumn) {
+          rowData.Client = row.clientName || row.leadName || '—';
+        }
+        if (showNisColumn) {
+          rowData['Amount (in NIS)'] = nis ? nis.totalNis : '';
+        }
+        if (showProformaDateColumn) {
+          rowData['Proforma Date'] = formatRowDate(row.proformaDate);
+        }
+        if (showPaidDateColumn) {
+          rowData['Paid Date'] = formatRowDate(row.collectedDate);
+        }
+        if (showHandlerColumn) {
+          rowData.Handler = row.handlerName || '—';
+        }
+        rowData.Case = row.caseNumber || '—';
+        rowData.Category = row.categoryName || '—';
+        if (showNotesColumn) {
+          rowData.Notes = row.notes || '';
+        }
+        return rowData;
+      });
+
+      const ws = XLSX.utils.json_to_sheet(excelData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Collection Finances');
+      const dateStr = new Date().toISOString().slice(0, 10);
+      XLSX.writeFile(wb, `Collection_Finances_Report_${dateStr}.xlsx`);
+      toast.success('Report exported to Excel');
+    } catch (err) {
+      console.error('Collection finances export failed', err);
+      toast.error('Failed to export report');
+    }
+  }, [
+    visibleRows,
+    nisByRowId,
+    showPaidDateColumn,
+    showNisColumn,
+    showProformaDateColumn,
+    showClientColumn,
+    showHandlerColumn,
+    showNotesColumn,
+  ]);
+
+  const selectedRows = useMemo(
+    () => rows.filter((row) => selectedRowIds.has(row.id)),
+    [rows, selectedRowIds],
+  );
+
+  const selectedLeadCount = useMemo(() => {
+    const leadIds = new Set<string>();
+    for (const row of selectedRows) {
+      if (row.leadId) leadIds.add(row.leadId);
+    }
+    return leadIds.size;
+  }, [selectedRows]);
+
+  const allRowsSelected = visibleRows.length > 0 && visibleRows.every((row) => selectedRowIds.has(row.id));
+
+  const toggleRowSelection = useCallback((rowId: string) => {
+    setSelectedRowIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectAllRows = useCallback(() => {
+    setSelectedRowIds((prev) => {
+      if (visibleRows.length === 0) return prev;
+      const allSelected = visibleRows.every((row) => prev.has(row.id));
+      const next = new Set(prev);
+      if (allSelected) {
+        for (const row of visibleRows) next.delete(row.id);
+      } else {
+        for (const row of visibleRows) next.add(row.id);
+      }
+      return next;
+    });
+  }, [visibleRows]);
+
+  const requireSelectedRows = useCallback((): PaymentRow[] | null => {
+    if (selectedRows.length === 0) {
+      toast.error('Select one or more rows first');
+      return null;
+    }
+    return selectedRows;
+  }, [selectedRows]);
+
+  const handleSentInvoiceClick = useCallback(() => {
+    const picked = requireSelectedRows();
+    if (!picked) return;
+    const withProforma = picked.filter((row) => row.hasProforma);
+    if (withProforma.length === 0) {
+      toast.error('Selected rows have no proforma to send');
+      return;
+    }
+    if (withProforma.length < picked.length) {
+      toast(`Sending invoice for ${withProforma.length} of ${picked.length} selected rows (others have no proforma).`);
+    }
+    setSendInvoiceRows(withProforma);
+    setSendInvoiceModalOpen(true);
+  }, [requireSelectedRows]);
+
+  const handleSendInvoiceConfirm = useCallback(async (language: ProformaSendLanguage) => {
+    if (!sendInvoiceRows.length) return;
+    setSendingInvoice(true);
+    let sent = 0;
+    let failed = 0;
+    try {
+      for (const row of sendInvoiceRows) {
+        try {
+          const input = await buildSendInvoiceInputForRow(row, language);
+          if (!input) {
+            failed += 1;
+            continue;
+          }
+          const result = await sendProformaInvoiceBundle(input);
+          collectProformaSendPartialErrors(result).forEach((message) => toast.error(message));
+          if (
+            result.emailError?.message === 'MAILBOX_NOT_CONNECTED' ||
+            (result.emailError as Error & { code?: string })?.code === 'MAILBOX_NOT_CONNECTED'
+          ) {
+            showReconnectModal('Connect Outlook to send invoices by email.');
+          }
+          if (result.emailSent || result.whatsAppSent) {
+            sent += 1;
+            toast.success(buildProformaSendSuccessMessage(result, language));
+          } else {
+            failed += 1;
+          }
+        } catch (err) {
+          failed += 1;
+          const message = err instanceof Error ? err.message : 'Failed to send invoice';
+          if ((err as Error & { code?: string }).code === 'MAILBOX_NOT_CONNECTED') {
+            showReconnectModal('Connect Outlook to send invoices by email.');
+          } else {
+            toast.error(message);
+          }
+        }
+      }
+      if (sent > 0) {
+        toast.success(`Invoice sent for ${sent} row${sent === 1 ? '' : 's'}`);
+      }
+      if (failed > 0 && sent === 0) {
+        toast.error(`Failed to send invoice for ${failed} row${failed === 1 ? '' : 's'}`);
+      }
+      setSendInvoiceModalOpen(false);
+      setSendInvoiceRows([]);
+    } finally {
+      setSendingInvoice(false);
+    }
+  }, [sendInvoiceRows, showReconnectModal]);
+
+  const handleViewInvoice = useCallback(async () => {
+    const picked = requireSelectedRows();
+    if (!picked) return;
+    const withProforma = picked.filter((row) => row.hasProforma);
+    if (withProforma.length === 0) {
+      toast.error('Selected rows have no proforma to view');
+      return;
+    }
+    setViewInvoiceModalOpen(true);
+    setViewInvoiceOptions([]);
+    setViewInvoiceLoading(true);
+    try {
+      const options = await buildInvoicePickerOptionsForRows(withProforma);
+      if (options.length === 0) {
+        setViewInvoiceModalOpen(false);
+        toast.error('No proforma found for the selected rows');
+        return;
+      }
+      setViewInvoiceOptions(options);
+    } finally {
+      setViewInvoiceLoading(false);
+    }
+  }, [requireSelectedRows]);
+
+  const handleViewInvoiceSelect = useCallback((option: CollectionInvoicePickerOption) => {
+    window.open(option.path, '_blank', 'noopener,noreferrer');
+    setViewInvoiceModalOpen(false);
+  }, []);
+
+  const handleViewPayments = useCallback(() => {
+    const picked = requireSelectedRows();
+    if (!picked) return;
+    const seen = new Set<string>();
+    let opened = 0;
+    for (const row of picked) {
+      const key = row.leadId;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const path = buildFinancesTabPathForRow(row);
+      if (path) {
+        window.open(path, '_blank', 'noopener,noreferrer');
+        opened += 1;
+      }
+    }
+    if (opened === 0) {
+      toast.error('Could not open finances tab for selected rows');
+    }
+  }, [requireSelectedRows]);
+
+  const openContactPicker = useCallback(
+    (mode: ContactPickerMode, picked: PaymentRow[]) => {
+      const uniqueRows = uniqueLeadsFromRows(picked);
+      setContactPickerMode(mode);
+      setContactPickerRows(picked);
+      setContactPickerLeads(
+        uniqueRows.map((row) => ({
+          leadId: row.leadId,
+          leadType: row.leadType,
+          leadName: row.leadName,
+          caseNumber: row.caseNumber,
+          clientName: row.clientName,
+        })),
+      );
+      setContactPickerOpen(true);
+    },
+    [],
+  );
+
+  const handleEmailClient = useCallback(() => {
+    const picked = requireSelectedRows();
+    if (!picked) return;
+    openContactPicker('email', picked);
+  }, [requireSelectedRows, openContactPicker]);
+
+  const handleWhatsAppClient = useCallback(() => {
+    const picked = requireSelectedRows();
+    if (!picked) return;
+    openContactPicker('whatsapp', picked);
+  }, [requireSelectedRows, openContactPicker]);
+
+  const handleCallClient = useCallback(() => {
+    const picked = requireSelectedRows();
+    if (!picked) return;
+    openContactPicker('call', picked);
+  }, [requireSelectedRows, openContactPicker]);
+
+  const handleContactPickerConfirm = useCallback(
+    (selections: SelectedLeadContact[]) => {
+      if (selections.length === 0) return;
+
+      if (contactPickerMode === 'call') {
+        const primary = selections[0];
+        const phone = primary.contact.phone?.trim() || primary.contact.mobile?.trim();
+        if (!phone) {
+          toast.error('No phone number for selected contact');
+          return;
+        }
+        window.open(`tel:${phone}`, '_self');
+        if (selections.length > 1) {
+          toast('Calling one contact at a time. Open Call again to dial another contact.');
+        }
+        return;
+      }
+
+      if (contactPickerMode === 'whatsapp') {
+        const primary = selections[0];
+        const primaryLeadKey = normalizeLeadIdForCompare(primary.leadId, primary.leadType);
+        const row =
+          contactPickerRows.find(
+            (r) => normalizeLeadIdForCompare(r.leadId, r.leadType) === primaryLeadKey,
+          ) || contactPickerRows[0];
+
+        setWhatsAppClient(buildWhatsAppClientSliceForRow(row, primary));
+        setWhatsAppSelectedContact(primary);
+        setWhatsAppModalOpen(true);
+
+        if (selections.length > 1) {
+          toast('WhatsApp opens one contact at a time. Use the contact sidebar to switch.');
+        }
+        return;
+      }
+
+      const byLead = new Map<string, SelectedLeadContact[]>();
+      for (const sel of selections) {
+        const key = normalizeLeadIdForCompare(sel.leadId, sel.leadType);
+        const bucket = byLead.get(key) || [];
+        bucket.push(sel);
+        byLead.set(key, bucket);
+      }
+
+      if (byLead.size > 1) {
+        toast('Email opens one lead at a time. Opening the first selected lead.');
+      }
+
+      const leadSelections = Array.from(byLead.values())[0];
+      const primary = leadSelections[0];
+      const additionalContacts = leadSelections.slice(1);
+
+      const primaryLeadKey = normalizeLeadIdForCompare(primary.leadId, primary.leadType);
+      const row =
+        contactPickerRows.find(
+          (r) => normalizeLeadIdForCompare(r.leadId, r.leadType) === primaryLeadKey,
+        ) || contactPickerRows[0];
+
+      const path = buildInteractionsTabPathForRow(row);
+      if (!path) {
+        toast.error('Could not open interactions tab for selected lead');
+        return;
+      }
+
+      setInteractionsCommunicationPreset({
+        mode: 'email',
+        primary,
+        additionalContacts: additionalContacts.length > 0 ? additionalContacts : undefined,
+      });
+
+      window.open(path, '_blank', 'noopener,noreferrer');
+    },
+    [contactPickerMode, contactPickerRows],
+  );
+
+  const resetFilters = useCallback(() => {
+    setFilters({ ...DEFAULT_FILTERS, fromDate: todayIso, toDate: todayIso });
+    setDisplayFilter('all');
+    closeSettingsMenu();
+    toast.success('Filters reset');
+  }, [setFilters, setDisplayFilter, closeSettingsMenu]);
+
+  const applyDateRange = useCallback(
+    (range: Pick<Filters, 'fromDate' | 'toDate'>) => {
+      setFilters((prev) => ({
+        ...prev,
+        ...range,
+        paymentFromDate: '',
+        paymentToDate: '',
+      }));
+      closeSettingsMenu();
+      void loadPaymentsRef.current();
+    },
+    [setFilters, closeSettingsMenu],
+  );
+
+  const handleSaveView = useCallback(() => {
+    const name = window.prompt('Name this view', `View ${savedViews.length + 1}`);
+    if (!name?.trim()) return;
+    const view: SavedCollectionView = {
+      id: `view-${Date.now()}`,
+      name: name.trim(),
+      filters: { ...filters },
+      showPaidDateColumn,
+      showNisColumn,
+      showProformaDateColumn,
+      showClientColumn,
+      showHandlerColumn,
+      showNotesColumn,
+      displayFilter,
+      savedAt: new Date().toISOString(),
+    };
+    const next = [view, ...savedViews.filter((v) => v.name !== view.name)].slice(0, MAX_SAVED_VIEWS);
+    setSavedViews(next);
+    persistSavedViews(next);
+    closeSettingsMenu();
+    toast.success(`Saved view “${view.name}”`);
+  }, [
+    savedViews,
+    filters,
+    showPaidDateColumn,
+    showNisColumn,
+    showProformaDateColumn,
+    showClientColumn,
+    showHandlerColumn,
+    showNotesColumn,
+    displayFilter,
+    closeSettingsMenu,
+  ]);
+
+  const applySavedView = useCallback(
+    (view: SavedCollectionView) => {
+      setFilters({ ...view.filters });
+      setShowPaidDateColumn(view.showPaidDateColumn);
+      setShowNisColumn(view.showNisColumn);
+      setShowProformaDateColumn(view.showProformaDateColumn);
+      setShowClientColumn(view.showClientColumn ?? true);
+      setShowHandlerColumn(view.showHandlerColumn ?? true);
+      setShowNotesColumn(view.showNotesColumn);
+      setDisplayFilter(view.displayFilter);
+      closeSettingsMenu();
+      void loadPaymentsRef.current();
+      toast.success(`Loaded “${view.name}”`);
+    },
+    [
+      setFilters,
+      setShowPaidDateColumn,
+      setShowNisColumn,
+      setShowProformaDateColumn,
+      setShowClientColumn,
+      setShowHandlerColumn,
+      setShowNotesColumn,
+      setDisplayFilter,
+      closeSettingsMenu,
+    ],
+  );
+
+  const handleClearCacheAndRefresh = useCallback(() => {
+    try {
+      sessionStorage.removeItem('collectionFinancesReport_results');
+    } catch {
+      // ignore
+    }
+    closeSettingsMenu();
+    void loadPaymentsRef.current();
+    toast.success('Cache cleared — refreshing');
+  }, [closeSettingsMenu]);
+
+  const settingsSections = useMemo(() => {
+    const section = (title: string, items: SettingsMenuItem[]) => ({ title, items });
+
+    const toggleItem = (
+      id: string,
+      label: string,
+      icon: React.ComponentType<{ className?: string }>,
+      checked: boolean,
+      onToggle: () => void,
+    ): SettingsMenuItem => ({
+      id,
+      label,
+      icon,
+      checked,
+      onClick: onToggle,
+    });
+
+    const data = section('Data', [
+      {
+        id: 'refresh',
+        label: 'Refresh list',
+        icon: ArrowPathIcon,
+        onClick: () => {
+          closeSettingsMenu();
+          void loadPaymentsRef.current();
+        },
+      },
+      {
+        id: 'export',
+        label: 'Export to Excel',
+        icon: ArrowDownTrayIcon,
+        onClick: () => {
+          handleExportToExcel();
+          closeSettingsMenu();
+        },
+        disabled: visibleRows.length === 0,
+      },
+      {
+        id: 'clear-cache',
+        label: 'Clear cache & refresh',
+        icon: ArrowPathIcon,
+        onClick: handleClearCacheAndRefresh,
+      },
+    ]);
+
+    const display = section('Display', [
+      toggleItem('col-client', 'Client column', ViewColumnsIcon, showClientColumn, () =>
+        setShowClientColumn((v) => !v),
+      ),
+      toggleItem('col-handler', 'Handler column', ViewColumnsIcon, showHandlerColumn, () =>
+        setShowHandlerColumn((v) => !v),
+      ),
+      toggleItem('col-paid', 'Paid date column', ViewColumnsIcon, showPaidDateColumn, () =>
+        setShowPaidDateColumn((v) => !v),
+      ),
+      toggleItem('col-nis', 'NIS amounts column', ViewColumnsIcon, showNisColumn, () =>
+        setShowNisColumn((v) => !v),
+      ),
+      toggleItem('col-proforma', 'Proforma date column', ViewColumnsIcon, showProformaDateColumn, () =>
+        setShowProformaDateColumn((v) => !v),
+      ),
+      toggleItem('col-notes', 'Notes column', ViewColumnsIcon, showNotesColumn, () =>
+        setShowNotesColumn((v) => !v),
+      ),
+      toggleItem('filter-uncollected', 'Show uncollected only', FunnelIconOutline, displayFilter === 'uncollected', () =>
+        setDisplayFilter((prev) => (prev === 'uncollected' ? 'all' : 'uncollected')),
+      ),
+      toggleItem('filter-proforma', 'Show with proforma only', FunnelIconOutline, displayFilter === 'with_proforma', () =>
+        setDisplayFilter((prev) => (prev === 'with_proforma' ? 'all' : 'with_proforma')),
+      ),
+    ]);
+
+    const dates = section('Date range', [
+      {
+        id: 'date-today',
+        label: 'Today',
+        icon: CalendarDaysIcon,
+        onClick: () => applyDateRange(getTodayDateRange()),
+      },
+      {
+        id: 'date-week',
+        label: 'This week',
+        icon: CalendarDaysIcon,
+        onClick: () => applyDateRange(getWeekDateRange()),
+      },
+      {
+        id: 'date-month',
+        label: 'This month',
+        icon: CalendarDaysIcon,
+        onClick: () => applyDateRange(getMonthDateRange()),
+      },
+    ]);
+
+    const views = section('Views', [
+      {
+        id: 'save-view',
+        label: 'Save current view…',
+        icon: StarIcon,
+        onClick: handleSaveView,
+      },
+      ...savedViews.map((view) => ({
+        id: `saved-${view.id}`,
+        label: view.name,
+        icon: StarIcon,
+        onClick: () => applySavedView(view),
+      })),
+    ]);
+
+    const reset = section('', [
+      {
+        id: 'reset-filters',
+        label: 'Reset filters',
+        icon: ArrowPathIcon,
+        onClick: resetFilters,
+      },
+    ]);
+
+    return [data, display, dates, views, reset];
+  }, [
+    applyDateRange,
+    applySavedView,
+    closeSettingsMenu,
+    displayFilter,
+    handleClearCacheAndRefresh,
+    handleExportToExcel,
+    handleSaveView,
+    resetFilters,
+    savedViews,
+    setDisplayFilter,
+    setShowClientColumn,
+    setShowHandlerColumn,
+    setShowNisColumn,
+    setShowNotesColumn,
+    setShowPaidDateColumn,
+    setShowProformaDateColumn,
+    showClientColumn,
+    showHandlerColumn,
+    showNisColumn,
+    showNotesColumn,
+    showPaidDateColumn,
+    showProformaDateColumn,
+    visibleRows.length,
+  ]);
+
+  const sidebarRailBtn =
+    'btn btn-ghost btn-circle w-11 h-11 min-h-11 min-w-11 border-0 flex-shrink-0';
+  const sidebarRailBtnActive = `${sidebarRailBtn} bg-gray-300 text-gray-900 hover:bg-gray-400`;
+  const sidebarRailBtnIdle = `${sidebarRailBtn} text-gray-600 hover:bg-gray-300/70`;
+  const sidebarRailBtnDisabled = `${sidebarRailBtn} text-gray-400 opacity-50 cursor-not-allowed`;
+  const sidebarIconClass = 'h-6 w-6 text-gray-600';
 
   const handleSaveHandler = async (rowId: string) => {
     if (!handlerEdit || handlerEdit.rowId !== rowId) {
@@ -1347,7 +2395,196 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
   };
 
   return (
-    <div className="p-4 md:p-8 space-y-6">
+    <div className="collection-finances-shell flex min-h-full bg-gray-100">
+      <aside
+        className="hidden lg:flex lg:w-[4.75rem] lg:shrink-0 lg:flex-col lg:items-center lg:border-r lg:border-base-200 lg:bg-white dark:lg:border-base-300 dark:lg:bg-base-100 sticky top-0 self-start min-h-[calc(100dvh-3.5rem)]"
+        aria-label="Collection finances shortcuts"
+      >
+        <div className="flex w-full flex-col items-center gap-3 px-0.5 pt-4">
+          <SidebarRailAction
+            label="Send invoice"
+            title="Send invoice"
+            onClick={handleSentInvoiceClick}
+            disabled={actionBusy || sendingInvoice}
+            btnClassNameActive={sidebarRailBtnActive}
+            btnClassNameIdle={sidebarRailBtnIdle}
+            btnClassNameDisabled={sidebarRailBtnDisabled}
+          >
+            <PaperAirplaneIcon className={sidebarIconClass} />
+          </SidebarRailAction>
+          <SidebarRailAction
+            label="View invoice"
+            title="View invoice"
+            onClick={() => void handleViewInvoice()}
+            disabled={actionBusy || viewInvoiceLoading}
+            btnClassNameActive={sidebarRailBtnActive}
+            btnClassNameIdle={sidebarRailBtnIdle}
+            btnClassNameDisabled={sidebarRailBtnDisabled}
+          >
+            <DocumentTextIcon className={sidebarIconClass} />
+          </SidebarRailAction>
+          <SidebarRailAction
+            label="View payments"
+            title="View payments"
+            onClick={handleViewPayments}
+            btnClassNameActive={sidebarRailBtnActive}
+            btnClassNameIdle={sidebarRailBtnIdle}
+            btnClassNameDisabled={sidebarRailBtnDisabled}
+          >
+            <CurrencyDollarIcon className={sidebarIconClass} />
+          </SidebarRailAction>
+          <SidebarRailAction
+            label="Email client"
+            title="Email client"
+            onClick={() => void handleEmailClient()}
+            disabled={actionBusy}
+            btnClassNameActive={sidebarRailBtnActive}
+            btnClassNameIdle={sidebarRailBtnIdle}
+            btnClassNameDisabled={sidebarRailBtnDisabled}
+          >
+            <FaEnvelope className={sidebarIconClass} />
+          </SidebarRailAction>
+          <SidebarRailAction
+            label="WhatsApp"
+            title="WhatsApp client"
+            onClick={() => void handleWhatsAppClient()}
+            disabled={actionBusy}
+            btnClassNameActive={sidebarRailBtnActive}
+            btnClassNameIdle={sidebarRailBtnIdle}
+            btnClassNameDisabled={sidebarRailBtnDisabled}
+          >
+            <FaWhatsapp className={sidebarIconClass} />
+          </SidebarRailAction>
+          <SidebarRailAction
+            label="Call client"
+            title="Call client"
+            onClick={handleCallClient}
+            disabled={actionBusy}
+            btnClassNameActive={sidebarRailBtnActive}
+            btnClassNameIdle={sidebarRailBtnIdle}
+            btnClassNameDisabled={sidebarRailBtnDisabled}
+          >
+            <PhoneIconSolid className={sidebarIconClass} />
+          </SidebarRailAction>
+        </div>
+        <div className="min-h-0 flex-1 shrink" aria-hidden />
+        {selectedLeadCount > 0 ? (
+          <div className="flex w-full flex-col items-center gap-1 px-0.5 pb-2">
+            <div
+              className="flex min-h-[2.5rem] min-w-[2.5rem] items-center justify-center rounded-xl bg-primary px-1.5 text-base font-bold text-primary-content shadow-md"
+              title={`${selectedLeadCount} lead${selectedLeadCount === 1 ? '' : 's'} selected`}
+              aria-label={`${selectedLeadCount} leads selected`}
+            >
+              {selectedLeadCount}
+            </div>
+          </div>
+        ) : null}
+        <div
+          ref={settingsMenuRef}
+          className="relative flex w-full shrink-0 flex-col items-center px-0.5 pb-4"
+        >
+          <button
+            ref={settingsButtonRef}
+            type="button"
+            title="Settings"
+            aria-label="Settings"
+            aria-expanded={settingsMenuOpen}
+            aria-haspopup="menu"
+            className={`${settingsMenuOpen ? sidebarRailBtnActive : sidebarRailBtnIdle} touch-manipulation`}
+            onClick={() => setSettingsMenuOpen((prev) => !prev)}
+          >
+            <Cog6ToothIcon className={`${sidebarIconClass} pointer-events-none`} />
+          </button>
+        </div>
+      </aside>
+
+      {settingsMenuOpen &&
+        settingsMenuAnchor &&
+        createPortal(
+          <div
+            ref={settingsMenuPanelRef}
+            role="menu"
+            className="fixed z-[10050] min-w-[15.5rem] max-h-[min(70vh,32rem)] overflow-y-auto overscroll-contain rounded-lg border border-gray-200 bg-white py-1 shadow-lg [-webkit-overflow-scrolling:touch]"
+            style={{
+              left: settingsMenuAnchor.left,
+              bottom: settingsMenuAnchor.bottom,
+            }}
+          >
+            {settingsSections.map((block, blockIndex) => (
+              <div key={block.title || `block-${blockIndex}`}>
+                {blockIndex > 0 && <div className="my-1 border-t border-gray-100" aria-hidden />}
+                {block.title ? (
+                  <p className="px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-gray-400">
+                    {block.title}
+                  </p>
+                ) : null}
+                {block.items.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="menuitem"
+                      disabled={item.disabled}
+                      onClick={item.onClick}
+                      className="flex w-full touch-manipulation items-center gap-3 rounded-lg px-4 py-2.5 text-left text-sm text-gray-700 transition-colors hover:bg-gray-50 active:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <Icon className="pointer-events-none h-5 w-5 shrink-0 text-gray-600" />
+                      <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                      {item.checked ? (
+                        <CheckIcon className="pointer-events-none h-4 w-4 shrink-0 text-primary" aria-hidden />
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>,
+          document.body,
+        )}
+
+      <div className="flex-1 min-w-0 px-4 md:px-6 lg:px-8 py-4 md:py-6 lg:py-8 space-y-6">
+      <ProformaSendLanguageModal
+        open={sendInvoiceModalOpen}
+        onClose={() => !sendingInvoice && setSendInvoiceModalOpen(false)}
+        onConfirm={(language) => void handleSendInvoiceConfirm(language)}
+        sending={sendingInvoice}
+        contactLabel={
+          sendInvoiceRows.length === 1
+            ? sendInvoiceRows[0]?.clientName || sendInvoiceRows[0]?.leadName
+            : sendInvoiceRows.length > 1
+              ? `${sendInvoiceRows.length} payments`
+              : undefined
+        }
+      />
+      <MultiLeadContactSelectorModal
+        isOpen={contactPickerOpen}
+        onClose={() => setContactPickerOpen(false)}
+        mode={contactPickerMode}
+        leads={contactPickerLeads}
+        onConfirm={handleContactPickerConfirm}
+      />
+      {whatsAppClient && (
+        <SchedulerWhatsAppModal
+          isOpen={whatsAppModalOpen}
+          onClose={() => {
+            setWhatsAppModalOpen(false);
+            setWhatsAppSelectedContact(null);
+          }}
+          client={whatsAppClient}
+          selectedContact={whatsAppSelectedContact}
+          hideContactSelector
+          showContactSidebar
+        />
+      )}
+      <CollectionViewInvoicePickerModal
+        isOpen={viewInvoiceModalOpen}
+        loading={viewInvoiceLoading}
+        options={viewInvoiceOptions}
+        onClose={() => setViewInvoiceModalOpen(false)}
+        onSelect={handleViewInvoiceSelect}
+        formatAmount={formatCurrency}
+      />
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
           <h1 className="text-3xl font-bold flex items-center gap-3">
@@ -1425,7 +2662,7 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
         </div>
       )}
 
-      <div className="card bg-base-100 shadow-lg p-6">
+      <div className="card bg-base-100 shadow-lg p-6 relative">
         <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Due from date:</span></label>
@@ -1757,92 +2994,111 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
               ))}
             </select>
           </div>
-        </div>
-        <div className="mt-4 pt-4 border-t border-base-200">
-          <p className="text-sm font-medium text-slate-600 mb-3">
-            Payment date (collected / paid)
-            {hasPaymentDateFilter(filters) && (
-              <span className="ml-2 text-xs font-normal text-primary">— active; due date filter ignored</span>
-            )}
-          </p>
-          <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
-            <div className="form-control">
-              <label className="label mb-2"><span className="label-text">Payment from:</span></label>
-              <input
-                type="date"
-                className="input input-bordered"
-                value={filters.paymentFromDate ?? ''}
-                onChange={(e) => handleFilterChange('paymentFromDate', e.target.value)}
-              />
-            </div>
-            <div className="form-control">
-              <label className="label mb-2"><span className="label-text">Payment to:</span></label>
-              <input
-                type="date"
-                className="input input-bordered"
-                value={filters.paymentToDate ?? ''}
-                onChange={(e) => handleFilterChange('paymentToDate', e.target.value)}
-              />
-            </div>
-            <div className="form-control">
-              <label className="label mb-2"><span className="label-text">&nbsp;</span></label>
+          <div className="form-control">
+            <label className="label mb-2"><span className="label-text">Payment from:</span></label>
+            <input
+              type="date"
+              className="input input-bordered"
+              value={filters.paymentFromDate ?? ''}
+              onChange={(e) => handleFilterChange('paymentFromDate', e.target.value)}
+            />
+          </div>
+          <div className="form-control">
+            <label className="label mb-2"><span className="label-text">Payment to:</span></label>
+            <input
+              type="date"
+              className="input input-bordered"
+              value={filters.paymentToDate ?? ''}
+              onChange={(e) => handleFilterChange('paymentToDate', e.target.value)}
+            />
+          </div>
+          <div className="form-control">
+            <label className="label mb-2"><span className="label-text">&nbsp;</span></label>
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                className="btn btn-outline btn-sm"
+                className="btn btn-outline h-12 min-h-0 max-h-12"
                 onClick={handleClearPaymentDates}
                 disabled={!hasPaymentDateFilter(filters)}
               >
                 Clear payment dates
               </button>
+              <button className="btn btn-primary h-12 min-h-0 max-h-12" onClick={() => loadPayments()} disabled={loading}>
+                {loading ? <ArrowPathIcon className="w-5 h-5 animate-spin" /> : 'Show'}
+              </button>
+              {error && <span className="text-error text-sm">{error}</span>}
             </div>
           </div>
-        </div>
-        <div className="mt-6 flex flex-wrap items-center gap-4">
-          <button className="btn btn-primary" onClick={() => loadPayments()} disabled={loading}>
-            {loading ? <ArrowPathIcon className="w-5 h-5 animate-spin" /> : 'Show'}
-          </button>
-          {error && <span className="text-error">{error}</span>}
         </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-white border border-gray-200 p-4 rounded-xl">
-          <p className="text-sm text-green-600">Total Estimated</p>
-          <p className="text-3xl font-bold text-green-800">
-            {nisReady ? formatCurrency(totals.estimated, '₪') : 'Calculating…'}
-          </p>
+        <div className="relative bg-white p-5 rounded-[18px]">
+          <ChartBarIcon className="absolute right-4 top-4 h-10 w-10 text-blue-200" aria-hidden />
+          <p className="text-sm text-primary font-medium pr-12">Total Estimated</p>
+          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mt-1">
+            <p className="text-3xl font-bold text-blue-800 tabular-nums">
+              {nisReady ? formatCurrency(totals.estimatedWithVat, '₪') : 'Calculating…'}
+            </p>
+            {nisReady ? (
+              <p className="text-base text-gray-500 tabular-nums">
+                No VAT: {formatCurrency(totals.estimatedWithoutVat, '₪')}
+              </p>
+            ) : null}
+          </div>
         </div>
-        <div className="bg-white border border-gray-200 p-4 rounded-xl">
-          <p className="text-sm text-emerald-600">Total Collected</p>
-          <p className="text-3xl font-bold text-emerald-800">
-            {nisReady ? formatCurrency(totals.collected, '₪') : 'Calculating…'}
-          </p>
+        <div className="relative bg-white p-5 rounded-[18px]">
+          <CheckCircleIcon className="absolute right-4 top-4 h-10 w-10 text-emerald-200" aria-hidden />
+          <p className="text-sm text-emerald-600 font-medium pr-12">Total Collected</p>
+          <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 mt-1">
+            <p className="text-3xl font-bold text-emerald-800 tabular-nums">
+              {nisReady ? formatCurrency(totals.collectedWithVat, '₪') : 'Calculating…'}
+            </p>
+            {nisReady ? (
+              <p className="text-base text-gray-500 tabular-nums">
+                No VAT: {formatCurrency(totals.collectedWithoutVat, '₪')}
+              </p>
+            ) : null}
+          </div>
         </div>
       </div>
 
-      <div className="card bg-base-100 shadow-lg">
-        <div className="overflow-x-auto">
-          <table className="table w-full">
+      <div className="w-full overflow-x-auto">
+        <table className="table w-full text-sm">
             <thead>
-              <tr>
+              <tr className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+                <th className="w-10">
+                  <input
+                    type="checkbox"
+                    className="checkbox checkbox-sm"
+                    checked={allRowsSelected}
+                    onChange={toggleSelectAllRows}
+                    aria-label="Select all rows"
+                  />
+                </th>
                 <th>Lead Name</th>
-                <th>Client</th>
+                {showClientColumn ? <th>Client</th> : null}
                 <th>Amount</th>
-                <th>Amount (in NIS)</th>
+                {showNisColumn ? <th>Amount (in NIS)</th> : null}
                 <th>Order</th>
                 <th>Collected</th>
                 <th>Date</th>
-                <th>Proforma Date</th>
-                <th>Handler</th>
+                {showProformaDateColumn ? <th>Proforma Date</th> : null}
+                {showPaidDateColumn ? <th>Paid Date</th> : null}
+                {showHandlerColumn ? <th>Handler</th> : null}
                 <th>Case</th>
                 <th>Category</th>
-                <th>Notes</th>
+                {showNotesColumn ? <th>Notes</th> : null}
               </tr>
             </thead>
             <tbody>
-              {rows.length === 0 && !loading && (
+              {visibleRows.length === 0 && !loading && (
                 <tr>
-                  <td colSpan={12} className="text-center py-6 text-gray-500">No payments found for the selected filters.</td>
+                  <td colSpan={tableColumnCount} className="text-center py-6 text-gray-500">
+                    {rows.length === 0
+                      ? 'No payments found for the selected filters.'
+                      : 'No rows match the current display filter.'}
+                  </td>
                 </tr>
               )}
               {(() => {
@@ -1889,14 +3145,23 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
                 }
                 return null;
               })()}
-              {rows.map((row) => (
+              {visibleRows.map((row) => (
                 <tr key={row.id}>
+                  <td>
+                    <input
+                      type="checkbox"
+                      className="checkbox checkbox-sm"
+                      checked={selectedRowIds.has(row.id)}
+                      onChange={() => toggleRowSelection(row.id)}
+                      aria-label={`Select ${row.leadName}`}
+                    />
+                  </td>
                   <td>
                     <Link to={buildLeadLink(row)} className="link link-primary">
                       {row.leadName}
                     </Link>
                   </td>
-                  <td>{row.clientName || row.leadName || '—'}</td>
+                  {showClientColumn ? <td>{row.clientName || row.leadName || '—'}</td> : null}
                   <td className="font-semibold">
                     {formatCurrency(row.value, row.currency)}
                     {row.vat > 0 && (
@@ -1905,9 +3170,11 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
                       </span>
                     )}
                   </td>
-                  <td className="font-semibold">
-                    {nisByRowId[row.id] ? formatCurrency(nisByRowId[row.id]!.totalNis, '₪') : '…'}
-                  </td>
+                  {showNisColumn ? (
+                    <td className="font-semibold">
+                      {nisByRowId[row.id] ? formatCurrency(nisByRowId[row.id]!.totalNis, '₪') : '…'}
+                    </td>
+                  ) : null}
                   <td>{row.orderLabel || '—'}</td>
                   <td>
                     {row.collected ? (
@@ -1934,9 +3201,17 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
                       return displayDate ? new Date(displayDate).toLocaleDateString() : '—';
                     })()}
                   </td>
-                  <td>
-                    {row.proformaDate ? new Date(row.proformaDate).toLocaleDateString() : '—'}
-                  </td>
+                  {showProformaDateColumn ? (
+                    <td>
+                      {row.proformaDate ? new Date(row.proformaDate).toLocaleDateString() : '—'}
+                    </td>
+                  ) : null}
+                  {showPaidDateColumn ? (
+                    <td>
+                      {row.collectedDate ? new Date(row.collectedDate).toLocaleDateString() : '—'}
+                    </td>
+                  ) : null}
+                  {showHandlerColumn ? (
                   <td>
                     {handlerEdit?.rowId === row.id ? (
                       <div className="flex flex-col gap-2 max-w-xs">
@@ -1964,6 +3239,12 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
                       </div>
                     ) : (
                       <div className="flex items-center gap-2">
+                        {(row.handlerId != null || (row.handlerName && row.handlerName !== '—')) ? (
+                          <HandlerAvatar
+                            employee={getHandlerEmployee(row.handlerId, row.handlerName)}
+                            name={row.handlerName || '—'}
+                          />
+                        ) : null}
                         <span>{row.handlerName || '—'}</span>
                         <button
                           className="btn btn-ghost btn-xs"
@@ -1975,8 +3256,10 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
                       </div>
                     )}
                   </td>
+                  ) : null}
                   <td>{row.caseNumber || '—'}</td>
                   <td>{row.categoryName || '—'}</td>
+                  {showNotesColumn ? (
                   <td className="max-w-xs" title={row.notes || ''}>
                     {notesEdit?.rowId === row.id ? (
                       <div className="flex flex-col gap-2">
@@ -2008,11 +3291,88 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
                       </div>
                     )}
                   </td>
+                  ) : null}
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
+      </div>
+
+      <style>{`
+        .collection-finances-shell table {
+          background: transparent !important;
+          border: none !important;
+          box-shadow: none !important;
+          border-collapse: separate !important;
+          border-spacing: 0 10px !important;
+        }
+
+        .collection-finances-shell .table tbody tr:hover {
+          background-color: transparent !important;
+        }
+        html.dark .collection-finances-shell .table tbody tr:hover {
+          background-color: transparent !important;
+        }
+
+        .collection-finances-shell table tbody tr {
+          background: transparent !important;
+          border-radius: 18px !important;
+          overflow: hidden !important;
+          box-shadow: none !important;
+        }
+
+        .collection-finances-shell table tbody tr:hover {
+          box-shadow: none !important;
+        }
+
+        .collection-finances-shell table tbody td {
+          border: none !important;
+          border-bottom: none !important;
+          background: #ffffff !important;
+          box-shadow: none !important;
+          vertical-align: middle;
+        }
+
+        .collection-finances-shell table tbody td:first-child {
+          border-top-left-radius: 18px !important;
+          border-bottom-left-radius: 18px !important;
+          padding-left: 1.1rem !important;
+        }
+
+        .collection-finances-shell table tbody td:last-child {
+          border-top-right-radius: 18px !important;
+          border-bottom-right-radius: 18px !important;
+          padding-right: 1.1rem !important;
+        }
+
+        .collection-finances-shell table tbody tr:hover td {
+          background: #f1f5f9 !important;
+        }
+
+        html.dark .collection-finances-shell table tbody tr {
+          box-shadow: none !important;
+        }
+
+        html.dark .collection-finances-shell table tbody tr:hover {
+          box-shadow: none !important;
+        }
+
+        html.dark .collection-finances-shell table tbody td {
+          background: rgba(255, 255, 255, 0.06) !important;
+        }
+
+        html.dark .collection-finances-shell table tbody tr:hover td {
+          background: rgba(255, 255, 255, 0.10) !important;
+        }
+
+        .collection-finances-shell table thead,
+        .collection-finances-shell table thead tr,
+        .collection-finances-shell table thead th {
+          background-color: transparent !important;
+          background-image: none !important;
+          border-bottom: none !important;
+        }
+      `}</style>
       </div>
     </div>
   );
@@ -2176,14 +3536,11 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
     const meta = leadMeta.get(key) || null;
     // Get value from payment_plans table (plan.value from payment_plans query)
     const value = Number(plan.value || 0);
-    // Get VAT from payment_plans table (plan.value_vat from payment_plans query)
-    let vat = Number(plan.value_vat || 0);
-    if (!vat && (plan.currency || '₪') === '₪') {
-      vat = Math.round(value * 0.18 * 100) / 100;
-    }
+    const orderCode = normalizeOrderCode(plan.payment_order);
+    const currency = plan.currency || '₪';
+    const vat = resolvePaymentVat(value, plan.value_vat, currency, orderCode);
     const amount = value + vat;
     const hasProforma = hasProformaValue(plan.proforma);
-    const orderCode = normalizeOrderCode(plan.payment_order);
     const paidAt = normalizeDate(plan.paid_at);
     const dueDate = normalizeDate(plan.due_date);
 
@@ -2516,15 +3873,11 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     // Use value for legacy payments (value_base may be null/0, value contains the actual amount)
     // Same logic as CollectionDueReport - plan.value and plan.value_base come from finances_paymentplanrow query
     const value = Number(plan.value || plan.value_base || 0);
-    // Get VAT from finances_paymentplanrow table (plan.vat_value from finances_paymentplanrow query)
-    let vat = Number(plan.vat_value || 0);
+    const orderCode = normalizeOrderCode(plan.order);
     const currency = plan.accounting_currencies?.name || mapCurrencyId(plan.currency_id);
-    if ((!vat || vat === 0) && currency === '₪') {
-      vat = Math.round(value * 0.18 * 100) / 100;
-    }
+    const vat = resolvePaymentVat(value, plan.vat_value, currency, orderCode);
 
     const amount = value + vat;
-    const orderCode = normalizeOrderCode(plan.order);
     const dueSource = plan.due_date || plan.date;
     const dueDate = normalizeDate(dueSource);
     const actualDate = normalizeDate(plan.actual_date);
@@ -2689,6 +4042,22 @@ function normalizeOrderCode(order: string | number | null | undefined): string {
     default:
       return raw;
   }
+}
+
+/** Expense (no VAT) order — never apply VAT, even when currency is NIS. */
+function resolvePaymentVat(
+  value: number,
+  storedVat: number | string | null | undefined,
+  currency: string,
+  orderCode: string,
+): number {
+  if (orderCode === '99') return 0;
+  let vat = Number(storedVat || 0);
+  const isNis = currency === '₪' || currency === 'ILS';
+  if (!vat && isNis) {
+    vat = Math.round(value * 0.18 * 100) / 100;
+  }
+  return vat;
 }
 
 function mapOrderLabel(orderCode?: string, fallback?: string | number | null) {
@@ -3078,11 +4447,14 @@ function normalizeDate(value: any): string | null {
   if (typeof raw === 'string' && invalidTokens.has(raw)) {
     return null;
   }
+  if (typeof raw === 'string' && isDateOnlyString(raw)) {
+    return raw;
+  }
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) {
     return null;
   }
-  return date.toISOString().split('T')[0];
+  return toReportCalendarDate(date);
 }
 
 /**
@@ -3107,13 +4479,11 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
       const key = plan.lead_id?.toString?.() || '';
       const meta = leadMeta.get(key) || null;
       const value = Number(plan.value || 0);
-      let vat = Number(plan.value_vat || 0);
-      if (!vat && (plan.currency || '₪') === '₪') {
-        vat = Math.round(value * 0.18 * 100) / 100;
-      }
+      const orderCode = normalizeOrderCode(plan.payment_order);
+      const currency = plan.currency || '₪';
+      const vat = resolvePaymentVat(value, plan.value_vat, currency, orderCode);
       const amount = value + vat;
       const hasProforma = hasProformaValue(plan.proforma);
-      const orderCode = normalizeOrderCode(plan.payment_order);
       const paidAt = normalizeDate(plan.paid_at);
       const dueDate = normalizeDate(plan.due_date);
       let proformaDate: string | null = null;
@@ -3223,13 +4593,10 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
     const meta = leadMeta.get(lidKey) || null;
     const contactName = clientId && !Number.isNaN(clientId) ? contactMap.get(clientId) : null;
     const value = Number(plan.value || plan.value_base || 0);
-    let vat = Number(plan.vat_value || 0);
-    const currency = plan.accounting_currencies?.name || mapCurrencyId(plan.currency_id);
-    if ((!vat || vat === 0) && currency === '₪') {
-      vat = Math.round(value * 0.18 * 100) / 100;
-    }
-    const amount = value + vat;
     const orderCode = normalizeOrderCode(plan.order);
+    const currency = plan.accounting_currencies?.name || mapCurrencyId(plan.currency_id);
+    const vat = resolvePaymentVat(value, plan.vat_value, currency, orderCode);
+    const amount = value + vat;
     const dueSource = plan.due_date || plan.date;
     const dueDate = normalizeDate(dueSource);
     const actualDate = normalizeDate(plan.actual_date);

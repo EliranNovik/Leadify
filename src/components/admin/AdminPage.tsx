@@ -51,6 +51,12 @@ import EmployeeSalariesManager from './EmployeeSalariesManager';
 import OfficeRentExpensesManager from './OfficeRentExpensesManager';
 import PartnerDrawsManager from './PartnerDrawsManager';
 import FirmManagementCostsManager from './FirmManagementCostsManager';
+import {
+  EXPENSE_TYPE_CODE_MARKETING,
+  EXPENSE_TYPE_CODE_OFFICE,
+  EXPENSE_TYPE_CODE_RENT,
+} from '../../lib/expenseTypes';
+import OfficeExpensesManager from './OfficeExpensesManager';
 import BoiExchangeRatesTestPage from '../../pages/BoiExchangeRatesTestPage';
 import EmployeeFieldAssignmentsManager from './EmployeeFieldAssignmentsManager';
 import { useAdminRole } from '../../hooks/useAdminRole';
@@ -1686,14 +1692,23 @@ const AdminPage: React.FC = () => {
                   selectedTab?.subcategories[selected.sub] === 'Marketing Expenses' ? (
                   <div className="w-full flex flex-col gap-12">
                     <SourceMediaExpensesManager />
-                    <FirmManagementCostsManager />
+                    <FirmManagementCostsManager expenseTypeCode={EXPENSE_TYPE_CODE_MARKETING} />
                   </div>
                 ) : selectedTab?.label === 'All Expenses' &&
                   selectedTab?.subcategories[selected.sub] === 'Salaries' ? (
                   <div className="w-full"><EmployeeSalariesManager /></div>
                 ) : selectedTab?.label === 'All Expenses' &&
+                  selectedTab?.subcategories[selected.sub] === 'Office Expenses' ? (
+                  <div className="w-full flex flex-col gap-12">
+                    <OfficeExpensesManager />
+                    <FirmManagementCostsManager expenseTypeCode={EXPENSE_TYPE_CODE_OFFICE} />
+                  </div>
+                ) : selectedTab?.label === 'All Expenses' &&
                   selectedTab?.subcategories[selected.sub] === 'Rent' ? (
-                  <div className="w-full"><OfficeRentExpensesManager /></div>
+                  <div className="w-full flex flex-col gap-12">
+                    <OfficeRentExpensesManager />
+                    <FirmManagementCostsManager expenseTypeCode={EXPENSE_TYPE_CODE_RENT} />
+                  </div>
                 ) : selectedTab?.label === 'All Expenses' &&
                   selectedTab?.subcategories[selected.sub] === 'Partner Draws' ? (
                   <div className="w-full"><PartnerDrawsManager /></div>

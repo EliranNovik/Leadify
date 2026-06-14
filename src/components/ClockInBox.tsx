@@ -1,43 +1,47 @@
-import React, { useState, useEffect } from 'react';
-import { ClockIcon, MapPinIcon, CheckCircleIcon } from '@heroicons/react/24/outline';
+import React, { useState, useEffect, useCallback } from 'react';
+import { ClockIcon } from '@heroicons/react/24/outline';
 import ClockInModal from './ClockInModal';
 import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
+import { resolveWorkplaceName } from '../lib/clockInLocations';
 
 interface ClockInBoxProps {
   employeeId: number | null;
+  isDark2Theme?: boolean;
+  isAltTheme?: boolean;
 }
 
-const ClockInBox: React.FC<ClockInBoxProps> = ({ employeeId }) => {
+const ClockInBox: React.FC<ClockInBoxProps> = ({
+  employeeId,
+  isDark2Theme = false,
+  isAltTheme = false,
+}) => {
   const { user } = useAuthContext();
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isClockedIn, setIsClockedIn] = useState(false);
   const [currentDuration, setCurrentDuration] = useState<string>('');
   const [todayTotal, setTodayTotal] = useState<string>('');
+  const [activeWorkplace, setActiveWorkplace] = useState<string>('');
 
-  useEffect(() => {
-    if (employeeId) {
-      fetchClockInStatus();
-      fetchTodayTotal();
-      // Update duration every minute
-      const interval = setInterval(() => {
-        if (isClockedIn) {
-          fetchClockInStatus();
-        }
-        fetchTodayTotal();
-      }, 60000); // Update every minute
+  const updateDuration = useCallback((start: string, end: string | null) => {
+    const startTime = new Date(start).getTime();
+    const endTime = end ? new Date(end).getTime() : Date.now();
+    const diffMs = endTime - startTime;
+    const hours = Math.floor(diffMs / (1000 * 60 * 60));
+    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    setCurrentDuration(`${hours}h ${minutes}m`);
+  }, []);
 
-      return () => clearInterval(interval);
-    }
-  }, [employeeId, isClockedIn]);
-
-  const fetchClockInStatus = async () => {
+  const fetchClockInStatus = useCallback(async () => {
     if (!employeeId) return;
 
     try {
       const { data, error } = await supabase
         .from('employee_clock_in')
-        .select('clock_in_time, clock_out_time')
+        .select(
+          `clock_in_time, clock_out_time, clock_in_location_id,
+           clock_in_place:clock_in_locations!clock_in_location_id ( name )`,
+        )
         .eq('employee_id', employeeId)
         .eq('is_active', true)
         .order('clock_in_time', { ascending: false })
@@ -51,25 +55,18 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({ employeeId }) => {
       if (data) {
         setIsClockedIn(true);
         updateDuration(data.clock_in_time, data.clock_out_time);
+        setActiveWorkplace(resolveWorkplaceName(data, 'in'));
       } else {
         setIsClockedIn(false);
         setCurrentDuration('');
+        setActiveWorkplace('');
       }
     } catch (error) {
       console.error('Error fetching clock-in status:', error);
     }
-  };
+  }, [employeeId, updateDuration]);
 
-  const updateDuration = (start: string, end: string | null) => {
-    const startTime = new Date(start).getTime();
-    const endTime = end ? new Date(end).getTime() : new Date().getTime();
-    const diffMs = endTime - startTime;
-    const hours = Math.floor(diffMs / (1000 * 60 * 60));
-    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-    setCurrentDuration(`${hours}h ${minutes}m`);
-  };
-
-  const fetchTodayTotal = async () => {
+  const fetchTodayTotal = useCallback(async () => {
     if (!employeeId) return;
 
     try {
@@ -92,7 +89,7 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({ employeeId }) => {
         const start = new Date(record.clock_in_time).getTime();
         const end = record.clock_out_time
           ? new Date(record.clock_out_time).getTime()
-          : new Date().getTime();
+          : Date.now();
         totalMs += end - start;
       });
 
@@ -102,92 +99,134 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({ employeeId }) => {
     } catch (error) {
       console.error('Error fetching today total:', error);
     }
+  }, [employeeId]);
+
+  useEffect(() => {
+    if (!employeeId) return;
+
+    void fetchClockInStatus();
+    void fetchTodayTotal();
+
+    const interval = setInterval(() => {
+      if (isClockedIn) {
+        void fetchClockInStatus();
+      }
+      void fetchTodayTotal();
+    }, 60_000);
+
+    return () => clearInterval(interval);
+  }, [employeeId, isClockedIn, fetchClockInStatus, fetchTodayTotal]);
+
+  const handleCloseModal = () => {
+    setIsModalOpen(false);
+    void fetchClockInStatus();
+    void fetchTodayTotal();
   };
 
   if (!employeeId || !user) return null;
 
+  const displayValue = isClockedIn && currentDuration ? currentDuration : todayTotal || '0h 0m';
+  const displayLabel = isClockedIn ? 'Clocked In' : 'Clocked Out';
+
+  const gradientClass = isClockedIn
+    ? isAltTheme
+      ? 'from-emerald-600 via-green-600 to-teal-500'
+      : 'from-green-600 via-emerald-600 to-teal-500'
+    : isAltTheme
+      ? 'from-violet-600 via-purple-600 to-indigo-500'
+      : 'from-violet-600 via-purple-600 to-indigo-500';
+
   return (
     <>
-      <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-6 hover:shadow-xl transition-all duration-300">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-gradient-to-tr from-purple-600 to-indigo-600 rounded-lg flex items-center justify-center">
-              <ClockIcon className="w-6 h-6 text-white" />
-            </div>
-            <div>
-              <h2 className="text-lg font-bold text-gray-900">Clock In/Out</h2>
-              <p className="text-sm text-gray-500">Track your work hours</p>
-            </div>
+      <div
+        className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ${
+          isDark2Theme
+            ? 'border border-base-300 bg-base-200 text-base-content shadow-none'
+            : `bg-gradient-to-tr ${gradientClass} text-white`
+        }`}
+        onClick={() => setIsModalOpen(true)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setIsModalOpen(true);
+          }
+        }}
+      >
+        {isClockedIn && (
+          <div className="absolute top-2 right-2 z-10">
+            <span
+              className={`inline-flex items-center justify-center min-w-[24px] h-6 px-2 text-[10px] font-bold rounded-full shadow-lg animate-pulse ${
+                isDark2Theme
+                  ? 'bg-base-200 text-green-600 ring-2 ring-base-300'
+                  : 'bg-white text-green-600 ring-2 ring-white ring-opacity-75'
+              }`}
+            >
+              Active
+            </span>
           </div>
-        </div>
+        )}
 
-        {/* Status Card */}
-        <div
-          className={`p-4 rounded-xl border-2 mb-4 cursor-pointer transition-all ${
-            isClockedIn
-              ? 'bg-green-50 border-green-200 hover:bg-green-100'
-              : 'bg-gray-50 border-gray-200 hover:bg-gray-100'
-          }`}
-          onClick={() => setIsModalOpen(true)}
-        >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 md:gap-4">
+          <div
+            className={`flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full ${
+              isDark2Theme ? 'border border-base-300 bg-base-200/40' : 'bg-white/20'
+            }`}
+          >
+            <ClockIcon
+              className={`w-7 h-7 md:w-7 md:h-7 ${isDark2Theme ? 'text-base-content' : 'text-white'}`}
+            />
+          </div>
+          <div className="min-w-0">
+            <div
+              className={`text-2xl md:text-4xl font-extrabold leading-tight truncate ${
+                isDark2Theme ? 'text-base-content' : 'text-white'
+              }`}
+            >
+              {displayValue}
+            </div>
+            <div
+              className={`text-sm md:text-sm font-medium mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 ${
+                isDark2Theme ? 'text-base-content/70' : 'text-white/80'
+              }`}
+            >
+              <span>{displayLabel}</span>
+              {!isClockedIn && (
+                <span className={isDark2Theme ? 'text-base-content/50' : 'text-white/60'}>
+                  · Please clock in
+                </span>
+              )}
+            </div>
+            {isClockedIn && activeWorkplace !== '—' && (
               <div
-                className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                  isClockedIn ? 'bg-green-500' : 'bg-gray-400'
+                className={`text-xs mt-0.5 truncate max-w-[140px] md:max-w-none ${
+                  isDark2Theme ? 'text-base-content/60' : 'text-white/70'
                 }`}
               >
-                <CheckCircleIcon className="w-6 h-6 text-white" />
-              </div>
-              <div>
-                <p className="text-sm font-medium text-gray-600">Status</p>
-                <p
-                  className={`text-lg font-bold ${
-                    isClockedIn ? 'text-green-700' : 'text-gray-700'
-                  }`}
-                >
-                  {isClockedIn ? 'Clocked In' : 'Clocked Out'}
-                </p>
-              </div>
-            </div>
-            {isClockedIn && currentDuration && (
-              <div className="text-right">
-                <p className="text-sm text-gray-600">Current</p>
-                <p className="text-lg font-bold text-green-700">{currentDuration}</p>
+                {activeWorkplace}
               </div>
             )}
           </div>
         </div>
 
-        {/* Today's Total */}
-        {todayTotal && (
-          <div className="p-3 bg-purple-50 rounded-lg border border-purple-200 mb-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-medium text-purple-900">Total Today</span>
-              <span className="text-lg font-bold text-purple-600">{todayTotal}</span>
-            </div>
-          </div>
-        )}
-
-        {/* Action Button */}
-        <button
-          onClick={() => setIsModalOpen(true)}
-          className={`btn w-full ${
-            isClockedIn ? 'btn-error' : 'btn-primary'
+        <svg
+          className={`absolute bottom-2 right-2 w-10 h-10 md:w-10 md:h-10 ${
+            isDark2Theme ? 'text-base-content/35' : 'text-white/40'
           }`}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          viewBox="0 0 32 32"
         >
-          <ClockIcon className="w-5 h-5" />
-          {isClockedIn ? 'Clock Out' : 'Clock In'}
-        </button>
+          <circle cx="16" cy="16" r="12" />
+          <path d="M16 10v6l4 2" strokeLinecap="round" />
+        </svg>
       </div>
 
       <ClockInModal
         isOpen={isModalOpen}
-        onClose={() => {
-          setIsModalOpen(false);
-          fetchClockInStatus();
-          fetchTodayTotal();
-        }}
+        onClose={handleCloseModal}
         employeeId={employeeId}
         userId={user.id}
       />

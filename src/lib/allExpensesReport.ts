@@ -1,5 +1,11 @@
 import { supabase } from './supabase';
 import { managementAmountToNis } from './firmManagementCosts';
+import {
+  EXPENSE_TYPE_CODE_MARKETING,
+  EXPENSE_TYPE_CODE_OFFICE,
+  EXPENSE_TYPE_CODE_RENT,
+  isRoutedFirmManagementExpenseTypeCode,
+} from './expenseTypes';
 
 export const EXPENSE_CATEGORY_LABELS = {
   source_media: 'Source media',
@@ -21,7 +27,10 @@ export const EXPENSE_CATEGORY_ORDER: ExpenseCategoryKey[] = [
   'office',
 ];
 
-export type ExpenseCategoryTotals = Record<ExpenseCategoryKey, number>;
+export type ExpenseCategoryTotals = Record<ExpenseCategoryKey, number> & {
+  /** Firm management costs with Marketing Expense type (rolled into marketing summary). */
+  firm_management_marketing: number;
+};
 
 export type MonthlyExpenseBreakdown = {
   monthKey: string;
@@ -84,6 +93,7 @@ export function emptyCategoryTotals(): ExpenseCategoryTotals {
     partner_draws: 0,
     salaries: 0,
     office: 0,
+    firm_management_marketing: 0,
   };
 }
 
@@ -110,23 +120,45 @@ async function fetchSourceMediaByMonth(monthKeys: string[]): Promise<Map<string,
   return byMonth;
 }
 
-async function fetchFirmManagementByMonth(monthKeys: string[]): Promise<Map<string, number>> {
-  const byMonth = new Map<string, number>();
-  if (monthKeys.length === 0) return byMonth;
+async function fetchFirmManagementSplitByMonth(monthKeys: string[]): Promise<{
+  firmManagement: Map<string, number>;
+  marketing: Map<string, number>;
+  rent: Map<string, number>;
+  office: Map<string, number>;
+}> {
+  const firmManagement = new Map<string, number>();
+  const marketing = new Map<string, number>();
+  const rent = new Map<string, number>();
+  const office = new Map<string, number>();
+  if (monthKeys.length === 0) {
+    return { firmManagement, marketing, rent, office };
+  }
 
   const { data, error } = await supabase
     .from('firm_management_costs')
-    .select('billing_month, amount, currency')
+    .select('billing_month, amount, currency, expense_types ( code )')
     .in('billing_month', monthKeys);
 
   if (error) throw error;
 
   for (const row of data || []) {
     const key = String(row.billing_month).slice(0, 10);
-    const prev = byMonth.get(key) || 0;
-    byMonth.set(key, prev + managementAmountToNis(row.amount, row.currency));
+    const nis = managementAmountToNis(row.amount, row.currency);
+    const typeRaw = row.expense_types as { code?: string | null } | { code?: string | null }[] | null;
+    const code = (Array.isArray(typeRaw) ? typeRaw[0]?.code : typeRaw?.code) ?? null;
+
+    if (code === EXPENSE_TYPE_CODE_RENT) {
+      rent.set(key, (rent.get(key) || 0) + nis);
+    } else if (code === EXPENSE_TYPE_CODE_MARKETING) {
+      marketing.set(key, (marketing.get(key) || 0) + nis);
+    } else if (code === EXPENSE_TYPE_CODE_OFFICE) {
+      office.set(key, (office.get(key) || 0) + nis);
+    } else {
+      firmManagement.set(key, (firmManagement.get(key) || 0) + nis);
+    }
   }
-  return byMonth;
+
+  return { firmManagement, marketing, rent, office };
 }
 
 async function fetchRentByMonth(monthKeys: string[]): Promise<Map<string, number>> {
@@ -167,6 +199,36 @@ async function fetchPartnerDrawsByMonth(monthKeys: string[]): Promise<Map<string
   return byMonth;
 }
 
+async function fetchOfficeExpensesByMonth(monthKeys: string[]): Promise<Map<string, number>> {
+  const byMonth = new Map<string, number>();
+  if (monthKeys.length === 0) return byMonth;
+
+  const monthKeySet = new Set(monthKeys);
+  const years = [...new Set(monthKeys.map(k => Number(k.slice(0, 4))))].filter(Number.isFinite);
+  if (years.length === 0) return byMonth;
+
+  const minYear = Math.min(...years);
+  const maxYear = Math.max(...years);
+
+  const { data, error } = await supabase
+    .from('office_expenses')
+    .select('created_at, amount, currency')
+    .gte('created_at', `${minYear}-01-01`)
+    .lt('created_at', `${maxYear + 1}-01-01`);
+
+  if (error) throw error;
+
+  for (const row of data || []) {
+    const created = String(row.created_at || '').slice(0, 10);
+    if (created.length < 7) continue;
+    const monthKey = `${created.slice(0, 7)}-01`;
+    if (!monthKeySet.has(monthKey)) continue;
+    const prev = byMonth.get(monthKey) || 0;
+    byMonth.set(monthKey, prev + managementAmountToNis(row.amount, row.currency));
+  }
+  return byMonth;
+}
+
 async function fetchSalariesByMonth(monthKeys: string[]): Promise<Map<string, number>> {
   const byMonth = new Map<string, number>();
   if (monthKeys.length === 0) return byMonth;
@@ -203,18 +265,25 @@ export function mergeMonthlyBreakdown(
     rent: Map<string, number>;
     partnerDraws: Map<string, number>;
     salaries: Map<string, number>;
+    office: Map<string, number>;
+    firmManagementMarketing: Map<string, number>;
+    firmManagementRent: Map<string, number>;
+    firmManagementOffice: Map<string, number>;
   },
 ): MonthlyExpenseBreakdown[] {
   return monthKeys.map(monthKey => {
     const totals: ExpenseCategoryTotals = {
       source_media: maps.sourceMedia.get(monthKey) || 0,
       firm_management: maps.firmManagement.get(monthKey) || 0,
-      rent: maps.rent.get(monthKey) || 0,
+      rent: (maps.rent.get(monthKey) || 0) + (maps.firmManagementRent.get(monthKey) || 0),
       partner_draws: maps.partnerDraws.get(monthKey) || 0,
       salaries: maps.salaries.get(monthKey) || 0,
-      office: 0,
+      office: (maps.office.get(monthKey) || 0) + (maps.firmManagementOffice.get(monthKey) || 0),
+      firm_management_marketing: maps.firmManagementMarketing.get(monthKey) || 0,
     };
-    const totalNis = EXPENSE_CATEGORY_ORDER.reduce((sum, key) => sum + totals[key], 0);
+    const totalNis =
+      EXPENSE_CATEGORY_ORDER.reduce((sum, key) => sum + totals[key], 0) +
+      totals.firm_management_marketing;
     return {
       monthKey,
       label: formatMonthKeyLabel(monthKey),
@@ -230,25 +299,42 @@ export function sumCategoryTotals(rows: MonthlyExpenseBreakdown[]): ExpenseCateg
     for (const key of EXPENSE_CATEGORY_ORDER) {
       out[key] += row.totals[key];
     }
+    out.firm_management_marketing += row.totals.firm_management_marketing;
   }
   return out;
 }
 
+export function marketingExpenseTotal(totals: ExpenseCategoryTotals): number {
+  return totals.source_media + totals.firm_management_marketing;
+}
+
 export async function fetchAllExpensesBreakdown(monthKeys: string[]): Promise<MonthlyExpenseBreakdown[]> {
-  const [sourceMedia, firmManagement, rent, partnerDraws, salaries] = await Promise.all([
+  const [
+    sourceMedia,
+    firmManagementSplit,
+    rent,
+    partnerDraws,
+    salaries,
+    office,
+  ] = await Promise.all([
     fetchSourceMediaByMonth(monthKeys),
-    fetchFirmManagementByMonth(monthKeys),
+    fetchFirmManagementSplitByMonth(monthKeys),
     fetchRentByMonth(monthKeys),
     fetchPartnerDrawsByMonth(monthKeys),
     fetchSalariesByMonth(monthKeys),
+    fetchOfficeExpensesByMonth(monthKeys),
   ]);
 
   return mergeMonthlyBreakdown(monthKeys, {
     sourceMedia,
-    firmManagement,
+    firmManagement: firmManagementSplit.firmManagement,
     rent,
     partnerDraws,
     salaries,
+    office,
+    firmManagementMarketing: firmManagementSplit.marketing,
+    firmManagementRent: firmManagementSplit.rent,
+    firmManagementOffice: firmManagementSplit.office,
   });
 }
 
@@ -274,13 +360,17 @@ export async function fetchFirmManagementCostsByFirm(
 
   const { data, error } = await supabase
     .from('firm_management_costs')
-    .select('firm_id, billing_month, amount, currency, firms ( name )')
+    .select('firm_id, billing_month, amount, currency, expense_types ( code ), firms ( name )')
     .in('billing_month', monthKeys);
 
   if (error) throw error;
 
   const aggregated = new Map<string, FirmManagementCostByFirmRow>();
   for (const row of data || []) {
+    const typeRaw = row.expense_types as { code?: string | null } | { code?: string | null }[] | null;
+    const code = (Array.isArray(typeRaw) ? typeRaw[0]?.code : typeRaw?.code) ?? null;
+    if (isRoutedFirmManagementExpenseTypeCode(code)) continue;
+
     const firmId = String(row.firm_id);
     const monthKey = String(row.billing_month).slice(0, 10);
     const firmRaw = row.firms as { name: string | null } | { name: string | null }[] | null;
@@ -294,6 +384,79 @@ export async function fetchFirmManagementCostsByFirm(
     } else {
       aggregated.set(mapKey, { firmId, firmName, monthKey, amountNis: nis });
     }
+  }
+
+  return [...aggregated.values()];
+}
+
+export async function fetchOfficeExpensesByFirm(
+  monthKeys: string[],
+): Promise<FirmManagementCostByFirmRow[]> {
+  if (monthKeys.length === 0) return [];
+
+  const monthKeySet = new Set(monthKeys);
+  const years = [...new Set(monthKeys.map(k => Number(k.slice(0, 4))))].filter(Number.isFinite);
+  if (years.length === 0) return [];
+
+  const minYear = Math.min(...years);
+  const maxYear = Math.max(...years);
+
+  const [officeTableResult, firmManagementResult] = await Promise.all([
+    supabase
+      .from('office_expenses')
+      .select('firm_id, created_at, amount, currency, firms ( name )')
+      .gte('created_at', `${minYear}-01-01`)
+      .lt('created_at', `${maxYear + 1}-01-01`),
+    supabase
+      .from('firm_management_costs')
+      .select('firm_id, billing_month, amount, currency, expense_types ( code ), firms ( name )')
+      .in('billing_month', monthKeys),
+  ]);
+
+  if (officeTableResult.error) throw officeTableResult.error;
+  if (firmManagementResult.error) throw firmManagementResult.error;
+
+  const aggregated = new Map<string, FirmManagementCostByFirmRow>();
+
+  const addRow = (
+    firmId: string,
+    firmName: string,
+    monthKey: string,
+    amountNis: number,
+  ) => {
+    const mapKey = `${firmId}|${monthKey}`;
+    const existing = aggregated.get(mapKey);
+    if (existing) {
+      existing.amountNis += amountNis;
+    } else {
+      aggregated.set(mapKey, { firmId, firmName, monthKey, amountNis });
+    }
+  };
+
+  for (const row of officeTableResult.data || []) {
+    const created = String(row.created_at || '').slice(0, 10);
+    if (created.length < 7) continue;
+    const monthKey = `${created.slice(0, 7)}-01`;
+    if (!monthKeySet.has(monthKey)) continue;
+
+    const firmId = String(row.firm_id);
+    const firmRaw = row.firms as { name: string | null } | { name: string | null }[] | null;
+    const firmName =
+      (Array.isArray(firmRaw) ? firmRaw[0]?.name : firmRaw?.name)?.trim() || `Firm ${firmId.slice(0, 8)}`;
+    addRow(firmId, firmName, monthKey, managementAmountToNis(row.amount, row.currency));
+  }
+
+  for (const row of firmManagementResult.data || []) {
+    const typeRaw = row.expense_types as { code?: string | null } | { code?: string | null }[] | null;
+    const code = (Array.isArray(typeRaw) ? typeRaw[0]?.code : typeRaw?.code) ?? null;
+    if (code !== EXPENSE_TYPE_CODE_OFFICE) continue;
+
+    const firmId = String(row.firm_id);
+    const monthKey = String(row.billing_month).slice(0, 10);
+    const firmRaw = row.firms as { name: string | null } | { name: string | null }[] | null;
+    const firmName =
+      (Array.isArray(firmRaw) ? firmRaw[0]?.name : firmRaw?.name)?.trim() || `Firm ${firmId.slice(0, 8)}`;
+    addRow(firmId, firmName, monthKey, managementAmountToNis(row.amount, row.currency));
   }
 
   return [...aggregated.values()];

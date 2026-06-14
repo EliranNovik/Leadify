@@ -1,8 +1,21 @@
-import React, { useState, useEffect } from 'react';
-import { XMarkIcon, ClockIcon, MapPinIcon, CheckCircleIcon } from '@heroicons/react/24/outline';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { XMarkIcon, ClockIcon, CheckCircleIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { useAuthContext } from '../contexts/AuthContext';
+import {
+  detectClockInLocation,
+  EMPTY_CLOCK_IN_LOCATION,
+  locationToDbFields,
+  type ClockInLocationData,
+} from '../lib/employeeClockInLocation';
+import {
+  fetchActiveClockInLocations,
+  persistLastSelectedWorkplaceId,
+  readLastSelectedWorkplaceId,
+  resolveWorkplaceName,
+  type ClockInLocationOption,
+} from '../lib/clockInLocations';
 
 interface ClockInModalProps {
   isOpen: boolean;
@@ -11,45 +24,56 @@ interface ClockInModalProps {
   userId: string;
 }
 
-interface LocationData {
-  latitude: number | null;
-  longitude: number | null;
-  address: string | null;
-  city: string | null;
-  country: string | null;
-  source: 'browser' | 'ip' | 'manual';
-}
-
 interface ClockInRecord {
   id: number;
   clock_in_time: string;
   clock_out_time: string | null;
   location_address: string | null;
   is_active: boolean;
+  clock_in_location_id?: number | null;
+  clock_in_place?: { name: string } | { name: string }[] | null;
 }
 
 const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId, userId }) => {
   const { user } = useAuthContext();
   const [isClockedIn, setIsClockedIn] = useState(false);
   const [currentRecord, setCurrentRecord] = useState<ClockInRecord | null>(null);
-  const [location, setLocation] = useState<LocationData>({
-    latitude: null,
-    longitude: null,
-    address: null,
-    city: null,
-    country: null,
-    source: 'browser',
-  });
+  const [location, setLocation] = useState<ClockInLocationData>(EMPTY_CLOCK_IN_LOCATION);
   const [isLoading, setIsLoading] = useState(false);
-  const [isGettingLocation, setIsGettingLocation] = useState(false);
-  const [todayRecords, setTodayRecords] = useState<ClockInRecord[]>([]);
-  const [notes, setNotes] = useState('');
+  const [workplaceOptions, setWorkplaceOptions] = useState<ClockInLocationOption[]>([]);
+  const [selectedWorkplaceId, setSelectedWorkplaceId] = useState<number | null>(null);
+  const [successAction, setSuccessAction] = useState<'in' | 'out' | null>(null);
+  const [workplaceDropdownOpen, setWorkplaceDropdownOpen] = useState(false);
+  const [sessionDuration, setSessionDuration] = useState('');
+  const workplaceDropdownRef = useRef<HTMLDivElement>(null);
 
-  // Fetch current clock-in status and today's records
+  const updateSessionDuration = useCallback((clockInTime: string) => {
+    const diffMs = Math.max(0, Date.now() - new Date(clockInTime).getTime());
+    const hours = Math.floor(diffMs / (1000 * 60 * 60));
+    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+    setSessionDuration(hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`);
+  }, []);
+
+  const AUTO_CLOSE_MS = 1800;
+
+  const selectedWorkplaceName =
+    workplaceOptions.find((o) => o.id === selectedWorkplaceId)?.name ?? '';
+
+  const workplaceDisplayLabel = selectedWorkplaceName
+    || (workplaceOptions.length === 0 ? 'Loading workplaces…' : 'Select workplace');
+
+  useEffect(() => {
+    if (!isOpen) {
+      setSuccessAction(null);
+      setWorkplaceDropdownOpen(false);
+      return;
+    }
+    void fetchActiveClockInLocations().then(setWorkplaceOptions);
+  }, [isOpen]);
+
   useEffect(() => {
     if (isOpen && employeeId) {
       fetchClockInStatus();
-      fetchTodayRecords();
     }
   }, [isOpen, employeeId]);
 
@@ -60,111 +84,47 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
     }
   }, [isOpen]);
 
-  const getLocation = async () => {
-    setIsGettingLocation(true);
-    try {
-      // Try browser geolocation first
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          async (position) => {
-            const lat = position.coords.latitude;
-            const lng = position.coords.longitude;
-            
-            // Try to reverse geocode the coordinates
-            try {
-              const response = await fetch(
-                `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`
-              );
-              const data = await response.json();
-              
-              setLocation({
-                latitude: lat,
-                longitude: lng,
-                address: data.locality || data.principalSubdivision || null,
-                city: data.city || data.locality || null,
-                country: data.countryName || null,
-                source: 'browser',
-              });
-            } catch (error) {
-              // If reverse geocoding fails, just use coordinates
-              setLocation({
-                latitude: lat,
-                longitude: lng,
-                address: null,
-                city: null,
-                country: null,
-                source: 'browser',
-              });
-            }
-          },
-          async (error) => {
-            console.warn('Geolocation error:', error);
-            // Fallback to IP-based location
-            try {
-              const response = await fetch('https://ipapi.co/json/');
-              const data = await response.json();
-              setLocation({
-                latitude: data.latitude || null,
-                longitude: data.longitude || null,
-                address: data.city ? `${data.city}, ${data.region}` : null,
-                city: data.city || null,
-                country: data.country_name || null,
-                source: 'ip',
-              });
-            } catch (ipError) {
-              console.warn('IP location error:', ipError);
-              setLocation({
-                latitude: null,
-                longitude: null,
-                address: 'Location unavailable',
-                city: null,
-                country: null,
-                source: 'manual',
-              });
-            }
-          },
-          {
-            enableHighAccuracy: true,
-            timeout: 10000,
-            maximumAge: 0,
-          }
-        );
-      } else {
-        // Fallback to IP-based location
-        try {
-          const response = await fetch('https://ipapi.co/json/');
-          const data = await response.json();
-          setLocation({
-            latitude: data.latitude || null,
-            longitude: data.longitude || null,
-            address: data.city ? `${data.city}, ${data.region}` : null,
-            city: data.city || null,
-            country: data.country_name || null,
-            source: 'ip',
-          });
-        } catch (error) {
-          setLocation({
-            latitude: null,
-            longitude: null,
-            address: 'Location unavailable',
-            city: null,
-            country: null,
-            source: 'manual',
-          });
-        }
+  useEffect(() => {
+    if (!successAction) return;
+    const timer = window.setTimeout(() => {
+      setSuccessAction(null);
+      onClose();
+    }, AUTO_CLOSE_MS);
+    return () => window.clearTimeout(timer);
+  }, [successAction, onClose]);
+
+  useEffect(() => {
+    if (!isOpen || !isClockedIn || !currentRecord?.clock_in_time) {
+      setSessionDuration('');
+      return;
+    }
+    updateSessionDuration(currentRecord.clock_in_time);
+    const interval = window.setInterval(() => {
+      updateSessionDuration(currentRecord.clock_in_time);
+    }, 60_000);
+    return () => window.clearInterval(interval);
+  }, [isOpen, isClockedIn, currentRecord?.clock_in_time, updateSessionDuration]);
+
+  useEffect(() => {
+    if (!workplaceDropdownOpen) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        workplaceDropdownRef.current
+        && !workplaceDropdownRef.current.contains(event.target as Node)
+      ) {
+        setWorkplaceDropdownOpen(false);
       }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [workplaceDropdownOpen]);
+
+  const getLocation = async () => {
+    try {
+      setLocation(await detectClockInLocation());
     } catch (error) {
       console.error('Error getting location:', error);
-      setLocation({
-        latitude: null,
-        longitude: null,
-        address: 'Location unavailable',
-        city: null,
-        country: null,
-        source: 'manual',
-      });
-    } finally {
-      setIsGettingLocation(false);
+      setLocation(EMPTY_CLOCK_IN_LOCATION);
     }
   };
 
@@ -172,7 +132,10 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
     try {
       const { data, error } = await supabase
         .from('employee_clock_in')
-        .select('*')
+        .select(
+          `id, clock_in_time, clock_out_time, location_address, is_active, clock_in_location_id,
+           clock_in_place:clock_in_locations!clock_in_location_id ( name )`,
+        )
         .eq('employee_id', employeeId)
         .eq('is_active', true)
         .order('clock_in_time', { ascending: false })
@@ -186,36 +149,21 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
       if (data) {
         setIsClockedIn(true);
         setCurrentRecord(data);
+        if (data.clock_in_location_id != null) {
+          setSelectedWorkplaceId(data.clock_in_location_id);
+        }
       } else {
         setIsClockedIn(false);
         setCurrentRecord(null);
+        const opts = await fetchActiveClockInLocations();
+        setWorkplaceOptions(opts);
+        const last = readLastSelectedWorkplaceId();
+        const validLast = last != null && opts.some((o) => o.id === last);
+        setSelectedWorkplaceId(validLast ? last : opts[0]?.id ?? null);
       }
     } catch (error) {
       console.error('Error fetching clock-in status:', error);
       toast.error('Failed to fetch clock-in status');
-    }
-  };
-
-  const fetchTodayRecords = async () => {
-    try {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const todayStart = today.toISOString();
-      const todayEnd = new Date(today.getTime() + 24 * 60 * 60 * 1000).toISOString();
-
-      const { data, error } = await supabase
-        .from('employee_clock_in')
-        .select('*')
-        .eq('employee_id', employeeId)
-        .gte('clock_in_time', todayStart)
-        .lt('clock_in_time', todayEnd)
-        .order('clock_in_time', { ascending: false });
-
-      if (error) throw error;
-
-      setTodayRecords(data || []);
-    } catch (error) {
-      console.error('Error fetching today records:', error);
     }
   };
 
@@ -224,34 +172,37 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
       toast.error('Missing employee or user information');
       return;
     }
+    if (!selectedWorkplaceId) {
+      toast.error('Please select a workplace');
+      return;
+    }
 
     setIsLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('employee_clock_in')
-        .insert({
-          employee_id: employeeId,
-          user_id: userId,
-          clock_in_time: new Date().toISOString(),
-          location_latitude: location.latitude,
-          location_longitude: location.longitude,
-          location_address: location.address,
-          location_city: location.city,
-          location_country: location.country,
-          location_source: location.source,
-          notes: notes.trim() || null,
-          is_active: true,
-        })
-        .select()
-        .single();
+      const payload = {
+        employee_id: employeeId,
+        user_id: userId,
+        clock_in_time: new Date().toISOString(),
+        clock_in_location_id: selectedWorkplaceId,
+        ...locationToDbFields(location),
+        notes: null,
+        is_active: true,
+        manually: false,
+      };
+      let { data, error } = await supabase.from('employee_clock_in').insert(payload).select().single();
+
+      if (error) {
+        const { clock_in_location_id: _drop, ...withoutPreset } = payload;
+        const retry = await supabase.from('employee_clock_in').insert(withoutPreset).select().single();
+        data = retry.data;
+        error = retry.error;
+      }
 
       if (error) throw error;
 
-      setIsClockedIn(true);
-      setCurrentRecord(data);
-      setNotes('');
-      toast.success('Clocked in successfully!');
-      fetchTodayRecords();
+      persistLastSelectedWorkplaceId(selectedWorkplaceId);
+
+      setSuccessAction('in');
     } catch (error: any) {
       console.error('Error clocking in:', error);
       toast.error(error.message || 'Failed to clock in');
@@ -266,62 +217,61 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
       return;
     }
 
+    const clockOutLocationId =
+      currentRecord.clock_in_location_id ?? selectedWorkplaceId;
+    if (!clockOutLocationId) {
+      toast.error('Missing workplace for clock-out');
+      return;
+    }
+
     setIsLoading(true);
     try {
-      const { error } = await supabase
+      const outLocation = await detectClockInLocation();
+      const baseUpdate = {
+        clock_out_time: new Date().toISOString(),
+        is_active: false,
+        notes: null,
+        clock_out_location_id: clockOutLocationId,
+      };
+      const gpsFields = locationToDbFields(outLocation, 'clock_out_');
+      let { error } = await supabase
         .from('employee_clock_in')
-        .update({
-          clock_out_time: new Date().toISOString(),
-          is_active: false,
-          notes: notes.trim() || currentRecord.notes || null,
-        })
+        .update({ ...baseUpdate, ...gpsFields })
         .eq('id', currentRecord.id);
+
+      if (error) {
+        const { clock_out_location_id: _drop, ...withoutPreset } = baseUpdate;
+        const retry = await supabase
+          .from('employee_clock_in')
+          .update({ ...withoutPreset, ...gpsFields })
+          .eq('id', currentRecord.id);
+        error = retry.error;
+      }
+      if (error) {
+        const retry2 = await supabase
+          .from('employee_clock_in')
+          .update({
+            clock_out_time: baseUpdate.clock_out_time,
+            is_active: false,
+            notes: baseUpdate.notes,
+          })
+          .eq('id', currentRecord.id);
+        error = retry2.error;
+      }
 
       if (error) throw error;
 
-      setIsClockedIn(false);
-      setCurrentRecord(null);
-      setNotes('');
-      toast.success('Clocked out successfully!');
-      fetchTodayRecords();
+      if (clockOutLocationId) {
+        persistLastSelectedWorkplaceId(clockOutLocationId);
+      }
+
+      setSuccessAction('out');
     } catch (error: any) {
       console.error('Error clocking out:', error);
       toast.error(error.message || 'Failed to clock out');
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const formatTime = (dateString: string) => {
-    return new Date(dateString).toLocaleTimeString('en-US', {
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    });
-  };
-
-  const formatDuration = (start: string, end: string | null) => {
-    if (!end) return 'In progress...';
-    const startTime = new Date(start).getTime();
-    const endTime = new Date(end).getTime();
-    const diffMs = endTime - startTime;
-    const hours = Math.floor(diffMs / (1000 * 60 * 60));
-    const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-    return `${hours}h ${minutes}m`;
-  };
-
-  const calculateTodayTotal = () => {
-    let totalMs = 0;
-    todayRecords.forEach((record) => {
-      const start = new Date(record.clock_in_time).getTime();
-      const end = record.clock_out_time
-        ? new Date(record.clock_out_time).getTime()
-        : new Date().getTime();
-      totalMs += end - start;
-    });
-    const hours = Math.floor(totalMs / (1000 * 60 * 60));
-    const minutes = Math.floor((totalMs % (1000 * 60 * 60)) / (1000 * 60));
-    return `${hours}h ${minutes}m`;
   };
 
   if (!isOpen) return null;
@@ -337,8 +287,27 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
       {/* Modal */}
       <div className="flex min-h-full items-center justify-center p-4">
         <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-2xl transform transition-all">
+          {successAction ? (
+            <div className="p-10 md:p-12 text-center animate-fade-in">
+              <div
+                className={`w-20 h-20 mx-auto rounded-full flex items-center justify-center mb-6 ${
+                  successAction === 'in' ? 'bg-green-500' : 'bg-gray-600'
+                }`}
+              >
+                <CheckCircleIcon className="w-12 h-12 text-white" />
+              </div>
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">
+                {successAction === 'in' ? 'Clocked in successfully!' : 'Clocked out successfully!'}
+              </h2>
+              {selectedWorkplaceName && (
+                <p className="text-gray-600 mb-1">{selectedWorkplaceName}</p>
+              )}
+              <p className="text-sm text-gray-400">Closing automatically…</p>
+            </div>
+          ) : (
+            <>
           {/* Header */}
-          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+          <div className="flex items-center justify-between px-6 py-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-gradient-to-tr from-purple-600 to-indigo-600 rounded-lg flex items-center justify-center">
                 <ClockIcon className="w-6 h-6 text-white" />
@@ -359,163 +328,138 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
 
           {/* Content */}
           <div className="p-6 space-y-6">
-            {/* Current Status */}
-            <div className={`p-4 rounded-xl border-2 ${
-              isClockedIn
-                ? 'bg-green-50 border-green-200'
-                : 'bg-gray-50 border-gray-200'
-            }`}>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className={`w-12 h-12 rounded-full flex items-center justify-center ${
-                    isClockedIn ? 'bg-green-500' : 'bg-gray-400'
-                  }`}>
-                    <CheckCircleIcon className="w-7 h-7 text-white" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-gray-600">Current Status</p>
-                    <p className={`text-lg font-bold ${
-                      isClockedIn ? 'text-green-700' : 'text-gray-700'
-                    }`}>
-                      {isClockedIn ? 'Clocked In' : 'Clocked Out'}
-                    </p>
-                    {isClockedIn && currentRecord && (
-                      <p className="text-xs text-gray-500 mt-1">
-                        Since {formatTime(currentRecord.clock_in_time)}
-                      </p>
+            {/* Status + action */}
+            <div className="flex items-center gap-4">
+                {!isClockedIn ? (
+                  <button
+                    type="button"
+                    onClick={handleClockIn}
+                    disabled={isLoading}
+                    className="btn btn-primary rounded-full h-14 min-h-14 px-5 gap-2 shrink-0 shadow-md"
+                  >
+                    {isLoading ? (
+                      <span className="loading loading-spinner loading-sm" />
+                    ) : (
+                      <>
+                        <ClockIcon className="w-5 h-5" />
+                        <span className="font-semibold">Clock In</span>
+                      </>
                     )}
-                  </div>
-                </div>
-                {isClockedIn && currentRecord && (
-                  <div className="text-right">
-                    <p className="text-sm text-gray-600">Duration</p>
-                    <p className="text-lg font-bold text-green-700">
-                      {formatDuration(currentRecord.clock_in_time, currentRecord.clock_out_time)}
-                    </p>
-                  </div>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleClockOut}
+                    disabled={isLoading}
+                    className="btn rounded-full h-14 min-h-14 px-5 gap-2 shrink-0 border-0 shadow-md bg-gradient-to-r from-red-600 via-rose-600 to-red-500 text-white hover:from-red-700 hover:via-rose-700 hover:to-red-600 hover:shadow-lg transition-all duration-200 disabled:opacity-60"
+                  >
+                    {isLoading ? (
+                      <span className="loading loading-spinner loading-sm" />
+                    ) : (
+                      <>
+                        <ClockIcon className="w-5 h-5" />
+                        <span className="font-semibold">Clock Out</span>
+                      </>
+                    )}
+                  </button>
                 )}
-              </div>
-            </div>
-
-            {/* Location Info */}
-            <div className="p-4 bg-blue-50 rounded-xl border border-blue-200">
-              <div className="flex items-start gap-3">
-                <MapPinIcon className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" />
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-blue-900">Location</p>
-                  {isGettingLocation ? (
-                    <p className="text-sm text-blue-700 mt-1">Detecting location...</p>
-                  ) : (
-                    <p className="text-sm text-blue-700 mt-1">
-                      {location.address || location.city || 'Location unavailable'}
-                      {location.country && `, ${location.country}`}
-                    </p>
-                  )}
-                  {location.latitude && location.longitude && (
-                    <p className="text-xs text-blue-600 mt-1">
-                      {location.latitude.toFixed(6)}, {location.longitude.toFixed(6)}
-                    </p>
-                  )}
+                <div className="min-w-0 flex-1">
+                  <p className={`text-2xl font-extrabold leading-tight ${
+                    isClockedIn ? 'text-green-700' : 'text-gray-700'
+                  }`}>
+                    {isClockedIn && sessionDuration
+                      ? (
+                        <>
+                          Clocked In since{' '}
+                          <span className="tabular-nums">{sessionDuration}</span>
+                        </>
+                      )
+                      : isClockedIn
+                        ? 'Clocked In'
+                        : 'Clocked Out'}
+                  </p>
                 </div>
-              </div>
             </div>
 
-            {/* Notes */}
+            {/* Workplace */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Notes (optional)
+                {isClockedIn ? 'Workplace' : 'Workplace (clock in)'}
               </label>
-              <textarea
-                className="textarea textarea-bordered w-full"
-                placeholder="Add any notes about your clock-in/out..."
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                rows={2}
-              />
-            </div>
-
-            {/* Action Buttons */}
-            <div className="flex gap-3">
-              {!isClockedIn ? (
-                <button
-                  onClick={handleClockIn}
-                  disabled={isLoading || isGettingLocation}
-                  className="btn btn-primary flex-1"
-                >
-                  {isLoading ? (
-                    <span className="loading loading-spinner"></span>
-                  ) : (
-                    <>
-                      <ClockIcon className="w-5 h-5" />
-                      Clock In
-                    </>
-                  )}
-                </button>
+              {isClockedIn && currentRecord ? (
+                <div className="select select-bordered w-full h-12 flex items-center px-4 bg-gray-50 text-gray-900 font-medium">
+                  {resolveWorkplaceName(currentRecord, 'in')}
+                </div>
               ) : (
-                <button
-                  onClick={handleClockOut}
-                  disabled={isLoading}
-                  className="btn btn-error flex-1"
-                >
-                  {isLoading ? (
-                    <span className="loading loading-spinner"></span>
-                  ) : (
-                    <>
-                      <ClockIcon className="w-5 h-5" />
-                      Clock Out
-                    </>
-                  )}
-                </button>
+                <>
+                  {/* Desktop: custom white dropdown */}
+                  <div className="hidden md:block relative" ref={workplaceDropdownRef}>
+                    <button
+                      type="button"
+                      onClick={() => setWorkplaceDropdownOpen((open) => !open)}
+                      disabled={workplaceOptions.length === 0}
+                      className={`w-full h-12 px-4 flex items-center justify-between gap-2 rounded-lg border bg-white text-left transition-colors ${
+                        workplaceDropdownOpen
+                          ? 'border-purple-400 ring-2 ring-purple-100'
+                          : 'border-gray-200 hover:border-gray-300'
+                      } disabled:opacity-60 disabled:cursor-not-allowed`}
+                    >
+                      <span className="text-gray-900 font-medium truncate">
+                        {workplaceDisplayLabel}
+                      </span>
+                      <ChevronDownIcon
+                        className={`w-5 h-5 text-gray-400 shrink-0 transition-transform ${
+                          workplaceDropdownOpen ? 'rotate-180' : ''
+                        }`}
+                      />
+                    </button>
+                    {workplaceDropdownOpen && workplaceOptions.length > 0 && (
+                      <div className="absolute z-30 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+                        {workplaceOptions.map((opt) => {
+                          const isSelected = opt.id === selectedWorkplaceId;
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedWorkplaceId(opt.id);
+                                setWorkplaceDropdownOpen(false);
+                              }}
+                              className={`w-full px-4 py-3 text-left text-sm transition-colors ${
+                                isSelected
+                                  ? 'bg-purple-50 text-purple-700 font-semibold'
+                                  : 'text-gray-800 hover:bg-gray-50'
+                              }`}
+                            >
+                              {opt.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Mobile: native select */}
+                  <select
+                    className="select select-bordered w-full md:hidden"
+                    value={selectedWorkplaceId ?? ''}
+                    onChange={(e) => setSelectedWorkplaceId(Number(e.target.value))}
+                    disabled={workplaceOptions.length === 0}
+                  >
+                    {workplaceOptions.length === 0 ? (
+                      <option value="">Loading workplaces…</option>
+                    ) : (
+                      workplaceOptions.map((opt) => (
+                        <option key={opt.id} value={opt.id}>{opt.name}</option>
+                      ))
+                    )}
+                  </select>
+                </>
               )}
             </div>
-
-            {/* Today's Records */}
-            {todayRecords.length > 0 && (
-              <div className="border-t border-gray-200 pt-4">
-                <h3 className="text-sm font-semibold text-gray-700 mb-3">Today's Records</h3>
-                <div className="space-y-2 max-h-48 overflow-y-auto">
-                  {todayRecords.map((record) => (
-                    <div
-                      key={record.id}
-                      className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
-                    >
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-gray-700">
-                            {formatTime(record.clock_in_time)}
-                          </span>
-                          <span className="text-gray-400">→</span>
-                          <span className="text-sm text-gray-600">
-                            {record.clock_out_time
-                              ? formatTime(record.clock_out_time)
-                              : 'In progress...'}
-                          </span>
-                        </div>
-                        {record.location_address && (
-                          <p className="text-xs text-gray-500 mt-1">
-                            📍 {record.location_address}
-                          </p>
-                        )}
-                      </div>
-                      <div className="text-right">
-                        <p className="text-sm font-medium text-gray-700">
-                          {formatDuration(record.clock_in_time, record.clock_out_time)}
-                        </p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-3 pt-3 border-t border-gray-200">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-gray-700">Total Today</span>
-                    <span className="text-lg font-bold text-purple-600">
-                      {calculateTodayTotal()}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
+            </>
+          )}
         </div>
       </div>
     </div>

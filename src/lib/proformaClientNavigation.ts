@@ -3,6 +3,9 @@ import { buildClientRoute } from './masterLeadApi';
 /** Opens the client page on the Finances tab (`FinancesTab`). */
 export const CLIENT_FINANCES_TAB = 'finances';
 
+/** Opens the client page on the Interactions tab (`InteractionsTab`). */
+export const CLIENT_INTERACTIONS_TAB = 'interactions';
+
 export type ClientFinancesTabPathInput = {
   isLegacy?: boolean;
   leadId?: string | number | null;
@@ -51,4 +54,26 @@ export function buildClientFinancesTabPath(input: ClientFinancesTabPathInput): s
   }
 
   return null;
+}
+
+function appendInteractionsTab(path: string): string {
+  if (!path || path === '/clients') return path;
+  const qIndex = path.indexOf('?');
+  const pathname = qIndex >= 0 ? path.slice(0, qIndex) : path;
+  const params = new URLSearchParams(qIndex >= 0 ? path.slice(qIndex + 1) : '');
+  params.set('tab', CLIENT_INTERACTIONS_TAB);
+  const qs = params.toString();
+  return qs ? `${pathname}?${qs}` : `${pathname}?tab=${CLIENT_INTERACTIONS_TAB}`;
+}
+
+/** Build `/clients/...?tab=interactions` for a lead. */
+export function buildClientInteractionsTabPath(input: ClientFinancesTabPathInput): string | null {
+  const financesPath = buildClientFinancesTabPath(input);
+  if (!financesPath) return null;
+  const qIndex = financesPath.indexOf('?');
+  const pathname = qIndex >= 0 ? financesPath.slice(0, qIndex) : financesPath;
+  const params = new URLSearchParams(qIndex >= 0 ? financesPath.slice(qIndex + 1) : '');
+  params.set('tab', CLIENT_INTERACTIONS_TAB);
+  const qs = params.toString();
+  return qs ? `${pathname}?${qs}` : appendInteractionsTab(pathname);
 }

@@ -6396,6 +6396,15 @@ const Dashboard: React.FC = () => {
             </text>
           </svg>
         </div>
+
+        {/* Clock In / Out */}
+        {currentUserEmployeeId != null && (
+          <ClockInBox
+            employeeId={currentUserEmployeeId}
+            isDark2Theme={isDark2Theme}
+            isAltTheme={isAltTheme}
+          />
+        )}
       </div>
 
       {/* Expanded Content for Top Boxes */}
@@ -7705,11 +7714,6 @@ const Dashboard: React.FC = () => {
 
             {/* Quick Actions removed per request */}
       </div>
-
-      {/* Clock In/Out Box - Commented out */}
-      {/* <div className="w-full mt-12">
-        <ClockInBox employeeId={currentUserEmployeeId} />
-      </div> */}
 
       {/* My Contribution - above Team Availability */}
       <div className="w-full mt-8">

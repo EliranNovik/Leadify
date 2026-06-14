@@ -320,10 +320,11 @@ html,
   .app-main-scroll {
     @apply bg-base-100;
     min-height: 0;
+    overflow-x: hidden;
     /* iOS: momentum scrolling inside main (not the whole document) */
     -webkit-overflow-scrolling: touch;
     /* Keep scroll gestures inside this pane; bottom inset so content clears the home indicator */
-    overscroll-behavior-y: contain;
+    overscroll-behavior: contain;
     padding-bottom: constant(safe-area-inset-bottom, 0px);
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }

@@ -2,14 +2,19 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import { DocumentArrowUpIcon, TrashIcon } from '@heroicons/react/24/outline';
 import {
-  fetchInvoicesForFirmMonth,
+  fetchInvoicesForCostLine,
   openFirmInvoiceDocument,
   removeFirmInvoice,
   toBillingMonthStart,
   uploadInvoiceForFirmMonth,
   type FirmInvoiceDoc,
 } from '../../lib/firmManagementCosts';
+import { fileNameFromStoragePath } from '../../lib/firmManagementCostDocuments';
 import FirmInvoiceDocumentsCell from './FirmInvoiceDocumentsCell';
+
+function firmInvoiceLabel(inv: FirmInvoiceDoc): string {
+  return inv.file_name?.trim() || fileNameFromStoragePath(inv.storage_path) || 'Invoice';
+}
 
 type FirmManagementCostInvoiceFieldProps = {
   value?: unknown;
@@ -25,8 +30,9 @@ const FirmManagementCostInvoiceField: React.FC<FirmManagementCostInvoiceFieldPro
   onInvoiceChanged,
 }) => {
   const firmId = record?.firm_id != null ? String(record.firm_id) : '';
+  const costId = record?.id != null ? String(record.id) : '';
   const billingMonth = record?.billing_month;
-  const monthReady = Boolean(firmId && toBillingMonthStart(billingMonth));
+  const lineReady = Boolean(firmId && toBillingMonthStart(billingMonth));
 
   const [invoices, setInvoices] = useState<FirmInvoiceDoc[]>([]);
   const [loading, setLoading] = useState(false);
@@ -35,13 +41,13 @@ const FirmManagementCostInvoiceField: React.FC<FirmManagementCostInvoiceFieldPro
   const [pendingFile, setPendingFile] = useState<File | null>(null);
 
   const reload = useCallback(async () => {
-    if (!monthReady) {
+    if (!lineReady) {
       setInvoices([]);
       return;
     }
     setLoading(true);
     try {
-      const rows = await fetchInvoicesForFirmMonth(firmId, billingMonth);
+      const rows = await fetchInvoicesForCostLine(costId, firmId, billingMonth);
       setInvoices(rows);
     } catch (err) {
       console.error(err);
@@ -49,17 +55,17 @@ const FirmManagementCostInvoiceField: React.FC<FirmManagementCostInvoiceFieldPro
     } finally {
       setLoading(false);
     }
-  }, [firmId, billingMonth, monthReady]);
+  }, [costId, firmId, billingMonth, lineReady]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
 
   const handleUpload = async () => {
-    if (!pendingFile || !monthReady) return;
+    if (!pendingFile || !lineReady) return;
     setUploading(true);
     try {
-      await uploadInvoiceForFirmMonth(firmId, billingMonth, pendingFile);
+      await uploadInvoiceForFirmMonth(firmId, billingMonth, pendingFile, costId || null);
       toast.success('Invoice uploaded');
       setPendingFile(null);
       await reload();
@@ -74,7 +80,8 @@ const FirmManagementCostInvoiceField: React.FC<FirmManagementCostInvoiceFieldPro
   };
 
   const handleRemove = async (inv: FirmInvoiceDoc) => {
-    if (!window.confirm(`Remove invoice${inv.file_name ? ` "${inv.file_name}"` : ''}?`)) return;
+    const label = firmInvoiceLabel(inv);
+    if (!window.confirm(`Remove invoice "${label}"?`)) return;
     setRemovingId(inv.id);
     try {
       await removeFirmInvoice(inv);
@@ -90,7 +97,7 @@ const FirmManagementCostInvoiceField: React.FC<FirmManagementCostInvoiceFieldPro
     }
   };
 
-  if (!monthReady) {
+  if (!lineReady) {
     return (
       <p className="text-sm text-base-content/60 rounded-lg border border-dashed border-base-300 bg-base-200/30 px-3 py-4">
         Select <span className="font-medium">Firm</span> and <span className="font-medium">Month &amp; Year</span>{' '}
@@ -99,7 +106,7 @@ const FirmManagementCostInvoiceField: React.FC<FirmManagementCostInvoiceFieldPro
     );
   }
 
-  const withFiles = invoices.filter(inv => inv.storage_path?.trim() && inv.file_name?.trim());
+  const withFiles = invoices.filter(inv => inv.storage_path?.trim());
 
   return (
     <div className="space-y-3 rounded-lg border border-base-300 bg-base-200/20 p-4">
@@ -145,7 +152,7 @@ const FirmManagementCostInvoiceField: React.FC<FirmManagementCostInvoiceFieldPro
           ))}
         </div>
       ) : (
-        <p className="text-sm text-base-content/50">No invoice file for this firm and month.</p>
+        <p className="text-sm text-base-content/50">No invoice file for this expense line.</p>
       )}
 
       {!readOnly && (

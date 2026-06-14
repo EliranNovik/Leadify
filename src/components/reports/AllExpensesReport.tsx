@@ -34,10 +34,12 @@ import {
   type EntityBreakdownStackedMonthPoint,
   fetchAllExpensesBreakdown,
   fetchFirmManagementCostsByFirm,
+  fetchOfficeExpensesByFirm,
   fetchSourceMediaCostsBySource,
   formatNis,
   monthKeysForYearMonth,
   sumCategoryTotals,
+  marketingExpenseTotal,
 } from '../../lib/allExpensesReport';
 import { usePersistedFilters } from '../../hooks/usePersistedState';
 import AllExpensesTotalDetailModal from './expenses/AllExpensesTotalDetailModal';
@@ -295,6 +297,9 @@ const AllExpensesReport: React.FC = () => {
   const [sourceMediaRows, setSourceMediaRows] = useState<
     Awaited<ReturnType<typeof fetchSourceMediaCostsBySource>>
   >([]);
+  const [officeExpenseRows, setOfficeExpenseRows] = useState<
+    Awaited<ReturnType<typeof fetchOfficeExpensesByFirm>>
+  >([]);
   const [summaryTableOpen, setSummaryTableOpen] = useState(false);
   const [openDetailModal, setOpenDetailModal] = useState<OpenExpenseDetailModal>(null);
 
@@ -315,20 +320,23 @@ const AllExpensesReport: React.FC = () => {
     if (!filters.year) return;
     setLoading(true);
     try {
-      const [rows, firmRows, sourceRows] = await Promise.all([
+      const [rows, firmRows, sourceRows, officeRows] = await Promise.all([
         fetchAllExpensesBreakdown(monthKeys),
         fetchFirmManagementCostsByFirm(monthKeys),
         fetchSourceMediaCostsBySource(monthKeys),
+        fetchOfficeExpensesByFirm(monthKeys),
       ]);
       setMonthlyRows(rows);
       setFirmManagementRows(firmRows);
       setSourceMediaRows(sourceRows);
+      setOfficeExpenseRows(officeRows);
     } catch (err) {
       console.error(err);
       toast.error('Failed to load expenses');
       setMonthlyRows([]);
       setFirmManagementRows([]);
       setSourceMediaRows([]);
+      setOfficeExpenseRows([]);
     } finally {
       setLoading(false);
     }
@@ -340,12 +348,14 @@ const AllExpensesReport: React.FC = () => {
 
   const categoryTotals = useMemo(() => sumCategoryTotals(monthlyRows), [monthlyRows]);
   const grandTotal = useMemo(
-    () => EXPENSE_CATEGORY_ORDER.reduce((sum, key) => sum + categoryTotals[key], 0),
+    () =>
+      EXPENSE_CATEGORY_ORDER.reduce((sum, key) => sum + categoryTotals[key], 0) +
+      categoryTotals.firm_management_marketing,
     [categoryTotals],
   );
 
   const marketingAmount = useMemo(
-    () => categoryTotals.source_media + categoryTotals.firm_management,
+    () => marketingExpenseTotal(categoryTotals),
     [categoryTotals],
   );
 
@@ -378,7 +388,7 @@ const AllExpensesReport: React.FC = () => {
   const categoryBarData = useMemo(
     () =>
       summaryDisplayRows
-        .filter(r => r.amount > 0 || r.key !== 'office')
+        .filter(r => r.amount > 0)
         .map(r => ({
           name: r.label,
           amount: r.amount,
@@ -426,6 +436,27 @@ const AllExpensesReport: React.FC = () => {
 
   const hasSourceMediaData = sourceMediaRows.some(r => r.amountNis > 0);
   const showSourceMediaYearChart = !filters.month && hasSourceMediaData;
+
+  const officeExpensesSingleMonthChart = useMemo(() => {
+    if (!filters.month || monthKeys.length !== 1) return [];
+    return buildFirmManagementSingleMonthChart(officeExpenseRows, monthKeys[0]);
+  }, [officeExpenseRows, filters.month, monthKeys]);
+
+  const officeExpensesYearChart = useMemo(() => {
+    if (filters.month) return { chartData: [], firmSeries: [] as { key: string; fill: string }[] };
+    return buildFirmManagementYearStackedChart(officeExpenseRows, monthKeys);
+  }, [officeExpenseRows, filters.month, monthKeys]);
+
+  const hasOfficeExpensesData = officeExpenseRows.some(r => r.amountNis > 0);
+  const showOfficeExpensesYearChart = !filters.month && hasOfficeExpensesData;
+
+  const officeYearChartForView = useMemo(
+    () => ({
+      chartData: officeExpensesYearChart.chartData,
+      series: officeExpensesYearChart.firmSeries,
+    }),
+    [officeExpensesYearChart],
+  );
 
   const firmYearChartForView = useMemo(
     () => ({
@@ -500,7 +531,6 @@ const AllExpensesReport: React.FC = () => {
               label={row.label}
               amount={row.amount}
               share={grandTotal > 0 ? row.share : undefined}
-              note={row.key === 'office' ? 'Not configured' : undefined}
               theme={SUMMARY_BOX_THEMES[row.key]}
               onClick={() => setOpenDetailModal(row.key)}
             />
@@ -526,9 +556,6 @@ const AllExpensesReport: React.FC = () => {
                         style={{ backgroundColor: row.color }}
                       />
                       {row.label}
-                      {row.key === 'office' && (
-                        <span className="ml-2 text-sm text-base-content/50">(not configured)</span>
-                      )}
                     </td>
                     <td className="text-right">{formatNis(row.amount)}</td>
                     <td className="text-right">
@@ -600,7 +627,7 @@ const AllExpensesReport: React.FC = () => {
                   />
                   <Tooltip formatter={(v: number) => formatNis(v)} />
                   <Legend />
-                  {EXPENSE_CATEGORY_ORDER.filter(k => k !== 'office').map(key => (
+                  {EXPENSE_CATEGORY_ORDER.map(key => (
                     <Bar
                       key={key}
                       dataKey={EXPENSE_CATEGORY_LABELS[key]}
@@ -666,6 +693,22 @@ const AllExpensesReport: React.FC = () => {
             emptyYearMessage="No source media costs for this year."
             stackId="sources"
           />
+
+          <PerEntityBreakdownChart
+            title="Office expenses by firm"
+            description={
+              filters.month
+                ? `Per firm for ${periodLabel} (by created date)`
+                : `Monthly breakdown by firm for ${periodLabel} (by created date)`
+            }
+            hasMonth={Boolean(filters.month)}
+            singleMonthChart={officeExpensesSingleMonthChart}
+            yearChart={officeYearChartForView}
+            showYearChart={showOfficeExpensesYearChart}
+            emptyMonthMessage="No office expenses for this month."
+            emptyYearMessage="No office expenses for this year."
+            stackId="office-firms"
+          />
         </div>
       )}
 
@@ -703,7 +746,10 @@ const AllExpensesReport: React.FC = () => {
       />
       <OfficeExpensesDetailModal
         open={openDetailModal === 'office'}
-        onClose={() => setOpenDetailModal(null)}
+        onClose={() => {
+          setOpenDetailModal(null);
+          void load();
+        }}
         year={filters.year}
         month={filters.month}
       />

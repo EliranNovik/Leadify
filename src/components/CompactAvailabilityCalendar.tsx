@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useImperativeHandle, forwardRef } from 'react';
+import React, { useState, useEffect, useImperativeHandle, forwardRef, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { useMsal } from '@azure/msal-react';
 import {
@@ -13,6 +13,22 @@ import {
   DocumentArrowUpIcon
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
+import UnavailabilityTypeBadge from './UnavailabilityTypeBadge';
+import HolidayEntryWarningModal from './profile/HolidayEntryWarningModal';
+import {
+  unavailabilityTypeCompactLabelClass,
+  unavailabilityTypeShortLabel,
+  type UnavailabilityType,
+} from '../lib/employeeUnavailabilities';
+import {
+  getHolidayNamesForDate,
+  getHolidayWarningsForDates,
+  getHolidaysForYearMap,
+  holidayCompactLabel,
+  preloadHolidayYears,
+} from '../lib/israeliJewishHolidays';
+import { eachDayInRange } from '../lib/employeeClockInFormat';
+import type { HolidayDateWarning } from '../lib/israeliJewishHolidays';
 
 interface UnavailableTime {
   id: string;
@@ -38,6 +54,8 @@ interface CalendarDay {
   unavailableTimes: UnavailableTime[];
   isInUnavailableRange: boolean;
   unavailableRangeReason?: string;
+  unavailabilityTypes: UnavailabilityType[];
+  holidays: string[];
   hasMeeting: boolean;
 }
 
@@ -47,10 +65,24 @@ export interface CompactAvailabilityCalendarRef {
 
 interface CompactAvailabilityCalendarProps {
   onAvailabilityChange?: () => void;
+  /** When set (e.g. My Profile), skips auth lookup for employee id. */
+  employeeId?: number;
+  /** Sync calendar to this month when opened or filter changes (1–12). */
+  initialYear?: number;
+  initialMonth?: number;
+  onMonthChange?: (year: number, month1to12: number) => void;
 }
 
+type ReasonUnavailabilityRow = {
+  start_date: string;
+  end_date: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  unavailability_type: UnavailabilityType;
+};
+
 const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, CompactAvailabilityCalendarProps>((props, ref) => {
-  const { onAvailabilityChange } = props;
+  const { onAvailabilityChange, employeeId: employeeIdProp, initialYear, initialMonth, onMonthChange } = props;
   const { instance } = useMsal();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
@@ -80,10 +112,63 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
   const [selectedDateMeetings, setSelectedDateMeetings] = useState<any[]>([]);
   const [rangeMeetings, setRangeMeetings] = useState<Map<string, any[]>>(new Map());
   const [existingUnavailabilities, setExistingUnavailabilities] = useState<any[]>([]);
+  const [reasonUnavailabilities, setReasonUnavailabilities] = useState<ReasonUnavailabilityRow[]>([]);
+  const [selectedDateHolidays, setSelectedDateHolidays] = useState<string[]>([]);
+  const [holidayWarningOpen, setHolidayWarningOpen] = useState(false);
+  const [holidayWarnings, setHolidayWarnings] = useState<HolidayDateWarning[]>([]);
+  const pendingHolidaySaveRef = useRef<(() => Promise<void>) | null>(null);
 
   // Get current month and year
   const currentMonth = currentDate.getMonth();
   const currentYear = currentDate.getFullYear();
+
+  const [holidayMapVersion, setHolidayMapVersion] = useState(0);
+
+  const yearHolidayMap = useMemo(
+    () => getHolidaysForYearMap(currentYear),
+    [currentYear, holidayMapVersion],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    void preloadHolidayYears([currentYear - 1, currentYear, currentYear + 1]).then(() => {
+      if (!cancelled) setHolidayMapVersion((v) => v + 1);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentYear]);
+
+  const runWithHolidayCheck = async (dates: string[], saveFn: () => Promise<void>) => {
+    const warnings = await getHolidayWarningsForDates(dates);
+    if (warnings.length === 0) {
+      await saveFn();
+      return;
+    }
+    pendingHolidaySaveRef.current = saveFn;
+    setHolidayWarnings(warnings);
+    setHolidayWarningOpen(true);
+  };
+
+  const handleHolidayContinue = async () => {
+    const saveFn = pendingHolidaySaveRef.current;
+    pendingHolidaySaveRef.current = null;
+    setHolidayWarningOpen(false);
+    setHolidayWarnings([]);
+    if (saveFn) await saveFn();
+  };
+
+  const goToMonth = (next: Date) => {
+    setCurrentDate(next);
+    onMonthChange?.(next.getFullYear(), next.getMonth() + 1);
+  };
+
+  useEffect(() => {
+    if (initialYear == null || initialMonth == null) return;
+    const synced = new Date(initialYear, initialMonth - 1, 1);
+    setCurrentDate(synced);
+    onMonthChange?.(initialYear, initialMonth);
+  }, [initialYear, initialMonth, onMonthChange]);
 
   // Generate calendar days
   const generateCalendarDays = (): CalendarDay[] => {
@@ -103,6 +188,8 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         isToday: false,
         unavailableTimes: [],
         isInUnavailableRange: false,
+        unavailabilityTypes: [],
+        holidays: [],
         hasMeeting: false
       });
     }
@@ -122,16 +209,28 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         return isInRange;
       });
 
+      const matchingReasons = reasonUnavailabilities.filter((reason) => {
+        const end = reason.end_date || reason.start_date;
+        return dateString >= reason.start_date && dateString <= end;
+      });
+      const isInReasonRange = matchingReasons.length > 0;
+      const unavailabilityTypes = [
+        ...new Set(matchingReasons.map((reason) => reason.unavailability_type)),
+      ];
+
       // Check if this date has a meeting
       const hasMeeting = meetingDates.has(dateString);
+      const holidays = [...(yearHolidayMap.get(dateString) ?? [])];
 
       days.push({
         date,
         isCurrentMonth: true,
         isToday: date.toDateString() === new Date().toDateString(),
         unavailableTimes: dayUnavailableTimes,
-        isInUnavailableRange: !!rangeInfo,
+        isInUnavailableRange: !!rangeInfo || isInReasonRange,
         unavailableRangeReason: rangeInfo?.reason,
+        unavailabilityTypes,
+        holidays,
         hasMeeting
       });
     }
@@ -146,6 +245,8 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         isToday: false,
         unavailableTimes: [],
         isInUnavailableRange: false,
+        unavailabilityTypes: [],
+        holidays: [],
         hasMeeting: false
       });
     }
@@ -156,51 +257,56 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
   // Fetch user's unavailable times
   const fetchUnavailableTimes = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user?.id) return;
-
-      // Get employee_id from users table using auth_id (same logic as Clients.tsx)
-      let userEmployeeId: number | null = null;
+      let userEmployeeId: number | null = employeeIdProp ?? null;
       let userDisplayName: string | null = null;
 
-      const { data: userData, error: userError } = await supabase
-        .from('users')
-        .select(`
-          full_name,
-          employee_id,
-          tenants_employee!employee_id(
-            id,
-            display_name
-          )
-        `)
-        .eq('auth_id', user.id)
-        .single();
+      if (!userEmployeeId) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user?.id) return;
 
-      if (userError || !userData) {
-        console.error('Error getting user data:', userError);
-        return;
-      }
+        const { data: userData, error: userError } = await supabase
+          .from('users')
+          .select(`
+            full_name,
+            employee_id,
+            tenants_employee!employee_id(
+              id,
+              display_name
+            )
+          `)
+          .eq('auth_id', user.id)
+          .single();
 
-      // Get employee_id directly from users table (same as Clients.tsx)
-      if (userData?.employee_id) {
-        userEmployeeId = userData.employee_id;
-      }
-
-      // Get display name from employee relationship or fallback to full_name
-      if (userData?.tenants_employee) {
-        const empData = Array.isArray(userData.tenants_employee)
-          ? userData.tenants_employee[0]
-          : userData.tenants_employee;
-        if (empData?.display_name) {
-          userDisplayName = empData.display_name;
+        if (userError || !userData) {
+          console.error('Error getting user data:', userError);
+          return;
         }
+
+        if (userData?.employee_id) {
+          userEmployeeId = userData.employee_id;
+        }
+
+        if (userData?.tenants_employee) {
+          const empData = Array.isArray(userData.tenants_employee)
+            ? userData.tenants_employee[0]
+            : userData.tenants_employee;
+          if (empData?.display_name) {
+            userDisplayName = empData.display_name;
+          }
+        }
+
+        if (!userDisplayName && userData?.full_name) {
+          userDisplayName = userData.full_name;
+        }
+      } else {
+        const { data: empData } = await supabase
+          .from('tenants_employee')
+          .select('display_name')
+          .eq('id', userEmployeeId)
+          .maybeSingle();
+        userDisplayName = empData?.display_name ?? null;
       }
 
-      if (!userDisplayName && userData?.full_name) {
-        userDisplayName = userData.full_name;
-      }
-
-      // Use employee_id directly instead of matching by display_name (same as Clients.tsx)
       if (userEmployeeId) {
         const { data: employeeData, error } = await supabase
           .from('tenants_employee')
@@ -218,16 +324,37 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
           setOutlookSyncEnabled(employeeData.outlook_calendar_sync || false);
           setCurrentEmployeeId(employeeData.id);
 
-          // Also set unavailable ranges if available
           if (employeeData.unavailable_ranges) {
             setUnavailableRanges(employeeData.unavailable_ranges);
+          } else {
+            setUnavailableRanges([]);
           }
         }
+
+        const lastDay = new Date(currentYear, currentMonth + 1, 0).getDate();
+        const monthStart = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-01`;
+        const monthEnd = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+
+        const { data: reasonsData, error: reasonsError } = await supabase
+          .from('employee_unavailability_reasons')
+          .select('start_date, end_date, start_time, end_time, unavailability_type')
+          .eq('employee_id', userEmployeeId);
+
+        if (reasonsError) {
+          console.error('Error fetching unavailability reasons for calendar:', reasonsError);
+          setReasonUnavailabilities([]);
+        } else {
+          const filtered = (reasonsData || []).filter((reason: ReasonUnavailabilityRow) => {
+            const end = reason.end_date || reason.start_date;
+            return reason.start_date <= monthEnd && end >= monthStart;
+          });
+          setReasonUnavailabilities(filtered as ReasonUnavailabilityRow[]);
+        }
       } else {
-        console.error('No employee_id found in users table for current user');
+        console.error('No employee_id found for calendar');
+        setReasonUnavailabilities([]);
       }
 
-      // Fetch meetings where user is manager or helper (use employee_id from users table)
       await fetchUserMeetings(userDisplayName || '', userEmployeeId || undefined);
     } catch (error) {
       console.error('Error fetching unavailable times:', error);
@@ -658,13 +785,6 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       return;
     }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (selectedDate < today) {
-      toast.error('Cannot add unavailable times for past dates');
-      return;
-    }
-
     const year = selectedDate.getFullYear();
     const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
     const day = String(selectedDate.getDate()).padStart(2, '0');
@@ -676,6 +796,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       return;
     }
 
+    await runWithHolidayCheck([dateString], async () => {
     setLoading(true);
     try {
       // Fetch existing unavailabilities for this date
@@ -823,6 +944,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
     } finally {
       setLoading(false);
     }
+    });
   };
 
   // Create Outlook event
@@ -900,8 +1022,11 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
 
         toast.success('Unavailable time deleted successfully');
 
-        // Refresh unavailable times
         await fetchUnavailableTimes();
+        if (selectedDate) {
+          const refreshed = await fetchExistingUnavailabilitiesForDate(selectedDate);
+          setExistingUnavailabilities(refreshed);
+        }
 
         // Trigger refresh of team availability
         if (onAvailabilityChange) {
@@ -958,13 +1083,9 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       return;
     }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (new Date(newUnavailableRange.startDate) < today) {
-      toast.error('Cannot add unavailable ranges for past dates');
-      return;
-    }
-
+    await runWithHolidayCheck(
+      eachDayInRange(newUnavailableRange.startDate, newUnavailableRange.endDate),
+      async () => {
     setLoading(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -1044,7 +1165,8 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       setShowAddRangeModal(false);
       setNewUnavailableRange({ startDate: '', endDate: '', reason: '', unavailabilityType: 'general', documentFile: null });
       setRangeMeetings(new Map());
-      setRangeMeetings(new Map());
+
+      await fetchUnavailableTimes();
 
       // Trigger refresh of team availability
       if (onAvailabilityChange) {
@@ -1056,6 +1178,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
     } finally {
       setLoading(false);
     }
+    });
   };
 
   // Create Outlook event for range
@@ -1159,8 +1282,8 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
   }));
 
   useEffect(() => {
-    fetchUnavailableTimes();
-  }, [currentMonth, currentYear]);
+    void fetchUnavailableTimes();
+  }, [currentMonth, currentYear, employeeIdProp]);
 
   const calendarDays = generateCalendarDays();
   const monthNames = [
@@ -1168,18 +1291,50 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
   ];
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const openDayModal = async (date: Date) => {
+    setSelectedDate(date);
+    setShowAddModal(true);
+
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    const holidays = await getHolidayNamesForDate(`${y}-${m}-${d}`);
+    setSelectedDateHolidays(holidays);
+
+    if (currentEmployeeId) {
+      const existing = await fetchExistingUnavailabilitiesForDate(date);
+      setExistingUnavailabilities(existing);
+    }
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user?.id) {
+      const { data: userData } = await supabase
+        .from('users')
+        .select('full_name')
+        .eq('auth_id', user.id)
+        .maybeSingle();
+
+      const { data: employeeData } = await supabase
+        .from('tenants_employee')
+        .select('id')
+        .eq('user_id', user.id)
+        .maybeSingle();
+
+      const meetings = await fetchMeetingsForDate(
+        date,
+        userData?.full_name || '',
+        employeeData?.id,
+      );
+      setSelectedDateMeetings(meetings);
+    }
+  };
 
   return (
     <div className="w-full">
       {/* Month Navigation */}
       <div className="flex items-center justify-between mb-3">
         <button
-          onClick={() => {
-            const newMonth = new Date(currentYear, currentMonth - 1, 1);
-            setCurrentDate(newMonth);
-          }}
+          onClick={() => goToMonth(new Date(currentYear, currentMonth - 1, 1))}
           className="btn btn-xs btn-ghost btn-circle"
         >
           <ChevronLeftIcon className="w-4 h-4" />
@@ -1188,10 +1343,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
           {monthNames[currentMonth]} {currentYear}
         </span>
         <button
-          onClick={() => {
-            const newMonth = new Date(currentYear, currentMonth + 1, 1);
-            setCurrentDate(newMonth);
-          }}
+          onClick={() => goToMonth(new Date(currentYear, currentMonth + 1, 1))}
           className="btn btn-xs btn-ghost btn-circle"
         >
           <ChevronRightIcon className="w-4 h-4" />
@@ -1214,63 +1366,57 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
             return <div key={idx} className="aspect-square"></div>;
           }
 
-          const isPast = day.date < today;
           const isUnavailable = day.unavailableTimes.length > 0 || day.isInUnavailableRange;
+          const typeLabels = day.unavailabilityTypes.map((type) => unavailabilityTypeShortLabel(type));
 
           // Only show green if not unavailable (red takes precedence)
           const showGreen = day.hasMeeting && !isUnavailable;
 
+          const titleParts: string[] = [];
+          if (day.holidays.length > 0) titleParts.push(day.holidays.join(', '));
+          if (typeLabels.length > 0) titleParts.push(typeLabels.join(', '));
+          else if (isUnavailable) titleParts.push('Unavailable');
+          if (showGreen) titleParts.push('Meeting');
+
           return (
             <button
               key={idx}
-              onClick={async () => {
-                if (!isPast) {
-                  setSelectedDate(day.date);
-                  setShowAddModal(true);
-
-                  // Fetch existing unavailabilities for this date
-                  if (currentEmployeeId) {
-                    const existing = await fetchExistingUnavailabilitiesForDate(day.date);
-                    setExistingUnavailabilities(existing);
-                  }
-
-                  // Fetch meetings for this date
-                  const { data: { user } } = await supabase.auth.getUser();
-                  if (user?.id) {
-                    const { data: userData } = await supabase
-                      .from('users')
-                      .select('full_name')
-                      .eq('auth_id', user.id)
-                      .maybeSingle();
-
-                    const { data: employeeData } = await supabase
-                      .from('tenants_employee')
-                      .select('id')
-                      .eq('user_id', user.id)
-                      .maybeSingle();
-
-                    const meetings = await fetchMeetingsForDate(
-                      day.date,
-                      userData?.full_name || '',
-                      employeeData?.id
-                    );
-                    setSelectedDateMeetings(meetings);
-                  }
-                }
-              }}
-              disabled={isPast}
+              onClick={() => void openDayModal(day.date)}
               className={`
-                aspect-square text-xs font-medium rounded transition-all
-                ${isPast ? 'text-gray-300 cursor-not-allowed' : 'cursor-pointer hover:bg-gray-200'}
+                min-h-[3.25rem] text-xs font-medium rounded transition-all cursor-pointer
+                flex flex-col items-center justify-start gap-0.5 p-0.5 overflow-hidden
                 ${day.isToday ? 'ring-2 ring-primary bg-primary/10' : ''}
-                ${showGreen ? 'bg-green-100 text-green-700 font-semibold' : ''}
-                ${isUnavailable ? 'bg-red-100 text-red-700 font-semibold' : ''}
-                ${!isUnavailable && !showGreen && !isPast ? 'text-gray-700 hover:bg-gray-200' : ''}
-                ${!isUnavailable && !showGreen && isPast ? 'text-gray-300' : ''}
+                ${showGreen ? 'bg-green-100 text-green-700' : ''}
+                ${isUnavailable ? 'bg-red-100 text-red-700' : ''}
+                ${!isUnavailable && !showGreen && day.holidays.length > 0 ? 'bg-violet-50 text-violet-800' : ''}
+                ${!isUnavailable && !showGreen && day.holidays.length === 0 ? 'text-gray-700 hover:bg-gray-200' : 'hover:opacity-90'}
               `}
-              title={showGreen ? 'You have a meeting on this day' : (isUnavailable ? 'Unavailable' : '')}
+              title={titleParts.join(' · ') || undefined}
             >
-              {day.date.getDate()}
+              <span className="font-semibold leading-none">{day.date.getDate()}</span>
+              {(day.holidays.length > 0 || day.unavailabilityTypes.length > 0) && (
+                <div className="flex flex-col gap-px w-full px-0.5">
+                  {day.holidays.slice(0, 1).map((holiday) => (
+                    <span
+                      key={holiday}
+                      className="text-[9px] leading-tight font-medium truncate rounded px-0.5 bg-violet-100/90 text-violet-800"
+                    >
+                      {holidayCompactLabel(holiday)}
+                    </span>
+                  ))}
+                  {day.unavailabilityTypes.slice(0, 2).map((type) => (
+                    <span
+                      key={type}
+                      className={`text-[9px] leading-tight font-medium truncate rounded px-0.5 ${unavailabilityTypeCompactLabelClass(type)}`}
+                    >
+                      {unavailabilityTypeShortLabel(type)}
+                    </span>
+                  ))}
+                  {day.unavailabilityTypes.length > 2 && (
+                    <span className="text-[8px] leading-tight text-gray-600">+{day.unavailabilityTypes.length - 2}</span>
+                  )}
+                </div>
+              )}
             </button>
           );
         })}
@@ -1285,6 +1431,10 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         <div className="flex items-center gap-1">
           <div className="w-3 h-3 rounded bg-green-100"></div>
           <span>Meeting</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-3 h-3 rounded bg-violet-100 border border-violet-200"></div>
+          <span>Holiday</span>
         </div>
         <div className="flex items-center gap-1">
           <div className="w-3 h-3 rounded ring-2 ring-primary bg-primary/10"></div>
@@ -1313,6 +1463,12 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
             </div>
 
             <div className="space-y-4">
+              {selectedDateHolidays.length > 0 && (
+                <div className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm text-violet-800">
+                  <p className="font-medium">Jewish / Israeli holiday</p>
+                  <p>{selectedDateHolidays.join(', ')}</p>
+                </div>
+              )}
               <div>
                 <label className="label">
                   <span className="label-text">Date</span>
@@ -1334,7 +1490,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   <div className="space-y-2">
                     {existingUnavailabilities.map((unav: any, idx: number) => (
                       <div key={idx} className="bg-white rounded p-2 border border-blue-200">
-                        <div className="flex items-start justify-between">
+                        <div className="flex items-start justify-between gap-2">
                           <div className="flex-1">
                             <div className="text-sm font-medium text-blue-900">
                               {unav.isAllDay ? (
@@ -1346,10 +1502,21 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                             <div className="text-xs text-blue-700 mt-1">
                               {unav.reason}
                             </div>
-                            <div className="text-xs text-blue-600 mt-1 capitalize">
-                              Type: {unav.type === 'sick_days' ? 'Sick day/s' : unav.type === 'vacation' ? 'Vacation' : 'General'}
+                            <div className="mt-1">
+                              <UnavailabilityTypeBadge type={unav.type} size="xs" />
                             </div>
                           </div>
+                          {unav.source === 'reasons_table' && (
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-xs btn-circle text-error shrink-0"
+                              title="Remove unavailability"
+                              disabled={loading}
+                              onClick={() => void deleteUnavailableTime(unav.id)}
+                            >
+                              <TrashIcon className="w-4 h-4" />
+                            </button>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -1855,6 +2022,18 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
           </div>
         </div>
       )}
+
+      <HolidayEntryWarningModal
+        isOpen={holidayWarningOpen}
+        warnings={holidayWarnings}
+        onCancel={() => {
+          pendingHolidaySaveRef.current = null;
+          setHolidayWarningOpen(false);
+          setHolidayWarnings([]);
+        }}
+        onContinue={() => void handleHolidayContinue()}
+        continuing={loading || uploadingDocument}
+      />
     </div>
   );
 });

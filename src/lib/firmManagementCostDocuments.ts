@@ -1,6 +1,7 @@
 import { supabase } from './supabase';
 import { toast } from 'react-hot-toast';
 import { fileNameFromStoragePath } from './firmColumnDocuments';
+import { applyMonthAnchorFilter, managementCostLineKey, toBillingMonthStart } from './firmManagementCosts';
 
 /** Matches `sql/create_firm_management_cost_document_buckets.sql` */
 export const FIRM_MANAGEMENT_PAYMENT_CONFIRMATIONS_BUCKET =
@@ -9,6 +10,18 @@ export const FIRM_MANAGEMENT_PAYMENT_CONFIRMATIONS_BUCKET =
 export const FIRM_MANAGEMENT_TAX_RECEIPTS_BUCKET = 'firm-management-tax-receipts' as const;
 
 export type FirmManagementCostDocColumn = 'payment_confirmation' | 'tax_receipt';
+
+export type FirmManagementCostDocument = {
+  id: string;
+  firm_id: string;
+  billing_month: string;
+  firm_management_cost_id?: string | null;
+  doc_type: FirmManagementCostDocColumn;
+  storage_path: string | null;
+  file_name: string | null;
+  mime_type: string | null;
+  created_at?: string | null;
+};
 
 const PATH_SAFE = /^[a-zA-Z0-9._\-+()\s]*$/;
 
@@ -29,14 +42,25 @@ export function bucketForManagementCostDocColumn(
   }
 }
 
-/** Object path: costs/<costRowId>/<column>/<timestamp>_<filename> */
+export const managementCostDocumentKey = (firmId: string, month: unknown): string => {
+  const anchor = toBillingMonthStart(month) || String(month ?? '').trim().slice(0, 10);
+  return `${firmId}|${anchor}`;
+};
+
+/** @deprecated Prefer managementCostLineKey from firmManagementCosts */
+export { managementCostLineKey };
+
+/** Object path: costs/<firmId>/<billingMonth>/<docType>/<docId>/<timestamp>_<filename> */
 export function buildFirmManagementCostStoragePath(
-  costRowId: string,
+  firmId: string,
+  billingMonth: unknown,
   column: FirmManagementCostDocColumn,
+  documentRowId: string,
   originalFileName: string,
 ): string {
+  const month = toBillingMonthStart(billingMonth) || 'unknown-month';
   const safeBase = originalFileName.replace(/[^\w.\-()+\s]/g, '_').slice(0, 200) || 'file';
-  return `costs/${sanitizeSegment(costRowId, 80)}/${column}/${Date.now()}_${safeBase}`;
+  return `costs/${sanitizeSegment(firmId, 80)}/${sanitizeSegment(month, 20)}/${column}/${sanitizeSegment(documentRowId, 80)}/${Date.now()}_${safeBase}`;
 }
 
 export { fileNameFromStoragePath };
@@ -58,6 +82,9 @@ export function guessMimeTypeFromFileName(fileName: string): string {
   return map[ext] || 'application/octet-stream';
 }
 
+const DOC_SELECT =
+  'id, firm_id, billing_month, firm_management_cost_id, doc_type, storage_path, file_name, mime_type, created_at';
+
 async function removeStorageObject(bucket: string, path: string): Promise<void> {
   const trimmed = path.trim();
   if (!trimmed) return;
@@ -65,78 +92,146 @@ async function removeStorageObject(bucket: string, path: string): Promise<void> 
   if (error) throw error;
 }
 
+export async function fetchDocumentsForCostLine(
+  costId: string,
+  docType: FirmManagementCostDocColumn,
+  firmId?: string,
+  billingMonth?: unknown,
+): Promise<FirmManagementCostDocument[]> {
+  if (!costId?.trim()) {
+    return fetchDocumentsForFirmMonth(firmId || '', billingMonth, docType);
+  }
+
+  const { data, error } = await supabase
+    .from('firm_management_cost_documents')
+    .select(DOC_SELECT)
+    .eq('firm_management_cost_id', costId)
+    .eq('doc_type', docType)
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  return (data || []) as FirmManagementCostDocument[];
+}
+
+export async function fetchDocumentsForFirmMonth(
+  firmId: string,
+  billingMonth: unknown,
+  docType: FirmManagementCostDocColumn,
+): Promise<FirmManagementCostDocument[]> {
+  const billing_month = toBillingMonthStart(billingMonth);
+  if (!firmId || !billing_month) return [];
+
+  const { data, error } = await supabase
+    .from('firm_management_cost_documents')
+    .select(DOC_SELECT)
+    .eq('firm_id', firmId)
+    .eq('billing_month', billing_month)
+    .eq('doc_type', docType)
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+  return (data || []) as FirmManagementCostDocument[];
+}
+
+/** firm_id + billing_month → document rows grouped by doc_type (for table columns). */
+export async function fetchFirmManagementCostDocumentsIndex(
+  month: string,
+  year: string,
+): Promise<{
+  paymentByKey: Map<string, FirmManagementCostDocument[]>;
+  taxByKey: Map<string, FirmManagementCostDocument[]>;
+}> {
+  let q = supabase.from('firm_management_cost_documents').select(DOC_SELECT);
+  q = applyMonthAnchorFilter(q, 'billing_month', month, year);
+  const { data, error } = await q;
+  if (error) throw error;
+
+  const paymentByKey = new Map<string, FirmManagementCostDocument[]>();
+  const taxByKey = new Map<string, FirmManagementCostDocument[]>();
+
+  (data || []).forEach((row: FirmManagementCostDocument) => {
+    const key = managementCostLineKey(row.firm_management_cost_id, row.firm_id, row.billing_month);
+    const target = row.doc_type === 'tax_receipt' ? taxByKey : paymentByKey;
+    const list = target.get(key) || [];
+    list.push(row);
+    target.set(key, list);
+  });
+
+  return { paymentByKey, taxByKey };
+}
+
 export async function uploadFirmManagementCostDocument(
-  costRowId: string,
+  firmId: string,
+  billingMonth: unknown,
   column: FirmManagementCostDocColumn,
   file: File,
-): Promise<string> {
-  if (!costRowId?.trim()) {
-    throw new Error('Save this management cost entry before uploading a document');
+  firmManagementCostId?: string | null,
+): Promise<FirmManagementCostDocument> {
+  const billing_month = toBillingMonthStart(billingMonth);
+  if (!firmId?.trim() || !billing_month) {
+    throw new Error('Select firm and billing month before uploading a document');
   }
 
   const bucket = bucketForManagementCostDocColumn(column);
-  const { data: existing, error: fetchErr } = await supabase
-    .from('firm_management_costs')
-    .select(column)
-    .eq('id', costRowId)
+
+  const { data: inserted, error: insErr } = await supabase
+    .from('firm_management_cost_documents')
+    .insert([
+      {
+        firm_id: firmId,
+        billing_month,
+        firm_management_cost_id: firmManagementCostId?.trim() || null,
+        doc_type: column,
+        storage_path: '',
+        file_name: file.name,
+        mime_type: file.type || guessMimeTypeFromFileName(file.name),
+      },
+    ])
+    .select(DOC_SELECT)
     .single();
-  if (fetchErr) throw fetchErr;
 
-  const oldPath =
-    typeof (existing as Record<string, unknown> | null)?.[column] === 'string'
-      ? String((existing as Record<string, unknown>)[column]).trim()
-      : '';
+  if (insErr) throw insErr;
 
-  const path = buildFirmManagementCostStoragePath(costRowId, column, file.name);
+  const path = buildFirmManagementCostStoragePath(
+    firmId,
+    billing_month,
+    column,
+    inserted.id,
+    file.name,
+  );
+
   const { error: upErr } = await supabase.storage
     .from(bucket)
-    .upload(path, file, { contentType: file.type || undefined, upsert: true });
+    .upload(path, file, {
+      contentType: file.type || guessMimeTypeFromFileName(file.name),
+      upsert: true,
+    });
   if (upErr) throw upErr;
 
-  const { error: uErr } = await supabase
-    .from('firm_management_costs')
-    .update({ [column]: path })
-    .eq('id', costRowId);
+  const { data: updated, error: uErr } = await supabase
+    .from('firm_management_cost_documents')
+    .update({ storage_path: path, file_name: file.name })
+    .eq('id', inserted.id)
+    .select(DOC_SELECT)
+    .single();
+
   if (uErr) throw uErr;
-
-  if (oldPath && oldPath !== path) {
-    try {
-      await removeStorageObject(bucket, oldPath);
-    } catch (err) {
-      console.warn('Could not remove previous management cost document', err);
-    }
-  }
-
-  return path;
+  return updated as FirmManagementCostDocument;
 }
 
 export async function removeFirmManagementCostDocument(
-  costRowId: string,
-  column: FirmManagementCostDocColumn,
+  document: Pick<FirmManagementCostDocument, 'id' | 'doc_type' | 'storage_path'>,
 ): Promise<void> {
-  if (!costRowId?.trim()) return;
-
-  const bucket = bucketForManagementCostDocColumn(column);
-  const { data: row, error: fetchErr } = await supabase
-    .from('firm_management_costs')
-    .select(column)
-    .eq('id', costRowId)
-    .single();
-  if (fetchErr) throw fetchErr;
-
-  const path =
-    typeof (row as Record<string, unknown> | null)?.[column] === 'string'
-      ? String((row as Record<string, unknown>)[column]).trim()
-      : '';
-
+  const bucket = bucketForManagementCostDocColumn(document.doc_type);
+  const path = document.storage_path?.trim();
   if (path) {
     await removeStorageObject(bucket, path);
   }
 
   const { error } = await supabase
-    .from('firm_management_costs')
-    .update({ [column]: null })
-    .eq('id', costRowId);
+    .from('firm_management_cost_documents')
+    .delete()
+    .eq('id', document.id);
   if (error) throw error;
 }
 

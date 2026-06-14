@@ -15,10 +15,12 @@ import {
     HashtagIcon,
     DevicePhoneMobileIcon,
     LinkIcon,
-    ShareIcon
+    ShareIcon,
+    EllipsisVerticalIcon,
 } from '@heroicons/react/24/outline';
-import { FaLinkedin, FaWhatsapp, FaEnvelope } from 'react-icons/fa';
+import { FaLinkedin } from 'react-icons/fa';
 import { toast } from 'react-hot-toast';
+import WorkingHoursTab from '../components/profile/WorkingHoursTab';
 
 // Default images if none provided
 const DEFAULT_BANNER = 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?ixlib=rb-4.0.3&auto=format&fit=crop&w=2070&q=80';
@@ -313,7 +315,7 @@ const MyProfilePage: React.FC = () => {
     }
 
     return (
-        <div className="min-h-screen bg-white flex flex-col">
+        <div className="min-h-0 w-full max-w-full min-w-0 overflow-x-hidden bg-white flex flex-col">
             {/* Banner Section */}
             <div className="relative h-64 md:h-80 w-full group">
                 <div
@@ -334,34 +336,42 @@ const MyProfilePage: React.FC = () => {
                     />
                 </div>
 
-                {/* Edit Profile and Share Buttons - TOP RIGHT of banner */}
-                <div className="absolute top-4 right-4 flex items-center gap-2">
+                {/* Profile actions — single dots menu (Share / Share Card / Edit) */}
+                <div className="absolute top-4 right-4 z-20">
                     {!isEditing && (
-                        <>
+                        <div className="dropdown dropdown-end">
                             <button
-                                onClick={handleShare}
-                                className="btn btn-sm btn-ghost bg-black/40 text-white hover:bg-black/60 backdrop-blur-md border-0 gap-2"
-                                title="Share Profile"
+                                type="button"
+                                tabIndex={0}
+                                className="btn btn-sm btn-circle bg-white/50 text-gray-800 hover:bg-white/70 backdrop-blur-md border border-white/60 shadow-md"
+                                aria-label="Profile actions"
                             >
-                                <ShareIcon className="w-4 h-4" />
-                                Share
+                                <EllipsisVerticalIcon className="w-5 h-5" />
                             </button>
-                            <button
-                                onClick={handleShareBusinessCard}
-                                className="btn btn-sm btn-ghost bg-black/40 text-white hover:bg-black/60 backdrop-blur-md border-0 gap-2"
-                                title="Share Business Card"
+                            <ul
+                                tabIndex={0}
+                                className="dropdown-content menu bg-white/90 backdrop-blur-md rounded-xl z-[30] w-52 p-2 shadow-lg border border-white/60 mt-2"
                             >
-                                <ShareIcon className="w-4 h-4" />
-                                Share Card
-                            </button>
-                            <button
-                                onClick={() => setIsEditing(true)}
-                                className="btn btn-sm btn-ghost bg-black/40 text-white hover:bg-black/60 backdrop-blur-md border-0 gap-2"
-                            >
-                                <PencilIcon className="w-4 h-4" />
-                                Edit Profile
-                            </button>
-                        </>
+                                <li>
+                                    <button type="button" className="gap-2" onClick={handleShare}>
+                                        <ShareIcon className="w-4 h-4" />
+                                        Share
+                                    </button>
+                                </li>
+                                <li>
+                                    <button type="button" className="gap-2" onClick={handleShareBusinessCard}>
+                                        <ShareIcon className="w-4 h-4" />
+                                        Share Card
+                                    </button>
+                                </li>
+                                <li>
+                                    <button type="button" className="gap-2" onClick={() => setIsEditing(true)}>
+                                        <PencilIcon className="w-4 h-4" />
+                                        Edit Profile
+                                    </button>
+                                </li>
+                            </ul>
+                        </div>
                     )}
                 </div>
 
@@ -407,8 +417,8 @@ const MyProfilePage: React.FC = () => {
                         <button
                             key={tab}
                             className={`px-4 md:px-6 py-2 rounded-full text-sm font-semibold transition-all backdrop-blur-md border whitespace-nowrap ${activeTab === tab
-                                ? 'bg-black/60 text-white shadow-lg border-black/40'
-                                : 'bg-black/30 text-white hover:bg-black/50 border-black/20'
+                                ? 'bg-primary text-white shadow-lg border-primary/80'
+                                : 'bg-white/45 text-gray-700 hover:bg-white/65 border-white/50'
                                 }`}
                             onClick={() => setActiveTab(tab)}
                         >
@@ -419,7 +429,11 @@ const MyProfilePage: React.FC = () => {
             </div>
 
             {/* Main Content Area */}
-            <div className="flex-1 w-full max-w-5xl mx-auto px-4 md:px-8 py-6 md:py-8 mt-12 md:mt-16">
+            <div
+              className={`flex-1 w-full py-6 md:py-8 mt-12 md:mt-16 px-4 md:px-8 ${
+                activeTab === 'Working Hours' ? '' : 'max-w-5xl mx-auto'
+              }`}
+            >
                 {activeTab === 'About' && (
                     <div>
                         <div className="flex items-center justify-between mb-6 md:mb-8">
@@ -551,8 +565,13 @@ const MyProfilePage: React.FC = () => {
                         </div>
                     </div>
                 )}
-                {/* Other tabs placeholders */}
-                {activeTab !== 'About' && (
+                {activeTab === 'Working Hours' && profile?.id && (
+                    <WorkingHoursTab
+                      employeeId={profile.id}
+                      employeeName={profile.official_name || profile.display_name}
+                    />
+                )}
+                {activeTab !== 'About' && activeTab !== 'Working Hours' && (
                     <div className="py-20 text-center text-gray-400">
                         <HashtagIcon className="w-16 h-16 mx-auto mb-4 opacity-20" />
                         <p>This tab is a placeholder for visual demonstration.</p>
@@ -560,93 +579,39 @@ const MyProfilePage: React.FC = () => {
                 )}
             </div>
 
-            {/* Footer */}
-            <footer className="bg-white border-t border-gray-200 mt-16 md:mt-24">
-                <div className="max-w-5xl mx-auto px-4 py-16 md:py-20 md:px-8">
-                    <div className="flex flex-col items-center justify-center gap-8">
-                        {/* Company Info & Addresses */}
-                        <div className="text-center space-y-3">
-                            <div className="flex items-center justify-center gap-3">
-                                <img src="/DPL-LOGO1.png" alt="DPL Logo" className="h-12 w-auto object-contain" />
-                                <p className="font-bold text-xl text-gray-900">Decker, Pex, Levi Law Offices</p>
-                            </div>
-                            <div className="text-gray-500 text-sm flex flex-col md:flex-row items-center justify-center gap-1 md:gap-3">
-                                <p>Yad Harutzim 10, Jerusalem, Israel</p>
-                                <span className="hidden md:inline text-gray-400">•</span>
-                                <p>Menachem Begin Rd. 150, Tel Aviv, Israel</p>
-                            </div>
-                        </div>
-
-
-                        {/* Contact Us Section - Removed as per request (moved to floating) */}
-                    </div>
-
-                    <div className="mt-12 pt-8 border-t border-gray-100 text-center text-xs text-gray-400">
-                        RMQ 2.0 - Copyright © {new Date().getFullYear()} - All right reserved
-                    </div>
+            {/* Floating Cancel/Save — only while editing (contact buttons live on PublicProfilePage only) */}
+            {isEditing && (
+                <div className="fixed right-4 md:right-6 top-1/2 -translate-y-1/2 flex flex-col gap-3 md:gap-4 z-50">
+                    <button
+                        onClick={() => {
+                            setIsEditing(false);
+                            setFormData({
+                                mobile: profile.mobile,
+                                phone: profile.phone,
+                                phone_ext: profile.phone_ext,
+                                display_name: profile.display_name,
+                                official_name: profile.official_name,
+                                school: profile.school || '',
+                                diplom: profile.diplom || '',
+                                linkedin_url: profile.linkedin_url || ''
+                            });
+                        }}
+                        className="btn btn-circle btn-md md:btn-lg bg-red-500 text-white border-none hover:bg-red-600 shadow-lg hover:scale-110 transition-transform"
+                        disabled={uploading}
+                        title="Cancel"
+                    >
+                        <XMarkIcon className="w-5 h-5 md:w-8 md:h-8" />
+                    </button>
+                    <button
+                        onClick={handleSave}
+                        className="btn btn-circle btn-md md:btn-lg bg-green-500 text-white border-none hover:bg-green-600 shadow-lg hover:scale-110 transition-transform"
+                        disabled={uploading}
+                        title="Save"
+                    >
+                        <CheckIcon className="w-5 h-5 md:w-8 md:h-8" />
+                    </button>
                 </div>
-            </footer>
-
-            {/* Floating Contact Buttons (Right Side Center) */}
-            <div className="fixed right-4 md:right-6 top-1/2 -translate-y-1/2 flex flex-col gap-3 md:gap-4 z-50">
-                <a
-                    href="https://wa.me/972552780162"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn btn-circle btn-md md:btn-lg bg-green-500 text-white border-none hover:bg-green-600 shadow-lg hover:scale-110 transition-transform"
-                    title="Chat on WhatsApp"
-                >
-                    <FaWhatsapp className="w-5 h-5 md:w-8 md:h-8" />
-                </a>
-                <a
-                    href="mailto:office@lawoffice.org.il"
-                    className="btn btn-circle btn-md md:btn-lg bg-blue-600 text-white border-none hover:bg-blue-700 shadow-lg hover:scale-110 transition-transform"
-                    title="Send Email"
-                >
-                    <FaEnvelope className="w-5 h-5 md:w-8 md:h-8" />
-                </a>
-                <a
-                    href="tel:+972503489649"
-                    className="btn btn-circle btn-md md:btn-lg bg-purple-600 text-white border-none hover:bg-purple-700 shadow-lg hover:scale-110 transition-transform"
-                    title="Call Office"
-                >
-                    <PhoneIcon className="w-5 h-5 md:w-8 md:h-8" />
-                </a>
-
-                {/* Cancel and Save Buttons - Only visible when editing */}
-                {isEditing && (
-                    <div className="flex flex-col gap-3 md:gap-4 mt-2">
-                        <button
-                            onClick={() => {
-                                setIsEditing(false);
-                                setFormData({
-                                    mobile: profile.mobile,
-                                    phone: profile.phone,
-                                    phone_ext: profile.phone_ext,
-                                    display_name: profile.display_name,
-                                    official_name: profile.official_name,
-                                    school: profile.school || '',
-                                    diplom: profile.diplom || '',
-                                    linkedin_url: profile.linkedin_url || ''
-                                });
-                            }}
-                            className="btn btn-circle btn-md md:btn-lg bg-red-500 text-white border-none hover:bg-red-600 shadow-lg hover:scale-110 transition-transform"
-                            disabled={uploading}
-                            title="Cancel"
-                        >
-                            <XMarkIcon className="w-5 h-5 md:w-8 md:h-8" />
-                        </button>
-                        <button
-                            onClick={handleSave}
-                            className="btn btn-circle btn-md md:btn-lg bg-green-500 text-white border-none hover:bg-green-600 shadow-lg hover:scale-110 transition-transform"
-                            disabled={uploading}
-                            title="Save"
-                        >
-                            <CheckIcon className="w-5 h-5 md:w-8 md:h-8" />
-                        </button>
-                    </div>
-                )}
-            </div>
+            )}
 
             {/* Edit Profile Modal */}
             {isEditing && typeof window !== 'undefined' && createPortal(

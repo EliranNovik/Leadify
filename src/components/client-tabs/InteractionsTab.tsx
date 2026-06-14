@@ -60,6 +60,11 @@ import { useMailboxReconnect } from '../../contexts/MailboxReconnectContext';
 import { useAuthContext } from '../../contexts/AuthContext';
 import { fetchLeadContacts } from '../../lib/contactHelpers';
 import type { ContactInfo } from '../../lib/contactHelpers';
+import {
+  consumeInteractionsCommunicationPreset,
+  normalizeLeadIdForCompare,
+  peekInteractionsCommunicationPreset,
+} from '../../lib/interactionsCommunicationPreset';
 import { fetchWhatsAppTemplates, type WhatsAppTemplate } from '../../lib/whatsappTemplates';
 import { interactionsDevLog, interactionsDevWarn } from '../../lib/interactions/devLog';
 import {
@@ -2798,6 +2803,47 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       }
     }
   }, [client.id, interactions.length]); // Include interactions.length since we need to check it
+
+  const communicationPresetAppliedRef = useRef(false);
+
+  useEffect(() => {
+    communicationPresetAppliedRef.current = false;
+  }, [client.id]);
+
+  // Open email modal from collection report (or other pages) with pre-selected contacts
+  useEffect(() => {
+    if (!client?.id || communicationPresetAppliedRef.current) return;
+
+    const preset = peekInteractionsCommunicationPreset();
+    if (!preset || preset.mode !== 'email') return;
+
+    const currentLeadId = isLegacyLead
+      ? String(client.id).replace(/^legacy_/, '')
+      : String(client.id);
+    const presetLeadId = normalizeLeadIdForCompare(preset.primary.leadId, preset.primary.leadType);
+    if (currentLeadId !== presetLeadId) return;
+
+    consumeInteractionsCommunicationPreset();
+    communicationPresetAppliedRef.current = true;
+
+    setSelectedContactForEmail(preset.primary);
+    const recipients: string[] = [];
+    const allSelections = [preset.primary, ...(preset.additionalContacts || [])];
+    for (const sel of allSelections) {
+      const email = sel.contact.email?.trim();
+      if (!email) continue;
+      try {
+        pushComposeRecipient(recipients, email);
+      } catch {
+        // skip invalid addresses
+      }
+    }
+    if (recipients.length > 0) {
+      setComposeToRecipients(recipients);
+    }
+    setShowContactSelectorForEmail(false);
+    setIsEmailModalOpen(true);
+  }, [client.id, isLegacyLead, pushComposeRecipient]);
 
 
 
