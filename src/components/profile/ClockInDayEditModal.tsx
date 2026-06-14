@@ -12,6 +12,7 @@ import { unavailabilityDateLabel } from '../../lib/employeeUnavailabilities';
 import { getHolidayWarningsForDates } from '../../lib/israeliJewishHolidays';
 import type { HolidayDateWarning } from '../../lib/israeliJewishHolidays';
 import HolidayEntryWarningModal from './HolidayEntryWarningModal';
+import HolidayDateNote from './HolidayDateNote';
 
 export type ClockInDaySession = {
   id: number;
@@ -120,6 +121,8 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
               readOnly
             />
           </label>
+
+          <HolidayDateNote date={dateKey} />
 
           {hadAutomatic && (
             <p className="text-sm text-gray-500 bg-base-200/60 rounded-lg px-3 py-2">

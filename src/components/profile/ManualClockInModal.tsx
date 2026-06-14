@@ -8,6 +8,7 @@ import { toDateInputValue } from '../../lib/employeeClockInFormat';
 import { getHolidayWarningsForDates } from '../../lib/israeliJewishHolidays';
 import type { HolidayDateWarning } from '../../lib/israeliJewishHolidays';
 import HolidayEntryWarningModal from './HolidayEntryWarningModal';
+import HolidayDateNote from './HolidayDateNote';
 
 interface ManualClockInModalProps {
   isOpen: boolean;
@@ -163,26 +164,29 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
             <span className="label-text font-medium">Dates</span>
             <div className="space-y-2">
               {dateRows.map((row, index) => (
-                <div key={row.id} className="flex items-center gap-2">
-                  <input
-                    type="date"
-                    className="input input-bordered flex-1"
-                    value={row.value}
-                    onChange={(e) => updateDateRow(row.id, e.target.value)}
-                    disabled={saving}
-                    aria-label={`Date ${index + 1}`}
-                  />
-                  {dateRows.length > 1 && (
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm btn-square text-error shrink-0"
-                      onClick={() => removeDateRow(row.id)}
+                <div key={row.id} className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="date"
+                      className="input input-bordered flex-1"
+                      value={row.value}
+                      onChange={(e) => updateDateRow(row.id, e.target.value)}
                       disabled={saving}
-                      title="Remove date"
-                    >
-                      <TrashIcon className="w-4 h-4" />
-                    </button>
-                  )}
+                      aria-label={`Date ${index + 1}`}
+                    />
+                    {dateRows.length > 1 && (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm btn-square text-error shrink-0"
+                        onClick={() => removeDateRow(row.id)}
+                        disabled={saving}
+                        title="Remove date"
+                      >
+                        <TrashIcon className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                  {row.value && <HolidayDateNote date={row.value} />}
                 </div>
               ))}
             </div>

@@ -46,6 +46,7 @@ import {
   type EmployeeUnavailabilityEntry,
 } from '../../lib/employeeUnavailabilities';
 import UnavailabilityTypeBadge from '../UnavailabilityTypeBadge';
+import DocumentViewerModal from '../DocumentViewerModal';
 import UnavailabilityDayEditModal from './UnavailabilityDayEditModal';
 import ManualClockInModal from './ManualClockInModal';
 import ClockInDayEditModal from './ClockInDayEditModal';
