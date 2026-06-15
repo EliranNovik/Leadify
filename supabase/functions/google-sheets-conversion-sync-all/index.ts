@@ -1,7 +1,10 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { corsHeaders } from '../_shared/cors.ts';
-import { googleSheetsCronAuthorized } from '../_shared/googleSheetsCronAuth.ts';
+import {
+  googleSheetsCronAuthorized,
+  resolveGoogleSheetsCronSecret,
+} from '../_shared/googleSheetsCronAuth.ts';
 
 const LOG_PREFIX = '[google-sheets-conversion-sync-all]';
 
@@ -17,14 +20,6 @@ function log(...args: unknown[]) {
 
 function logError(...args: unknown[]) {
   console.error(LOG_PREFIX, ...args);
-}
-
-function resolveCronSecret(): string | null {
-  return (
-    Deno.env.get('GOOGLE_SHEETS_SYNC_CRON_SECRET')?.trim() ||
-    Deno.env.get('BAD_LEADS_SYNC_CRON_SECRET')?.trim() ||
-    null
-  );
 }
 
 serve(async (req) => {
@@ -43,8 +38,8 @@ serve(async (req) => {
   const supabaseAnon = Deno.env.get('SUPABASE_ANON_KEY')!;
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const authHeader = req.headers.get('Authorization') ?? '';
-  const cronSecret = resolveCronSecret();
-  const cronOk = googleSheetsCronAuthorized(req, 'GOOGLE_SHEETS_SYNC_CRON_SECRET');
+  const cronSecret = resolveGoogleSheetsCronSecret(req);
+  const cronOk = googleSheetsCronAuthorized(req, 'BAD_LEADS_SYNC_CRON_SECRET');
 
   let authorized = cronOk;
   if (!authorized && authHeader.startsWith('Bearer ')) {
