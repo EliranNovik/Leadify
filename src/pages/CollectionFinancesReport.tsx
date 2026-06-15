@@ -3,17 +3,17 @@ import { createPortal } from 'react-dom';
 import { Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { BanknotesIcon, MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
-import { PencilSquareIcon, XMarkIcon, ArrowLeftIcon, XCircleIcon, ExclamationTriangleIcon, PaperAirplaneIcon, DocumentTextIcon, Cog6ToothIcon, ArrowDownTrayIcon, CheckIcon, CalendarDaysIcon, ViewColumnsIcon, FunnelIcon as FunnelIconOutline } from '@heroicons/react/24/outline';
+import { PencilSquareIcon, XMarkIcon, ArrowLeftIcon, XCircleIcon, ExclamationTriangleIcon, DocumentTextIcon, Cog6ToothIcon, ArrowDownTrayIcon, CheckIcon, CalendarDaysIcon, ViewColumnsIcon, FunnelIcon as FunnelIconOutline, ClockIcon as ClockIconOutline, PaperAirplaneIcon, ChevronUpIcon, ChevronDownIcon, ChevronUpDownIcon } from '@heroicons/react/24/outline';
 import { PhoneIcon as PhoneIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp, FaEnvelope } from 'react-icons/fa';
 import * as XLSX from 'xlsx';
 import toast from 'react-hot-toast';
-import ProformaSendLanguageModal from '../components/proforma/ProformaSendLanguageModal';
 import MultiLeadContactSelectorModal, {
   type ContactPickerMode,
   type MultiLeadContactSelectorLead,
 } from '../components/MultiLeadContactSelectorModal';
 import CollectionViewInvoicePickerModal from '../components/collection/CollectionViewInvoicePickerModal';
+import ProformaSendLanguageModal from '../components/proforma/ProformaSendLanguageModal';
 import SchedulerWhatsAppModal from '../components/SchedulerWhatsAppModal';
 import { useMailboxReconnect } from '../contexts/MailboxReconnectContext';
 import {
@@ -25,12 +25,12 @@ import {
   uniqueLeadsFromRows,
   type CollectionInvoicePickerOption,
 } from '../lib/collectionFinancesRowActions';
+import type { ProformaSendLanguage } from '../lib/proformaSendLanguage';
 import {
   buildProformaSendSuccessMessage,
   collectProformaSendPartialErrors,
   sendProformaInvoiceBundle,
 } from '../lib/proformaSendInvoice';
-import type { ProformaSendLanguage } from '../lib/proformaSendLanguage';
 import {
   normalizeLeadIdForCompare,
   setInteractionsCommunicationPreset,
@@ -92,6 +92,9 @@ export type PaymentRow = {
   proformaDate: string | null;
   /** New leads only: true when this is the "due" row (sent to finance). Used when Due = "Due date included". */
   readyToPay?: boolean;
+  invoiceSendAutomationActive?: boolean;
+  invoiceSendAutomationLanguage?: string | null;
+  invoiceSendAutomationSentAt?: string | null;
   handlerName: string;
   handlerId?: number | null;
   caseNumber: string;
@@ -101,6 +104,10 @@ export type PaymentRow = {
   /** Payment row currency (accounting_currencies.id); used for currency filter. */
   currencyId?: number | null;
   leadType: 'new' | 'legacy';
+  /** Main lead email (leads / leads_lead). */
+  leadEmail?: string | null;
+  /** Per-row contact email (legacy client_id or main contact). */
+  contactEmail?: string | null;
 };
 
 type RowNisAmounts = {
@@ -164,6 +171,32 @@ function formatRowAmount(row: PaymentRow): string {
 function formatRowDate(value: string | null | undefined): string {
   if (!value) return '—';
   return new Date(value).toLocaleDateString();
+}
+
+function InvoiceAutomationBadge({ row }: { row: PaymentRow }) {
+  if (!row.invoiceSendAutomationActive) return null;
+  const sent = Boolean(row.invoiceSendAutomationSentAt);
+  const scheduledDate = row.dueDate ?? row.planDate;
+  const title = sent
+    ? `Invoice sent automatically on ${formatRowDate(row.invoiceSendAutomationSentAt)}`
+    : `Scheduled invoice send on ${formatRowDate(scheduledDate)} (${row.invoiceSendAutomationLanguage === 'he' ? 'Hebrew' : 'English'})`;
+  return (
+    <span
+      className={`ml-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border ${
+        sent
+          ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+          : 'border-violet-200 bg-violet-50 text-violet-700'
+      }`}
+      title={title}
+      aria-label={title}
+    >
+      {sent ? (
+        <CheckIcon className="h-3.5 w-3.5" aria-hidden />
+      ) : (
+        <ClockIconOutline className="h-3.5 w-3.5" aria-hidden />
+      )}
+    </span>
+  );
 }
 
 const todayIso = new Date().toISOString().split('T')[0];
@@ -257,6 +290,200 @@ function applyDisplayFilterToRows(rows: PaymentRow[], displayFilter: DisplayFilt
   if (displayFilter === 'uncollected') return rows.filter((row) => !row.collected);
   if (displayFilter === 'with_proforma') return rows.filter((row) => row.hasProforma);
   return rows;
+}
+
+function normalizeRowSearchToken(value: string): string {
+  return value.toLowerCase().trim().replace(/^#/, '');
+}
+
+function filterRowsBySearch(rows: PaymentRow[], query: string): PaymentRow[] {
+  const q = normalizeRowSearchToken(query);
+  if (!q) return rows;
+  return rows.filter((row) => {
+    const fields = [
+      row.caseNumber,
+      row.leadName,
+      row.clientName,
+      row.contactEmail,
+      row.leadEmail,
+      row.leadId?.replace(/^legacy_/, ''),
+    ];
+    return fields
+      .filter(Boolean)
+      .some((field) => normalizeRowSearchToken(String(field)).includes(q));
+  });
+}
+
+type CollectionSortColumn = 'amount' | 'date' | 'proformaDate' | 'paidDate';
+type CollectionSortDirection = 'asc' | 'desc';
+
+function parseRowSortDate(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+function compareNullableSortDate(
+  a: string | null | undefined,
+  b: string | null | undefined,
+  direction: CollectionSortDirection,
+): number {
+  const aTime = parseRowSortDate(a);
+  const bTime = parseRowSortDate(b);
+  if (aTime === null && bTime === null) return 0;
+  if (aTime === null) return 1;
+  if (bTime === null) return -1;
+  const cmp = aTime - bTime;
+  return direction === 'asc' ? cmp : -cmp;
+}
+
+function sortCollectionRows(
+  rows: PaymentRow[],
+  column: CollectionSortColumn | null,
+  direction: CollectionSortDirection,
+): PaymentRow[] {
+  if (!column) return rows;
+  const sorted = [...rows];
+  sorted.sort((a, b) => {
+    switch (column) {
+      case 'amount': {
+        const cmp = a.amount - b.amount;
+        return direction === 'asc' ? cmp : -cmp;
+      }
+      case 'date':
+        return compareNullableSortDate(a.dueDate ?? a.planDate, b.dueDate ?? b.planDate, direction);
+      case 'proformaDate':
+        return compareNullableSortDate(a.proformaDate, b.proformaDate, direction);
+      case 'paidDate':
+        return compareNullableSortDate(a.collectedDate, b.collectedDate, direction);
+      default:
+        return 0;
+    }
+  });
+  return sorted;
+}
+
+const SortableTableHeader: React.FC<{
+  label: string;
+  active: boolean;
+  direction: CollectionSortDirection;
+  onClick: () => void;
+}> = ({ label, active, direction, onClick }) => (
+  <th>
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-1 text-left hover:text-gray-800"
+      aria-sort={active ? (direction === 'asc' ? 'ascending' : 'descending') : 'none'}
+    >
+      <span>{label}</span>
+      {active ? (
+        direction === 'asc' ? (
+          <ChevronUpIcon className="h-3.5 w-3.5" aria-hidden />
+        ) : (
+          <ChevronDownIcon className="h-3.5 w-3.5" aria-hidden />
+        )
+      ) : (
+        <ChevronUpDownIcon className="h-3.5 w-3.5 opacity-40" aria-hidden />
+      )}
+    </button>
+  </th>
+);
+
+function escapeIlikePattern(value: string): string {
+  return value.replace(/[%_\\]/g, '\\$&');
+}
+
+type PaymentFetchScope = {
+  modernLeadIds?: string[];
+  legacyLeadIds?: number[];
+};
+
+const PAYMENT_SEARCH_FILTERS: Filters = {
+  fromDate: '',
+  toDate: '',
+  paymentFromDate: '',
+  paymentToDate: '',
+  collected: [],
+  categoryId: [],
+  order: [],
+  currencyId: [],
+  due: 'ignore',
+};
+
+async function resolveLeadIdsForPaymentSearch(query: string): Promise<PaymentFetchScope> {
+  const trimmed = query.trim().replace(/^#/, '');
+  if (!trimmed) return {};
+
+  const escaped = escapeIlikePattern(trimmed);
+  const pattern = `%${escaped}%`;
+  const modernLeadIds = new Set<string>();
+  const legacyLeadIds = new Set<number>();
+  const orLeadFields = `lead_number.ilike.${pattern},name.ilike.${pattern},email.ilike.${pattern},anchor_full_name.ilike.${pattern}`;
+
+  const [{ data: modernLeads }, { data: legacyLeads }] = await Promise.all([
+    supabase.from('leads').select('id').or(orLeadFields),
+    supabase.from('leads_lead').select('id').or(`${orLeadFields},manual_id.ilike.${pattern}`),
+  ]);
+
+  (modernLeads || []).forEach((lead) => {
+    if (lead.id) modernLeadIds.add(lead.id);
+  });
+  (legacyLeads || []).forEach((lead) => {
+    if (lead.id != null) legacyLeadIds.add(Number(lead.id));
+  });
+
+  const numericId = parseInt(trimmed, 10);
+  if (!Number.isNaN(numericId)) {
+    legacyLeadIds.add(numericId);
+  }
+
+  const { data: contacts } = await supabase
+    .from('leads_contact')
+    .select('id')
+    .or(`name.ilike.${pattern},email.ilike.${pattern}`);
+
+  const contactIds = (contacts || []).map((contact) => contact.id).filter(Boolean);
+  const linkBatchSize = 150;
+  for (let i = 0; i < contactIds.length; i += linkBatchSize) {
+    const batch = contactIds.slice(i, i + linkBatchSize);
+    const { data: links } = await supabase
+      .from('lead_leadcontact')
+      .select('lead_id, newlead_id')
+      .in('contact_id', batch);
+    (links || []).forEach((link) => {
+      if (link.newlead_id) modernLeadIds.add(link.newlead_id);
+      if (link.lead_id != null) legacyLeadIds.add(Number(link.lead_id));
+    });
+  }
+
+  const { data: modernByClientName } = await supabase
+    .from('payment_plans')
+    .select('lead_id')
+    .is('cancel_date', null)
+    .ilike('client_name', pattern);
+  (modernByClientName || []).forEach((plan) => {
+    if (plan.lead_id) modernLeadIds.add(plan.lead_id);
+  });
+
+  return {
+    modernLeadIds: Array.from(modernLeadIds),
+    legacyLeadIds: Array.from(legacyLeadIds),
+  };
+}
+
+async function searchPaymentRowsByQuery(query: string): Promise<PaymentRow[]> {
+  const scope = await resolveLeadIdsForPaymentSearch(query);
+  const hasModern = (scope.modernLeadIds?.length ?? 0) > 0;
+  const hasLegacy = (scope.legacyLeadIds?.length ?? 0) > 0;
+  if (!hasModern && !hasLegacy) return [];
+
+  const [modern, legacy] = await Promise.all([
+    hasModern ? fetchModernPayments(PAYMENT_SEARCH_FILTERS, scope) : Promise.resolve([]),
+    hasLegacy ? fetchLegacyPayments(PAYMENT_SEARCH_FILTERS, scope) : Promise.resolve([]),
+  ]);
+
+  return filterRowsBySearch([...modern, ...legacy], query);
 }
 
 /** Payment dates use Israel calendar day (paid_at at 01:00 should count for that local day, not UTC). */
@@ -836,6 +1063,13 @@ const CollectionFinancesReport: React.FC = () => {
   const [searchQuery, setSearchQuery] = usePersistedState<string>('collectionFinancesReport_searchQuery', '', {
     storage: 'sessionStorage',
   });
+  const [rowSearchQuery, setRowSearchQuery] = usePersistedState<string>(
+    'collectionFinancesReport_rowSearchQuery',
+    '',
+    { storage: 'sessionStorage' },
+  );
+  const [searchRows, setSearchRows] = useState<PaymentRow[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [showCollectedDropdown, setShowCollectedDropdown] = useState(false);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [showOrderDropdown, setShowOrderDropdown] = useState(false);
@@ -882,9 +1116,6 @@ const CollectionFinancesReport: React.FC = () => {
   const settingsMenuPanelRef = useRef<HTMLDivElement>(null);
   const [settingsMenuAnchor, setSettingsMenuAnchor] = useState<{ left: number; bottom: number } | null>(null);
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
-  const [sendInvoiceModalOpen, setSendInvoiceModalOpen] = useState(false);
-  const [sendInvoiceRows, setSendInvoiceRows] = useState<PaymentRow[]>([]);
-  const [sendingInvoice, setSendingInvoice] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
   const [contactPickerOpen, setContactPickerOpen] = useState(false);
   const [contactPickerMode, setContactPickerMode] = useState<ContactPickerMode>('email');
@@ -907,6 +1138,10 @@ const CollectionFinancesReport: React.FC = () => {
   const [viewInvoiceModalOpen, setViewInvoiceModalOpen] = useState(false);
   const [viewInvoiceOptions, setViewInvoiceOptions] = useState<CollectionInvoicePickerOption[]>([]);
   const [viewInvoiceLoading, setViewInvoiceLoading] = useState(false);
+  const [sendInvoiceModalOpen, setSendInvoiceModalOpen] = useState(false);
+  const [sendingInvoice, setSendingInvoice] = useState(false);
+  const [sortColumn, setSortColumn] = useState<CollectionSortColumn | null>(null);
+  const [sortDirection, setSortDirection] = useState<CollectionSortDirection>('asc');
   const dropdownTouchHandledRef = useRef(0); // ignore synthetic click after touch (iOS Safari)
 
   // Filter reports based on search query
@@ -1074,10 +1309,55 @@ const CollectionFinancesReport: React.FC = () => {
     };
   }, [settingsMenuOpen]);
 
-  const visibleRows = useMemo(
-    () => applyDisplayFilterToRows(rows, displayFilter),
-    [rows, displayFilter],
+  const isRowSearchActive = Boolean(rowSearchQuery.trim());
+
+  const nisSourceRows = useMemo(
+    () => (isRowSearchActive ? searchRows : rows),
+    [isRowSearchActive, searchRows, rows],
   );
+
+  const visibleRows = useMemo(() => {
+    const baseRows = isRowSearchActive ? searchRows : rows;
+    return applyDisplayFilterToRows(baseRows, displayFilter);
+  }, [rows, searchRows, displayFilter, isRowSearchActive]);
+
+  const sortedVisibleRows = useMemo(
+    () => sortCollectionRows(visibleRows, sortColumn, sortDirection),
+    [visibleRows, sortColumn, sortDirection],
+  );
+
+  const toggleSort = useCallback((column: CollectionSortColumn) => {
+    setSortColumn((prev) => {
+      if (prev === column) {
+        setSortDirection((direction) => (direction === 'asc' ? 'desc' : 'asc'));
+        return column;
+      }
+      setSortDirection('asc');
+      return column;
+    });
+  }, []);
+
+  useEffect(() => {
+    const query = rowSearchQuery.trim();
+    if (!query) {
+      setSearchRows([]);
+      setSearchLoading(false);
+      return;
+    }
+
+    setSearchLoading(true);
+    const timerId = window.setTimeout(() => {
+      void searchPaymentRowsByQuery(query)
+        .then((results) => setSearchRows(results))
+        .catch((err) => {
+          console.error('Payment row search failed:', err);
+          setSearchRows([]);
+        })
+        .finally(() => setSearchLoading(false));
+    }, 350);
+
+    return () => window.clearTimeout(timerId);
+  }, [rowSearchQuery]);
 
   const tableColumnCount = useMemo(() => {
     let count = 8;
@@ -1631,7 +1911,7 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
     let cancelled = false;
 
     const computeNisAmounts = async () => {
-      if (!rows.length) {
+      if (!nisSourceRows.length) {
         setNisByRowId({});
         return;
       }
@@ -1639,13 +1919,13 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
       try {
         const boiStart = await getBoiCoverageStartDate();
         const todaySnap = await loadBoiExchangeRatesForDate(getJerusalemTodayIsoDate());
-        const planIds = rows
+        const planIds = nisSourceRows
           .map((row) => parsePaymentPlanIdFromCollectionRowId(row.id))
           .filter((id): id is number => id != null);
         const lockedByPlan = await fetchPaymentPlanExchangeContexts(planIds);
 
         const entries = await Promise.all(
-          rows.map(async (row): Promise<[string, RowNisAmounts]> => {
+          nisSourceRows.map(async (row): Promise<[string, RowNisAmounts]> => {
             const currencyInput = row.currencyId != null ? row.currencyId : row.currency;
             const isCollected = Boolean(row.collected);
             const dateOnly = (row.collectedDate || '').slice(0, 10);
@@ -1704,7 +1984,7 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
     return () => {
       cancelled = true;
     };
-  }, [rows]);
+  }, [nisSourceRows]);
 
   const totals = useMemo(() => {
     let estimatedWithVat = 0;
@@ -1732,9 +2012,10 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
   }, [visibleRows, nisByRowId]);
 
   const nisReady = useMemo(() => {
+    if (searchLoading && isRowSearchActive) return false;
     if (visibleRows.length === 0) return true;
     return visibleRows.every((r) => Boolean(nisByRowId[r.id]));
-  }, [visibleRows, nisByRowId]);
+  }, [visibleRows, nisByRowId, searchLoading, isRowSearchActive]);
 
   const handleExportToExcel = useCallback(() => {
     if (visibleRows.length === 0) {
@@ -1743,7 +2024,7 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
     }
 
     try {
-      const excelData = visibleRows.map((row) => {
+      const excelData = sortedVisibleRows.map((row) => {
         const nis = nisByRowId[row.id];
         const displayDate = row.dueDate ?? row.planDate;
         const rowData: Record<string, string | number> = {
@@ -1787,7 +2068,7 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
       toast.error('Failed to export report');
     }
   }, [
-    visibleRows,
+    sortedVisibleRows,
     nisByRowId,
     showPaidDateColumn,
     showNisColumn,
@@ -1797,10 +2078,23 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
     showNotesColumn,
   ]);
 
-  const selectedRows = useMemo(
-    () => rows.filter((row) => selectedRowIds.has(row.id)),
-    [rows, selectedRowIds],
+  const selectedRows = useMemo(() => {
+    const source = isRowSearchActive ? searchRows : rows;
+    return source.filter((row) => selectedRowIds.has(row.id));
+  }, [rows, searchRows, selectedRowIds, isRowSearchActive]);
+
+  const sendableInvoiceRows = useMemo(
+    () => selectedRows.filter((row) => row.hasProforma && !row.collected),
+    [selectedRows],
   );
+
+  const sendInvoiceContactLabel = useMemo(() => {
+    if (sendableInvoiceRows.length === 0) return undefined;
+    if (sendableInvoiceRows.length === 1) {
+      return sendableInvoiceRows[0].clientName || sendableInvoiceRows[0].leadName;
+    }
+    return `${sendableInvoiceRows.length} payments`;
+  }, [sendableInvoiceRows]);
 
   const selectedLeadCount = useMemo(() => {
     const leadIds = new Set<string>();
@@ -1843,71 +2137,6 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
     return selectedRows;
   }, [selectedRows]);
 
-  const handleSentInvoiceClick = useCallback(() => {
-    const picked = requireSelectedRows();
-    if (!picked) return;
-    const withProforma = picked.filter((row) => row.hasProforma);
-    if (withProforma.length === 0) {
-      toast.error('Selected rows have no proforma to send');
-      return;
-    }
-    if (withProforma.length < picked.length) {
-      toast(`Sending invoice for ${withProforma.length} of ${picked.length} selected rows (others have no proforma).`);
-    }
-    setSendInvoiceRows(withProforma);
-    setSendInvoiceModalOpen(true);
-  }, [requireSelectedRows]);
-
-  const handleSendInvoiceConfirm = useCallback(async (language: ProformaSendLanguage) => {
-    if (!sendInvoiceRows.length) return;
-    setSendingInvoice(true);
-    let sent = 0;
-    let failed = 0;
-    try {
-      for (const row of sendInvoiceRows) {
-        try {
-          const input = await buildSendInvoiceInputForRow(row, language);
-          if (!input) {
-            failed += 1;
-            continue;
-          }
-          const result = await sendProformaInvoiceBundle(input);
-          collectProformaSendPartialErrors(result).forEach((message) => toast.error(message));
-          if (
-            result.emailError?.message === 'MAILBOX_NOT_CONNECTED' ||
-            (result.emailError as Error & { code?: string })?.code === 'MAILBOX_NOT_CONNECTED'
-          ) {
-            showReconnectModal('Connect Outlook to send invoices by email.');
-          }
-          if (result.emailSent || result.whatsAppSent) {
-            sent += 1;
-            toast.success(buildProformaSendSuccessMessage(result, language));
-          } else {
-            failed += 1;
-          }
-        } catch (err) {
-          failed += 1;
-          const message = err instanceof Error ? err.message : 'Failed to send invoice';
-          if ((err as Error & { code?: string }).code === 'MAILBOX_NOT_CONNECTED') {
-            showReconnectModal('Connect Outlook to send invoices by email.');
-          } else {
-            toast.error(message);
-          }
-        }
-      }
-      if (sent > 0) {
-        toast.success(`Invoice sent for ${sent} row${sent === 1 ? '' : 's'}`);
-      }
-      if (failed > 0 && sent === 0) {
-        toast.error(`Failed to send invoice for ${failed} row${failed === 1 ? '' : 's'}`);
-      }
-      setSendInvoiceModalOpen(false);
-      setSendInvoiceRows([]);
-    } finally {
-      setSendingInvoice(false);
-    }
-  }, [sendInvoiceRows, showReconnectModal]);
-
   const handleViewInvoice = useCallback(async () => {
     const picked = requireSelectedRows();
     if (!picked) return;
@@ -1936,6 +2165,85 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
     window.open(option.path, '_blank', 'noopener,noreferrer');
     setViewInvoiceModalOpen(false);
   }, []);
+
+  const handleSendInvoice = useCallback(() => {
+    const picked = requireSelectedRows();
+    if (!picked) return;
+
+    if (sendableInvoiceRows.length === 0) {
+      if (picked.some((row) => !row.hasProforma)) {
+        toast.error('Selected rows need a proforma before sending');
+      } else {
+        toast.error('Collected payments cannot be sent');
+      }
+      return;
+    }
+
+    if (sendableInvoiceRows.length < picked.length) {
+      toast('Only pending rows with a proforma will be sent', { icon: 'ℹ️' });
+    }
+
+    setSendInvoiceModalOpen(true);
+  }, [requireSelectedRows, sendableInvoiceRows]);
+
+  const handleSendInvoiceConfirm = useCallback(
+    async (language: ProformaSendLanguage) => {
+      if (sendableInvoiceRows.length === 0) return;
+
+      setSendingInvoice(true);
+      let sent = 0;
+      let failed = 0;
+
+      try {
+        for (const row of sendableInvoiceRows) {
+          try {
+            const input = await buildSendInvoiceInputForRow(row, language);
+            if (!input) {
+              failed += 1;
+              continue;
+            }
+
+            const result = await sendProformaInvoiceBundle(input);
+            collectProformaSendPartialErrors(result).forEach((message) => toast.error(message));
+
+            if (
+              result.emailError?.message === 'MAILBOX_NOT_CONNECTED' ||
+              (result.emailError as Error & { code?: string })?.code === 'MAILBOX_NOT_CONNECTED'
+            ) {
+              showReconnectModal('Connect Outlook to send invoices by email.');
+            }
+
+            if (result.emailSent || result.whatsAppSent) {
+              sent += 1;
+              toast.success(buildProformaSendSuccessMessage(result, language));
+            } else {
+              failed += 1;
+            }
+          } catch (err) {
+            failed += 1;
+            const message = err instanceof Error ? err.message : 'Failed to send invoice';
+            if ((err as Error & { code?: string }).code === 'MAILBOX_NOT_CONNECTED') {
+              showReconnectModal('Connect Outlook to send invoices by email.');
+            } else {
+              toast.error(message);
+            }
+          }
+        }
+
+        if (sent > 0) {
+          toast.success(`Invoice sent for ${sent} row${sent === 1 ? '' : 's'}`);
+        }
+        if (failed > 0 && sent === 0) {
+          toast.error(`Failed to send invoice for ${failed} row${failed === 1 ? '' : 's'}`);
+        }
+
+        setSendInvoiceModalOpen(false);
+      } finally {
+        setSendingInvoice(false);
+      }
+    },
+    [sendableInvoiceRows, showReconnectModal],
+  );
 
   const handleViewPayments = useCallback(() => {
     const picked = requireSelectedRows();
@@ -2402,17 +2710,6 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
       >
         <div className="flex w-full flex-col items-center gap-3 px-0.5 pt-4">
           <SidebarRailAction
-            label="Send invoice"
-            title="Send invoice"
-            onClick={handleSentInvoiceClick}
-            disabled={actionBusy || sendingInvoice}
-            btnClassNameActive={sidebarRailBtnActive}
-            btnClassNameIdle={sidebarRailBtnIdle}
-            btnClassNameDisabled={sidebarRailBtnDisabled}
-          >
-            <PaperAirplaneIcon className={sidebarIconClass} />
-          </SidebarRailAction>
-          <SidebarRailAction
             label="View invoice"
             title="View invoice"
             onClick={() => void handleViewInvoice()}
@@ -2422,6 +2719,17 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
             btnClassNameDisabled={sidebarRailBtnDisabled}
           >
             <DocumentTextIcon className={sidebarIconClass} />
+          </SidebarRailAction>
+          <SidebarRailAction
+            label="Send invoice"
+            title="Send invoice by email and WhatsApp"
+            onClick={() => void handleSendInvoice()}
+            disabled={actionBusy || sendingInvoice}
+            btnClassNameActive={sidebarRailBtnActive}
+            btnClassNameIdle={sidebarRailBtnIdle}
+            btnClassNameDisabled={sidebarRailBtnDisabled}
+          >
+            <PaperAirplaneIcon className={sidebarIconClass} />
           </SidebarRailAction>
           <SidebarRailAction
             label="View payments"
@@ -2544,19 +2852,6 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
         )}
 
       <div className="flex-1 min-w-0 px-4 md:px-6 lg:px-8 py-4 md:py-6 lg:py-8 space-y-6">
-      <ProformaSendLanguageModal
-        open={sendInvoiceModalOpen}
-        onClose={() => !sendingInvoice && setSendInvoiceModalOpen(false)}
-        onConfirm={(language) => void handleSendInvoiceConfirm(language)}
-        sending={sendingInvoice}
-        contactLabel={
-          sendInvoiceRows.length === 1
-            ? sendInvoiceRows[0]?.clientName || sendInvoiceRows[0]?.leadName
-            : sendInvoiceRows.length > 1
-              ? `${sendInvoiceRows.length} payments`
-              : undefined
-        }
-      />
       <MultiLeadContactSelectorModal
         isOpen={contactPickerOpen}
         onClose={() => setContactPickerOpen(false)}
@@ -2584,6 +2879,16 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
         onClose={() => setViewInvoiceModalOpen(false)}
         onSelect={handleViewInvoiceSelect}
         formatAmount={formatCurrency}
+      />
+      <ProformaSendLanguageModal
+        open={sendInvoiceModalOpen}
+        onClose={() => !sendingInvoice && setSendInvoiceModalOpen(false)}
+        onConfirm={(language) => void handleSendInvoiceConfirm(language)}
+        sending={sendingInvoice}
+        title="Send invoice"
+        description="Send the proforma invoice to each selected contact by email and WhatsApp."
+        confirmLabel="Send invoice"
+        contactLabel={sendInvoiceContactLabel}
       />
       <div className="flex items-center justify-between flex-wrap gap-4">
         <div>
@@ -3014,20 +3319,59 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">&nbsp;</span></label>
-            <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="btn btn-outline h-12 min-h-12 max-h-12 w-full md:w-auto"
+              onClick={handleClearPaymentDates}
+              disabled={!hasPaymentDateFilter(filters)}
+            >
+              Clear payment dates
+            </button>
+          </div>
+          <div className="form-control md:col-span-2">
+            <label className="label mb-2"><span className="label-text">&nbsp;</span></label>
+            <div className="flex items-center gap-2">
+              <div className="relative min-w-0 flex-1">
+                <MagnifyingGlassIcon
+                  className="pointer-events-none absolute left-4 top-1/2 z-10 h-5 w-5 -translate-y-1/2 text-gray-400"
+                  aria-hidden
+                />
+                <input
+                  type="search"
+                  className={`input input-bordered h-12 min-h-12 w-full rounded-full pl-11 ${
+                    rowSearchQuery || searchLoading ? 'pr-11' : 'pr-4'
+                  }`}
+                  placeholder="Search..."
+                  value={rowSearchQuery}
+                  onChange={(e) => setRowSearchQuery(e.target.value)}
+                  aria-label="Search"
+                />
+                {searchLoading ? (
+                  <ArrowPathIcon
+                    className="pointer-events-none absolute right-4 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-gray-400"
+                    aria-hidden
+                  />
+                ) : rowSearchQuery ? (
+                  <button
+                    type="button"
+                    onClick={() => setRowSearchQuery('')}
+                    className="absolute right-3 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                    aria-label="Clear search"
+                  >
+                    <XMarkIcon className="h-4 w-4" />
+                  </button>
+                ) : null}
+              </div>
               <button
                 type="button"
-                className="btn btn-outline h-12 min-h-0 max-h-12"
-                onClick={handleClearPaymentDates}
-                disabled={!hasPaymentDateFilter(filters)}
+                className="btn btn-primary h-12 min-h-12 shrink-0 rounded-full px-6"
+                onClick={() => loadPayments()}
+                disabled={loading}
               >
-                Clear payment dates
+                {loading ? <ArrowPathIcon className="h-5 w-5 animate-spin" /> : 'Show'}
               </button>
-              <button className="btn btn-primary h-12 min-h-0 max-h-12" onClick={() => loadPayments()} disabled={loading}>
-                {loading ? <ArrowPathIcon className="w-5 h-5 animate-spin" /> : 'Show'}
-              </button>
-              {error && <span className="text-error text-sm">{error}</span>}
             </div>
+            {error ? <span className="text-error mt-1 text-sm">{error}</span> : null}
           </div>
         </div>
       </div>
@@ -3078,13 +3422,37 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
                 </th>
                 <th>Lead Name</th>
                 {showClientColumn ? <th>Client</th> : null}
-                <th>Amount</th>
+                <SortableTableHeader
+                  label="Amount"
+                  active={sortColumn === 'amount'}
+                  direction={sortDirection}
+                  onClick={() => toggleSort('amount')}
+                />
                 {showNisColumn ? <th>Amount (in NIS)</th> : null}
                 <th>Order</th>
                 <th>Collected</th>
-                <th>Date</th>
-                {showProformaDateColumn ? <th>Proforma Date</th> : null}
-                {showPaidDateColumn ? <th>Paid Date</th> : null}
+                <SortableTableHeader
+                  label="Date"
+                  active={sortColumn === 'date'}
+                  direction={sortDirection}
+                  onClick={() => toggleSort('date')}
+                />
+                {showProformaDateColumn ? (
+                  <SortableTableHeader
+                    label="Proforma Date"
+                    active={sortColumn === 'proformaDate'}
+                    direction={sortDirection}
+                    onClick={() => toggleSort('proformaDate')}
+                  />
+                ) : null}
+                {showPaidDateColumn ? (
+                  <SortableTableHeader
+                    label="Paid Date"
+                    active={sortColumn === 'paidDate'}
+                    direction={sortDirection}
+                    onClick={() => toggleSort('paidDate')}
+                  />
+                ) : null}
                 {showHandlerColumn ? <th>Handler</th> : null}
                 <th>Case</th>
                 <th>Category</th>
@@ -3092,12 +3460,21 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
               </tr>
             </thead>
             <tbody>
-              {visibleRows.length === 0 && !loading && (
+              {visibleRows.length === 0 && !loading && !searchLoading && (
                 <tr>
                   <td colSpan={tableColumnCount} className="text-center py-6 text-gray-500">
-                    {rows.length === 0
-                      ? 'No payments found for the selected filters.'
-                      : 'No rows match the current display filter.'}
+                    {isRowSearchActive
+                      ? 'No payments match your search.'
+                      : rows.length === 0
+                        ? 'No payments found for the selected filters.'
+                        : 'No rows match the current display filter.'}
+                  </td>
+                </tr>
+              )}
+              {searchLoading && isRowSearchActive && (
+                <tr>
+                  <td colSpan={tableColumnCount} className="text-center py-6 text-gray-500">
+                    Searching…
                   </td>
                 </tr>
               )}
@@ -3145,7 +3522,8 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
                 }
                 return null;
               })()}
-              {visibleRows.map((row) => (
+              {!(searchLoading && isRowSearchActive) &&
+                sortedVisibleRows.map((row) => (
                 <tr key={row.id}>
                   <td>
                     <input
@@ -3177,22 +3555,25 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
                   ) : null}
                   <td>{row.orderLabel || '—'}</td>
                   <td>
-                    {row.collected ? (
-                      <span className="inline-flex items-center gap-2 text-green-600 font-semibold">
-                        <CheckCircleIcon className="w-5 h-5" />
-                        {row.hasProforma ? 'Collected - With Proforma' : 'Collected - Without Proforma'}
-                      </span>
-                    ) : row.hasProforma ? (
-                      <span className="inline-flex items-center gap-2 text-yellow-600 font-semibold">
-                        <ExclamationTriangleIcon className="w-5 h-5" />
-                        Pending (Proforma)
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-2 text-red-600 font-semibold">
-                        <XCircleIcon className="w-5 h-5" />
-                        Pending
-                      </span>
-                    )}
+                    <span className="inline-flex items-center">
+                      {row.collected ? (
+                        <span className="inline-flex items-center gap-2 text-green-600 font-semibold">
+                          <CheckCircleIcon className="w-5 h-5" />
+                          {row.hasProforma ? 'Collected - With Proforma' : 'Collected - Without Proforma'}
+                        </span>
+                      ) : row.hasProforma ? (
+                        <span className="inline-flex items-center gap-2 text-yellow-600 font-semibold">
+                          <ExclamationTriangleIcon className="w-5 h-5" />
+                          Pending (Proforma)
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-2 text-red-600 font-semibold">
+                          <XCircleIcon className="w-5 h-5" />
+                          Pending
+                        </span>
+                      )}
+                      <InvoiceAutomationBadge row={row} />
+                    </span>
                   </td>
                   <td>
                     {(() => {
@@ -3380,16 +3761,18 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
 
 export default CollectionFinancesReport;
 
-async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
+async function fetchModernPayments(filters: Filters, scope?: PaymentFetchScope): Promise<PaymentRow[]> {
   console.log(`🔍 [fetchModernPayments] Starting with filters:`, filters);
   let query = supabase
     .from('payment_plans')
-    .select('id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay');
+    .select('id, lead_id, value, value_vat, currency, currency_id, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at');
 
   // Always filter out cancelled plans
   query = query.is('cancel_date', null);
 
-  if (hasPaymentDateFilter(filters)) {
+  if (scope?.modernLeadIds?.length) {
+    query = query.in('lead_id', scope.modernLeadIds);
+  } else if (hasPaymentDateFilter(filters)) {
     query = applyPaymentDateRangeToQuery(query, filters, 'paid_at');
   } else if (filters.fromDate || filters.toDate) {
     // New leads: always apply date range on due_date (one column, no combining rows).
@@ -3401,11 +3784,13 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
       if (filters.toDate) query = query.lte('due_date', filters.toDate);
     }
   }
-  if (filters.due === 'due_only') {
-    query = query.not('due_date', 'is', null).eq('ready_to_pay', true);
-    console.log(`🔍 [fetchModernPayments] Due date included: due_date range + ready_to_pay = true`);
-  } else {
-    console.log(`🔍 [fetchModernPayments] Ignore: all rows in due_date range (no ready_to_pay filter)`);
+  if (!scope?.modernLeadIds?.length) {
+    if (filters.due === 'due_only') {
+      query = query.not('due_date', 'is', null).eq('ready_to_pay', true);
+      console.log(`🔍 [fetchModernPayments] Due date included: due_date range + ready_to_pay = true`);
+    } else {
+      console.log(`🔍 [fetchModernPayments] Ignore: all rows in due_date range (no ready_to_pay filter)`);
+    }
   }
 
   // Supabase returns max 1000 rows by default; paginate to fetch all
@@ -3588,6 +3973,9 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
       planDate: null, // New leads have no separate "date" column; date filter uses due_date
       proformaDate,
       readyToPay: Boolean(plan.ready_to_pay), // When Due = "Due date included" we only want rows with ready_to_pay = true
+      invoiceSendAutomationActive: Boolean(plan.invoice_send_automation_active),
+      invoiceSendAutomationLanguage: plan.invoice_send_automation_language || null,
+      invoiceSendAutomationSentAt: plan.invoice_send_automation_sent_at || null,
       handlerName: meta?.handlerName || '—',
       handlerId: meta?.handlerId ?? null,
       caseNumber: meta?.caseNumber || (plan.lead_id ? `#${plan.lead_id}` : '—'),
@@ -3596,23 +3984,27 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
       mainCategoryId: meta?.mainCategoryId,
       currencyId: (plan.currency_id != null ? Number(plan.currency_id) : null) ?? (plan.currency ? currencySymbolToId(plan.currency) : null),
       leadType: 'new',
+      leadEmail: meta?.leadEmail ?? null,
+      contactEmail: meta?.contactEmail ?? null,
     };
   });
 }
 
-async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
+async function fetchLegacyPayments(filters: Filters, scope?: PaymentFetchScope): Promise<PaymentRow[]> {
   console.log('🔍 [fetchLegacyPayments] Starting fetch with filters:', filters);
   
   let query = supabase
     .from('finances_paymentplanrow')
     .select(
-      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)',
+      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, invoice_send_automation_active, invoice_send_automation_language, invoice_send_automation_sent_at, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)',
     );
 
   // Always filter out cancelled plans
   query = query.is('cancel_date', null);
 
-  if (hasPaymentDateFilter(filters)) {
+  if (scope?.legacyLeadIds?.length) {
+    query = query.in('lead_id', scope.legacyLeadIds);
+  } else if (hasPaymentDateFilter(filters)) {
     query = applyPaymentDateRangeToQuery(query, filters, 'actual_date');
     console.log(`🔍 [fetchLegacyPayments] Payment date filter on actual_date`);
   } else if (filters.fromDate || filters.toDate) {
@@ -3763,17 +4155,20 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
   console.log(`🔍 [fetchLegacyPayments] Metadata for 155026:`, leadMeta.get('155026'));
   
   // Fetch contact information for client_ids (contact_ids)
-  const contactMap = new Map<number, string>();
+  const contactMap = new Map<number, { name: string; email: string | null }>();
   if (allClientIds.size > 0) {
     const clientIdArray = Array.from(allClientIds);
     const { data: contacts, error: contactsError } = await supabase
       .from('leads_contact')
-      .select('id, name')
+      .select('id, name, email')
       .in('id', clientIdArray);
     if (!contactsError && contacts) {
       contacts.forEach((contact: any) => {
         if (contact.id && contact.name) {
-          contactMap.set(contact.id, contact.name);
+          contactMap.set(contact.id, {
+            name: contact.name,
+            email: contact.email || null,
+          });
         }
       });
     }
@@ -3781,7 +4176,7 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
   }
 
   const danielGranotContactIds = Array.from(contactMap.entries())
-    .filter(([, name]) => nameMatchesDebugContact(name))
+    .filter(([, contact]) => nameMatchesDebugContact(contact.name))
     .map(([id]) => id);
   const danielGranotLegacyRaw = activePlans.filter((plan: any) =>
     danielGranotContactIds.includes(Number(plan.client_id)),
@@ -3791,7 +4186,7 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
       id: plan.id,
       lead_id: plan.lead_id,
       client_id: plan.client_id,
-      contactName: contactMap.get(Number(plan.client_id)),
+      contactName: contactMap.get(Number(plan.client_id))?.name,
       date: plan.date,
       due_date: plan.due_date,
       actual_date: plan.actual_date,
@@ -3867,7 +4262,8 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     const meta = leadMeta.get(leadIdKey) || null;
     
     // Get contact name for client_id (contact_id)
-    const contactName = clientId && !Number.isNaN(clientId) ? contactMap.get(clientId) : null;
+    const contactRecord = clientId && !Number.isNaN(clientId) ? contactMap.get(clientId) : null;
+    const contactName = contactRecord?.name ?? null;
     
     // IMPORTANT: Get value from finances_paymentplanrow table, NOT from leads_lead table
     // Use value for legacy payments (value_base may be null/0, value contains the actual amount)
@@ -3994,6 +4390,11 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
       mainCategoryId: meta?.mainCategoryId,
       currencyId: plan.currency_id != null ? Number(plan.currency_id) : null,
       leadType: 'legacy',
+      invoiceSendAutomationActive: Boolean(plan.invoice_send_automation_active),
+      invoiceSendAutomationLanguage: plan.invoice_send_automation_language || null,
+      invoiceSendAutomationSentAt: plan.invoice_send_automation_sent_at || null,
+      leadEmail: meta?.leadEmail ?? null,
+      contactEmail: contactRecord?.email ?? meta?.contactEmail ?? meta?.leadEmail ?? null,
     };
   });
 }
@@ -4099,6 +4500,8 @@ type LeadMeta = {
   categoryName: string;
   mainCategoryId?: string;
   contactName?: string;
+  leadEmail?: string | null;
+  contactEmail?: string | null;
 };
 
 async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: boolean): Promise<Map<string, LeadMeta>> {
@@ -4114,7 +4517,7 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
     
     const { data, error } = await supabase
       .from('leads_lead')
-      .select('id, name, anchor_full_name, lead_number, case_handler_id, category, category_id, master_id, manual_id')
+      .select('id, name, anchor_full_name, lead_number, case_handler_id, category, category_id, master_id, manual_id, email')
       .in('id', numericIds);
     if (error) throw error;
     const categoryMap = await fetchCategoryMap((data || []).map((lead) => lead.category_id).filter(Boolean));
@@ -4172,7 +4575,8 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
       const key = lead.id?.toString();
       if (!key) return;
       const cat = categoryMap.get(lead.category_id ?? null);
-      const contactName = contactMap.get(key);
+      const contactInfo = contactMap.get(key);
+      const contactName = contactInfo?.name;
       const handlerId = normalizeHandlerId(lead.case_handler_id);
       
       // Format case number with sublead suffix if applicable
@@ -4196,6 +4600,8 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
         categoryName: cat?.mainCategoryName || cat?.name || lead.category || '—',
         mainCategoryId: cat?.mainCategoryId,
         contactName: contactName || lead.anchor_full_name || lead.name,
+        leadEmail: lead.email || null,
+        contactEmail: contactInfo?.email || lead.email || null,
       });
     });
     return map;
@@ -4203,7 +4609,7 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
 
   const { data, error } = await supabase
     .from('leads')
-    .select('id, name, lead_number, anchor_full_name, case_handler_id, category_id, category, master_id, manual_id')
+    .select('id, name, lead_number, anchor_full_name, case_handler_id, category_id, category, master_id, manual_id, email')
     .in('id', normalizedIds);
   if (error) throw error;
   const categoryMap = await fetchCategoryMap((data || []).map((lead) => lead.category_id).filter(Boolean));
@@ -4257,7 +4663,8 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
   (data || []).forEach((lead) => {
     const key = lead.id?.toString();
     if (!key) return;
-    const contactName = contactMap.get(key);
+    const contactInfo = contactMap.get(key);
+    const contactName = contactInfo?.name;
     const categoryMeta = categoryMap.get(lead.category_id ?? null);
     const handlerId = normalizeHandlerId(lead.case_handler_id);
     
@@ -4282,6 +4689,8 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
       categoryName: categoryMeta?.mainCategoryName || categoryMeta?.name || lead.category || '—',
       mainCategoryId: categoryMeta?.mainCategoryId,
       contactName: contactName || lead.anchor_full_name || lead.name,
+      leadEmail: lead.email || null,
+      contactEmail: contactInfo?.email || lead.email || null,
     });
   });
   return map;
@@ -4330,14 +4739,17 @@ async function fetchHandlerNames(handlerIds: number[]): Promise<Map<number, stri
   return map;
 }
 
-async function fetchContactNameMap(ids: string[], isLegacy: boolean): Promise<Map<string, string>> {
-  const map = new Map<string, string>();
+async function fetchContactNameMap(
+  ids: string[],
+  isLegacy: boolean,
+): Promise<Map<string, { name: string; email: string | null }>> {
+  const map = new Map<string, { name: string; email: string | null }>();
   if (!ids.length) return map;
 
   const column = isLegacy ? 'lead_id' : 'newlead_id';
   const { data, error } = await supabase
     .from('lead_leadcontact')
-    .select(`${column}, main, leads_contact:contact_id(name)`)
+    .select(`${column}, main, leads_contact:contact_id(name, email)`)
     .eq('main', 'true')
     .in(column, isLegacy ? ids.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id)) : ids);
 
@@ -4350,8 +4762,12 @@ async function fetchContactNameMap(ids: string[], isLegacy: boolean): Promise<Ma
     const key = (isLegacy ? entry.lead_id : entry.newlead_id)?.toString();
     if (!key) return;
     const contactName = entry.leads_contact?.name;
-    if (contactName) {
-      map.set(key, contactName);
+    const contactEmail = entry.leads_contact?.email || null;
+    if (contactName || contactEmail) {
+      map.set(key, {
+        name: contactName || '',
+        email: contactEmail,
+      });
     }
   });
 
@@ -4548,14 +4964,16 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
     const clientId = plan.client_id ? Number(plan.client_id) : null;
     if (clientId && !Number.isNaN(clientId)) allClientIds.add(clientId);
   });
-  const contactMap = new Map<number, string>();
+  const contactMap = new Map<number, { name: string; email: string | null }>();
   if (allClientIds.size > 0) {
     const { data: contacts } = await supabase
       .from('leads_contact')
-      .select('id, name')
+      .select('id, name, email')
       .in('id', Array.from(allClientIds));
     (contacts || []).forEach((contact: any) => {
-      if (contact.id && contact.name) contactMap.set(contact.id, contact.name);
+      if (contact.id && contact.name) {
+        contactMap.set(contact.id, { name: contact.name, email: contact.email || null });
+      }
     });
   }
 
@@ -4591,7 +5009,8 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
     const lidKey = plan.lead_id?.toString?.() || '';
     const clientId = plan.client_id ? Number(plan.client_id) : null;
     const meta = leadMeta.get(lidKey) || null;
-    const contactName = clientId && !Number.isNaN(clientId) ? contactMap.get(clientId) : null;
+    const contactRecord = clientId && !Number.isNaN(clientId) ? contactMap.get(clientId) : null;
+    const contactName = contactRecord?.name ?? null;
     const value = Number(plan.value || plan.value_base || 0);
     const orderCode = normalizeOrderCode(plan.order);
     const currency = plan.accounting_currencies?.name || mapCurrencyId(plan.currency_id);
@@ -4638,6 +5057,8 @@ export async function fetchOutstandingPaymentPlanRowsForTagsManager(
       mainCategoryId: meta?.mainCategoryId,
       currencyId: plan.currency_id != null ? Number(plan.currency_id) : null,
       leadType: 'legacy',
+      leadEmail: meta?.leadEmail ?? null,
+      contactEmail: contactRecord?.email ?? meta?.contactEmail ?? meta?.leadEmail ?? null,
     };
   });
   return rows.filter((r) => !r.collected);

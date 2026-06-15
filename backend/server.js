@@ -19,12 +19,14 @@ const emailRoutes = require('./src/routes/emailRoutes');
 const syncRoutes = require('./src/routes/syncRoutes');
 const pushNotificationRoutes = require('./src/routes/pushNotificationRoutes');
 const currencyRatesRoutes = require('./src/routes/currencyRatesRoutes');
+const paymentPlanInvoiceAutomationRoutes = require('./src/routes/paymentPlanInvoiceAutomationRoutes');
 const pelecardPaymentRoutes = require('./src/routes/pelecardPaymentRoutes');
 const { startMailboxSyncScheduler } = require('./src/services/mailboxSyncScheduler');
 const { startMeetingNotificationScheduler } = require('./src/services/meetingNotificationScheduler');
 const { startBoiExchangeRatesScheduler } = require('./src/services/boiExchangeRatesScheduler');
 const { startGoogleSheetsConversionSyncScheduler } = require('./src/services/googleSheetsConversionSyncScheduler');
 const { startPelecardPaymentReconciliationScheduler } = require('./src/services/pelecardPaymentReconciliationScheduler');
+const { startPaymentPlanInvoiceAutomationScheduler } = require('./src/services/paymentPlanInvoiceAutomationScheduler');
 const accessLogger = require('./src/middleware/accessLogger');
 const { notifyConversationParticipants } = require('./src/services/rmqNotificationService');
 
@@ -405,6 +407,7 @@ app.use('/api', emailRoutes);
 app.use('/api', syncRoutes);
 app.use('/api', pushNotificationRoutes);
 app.use('/api/currency-rates', currencyRatesRoutes);
+app.use('/api/payment-plan-invoice-automation', paymentPlanInvoiceAutomationRoutes);
 app.use('/api/payments/pelecard', pelecardPaymentRoutes);
 
 // Pelecard hosted checkout theme (must be publicly reachable HTTPS for CssURL)
@@ -471,6 +474,7 @@ server.listen(PORT, () => {
   startBoiExchangeRatesScheduler();
   startGoogleSheetsConversionSyncScheduler();
   startPelecardPaymentReconciliationScheduler();
+  startPaymentPlanInvoiceAutomationScheduler();
 });
 
 // Graceful shutdown

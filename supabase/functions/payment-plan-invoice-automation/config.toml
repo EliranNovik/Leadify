@@ -1,0 +1,2 @@
+[functions.payment-plan-invoice-automation]
+verify_jwt = false

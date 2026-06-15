@@ -7,6 +7,9 @@ interface ProformaSendLanguageModalProps {
   onConfirm: (language: ProformaSendLanguage) => void;
   sending?: boolean;
   contactLabel?: string;
+  title?: string;
+  description?: string;
+  confirmLabel?: string;
 }
 
 const ProformaSendLanguageModal: React.FC<ProformaSendLanguageModalProps> = ({
@@ -15,6 +18,9 @@ const ProformaSendLanguageModal: React.FC<ProformaSendLanguageModalProps> = ({
   onConfirm,
   sending = false,
   contactLabel,
+  title = 'Send invoice',
+  description,
+  confirmLabel = 'Send invoice',
 }) => {
   const [language, setLanguage] = useState<ProformaSendLanguage>('en');
 
@@ -27,16 +33,20 @@ const ProformaSendLanguageModal: React.FC<ProformaSendLanguageModalProps> = ({
   return (
     <dialog open className="modal modal-open z-[100]">
       <div className="modal-box max-w-md">
-        <h3 className="font-bold text-lg text-gray-900">Send invoice</h3>
+        <h3 className="font-bold text-lg text-gray-900">{title}</h3>
         <p className="text-sm text-gray-600 mt-1">
-          Choose the language for the email and WhatsApp message
-          {contactLabel ? (
+          {description ?? (
             <>
-              {' '}
-              to <span className="font-medium text-gray-800">{contactLabel}</span>
+              Choose the language for the email and WhatsApp message
+              {contactLabel ? (
+                <>
+                  {' '}
+                  to <span className="font-medium text-gray-800">{contactLabel}</span>
+                </>
+              ) : (
+                '.'
+              )}
             </>
-          ) : (
-            '.'
           )}
         </p>
 
@@ -94,7 +104,7 @@ const ProformaSendLanguageModal: React.FC<ProformaSendLanguageModalProps> = ({
                 Sending…
               </>
             ) : (
-              'Send invoice'
+              confirmLabel
             )}
           </button>
         </div>

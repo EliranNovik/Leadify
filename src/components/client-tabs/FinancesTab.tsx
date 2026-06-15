@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon, ClockIcon } from '@heroicons/react/24/outline';
@@ -108,6 +108,24 @@ import {
 } from '../../lib/paymentPlanTotalInNis';
 import { getClientContracts, getContractDetails } from '../../lib/contractAutomation';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
+import { useAuthContext } from '../../contexts/AuthContext';
+import ProformaSendLanguageModal from '../proforma/ProformaSendLanguageModal';
+import type { ProformaSendLanguage } from '../../lib/proformaSendLanguage';
+import {
+  disableInvoiceSendAutomation,
+  enableInvoiceSendAutomation,
+  buildSendInvoiceInputForPaymentPlan,
+  paymentPlanHasProforma,
+  paymentPlanSelectionKey,
+  type PaymentPlanAutomationRow,
+} from '../../lib/paymentPlanInvoiceAutomation';
+import { ensureProformasForAutomationPayments } from '../../lib/proformaAutomationCreate';
+import {
+  buildProformaSendSuccessMessage,
+  collectProformaSendPartialErrors,
+  sendProformaInvoiceBundle,
+} from '../../lib/proformaSendInvoice';
+import { useMailboxReconnect } from '../../contexts/MailboxReconnectContext';
 
 const FINANCES_TAB_CACHE_KEY_PREFIX = 'financesTab_cache_';
 
@@ -129,6 +147,7 @@ interface PaymentPlan {
   paid_at?: string;
   paid_by?: string;
   currency?: string;
+  currency_id?: number | null;
   isLegacy?: boolean; // Flag to identify legacy payments
   ready_to_pay?: boolean; // Flag to indicate if payment is ready for collection
   ready_to_pay_by?: number | null; // Employee ID who marked it as ready to pay
@@ -136,6 +155,10 @@ interface PaymentPlan {
   client_id?: number | null; // Contact ID (client_id from payment plan row)
   sent_to_finance?: boolean; // Flag to indicate if payment was sent to finance
   sent_to_finance_at?: string | null; // Timestamp when payment was sent to finance
+  invoice_send_automation_active?: boolean;
+  invoice_send_automation_language?: string | null;
+  invoice_send_automation_at?: string | null;
+  invoice_send_automation_sent_at?: string | null;
 }
 
 interface FinancePlan {
@@ -202,6 +225,8 @@ interface FinancesTabProps extends ClientTabProps {
 
 const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPaymentMarkedPaid, onCreateFinancePlan, hideTimelineHistory = false }) => {
   const navigate = useNavigate();
+  const { user } = useAuthContext();
+  const { showReconnectModal } = useMailboxReconnect();
 
   // Helper function to format date as dd/mm/yyyy
   const formatDateDDMMYYYY = (dateString: string | null | undefined): string => {
@@ -519,6 +544,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Add state for legacy proformas
   const [legacyProformas, setLegacyProformas] = useState<any[]>([]);
+
+  // Invoice send automation (schedule email + WhatsApp on due date)
+  const [invoiceAutomationSelectMode, setInvoiceAutomationSelectMode] = useState(false);
+  const [selectedAutomationPaymentKeys, setSelectedAutomationPaymentKeys] = useState<Set<string>>(new Set());
+  const [invoiceAutomationModalOpen, setInvoiceAutomationModalOpen] = useState(false);
+  const [savingInvoiceAutomation, setSavingInvoiceAutomation] = useState(false);
+
+  // Manual send invoice (pick rows across all contacts)
+  const [sendInvoiceSelectMode, setSendInvoiceSelectMode] = useState(false);
+  const [selectedSendInvoicePaymentKeys, setSelectedSendInvoicePaymentKeys] = useState<Set<string>>(new Set());
+  const [sendInvoiceModalOpen, setSendInvoiceModalOpen] = useState(false);
+  const [sendingInvoice, setSendingInvoice] = useState(false);
 
   // Add state for paid date modal
   const [showPaidDateModal, setShowPaidDateModal] = useState(false);
@@ -2073,6 +2110,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 sent_to_finance: plan.sent_to_finance || false, // Include sent_to_finance flag
                 sent_to_finance_at: plan.sent_to_finance_at || null, // Include sent_to_finance_at timestamp
                 original_due_date: plan.due_date || null, // Store original due_date for legacy leads to check if it exists
+                invoice_send_automation_active: plan.invoice_send_automation_active || false,
+                invoice_send_automation_language: plan.invoice_send_automation_language || null,
+                invoice_send_automation_at: plan.invoice_send_automation_at || null,
+                invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
               };
             });
           } else {
@@ -2158,8 +2199,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 ready_to_pay_date: (plan as any).ready_to_pay_date || null,
                 ready_to_pay_by: plan.ready_to_pay_by || null,
                 ready_to_pay_by_display_name: plan.tenants_employee?.display_name || null,
+                client_id: plan.client_id ? Number(plan.client_id) : null,
                 sent_to_finance: plan.sent_to_finance || false, // Include sent_to_finance flag
                 sent_to_finance_at: plan.sent_to_finance_at || null, // Include sent_to_finance_at timestamp
+                invoice_send_automation_active: plan.invoice_send_automation_active || false,
+                invoice_send_automation_language: plan.invoice_send_automation_language || null,
+                invoice_send_automation_at: plan.invoice_send_automation_at || null,
+                invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
               };
             });
           }
@@ -2642,6 +2688,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               ready_to_pay: isReadyToPay,
               ready_to_pay_by: readyToPayBy,
               ready_to_pay_by_display_name: readyToPayByDisplayName,
+              invoice_send_automation_active: plan.invoice_send_automation_active || false,
+              invoice_send_automation_language: plan.invoice_send_automation_language || null,
+              invoice_send_automation_at: plan.invoice_send_automation_at || null,
+              invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
             };
           });
         } else {
@@ -2725,6 +2775,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               ready_to_pay: plan.ready_to_pay || false,
               ready_to_pay_by: plan.ready_to_pay_by || null,
               ready_to_pay_by_display_name: plan.tenants_employee?.display_name || null,
+              invoice_send_automation_active: plan.invoice_send_automation_active || false,
+              invoice_send_automation_language: plan.invoice_send_automation_language || null,
+              invoice_send_automation_at: plan.invoice_send_automation_at || null,
+              invoice_send_automation_sent_at: plan.invoice_send_automation_sent_at || null,
             };
           });
         }
@@ -4987,6 +5041,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
+  const selectedAutomationPayments = useMemo(() => {
+    if (!financePlan) return [] as PaymentPlan[];
+    const keys = selectedAutomationPaymentKeys;
+    return financePlan.payments.filter((p) => keys.has(paymentPlanSelectionKey(p)));
+  }, [financePlan, selectedAutomationPaymentKeys]);
+
+  const selectedSendInvoicePayments = useMemo(() => {
+    if (!financePlan) return [] as PaymentPlan[];
+    const keys = selectedSendInvoicePaymentKeys;
+    return financePlan.payments.filter((p) => keys.has(paymentPlanSelectionKey(p)));
+  }, [financePlan, selectedSendInvoicePaymentKeys]);
+
   if (isLoadingFinancePlan) {
     return (
       <div className="flex flex-col items-center justify-center h-64 text-center">
@@ -5543,12 +5609,373 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     legacyProformas.some((proforma) => Number(proforma.ppr_id) === Number(paymentPlanId));
 
   /** New leads: proforma JSON on row. Legacy: proformainvoice linked via ppr_id. */
-  const paymentRowHasProforma = (payment: PaymentPlan): boolean => {
-    if (payment.isLegacy) {
-      return legacyPaymentHasProforma(payment.id);
-    }
-    return Boolean(payment.proforma && String(payment.proforma).trim() !== '');
+  const paymentRowHasProforma = (payment: PaymentPlan): boolean =>
+    paymentPlanHasProforma(payment, legacyProformas);
+
+  const exitSendInvoiceSelectMode = () => {
+    setSendInvoiceSelectMode(false);
+    setSelectedSendInvoicePaymentKeys(new Set());
   };
+
+  const exitInvoiceAutomationSelectMode = () => {
+    setInvoiceAutomationSelectMode(false);
+    setSelectedAutomationPaymentKeys(new Set());
+  };
+
+  const enterSendInvoiceSelectMode = () => {
+    exitInvoiceAutomationSelectMode();
+    setSendInvoiceSelectMode(true);
+    setSelectedSendInvoicePaymentKeys(new Set());
+  };
+
+  const enterInvoiceAutomationSelectMode = () => {
+    exitSendInvoiceSelectMode();
+    setInvoiceAutomationSelectMode(true);
+    setSelectedAutomationPaymentKeys(new Set());
+  };
+
+  const paymentRowPickMode = sendInvoiceSelectMode
+    ? 'send-invoice'
+    : invoiceAutomationSelectMode
+      ? 'automation'
+      : null;
+
+  const isPaymentRowSelectedForPick = (payment: PaymentPlan) => {
+    const key = paymentPlanSelectionKey(payment);
+    if (sendInvoiceSelectMode) return selectedSendInvoicePaymentKeys.has(key);
+    if (invoiceAutomationSelectMode) return selectedAutomationPaymentKeys.has(key);
+    return false;
+  };
+
+  const isPaymentRowPickDisabled = (payment: PaymentPlan) => {
+    if (payment.paid) return true;
+    if (sendInvoiceSelectMode && !paymentRowHasProforma(payment)) return true;
+    if (paymentRowPickMode === 'automation' && !payment.dueDate) return true;
+    return false;
+  };
+
+  const toggleSendInvoicePaymentSelection = (payment: PaymentPlan) => {
+    if (!sendInvoiceSelectMode) return;
+    if (isPaymentRowPickDisabled(payment)) {
+      if (!paymentRowHasProforma(payment)) {
+        toast.error('Create a proforma before sending the invoice');
+      }
+      return;
+    }
+    const key = paymentPlanSelectionKey(payment);
+    setSelectedSendInvoicePaymentKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const togglePaymentRowPick = (payment: PaymentPlan) => {
+    if (sendInvoiceSelectMode) toggleSendInvoicePaymentSelection(payment);
+    else if (invoiceAutomationSelectMode) toggleAutomationPaymentSelection(payment);
+  };
+
+  const toggleAutomationPaymentSelection = (payment: PaymentPlan) => {
+    if (!invoiceAutomationSelectMode) return;
+    if (payment.paid) return;
+    if (!payment.dueDate) {
+      toast.error('Payment has no due date');
+      return;
+    }
+    const key = paymentPlanSelectionKey(payment);
+    setSelectedAutomationPaymentKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const openSendInvoiceModal = () => {
+    if (selectedSendInvoicePayments.length === 0) {
+      toast.error('Select at least one payment row');
+      return;
+    }
+    setSendInvoiceModalOpen(true);
+  };
+
+  const handleSendInvoiceConfirm = async (language: ProformaSendLanguage) => {
+    if (!client?.id || selectedSendInvoicePayments.length === 0) return;
+
+    setSendingInvoice(true);
+    const isLegacyLead =
+      client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+    const leadNumber = client.lead_number
+      ? String(client.lead_number).replace(/^#/, '').trim()
+      : String(client.id);
+
+    let sent = 0;
+    let failed = 0;
+
+    try {
+      for (const payment of selectedSendInvoicePayments) {
+        try {
+          const input = await buildSendInvoiceInputForPaymentPlan(payment, {
+            leadId: client.id,
+            leadNumber,
+            isLegacyLead,
+            language,
+            legacyProformas,
+          });
+          if (!input) {
+            failed += 1;
+            continue;
+          }
+
+          const result = await sendProformaInvoiceBundle(input);
+          collectProformaSendPartialErrors(result).forEach((message) => toast.error(message));
+
+          if (
+            result.emailError?.message === 'MAILBOX_NOT_CONNECTED' ||
+            (result.emailError as Error & { code?: string })?.code === 'MAILBOX_NOT_CONNECTED'
+          ) {
+            showReconnectModal('Connect Outlook to send invoices by email.');
+          }
+
+          if (result.emailSent || result.whatsAppSent) {
+            sent += 1;
+            toast.success(buildProformaSendSuccessMessage(result, language));
+          } else {
+            failed += 1;
+          }
+        } catch (err) {
+          failed += 1;
+          const message = err instanceof Error ? err.message : 'Failed to send invoice';
+          if ((err as Error & { code?: string }).code === 'MAILBOX_NOT_CONNECTED') {
+            showReconnectModal('Connect Outlook to send invoices by email.');
+          } else {
+            toast.error(message);
+          }
+        }
+      }
+
+      if (sent > 0) {
+        toast.success(`Invoice sent for ${sent} row${sent === 1 ? '' : 's'}`);
+      }
+      if (failed > 0 && sent === 0) {
+        toast.error(`Failed to send invoice for ${failed} row${failed === 1 ? '' : 's'}`);
+      }
+
+      setSendInvoiceModalOpen(false);
+      exitSendInvoiceSelectMode();
+    } catch (err) {
+      console.error('handleSendInvoiceConfirm:', err);
+      toast.error(err instanceof Error ? err.message : 'Failed to send invoice');
+    } finally {
+      setSendingInvoice(false);
+    }
+  };
+
+  const openInvoiceAutomationModal = () => {
+    if (selectedAutomationPayments.length === 0) {
+      toast.error('Select at least one payment row');
+      return;
+    }
+    setInvoiceAutomationModalOpen(true);
+  };
+
+  const handleInvoiceAutomationConfirm = async (language: ProformaSendLanguage) => {
+    if (!user?.id) {
+      toast.error('You must be signed in');
+      return;
+    }
+    if (selectedAutomationPayments.length === 0) return;
+
+    setSavingInvoiceAutomation(true);
+    try {
+      const isLegacyLead =
+        client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+      const leadNumber = client?.lead_number
+        ? String(client.lead_number).replace(/^#/, '').trim()
+        : String(client?.id ?? '');
+      const createdBy = await getCurrentUserName();
+      const employeeId = await getCurrentUserEmployeeId();
+
+      let proformaBatch;
+      try {
+        proformaBatch = await ensureProformasForAutomationPayments(selectedAutomationPayments, {
+          leadId: client!.id,
+          leadNumber,
+          isLegacyLead,
+          createdBy,
+          employeeId,
+          legacyProformas,
+        });
+      } catch (proformaErr) {
+        console.error('ensureProformasForAutomationPayments:', proformaErr);
+        toast.error(proformaErr instanceof Error ? proformaErr.message : 'Failed to create proforma');
+        return;
+      }
+
+      if (proformaBatch.createdCount > 0) {
+        setLegacyProformas((prev) => [...prev, ...proformaBatch.addedLegacyProformas]);
+        toast.success(
+          proformaBatch.createdCount === 1
+            ? 'Proforma created automatically'
+            : `${proformaBatch.createdCount} proformas created automatically`,
+        );
+      }
+
+      const rows: PaymentPlanAutomationRow[] = selectedAutomationPayments.map((p) => ({
+        id: p.id,
+        isLegacy: p.isLegacy,
+        client_id: p.client_id,
+        client: p.client,
+        dueDate: p.dueDate,
+        paid: p.paid,
+        proforma: p.isLegacy
+          ? p.proforma
+          : proformaBatch.newProformaByPaymentId.get(String(p.id)) ?? p.proforma,
+      }));
+      const count = await enableInvoiceSendAutomation(rows, language, user.id);
+      if (count === 0) {
+        toast.error('Failed to enable automation. Run sql/add_payment_plan_invoice_send_automation.sql if columns are missing.');
+        return;
+      }
+      toast.success(
+        count === 1
+          ? 'Invoice automation enabled — will send on due date'
+          : `Invoice automation enabled for ${count} payments`,
+      );
+      const automationAt = new Date().toISOString();
+      const enabledKeys = new Set(selectedAutomationPayments.map((p) => paymentPlanSelectionKey(p)));
+      setFinancePlan((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          payments: prev.payments.map((p) => {
+            if (!enabledKeys.has(paymentPlanSelectionKey(p))) return p;
+            const autoProforma = proformaBatch.newProformaByPaymentId.get(String(p.id));
+            return {
+              ...p,
+              ...(autoProforma ? { proforma: autoProforma } : {}),
+              invoice_send_automation_active: true,
+              invoice_send_automation_language: language,
+              invoice_send_automation_at: automationAt,
+              invoice_send_automation_sent_at: null,
+            };
+          }),
+        };
+      });
+      setInvoiceAutomationModalOpen(false);
+      exitInvoiceAutomationSelectMode();
+      await refreshAllData();
+    } catch (err) {
+      console.error('handleInvoiceAutomationConfirm:', err);
+      toast.error(err instanceof Error ? err.message : 'Failed to enable automation');
+    } finally {
+      setSavingInvoiceAutomation(false);
+    }
+  };
+
+  const handleDisableInvoiceAutomation = async (payment: PaymentPlan) => {
+    const dueLabel = formatDateDDMMYYYY(payment.dueDate) || 'the due date';
+    const langLabel = payment.invoice_send_automation_language === 'he' ? 'Hebrew' : 'English';
+    const confirmed = window.confirm(
+      `Remove scheduled invoice send on ${dueLabel} (${langLabel})?\n\nThe invoice will not be sent automatically on the due date.`,
+    );
+    if (!confirmed) return;
+
+    try {
+      const count = await disableInvoiceSendAutomation([payment]);
+      if (count > 0) {
+        setFinancePlan((prev) => {
+          if (!prev) return prev;
+          const key = paymentPlanSelectionKey(payment);
+          return {
+            ...prev,
+            payments: prev.payments.map((p) =>
+              paymentPlanSelectionKey(p) === key
+                ? {
+                    ...p,
+                    invoice_send_automation_active: false,
+                    invoice_send_automation_language: null,
+                    invoice_send_automation_at: null,
+                    invoice_send_automation_sent_at: null,
+                  }
+                : p,
+            ),
+          };
+        });
+        toast.success('Invoice automation removed');
+        await refreshAllData();
+      }
+    } catch (err) {
+      toast.error('Failed to remove automation');
+    }
+  };
+
+  const renderInvoiceAutomationBadge = (payment: PaymentPlan) => {
+    if (!payment.invoice_send_automation_active) return null;
+    const sent = Boolean(payment.invoice_send_automation_sent_at);
+    const title = sent
+      ? `Invoice sent automatically on ${formatDateDDMMYYYY(payment.invoice_send_automation_sent_at)}`
+      : `Scheduled invoice send on ${formatDateDDMMYYYY(payment.dueDate)} (${payment.invoice_send_automation_language === 'he' ? 'Hebrew' : 'English'}) — click to remove`;
+    return (
+      <button
+        type="button"
+        className={`ml-1 inline-flex h-6 w-6 items-center justify-center rounded-full border ${
+          sent
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+            : 'border-violet-200 bg-violet-50 text-violet-700 hover:bg-violet-100'
+        }`}
+        title={title}
+        aria-label={title}
+        onClick={(e) => {
+          e.stopPropagation();
+          if (!sent) void handleDisableInvoiceAutomation(payment);
+        }}
+      >
+        {sent ? (
+          <CheckIcon className="h-3.5 w-3.5" aria-hidden />
+        ) : (
+          <ClockIcon className="h-3.5 w-3.5" aria-hidden />
+        )}
+      </button>
+    );
+  };
+
+  const renderPaymentPickCell = (payment: PaymentPlan) => {
+    if (!paymentRowPickMode) return null;
+
+    const key = paymentPlanSelectionKey(payment);
+    const selected = isPaymentRowSelectedForPick(payment);
+    const disabled = isPaymentRowPickDisabled(payment);
+
+    return (
+      <td className="w-10 px-2 py-4 align-middle" onClick={(e) => e.stopPropagation()}>
+        <input
+          type="checkbox"
+          className="checkbox checkbox-sm checkbox-primary"
+          checked={selected}
+          disabled={disabled}
+          onChange={() => togglePaymentRowPick(payment)}
+          aria-label={
+            paymentRowPickMode === 'send-invoice'
+              ? 'Select for invoice send'
+              : 'Select for invoice automation'
+          }
+        />
+      </td>
+    );
+  };
+
+  const renderAutomationSelectCell = (payment: PaymentPlan) => renderPaymentPickCell(payment);
+
+  const automationActiveCountForContact = (contactName: string) =>
+    financePlan?.payments.filter(
+      (p) => p.client === contactName && p.invoice_send_automation_active && !p.invoice_send_automation_sent_at,
+    ).length ?? 0;
+
+  const globalAutomationActiveCount =
+    financePlan?.payments.filter((p) => p.invoice_send_automation_active && !p.invoice_send_automation_sent_at)
+      .length ?? 0;
 
   const renderPaymentRowActions = (p: PaymentPlan, isPaid: boolean) => {
     if (!p.id) return <span className="text-slate-400">—</span>;
@@ -5923,6 +6350,44 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                     <ClockIcon className="h-4 w-4" />
                     <span className="ml-1 hidden md:inline">Payment History</span>
                   </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm rounded-xl normal-case ${
+                      sendInvoiceSelectMode
+                        ? 'btn-primary'
+                        : 'border border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                    onClick={() => {
+                      if (sendInvoiceSelectMode) {
+                        exitSendInvoiceSelectMode();
+                      } else {
+                        enterSendInvoiceSelectMode();
+                      }
+                    }}
+                    title="Send invoice by email and WhatsApp"
+                  >
+                    <PaperAirplaneIcon className="h-4 w-4" />
+                    <span className="ml-1 hidden md:inline">Send invoice</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn btn-sm rounded-xl normal-case ${
+                      invoiceAutomationSelectMode
+                        ? 'btn-primary'
+                        : 'border border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                    onClick={() => {
+                      if (invoiceAutomationSelectMode) {
+                        exitInvoiceAutomationSelectMode();
+                      } else {
+                        enterInvoiceAutomationSelectMode();
+                      }
+                    }}
+                    title="Schedule automatic invoice send on due date"
+                  >
+                    <ClockIcon className="h-4 w-4" />
+                    <span className="ml-1 hidden md:inline">Auto invoice</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -5934,6 +6399,28 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             contractTotalNis={contractTotalNisDisplay}
             outstandingNis={outstandingNisDisplay}
           />
+
+          <div className="border-t border-slate-100 px-6 py-4">
+            <div className="flex flex-wrap items-center justify-between gap-4">
+              <div className="min-w-[12rem] flex-1">
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium text-slate-500">Payment progress</span>
+                  {globalAutomationActiveCount > 0 && (
+                    <span className="inline-flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-700">
+                      Auto invoice active · {globalAutomationActiveCount}
+                    </span>
+                  )}
+                  <span className="text-xs text-slate-500">{planSummary.progressPct}%</span>
+                </div>
+                <div className="h-2 rounded-full bg-slate-100">
+                  <div
+                    className="h-2 rounded-full bg-emerald-500 transition-all"
+                    style={{ width: `${planSummary.progressPct}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
 
           {/* One white card per contact payment plan */}
           {(() => {
@@ -6025,6 +6512,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             setCollapsedContacts((prev) => ({ ...prev, [contactName]: !prev[contactName] }))
                           }
                           totalNis={contactTotalNisByName[contactName]}
+                          automationActiveCount={automationActiveCountForContact(contactName)}
                         />
                       </div>
 
@@ -6036,6 +6524,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               <table className="w-full min-w-[960px] text-sm">
                                 <thead className="border-b border-slate-200 bg-white">
                                   <tr className="text-xs uppercase tracking-wide text-slate-500">
+                                    {paymentRowPickMode && (
+                                      <th className="w-10 px-2 py-3" aria-label="Select" />
+                                    )}
                                     <th className="px-4 py-3 text-left">Status</th>
                                     <th className="px-4 py-3 text-left">Due date</th>
                                     <th className="px-4 py-3 text-right">Value</th>
@@ -6051,14 +6542,28 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 <tbody className="divide-y divide-slate-100">
                                   {sortedContactPayments.map((p: PaymentPlan, idx: number) => {
                                     const isPaid = !!p.paid;
+                                    const rowSelectable = Boolean(paymentRowPickMode);
                                     return (
                                       <tr
                                         key={p.id || idx}
-                                        className={`transition-colors hover:bg-slate-50 ${isPaid ? 'bg-emerald-50/40' : 'bg-white'}`}
+                                        className={`transition-colors hover:bg-slate-50 ${isPaid ? 'bg-emerald-50/40' : 'bg-white'} ${
+                                          rowSelectable ? 'cursor-pointer' : ''
+                                        } ${
+                                          isPaymentRowSelectedForPick(p)
+                                            ? 'ring-1 ring-inset ring-primary/40 bg-primary/5'
+                                            : ''
+                                        }`}
+                                        onClick={
+                                          rowSelectable
+                                            ? () => togglePaymentRowPick(p)
+                                            : undefined
+                                        }
                                       >
+                                        {renderAutomationSelectCell(p)}
                                         <td className="px-4 py-4 align-middle whitespace-nowrap">
                                           <PaymentStatusPill paid={isPaid} readyToPay={p.ready_to_pay} />
                                           <span className="ml-2 text-xs text-slate-400">{p.duePercent}</span>
+                                          {renderInvoiceAutomationBadge(p)}
                                         </td>
                                         <td className="px-4 py-4 align-middle whitespace-nowrap font-medium text-slate-800">
                                           {formatDateDDMMYYYY(p.dueDate) || '—'}
@@ -6159,7 +6664,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               : p.notes || '---'}
                                           </button>
                                         </td>
-                                        <td className="relative min-w-[200px] px-4 py-4 align-middle">
+                                        <td
+                                          className="relative min-w-[200px] px-4 py-4 align-middle"
+                                          onClick={(e) => paymentRowPickMode && e.stopPropagation()}
+                                        >
                                           {renderPaymentRowActions(p, isPaid)}
                                         </td>
                                       </tr>
@@ -6532,14 +7040,36 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 gap-y-8">
                                 {sortedContactPayments.map((p: PaymentPlan, idx: number) => {
                                   const isPaid = p.paid;
+                                  const rowSelectable = Boolean(paymentRowPickMode);
+                                  const selected = isPaymentRowSelectedForPick(p);
                                   return (
                                     <div
                                       key={p.id || idx}
-                                      className={`flex min-h-[420px] flex-col gap-0 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition-all duration-200 hover:shadow-md ${isPaid ? 'bg-emerald-50/40 border-emerald-100' : ''}`}
+                                      className={`flex min-h-[420px] flex-col gap-0 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition-all duration-200 hover:shadow-md ${isPaid ? 'bg-emerald-50/40 border-emerald-100' : ''} ${
+                                        rowSelectable ? 'cursor-pointer' : ''
+                                      } ${selected ? 'ring-2 ring-primary/50' : ''}`}
+                                      onClick={
+                                        rowSelectable
+                                          ? () => togglePaymentRowPick(p)
+                                          : undefined
+                                      }
                                     >
                                       <div className="mb-4 flex items-start justify-between gap-3">
                                         <div>
-                                          <PaymentStatusPill paid={!!isPaid} readyToPay={p.ready_to_pay} />
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            {paymentRowPickMode && (
+                                              <input
+                                                type="checkbox"
+                                                className="checkbox checkbox-sm checkbox-primary"
+                                                checked={selected}
+                                                disabled={isPaymentRowPickDisabled(p)}
+                                                onChange={() => togglePaymentRowPick(p)}
+                                                onClick={(e) => e.stopPropagation()}
+                                              />
+                                            )}
+                                            <PaymentStatusPill paid={!!isPaid} readyToPay={p.ready_to_pay} />
+                                            {renderInvoiceAutomationBadge(p)}
+                                          </div>
                                           <p className="mt-2 text-sm font-medium text-slate-700">{p.order}</p>
                                           <p className="text-xs text-slate-400">{p.duePercent}</p>
                                         </div>
@@ -7788,6 +8318,86 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       />
 
       {/* Payment History Modal — all paid payments across every contact for this lead */}
+      {sendInvoiceSelectMode && selectedSendInvoicePayments.length > 0 && ReactDOM.createPortal(
+        <div className="fixed bottom-6 left-1/2 z-[35] flex w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-3 shadow-xl lg:bottom-[calc(5.5rem+env(safe-area-inset-bottom,0px))]">
+          <span className="text-sm font-medium text-slate-700">
+            {selectedSendInvoicePayments.length} row{selectedSendInvoicePayments.length === 1 ? '' : 's'} selected
+          </span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={exitSendInvoiceSelectMode}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={openSendInvoiceModal}
+          >
+            Send invoice
+          </button>
+        </div>,
+        document.body,
+      )}
+
+      {invoiceAutomationSelectMode && selectedAutomationPayments.length > 0 && ReactDOM.createPortal(
+        <div className="fixed bottom-6 left-1/2 z-[35] flex w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 items-center justify-center gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-3 shadow-xl lg:bottom-[calc(5.5rem+env(safe-area-inset-bottom,0px))]">
+          <span className="text-sm font-medium text-slate-700">
+            {selectedAutomationPayments.length} row{selectedAutomationPayments.length === 1 ? '' : 's'} selected
+          </span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={exitInvoiceAutomationSelectMode}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={openInvoiceAutomationModal}
+          >
+            Schedule invoice send
+          </button>
+        </div>,
+        document.body,
+      )}
+
+      <ProformaSendLanguageModal
+        open={sendInvoiceModalOpen}
+        onClose={() => !sendingInvoice && setSendInvoiceModalOpen(false)}
+        onConfirm={(language) => void handleSendInvoiceConfirm(language)}
+        sending={sendingInvoice}
+        title="Send invoice"
+        description="Send the proforma invoice to each selected contact by email and WhatsApp."
+        confirmLabel="Send invoice"
+        contactLabel={
+          selectedSendInvoicePayments.length === 1
+            ? selectedSendInvoicePayments[0]?.client
+            : selectedSendInvoicePayments.length > 1
+              ? `${selectedSendInvoicePayments.length} payments`
+              : undefined
+        }
+      />
+
+      <ProformaSendLanguageModal
+        open={invoiceAutomationModalOpen}
+        onClose={() => !savingInvoiceAutomation && setInvoiceAutomationModalOpen(false)}
+        onConfirm={(language) => void handleInvoiceAutomationConfirm(language)}
+        sending={savingInvoiceAutomation}
+        title="Schedule invoice automation"
+        description="A proforma will be created automatically when needed. Invoice email and WhatsApp will be sent to each contact on the payment due date."
+        confirmLabel="Enable automation"
+        contactLabel={
+          selectedAutomationPayments.length === 1
+            ? selectedAutomationPayments[0]?.client
+            : selectedAutomationPayments.length > 1
+              ? `${selectedAutomationPayments.length} payments`
+              : undefined
+        }
+      />
+
       {showPaymentHistoryModal && ReactDOM.createPortal(
         (() => {
           const paidPayments = (financePlan?.payments || []).filter((p: PaymentPlan) => p.paid === true);

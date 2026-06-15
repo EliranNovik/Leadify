@@ -18,6 +18,7 @@ export type PaymentPlanRowLike = {
   currency_id?: number | string | null;
   isLegacy?: boolean;
   order?: string;
+  invoice_send_automation_active?: boolean;
 };
 
 export type CurrencyAmountMap = Record<string, { base: number; vat: number }>;
@@ -243,6 +244,7 @@ export function ContactPlanHeader({
   collapsed,
   onToggle,
   totalNis,
+  automationActiveCount = 0,
 }: {
   contactName: string;
   payments: PaymentPlanRowLike[];
@@ -250,6 +252,7 @@ export function ContactPlanHeader({
   onToggle: () => void;
   /** Sum of row totals (value + VAT) in NIS — BOI rate per row at payment/due date. */
   totalNis?: { primary: string; loading?: boolean };
+  automationActiveCount?: number;
 }) {
   const stats = computePlanSummary(payments);
   return (
@@ -277,10 +280,18 @@ export function ContactPlanHeader({
           ) : null}
         </div>
       </button>
-      <div className="w-full sm:w-64">
-        <div className="mb-1 flex justify-between text-xs text-slate-500">
-          <span>Payment progress</span>
-          <span>{stats.progressPct}%</span>
+      <div className="w-full sm:w-auto sm:min-w-[16rem]">
+        <div className="flex flex-wrap items-center justify-end gap-2 mb-1">
+          <span className="text-xs text-slate-500">Payment progress</span>
+          {automationActiveCount > 0 && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-700"
+              title="Scheduled invoice send on due date"
+            >
+              Auto invoice · {automationActiveCount}
+            </span>
+          )}
+          <span className="text-xs text-slate-500">{stats.progressPct}%</span>
         </div>
         <div className="h-2 rounded-full bg-slate-100">
           <div
