@@ -2,7 +2,6 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
-import * as XLSX from 'xlsx';
 import {
   MagnifyingGlassIcon,
   DocumentArrowUpIcon,
@@ -13,12 +12,17 @@ import {
   PencilSquareIcon,
   BoltIcon,
   CalendarDaysIcon,
+  CheckCircleIcon,
+  XCircleIcon,
 } from '@heroicons/react/24/outline';
+import DocumentViewerModal from '../components/DocumentViewerModal';
 import { usePersistedFilters } from '../hooks/usePersistedState';
 import UnavailabilityTypeBadge from '../components/UnavailabilityTypeBadge';
 import {
   aggregateClockInRecordsByDay,
+  buildEmployeeMergedTimeAndUnavailabilityExportRows,
   buildMergedTimeAndUnavailabilityExportRows,
+  exportAllEmployeesMergedTimeAndUnavailabilitiesToExcel,
   exportMergedTimeAndUnavailabilitiesToExcel,
   fetchClockInRecordsInRange,
   fetchEmployeeClockInRecords,
@@ -27,11 +31,13 @@ import {
 } from '../lib/workingHoursExport';
 import {
   sumClockDurations,
+  monthRange,
   toDateInputValue,
 } from '../lib/employeeClockInFormat';
 import { formatClockInLocationDisplay } from '../lib/employeeClockInLocation';
 import {
   expandUnavailabilitiesToDailyRows,
+  fetchAllUnavailabilitiesInRange,
   fetchEmployeeUnavailabilitiesInRange,
   unavailabilityDateLabel,
   unavailabilityReasonText,
@@ -39,6 +45,20 @@ import {
   type EmployeeUnavailabilityEntry,
 } from '../lib/employeeUnavailabilities';
 import type { DailyClockInSummary } from '../lib/workingHoursExport';
+import { fetchWorkingHoursSubmissionsForMonth } from '../lib/employeeWorkingHoursSubmissions';
+import { fetchActiveStaffEmployeesWithDepartment } from '../lib/employeeSalaries';
+import { filterCountedClockInRecords } from '../lib/employeeClockInApproval';
+
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+type ReportFilters = {
+  year: number;
+  month: number;
+  searchTerm: string;
+};
 
 function TimeListCell({ value }: { value: string }) {
   const parts = value.split(', ').filter(Boolean);
@@ -89,11 +109,8 @@ interface EmployeeUnavailabilityData {
   hasDocuments: boolean;
   totalHours: string;
   daysWorked: number;
-}
-
-function unwrapOne<T>(value: T | T[] | null | undefined): T | null {
-  if (value == null) return null;
-  return Array.isArray(value) ? value[0] ?? null : value;
+  hoursSubmitted: boolean;
+  submittedAt: string | null;
 }
 
 interface DocumentData {
@@ -109,18 +126,34 @@ interface DocumentData {
 
 const EmployeeUnavailabilitiesReport = () => {
   const navigate = useNavigate();
-  const [filters, setFilters] = usePersistedFilters('employee_unavailabilities_filters', {
-    fromDate: '',
-    toDate: '',
-    searchTerm: '',
-  }, {
-    storage: 'sessionStorage',
-  });
+  const now = useMemo(() => new Date(), []);
+  const [filters, setFilters] = usePersistedFilters<ReportFilters>(
+    'employee_unavailabilities_filters_v2',
+    {
+      year: now.getFullYear(),
+      month: now.getMonth() + 1,
+      searchTerm: '',
+    },
+    {
+      storage: 'sessionStorage',
+    },
+  );
+
+  const periodRange = useMemo(
+    () => monthRange(filters.year, filters.month),
+    [filters.year, filters.month],
+  );
+  const fromDate = periodRange.from;
+  const toDate = periodRange.to;
+
+  const yearOptions = useMemo(() => {
+    const y = now.getFullYear();
+    return [y - 2, y - 1, y, y + 1];
+  }, [now]);
 
   const [loading, setLoading] = useState(false);
   const [employeeData, setEmployeeData] = useState<EmployeeUnavailabilityData[]>([]);
   const [documents, setDocuments] = useState<DocumentData[]>([]);
-  const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [selectedDocument, setSelectedDocument] = useState<DocumentData | null>(null);
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const [selectedEmployee, setSelectedEmployee] = useState<EmployeeUnavailabilityData | null>(null);
@@ -128,35 +161,31 @@ const EmployeeUnavailabilitiesReport = () => {
   const [detailUnavailabilities, setDetailUnavailabilities] = useState<EmployeeUnavailabilityEntry[]>([]);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailExporting, setDetailExporting] = useState(false);
-
-  // Fetch employees for search
-  useEffect(() => {
-    const fetchEmployees = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('tenants_employee')
-          .select('id, display_name, photo_url')
-          .order('display_name', { ascending: true });
-
-        if (error) throw error;
-        setAllEmployees(data || []);
-      } catch (error) {
-        console.error('Error fetching employees:', error);
-      }
-    };
-
-    fetchEmployees();
-  }, []);
+  const [exportingAll, setExportingAll] = useState(false);
 
   // Fetch unavailability data
   const fetchData = async () => {
-    if (!filters.fromDate || !filters.toDate) {
-      toast.error('Please select both from and to dates');
-      return;
-    }
-
     setLoading(true);
     try {
+      const activeEmployees = await fetchActiveStaffEmployeesWithDepartment();
+      const employeeMap = new Map<number, EmployeeUnavailabilityData>();
+      for (const employee of activeEmployees) {
+        employeeMap.set(employee.id, {
+          employeeId: employee.id,
+          employeeName: employee.display_name,
+          photoUrl: employee.photo_url,
+          departmentName: employee.departmentName || '—',
+          sickDays: 0,
+          vacationDays: 0,
+          generalDays: 0,
+          hasDocuments: false,
+          totalHours: '0h 0m',
+          daysWorked: 0,
+          hoursSubmitted: false,
+          submittedAt: null,
+        });
+      }
+
       // Fetch all unavailability reasons that overlap with the date range
       // We'll fetch all records and filter in JavaScript for better control
       const { data: reasonsData, error: reasonsError } = await supabase
@@ -191,17 +220,13 @@ const EmployeeUnavailabilitiesReport = () => {
       const filteredReasons = (reasonsData || []).filter((reason: any) => {
         const startDate = new Date(reason.start_date);
         const endDate = reason.end_date ? new Date(reason.end_date) : startDate;
-        const filterFromDate = new Date(filters.fromDate);
-        const filterToDate = new Date(filters.toDate);
+        const filterFromDate = new Date(fromDate);
+        const filterToDate = new Date(toDate);
 
         // Check if ranges overlap: start <= filterTo AND end >= filterFrom
         return startDate <= filterToDate && endDate >= filterFromDate;
       });
 
-      if (reasonsError) throw reasonsError;
-
-      // Process data by employee
-      const employeeMap = new Map<number, EmployeeUnavailabilityData>();
       const documentsList: DocumentData[] = [];
 
       filteredReasons.forEach((reason: any) => {
@@ -211,34 +236,16 @@ const EmployeeUnavailabilitiesReport = () => {
         const employeeId = reason.employee_id;
         const employeeData = Array.isArray(employee) ? employee[0] : employee;
         const employeeName = employeeData?.display_name;
-        const photoUrl = employeeData?.photo_url;
-        const department = employeeData?.tenant_departement;
-        const departmentName = department 
-          ? (Array.isArray(department) ? department[0]?.name : department?.name)
-          : null;
 
-        if (!employeeMap.has(employeeId)) {
-          employeeMap.set(employeeId, {
-            employeeId,
-            employeeName: employeeName || 'Unknown',
-            photoUrl,
-            departmentName: departmentName || '—',
-            sickDays: 0,
-            vacationDays: 0,
-            generalDays: 0,
-            hasDocuments: false,
-            totalHours: '0h 0m',
-            daysWorked: 0,
-          });
-        }
+        if (!employeeMap.has(employeeId)) return;
 
         const empData = employeeMap.get(employeeId)!;
 
         // Calculate days for this entry within the filter period
         const startDate = new Date(reason.start_date);
         const endDate = reason.end_date ? new Date(reason.end_date) : startDate;
-        const filterFromDate = new Date(filters.fromDate);
-        const filterToDate = new Date(filters.toDate);
+        const filterFromDate = new Date(fromDate);
+        const filterToDate = new Date(toDate);
         
         // Calculate the overlap: use the later of start dates and earlier of end dates
         const overlapStart = startDate > filterFromDate ? startDate : filterFromDate;
@@ -267,31 +274,25 @@ const EmployeeUnavailabilitiesReport = () => {
         }
       });
 
-      const clockRecords = await fetchClockInRecordsInRange(filters.fromDate, filters.toDate);
+      const clockRecords = await fetchClockInRecordsInRange(fromDate, toDate);
       const clockByEmployee = groupClockInTotalsByEmployee(clockRecords);
+      const submissions = await fetchWorkingHoursSubmissionsForMonth(filters.year, filters.month);
+      const submissionByEmployee = new Map(
+        submissions.map((submission) => [submission.employee_id, submission]),
+      );
 
       for (const [employeeId, { totals }] of clockByEmployee) {
-        if (employeeMap.has(employeeId)) {
-          const emp = employeeMap.get(employeeId)!;
+        const emp = employeeMap.get(employeeId);
+        if (emp) {
           emp.totalHours = totals.totalDuration;
           emp.daysWorked = totals.daysWorked;
-        } else {
-          const first = clockRecords.find((r) => r.employee_id === employeeId);
-          const te = unwrapOne(first?.tenants_employee);
-          const dept = unwrapOne(te?.tenant_departement);
-          employeeMap.set(employeeId, {
-            employeeId,
-            employeeName: te?.display_name || 'Unknown',
-            photoUrl: te?.photo_url,
-            departmentName: dept?.name || '—',
-            sickDays: 0,
-            vacationDays: 0,
-            generalDays: 0,
-            hasDocuments: false,
-            totalHours: totals.totalDuration,
-            daysWorked: totals.daysWorked,
-          });
         }
+      }
+
+      for (const emp of employeeMap.values()) {
+        const submission = submissionByEmployee.get(emp.employeeId);
+        emp.hoursSubmitted = Boolean(submission);
+        emp.submittedAt = submission?.submitted_at ?? null;
       }
 
       const mergedData = Array.from(employeeMap.values()).sort((a, b) =>
@@ -310,21 +311,16 @@ const EmployeeUnavailabilitiesReport = () => {
 
   // Auto-fetch when dates are set
   useEffect(() => {
-    if (filters.fromDate && filters.toDate) {
-      fetchData();
-    }
-  }, [filters.fromDate, filters.toDate]);
+    void fetchData();
+  }, [filters.year, filters.month]);
 
   const handleFilterChange = (field: string, value: any) => {
     setFilters(prev => ({ ...prev, [field]: value }));
   };
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric'
-    });
+    const dateKey = dateString.includes('T') ? dateString.split('T')[0] : dateString;
+    return unavailabilityDateLabel(dateKey);
   };
 
   // Export employee summary to Excel
@@ -344,8 +340,8 @@ const EmployeeUnavailabilitiesReport = () => {
       setDetailLoading(true);
       try {
         const [records, unavailRows] = await Promise.all([
-          fetchEmployeeClockInRecords(emp.employeeId, filters.fromDate, filters.toDate),
-          fetchEmployeeUnavailabilitiesInRange(emp.employeeId, filters.fromDate, filters.toDate),
+          fetchEmployeeClockInRecords(emp.employeeId, fromDate, toDate),
+          fetchEmployeeUnavailabilitiesInRange(emp.employeeId, fromDate, toDate),
         ]);
         setDetailRecords(records);
         setDetailUnavailabilities(unavailRows);
@@ -357,7 +353,7 @@ const EmployeeUnavailabilitiesReport = () => {
         setDetailLoading(false);
       }
     },
-    [filters.fromDate, filters.toDate],
+    [fromDate, toDate],
   );
 
   const closeEmployeeDetail = () => {
@@ -387,8 +383,8 @@ const EmployeeUnavailabilitiesReport = () => {
 
     const unavailRows: DetailUnavailabilityRow[] = expandUnavailabilitiesToDailyRows(
       detailUnavailabilities,
-      filters.fromDate,
-      filters.toDate,
+      fromDate,
+      toDate,
     ).map((row) => ({
       kind: 'unavailability' as const,
       rowKey: `${row.id}-${row.date}`,
@@ -401,13 +397,13 @@ const EmployeeUnavailabilitiesReport = () => {
 
     const combined: DetailTableRow[] = [...clockRows, ...unavailRows];
     combined.sort((a, b) => {
-      const dateCmp = b.dateKey.localeCompare(a.dateKey);
+      const dateCmp = a.dateKey.localeCompare(b.dateKey);
       if (dateCmp !== 0) return dateCmp;
       if (a.kind === b.kind) return 0;
       return a.kind === 'unavailability' ? -1 : 1;
     });
     return combined;
-  }, [detailRecords, detailUnavailabilities, filters.fromDate, filters.toDate]);
+  }, [detailRecords, detailUnavailabilities, fromDate, toDate]);
 
   const handleDetailExport = () => {
     if (!selectedEmployee) {
@@ -417,8 +413,8 @@ const EmployeeUnavailabilitiesReport = () => {
     const mergedRows = buildMergedTimeAndUnavailabilityExportRows(
       detailRecords,
       detailUnavailabilities,
-      filters.fromDate,
-      filters.toDate,
+      fromDate,
+      toDate,
     );
     if (mergedRows.length === 0) {
       toast.error('No data to export');
@@ -426,11 +422,12 @@ const EmployeeUnavailabilitiesReport = () => {
     }
     setDetailExporting(true);
     try {
-      const periodTotal = sumClockDurations(detailRecords);
+      const periodTotal = sumClockDurations(filterCountedClockInRecords(detailRecords));
       exportMergedTimeAndUnavailabilitiesToExcel(mergedRows, {
         employeeName: selectedEmployee.employeeName,
-        dateFrom: filters.fromDate,
-        dateTo: filters.toDate,
+        department: selectedEmployee.departmentName || '—',
+        dateFrom: fromDate,
+        dateTo: toDate,
         periodTotal,
         filenameSuffix: selectedEmployee.employeeName,
       });
@@ -443,42 +440,79 @@ const EmployeeUnavailabilitiesReport = () => {
     }
   };
 
-  const exportEmployeeSummary = () => {
+  const exportEmployeeSummary = async () => {
     if (displayedEmployees.length === 0) {
       toast.error('No data to export');
       return;
     }
 
-    const excelData = displayedEmployees.map((emp) => ({
-      Employee: emp.employeeName,
-      Department: emp.departmentName || '—',
-      'Sick Days': emp.sickDays,
-      Vacation: emp.vacationDays,
-      General: emp.generalDays,
-      'Total Hours': emp.totalHours,
-      'Days Worked': emp.daysWorked,
-    }));
+    setExportingAll(true);
+    try {
+      const [clockRecords, allUnavailabilities] = await Promise.all([
+        fetchClockInRecordsInRange(fromDate, toDate),
+        fetchAllUnavailabilitiesInRange(fromDate, toDate),
+      ]);
 
-    const ws = XLSX.utils.json_to_sheet(excelData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Employee Summary');
+      const clockByEmployee = new Map<number, ClockInExportRecord[]>();
+      for (const record of clockRecords) {
+        const empId = record.employee_id;
+        if (empId == null) continue;
+        const list = clockByEmployee.get(empId);
+        if (list) list.push(record);
+        else clockByEmployee.set(empId, [record]);
+      }
 
-    const dateStr = new Date().toISOString().split('T')[0];
-    const fromDateStr = filters.fromDate ? new Date(filters.fromDate).toISOString().split('T')[0] : '';
-    const toDateStr = filters.toDate ? new Date(filters.toDate).toISOString().split('T')[0] : '';
-    const dateRange = fromDateStr && toDateStr ? `_${fromDateStr}_to_${toDateStr}` : '';
-    
-    XLSX.writeFile(wb, `Employee_Unavailabilities_Summary${dateRange}_${dateStr}.xlsx`);
-    toast.success('Employee summary exported successfully');
+      const unavailByEmployee = new Map<number, EmployeeUnavailabilityEntry[]>();
+      for (const entry of allUnavailabilities) {
+        const list = unavailByEmployee.get(entry.employee_id);
+        if (list) list.push(entry);
+        else unavailByEmployee.set(entry.employee_id, [entry]);
+      }
+
+      const employeeExports = displayedEmployees.map((emp) => {
+        const clockRecordsForEmp = clockByEmployee.get(emp.employeeId) ?? [];
+        const mergedRows = buildEmployeeMergedTimeAndUnavailabilityExportRows(
+          clockRecordsForEmp,
+          unavailByEmployee.get(emp.employeeId) ?? [],
+          fromDate,
+          toDate,
+          emp.employeeName,
+          emp.departmentName || '—',
+        );
+
+        return {
+          employeeName: emp.employeeName,
+          department: emp.departmentName || '—',
+          rows: mergedRows.map(({ employeeName, department, ...row }) => row),
+          periodTotal: sumClockDurations(filterCountedClockInRecords(clockRecordsForEmp)),
+        };
+      });
+
+      if (employeeExports.length === 0) {
+        toast.error('No employees to export');
+        return;
+      }
+
+      exportAllEmployeesMergedTimeAndUnavailabilitiesToExcel(employeeExports, {
+        dateFrom: fromDate,
+        dateTo: toDate,
+      });
+      toast.success('Employee time and unavailabilities exported successfully');
+    } catch (error) {
+      console.error('Export all employees error:', error);
+      toast.error('Failed to export');
+    } finally {
+      setExportingAll(false);
+    }
   };
 
   const formatDateTime = (dateString: string) => {
-    return new Date(dateString).toLocaleString('en-US', {
+    return new Date(dateString).toLocaleString('en-GB', {
+      day: '2-digit',
+      month: '2-digit',
       year: 'numeric',
-      month: 'short',
-      day: 'numeric',
       hour: '2-digit',
-      minute: '2-digit'
+      minute: '2-digit',
     });
   };
 
@@ -542,25 +576,31 @@ const EmployeeUnavailabilitiesReport = () => {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
             <div>
               <label className="label">
-                <span className="label-text">From Date</span>
+                <span className="label-text">Year</span>
               </label>
-              <input
-                type="date"
-                className="input input-bordered w-full"
-                value={filters.fromDate}
-                onChange={(e) => handleFilterChange('fromDate', e.target.value)}
-              />
+              <select
+                className="select select-bordered w-full"
+                value={filters.year}
+                onChange={(e) => handleFilterChange('year', Number(e.target.value))}
+              >
+                {yearOptions.map((y) => (
+                  <option key={y} value={y}>{y}</option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="label">
-                <span className="label-text">To Date</span>
+                <span className="label-text">Month</span>
               </label>
-              <input
-                type="date"
-                className="input input-bordered w-full"
-                value={filters.toDate}
-                onChange={(e) => handleFilterChange('toDate', e.target.value)}
-              />
+              <select
+                className="select select-bordered w-full"
+                value={filters.month}
+                onChange={(e) => handleFilterChange('month', Number(e.target.value))}
+              >
+                {MONTH_NAMES.map((name, i) => (
+                  <option key={name} value={i + 1}>{name}</option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="label">
@@ -584,12 +624,16 @@ const EmployeeUnavailabilitiesReport = () => {
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-xl font-semibold">Employee Summary</h2>
             <button
-              onClick={exportEmployeeSummary}
+              onClick={() => void exportEmployeeSummary()}
               className="btn btn-sm btn-primary"
-              disabled={loading || displayedEmployees.length === 0}
+              disabled={loading || exportingAll || displayedEmployees.length === 0}
               title="Download as Excel"
             >
-              <ArrowDownTrayIcon className="w-5 h-5 mr-2" />
+              {exportingAll ? (
+                <span className="loading loading-spinner loading-sm mr-2" />
+              ) : (
+                <ArrowDownTrayIcon className="w-5 h-5 mr-2" />
+              )}
               Export to Excel
             </button>
           </div>
@@ -604,19 +648,20 @@ const EmployeeUnavailabilitiesReport = () => {
                   <th className="text-right">General</th>
                   <th className="text-right">Total Hours</th>
                   <th className="text-right">Days Worked</th>
+                  <th>Submitted</th>
                 </tr>
               </thead>
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={7} className="text-center py-8">
+                    <td colSpan={8} className="text-center py-8">
                       <span className="loading loading-spinner loading-md"></span>
                       <span className="ml-2">Loading...</span>
                     </td>
                   </tr>
                 ) : displayedEmployees.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="text-center py-8 text-gray-500">
+                    <td colSpan={8} className="text-center py-8 text-gray-500">
                       No data found for the selected period
                     </td>
                   </tr>
@@ -634,10 +679,10 @@ const EmployeeUnavailabilitiesReport = () => {
                             <img
                               src={emp.photoUrl}
                               alt={emp.employeeName}
-                              className="w-10 h-10 rounded-full object-cover"
+                              className="w-10 h-10 rounded-full object-cover shrink-0"
                             />
                           ) : (
-                            <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center">
+                            <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
                               <UserIcon className="w-6 h-6 text-primary" />
                             </div>
                           )}
@@ -652,6 +697,29 @@ const EmployeeUnavailabilitiesReport = () => {
                       <td className="text-right font-semibold">{emp.generalDays}</td>
                       <td className="text-right font-semibold text-primary">{emp.totalHours}</td>
                       <td className="text-right font-semibold">{emp.daysWorked}</td>
+                      <td>
+                        {emp.hoursSubmitted ? (
+                          <span
+                            className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-green-100 text-green-700 border border-green-200"
+                            title={
+                              emp.submittedAt
+                                ? `Submitted ${formatDateTime(emp.submittedAt)}`
+                                : 'Submitted'
+                            }
+                            aria-label="Submitted"
+                          >
+                            <CheckCircleIcon className="w-5 h-5 shrink-0" aria-hidden />
+                          </span>
+                        ) : (
+                          <span
+                            className="inline-flex items-center justify-center w-8 h-8 rounded-full bg-amber-100 text-amber-700 border border-amber-200"
+                            title="Hours not submitted for this month"
+                            aria-label="Not submitted"
+                          >
+                            <XCircleIcon className="w-5 h-5 shrink-0" aria-hidden />
+                          </span>
+                        )}
+                      </td>
                     </tr>
                   ))
                 )}
@@ -756,7 +824,7 @@ const EmployeeUnavailabilitiesReport = () => {
                   <h3 className="font-bold text-xl truncate">{selectedEmployee.employeeName}</h3>
                   <p className="text-sm text-gray-500 flex items-center gap-1.5">
                     <ClockIcon className="w-4 h-4 shrink-0" />
-                    Working hours &amp; unavailabilities · {formatDate(filters.fromDate)} – {formatDate(filters.toDate)}
+                    Working hours &amp; unavailabilities · {formatDate(fromDate)} – {formatDate(toDate)}
                   </p>
                 </div>
               </div>
@@ -772,7 +840,7 @@ const EmployeeUnavailabilitiesReport = () => {
 
             <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
               <span className="text-base font-semibold text-primary">
-                Period total: {sumClockDurations(detailRecords)}
+                Period total: {sumClockDurations(filterCountedClockInRecords(detailRecords))}
               </span>
               <button
                 type="button"

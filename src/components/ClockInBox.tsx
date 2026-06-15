@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { ClockIcon } from '@heroicons/react/24/outline';
+import { ClockIcon, ClipboardDocumentCheckIcon } from '@heroicons/react/24/outline';
 import ClockInModal from './ClockInModal';
+import ManualClockInApprovalModal from './ManualClockInApprovalModal';
 import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
+import { useAdminRole } from '../hooks/useAdminRole';
 import { resolveWorkplaceName } from '../lib/clockInLocations';
+import { fetchPendingManualClockInCount } from '../lib/employeeClockInApproval';
 
 interface ClockInBoxProps {
   employeeId: number | null;
@@ -17,7 +20,10 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
   isAltTheme = false,
 }) => {
   const { user } = useAuthContext();
+  const { isSuperUser } = useAdminRole();
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isApprovalModalOpen, setIsApprovalModalOpen] = useState(false);
+  const [pendingApprovalCount, setPendingApprovalCount] = useState(0);
   const [isClockedIn, setIsClockedIn] = useState(false);
   const [currentDuration, setCurrentDuration] = useState<string>('');
   const [todayTotal, setTodayTotal] = useState<string>('');
@@ -101,21 +107,36 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
     }
   }, [employeeId]);
 
+  const fetchPendingApprovals = useCallback(async () => {
+    if (!isSuperUser) {
+      setPendingApprovalCount(0);
+      return;
+    }
+    try {
+      const count = await fetchPendingManualClockInCount();
+      setPendingApprovalCount(count);
+    } catch (error) {
+      console.error('Error fetching pending approvals:', error);
+    }
+  }, [isSuperUser]);
+
   useEffect(() => {
     if (!employeeId) return;
 
     void fetchClockInStatus();
     void fetchTodayTotal();
+    void fetchPendingApprovals();
 
     const interval = setInterval(() => {
       if (isClockedIn) {
         void fetchClockInStatus();
       }
       void fetchTodayTotal();
+      void fetchPendingApprovals();
     }, 60_000);
 
     return () => clearInterval(interval);
-  }, [employeeId, isClockedIn, fetchClockInStatus, fetchTodayTotal]);
+  }, [employeeId, isClockedIn, isSuperUser, fetchClockInStatus, fetchTodayTotal, fetchPendingApprovals]);
 
   const handleCloseModal = () => {
     setIsModalOpen(false);
@@ -155,7 +176,28 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
         }}
       >
         {isClockedIn && (
-          <div className="absolute top-2 right-2 z-10">
+          <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
+            {isSuperUser && (
+              <button
+                type="button"
+                className={`inline-flex items-center justify-center min-w-[28px] h-7 px-2 rounded-full shadow-lg ${
+                  isDark2Theme
+                    ? 'bg-base-100 text-primary ring-2 ring-base-300'
+                    : 'bg-white/95 text-primary ring-2 ring-white/80'
+                }`}
+                title="Approve manual clock-ins"
+                aria-label="Approve manual clock-ins"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setIsApprovalModalOpen(true);
+                }}
+              >
+                <ClipboardDocumentCheckIcon className="w-4 h-4" />
+                {pendingApprovalCount > 0 && (
+                  <span className="ml-1 text-[10px] font-bold">{pendingApprovalCount}</span>
+                )}
+              </button>
+            )}
             <span
               className={`inline-flex items-center justify-center min-w-[24px] h-6 px-2 text-[10px] font-bold rounded-full shadow-lg animate-pulse ${
                 isDark2Theme
@@ -165,6 +207,30 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
             >
               Active
             </span>
+          </div>
+        )}
+
+        {!isClockedIn && isSuperUser && (
+          <div className="absolute top-2 right-2 z-10">
+            <button
+              type="button"
+              className={`inline-flex items-center justify-center min-h-[28px] px-2 rounded-full shadow-lg ${
+                isDark2Theme
+                  ? 'bg-base-100 text-primary ring-2 ring-base-300'
+                  : 'bg-white/95 text-primary ring-2 ring-white/80'
+              }`}
+              title="Approve manual clock-ins"
+              aria-label="Approve manual clock-ins"
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsApprovalModalOpen(true);
+              }}
+            >
+              <ClipboardDocumentCheckIcon className="w-4 h-4" />
+              {pendingApprovalCount > 0 && (
+                <span className="ml-1 text-[10px] font-bold">{pendingApprovalCount}</span>
+              )}
+            </button>
           </div>
         )}
 
@@ -230,6 +296,14 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
         employeeId={employeeId}
         userId={user.id}
       />
+
+      {isSuperUser && (
+        <ManualClockInApprovalModal
+          isOpen={isApprovalModalOpen}
+          onClose={() => setIsApprovalModalOpen(false)}
+          onUpdated={() => void fetchPendingApprovals()}
+        />
+      )}
     </>
   );
 };

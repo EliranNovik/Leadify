@@ -21,6 +21,7 @@ import {
 import { FaLinkedin } from 'react-icons/fa';
 import { toast } from 'react-hot-toast';
 import WorkingHoursTab from '../components/profile/WorkingHoursTab';
+import MyDocumentsTab from '../components/profile/MyDocumentsTab';
 
 // Default images if none provided
 const DEFAULT_BANNER = 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?ixlib=rb-4.0.3&auto=format&fit=crop&w=2070&q=80';
@@ -315,7 +316,7 @@ const MyProfilePage: React.FC = () => {
     }
 
     return (
-        <div className="min-h-0 w-full max-w-full min-w-0 overflow-x-hidden bg-white flex flex-col">
+        <div className="min-h-0 w-full max-w-full min-w-0 overflow-x-hidden bg-[#ececec] flex flex-col">
             {/* Banner Section */}
             <div className="relative h-64 md:h-80 w-full group">
                 <div
@@ -400,8 +401,8 @@ const MyProfilePage: React.FC = () => {
                         />
                     </div>
 
-                    {/* Name and Role - Positioned on banner */}
-                    <div className="flex-1 pointer-events-auto text-center md:text-left mt-8 md:mt-0">
+                    {/* Name and role — beside profile image on banner */}
+                    <div className="flex-1 pointer-events-auto text-center md:text-left mt-8 md:mt-2 min-w-0 w-full">
                         <div className="flex flex-col md:flex-row md:items-baseline md:gap-3">
                             <h1 className="text-2xl md:text-3xl font-bold text-gray-900 md:text-white drop-shadow-lg">{profile.official_name}</h1>
                             <p className="text-sm md:text-base text-gray-600 md:text-white/90 drop-shadow-md mt-1 md:mt-0">{getRoleDisplay(profile.bonuses_role)}</p>
@@ -416,6 +417,7 @@ const MyProfilePage: React.FC = () => {
                     {['About', 'Working Hours', 'Contribution', 'Documents'].map((tab) => (
                         <button
                             key={tab}
+                            type="button"
                             className={`px-4 md:px-6 py-2 rounded-full text-sm font-semibold transition-all backdrop-blur-md border whitespace-nowrap ${activeTab === tab
                                 ? 'bg-primary text-white shadow-lg border-primary/80'
                                 : 'bg-white/45 text-gray-700 hover:bg-white/65 border-white/50'
@@ -431,11 +433,11 @@ const MyProfilePage: React.FC = () => {
             {/* Main Content Area */}
             <div
               className={`flex-1 w-full py-6 md:py-8 mt-12 md:mt-16 px-4 md:px-8 ${
-                activeTab === 'Working Hours' ? '' : 'max-w-5xl mx-auto'
+                activeTab === 'Working Hours' || activeTab === 'Documents' ? '' : 'max-w-5xl mx-auto'
               }`}
             >
                 {activeTab === 'About' && (
-                    <div>
+                    <div className="rounded-[18px] bg-white p-6 md:p-8 shadow-sm">
                         <div className="flex items-center justify-between mb-6 md:mb-8">
                             <h2 className="text-xl md:text-2xl font-bold text-gray-800">About</h2>
                         </div>
@@ -571,8 +573,14 @@ const MyProfilePage: React.FC = () => {
                       employeeName={profile.official_name || profile.display_name}
                     />
                 )}
-                {activeTab !== 'About' && activeTab !== 'Working Hours' && (
-                    <div className="py-20 text-center text-gray-400">
+                {activeTab === 'Documents' && profile?.id && (
+                    <MyDocumentsTab
+                      employeeId={profile.id}
+                      employeeName={profile.official_name || profile.display_name}
+                    />
+                )}
+                {activeTab !== 'About' && activeTab !== 'Working Hours' && activeTab !== 'Documents' && (
+                    <div className="rounded-[18px] bg-white py-20 text-center text-gray-400 shadow-sm">
                         <HashtagIcon className="w-16 h-16 mx-auto mb-4 opacity-20" />
                         <p>This tab is a placeholder for visual demonstration.</p>
                     </div>

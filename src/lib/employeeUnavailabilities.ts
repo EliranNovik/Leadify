@@ -12,6 +12,8 @@ export type EmployeeUnavailabilityEntry = {
   document_url: string | null;
   start_date: string;
   end_date: string | null;
+  start_time: string | null;
+  end_time: string | null;
   created_at: string;
 };
 
@@ -70,6 +72,24 @@ export function unavailabilityTypeCompactLabelClass(type: UnavailabilityType | s
   }
 }
 
+export function formatUnavailabilityTime(time: string | null | undefined): string {
+  if (!time?.trim()) return '';
+  const trimmed = time.trim();
+  if (trimmed.length >= 8 && trimmed.includes(':')) {
+    return trimmed.substring(0, 5);
+  }
+  return trimmed;
+}
+
+export function unavailabilityGeneralTimeRange(entry: EmployeeUnavailabilityEntry): string {
+  const start = formatUnavailabilityTime(entry.start_time);
+  const end = formatUnavailabilityTime(entry.end_time);
+  if (start && end) return `${start} – ${end}`;
+  if (start) return start;
+  if (end) return end;
+  return '';
+}
+
 export function unavailabilityReasonText(entry: EmployeeUnavailabilityEntry): string {
   if (entry.unavailability_type === 'sick_days') {
     return entry.sick_days_reason?.trim() || '—';
@@ -77,14 +97,19 @@ export function unavailabilityReasonText(entry: EmployeeUnavailabilityEntry): st
   if (entry.unavailability_type === 'vacation') {
     return entry.vacation_reason?.trim() || '—';
   }
-  return entry.general_reason?.trim() || '—';
+  const reason = entry.general_reason?.trim() || '';
+  const timeRange = unavailabilityGeneralTimeRange(entry);
+  if (reason && timeRange) return `${reason} (${timeRange})`;
+  if (reason) return reason;
+  if (timeRange) return timeRange;
+  return '—';
 }
 
 function formatUnavailabilityDate(d: string): string {
   const [y, m, day] = d.split('-').map(Number);
   return new Date(y, m - 1, day).toLocaleDateString('en-GB', {
     day: '2-digit',
-    month: 'short',
+    month: '2-digit',
     year: 'numeric',
   });
 }
@@ -152,6 +177,8 @@ function cloneEntryFieldsForInsert(
     document_url: entry.document_url,
     start_date: startDate,
     end_date: endDate,
+    start_time: entry.start_time,
+    end_time: entry.end_time,
   };
 }
 
@@ -328,7 +355,7 @@ export async function fetchEmployeeUnavailabilitiesInRange(
     .from('employee_unavailability_reasons')
     .select(
       `id, employee_id, unavailability_type, sick_days_reason, vacation_reason,
-       general_reason, document_url, start_date, end_date, created_at`,
+       general_reason, document_url, start_date, end_date, start_time, end_time, created_at`,
     )
     .eq('employee_id', employeeId)
     .order('start_date', { ascending: false });
@@ -338,6 +365,51 @@ export async function fetchEmployeeUnavailabilitiesInRange(
   return ((data || []) as EmployeeUnavailabilityEntry[]).filter((row) =>
     rangesOverlap(row.start_date, row.end_date, dateFrom, dateTo),
   );
+}
+
+/** All employees' unavailability records overlapping a date range. */
+export async function fetchAllUnavailabilitiesInRange(
+  dateFrom: string,
+  dateTo: string,
+): Promise<EmployeeUnavailabilityEntry[]> {
+  const { data, error } = await supabase
+    .from('employee_unavailability_reasons')
+    .select(
+      `id, employee_id, unavailability_type, sick_days_reason, vacation_reason,
+       general_reason, document_url, start_date, end_date, start_time, end_time, created_at`,
+    )
+    .order('start_date', { ascending: true });
+
+  if (error) throw error;
+
+  return ((data || []) as EmployeeUnavailabilityEntry[]).filter((row) =>
+    rangesOverlap(row.start_date, row.end_date, dateFrom, dateTo),
+  );
+}
+
+export type EmployeeUnavailabilityDocument = EmployeeUnavailabilityEntry & {
+  document_url: string;
+};
+
+/** All unavailability records for an employee that have an uploaded document. */
+export async function fetchEmployeeUnavailabilityDocuments(
+  employeeId: number,
+): Promise<EmployeeUnavailabilityDocument[]> {
+  const { data, error } = await supabase
+    .from('employee_unavailability_reasons')
+    .select(
+      `id, employee_id, unavailability_type, sick_days_reason, vacation_reason,
+       general_reason, document_url, start_date, end_date, start_time, end_time, created_at`,
+    )
+    .eq('employee_id', employeeId)
+    .not('document_url', 'is', null)
+    .order('created_at', { ascending: false });
+
+  if (error) throw error;
+
+  return ((data || []) as EmployeeUnavailabilityEntry[])
+    .filter((row) => Boolean(row.document_url?.trim()))
+    .map((row) => ({ ...row, document_url: row.document_url!.trim() }));
 }
 
 export function documentNameFromUrl(documentUrl: string): string {

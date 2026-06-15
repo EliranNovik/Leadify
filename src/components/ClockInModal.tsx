@@ -188,6 +188,8 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
         notes: null,
         is_active: true,
         manually: false,
+        approved: true,
+        declined: false,
       };
       let { data, error } = await supabase.from('employee_clock_in').insert(payload).select().single();
 

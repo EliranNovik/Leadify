@@ -96,7 +96,9 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
         clockOutLocationId: clockOutLocationId === '' ? null : clockOutLocationId,
       });
       toast.success(
-        count === 1 ? 'Clock-in entry added' : `${count} clock-in entries added`,
+        count === 1
+          ? 'Clock-in entry added — waiting for admin approval'
+          : `${count} clock-in entries added — waiting for admin approval`,
       );
       onSaved();
       onClose();

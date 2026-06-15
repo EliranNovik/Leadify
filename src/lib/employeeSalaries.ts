@@ -17,6 +17,47 @@ export interface ActiveStaffEmployee {
   photo_url: string | null;
 }
 
+export interface ActiveStaffEmployeeWithDepartment extends ActiveStaffEmployee {
+  departmentName: string | null;
+}
+
+async function fetchActiveStaffEmployeeIds(allEmployeeIds: number[]): Promise<Set<number>> {
+  if (allEmployeeIds.length === 0) {
+    return new Set();
+  }
+
+  const { data: staffUsers, error: usersError } = await supabase
+    .from('users')
+    .select('employee_id')
+    .in('employee_id', allEmployeeIds)
+    .eq('is_staff', true)
+    .eq('is_active', true);
+
+  if (usersError) {
+    throw usersError;
+  }
+
+  return new Set(
+    (staffUsers || []).map((u: { employee_id: number | null }) => u.employee_id).filter(Boolean) as number[],
+  );
+}
+
+function mapActiveStaffEmployee(emp: {
+  id: number;
+  display_name: string | null;
+  photo_url: string | null;
+  photo: string | null;
+}): ActiveStaffEmployee {
+  return {
+    id: emp.id,
+    display_name: emp.display_name?.trim() || `Employee #${emp.id}`,
+    photo_url:
+      (typeof emp.photo_url === 'string' && emp.photo_url.trim()) ||
+      (typeof emp.photo === 'string' && emp.photo.trim()) ||
+      null,
+  };
+}
+
 /** Active staff: tenants_employee rows linked to users with is_staff + is_active. */
 export async function fetchActiveStaffEmployees(): Promise<ActiveStaffEmployee[]> {
   const { data, error } = await supabase
@@ -28,22 +69,36 @@ export async function fetchActiveStaffEmployees(): Promise<ActiveStaffEmployee[]
   }
 
   const allEmployeeIds = (data || []).map((e: { id: number }) => e.id);
-  let staffEmployeeIds = new Set<number>();
-  if (allEmployeeIds.length > 0) {
-    const { data: staffUsers, error: usersError } = await supabase
-      .from('users')
-      .select('employee_id')
-      .in('employee_id', allEmployeeIds)
-      .eq('is_staff', true)
-      .eq('is_active', true);
+  const staffEmployeeIds = await fetchActiveStaffEmployeeIds(allEmployeeIds);
 
-    if (usersError) {
-      throw usersError;
-    }
-    staffEmployeeIds = new Set(
-      (staffUsers || []).map((u: { employee_id: number | null }) => u.employee_id).filter(Boolean) as number[],
-    );
+  return (data || [])
+    .filter((emp: { id: number }) => staffEmployeeIds.has(emp.id))
+    .map((emp: { id: number; display_name: string | null; photo_url: string | null; photo: string | null }) =>
+      mapActiveStaffEmployee(emp),
+    )
+    .sort((a, b) => a.display_name.localeCompare(b.display_name, undefined, { sensitivity: 'base' }));
+}
+
+/** Active staff with department name for reports. */
+export async function fetchActiveStaffEmployeesWithDepartment(): Promise<ActiveStaffEmployeeWithDepartment[]> {
+  const { data, error } = await supabase
+    .from('tenants_employee')
+    .select(`
+      id,
+      display_name,
+      photo_url,
+      photo,
+      tenant_departement!department_id (
+        name
+      )
+    `);
+
+  if (error) {
+    throw error;
   }
+
+  const allEmployeeIds = (data || []).map((e: { id: number }) => e.id);
+  const staffEmployeeIds = await fetchActiveStaffEmployeeIds(allEmployeeIds);
 
   return (data || [])
     .filter((emp: { id: number }) => staffEmployeeIds.has(emp.id))
@@ -53,14 +108,16 @@ export async function fetchActiveStaffEmployees(): Promise<ActiveStaffEmployee[]
         display_name: string | null;
         photo_url: string | null;
         photo: string | null;
-      }) => ({
-        id: emp.id,
-        display_name: emp.display_name?.trim() || `Employee #${emp.id}`,
-        photo_url:
-          (typeof emp.photo_url === 'string' && emp.photo_url.trim()) ||
-          (typeof emp.photo === 'string' && emp.photo.trim()) ||
-          null,
-      }),
+        tenant_departement: { name: string } | { name: string }[] | null;
+      }) => {
+        const dept = Array.isArray(emp.tenant_departement)
+          ? emp.tenant_departement[0]
+          : emp.tenant_departement;
+        return {
+          ...mapActiveStaffEmployee(emp),
+          departmentName: dept?.name ?? null,
+        };
+      },
     )
     .sort((a, b) => a.display_name.localeCompare(b.display_name, undefined, { sensitivity: 'base' }));
 }
