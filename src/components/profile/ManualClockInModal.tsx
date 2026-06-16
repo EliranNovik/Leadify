@@ -2,7 +2,12 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { PlusIcon, TrashIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
-import { fetchActiveClockInLocations, type ClockInLocationOption } from '../../lib/clockInLocations';
+import {
+  fetchActiveClockInLocations,
+  fetchEmployeeWorksFromHome,
+  isHomeClockInLocation,
+  type ClockInLocationOption,
+} from '../../lib/clockInLocations';
 import { insertManualClockInRecords } from '../../lib/employeeClockInManual';
 import { toDateInputValue } from '../../lib/employeeClockInFormat';
 import { getHolidayWarningsForDates } from '../../lib/israeliJewishHolidays';
@@ -43,6 +48,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
   const [clockOutTime, setClockOutTime] = useState('17:00');
   const [notes, setNotes] = useState('');
   const [workplaces, setWorkplaces] = useState<ClockInLocationOption[]>([]);
+  const [worksFromHome, setWorksFromHome] = useState(false);
   const [clockInLocationId, setClockInLocationId] = useState<number | ''>('');
   const [clockOutLocationId, setClockOutLocationId] = useState<number | ''>('');
   const [saving, setSaving] = useState(false);
@@ -58,8 +64,25 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
     setNotes('');
     setClockInLocationId('');
     setClockOutLocationId('');
-    void fetchActiveClockInLocations().then(setWorkplaces);
-  }, [isOpen]);
+    void Promise.all([fetchActiveClockInLocations(), fetchEmployeeWorksFromHome(employeeId)]).then(
+      ([locations, wfh]) => {
+        setWorkplaces(locations);
+        setWorksFromHome(wfh);
+      },
+    );
+  }, [isOpen, employeeId]);
+
+  const selectedIn = useMemo(
+    () => workplaces.find((wp) => wp.id === (clockInLocationId === '' ? null : clockInLocationId)) ?? null,
+    [workplaces, clockInLocationId],
+  );
+  const selectedOut = useMemo(
+    () => workplaces.find((wp) => wp.id === (clockOutLocationId === '' ? null : clockOutLocationId)) ?? null,
+    [workplaces, clockOutLocationId],
+  );
+  const homeNeedsApproval =
+    (selectedIn != null && isHomeClockInLocation(selectedIn) && !worksFromHome)
+    || (selectedOut != null && isHomeClockInLocation(selectedOut) && !worksFromHome);
 
   const datesToSave = useMemo(() => {
     const filled = dateRows.map((row) => row.value).filter(Boolean);
@@ -85,13 +108,18 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
   const performSave = async () => {
     setSaving(true);
     try {
+      const wfhNote = homeNeedsApproval
+        ? 'Clock-in from Home — waiting for admin approval (auto-enables Works From Home when approved)'
+        : '';
+      const mergedNotes = [notes?.trim(), wfhNote].filter(Boolean).join('\n');
+
       const count = await insertManualClockInRecords({
         employeeId,
         userId,
         dates: datesToSave,
         clockInTime,
         clockOutTime,
-        notes,
+        notes: mergedNotes,
         clockInLocationId: clockInLocationId === '' ? null : clockInLocationId,
         clockOutLocationId: clockOutLocationId === '' ? null : clockOutLocationId,
       });
@@ -263,6 +291,12 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
                   ))}
                 </select>
               </label>
+            </div>
+          )}
+
+          {homeNeedsApproval && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              Home needs approval before you can use it.
             </div>
           )}
 

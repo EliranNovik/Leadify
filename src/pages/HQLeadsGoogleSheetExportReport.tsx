@@ -156,7 +156,8 @@ const HQLeadsGoogleSheetExportReport: React.FC = () => {
             <h2 className="text-xl font-bold text-base-content">HQLeads → Google Sheet</h2>
             <p className="mt-1 max-w-2xl text-sm text-base-content/60">
               Q leads at Meeting Scheduled (stage 20+) with potential ≥ 50% (legal, seriousness, financial)
-              and balance ≥ ₪20,000 NIS — Capital firm sources with GCLID.
+              and balance ≥ ₪20,000 NIS — Capital firm sources.
+              GCLID is included when present; otherwise the sheet cell is left empty.
             </p>
           </div>
         </div>

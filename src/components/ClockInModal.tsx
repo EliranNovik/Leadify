@@ -11,11 +11,17 @@ import {
 } from '../lib/employeeClockInLocation';
 import {
   fetchActiveClockInLocations,
+  fetchEmployeeWorksFromHome,
+  isHomeClockInLocation,
   persistLastSelectedWorkplaceId,
   readLastSelectedWorkplaceId,
   resolveWorkplaceName,
   type ClockInLocationOption,
 } from '../lib/clockInLocations';
+import {
+  fetchPendingHomeWfhApproval,
+  insertHomeWfhApprovalRequest,
+} from '../lib/employeeClockInApproval';
 
 interface ClockInModalProps {
   isOpen: boolean;
@@ -41,8 +47,10 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
   const [location, setLocation] = useState<ClockInLocationData>(EMPTY_CLOCK_IN_LOCATION);
   const [isLoading, setIsLoading] = useState(false);
   const [workplaceOptions, setWorkplaceOptions] = useState<ClockInLocationOption[]>([]);
+  const [worksFromHome, setWorksFromHome] = useState(false);
   const [selectedWorkplaceId, setSelectedWorkplaceId] = useState<number | null>(null);
-  const [successAction, setSuccessAction] = useState<'in' | 'out' | null>(null);
+  const [successAction, setSuccessAction] = useState<'in' | 'out' | 'approval' | null>(null);
+  const [pendingHomeApproval, setPendingHomeApproval] = useState(false);
   const [workplaceDropdownOpen, setWorkplaceDropdownOpen] = useState(false);
   const [sessionDuration, setSessionDuration] = useState('');
   const workplaceDropdownRef = useRef<HTMLDivElement>(null);
@@ -68,8 +76,25 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
       setWorkplaceDropdownOpen(false);
       return;
     }
-    void fetchActiveClockInLocations().then(setWorkplaceOptions);
-  }, [isOpen]);
+    void Promise.all([
+      fetchActiveClockInLocations(),
+      fetchEmployeeWorksFromHome(employeeId),
+      fetchPendingHomeWfhApproval(employeeId),
+    ]).then(([locations, wfh, pendingApproval]) => {
+      setWorkplaceOptions(locations);
+      setWorksFromHome(wfh);
+      setPendingHomeApproval(pendingApproval);
+      // Initialize selection (prefer last selected if still valid)
+      setSelectedWorkplaceId((prev) => {
+        if (prev != null && locations.some((o) => o.id === prev)) return prev;
+        const last = readLastSelectedWorkplaceId();
+        const validLast = last != null && locations.some((o) => o.id === last);
+        return validLast ? last : locations[0]?.id ?? null;
+      });
+    }).catch((error) => {
+      console.error('Error loading clock-in modal data:', error);
+    });
+  }, [isOpen, employeeId]);
 
   useEffect(() => {
     if (isOpen && employeeId) {
@@ -155,15 +180,41 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
       } else {
         setIsClockedIn(false);
         setCurrentRecord(null);
-        const opts = await fetchActiveClockInLocations();
-        setWorkplaceOptions(opts);
-        const last = readLastSelectedWorkplaceId();
-        const validLast = last != null && opts.some((o) => o.id === last);
-        setSelectedWorkplaceId(validLast ? last : opts[0]?.id ?? null);
       }
     } catch (error) {
       console.error('Error fetching clock-in status:', error);
       toast.error('Failed to fetch clock-in status');
+    }
+  };
+
+  const selectedWorkplace = workplaceOptions.find((o) => o.id === selectedWorkplaceId) ?? null;
+  const selectedIsHome = selectedWorkplace != null && isHomeClockInLocation(selectedWorkplace);
+  const homeNeedsApproval = selectedIsHome && !worksFromHome;
+
+  const handleSendHomeForApproval = async () => {
+    if (!employeeId || !userId) {
+      toast.error('Missing employee or user information');
+      return;
+    }
+    if (!selectedWorkplaceId) {
+      toast.error('Please select a workplace');
+      return;
+    }
+    if (pendingHomeApproval) {
+      toast('You already have a pending work-from-home approval request.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      await insertHomeWfhApprovalRequest(employeeId, userId, selectedWorkplaceId);
+      setPendingHomeApproval(true);
+      setSuccessAction('approval');
+    } catch (error: any) {
+      console.error('Error sending home approval request:', error);
+      toast.error(error.message || 'Failed to send approval request');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -174,6 +225,10 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
     }
     if (!selectedWorkplaceId) {
       toast.error('Please select a workplace');
+      return;
+    }
+    if (homeNeedsApproval) {
+      toast.error('You cannot clock in from Home until an admin approves your work-from-home access.');
       return;
     }
 
@@ -288,56 +343,93 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
 
       {/* Modal */}
       <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-2xl transform transition-all">
+        <div className="relative bg-white rounded-full shadow-2xl w-[380px] h-[380px] max-w-[92vw] max-h-[92vw] transform transition-all flex flex-col items-center justify-center text-center">
+
+          {/* Close button — always visible */}
+          <button
+            onClick={onClose}
+            className="absolute top-7 right-7 btn btn-sm btn-ghost btn-circle z-10"
+            title="Close"
+          >
+            <XMarkIcon className="w-5 h-5" />
+          </button>
+
           {successAction ? (
-            <div className="p-10 md:p-12 text-center animate-fade-in">
+            <div className="flex flex-col items-center justify-center px-10 animate-fade-in">
               <div
-                className={`w-20 h-20 mx-auto rounded-full flex items-center justify-center mb-6 ${
-                  successAction === 'in' ? 'bg-green-500' : 'bg-gray-600'
+                className={`w-16 h-16 rounded-full flex items-center justify-center mb-4 ${
+                  successAction === 'approval'
+                    ? 'bg-amber-500'
+                    : successAction === 'in'
+                      ? 'bg-green-500'
+                      : 'bg-gray-600'
                 }`}
               >
-                <CheckCircleIcon className="w-12 h-12 text-white" />
+                <CheckCircleIcon className="w-10 h-10 text-white" />
               </div>
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">
-                {successAction === 'in' ? 'Clocked in successfully!' : 'Clocked out successfully!'}
+              <h2 className="text-xl font-bold text-gray-900 mb-1">
+                {successAction === 'approval'
+                  ? 'Sent for approval!'
+                  : successAction === 'in'
+                    ? 'Clocked in!'
+                    : 'Clocked out!'}
               </h2>
-              {selectedWorkplaceName && (
-                <p className="text-gray-600 mb-1">{selectedWorkplaceName}</p>
-              )}
-              <p className="text-sm text-gray-400">Closing automatically…</p>
+              {successAction === 'approval' ? (
+                <p className="text-sm text-gray-500">Waiting for admin approval.</p>
+              ) : selectedWorkplaceName ? (
+                <p className="text-sm text-gray-500">{selectedWorkplaceName}</p>
+              ) : null}
+              <p className="text-xs text-gray-400 mt-1">Closing automatically…</p>
             </div>
           ) : (
-            <>
-          {/* Header */}
-          <div className="flex items-center justify-between px-6 py-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-gradient-to-tr from-purple-600 to-indigo-600 rounded-lg flex items-center justify-center">
-                <ClockIcon className="w-6 h-6 text-white" />
-              </div>
+            <div className="flex flex-col items-center gap-5 px-10 w-full">
+              {/* Status text */}
               <div>
-                <h2 className="text-xl font-bold text-gray-900">Clock In/Out</h2>
-                <p className="text-sm text-gray-500">Track your work hours</p>
+                <p className={`text-lg font-extrabold leading-tight ${
+                  isClockedIn ? 'text-green-700' : ''
+                }`}
+                  style={!isClockedIn ? {
+                    background: 'linear-gradient(to right, #7c3aed, #6366f1)',
+                    WebkitBackgroundClip: 'text',
+                    WebkitTextFillColor: 'transparent',
+                    backgroundClip: 'text',
+                  } : undefined}
+                >
+                  {isClockedIn && sessionDuration
+                    ? <span className="tabular-nums">{sessionDuration}</span>
+                    : isClockedIn ? 'Clocked In' : 'Clocked Out'}
+                </p>
+                {isClockedIn && (
+                  <p className="text-xs text-gray-400 mt-0.5">Currently clocked in</p>
+                )}
               </div>
-            </div>
-            <button
-              onClick={onClose}
-              className="btn btn-sm btn-ghost btn-circle"
-              title="Close"
-            >
-              <XMarkIcon className="w-5 h-5" />
-            </button>
-          </div>
 
-          {/* Content */}
-          <div className="p-6 space-y-6">
-            {/* Status + action */}
-            <div className="flex items-center gap-4">
-                {!isClockedIn ? (
+              {/* Main action button */}
+              {!isClockedIn ? (
+                homeNeedsApproval ? (
+                  <button
+                    type="button"
+                    onClick={handleSendHomeForApproval}
+                    disabled={isLoading || pendingHomeApproval}
+                    className="btn rounded-full h-14 min-h-14 px-6 gap-2 border-0 shadow-md bg-gradient-to-r from-amber-500 via-orange-500 to-amber-500 text-white hover:from-amber-600 hover:via-orange-600 hover:to-amber-600 hover:shadow-lg transition-all duration-200 disabled:opacity-60"
+                  >
+                    {isLoading ? (
+                      <span className="loading loading-spinner loading-sm" />
+                    ) : (
+                      <>
+                        <ClockIcon className="w-5 h-5" />
+                        <span className="font-semibold text-sm">
+                          {pendingHomeApproval ? 'Approval pending' : 'Send for approval'}
+                        </span>
+                      </>
+                    )}
+                  </button>
+                ) : (
                   <button
                     type="button"
                     onClick={handleClockIn}
                     disabled={isLoading}
-                    className="btn btn-primary rounded-full h-14 min-h-14 px-5 gap-2 shrink-0 shadow-md"
+                    className="btn rounded-full h-16 min-h-16 px-8 gap-2 border-0 shadow-lg bg-gradient-to-r from-green-600 via-emerald-600 to-teal-500 text-white hover:from-green-700 hover:via-emerald-700 hover:to-teal-600 hover:shadow-xl transition-all duration-200 disabled:opacity-60 text-base"
                   >
                     {isLoading ? (
                       <span className="loading loading-spinner loading-sm" />
@@ -348,119 +440,105 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
                       </>
                     )}
                   </button>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={handleClockOut}
-                    disabled={isLoading}
-                    className="btn rounded-full h-14 min-h-14 px-5 gap-2 shrink-0 border-0 shadow-md bg-gradient-to-r from-red-600 via-rose-600 to-red-500 text-white hover:from-red-700 hover:via-rose-700 hover:to-red-600 hover:shadow-lg transition-all duration-200 disabled:opacity-60"
-                  >
-                    {isLoading ? (
-                      <span className="loading loading-spinner loading-sm" />
-                    ) : (
-                      <>
-                        <ClockIcon className="w-5 h-5" />
-                        <span className="font-semibold">Clock Out</span>
-                      </>
-                    )}
-                  </button>
-                )}
-                <div className="min-w-0 flex-1">
-                  <p className={`text-2xl font-extrabold leading-tight ${
-                    isClockedIn ? 'text-green-700' : 'text-gray-700'
-                  }`}>
-                    {isClockedIn && sessionDuration
-                      ? (
-                        <>
-                          Clocked In since{' '}
-                          <span className="tabular-nums">{sessionDuration}</span>
-                        </>
-                      )
-                      : isClockedIn
-                        ? 'Clocked In'
-                        : 'Clocked Out'}
-                  </p>
-                </div>
-            </div>
-
-            {/* Workplace */}
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                {isClockedIn ? 'Workplace' : 'Workplace (clock in)'}
-              </label>
-              {isClockedIn && currentRecord ? (
-                <div className="select select-bordered w-full h-12 flex items-center px-4 bg-gray-50 text-gray-900 font-medium">
-                  {resolveWorkplaceName(currentRecord, 'in')}
-                </div>
+                )
               ) : (
-                <>
-                  {/* Desktop: custom white dropdown */}
-                  <div className="hidden md:block relative" ref={workplaceDropdownRef}>
-                    <button
-                      type="button"
-                      onClick={() => setWorkplaceDropdownOpen((open) => !open)}
-                      disabled={workplaceOptions.length === 0}
-                      className={`w-full h-12 px-4 flex items-center justify-between gap-2 rounded-lg border bg-white text-left transition-colors ${
-                        workplaceDropdownOpen
-                          ? 'border-purple-400 ring-2 ring-purple-100'
-                          : 'border-gray-200 hover:border-gray-300'
-                      } disabled:opacity-60 disabled:cursor-not-allowed`}
-                    >
-                      <span className="text-gray-900 font-medium truncate">
-                        {workplaceDisplayLabel}
-                      </span>
-                      <ChevronDownIcon
-                        className={`w-5 h-5 text-gray-400 shrink-0 transition-transform ${
-                          workplaceDropdownOpen ? 'rotate-180' : ''
-                        }`}
-                      />
-                    </button>
-                    {workplaceDropdownOpen && workplaceOptions.length > 0 && (
-                      <div className="absolute z-30 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
-                        {workplaceOptions.map((opt) => {
-                          const isSelected = opt.id === selectedWorkplaceId;
-                          return (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              onClick={() => {
-                                setSelectedWorkplaceId(opt.id);
-                                setWorkplaceDropdownOpen(false);
-                              }}
-                              className={`w-full px-4 py-3 text-left text-sm transition-colors ${
-                                isSelected
-                                  ? 'bg-purple-50 text-purple-700 font-semibold'
-                                  : 'text-gray-800 hover:bg-gray-50'
-                              }`}
-                            >
-                              {opt.name}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Mobile: native select */}
-                  <select
-                    className="select select-bordered w-full md:hidden"
-                    value={selectedWorkplaceId ?? ''}
-                    onChange={(e) => setSelectedWorkplaceId(Number(e.target.value))}
-                    disabled={workplaceOptions.length === 0}
-                  >
-                    {workplaceOptions.length === 0 ? (
-                      <option value="">Loading workplaces…</option>
-                    ) : (
-                      workplaceOptions.map((opt) => (
-                        <option key={opt.id} value={opt.id}>{opt.name}</option>
-                      ))
-                    )}
-                  </select>
-                </>
+                <button
+                  type="button"
+                  onClick={handleClockOut}
+                  disabled={isLoading}
+                  className="btn rounded-full h-16 min-h-16 px-8 gap-2 border-0 shadow-lg bg-gradient-to-r from-violet-600 via-purple-600 to-indigo-500 text-white hover:from-violet-700 hover:via-purple-700 hover:to-indigo-600 hover:shadow-xl transition-all duration-200 disabled:opacity-60 text-base"
+                >
+                  {isLoading ? (
+                    <span className="loading loading-spinner loading-sm" />
+                  ) : (
+                    <>
+                      <ClockIcon className="w-5 h-5" />
+                      <span className="font-semibold">Clock Out</span>
+                    </>
+                  )}
+                </button>
               )}
+
+              {/* Workplace */}
+              <div className="w-full">
+                {isClockedIn && currentRecord ? (
+                  <div className="h-10 flex items-center justify-center rounded-full border border-gray-200 bg-gray-50 px-4 text-gray-700 font-medium text-sm">
+                    {resolveWorkplaceName(currentRecord, 'in')}
+                  </div>
+                ) : (
+                  <>
+                    {/* Desktop dropdown */}
+                    <div className="hidden md:block relative" ref={workplaceDropdownRef}>
+                      <button
+                        type="button"
+                        onClick={() => setWorkplaceDropdownOpen((open) => !open)}
+                        disabled={workplaceOptions.length === 0}
+                        className={`w-full h-10 px-4 flex items-center justify-between gap-2 rounded-full border bg-white text-left transition-colors text-sm ${
+                          workplaceDropdownOpen
+                            ? 'border-purple-400 ring-2 ring-purple-100'
+                            : 'border-gray-200 hover:border-gray-300'
+                        } disabled:opacity-60 disabled:cursor-not-allowed`}
+                      >
+                        <span className="text-gray-900 font-medium truncate">
+                          {workplaceDisplayLabel}
+                        </span>
+                        <ChevronDownIcon
+                          className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ${
+                            workplaceDropdownOpen ? 'rotate-180' : ''
+                          }`}
+                        />
+                      </button>
+                      {workplaceDropdownOpen && workplaceOptions.length > 0 && (
+                        <div className="absolute z-30 w-full mt-1 bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
+                          {workplaceOptions.map((opt) => {
+                            const isSelected = opt.id === selectedWorkplaceId;
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedWorkplaceId(opt.id);
+                                  setWorkplaceDropdownOpen(false);
+                                }}
+                                className={`w-full px-4 py-2.5 text-left text-sm transition-colors ${
+                                  isSelected
+                                    ? 'bg-purple-50 text-purple-700 font-semibold'
+                                    : 'text-gray-800 hover:bg-gray-50'
+                                }`}
+                              >
+                                {opt.name}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    {homeNeedsApproval && (
+                      <p className="mt-1.5 text-xs text-amber-700">
+                        {pendingHomeApproval
+                          ? 'Home access is pending approval.'
+                          : 'Home needs approval.'}
+                      </p>
+                    )}
+                    {/* Mobile: native select */}
+                    <select
+                      className="select select-bordered select-sm w-full md:hidden rounded-full"
+                      value={selectedWorkplaceId ?? ''}
+                      onChange={(e) => setSelectedWorkplaceId(Number(e.target.value))}
+                      disabled={workplaceOptions.length === 0}
+                    >
+                      {workplaceOptions.length === 0 ? (
+                        <option value="">Loading…</option>
+                      ) : (
+                        workplaceOptions.map((opt) => (
+                          <option key={opt.id} value={opt.id}>{opt.name}</option>
+                        ))
+                      )}
+                    </select>
+                  </>
+                )}
+              </div>
             </div>
-          </div>
-            </>
           )}
         </div>
       </div>

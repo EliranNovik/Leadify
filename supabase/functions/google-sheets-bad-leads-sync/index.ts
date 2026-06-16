@@ -200,9 +200,8 @@ serve(async (req) => {
   };
 
   const filterStats = {
-    skippedNullUtm: 0,
     skippedUtmJsonParse: 0,
-    skippedEmptyGclid: 0,
+    emptyGclid: 0,
     included: 0,
   };
   const valueRows: (string | number)[][] = [];
@@ -210,26 +209,22 @@ serve(async (req) => {
   const preview: Array<{ lead_id: string; lead_number: string | null; gclid_prefix: string }> = [];
 
   for (const l of list) {
-    if (l.utm_params == null) {
-      filterStats.skippedNullUtm++;
-      continue;
-    }
     let up: Record<string, unknown> = {};
-    if (typeof l.utm_params === 'string') {
+    if (l.utm_params == null) {
+      up = {};
+    } else if (typeof l.utm_params === 'string') {
       try {
         up = JSON.parse(l.utm_params) as Record<string, unknown>;
       } catch {
         filterStats.skippedUtmJsonParse++;
-        continue;
+        up = {};
       }
     } else if (typeof l.utm_params === 'object') {
       up = l.utm_params as Record<string, unknown>;
     }
+
     const gclid = typeof up.gclid === 'string' ? up.gclid.trim() : '';
-    if (!gclid) {
-      filterStats.skippedEmptyGclid++;
-      continue;
-    }
+    if (!gclid) filterStats.emptyGclid++;
     filterStats.included++;
     const convTime = formatConversionTimeJerusalem(l.created_at);
     valueRows.push([gclid, 'BadLeads', convTime, 0, 'ils']);
@@ -249,12 +244,12 @@ serve(async (req) => {
       preview.push({
         lead_id: l.id,
         lead_number: l.lead_number,
-        gclid_prefix: `${gclid.slice(0, 10)}…`,
+        gclid_prefix: gclid ? `${gclid.slice(0, 10)}…` : '(none)',
       });
     }
   }
 
-  log('After gclid / utm filter', { ...filterStats, valueRowCount: valueRows.length });
+  log('After utm parse', { ...filterStats, valueRowCount: valueRows.length });
 
   const debugPayload = {
     destination: DESTINATION,
@@ -305,7 +300,7 @@ serve(async (req) => {
         candidateCount: list.length,
         appended: 0,
         wouldAppend: 0,
-        message: 'RPC returned leads but none had a usable gclid in utm_params after parsing.',
+        message: 'No rows to append.',
         ...(debug ? { debug: debugPayload } : {}),
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },

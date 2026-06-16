@@ -7,10 +7,8 @@ import {
   MagnifyingGlassIcon,
   UserIcon,
   ChevronDownIcon,
-  EnvelopeIcon,
-  PhoneIcon,
-  DevicePhoneMobileIcon,
   ChatBubbleLeftRightIcon,
+  EnvelopeIcon,
 } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { useAuthContext } from '../contexts/AuthContext';
@@ -19,10 +17,14 @@ import { unavailabilityDateLabel } from '../lib/employeeUnavailabilities';
 import RMQMessagesPage from '../pages/RMQMessagesPage';
 import {
   approveClockInRecord,
+  countPendingApprovalBuckets,
   declineClockInRecord,
+  fetchActiveClockInsByEmployeeIds,
   fetchAllManualClockInsForApproval,
   fetchAllUnapprovedManualClockInsForApproval,
+  filterManualApprovalModalRecords,
   getClockInApprovalStatus,
+  isHomeWfhApprovalRequest,
   manualClockInWorkplaceLabel,
   type ManualClockInApprovalRecord,
 } from '../lib/employeeClockInApproval';
@@ -39,8 +41,6 @@ type EmployeeGroup = {
   department: string;
   photoUrl: string | null;
   email: string | null;
-  phone: string | null;
-  mobile: string | null;
   chatUserId: string | null;
   records: ManualClockInApprovalRecord[];
   pendingCount: number;
@@ -53,6 +53,55 @@ const MONTH_NAMES = [
 
 const PENDING_BADGE_CLASS =
   'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium shrink-0 bg-amber-100/45 text-amber-800/55 border-0 shadow-none ring-0 outline-none';
+
+const WFH_PENDING_HEADER_BADGE_CLASS =
+  'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold shrink-0 bg-orange-100 text-orange-800 border border-orange-200/80';
+
+const CLOCK_PENDING_HEADER_BADGE_CLASS =
+  'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold shrink-0 bg-emerald-200 text-emerald-950 border border-emerald-300/80';
+
+const WFH_PENDING_FILTER_BTN_CLASS =
+  'inline-flex items-center rounded-full px-3.5 py-1.5 text-sm font-semibold shrink-0 bg-orange-100 text-orange-800 border border-orange-200/80 cursor-pointer transition-all hover:bg-orange-200/90 hover:border-orange-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 focus-visible:ring-offset-1';
+
+const CLOCK_PENDING_FILTER_BTN_CLASS =
+  'inline-flex items-center rounded-full px-3.5 py-1.5 text-sm font-semibold shrink-0 text-white cursor-pointer transition-opacity hover:opacity-85 active:opacity-70 focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1';
+
+const CLOCK_IN_DATE_BADGE_COLOR = 'rgb(25, 49, 31)';
+
+const WFH_PENDING_FILTER_BTN_ACTIVE_CLASS =
+  'ring-2 ring-orange-400 ring-offset-1 bg-orange-200 border-orange-300';
+
+const CLOCK_PENDING_FILTER_BTN_ACTIVE_CLASS =
+  'ring-2 ring-offset-1 opacity-90';
+
+type PendingApprovalFilter = 'all' | 'wfh' | 'clock';
+
+function matchesPendingTypeFilter(
+  record: ManualClockInApprovalRecord,
+  filter: PendingApprovalFilter,
+): boolean {
+  if (filter === 'all') return true;
+  const isWfh = isHomeWfhApprovalRequest(record);
+  return filter === 'wfh' ? isWfh : !isWfh;
+}
+
+function applyPendingTypeFilterToGroups(
+  groups: EmployeeGroup[],
+  filter: PendingApprovalFilter,
+): EmployeeGroup[] {
+  if (filter === 'all') return groups;
+  return groups
+    .map((group) => {
+      const records = group.records.filter((record) =>
+        matchesPendingTypeFilter(record, filter),
+      );
+      const pendingCount = records.filter(
+        (record) => getClockInApprovalStatus(record) === 'pending',
+      ).length;
+      return { ...group, records, pendingCount };
+    })
+    .filter((group) => group.records.length > 0);
+}
 
 const BULK_ACTION_BTN_BASE =
   'inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold border-0 shadow-sm transition-all duration-200 disabled:opacity-40 disabled:pointer-events-none disabled:shadow-none';
@@ -68,6 +117,34 @@ const BULK_CANCEL_CLASS =
 const CLOCK_IN_DATE_BADGE_CLASS =
   'inline-flex items-center px-2.5 py-1 rounded-md text-white text-sm font-medium whitespace-nowrap';
 const CLOCK_IN_DATE_BADGE_BG = 'rgb(25, 49, 31)';
+const HOME_WFH_DATE_BADGE_BG = 'rgb(217, 119, 6)';
+
+const HOME_WFH_SUMMARY_BADGE_CLASS =
+  'inline-flex items-center rounded-full bg-gray-100 px-3 py-1.5 text-sm font-medium text-gray-600 whitespace-nowrap';
+
+function approvalDateBadgeBg(record: ManualClockInApprovalRecord): string {
+  return isHomeWfhApprovalRequest(record) ? HOME_WFH_DATE_BADGE_BG : CLOCK_IN_DATE_BADGE_BG;
+}
+
+function homeWfhApprovalSummary(record: ManualClockInApprovalRecord): string {
+  return `Home access requested at ${formatClockTime(record.clock_in_time)}.`;
+}
+
+function HomeWfhApprovalSummaryBadge({ record }: { record: ManualClockInApprovalRecord }) {
+  return (
+    <span className={HOME_WFH_SUMMARY_BADGE_CLASS}>
+      {homeWfhApprovalSummary(record)}
+    </span>
+  );
+}
+
+function approvalClockOutTime(record: ManualClockInApprovalRecord): string {
+  return record.clock_out_time ? formatClockTime(record.clock_out_time) : '—';
+}
+
+function approvalWorkplaceOut(record: ManualClockInApprovalRecord): string {
+  return record.clock_out_time ? manualClockInWorkplaceLabel(record, 'out') : '—';
+}
 
 const MANUAL_CLOCK_APPROVAL_TABLE_STYLES = `
   .manual-clock-approval-table-shell table {
@@ -145,6 +222,21 @@ function getInitials(name: string): string {
     .slice(0, 2);
 }
 
+function EmployeeClockStatusBadge({ clockInTime }: { clockInTime?: string | null }) {
+  if (clockInTime) {
+    return (
+      <span className="inline-flex items-center rounded-full px-2.5 py-0.5 md:px-3 md:py-1 text-xs md:text-sm font-medium shrink-0 bg-green-100/90 text-green-800 whitespace-nowrap">
+        Clocked in · since {formatClockTime(clockInTime)}
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center rounded-full px-2.5 py-0.5 md:px-3 md:py-1 text-xs md:text-sm font-medium shrink-0 bg-gray-100 text-gray-500 whitespace-nowrap">
+      Clocked out
+    </span>
+  );
+}
+
 function EmployeeAvatar({
   name,
   photoUrl,
@@ -152,9 +244,10 @@ function EmployeeAvatar({
 }: {
   name: string;
   photoUrl?: string | null;
-  size?: 'sm' | 'md';
+  size?: 'sm' | 'md' | 'lg';
 }) {
-  const dim = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-10 h-10 text-sm';
+  const dim =
+    size === 'sm' ? 'w-8 h-8 text-xs' : size === 'lg' ? 'w-16 h-16 text-lg' : 'w-12 h-12 text-base';
   if (photoUrl) {
     return (
       <img
@@ -173,58 +266,43 @@ function EmployeeAvatar({
   );
 }
 
-function EmployeeContactBar({
-  group,
+
+function EmployeeMessageButton({
+  chatUserId,
   onMessage,
 }: {
-  group: EmployeeGroup;
+  chatUserId: string | null;
   onMessage: () => void;
 }) {
-  const contactItems = [
-    group.email
-      ? { key: 'email', icon: EnvelopeIcon, label: group.email, href: `mailto:${group.email}` }
-      : null,
-    group.phone
-      ? { key: 'phone', icon: PhoneIcon, label: group.phone, href: `tel:${group.phone}` }
-      : null,
-    group.mobile
-      ? { key: 'mobile', icon: DevicePhoneMobileIcon, label: group.mobile, href: `tel:${group.mobile}` }
-      : null,
-  ].filter((item): item is { key: string; icon: typeof EnvelopeIcon; label: string; href: string } => item != null);
-
   return (
-    <div
-      className="flex flex-wrap items-center gap-2 pt-3 border-t border-base-200/80"
+    <button
+      type="button"
+      className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-[#4829CC]/25 bg-[#4829CC]/8 text-[#4829CC] hover:bg-[#4829CC]/14 transition-colors disabled:opacity-40 disabled:pointer-events-none shrink-0"
+      disabled={!chatUserId}
+      title={chatUserId ? 'Open RMQ chat' : 'No RMQ account linked'}
+      aria-label="Open RMQ chat"
+      onClick={(e) => {
+        e.stopPropagation();
+        onMessage();
+      }}
+    >
+      <ChatBubbleLeftRightIcon className="w-[18px] h-[18px]" aria-hidden />
+    </button>
+  );
+}
+
+function EmployeeEmailButton({ email }: { email: string | null }) {
+  if (!email) return null;
+  return (
+    <a
+      href={`mailto:${email}`}
+      className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-base-content/15 bg-base-200/60 text-base-content/50 hover:bg-base-200 hover:text-base-content transition-colors shrink-0"
+      title={`Email ${email}`}
+      aria-label={`Send email to ${email}`}
       onClick={(e) => e.stopPropagation()}
     >
-      {contactItems.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-1.5 min-w-0 flex-1">
-          {contactItems.map((item) => (
-            <a
-              key={item.key}
-              href={item.href}
-              className="inline-flex items-center gap-1.5 max-w-full rounded-full bg-base-200/55 px-2.5 py-1 text-xs text-base-content/70 hover:bg-base-200 hover:text-base-content transition-colors"
-              title={item.label}
-            >
-              <item.icon className="w-3.5 h-3.5 shrink-0 text-base-content/45" aria-hidden />
-              <span className="truncate">{item.label}</span>
-            </a>
-          ))}
-        </div>
-      ) : (
-        <span className="text-xs text-base-content/40 flex-1">No contact details</span>
-      )}
-      <button
-        type="button"
-        className="inline-flex items-center gap-1.5 rounded-full border border-[#4829CC]/25 bg-[#4829CC]/8 px-3 py-1.5 text-xs font-medium text-[#4829CC] hover:bg-[#4829CC]/14 transition-colors disabled:opacity-40 disabled:pointer-events-none shrink-0"
-        disabled={!group.chatUserId}
-        title={group.chatUserId ? 'Open RMQ chat' : 'No RMQ account linked'}
-        onClick={onMessage}
-      >
-        <ChatBubbleLeftRightIcon className="w-4 h-4" aria-hidden />
-        Message
-      </button>
-    </div>
+      <EnvelopeIcon className="w-[18px] h-[18px]" aria-hidden />
+    </a>
   );
 }
 
@@ -245,11 +323,13 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | null>(null);
   const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
   const [expandedEmployeeIds, setExpandedEmployeeIds] = useState<Set<number>>(() => new Set());
+  const [pendingTypeFilter, setPendingTypeFilter] = useState<PendingApprovalFilter>('all');
   const [bulkActionMode, setBulkActionMode] = useState<'approve' | 'decline' | null>(null);
   const [selectedRecordIds, setSelectedRecordIds] = useState<Set<number>>(() => new Set());
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [rmqOpen, setRmqOpen] = useState(false);
   const [rmqChatUserId, setRmqChatUserId] = useState<string | null>(null);
+  const [activeClockIns, setActiveClockIns] = useState<Map<number, string>>(() => new Map());
   const searchWrapRef = useRef<HTMLDivElement>(null);
 
   const yearOptions = useMemo(() => {
@@ -280,16 +360,19 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     setSelectedEmployeeId(null);
     setEmployeePickerOpen(false);
     setExpandedEmployeeIds(new Set());
+    setPendingTypeFilter('all');
     setPeriodScope('month');
     setBulkActionMode(null);
     setSelectedRecordIds(new Set());
     setRmqOpen(false);
     setRmqChatUserId(null);
+    setActiveClockIns(new Map());
     void loadRecords();
   }, [isOpen, loadRecords]);
 
   useEffect(() => {
     setExpandedEmployeeIds(new Set());
+    setPendingTypeFilter('all');
     setBulkActionMode(null);
     setSelectedRecordIds(new Set());
   }, [year, month, periodScope]);
@@ -305,7 +388,7 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
   }, [employeePickerOpen]);
 
   const actionableRecords = useMemo(
-    () => records.filter((r) => getClockInApprovalStatus(r) !== 'approved'),
+    () => filterManualApprovalModalRecords(records),
     [records],
   );
 
@@ -325,8 +408,6 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
           department: record.employee_department || '—',
           photoUrl: record.employee_photo_url ?? null,
           email: record.employee_email ?? null,
-          phone: record.employee_phone ?? null,
-          mobile: record.employee_mobile ?? null,
           chatUserId: record.employee_chat_user_id ?? null,
           records: [record],
           pendingCount: getClockInApprovalStatus(record) === 'pending' ? 1 : 0,
@@ -344,6 +425,29 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
       .sort((a, b) => a.employeeName.localeCompare(b.employeeName));
   }, [actionableRecords]);
 
+  const employeeIdsForClockStatus = useMemo(
+    () => employeeGroups.map((group) => group.employeeId),
+    [employeeGroups],
+  );
+
+  useEffect(() => {
+    if (!isOpen || employeeIdsForClockStatus.length === 0) {
+      setActiveClockIns(new Map());
+      return;
+    }
+    let cancelled = false;
+    void fetchActiveClockInsByEmployeeIds(employeeIdsForClockStatus)
+      .then((map) => {
+        if (!cancelled) setActiveClockIns(map);
+      })
+      .catch((err) => {
+        console.error('ManualClockInApprovalModal active clock-ins:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, employeeIdsForClockStatus]);
+
   const employeePickerOptions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return employeeGroups.filter((group) => {
@@ -355,7 +459,7 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     });
   }, [employeeGroups, searchQuery]);
 
-  const visibleGroups = useMemo(() => {
+  const baseVisibleGroups = useMemo(() => {
     if (selectedEmployeeId != null) {
       return employeeGroups.filter((g) => g.employeeId === selectedEmployeeId);
     }
@@ -368,10 +472,17 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     );
   }, [employeeGroups, selectedEmployeeId, searchQuery]);
 
-  const totalPending = useMemo(
-    () => actionableRecords.filter((r) => getClockInApprovalStatus(r) === 'pending').length,
+  const visibleGroups = useMemo(
+    () => applyPendingTypeFilterToGroups(baseVisibleGroups, pendingTypeFilter),
+    [baseVisibleGroups, pendingTypeFilter],
+  );
+
+  const { wfh: pendingWfhCount, clock: pendingClockCount } = useMemo(
+    () => countPendingApprovalBuckets(actionableRecords),
     [actionableRecords],
   );
+
+  const totalPending = pendingWfhCount + pendingClockCount;
 
   const pendingSelectableRecords = useMemo(() => {
     const rows: ManualClockInApprovalRecord[] = [];
@@ -426,10 +537,13 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
   const handleApprove = async (recordId: number) => {
     if (!user?.id) return;
     setActingId(recordId);
+    const isWfh = isHomeWfhApprovalRequest(
+      records.find((r) => r.id === recordId) ?? { notes: null },
+    );
     setRecords((prev) => prev.filter((r) => r.id !== recordId));
     try {
       await approveClockInRecord(recordId, user.id);
-      toast.success('Entry approved');
+      toast.success(isWfh ? 'Home access granted' : 'Entry approved');
       onUpdated?.();
     } catch (err) {
       console.error('Approve clock-in:', err);
@@ -444,9 +558,13 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     if (!user?.id) return;
     setActingId(recordId);
     try {
-      await declineClockInRecord(recordId, user.id);
-      toast.success('Entry declined');
-      await loadRecords();
+      const result = await declineClockInRecord(recordId, user.id);
+      toast.success(result === 'removed' ? 'Home access request removed' : 'Entry declined');
+      if (result === 'removed') {
+        setRecords((prev) => prev.filter((r) => r.id !== recordId));
+      } else {
+        await loadRecords();
+      }
       onUpdated?.();
     } catch (err) {
       console.error('Decline clock-in:', err);
@@ -502,8 +620,11 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
 
     for (const recordId of ids) {
       try {
-        await declineClockInRecord(recordId, user.id);
+        const result = await declineClockInRecord(recordId, user.id);
         declinedCount += 1;
+        if (result === 'removed') {
+          setRecords((prev) => prev.filter((r) => r.id !== recordId));
+        }
       } catch (err) {
         console.error('Bulk decline clock-in:', err);
         failedCount += 1;
@@ -518,7 +639,13 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
       toast.success(
         `Declined ${declinedCount} entr${declinedCount === 1 ? 'y' : 'ies'}.`,
       );
-      await loadRecords();
+      const hasRegularDeclines = ids.some((id) => {
+        const record = records.find((r) => r.id === id);
+        return record && !isHomeWfhApprovalRequest(record);
+      });
+      if (hasRegularDeclines) {
+        await loadRecords();
+      }
     } else if (declinedCount > 0) {
       toast.error(`Declined ${declinedCount}, failed ${failedCount}.`);
       await loadRecords();
@@ -552,6 +679,21 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     });
   };
 
+  const togglePendingTypeFilter = (type: 'wfh' | 'clock') => {
+    const nextFilter: PendingApprovalFilter = pendingTypeFilter === type ? 'all' : type;
+    setPendingTypeFilter(nextFilter);
+    setBulkActionMode(null);
+    setSelectedRecordIds(new Set());
+
+    if (nextFilter === 'all') {
+      setExpandedEmployeeIds(new Set());
+      return;
+    }
+
+    const matchingGroups = applyPendingTypeFilterToGroups(baseVisibleGroups, nextFilter);
+    setExpandedEmployeeIds(new Set(matchingGroups.map((group) => group.employeeId)));
+  };
+
   const openEmployeeChat = (group: EmployeeGroup) => {
     if (!group.chatUserId) {
       toast.error('No RMQ account linked for this employee');
@@ -580,11 +722,6 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
               {periodScope === 'all' ? 'All periods' : `${MONTH_NAMES[month - 1]} ${year}`}
               {' · '}
               {visibleGroups.length} employee{visibleGroups.length === 1 ? '' : 's'}
-              {totalPending > 0 && (
-                <span className={`ml-1.5 ${PENDING_BADGE_CLASS}`}>
-                  {totalPending} pending
-                </span>
-              )}
             </p>
           </div>
           <button type="button" className="btn btn-ghost btn-sm btn-circle" onClick={onClose}>
@@ -702,6 +839,41 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
               <option value="month">Month</option>
               <option value="all">All</option>
             </select>
+          </div>
+          <div className="form-control w-full sm:w-auto">
+            <label className="label py-0 pb-1">
+              <span className="label-text text-xs font-medium">Pending</span>
+            </label>
+            <div className="flex flex-wrap items-center gap-2 min-h-[2rem]">
+              {pendingWfhCount > 0 && (
+                <button
+                  type="button"
+                  className={`${WFH_PENDING_FILTER_BTN_CLASS} ${
+                    pendingTypeFilter === 'wfh' ? WFH_PENDING_FILTER_BTN_ACTIVE_CLASS : ''
+                  }`}
+                  aria-pressed={pendingTypeFilter === 'wfh'}
+                  onClick={() => togglePendingTypeFilter('wfh')}
+                >
+                  {pendingWfhCount} work from home
+                </button>
+              )}
+              {pendingClockCount > 0 && (
+                <button
+                  type="button"
+                  className={`${CLOCK_PENDING_FILTER_BTN_CLASS} ${
+                    pendingTypeFilter === 'clock' ? CLOCK_PENDING_FILTER_BTN_ACTIVE_CLASS : ''
+                  }`}
+                  style={{ backgroundColor: CLOCK_IN_DATE_BADGE_COLOR }}
+                  aria-pressed={pendingTypeFilter === 'clock'} 
+                  onClick={() => togglePendingTypeFilter('clock')}
+                >
+                  {pendingClockCount} clock in/out
+                </button>
+              )}
+              {pendingWfhCount === 0 && pendingClockCount === 0 && (
+                <span className="text-xs text-base-content/45">No pending entries</span>
+              )}
+            </div>
           </div>
           <div className="flex flex-wrap items-end justify-end gap-2 ml-auto shrink-0 pb-0.5">
             {!bulkActionMode ? (
@@ -833,6 +1005,7 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                     {pendingSelectableRecords.map((record) => {
                       const dateKey = record.clock_in_time.split('T')[0];
                       const isSelected = selectedRecordIds.has(record.id);
+                      const isHomeWfh = isHomeWfhApprovalRequest(record);
                       return (
                         <tr
                           key={record.id}
@@ -854,30 +1027,34 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                           <td className="whitespace-nowrap px-5 py-4">
                             <span
                               className={CLOCK_IN_DATE_BADGE_CLASS}
-                              style={{ backgroundColor: CLOCK_IN_DATE_BADGE_BG }}
+                              style={{ backgroundColor: approvalDateBadgeBg(record) }}
                             >
                               {unavailabilityDateLabel(dateKey)}
                             </span>
                           </td>
-                          <td className="whitespace-nowrap px-5 py-4">
-                            {formatClockTime(record.clock_in_time)}
-                          </td>
-                          <td className="whitespace-nowrap px-5 py-4">
-                            {record.clock_out_time
-                              ? formatClockTime(record.clock_out_time)
-                              : '—'}
-                          </td>
-                          <td className="text-sm max-w-[120px] truncate px-5 py-4">
-                            {manualClockInWorkplaceLabel(record, 'in')}
-                          </td>
-                          <td className="text-sm max-w-[120px] truncate px-5 py-4">
-                            {record.clock_out_time
-                              ? manualClockInWorkplaceLabel(record, 'out')
-                              : '—'}
-                          </td>
-                          <td className="text-sm max-w-[140px] truncate text-base-content/70 px-5 py-4">
-                            {record.notes?.trim() || '—'}
-                          </td>
+                          {isHomeWfh ? (
+                            <td className="px-5 py-4" colSpan={5}>
+                              <HomeWfhApprovalSummaryBadge record={record} />
+                            </td>
+                          ) : (
+                            <>
+                              <td className="whitespace-nowrap px-5 py-4">
+                                {formatClockTime(record.clock_in_time)}
+                              </td>
+                              <td className="whitespace-nowrap px-5 py-4">
+                                {approvalClockOutTime(record)}
+                              </td>
+                              <td className="text-sm max-w-[120px] truncate px-5 py-4">
+                                {manualClockInWorkplaceLabel(record, 'in')}
+                              </td>
+                              <td className="text-sm max-w-[120px] truncate px-5 py-4">
+                                {approvalWorkplaceOut(record)}
+                              </td>
+                              <td className="text-sm max-w-[140px] truncate text-base-content/70 px-5 py-4">
+                                {record.notes?.trim() || '—'}
+                              </td>
+                            </>
+                          )}
                         </tr>
                       );
                     })}
@@ -887,53 +1064,88 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
             )
           ) : visibleGroups.length === 0 ? (
             <div className="text-center py-16 text-base-content/50">
-              {actionableRecords.length === 0
-                ? periodScope === 'all'
-                  ? 'No unapproved manual clock-in entries.'
-                  : 'No pending manual clock-in entries for this period.'
-                : 'No employees match your search.'}
+              {pendingTypeFilter === 'wfh'
+                ? 'No pending work from home requests.'
+                : pendingTypeFilter === 'clock'
+                  ? 'No pending clock in/out entries.'
+                  : actionableRecords.length === 0
+                    ? periodScope === 'all'
+                      ? 'No unapproved manual clock-in entries.'
+                      : 'No pending manual clock-in entries for this period.'
+                    : 'No employees match your search.'}
             </div>
           ) : (
-            visibleGroups.map((group) => {
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
+            {visibleGroups.map((group) => {
               const isExpanded = expandedEmployeeIds.has(group.employeeId);
+              const activeClockInTime = activeClockIns.get(group.employeeId) ?? null;
+              const hasWfhPending = group.records.some(
+                (r) => isHomeWfhApprovalRequest(r) && getClockInApprovalStatus(r) === 'pending',
+              );
               return (
-              <section key={group.employeeId} className="space-y-3">
-                <div className="rounded-[18px] bg-white px-4 py-3 shadow-sm">
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-3 text-left"
-                    onClick={() => toggleEmployeeExpanded(group.employeeId)}
-                    aria-expanded={isExpanded}
-                    aria-controls={`manual-clock-approval-table-${group.employeeId}`}
-                  >
+              <section key={group.employeeId} className="flex min-w-0 flex-col gap-3">
+                <div
+                  className="rounded-[18px] bg-white px-4 py-4 shadow-sm cursor-pointer"
+                  onClick={() => toggleEmployeeExpanded(group.employeeId)}
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={isExpanded}
+                  aria-controls={`manual-clock-approval-table-${group.employeeId}`}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      toggleEmployeeExpanded(group.employeeId);
+                    }
+                  }}
+                >
+                  <div className="flex w-full gap-3 text-left">
                     <EmployeeAvatar
                       name={group.employeeName}
                       photoUrl={group.photoUrl}
+                      size="lg"
                     />
-                    <div className="min-w-0 flex-1">
-                      <h3 className="font-semibold text-base truncate">{group.employeeName}</h3>
-                      <p className="text-xs text-base-content/55 truncate">{group.department}</p>
+                    <div className="min-w-0 flex-1 flex flex-col gap-2">
+                      {/* Name row */}
+                      <div className="flex items-center justify-between gap-2">
+                        <h3 className="font-semibold text-base leading-snug min-w-0 truncate">
+                          {group.employeeName}
+                          <span className="font-medium text-base-content/50">{` - `}</span>
+                          <span className="font-medium text-base-content/70">{group.department}</span>
+                        </h3>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <EmployeeEmailButton email={group.email} />
+                          <EmployeeMessageButton
+                            chatUserId={group.chatUserId}
+                            onMessage={() => openEmployeeChat(group)}
+                          />
+                          <ChevronDownIcon
+                            className={`w-5 h-5 text-base-content/40 transition-transform duration-200 ${
+                              isExpanded ? 'rotate-180' : ''
+                            }`}
+                            aria-hidden
+                          />
+                        </div>
+                      </div>
+                      {/* Status badges row */}
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <EmployeeClockStatusBadge clockInTime={activeClockInTime} />
+                        {hasWfhPending && (
+                          <span className="inline-flex items-center rounded-full px-2.5 py-0.5 md:px-3 md:py-1 text-xs md:text-sm font-medium shrink-0 bg-orange-100 text-orange-800 whitespace-nowrap">
+                            Waiting for home access
+                          </span>
+                        )}
+                        {group.pendingCount > 0 ? (
+                          <span className="inline-flex items-center rounded-full px-2.5 py-0.5 md:px-3 md:py-1 text-xs md:text-sm font-medium shrink-0 bg-amber-100/60 text-amber-800/70 whitespace-nowrap">
+                            {group.pendingCount} pending
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center rounded-full px-2.5 py-0.5 md:px-3 md:py-1 text-xs md:text-sm font-medium shrink-0 bg-base-200/50 text-base-content/40">
+                            No pending
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    {group.pendingCount > 0 ? (
-                      <span className={PENDING_BADGE_CLASS}>
-                        {group.pendingCount} pending
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium shrink-0 bg-base-200/50 text-base-content/40 border-0 shadow-none">
-                        No pending
-                      </span>
-                    )}
-                    <ChevronDownIcon
-                      className={`w-5 h-5 shrink-0 text-base-content/40 transition-transform duration-200 ${
-                        isExpanded ? 'rotate-180' : ''
-                      }`}
-                      aria-hidden
-                    />
-                  </button>
-                  <EmployeeContactBar
-                    group={group}
-                    onMessage={() => openEmployeeChat(group)}
-                  />
+                  </div>
                 </div>
 
                 {isExpanded && (
@@ -941,7 +1153,7 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                   id={`manual-clock-approval-table-${group.employeeId}`}
                   className="manual-clock-approval-table-shell overflow-x-auto pb-1"
                 >
-                  <table className="table manual-clock-approval-results-table w-full min-w-[48rem] text-sm">
+                  <table className="table manual-clock-approval-results-table w-full min-w-[36rem] text-sm">
                     <thead>
                       <tr>
                         <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
@@ -974,6 +1186,7 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                         const dateKey = record.clock_in_time.split('T')[0];
                         const isActing = actingId === record.id;
                         const isDeclined = status === 'declined';
+                        const isHomeWfh = isHomeWfhApprovalRequest(record);
 
                         return (
                           <tr
@@ -983,30 +1196,34 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                             <td className="whitespace-nowrap px-5 py-4">
                               <span
                                 className={CLOCK_IN_DATE_BADGE_CLASS}
-                                style={{ backgroundColor: CLOCK_IN_DATE_BADGE_BG }}
+                                style={{ backgroundColor: approvalDateBadgeBg(record) }}
                               >
                                 {unavailabilityDateLabel(dateKey)}
                               </span>
                             </td>
-                            <td className="whitespace-nowrap px-5 py-4">
-                              {formatClockTime(record.clock_in_time)}
-                            </td>
-                            <td className="whitespace-nowrap px-5 py-4">
-                              {record.clock_out_time
-                                ? formatClockTime(record.clock_out_time)
-                                : '—'}
-                            </td>
-                            <td className="text-sm max-w-[120px] truncate px-5 py-4">
-                              {manualClockInWorkplaceLabel(record, 'in')}
-                            </td>
-                            <td className="text-sm max-w-[120px] truncate px-5 py-4">
-                              {record.clock_out_time
-                                ? manualClockInWorkplaceLabel(record, 'out')
-                                : '—'}
-                            </td>
-                            <td className="text-sm max-w-[140px] truncate text-base-content/70 px-5 py-4">
-                              {record.notes?.trim() || '—'}
-                            </td>
+                            {isHomeWfh ? (
+                              <td className="px-5 py-4" colSpan={5}>
+                                <HomeWfhApprovalSummaryBadge record={record} />
+                              </td>
+                            ) : (
+                              <>
+                                <td className="whitespace-nowrap px-5 py-4">
+                                  {formatClockTime(record.clock_in_time)}
+                                </td>
+                                <td className="whitespace-nowrap px-5 py-4">
+                                  {approvalClockOutTime(record)}
+                                </td>
+                                <td className="text-sm max-w-[120px] truncate px-5 py-4">
+                                  {manualClockInWorkplaceLabel(record, 'in')}
+                                </td>
+                                <td className="text-sm max-w-[120px] truncate px-5 py-4">
+                                  {approvalWorkplaceOut(record)}
+                                </td>
+                                <td className="text-sm max-w-[140px] truncate text-base-content/70 px-5 py-4">
+                                  {record.notes?.trim() || '—'}
+                                </td>
+                              </>
+                            )}
                             <td className="text-right whitespace-nowrap px-5 py-4">
                               <div className="inline-flex items-center justify-end gap-1.5">
                                 <button
@@ -1044,7 +1261,8 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                 )}
               </section>
             );
-            })
+            })}
+            </div>
           )}
         </div>
 

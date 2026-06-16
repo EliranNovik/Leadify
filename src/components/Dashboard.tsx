@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspens
 import Meetings from './Meetings';
 import OverdueFollowups from './OverdueFollowups';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
+import TeamStatusModal from './TeamStatusModal';
 import ClockInBox from './ClockInBox';
 
 // Lazy load bottom components for faster initial render
@@ -237,6 +238,7 @@ const Dashboard: React.FC = () => {
   const [isUnavailableEmployeesModalOpen, setIsUnavailableEmployeesModalOpen] = useState(false);
   const [isMyAvailabilityModalOpen, setIsMyAvailabilityModalOpen] = useState(false);
   const [isSickDaysUploadModalOpen, setIsSickDaysUploadModalOpen] = useState(false);
+  const [isTeamStatusModalOpen, setIsTeamStatusModalOpen] = useState(false);
   const [unavailableEmployeesCount, setUnavailableEmployeesCount] = useState(0);
   const [currentlyUnavailableCount, setCurrentlyUnavailableCount] = useState(0);
   const [scheduledTimeOffCount, setScheduledTimeOffCount] = useState(0);
@@ -276,7 +278,19 @@ const Dashboard: React.FC = () => {
   const [realPerformanceData, setRealPerformanceData] = useState<any[]>([]);
   const [realTeamAverageData, setRealTeamAverageData] = useState<any[]>([]);
   const [performanceLoading, setPerformanceLoading] = useState(false);
-  const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
+  const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(() => {
+    try {
+      const v = localStorage.getItem('_clockin_emp_id');
+      return v ? parseInt(v, 10) : null;
+    } catch {
+      return null;
+    }
+  });
+
+  const setAndCacheEmployeeId = useCallback((id: number) => {
+    setCurrentUserEmployeeId(id);
+    try { localStorage.setItem('_clockin_emp_id', String(id)); } catch { /* noop */ }
+  }, []);
   const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
 
   // 1. Add state for real overdue leads
@@ -328,6 +342,26 @@ const Dashboard: React.FC = () => {
   // Skip redundant auth check - ProtectedRoute already handles authentication
   // Just rely on AuthContext state for faster page loads
   // isInitialized is checked directly in render below
+
+  // Eagerly fetch the employee ID so ClockInBox renders immediately on mount
+  // without waiting for the heavy meetings / performance data fetches.
+  useEffect(() => {
+    if (!authUser?.id || currentUserEmployeeId != null) return;
+    void (async () => {
+      try {
+        const { data } = await supabase
+          .from('users')
+          .select('employee_id')
+          .eq('auth_id', authUser.id)
+          .maybeSingle();
+        if (data?.employee_id != null) {
+          setAndCacheEmployeeId(data.employee_id);
+        }
+      } catch {
+        // non-critical; the heavy fetches will also set this as a fallback
+      }
+    })();
+  }, [authUser?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch meeting locations and their default links for join buttons
   // DEFERRED: Load after initial render
@@ -1410,7 +1444,7 @@ const Dashboard: React.FC = () => {
 
           if (userData?.employee_id) {
             userEmployeeId = userData.employee_id;
-            setCurrentUserEmployeeId(userData.employee_id);
+            setAndCacheEmployeeId(userData.employee_id);
           }
 
           // Use email from userData if available, otherwise use auth email
@@ -2869,7 +2903,7 @@ const Dashboard: React.FC = () => {
       const userEmployeeId = userData.employee_id;
 
       setCurrentUserFullName(userFullName || '');
-      setCurrentUserEmployeeId(userEmployeeId);
+      if (userEmployeeId != null) setAndCacheEmployeeId(userEmployeeId);
 
       // Calculate date 30 days ago
       const thirtyDaysAgo = new Date();
@@ -7735,7 +7769,18 @@ const Dashboard: React.FC = () => {
                     <UserGroupIcon className="w-6 h-6 text-white" />
                   </div>
                   <div>
-                    <h2 className="text-lg font-bold text-gray-900">Team Availability</h2>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h2 className="text-lg font-bold text-gray-900">
+                        Team Availability
+                      </h2>
+                      <button
+                        type="button"
+                        className="btn btn-xs btn-outline btn-primary rounded-full px-3 min-h-0 h-7"
+                        onClick={() => setIsTeamStatusModalOpen(true)}
+                      >
+                        View all
+                      </button>
+                    </div>
                     <p className="text-sm text-gray-500">
                   {getDateDescription(teamAvailabilityDate)}
                     </p>
@@ -8266,6 +8311,12 @@ const Dashboard: React.FC = () => {
       <UnavailableEmployeesModal
         isOpen={isUnavailableEmployeesModalOpen}
         onClose={() => setIsUnavailableEmployeesModalOpen(false)}
+      />
+
+      {/* Team Status Modal */}
+      <TeamStatusModal
+        isOpen={isTeamStatusModalOpen}
+        onClose={() => setIsTeamStatusModalOpen(false)}
       />
 
       {/* My Availability Modal - Mobile Only */}

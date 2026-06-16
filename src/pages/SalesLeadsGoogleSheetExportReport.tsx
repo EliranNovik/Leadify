@@ -1,5 +1,5 @@
 /**
- * Marketing: quality leads appended to the QLeads Google Sheet (export log).
+ * Marketing: signed sales leads appended to the SalesLeads Google Sheet (export log).
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { ArrowPathIcon, CloudArrowUpIcon, TableCellsIcon, XMarkIcon } from '@heroicons/react/24/outline';
@@ -8,7 +8,7 @@ import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
 import GoogleSheetAutoSyncNotice from '../components/reports/GoogleSheetAutoSyncNotice';
 
-const EXPORT_DESTINATION = 'q_leads_capital_firm';
+const EXPORT_DESTINATION = 'sales_leads_capital_firm';
 
 export type GoogleSheetConversionExportRow = {
   id: string;
@@ -36,7 +36,7 @@ function formatDt(iso: string) {
   }
 }
 
-const QLeadsGoogleSheetExportReport: React.FC = () => {
+const SalesLeadsGoogleSheetExportReport: React.FC = () => {
   const [rows, setRows] = useState<GoogleSheetConversionExportRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
@@ -74,7 +74,7 @@ const QLeadsGoogleSheetExportReport: React.FC = () => {
     setSyncing(true);
     setLastResponseJson(null);
     try {
-      const { data, error } = await supabase.functions.invoke('google-sheets-qleads-sync', {
+      const { data, error } = await supabase.functions.invoke('google-sheets-salesleads-sync', {
         body: { dryRun, limit: 200, debug: includeDebug },
       });
 
@@ -108,7 +108,7 @@ const QLeadsGoogleSheetExportReport: React.FC = () => {
         sheets?: { updatedRange?: string; updatedRows?: number };
       };
       if (includeDebug && data != null) {
-        console.info('[QLeadsGoogleSheetExportReport] function response', data);
+        console.info('[SalesLeadsGoogleSheetExportReport] function response', data);
       }
       if (d?.error) {
         toast.error(d.error);
@@ -153,11 +153,11 @@ const QLeadsGoogleSheetExportReport: React.FC = () => {
             <TableCellsIcon className="h-6 w-6" />
           </div>
           <div>
-            <h2 className="text-xl font-bold text-base-content">QLeads → Google Sheet</h2>
+            <h2 className="text-xl font-bold text-base-content">SalesLeads → Google Sheet</h2>
             <p className="mt-1 max-w-2xl text-sm text-base-content/60">
-              Eligible leads (stages 0–20) and all leads from Meeting Scheduled (stage 20+)
-              from Capital firm sources — exported as Google Ads offline conversions.
+              Capital firm sources at Client signed agreement (stage 60) or later.
               GCLID is included when present; otherwise the sheet cell is left empty.
+              Conversion value is the lead balance in NIS.
             </p>
           </div>
         </div>
@@ -202,7 +202,7 @@ const QLeadsGoogleSheetExportReport: React.FC = () => {
         </div>
       </div>
 
-      <GoogleSheetAutoSyncNotice reportLabel="QLeads" />
+      <GoogleSheetAutoSyncNotice reportLabel="SalesLeads" />
 
       {responseModalOpen && (
         <div className="modal modal-open z-[200]">
@@ -301,4 +301,4 @@ const QLeadsGoogleSheetExportReport: React.FC = () => {
   );
 };
 
-export default QLeadsGoogleSheetExportReport;
+export default SalesLeadsGoogleSheetExportReport;

@@ -41,7 +41,7 @@ CREATE POLICY "google_sheet_conversion_exports_select_authenticated"
 
 -- ---------------------------------------------------------------------------
 -- Candidates: firm-linked sources, stage id <= 20, inactive / unactivated,
--- gclid present, exclude "double -diff. source", not yet exported.
+-- gclid optional (empty when missing), exclude "double -diff. source", not yet exported.
 -- Firm UUID is fixed for this sheet (Capital / provider mapping).
 -- ---------------------------------------------------------------------------
 
@@ -81,7 +81,6 @@ AS $$
       OR l.unactivated_at IS NOT NULL
     )
     AND coalesce(trim(l.unactivation_reason), '') IS DISTINCT FROM 'double -diff. source'
-    AND coalesce(l.utm_params ->> 'gclid', '') <> ''
     AND NOT EXISTS (
       SELECT 1
       FROM public.google_sheet_conversion_exports e
@@ -93,7 +92,7 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION public.get_leads_for_bad_leads_google_sheet_export(int) IS
-  'BadLeads Google Sheet: firm ee79359b-..., stage id <= 20, inactive/unactivated, gclid, exclude double -diff. source, not yet exported.';
+  'BadLeads Google Sheet: firm ee79359b-..., stage id <= 20, inactive/unactivated, gclid optional, exclude double -diff. source, not yet exported.';
 
 REVOKE ALL ON FUNCTION public.get_leads_for_bad_leads_google_sheet_export(int) FROM PUBLIC;
 -- Only edge (service_role) may call — returns PII + gclid.

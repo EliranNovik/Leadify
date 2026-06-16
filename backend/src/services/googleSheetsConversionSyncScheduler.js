@@ -1,5 +1,5 @@
 /**
- * Invokes BadLeads, QLeads, and HQLeads Google Sheet edge functions on a schedule.
+ * Invokes BadLeads, QLeads, HQLeads, and SalesLeads Google Sheet edge functions on a schedule.
  */
 const DEFAULT_INTERVAL_MINUTES = Number(process.env.GOOGLE_SHEETS_CONVERSION_SYNC_INTERVAL_MINUTES || '60');
 const SCHEDULER_ENABLED =
@@ -105,7 +105,7 @@ function startGoogleSheetsConversionSyncScheduler() {
   const intervalMs = intervalMinutes * 60 * 1000;
 
   console.log(
-    `⏰ Google Sheets conversion sync scheduler: every ${intervalMinutes} minute(s) (BadLeads + QLeads + HQLeads)`,
+    `⏰ Google Sheets conversion sync scheduler: every ${intervalMinutes} minute(s) (BadLeads + QLeads + HQLeads + SalesLeads)`,
   );
 
   setTimeout(() => runSyncCycle('initial'), 30 * 1000);

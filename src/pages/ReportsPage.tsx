@@ -8,6 +8,7 @@ import MarketingDashboardReport from './MarketingDashboardReport';
 import BadLeadsGoogleSheetExportReport from './BadLeadsGoogleSheetExportReport';
 import QLeadsGoogleSheetExportReport from './QLeadsGoogleSheetExportReport';
 import HQLeadsGoogleSheetExportReport from './HQLeadsGoogleSheetExportReport';
+import SalesLeadsGoogleSheetExportReport from './SalesLeadsGoogleSheetExportReport';
 import AllExpensesReport from '../components/reports/AllExpensesReport';
 import { supabase } from '../lib/supabase';
 import EmployeeLeadDrawer, {
@@ -8214,6 +8215,7 @@ const reports: ReportSection[] = [
       { label: 'Bad leads → Google Sheet', icon: CloudArrowUpIcon, component: BadLeadsGoogleSheetExportReport, superuserOnly: true },
       { label: 'QLeads → Google Sheet', icon: CloudArrowUpIcon, component: QLeadsGoogleSheetExportReport, superuserOnly: true },
       { label: 'HQLeads → Google Sheet', icon: CloudArrowUpIcon, component: HQLeadsGoogleSheetExportReport, superuserOnly: true },
+      { label: 'SalesLeads → Google Sheet', icon: CloudArrowUpIcon, component: SalesLeadsGoogleSheetExportReport, superuserOnly: true },
       { label: 'Sources pie', icon: ChartPieIcon, component: SourcesPieReport },
       { label: 'Category & source', icon: AdjustmentsHorizontalIcon, component: CategorySourceReport },
       { label: 'Convertion', icon: FunnelIcon, component: ConvertionReport },

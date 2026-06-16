@@ -261,6 +261,13 @@ const EmployeesManager: React.FC = () => {
       hideInEdit: true // Hide in edit drawer only
     },
     {
+      name: 'works_from_home',
+      label: 'Works From Home',
+      type: 'boolean' as const,
+      required: false,
+      hideInEdit: true // Toggle in table only
+    },
+    {
       name: 'bonuses_role',
       label: 'Bonuses Role',
       type: 'select' as const,

@@ -12,6 +12,7 @@ const SYNC_TARGETS = [
   { slug: 'google-sheets-bad-leads-sync', label: 'BadLeads' },
   { slug: 'google-sheets-qleads-sync', label: 'QLeads' },
   { slug: 'google-sheets-hqleads-sync', label: 'HQLeads' },
+  { slug: 'google-sheets-salesleads-sync', label: 'SalesLeads' },
 ] as const;
 
 function log(...args: unknown[]) {

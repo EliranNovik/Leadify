@@ -39,6 +39,37 @@ export function persistLastSelectedWorkplaceId(id: number): void {
   }
 }
 
+export function isHomeClockInLocation(loc: ClockInLocationOption): boolean {
+  if (loc.slug?.toLowerCase() === 'home') return true;
+  return loc.name.trim().toLowerCase() === 'home';
+}
+
+export function coerceEmployeeWorksFromHome(value: unknown): boolean {
+  return value === true || value === 't' || value === 'true' || value === 1;
+}
+
+/** Hide Home unless the employee is flagged works_from_home in tenants_employee. */
+export function filterClockInLocationsForEmployee(
+  locations: ClockInLocationOption[],
+  worksFromHome: boolean,
+): ClockInLocationOption[] {
+  if (worksFromHome) return locations;
+  return locations.filter((loc) => !isHomeClockInLocation(loc));
+}
+
+export async function fetchEmployeeWorksFromHome(employeeId: number): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('tenants_employee')
+    .select('works_from_home')
+    .eq('id', employeeId)
+    .maybeSingle();
+  if (error) {
+    console.warn('[fetchEmployeeWorksFromHome]', error);
+    return false;
+  }
+  return coerceEmployeeWorksFromHome(data?.works_from_home);
+}
+
 export function resolveWorkplaceName(
   row: {
     clock_in_location_id?: number | null;

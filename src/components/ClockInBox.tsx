@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ClockIcon, ClipboardDocumentCheckIcon } from '@heroicons/react/24/outline';
 import ClockInModal from './ClockInModal';
 import ManualClockInApprovalModal from './ManualClockInApprovalModal';
@@ -28,6 +28,7 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
   const [currentDuration, setCurrentDuration] = useState<string>('');
   const [todayTotal, setTodayTotal] = useState<string>('');
   const [activeWorkplace, setActiveWorkplace] = useState<string>('');
+  const clockInStartRef = useRef<string | null>(null);
 
   const updateDuration = useCallback((start: string, end: string | null) => {
     const startTime = new Date(start).getTime();
@@ -37,6 +38,14 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
     const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
     setCurrentDuration(`${hours}h ${minutes}m`);
   }, []);
+
+  // Tick the displayed duration every minute while clocked in
+  useEffect(() => {
+    if (!isClockedIn || !clockInStartRef.current) return;
+    const tick = () => updateDuration(clockInStartRef.current!, null);
+    const id = setInterval(tick, 60_000);
+    return () => clearInterval(id);
+  }, [isClockedIn, updateDuration]);
 
   const fetchClockInStatus = useCallback(async () => {
     if (!employeeId) return;
@@ -59,10 +68,12 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
       }
 
       if (data) {
+        clockInStartRef.current = data.clock_in_time;
         setIsClockedIn(true);
         updateDuration(data.clock_in_time, data.clock_out_time);
         setActiveWorkplace(resolveWorkplaceName(data, 'in'));
       } else {
+        clockInStartRef.current = null;
         setIsClockedIn(false);
         setCurrentDuration('');
         setActiveWorkplace('');
@@ -127,16 +138,35 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
     void fetchTodayTotal();
     void fetchPendingApprovals();
 
+    // Realtime subscription: react instantly to clock-in/out changes
+    const channel = supabase
+      .channel(`clockin_box_${employeeId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'employee_clock_in',
+          filter: `employee_id=eq.${employeeId}`,
+        },
+        () => {
+          void fetchClockInStatus();
+          void fetchTodayTotal();
+        },
+      )
+      .subscribe();
+
+    // Fallback poll every 5 minutes (keeps today-total accurate even without changes)
     const interval = setInterval(() => {
-      if (isClockedIn) {
-        void fetchClockInStatus();
-      }
       void fetchTodayTotal();
       void fetchPendingApprovals();
-    }, 60_000);
+    }, 5 * 60_000);
 
-    return () => clearInterval(interval);
-  }, [employeeId, isClockedIn, isSuperUser, fetchClockInStatus, fetchTodayTotal, fetchPendingApprovals]);
+    return () => {
+      void supabase.removeChannel(channel);
+      clearInterval(interval);
+    };
+  }, [employeeId, fetchClockInStatus, fetchTodayTotal, fetchPendingApprovals]);
 
   const handleCloseModal = () => {
     setIsModalOpen(false);

@@ -154,7 +154,6 @@ AS $$
     AND l.stage IS NOT NULL
     AND trim(l.stage::text) ~ '^[0-9]+$'
     AND trim(l.stage::text)::bigint >= 20
-    AND coalesce(l.utm_params ->> 'gclid', '') <> ''
     AND public.lead_case_probability(
       l.legal_potential::text,
       l.seriousness::numeric,
@@ -173,7 +172,7 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION public.get_leads_for_hqleads_google_sheet_export(int) IS
-  'HQLeads Google Sheet: Capital sources, stage >= 20, case probability >= 50%, balance >= 20000 NIS, gclid, not yet exported.';
+  'HQLeads Google Sheet: Capital sources, stage >= 20, case probability >= 50%, balance >= 20000 NIS, gclid optional, not yet exported.';
 
 REVOKE ALL ON FUNCTION public.get_leads_for_hqleads_google_sheet_export(int) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.get_leads_for_hqleads_google_sheet_export(int) TO service_role;

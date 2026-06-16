@@ -41,7 +41,6 @@ AS $$
     )
     AND l.stage IS NOT NULL
     AND trim(l.stage::text) ~ '^[0-9]+$'
-    AND coalesce(l.utm_params ->> 'gclid', '') <> ''
     AND (
       (
         l.eligible IS TRUE
@@ -61,7 +60,7 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION public.get_leads_for_qleads_google_sheet_export(int) IS
-  'QLeads Google Sheet: firm ee79359b-..., Capital sources, gclid. (eligible=true stage 0–20) OR (stage >= 20), not yet exported.';
+  'QLeads Google Sheet: firm ee79359b-..., Capital sources, gclid optional. (eligible=true stage 0–20) OR (stage >= 20), not yet exported.';
 
 REVOKE ALL ON FUNCTION public.get_leads_for_qleads_google_sheet_export(int) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.get_leads_for_qleads_google_sheet_export(int) TO service_role;

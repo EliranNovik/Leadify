@@ -4,11 +4,11 @@ import { GoogleAuth } from 'npm:google-auth-library@9.15.1';
 import { corsHeaders } from '../_shared/cors.ts';
 import { googleSheetsCronAuthorized } from '../_shared/googleSheetsCronAuth.ts';
 
-const DESTINATION = 'q_leads_capital_firm';
-const DEFAULT_SPREADSHEET_ID = '1k4ctvw6Fq3yVbIM_zjd40fsD7tLxFh0GDKOIoGIrI_w';
+const DESTINATION = 'sales_leads_capital_firm';
+const DEFAULT_SPREADSHEET_ID = '1LvGPy1h0wcs1wl2MOicITrW-i778lZqcUlUTddzc1gM';
 const DEFAULT_SHEET_TAB = 'conversion-import-template';
 
-const LOG_PREFIX = '[google-sheets-qleads-sync]';
+const LOG_PREFIX = '[google-sheets-salesleads-sync]';
 
 function log(...args: unknown[]) {
   console.log(LOG_PREFIX, ...args);
@@ -20,7 +20,7 @@ function logError(...args: unknown[]) {
 
 function sheetRangeA1(tabName: string, cellRange: string): string {
   const t = tabName.trim();
-  if (!t) throw new Error('Sheet tab name is empty; set GOOGLE_SHEET_QLEADS_TAB');
+  if (!t) throw new Error('Sheet tab name is empty; set GOOGLE_SHEET_SALESLEADS_TAB');
   const escaped = t.replace(/'/g, "''");
   return `'${escaped}'!${cellRange}`;
 }
@@ -126,7 +126,7 @@ serve(async (req) => {
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const authHeader = req.headers.get('Authorization') ?? '';
 
-  const cronOk = googleSheetsCronAuthorized(req, 'QLEADS_SYNC_CRON_SECRET');
+  const cronOk = googleSheetsCronAuthorized(req, 'SALESLEADS_SYNC_CRON_SECRET');
 
   let authorized = cronOk;
   if (!authorized && authHeader.startsWith('Bearer ')) {
@@ -159,11 +159,11 @@ serve(async (req) => {
 
   const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
 
-  const { data: leads, error: rpcErr } = await admin.rpc('get_leads_for_qleads_google_sheet_export', {
+  const { data: leads, error: rpcErr } = await admin.rpc('get_leads_for_salesleads_google_sheet_export', {
     p_limit: limit,
   });
   if (rpcErr) {
-    logError('RPC get_leads_for_qleads_google_sheet_export failed', rpcErr);
+    logError('RPC get_leads_for_salesleads_google_sheet_export failed', rpcErr);
     return new Response(JSON.stringify({ error: rpcErr.message, ...(debug ? { debug: { rpcError: rpcErr } } : {}) }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -182,8 +182,8 @@ serve(async (req) => {
 
   log('RPC returned rows', { count: list.length });
 
-  const spreadsheetId = Deno.env.get('GOOGLE_SHEET_QLEADS_SPREADSHEET_ID') ?? DEFAULT_SPREADSHEET_ID;
-  const tabName = Deno.env.get('GOOGLE_SHEET_QLEADS_TAB')?.trim() || DEFAULT_SHEET_TAB;
+  const spreadsheetId = Deno.env.get('GOOGLE_SHEET_SALESLEADS_SPREADSHEET_ID') ?? DEFAULT_SPREADSHEET_ID;
+  const tabName = Deno.env.get('GOOGLE_SHEET_SALESLEADS_TAB')?.trim() || DEFAULT_SHEET_TAB;
 
   type LogRow = {
     destination: string;
@@ -227,14 +227,14 @@ serve(async (req) => {
     filterStats.included++;
     const convTime = formatConversionTimeJerusalem(l.created_at);
     const conversionValue = Math.max(0, Number(l.conversion_value_nis) || 0);
-    valueRows.push([gclid, 'QLeads', convTime, conversionValue, 'ils']);
+    valueRows.push([gclid, 'Sales', convTime, conversionValue, 'ils']);
     logRows.push({
       destination: DESTINATION,
       lead_id: l.id,
       lead_number: l.lead_number,
       lead_name: l.lead_name,
       gclid,
-      conversion_name: 'QLeads',
+      conversion_name: 'Sales',
       conversion_time: l.created_at,
       conversion_value: conversionValue,
       conversion_currency: 'ils',

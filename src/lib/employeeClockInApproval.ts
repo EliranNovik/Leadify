@@ -160,6 +160,68 @@ export function normalizeClockInApprovalFields<
   };
 }
 
+export const HOME_WFH_APPROVAL_NOTE = 'Home access — waiting for approval';
+
+/** Legacy note text from earlier builds — still matched for display/filtering. */
+const HOME_WFH_APPROVAL_NOTE_LEGACY = 'Work from home access — waiting for admin approval';
+
+export function isHomeWfhApprovalRequest(record: { notes?: string | null }): boolean {
+  const notes = record.notes?.trim() ?? '';
+  if (!notes) return false;
+  return (
+    notes.includes(HOME_WFH_APPROVAL_NOTE)
+    || notes.includes(HOME_WFH_APPROVAL_NOTE_LEGACY)
+    || notes.toLowerCase().includes('work from home access')
+  );
+}
+
+export function homeWfhApprovalNotesFilter(): string {
+  return `notes.ilike.%Home access%,notes.ilike.%Work from home access%`;
+}
+
+export async function fetchPendingHomeWfhApproval(employeeId: number): Promise<boolean> {
+  const { count, error } = await supabase
+    .from('employee_clock_in')
+    .select('id', { count: 'exact', head: true })
+    .eq('employee_id', employeeId)
+    .eq('manually', true)
+    .eq('approved', false)
+    .eq('declined', false)
+    .or(homeWfhApprovalNotesFilter());
+
+  if (error) throw error;
+  return (count ?? 0) > 0;
+}
+
+export async function insertHomeWfhApprovalRequest(
+  employeeId: number,
+  userId: string,
+  homeLocationId: number,
+): Promise<void> {
+  const now = new Date().toISOString();
+  const row: Record<string, unknown> = {
+    employee_id: employeeId,
+    user_id: userId,
+    clock_in_time: now,
+    clock_out_time: null,
+    clock_in_location_id: homeLocationId,
+    notes: HOME_WFH_APPROVAL_NOTE,
+    is_active: false,
+    manually: true,
+    approved: false,
+    declined: false,
+    location_source: 'manual',
+  };
+
+  let { error } = await supabase.from('employee_clock_in').insert(row);
+  if (error && row.clock_in_location_id) {
+    const { clock_in_location_id: _drop, ...withoutPreset } = row;
+    const retry = await supabase.from('employee_clock_in').insert(withoutPreset);
+    error = retry.error;
+  }
+  if (error) throw error;
+}
+
 export async function fetchPendingManualClockInCount(): Promise<number> {
   const { count, error } = await supabase
     .from('employee_clock_in')
@@ -324,6 +386,41 @@ export async function approveClockInRecord(
   recordId: number,
   approverAuthUserId: string,
 ): Promise<void> {
+  // Fetch employee, notes, and workplace so we can handle WFH requests and auto-enable works_from_home.
+  const { data: existing, error: fetchError } = await supabase
+    .from('employee_clock_in')
+    .select(
+      `id, employee_id, notes,
+       clock_in_location_id,
+       clock_out_location_id,
+       clock_in_place:clock_in_locations!clock_in_location_id ( name, slug ),
+       clock_out_place:clock_in_locations!clock_out_location_id ( name, slug )`,
+    )
+    .eq('id', recordId)
+    .maybeSingle();
+
+  if (fetchError) throw fetchError;
+
+  // WFH approval requests are placeholder records (is_active: false) used only to request
+  // the works_from_home permission. On approval we grant the permission then DELETE the
+  // request record so it never appears as a real clock-in entry in WorkingHoursTab.
+  if (existing && isHomeWfhApprovalRequest(existing)) {
+    if (existing.employee_id != null) {
+      const { error: wfhError } = await supabase
+        .from('tenants_employee')
+        .update({ works_from_home: true })
+        .eq('id', existing.employee_id);
+      if (wfhError) throw wfhError;
+    }
+    const { error: deleteError } = await supabase
+      .from('employee_clock_in')
+      .delete()
+      .eq('id', recordId);
+    if (deleteError) throw deleteError;
+    return;
+  }
+
+  // Regular manual clock-in: mark as approved.
   const { error } = await supabase
     .from('employee_clock_in')
     .update({
@@ -335,12 +432,79 @@ export async function approveClockInRecord(
     .eq('id', recordId);
 
   if (error) throw error;
+
+  // Also auto-enable works_from_home if the approved entry is for a Home workplace.
+  const inPlace = (existing as any)?.clock_in_place;
+  const outPlace = (existing as any)?.clock_out_place;
+  const inRec = Array.isArray(inPlace) ? inPlace[0] : inPlace;
+  const outRec = Array.isArray(outPlace) ? outPlace[0] : outPlace;
+  const inSlug = typeof inRec?.slug === 'string' ? inRec.slug.toLowerCase() : null;
+  const outSlug = typeof outRec?.slug === 'string' ? outRec.slug.toLowerCase() : null;
+  const inName = typeof inRec?.name === 'string' ? inRec.name.trim().toLowerCase() : null;
+  const outName = typeof outRec?.name === 'string' ? outRec.name.trim().toLowerCase() : null;
+  const isHome =
+    inSlug === 'home'
+    || outSlug === 'home'
+    || inName === 'home'
+    || outName === 'home'
+    || (existing as any)?.clock_in_location_id === 3
+    || (existing as any)?.clock_out_location_id === 3;
+
+  if (existing?.employee_id != null && isHome) {
+    const { error: wfhError } = await supabase
+      .from('tenants_employee')
+      .update({ works_from_home: true })
+      .eq('id', existing.employee_id);
+    if (wfhError) throw wfhError;
+  }
+}
+
+export function filterManualApprovalModalRecords(
+  records: ManualClockInApprovalRecord[],
+): ManualClockInApprovalRecord[] {
+  return records.filter((record) => {
+    const status = getClockInApprovalStatus(record);
+    if (status === 'approved') return false;
+    if (status === 'declined' && isHomeWfhApprovalRequest(record)) return false;
+    return true;
+  });
+}
+
+export function countPendingApprovalBuckets(records: ManualClockInApprovalRecord[]): {
+  wfh: number;
+  clock: number;
+} {
+  let wfh = 0;
+  let clock = 0;
+  for (const record of records) {
+    if (getClockInApprovalStatus(record) !== 'pending') continue;
+    if (isHomeWfhApprovalRequest(record)) wfh += 1;
+    else clock += 1;
+  }
+  return { wfh, clock };
 }
 
 export async function declineClockInRecord(
   recordId: number,
   approverAuthUserId: string,
-): Promise<void> {
+): Promise<'removed' | 'declined'> {
+  const { data: existing, error: fetchError } = await supabase
+    .from('employee_clock_in')
+    .select('id, notes')
+    .eq('id', recordId)
+    .maybeSingle();
+
+  if (fetchError) throw fetchError;
+
+  if (existing && isHomeWfhApprovalRequest(existing)) {
+    const { error: deleteError } = await supabase
+      .from('employee_clock_in')
+      .delete()
+      .eq('id', recordId);
+    if (deleteError) throw deleteError;
+    return 'removed';
+  }
+
   const { error } = await supabase
     .from('employee_clock_in')
     .update({
@@ -352,6 +516,7 @@ export async function declineClockInRecord(
     .eq('id', recordId);
 
   if (error) throw error;
+  return 'declined';
 }
 
 export function manualClockInWorkplaceLabel(
@@ -359,4 +524,28 @@ export function manualClockInWorkplaceLabel(
   which: 'in' | 'out',
 ): string {
   return resolveWorkplaceName(record, which);
+}
+
+/** Active clock-in start time per employee (latest if multiple). */
+export async function fetchActiveClockInsByEmployeeIds(
+  employeeIds: number[],
+): Promise<Map<number, string>> {
+  if (employeeIds.length === 0) return new Map();
+
+  const { data, error } = await supabase
+    .from('employee_clock_in')
+    .select('employee_id, clock_in_time')
+    .in('employee_id', employeeIds)
+    .eq('is_active', true);
+
+  if (error) throw error;
+
+  const map = new Map<number, string>();
+  for (const row of data ?? []) {
+    const existing = map.get(row.employee_id);
+    if (!existing || row.clock_in_time > existing) {
+      map.set(row.employee_id, row.clock_in_time);
+    }
+  }
+  return map;
 }

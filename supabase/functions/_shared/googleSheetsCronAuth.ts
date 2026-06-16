@@ -3,6 +3,7 @@ const ORCHESTRATOR_SECRET_ENVS = [
   'BAD_LEADS_SYNC_CRON_SECRET',
   'QLEADS_SYNC_CRON_SECRET',
   'HQLEADS_SYNC_CRON_SECRET',
+  'SALESLEADS_SYNC_CRON_SECRET',
 ] as const;
 
 function trimSecret(value: string | undefined): string | null {

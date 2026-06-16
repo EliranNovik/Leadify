@@ -130,7 +130,8 @@ OPENAI_API_KEY= (set in Supabase dashboard)
 # Optional: GOOGLE_SHEET_BAD_LEADS_SPREADSHEET_ID, GOOGLE_SHEET_BAD_LEADS_TAB (default conversion-import-template)
 # Optional: GOOGLE_SHEET_QLEADS_SPREADSHEET_ID (default 1k4ctvw6…), GOOGLE_SHEET_QLEADS_TAB
 # Optional: GOOGLE_SHEET_HQLEADS_SPREADSHEET_ID (default 1CpFG7lW…), GOOGLE_SHEET_HQLEADS_TAB
-# Optional cron: BAD_LEADS_SYNC_CRON_SECRET / QLEADS_SYNC_CRON_SECRET / HQLEADS_SYNC_CRON_SECRET + POST header x-cron-secret
+# Optional: GOOGLE_SHEET_SALESLEADS_SPREADSHEET_ID (default 1LvGPy1h…), GOOGLE_SHEET_SALESLEADS_TAB
+# Optional cron: BAD_LEADS_SYNC_CRON_SECRET / QLEADS_SYNC_CRON_SECRET / HQLEADS_SYNC_CRON_SECRET / SALESLEADS_SYNC_CRON_SECRET + POST header x-cron-secret
 
 # Bank of Israel daily FX rates (boi_exchange_rates table + boi-exchange-rates-sync edge function; separate from currency_rates)
 # BOI_BASE_CURRENCIES=USD,EUR,GBP,CHF,CAD,AUD
