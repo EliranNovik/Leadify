@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { assertDateEditableForEmployee } from './employeeWorkingHoursSubmissions';
 
 export type UnavailabilityType = 'sick_days' | 'vacation' | 'general';
 
@@ -206,6 +207,8 @@ export async function deleteUnavailabilityDay(
   entry: EmployeeUnavailabilityEntry,
   day: string,
 ): Promise<void> {
+  await assertDateEditableForEmployee(entry.employee_id, day);
+
   const end = recordEndDate(entry);
 
   if (day < entry.start_date || day > end) {
@@ -263,6 +266,8 @@ export async function updateUnavailabilityDayRow(
   payload: UnavailabilityEditPayload,
   employeeId: number,
 ): Promise<void> {
+  await assertDateEditableForEmployee(employeeId, day);
+
   let documentUrl = payload.document_url;
   if (payload.documentFile) {
     documentUrl = await uploadUnavailabilityDocument(employeeId, payload.documentFile);

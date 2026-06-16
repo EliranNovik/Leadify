@@ -12,6 +12,7 @@ import {
   EllipsisVerticalIcon,
   TrashIcon,
   XMarkIcon,
+  ArrowUturnLeftIcon,
 } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../../lib/supabase';
@@ -55,7 +56,9 @@ import UnavailabilityDayEditModal from './UnavailabilityDayEditModal';
 import ManualClockInModal from './ManualClockInModal';
 import ClockInDayEditModal from './ClockInDayEditModal';
 import SubmitWorkingHoursModal from './SubmitWorkingHoursModal';
+import YearWheelPicker from '../YearWheelPicker';
 import {
+  cancelWorkingHoursSubmission,
   fetchWorkingHoursSubmission,
   type EmployeeWorkingHoursSubmission,
 } from '../../lib/employeeWorkingHoursSubmissions';
@@ -65,8 +68,10 @@ import {
   countClockInApprovalBlockers,
   clockInApprovalSubmitBlockMessage,
   filterCountedClockInRecords,
+  getClockInApprovalStatus,
   getDayClockInApprovalStatus,
   clockInApprovalWatermarkLabel,
+  isManualClockInRecord,
   normalizeClockInApprovalFields,
 } from '../../lib/employeeClockInApproval';
 
@@ -98,12 +103,90 @@ const MONTH_NAMES = [
 
 const MERGED_COL_SPAN = 10;
 
+const SUBMIT_HOURS_BTN_CLASS =
+  'inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold border-0 shadow-sm transition-all duration-200 bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-700 hover:to-teal-700 hover:shadow-md active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none disabled:shadow-none';
+
+const CANCEL_SUBMISSION_BTN_CLASS =
+  'inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold border-0 shadow-sm transition-all duration-200 bg-amber-50 text-amber-900 hover:bg-amber-100 hover:shadow-md active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none disabled:shadow-none';
+
+type WorkingHoursRowFilter = 'approved' | 'declined' | 'pending' | 'unavailability' | 'clock';
+
+const ROW_FILTER_OPTIONS: {
+  id: WorkingHoursRowFilter;
+  label: string;
+  activeClass: string;
+  idleClass: string;
+}[] = [
+  {
+    id: 'approved',
+    label: 'Approved',
+    activeClass: 'bg-emerald-600 text-white border-emerald-600 shadow-sm',
+    idleClass: 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100',
+  },
+  {
+    id: 'declined',
+    label: 'Declined',
+    activeClass: 'bg-red-600 text-white border-red-600 shadow-sm',
+    idleClass: 'bg-red-50 text-red-700 border-red-200 hover:bg-red-100',
+  },
+  {
+    id: 'pending',
+    label: 'Waiting for approval',
+    activeClass: 'bg-sky-600 text-white border-sky-600 shadow-sm',
+    idleClass: 'bg-sky-50 text-sky-800 border-sky-200 hover:bg-sky-100',
+  },
+  {
+    id: 'unavailability',
+    label: 'Unavailabilities',
+    activeClass: 'bg-violet-600 text-white border-violet-600 shadow-sm',
+    idleClass: 'bg-violet-50 text-violet-800 border-violet-200 hover:bg-violet-100',
+  },
+  {
+    id: 'clock',
+    label: 'Clock in & out',
+    activeClass: 'bg-primary text-primary-content border-primary shadow-sm',
+    idleClass: 'bg-primary/8 text-primary border-primary/25 hover:bg-primary/12',
+  },
+];
+
+const ROW_FILTER_PILL_BASE =
+  'inline-flex items-center rounded-full px-3.5 py-2 text-sm font-medium border transition-all duration-200 active:scale-[0.98]';
+
 type MergedWorkingHoursDayRow = {
   dateKey: string;
   date: string;
   clock: DailyClockInSummary | null;
   unavailabilities: EmployeeUnavailabilityDayRow[];
 };
+
+function rowMatchesWorkingHoursFilters(
+  row: MergedWorkingHoursDayRow,
+  dayRecords: ClockInRow[],
+  activeFilters: Set<WorkingHoursRowFilter>,
+): boolean {
+  if (activeFilters.size === 0) return true;
+
+  const hasClock = row.clock != null;
+  const hasUnavail = row.unavailabilities.length > 0;
+  const approvalStatus = getDayClockInApprovalStatus(dayRecords, {
+    hasManualClockSummary: row.clock?.hasManual === true,
+  });
+
+  const matches: Record<WorkingHoursRowFilter, boolean> = {
+    approved: dayRecords.some(
+      (record) => isManualClockInRecord(record) && getClockInApprovalStatus(record) === 'approved',
+    ),
+    declined: hasClock && approvalStatus === 'declined',
+    pending: hasClock && approvalStatus === 'pending',
+    unavailability: hasUnavail,
+    clock: hasClock,
+  };
+
+  for (const filter of activeFilters) {
+    if (matches[filter]) return true;
+  }
+  return false;
+}
 
 function parseDateKeyMs(dateKey: string): number {
   const [y, m, d] = dateKey.split('-').map(Number);
@@ -206,6 +289,7 @@ type WorkingHoursRowActionsMenuProps = {
   loading: boolean;
   deletingRowKey: string | null;
   deletingClockInDay: string | null;
+  readOnly?: boolean;
   onEditUnavailability: (row: EmployeeUnavailabilityDayRow) => void;
   onDeleteUnavailability: (row: EmployeeUnavailabilityDayRow) => void;
   onEditClockIn: (dateKey: string) => void;
@@ -222,6 +306,7 @@ function WorkingHoursRowActionsMenu({
   loading,
   deletingRowKey,
   deletingClockInDay,
+  readOnly = false,
   onEditUnavailability,
   onDeleteUnavailability,
   onEditClockIn,
@@ -293,7 +378,7 @@ function WorkingHoursRowActionsMenu({
     return () => document.removeEventListener('pointerdown', onPointerDown);
   }, [open]);
 
-  if (!showMenu) {
+  if (!showMenu || readOnly) {
     return <span className="text-gray-400">—</span>;
   }
 
@@ -425,9 +510,9 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
   const now = useMemo(() => new Date(), []);
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
-  const defaultRange = monthRange(now.getFullYear(), now.getMonth() + 1);
-  const [dateFrom, setDateFrom] = useState(defaultRange.from);
-  const [dateTo, setDateTo] = useState(defaultRange.to);
+  const periodRange = useMemo(() => monthRange(year, month), [year, month]);
+  const dateFrom = periodRange.from;
+  const dateTo = periodRange.to;
   const [records, setRecords] = useState<ClockInRow[]>([]);
   const [unavailabilities, setUnavailabilities] = useState<EmployeeUnavailabilityEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -437,6 +522,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
   const [submitModalOpen, setSubmitModalOpen] = useState(false);
   const [monthSubmission, setMonthSubmission] = useState<EmployeeWorkingHoursSubmission | null>(null);
   const [loadingMonthSubmission, setLoadingMonthSubmission] = useState(false);
+  const [cancellingSubmission, setCancellingSubmission] = useState(false);
   const [calendarModalOpen, setCalendarModalOpen] = useState(false);
   const [calendarViewYear, setCalendarViewYear] = useState(now.getFullYear());
   const [calendarViewMonth, setCalendarViewMonth] = useState(now.getMonth() + 1);
@@ -456,6 +542,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
     uploadedAt: string;
   } | null>(null);
   const [holidayMapVersion, setHolidayMapVersion] = useState(0);
+  const [rowFilters, setRowFilters] = useState<Set<WorkingHoursRowFilter>>(() => new Set());
 
   useEffect(() => {
     let cancelled = false;
@@ -467,6 +554,19 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
       cancelled = true;
     };
   }, [year, calendarViewYear]);
+
+  useEffect(() => {
+    setRowFilters(new Set());
+  }, [year, month]);
+
+  const toggleRowFilter = useCallback((filter: WorkingHoursRowFilter) => {
+    setRowFilters((prev) => {
+      const next = new Set(prev);
+      if (next.has(filter)) next.delete(filter);
+      else next.add(filter);
+      return next;
+    });
+  }, []);
 
   const updateSessionDuration = useCallback((clockInTime: string) => {
     const diffMs = Math.max(0, Date.now() - new Date(clockInTime).getTime());
@@ -507,27 +607,17 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
     }
   }, [employeeId, updateSessionDuration]);
 
-  const yearOptions = useMemo(() => {
-    const y = now.getFullYear();
-    return [y - 2, y - 1, y, y + 1];
-  }, [now]);
-
-  useEffect(() => {
-    const range = monthRange(year, month);
-    setDateFrom(range.from);
-    setDateTo(range.to);
-  }, [year, month]);
-
   const fetchRecords = useCallback(async () => {
-    if (!employeeId || !dateFrom || !dateTo) {
+    if (!employeeId) {
       setRecords([]);
       setUnavailabilities([]);
       setLoading(false);
       return;
     }
+    const range = monthRange(year, month);
     setLoading(true);
     try {
-      const { start, end } = dateRangeToIsoBounds(dateFrom, dateTo);
+      const { start, end } = dateRangeToIsoBounds(range.from, range.to);
       const clockSelectWithApproval = `id, employee_id, clock_in_time, clock_out_time, is_active, manually,
              approved, declined,
              clock_in_location_id, clock_out_location_id,
@@ -563,7 +653,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
 
       const [resolvedClockResult, unavailRows] = await Promise.all([
         Promise.resolve(clockResult),
-        fetchEmployeeUnavailabilitiesInRange(employeeId, dateFrom, dateTo),
+        fetchEmployeeUnavailabilitiesInRange(employeeId, range.from, range.to),
       ]);
 
       if (resolvedClockResult.error) throw resolvedClockResult.error;
@@ -579,7 +669,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
     } finally {
       setLoading(false);
     }
-  }, [employeeId, dateFrom, dateTo]);
+  }, [employeeId, year, month]);
 
   useEffect(() => {
     void fetchRecords();
@@ -633,6 +723,19 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
 
   const submitBlockedByApproval = monthSubmitBlockMessage != null;
 
+  const isMonthSubmitted = monthSubmission != null;
+  const monthLockedMessage =
+    'This month is submitted. Cancel submission to add or edit entries.';
+
+  const isRowLockedForSubmission = useCallback(
+    (dateKey: string) => {
+      if (!monthSubmission) return false;
+      const range = monthRange(year, month);
+      return dateKey >= range.from && dateKey <= range.to;
+    },
+    [monthSubmission, year, month],
+  );
+
   const recordsByDay = useMemo(() => {
     const map = new Map<string, ClockInRow[]>();
     for (const record of records) {
@@ -663,6 +766,15 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
     () => buildMergedWorkingHoursDayRows(dailyRows, unavailabilityDayRows),
     [dailyRows, unavailabilityDayRows],
   );
+
+  const filteredMergedDayRows = useMemo(
+    () => mergedDayRows.filter((row) =>
+      rowMatchesWorkingHoursFilters(row, recordsByDay.get(row.dateKey) ?? [], rowFilters),
+    ),
+    [mergedDayRows, recordsByDay, rowFilters],
+  );
+
+  const hasActiveRowFilters = rowFilters.size > 0;
 
   const handleCalendarMonthChange = useCallback((viewYear: number, viewMonth: number) => {
     setCalendarViewYear(viewYear);
@@ -750,9 +862,33 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
   }, [calendarModalOpen, calendarViewYear, calendarViewMonth, year, month, employeeId]);
 
   const openCalendarModal = () => {
+    if (isMonthSubmitted) {
+      toast.error(monthLockedMessage);
+      return;
+    }
     setCalendarViewYear(year);
     setCalendarViewMonth(month);
     setCalendarModalOpen(true);
+  };
+
+  const handleCancelSubmission = async () => {
+    const monthLabel = MONTH_NAMES[month - 1] ?? String(month);
+    const confirmed = window.confirm(
+      `Cancel submission for ${monthLabel} ${year}? You will be able to add and edit entries again.`,
+    );
+    if (!confirmed) return;
+
+    setCancellingSubmission(true);
+    try {
+      await cancelWorkingHoursSubmission(employeeId, year, month);
+      setMonthSubmission(null);
+      toast.success('Submission cancelled. You can edit this month again.');
+    } catch (err) {
+      console.error('WorkingHoursTab cancel submission:', err);
+      toast.error('Failed to cancel submission.');
+    } finally {
+      setCancellingSubmission(false);
+    }
   };
 
   const handleSubmissionSaved = (submission: EmployeeWorkingHoursSubmission) => {
@@ -791,6 +927,11 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
   };
 
   const handleDeleteUnavailability = async (row: EmployeeUnavailabilityDayRow) => {
+    if (isRowLockedForSubmission(row.date)) {
+      toast.error(monthLockedMessage);
+      return;
+    }
+
     const confirmed = window.confirm(
       `Remove unavailability for ${unavailabilityDateLabel(row.date)}?`,
     );
@@ -810,13 +951,18 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
       await fetchRecords();
     } catch (err) {
       console.error('WorkingHoursTab delete unavailability:', err);
-      toast.error('Failed to remove unavailability');
+      toast.error(err instanceof Error ? err.message : 'Failed to remove unavailability');
     } finally {
       setDeletingRowKey(null);
     }
   };
 
   const handleDeleteClockInDay = async (dateKey: string) => {
+    if (isRowLockedForSubmission(dateKey)) {
+      toast.error(monthLockedMessage);
+      return;
+    }
+
     const daySessions = recordsByDay.get(dateKey) ?? [];
     if (daySessions.length === 0) return;
 
@@ -836,7 +982,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
       void fetchClockInStatus();
     } catch (err) {
       console.error('WorkingHoursTab delete clock-in:', err);
-      toast.error('Failed to remove clock-in entries');
+      toast.error(err instanceof Error ? err.message : 'Failed to remove clock-in entries');
     } finally {
       setDeletingClockInDay(null);
     }
@@ -877,68 +1023,62 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
           <FunnelIcon className="w-5 h-5" />
           Filters
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          <label className="form-control w-full">
-            <span className="label-text text-sm text-gray-600 mb-1.5 font-medium">Year</span>
-            <select
-              className="select select-bordered w-full text-base h-12"
-              value={year}
-              onChange={(e) => setYear(Number(e.target.value))}
-            >
-              {yearOptions.map((y) => (
-                <option key={y} value={y}>{y}</option>
-              ))}
-            </select>
-          </label>
-          <label className="form-control w-full">
-            <span className="label-text text-sm text-gray-600 mb-1.5 font-medium">Month</span>
-            <select
-              className="select select-bordered w-full text-base h-12"
-              value={month}
-              onChange={(e) => setMonth(Number(e.target.value))}
-            >
-              {MONTH_NAMES.map((name, i) => (
-                <option key={name} value={i + 1}>{name}</option>
-              ))}
-            </select>
-          </label>
-          <label className="form-control w-full">
-            <span className="label-text text-sm text-gray-600 mb-1.5 font-medium">From</span>
-            <input
-              type="date"
-              className="input input-bordered w-full text-base h-12"
-              value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-            />
-          </label>
-          <label className="form-control w-full">
-            <span className="label-text text-sm text-gray-600 mb-1.5 font-medium">To</span>
-            <input
-              type="date"
-              className="input input-bordered w-full text-base h-12"
-              value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-            />
-          </label>
-        </div>
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-          <button
-            type="button"
-            className="btn btn-ghost text-base"
-            onClick={() => {
-              const t = new Date();
-              setYear(t.getFullYear());
-              setMonth(t.getMonth() + 1);
-            }}
-          >
-            Current month
-          </button>
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-base font-semibold text-primary">
-              Period total: {periodTotal}
-            </span>
-            <MissingDaysBadge count={periodMissingDays} loading={loading} />
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:gap-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl shrink-0">
+            <div className="form-control w-full">
+              <YearWheelPicker
+                label="Year"
+                value={year}
+                onChange={setYear}
+              />
+            </div>
+            <label className="form-control w-full">
+              <span className="label-text text-sm text-gray-600 mb-1.5 font-medium">Month</span>
+              <select
+                className="select select-bordered w-full text-base h-12"
+                value={month}
+                onChange={(e) => setMonth(Number(e.target.value))}
+              >
+                {MONTH_NAMES.map((name, i) => (
+                  <option key={name} value={i + 1}>{name}</option>
+                ))}
+              </select>
+            </label>
           </div>
+          <div className="min-w-0 flex-1">
+            <span className="label-text text-sm text-gray-600 mb-1.5 font-medium block">Show</span>
+            <div className="flex flex-wrap items-center gap-2">
+              {ROW_FILTER_OPTIONS.map((option) => {
+                const active = rowFilters.has(option.id);
+                return (
+                  <button
+                    key={option.id}
+                    type="button"
+                    aria-pressed={active}
+                    className={`${ROW_FILTER_PILL_BASE} ${active ? option.activeClass : option.idleClass}`}
+                    onClick={() => toggleRowFilter(option.id)}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+              {hasActiveRowFilters && (
+                <button
+                  type="button"
+                  className="inline-flex items-center rounded-full px-3 py-2 text-sm font-medium text-base-content/50 hover:text-base-content hover:bg-base-200/70 transition-colors"
+                  onClick={() => setRowFilters(new Set())}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-3 pt-1">
+          <span className="text-base font-semibold text-primary">
+            Period total: {periodTotal}
+          </span>
+          <MissingDaysBadge count={periodMissingDays} loading={loading} />
         </div>
       </div>
 
@@ -957,31 +1097,55 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                 Submitted
               </span>
             )}
-            {submitBlockedByApproval && monthSubmitBlockMessage && (
+            {submitBlockedByApproval && !isMonthSubmitted && monthSubmitBlockMessage && (
               <span className="text-xs text-red-700 max-w-md">{monthSubmitBlockMessage}</span>
             )}
-            <button
-              type="button"
-              className="btn btn-sm btn-outline btn-success gap-2"
-              onClick={() => {
-                if (submitBlockedByApproval && monthSubmitBlockMessage) {
-                  toast.error(monthSubmitBlockMessage);
-                  return;
-                }
-                setSubmitModalOpen(true);
-              }}
-              disabled={!user?.id || loadingMonthSubmission || submitBlockedByApproval}
-              title={monthSubmitBlockMessage ?? undefined}
-            >
-              <CheckIcon className="w-4 h-4" />
-              Submit
-            </button>
+            {!isMonthSubmitted && (
+              <button
+                type="button"
+                className={SUBMIT_HOURS_BTN_CLASS}
+                onClick={() => {
+                  if (submitBlockedByApproval && monthSubmitBlockMessage) {
+                    toast.error(monthSubmitBlockMessage);
+                    return;
+                  }
+                  setSubmitModalOpen(true);
+                }}
+                disabled={!user?.id || loadingMonthSubmission || submitBlockedByApproval}
+                title={monthSubmitBlockMessage ?? undefined}
+              >
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/20">
+                  <CheckIcon className="w-4 h-4 stroke-[2.5]" aria-hidden />
+                </span>
+                Submit {MONTH_NAMES[month - 1]} {year}
+              </button>
+            )}
+            {isMonthSubmitted && (
+              <button
+                type="button"
+                className={CANCEL_SUBMISSION_BTN_CLASS}
+                onClick={() => void handleCancelSubmission()}
+                disabled={!user?.id || cancellingSubmission || loadingMonthSubmission}
+                title="Withdraw submission so you can add or edit entries again"
+              >
+                {cancellingSubmission ? (
+                  <span className="loading loading-spinner loading-sm" />
+                ) : (
+                  <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-amber-200/60">
+                    <ArrowUturnLeftIcon className="w-4 h-4 stroke-[2.5]" aria-hidden />
+                  </span>
+                )}
+                Cancel submission
+              </button>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2 shrink-0">
             <button
               type="button"
               className="btn btn-sm btn-outline btn-primary gap-2"
               onClick={openCalendarModal}
+              disabled={isMonthSubmitted}
+              title={isMonthSubmitted ? monthLockedMessage : undefined}
             >
               <CalendarDaysIcon className="w-4 h-4" />
               Add unavailability
@@ -1006,8 +1170,15 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
             <button
               type="button"
               className="btn btn-sm btn-primary gap-2"
-              onClick={() => setManualClockInOpen(true)}
-              disabled={!user?.id}
+              onClick={() => {
+                if (isMonthSubmitted) {
+                  toast.error(monthLockedMessage);
+                  return;
+                }
+                setManualClockInOpen(true);
+              }}
+              disabled={!user?.id || isMonthSubmitted}
+              title={isMonthSubmitted ? monthLockedMessage : undefined}
             >
               <PlusIcon className="w-4 h-4" />
               Add clock-in
@@ -1037,14 +1208,16 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                     <span className="loading loading-spinner loading-md text-primary" />
                   </td>
                 </tr>
-              ) : mergedDayRows.length === 0 ? (
+              ) : filteredMergedDayRows.length === 0 ? (
                 <tr>
                   <td colSpan={MERGED_COL_SPAN} className="text-center py-12 text-gray-400">
-                    No working hours or unavailabilities for this period.
+                    {hasActiveRowFilters
+                      ? 'No entries match the selected filters.'
+                      : 'No working hours or unavailabilities for this period.'}
                   </td>
                 </tr>
               ) : (
-                mergedDayRows.map((row) => {
+                filteredMergedDayRows.map((row) => {
                   const hasClock = row.clock != null;
                   const dayRecords = recordsByDay.get(row.dateKey) ?? [];
                   const approvalStatus = getDayClockInApprovalStatus(dayRecords, {
@@ -1170,9 +1343,22 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                             loading={loading}
                             deletingRowKey={deletingRowKey}
                             deletingClockInDay={deletingClockInDay}
-                            onEditUnavailability={setEditingRow}
+                            readOnly={isRowLockedForSubmission(row.dateKey)}
+                            onEditUnavailability={(unavail) => {
+                              if (isRowLockedForSubmission(unavail.date)) {
+                                toast.error(monthLockedMessage);
+                                return;
+                              }
+                              setEditingRow(unavail);
+                            }}
                             onDeleteUnavailability={(unavail) => void handleDeleteUnavailability(unavail)}
-                            onEditClockIn={setEditingClockInDay}
+                            onEditClockIn={(dateKey) => {
+                              if (isRowLockedForSubmission(dateKey)) {
+                                toast.error(monthLockedMessage);
+                                return;
+                              }
+                              setEditingClockInDay(dateKey);
+                            }}
                             onDeleteClockIn={(dateKey) => void handleDeleteClockInDay(dateKey)}
                         />
                       </td>
@@ -1262,9 +1448,16 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
               <div className="flex items-center gap-1 shrink-0">
                 <button
                   type="button"
-                  onClick={() => calendarRef.current?.openAddRangeModal()}
+                  onClick={() => {
+                    if (isMonthSubmitted) {
+                      toast.error(monthLockedMessage);
+                      return;
+                    }
+                    calendarRef.current?.openAddRangeModal();
+                  }}
                   className="btn btn-xs btn-primary gap-1"
-                  title="Add unavailability range"
+                  disabled={isMonthSubmitted}
+                  title={isMonthSubmitted ? monthLockedMessage : 'Add unavailability range'}
                 >
                   <PlusIcon className="w-3.5 h-3.5" />
                   Add range
@@ -1330,7 +1523,6 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
           userId={user.id}
           initialYear={year}
           initialMonth={month}
-          yearOptions={yearOptions}
           onSubmitted={handleSubmissionSaved}
         />
       )}

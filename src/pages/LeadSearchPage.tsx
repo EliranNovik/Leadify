@@ -19,7 +19,7 @@ import {
 import { Search, Loader2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { toast } from 'react-hot-toast';
-import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
+import { getStageName, getStageColour, fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
 import {
   buildJerusalemEndOfDayIso,
   buildJerusalemStartOfDayIso,
@@ -803,7 +803,20 @@ const getContrastingTextColor = (hexColor?: string | null) => {
   return luminance > 0.6 ? '#111827' : '#ffffff';
 };
 
-const getSoftStageBadgeStyle = (hexColor?: string | null) => {
+const getSoftStageBadgeStyle = (hexColor?: string | null, stageId?: string | number | null) => {
+  const stageStr = stageId != null ? String(stageId) : '';
+  const isMtngSumAgreement =
+    stageStr === '50'
+    || areStagesEquivalent(getStageName(stageStr), 'Mtng sum+Agreement sent');
+
+  if (isMtngSumAgreement) {
+    return {
+      backgroundColor: 'rgba(22, 163, 74, 0.3)',
+      borderColor: 'rgba(22, 163, 74, 0.45)',
+      color: '#15803d',
+    };
+  }
+
   const fallback = '#3f28cd';
   const color = hexColor || fallback;
   let sanitized = color.trim();
@@ -1026,14 +1039,17 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="table w-full">
+    <div className="lead-search-table-shell -mx-4 overflow-x-auto md:mx-0 py-2 pb-8">
+      <table className="table lead-search-results-table w-full min-w-[36rem] text-base">
         <thead>
-          <tr>
+          <tr className="md:sticky md:top-0 z-20">
             {selectedColumns.map((columnKey) => {
               const column = AVAILABLE_COLUMNS.find(col => col.key === columnKey);
               return (
-                <th key={columnKey} className="font-semibold">
+                <th
+                  key={columnKey}
+                  className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40"
+                >
                   {column?.label || columnKey}
                 </th>
               );
@@ -1046,13 +1062,14 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
             const isLegacyInactive = anyLead.lead_type === 'legacy' && anyLead.status != null && (Number(anyLead.status) === 10 || anyLead.status === '10');
             const isNewInactive = anyLead.lead_type === 'new' && anyLead.unactivated_at != null;
             const isInactive = isLegacyInactive || isNewInactive;
-            const rowClasses = isInactive
-              ? 'bg-gray-200 text-black hover:bg-gray-300 cursor-pointer transition-colors duration-200 [&_.badge]:!border-0 [&_.badge]:!bg-gray-300 [&_.badge]:![color:black]'
-              : 'hover cursor-pointer transition-colors duration-200 hover:bg-blue-50 active:bg-blue-100';
             return (
               <tr
                 key={lead.id || index}
-                className={rowClasses}
+                className={`group cursor-pointer${
+                  isInactive
+                    ? ' lead-search-row-inactive [&_.badge]:!border-0 [&_.badge]:!bg-gray-200 [&_.badge]:![color:black]'
+                    : ''
+                }`}
                 onClick={(e) => {
                   onLeadClick(lead, e);
                 }}
@@ -1062,7 +1079,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
                   const columnValue = getColumnValue(lead, columnKey);
                   const titleText = typeof columnValue === 'string' ? columnValue : (columnValue?.props?.title || '');
                   return (
-                    <td key={columnKey} className="max-w-xs">
+                    <td key={columnKey} className="max-w-xs px-5 py-4">
                       <div className="truncate" title={titleText}>
                         {columnValue}
                       </div>
@@ -1074,6 +1091,87 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
           })}
         </tbody>
       </table>
+      <style>{`
+        .lead-search-table-shell table {
+          background: transparent !important;
+          border: none !important;
+          box-shadow: none !important;
+          border-collapse: separate !important;
+          border-spacing: 0 10px !important;
+        }
+
+        .lead-search-table-shell .table tbody tr:hover {
+          background-color: transparent !important;
+        }
+
+        html.dark .lead-search-table-shell .table tbody tr:hover {
+          background-color: transparent !important;
+        }
+
+        .lead-search-table-shell table tbody tr {
+          background: transparent !important;
+          border-radius: 18px !important;
+          overflow: hidden !important;
+          box-shadow: none !important;
+        }
+
+        .lead-search-table-shell table tbody td {
+          border: none !important;
+          border-bottom: none !important;
+          background: #ffffff !important;
+          box-shadow: none !important;
+          vertical-align: middle;
+        }
+
+        .lead-search-table-shell table tbody tr.lead-search-row-inactive td {
+          background: #f3f4f6 !important;
+        }
+
+        .lead-search-table-shell table tbody td:first-child {
+          border-top-left-radius: 18px !important;
+          border-bottom-left-radius: 18px !important;
+          padding-left: 1.1rem !important;
+        }
+
+        .lead-search-table-shell table tbody td:last-child {
+          border-top-right-radius: 18px !important;
+          border-bottom-right-radius: 18px !important;
+          padding-right: 1.1rem !important;
+        }
+
+        .lead-search-table-shell table tbody tr:hover td {
+          background: #f1f5f9 !important;
+        }
+
+        .lead-search-table-shell table tbody tr.lead-search-row-inactive:hover td {
+          background: #e5e7eb !important;
+        }
+
+        html.dark .lead-search-table-shell table tbody td {
+          background: rgba(255, 255, 255, 0.06) !important;
+        }
+
+        html.dark .lead-search-table-shell table tbody tr.lead-search-row-inactive td {
+          background: rgba(255, 255, 255, 0.04) !important;
+        }
+
+        html.dark .lead-search-table-shell table tbody tr:hover td {
+          background: rgba(255, 255, 255, 0.10) !important;
+        }
+
+        .lead-search-table-shell table thead,
+        .lead-search-table-shell table thead tr,
+        .lead-search-table-shell table thead th {
+          background-color: transparent !important;
+          background-image: none !important;
+          border-bottom: none !important;
+        }
+
+        .lead-search-table-shell table.lead-search-results-table thead tr,
+        .lead-search-table-shell table.lead-search-results-table thead th {
+          background-color: #ececec !important;
+        }
+      `}</style>
     </div>
   );
 };
@@ -4733,7 +4831,7 @@ const LeadSearchPage: React.FC = () => {
     const stageStr = String(stage);
     const stageName = getStageName(stageStr);
     const stageColour = getStageColour(stageStr);
-    const softBadgeStyle = getSoftStageBadgeStyle(stageColour);
+    const softBadgeStyle = getSoftStageBadgeStyle(stageColour, stageStr);
 
     return <span
       className="badge stage-badge rounded-full shrink-0 border-0 hover:opacity-90 transition-opacity duration-200 text-xs px-2.5 py-0.5 max-w-full"
@@ -4771,8 +4869,6 @@ const LeadSearchPage: React.FC = () => {
       'w-full',
       'max-w-full',
       'rounded-2xl',
-      'border',
-      'border-gray-100',
       'shadow-[0_2px_10px_rgba(0,0,0,0.06)]',
       'hover:shadow-[0_4px_16px_rgba(0,0,0,0.1)]',
       'md:hover:-translate-y-0.5',
@@ -4781,7 +4877,7 @@ const LeadSearchPage: React.FC = () => {
       'ease-out',
       'cursor-pointer',
       'group',
-      isInactive ? 'bg-gray-200' : 'bg-white',
+      isInactive ? 'bg-gray-100 border-0' : 'bg-white border border-gray-100',
     ].join(' ');
 
     // Ensure category is always shown as "Subcategory (Main Category)" when possible
@@ -4834,7 +4930,7 @@ const LeadSearchPage: React.FC = () => {
               </p>
             </div>
             <div
-              className={`shrink-0 max-w-[42%] ${isInactive ? '[&_.stage-badge]:!border-0 [&_.stage-badge]:!bg-gray-300 [&_.stage-badge]:![color:black]' : ''}`}
+              className={`shrink-0 max-w-[42%] ${isInactive ? '[&_.stage-badge]:!border-0 [&_.stage-badge]:!bg-gray-200 [&_.stage-badge]:![color:black]' : ''}`}
             >
               {getStageBadge(lead.stage)}
             </div>
@@ -4848,21 +4944,16 @@ const LeadSearchPage: React.FC = () => {
           </div>
 
           <div
-            className={`relative rounded-xl px-3.5 py-3 ${isInactive ? 'bg-gray-50/90' : 'bg-gray-50'}`}
+            className="relative rounded-xl px-3.5 py-3 bg-gray-50"
           >
             <div
               className="pointer-events-none absolute inset-y-2 left-1/2 w-px -translate-x-1/2 bg-gray-300/80"
               aria-hidden
             />
             <div className="grid grid-cols-2 gap-x-5 gap-y-3.5 text-sm text-gray-700">
-              <div
-                className={`flex min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 ${
-                  isInactive ? 'bg-gray-300/70' : 'bg-gray-200'
-                }`}
-                title="Date Created"
-              >
-                <CalendarIcon className="h-4 w-4 shrink-0 text-gray-600" aria-hidden />
-                <span className="truncate text-sm font-medium text-gray-800">
+              <div className="flex min-w-0 items-center gap-2.5" title="Date Created">
+                <CalendarIcon className="h-4 w-4 shrink-0 text-gray-500" aria-hidden />
+                <span className="truncate">
                   {new Date(lead.created_at).toLocaleDateString()}
                 </span>
               </div>

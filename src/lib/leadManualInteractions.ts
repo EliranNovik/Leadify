@@ -17,6 +17,7 @@ export type ManualInteractionRecord = {
   contact_id?: number | null;
   contact_name?: string | null;
   minutes?: number | null;
+  employee_id?: number | null;
   [key: string]: unknown;
 };
 
@@ -37,6 +38,7 @@ export type LeadManualInteractionRow = {
   length: string | null;
   minutes: number | null;
   editable: boolean;
+  employee_id: number | null;
   payload: Record<string, unknown>;
 };
 
@@ -91,6 +93,7 @@ export function recordToTableRow(
     contact_id,
     contact_name,
     minutes,
+    employee_id,
     ...rest
   } = record;
 
@@ -111,6 +114,7 @@ export function recordToTableRow(
     length: length != null ? String(length) : null,
     minutes: minutes != null ? Number(minutes) : null,
     editable: editable !== false,
+    employee_id: employee_id != null ? Number(employee_id) : null,
     payload: rest as Record<string, unknown>,
   };
 }
@@ -134,6 +138,7 @@ export function tableRowToRecord(row: LeadManualInteractionRow): ManualInteracti
     contact_id: row.contact_id,
     contact_name: row.contact_name,
     minutes: row.minutes,
+    employee_id: row.employee_id,
   };
 }
 

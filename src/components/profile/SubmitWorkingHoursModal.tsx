@@ -29,6 +29,7 @@ import {
   WorkingHoursAlreadySubmittedError,
   type EmployeeWorkingHoursSubmission,
 } from '../../lib/employeeWorkingHoursSubmissions';
+import YearWheelPicker from '../YearWheelPicker';
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -69,9 +70,11 @@ interface SubmitWorkingHoursModalProps {
   userId: string;
   initialYear: number;
   initialMonth: number;
-  yearOptions: number[];
   onSubmitted: (submission: EmployeeWorkingHoursSubmission) => void;
 }
+
+const SUBMIT_MODAL_BTN_CLASS =
+  'inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold border-0 shadow-sm transition-all duration-200 bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-700 hover:to-teal-700 hover:shadow-md active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none disabled:shadow-none';
 
 const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
   isOpen,
@@ -80,7 +83,6 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
   userId,
   initialYear,
   initialMonth,
-  yearOptions,
   onSubmitted,
 }) => {
   const [submitYear, setSubmitYear] = useState(initialYear);
@@ -217,19 +219,14 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
           </p>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label className="form-control w-full">
-              <span className="label-text text-sm text-gray-600 mb-1.5 font-medium">Year</span>
-              <select
-                className="select select-bordered w-full"
+            <div className="form-control w-full">
+              <YearWheelPicker
+                label="Year"
                 value={submitYear}
-                onChange={(e) => setSubmitYear(Number(e.target.value))}
+                onChange={setSubmitYear}
                 disabled={submitting}
-              >
-                {yearOptions.map((y) => (
-                  <option key={y} value={y}>{y}</option>
-                ))}
-              </select>
-            </label>
+              />
+            </div>
             <label className="form-control w-full">
               <span className="label-text text-sm text-gray-600 mb-1.5 font-medium">Month</span>
               <select
@@ -303,7 +300,7 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
           </button>
           <button
             type="button"
-            className="btn btn-success gap-2"
+            className={SUBMIT_MODAL_BTN_CLASS}
             onClick={() => void handleSubmit()}
             disabled={
               submitting
@@ -315,7 +312,9 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
             {submitting ? (
               <span className="loading loading-spinner loading-sm" />
             ) : (
-              <CheckIcon className="w-4 h-4" />
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-white/20">
+                <CheckIcon className="w-4 h-4 stroke-[2.5]" aria-hidden />
+              </span>
             )}
             Submit {monthLabel} {submitYear}
           </button>

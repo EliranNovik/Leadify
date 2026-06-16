@@ -40,6 +40,10 @@ export type ManualClockInApprovalRecord = {
   employee_name?: string;
   employee_department?: string;
   employee_photo_url?: string | null;
+  employee_email?: string | null;
+  employee_phone?: string | null;
+  employee_mobile?: string | null;
+  employee_chat_user_id?: string | null;
 };
 
 const MANUAL_APPROVAL_SELECT = `
@@ -192,52 +196,29 @@ export async function fetchManualClockInsForApproval(
   return ((data as ManualClockInApprovalRecord[]) || []).map(normalizeClockInApprovalFields);
 }
 
-export async function fetchAllManualClockInsForApproval(
-  year: number,
-  month: number,
-): Promise<ManualClockInApprovalRecord[]> {
-  const monthStr = String(month).padStart(2, '0');
-  const lastDay = new Date(year, month, 0).getDate();
-  const dateFrom = `${year}-${monthStr}-01`;
-  const dateTo = `${year}-${monthStr}-${String(lastDay).padStart(2, '0')}`;
-  const { start, end } = dateRangeToIsoBounds(dateFrom, dateTo);
+type ManualClockInApprovalRow = ManualClockInApprovalRecord & {
+  tenants_employee?:
+    | {
+        display_name: string | null;
+        photo_url?: string | null;
+        photo?: string | null;
+        phone?: string | null;
+        mobile?: string | null;
+        tenant_departement?: { name: string } | { name: string }[] | null;
+      }
+    | Array<{
+        display_name: string | null;
+        photo_url?: string | null;
+        photo?: string | null;
+        phone?: string | null;
+        mobile?: string | null;
+        tenant_departement?: { name: string } | { name: string }[] | null;
+      }>
+    | null;
+};
 
-  const { data, error } = await supabase
-    .from('employee_clock_in')
-    .select(
-      `${MANUAL_APPROVAL_SELECT},
-       tenants_employee!employee_id (
-         display_name,
-         photo_url,
-         photo,
-         tenant_departement!department_id ( name )
-       )`,
-    )
-    .eq('manually', true)
-    .gte('clock_in_time', start)
-    .lte('clock_in_time', end)
-    .order('clock_in_time', { ascending: true });
-
-  if (error) throw error;
-
-  return ((data || []) as Array<
-    ManualClockInApprovalRecord & {
-      tenants_employee?:
-        | {
-            display_name: string | null;
-            photo_url?: string | null;
-            photo?: string | null;
-            tenant_departement?: { name: string } | { name: string }[] | null;
-          }
-        | Array<{
-            display_name: string | null;
-            photo_url?: string | null;
-            photo?: string | null;
-            tenant_departement?: { name: string } | { name: string }[] | null;
-          }>
-        | null;
-    }
-  >).map((row) => {
+function mapManualClockInApprovalRows(rows: ManualClockInApprovalRow[]): ManualClockInApprovalRecord[] {
+  return rows.map((row) => {
     const te = Array.isArray(row.tenants_employee) ? row.tenants_employee[0] : row.tenants_employee;
     const dept = Array.isArray(te?.tenant_departement)
       ? te?.tenant_departement[0]
@@ -251,8 +232,92 @@ export async function fetchAllManualClockInsForApproval(
         (typeof te?.photo_url === 'string' && te.photo_url.trim()) ||
         (typeof te?.photo === 'string' && te.photo.trim()) ||
         null,
+      employee_phone: te?.phone?.trim() || null,
+      employee_mobile: te?.mobile?.trim() || null,
     };
   });
+}
+
+async function enrichManualApprovalRowsWithContacts(
+  rows: ManualClockInApprovalRecord[],
+): Promise<ManualClockInApprovalRecord[]> {
+  const employeeIds = [...new Set(rows.map((row) => row.employee_id))];
+  if (employeeIds.length === 0) return rows;
+
+  const { data: users, error } = await supabase
+    .from('users')
+    .select('id, email, employee_id')
+    .in('employee_id', employeeIds);
+
+  if (error) throw error;
+
+  const userByEmployeeId = new Map<number, { id: string; email: string | null }>();
+  for (const user of users || []) {
+    if (user.employee_id == null) continue;
+    userByEmployeeId.set(user.employee_id, {
+      id: user.id,
+      email: user.email ?? null,
+    });
+  }
+
+  return rows.map((row) => {
+    const linkedUser = userByEmployeeId.get(row.employee_id);
+    return {
+      ...row,
+      employee_email: linkedUser?.email ?? row.employee_email ?? null,
+      employee_chat_user_id: linkedUser?.id ?? null,
+    };
+  });
+}
+
+const MANUAL_APPROVAL_WITH_EMPLOYEE_SELECT = `
+  ${MANUAL_APPROVAL_SELECT},
+  tenants_employee!employee_id (
+    display_name,
+    photo_url,
+    photo,
+    phone,
+    mobile,
+    tenant_departement!department_id ( name )
+  )
+`;
+
+/** Pending + declined manual entries for one calendar month. */
+export async function fetchAllManualClockInsForApproval(
+  year: number,
+  month: number,
+): Promise<ManualClockInApprovalRecord[]> {
+  const monthStr = String(month).padStart(2, '0');
+  const lastDay = new Date(year, month, 0).getDate();
+  const dateFrom = `${year}-${monthStr}-01`;
+  const dateTo = `${year}-${monthStr}-${String(lastDay).padStart(2, '0')}`;
+  const { start, end } = dateRangeToIsoBounds(dateFrom, dateTo);
+
+  const { data, error } = await supabase
+    .from('employee_clock_in')
+    .select(MANUAL_APPROVAL_WITH_EMPLOYEE_SELECT)
+    .eq('manually', true)
+    .gte('clock_in_time', start)
+    .lte('clock_in_time', end)
+    .order('clock_in_time', { ascending: true });
+
+  if (error) throw error;
+  const mapped = mapManualClockInApprovalRows((data || []) as ManualClockInApprovalRow[]);
+  return enrichManualApprovalRowsWithContacts(mapped);
+}
+
+/** All pending + declined manual entries (any date). */
+export async function fetchAllUnapprovedManualClockInsForApproval(): Promise<ManualClockInApprovalRecord[]> {
+  const { data, error } = await supabase
+    .from('employee_clock_in')
+    .select(MANUAL_APPROVAL_WITH_EMPLOYEE_SELECT)
+    .eq('manually', true)
+    .eq('approved', false)
+    .order('clock_in_time', { ascending: true });
+
+  if (error) throw error;
+  const mapped = mapManualClockInApprovalRows((data || []) as ManualClockInApprovalRow[]);
+  return enrichManualApprovalRowsWithContacts(mapped);
 }
 
 export async function approveClockInRecord(

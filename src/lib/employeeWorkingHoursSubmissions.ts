@@ -18,6 +18,18 @@ export class WorkingHoursAlreadySubmittedError extends Error {
   }
 }
 
+export class WorkingHoursMonthLockedError extends Error {
+  constructor() {
+    super('This month has been submitted. Cancel the submission to add or edit entries.');
+    this.name = 'WorkingHoursMonthLockedError';
+  }
+}
+
+export function yearMonthFromDateKey(dateKey: string): { year: number; month: number } {
+  const [year, month] = dateKey.split('-').map(Number);
+  return { year, month };
+}
+
 export async function fetchWorkingHoursSubmission(
   employeeId: number,
   year: number,
@@ -79,4 +91,36 @@ export async function submitWorkingHoursMonth(params: {
   }
 
   return data as EmployeeWorkingHoursSubmission;
+}
+
+export async function assertWorkingHoursMonthEditable(
+  employeeId: number,
+  year: number,
+  month: number,
+): Promise<void> {
+  const submission = await fetchWorkingHoursSubmission(employeeId, year, month);
+  if (submission) throw new WorkingHoursMonthLockedError();
+}
+
+export async function assertDateEditableForEmployee(
+  employeeId: number,
+  dateKey: string,
+): Promise<void> {
+  const { year, month } = yearMonthFromDateKey(dateKey);
+  await assertWorkingHoursMonthEditable(employeeId, year, month);
+}
+
+export async function cancelWorkingHoursSubmission(
+  employeeId: number,
+  year: number,
+  month: number,
+): Promise<void> {
+  const { error } = await supabase
+    .from('employee_working_hours_submissions')
+    .delete()
+    .eq('employee_id', employeeId)
+    .eq('year', year)
+    .eq('month', month);
+
+  if (error) throw error;
 }

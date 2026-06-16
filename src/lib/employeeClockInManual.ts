@@ -1,5 +1,10 @@
 import { supabase } from './supabase';
 import { toDateInputValue } from './employeeClockInFormat';
+import {
+  assertDateEditableForEmployee,
+  yearMonthFromDateKey,
+  assertWorkingHoursMonthEditable,
+} from './employeeWorkingHoursSubmissions';
 
 export type ManualClockInPayload = {
   employeeId: number;
@@ -25,6 +30,8 @@ export async function insertManualClockInRecord(
   if (clockOut.getTime() <= clockIn.getTime()) {
     throw new Error('Clock out must be after clock in');
   }
+
+  await assertDateEditableForEmployee(payload.employeeId, payload.date);
 
   const row: Record<string, unknown> = {
     employee_id: payload.employeeId,
@@ -114,6 +121,23 @@ export function clockInSessionToFormValues(session: {
 }
 
 export async function updateClockInSession(update: ClockInSessionUpdate): Promise<void> {
+  const { data: existing, error: fetchError } = await supabase
+    .from('employee_clock_in')
+    .select(
+      'employee_id, clock_in_time, clock_out_time, notes, manually, approved, declined, approved_by, approved_at, clock_in_location_id, clock_out_location_id',
+    )
+    .eq('id', update.id)
+    .single();
+
+  if (fetchError) throw fetchError;
+  if (!existing) throw new Error('Clock-in entry not found');
+
+  const previousDateKey = toDateInputValue(new Date(existing.clock_in_time));
+  await assertDateEditableForEmployee(existing.employee_id, previousDateKey);
+  if (update.date !== previousDateKey) {
+    await assertDateEditableForEmployee(existing.employee_id, update.date);
+  }
+
   const clockIn = combineDateAndTime(update.date, update.clockInTime);
   const clockOut = combineDateAndTime(update.date, update.clockOutTime);
 
@@ -121,17 +145,39 @@ export async function updateClockInSession(update: ClockInSessionUpdate): Promis
     throw new Error('Clock out must be after clock in');
   }
 
+  const previousForm = clockInSessionToFormValues({
+    id: update.id,
+    clock_in_time: existing.clock_in_time,
+    clock_out_time: existing.clock_out_time,
+    notes: existing.notes,
+    clock_in_location_id: existing.clock_in_location_id,
+    clock_out_location_id: existing.clock_out_location_id,
+  });
+
+  const materialFieldsUnchanged =
+    previousForm.date === update.date
+    && previousForm.clockInTime === update.clockInTime
+    && previousForm.clockOutTime === update.clockOutTime
+    && (previousForm.clockInLocationId ?? null) === (update.clockInLocationId ?? null)
+    && (previousForm.clockOutLocationId ?? null) === (update.clockOutLocationId ?? null);
+
+  const wasEffectivelyApproved =
+    existing.declined !== true
+    && (existing.manually !== true || existing.approved === true);
+
+  const preserveApproval = wasEffectivelyApproved && materialFieldsUnchanged;
+
   const row: Record<string, unknown> = {
     clock_in_time: clockIn.toISOString(),
     clock_out_time: clockOut.toISOString(),
     is_active: false,
     manually: true,
-    approved: false,
-    declined: false,
-    approved_by: null,
-    approved_at: null,
     notes: update.notes?.trim() || null,
     location_source: 'manual',
+    approved: preserveApproval,
+    declined: false,
+    approved_by: preserveApproval ? existing.approved_by : null,
+    approved_at: preserveApproval ? existing.approved_at : null,
   };
 
   if (update.clockInLocationId) {
@@ -172,6 +218,24 @@ export async function updateClockInSessions(updates: ClockInSessionUpdate[]): Pr
 
 export async function deleteClockInSessions(ids: number[]): Promise<void> {
   if (ids.length === 0) return;
+
+  const { data: rows, error: fetchError } = await supabase
+    .from('employee_clock_in')
+    .select('id, employee_id, clock_in_time')
+    .in('id', ids);
+
+  if (fetchError) throw fetchError;
+
+  const checkedMonths = new Set<string>();
+  for (const row of rows ?? []) {
+    const dateKey = toDateInputValue(new Date(row.clock_in_time));
+    const { year, month } = yearMonthFromDateKey(dateKey);
+    const key = `${row.employee_id}-${year}-${month}`;
+    if (checkedMonths.has(key)) continue;
+    checkedMonths.add(key);
+    await assertWorkingHoursMonthEditable(row.employee_id, year, month);
+  }
+
   const { error } = await supabase.from('employee_clock_in').delete().in('id', ids);
   if (error) throw error;
 }

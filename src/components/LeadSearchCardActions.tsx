@@ -212,7 +212,7 @@ const LeadSearchCardActions: React.FC<LeadSearchCardActionsProps> = ({
           <label className="sr-only" htmlFor={`lead-card-actions-${lead.id}`}>
             Actions for {lead.name}
           </label>
-          <div className="relative inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200/80 bg-gray-100 text-gray-600">
+          <div className="relative inline-flex h-10 w-10 items-center justify-center text-gray-500">
             <EllipsisVerticalIcon className="h-6 w-6 pointer-events-none" aria-hidden />
             <select
               ref={nativeSelectRef}
@@ -238,7 +238,7 @@ const LeadSearchCardActions: React.FC<LeadSearchCardActionsProps> = ({
       ) : (
         <button
           type="button"
-          className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200/80 bg-gray-100 text-gray-600 shadow-sm transition-colors hover:bg-gray-200 hover:text-gray-800"
+          className="inline-flex h-10 w-10 items-center justify-center text-gray-500 transition-colors hover:text-gray-800"
           aria-label={`Actions for ${lead.name}`}
           aria-expanded={isOpen}
           aria-haspopup="menu"
