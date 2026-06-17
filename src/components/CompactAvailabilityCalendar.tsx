@@ -61,6 +61,7 @@ interface CalendarDay {
 
 export interface CompactAvailabilityCalendarRef {
   openAddRangeModal: () => void;
+  openDayForDate: (dateKey: string) => void;
 }
 
 interface CompactAvailabilityCalendarProps {
@@ -1244,7 +1245,12 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
   useImperativeHandle(ref, () => ({
     openAddRangeModal: () => {
       setShowAddRangeModal(true);
-    }
+    },
+    openDayForDate: (dateKey: string) => {
+      const [y, m, d] = dateKey.split('-').map(Number);
+      if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return;
+      void openDayModal(new Date(y, m - 1, d));
+    },
   }));
 
   useEffect(() => {

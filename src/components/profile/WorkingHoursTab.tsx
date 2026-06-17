@@ -8,6 +8,7 @@ import {
   FunnelIcon,
   PencilSquareIcon,
   PlusIcon,
+  SquaresPlusIcon,
   BoltIcon,
   EllipsisVerticalIcon,
   TrashIcon,
@@ -26,14 +27,16 @@ import {
   type DailyClockInSummary,
 } from '../../lib/workingHoursExport';
 import {
-  countMissingMonthEntryDays,
+  buildMonthWeekNumberLookup,
   dateRangeToIsoBounds,
+  formatWorkingHoursDateLabel,
+  formatWorkingHoursWeekday,
+  getSundayWeekStartKey,
   monthRange,
   sumClockDurations,
   toDateInputValue,
 } from '../../lib/employeeClockInFormat';
 import {
-  getHolidayDatesInMonth,
   preloadHolidayYears,
 } from '../../lib/israeliJewishHolidays';
 import { deleteClockInSessions } from '../../lib/employeeClockInManual';
@@ -43,7 +46,6 @@ import {
   deleteUnavailabilityDay,
   expandUnavailabilitiesToDailyRows,
   fetchEmployeeUnavailabilitiesInRange,
-  unavailabilityDateLabel,
   unavailabilityReasonText,
   unavailabilityTypeLabel,
   type EmployeeUnavailabilityDayRow,
@@ -54,9 +56,11 @@ import DocumentViewerModal from '../DocumentViewerModal';
 import { DocumentFileGlyph } from '../../lib/documentFileGlyphs';
 import UnavailabilityDayEditModal from './UnavailabilityDayEditModal';
 import ManualClockInModal from './ManualClockInModal';
+import BulkManualClockInModal from './BulkManualClockInModal';
 import ClockInDayEditModal from './ClockInDayEditModal';
 import SubmitWorkingHoursModal from './SubmitWorkingHoursModal';
 import YearWheelPicker from '../YearWheelPicker';
+import { buildWorkingHoursMonthCoverage, type WorkingHoursDayCoverage } from '../../lib/workingHoursMonthCoverage';
 import {
   cancelWorkingHoursSubmission,
   fetchWorkingHoursSubmission,
@@ -102,6 +106,109 @@ const MONTH_NAMES = [
 ];
 
 const MERGED_COL_SPAN = 10;
+const WEEK_COL_SPAN = 1;
+
+type WorkingHoursWeekRowMeta = {
+  weekNum: number;
+  isFirstInWeek: boolean;
+  weekRowSpan: number;
+};
+
+function buildWorkingHoursWeekRowMeta<T extends { dateKey: string }>(
+  rows: T[],
+  weekLookup: Map<string, number>,
+): Map<string, WorkingHoursWeekRowMeta> {
+  const meta = new Map<string, WorkingHoursWeekRowMeta>();
+  let currentWeek = -1;
+  let weekStartIndex = 0;
+
+  rows.forEach((row, index) => {
+    const weekNum = weekLookup.get(getSundayWeekStartKey(row.dateKey)) ?? 1;
+    if (weekNum !== currentWeek) {
+      if (currentWeek !== -1) {
+        const span = index - weekStartIndex;
+        for (let i = weekStartIndex; i < index; i += 1) {
+          const existing = meta.get(rows[i].dateKey);
+          if (existing) {
+            meta.set(rows[i].dateKey, {
+              ...existing,
+              isFirstInWeek: i === weekStartIndex,
+              weekRowSpan: span,
+            });
+          }
+        }
+      }
+      currentWeek = weekNum;
+      weekStartIndex = index;
+    }
+    meta.set(row.dateKey, {
+      weekNum,
+      isFirstInWeek: false,
+      weekRowSpan: 1,
+    });
+  });
+
+  if (rows.length > 0 && currentWeek !== -1) {
+    const span = rows.length - weekStartIndex;
+    for (let i = weekStartIndex; i < rows.length; i += 1) {
+      const existing = meta.get(rows[i].dateKey);
+      if (existing) {
+        meta.set(rows[i].dateKey, {
+          ...existing,
+          isFirstInWeek: i === weekStartIndex,
+          weekRowSpan: span,
+        });
+      }
+    }
+  }
+
+  return meta;
+}
+
+const WEEK_SIDE_COLORS = [
+  '#3b82f6',
+  '#10b981',
+  '#8b5cf6',
+  '#f59e0b',
+  '#e11d48',
+  '#0891b2',
+] as const;
+
+function WorkingHoursWeekDividerCell({
+  weekNum,
+  rowSpan,
+}: {
+  weekNum: number;
+  rowSpan: number;
+}) {
+  const accent = WEEK_SIDE_COLORS[(weekNum - 1) % WEEK_SIDE_COLORS.length];
+  return (
+    <td
+      rowSpan={rowSpan}
+      className="wh-week-divider-cell align-top"
+      style={{ '--wh-week-accent': accent } as React.CSSProperties}
+    >
+      <div className="wh-week-divider-line" aria-hidden />
+      <span className="wh-week-divider-label">Week {weekNum}</span>
+    </td>
+  );
+}
+
+function WorkingHoursDateLabel({
+  dateKey,
+  muted = false,
+}: {
+  dateKey: string;
+  muted?: boolean;
+}) {
+  return (
+    <span className={`whitespace-nowrap ${muted ? 'text-base-content/45' : ''}`}>
+      <span className="font-semibold text-base-content/50">{formatWorkingHoursWeekday(dateKey)}</span>
+      <span className="mx-1.5 text-base-content/30" aria-hidden>·</span>
+      {formatWorkingHoursDateLabel(dateKey)}
+    </span>
+  );
+}
 
 const SUBMIT_HOURS_BTN_CLASS =
   'inline-flex items-center gap-2 rounded-full px-4 py-2.5 text-sm font-semibold border-0 shadow-sm transition-all duration-200 bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-700 hover:to-teal-700 hover:shadow-md active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none disabled:shadow-none';
@@ -157,13 +264,54 @@ type MergedWorkingHoursDayRow = {
   date: string;
   clock: DailyClockInSummary | null;
   unavailabilities: EmployeeUnavailabilityDayRow[];
+  /** Workday with no entry — muted clickable row. */
+  isMissingPlaceholder?: boolean;
+  /** Holiday with no entry — muted clickable row (may still require hours). */
+  isHolidayPlaceholder?: boolean;
+  holidayNames?: string[];
 };
+
+function buildFullMonthTableRows(
+  mergedRows: MergedWorkingHoursDayRow[],
+  coverageDays: WorkingHoursDayCoverage[],
+): MergedWorkingHoursDayRow[] {
+  const byKey = new Map(mergedRows.map((row) => [row.dateKey, row]));
+  const rows: MergedWorkingHoursDayRow[] = [];
+
+  for (const day of coverageDays) {
+    const existing = byKey.get(day.dateKey);
+    if (existing) {
+      rows.push(existing);
+    } else if (day.status === 'missing') {
+      rows.push({
+        dateKey: day.dateKey,
+        date: formatWorkingHoursDateLabel(day.dateKey),
+        clock: null,
+        unavailabilities: [],
+        isMissingPlaceholder: true,
+      });
+    } else if (day.status === 'holiday') {
+      rows.push({
+        dateKey: day.dateKey,
+        date: formatWorkingHoursDateLabel(day.dateKey),
+        clock: null,
+        unavailabilities: [],
+        isHolidayPlaceholder: true,
+        holidayNames: day.holidayNames,
+      });
+    }
+  }
+
+  rows.sort((a, b) => parseDateKeyMs(a.dateKey) - parseDateKeyMs(b.dateKey));
+  return rows;
+}
 
 function rowMatchesWorkingHoursFilters(
   row: MergedWorkingHoursDayRow,
   dayRecords: ClockInRow[],
   activeFilters: Set<WorkingHoursRowFilter>,
 ): boolean {
+  if (row.isMissingPlaceholder || row.isHolidayPlaceholder) return false;
   if (activeFilters.size === 0) return true;
 
   const hasClock = row.clock != null;
@@ -213,7 +361,7 @@ function buildMergedWorkingHoursDayRows(
     const clock = clockByDate.get(dateKey) ?? null;
     rows.push({
       dateKey,
-      date: clock?.date ?? unavailabilityDateLabel(dateKey),
+      date: clock?.date ?? formatWorkingHoursDateLabel(dateKey),
       clock,
       unavailabilities: unavailByDate.get(dateKey) ?? [],
     });
@@ -224,26 +372,8 @@ function buildMergedWorkingHoursDayRows(
   return rows;
 }
 
-function countMissingForMonth(
-  targetYear: number,
-  targetMonth: number,
-  records: ClockInRow[],
-  unavailabilities: EmployeeUnavailabilityEntry[],
-  excludeDates: Iterable<string> = [],
-): number {
-  const range = monthRange(targetYear, targetMonth);
-  const covered = new Set<string>();
-  for (const record of records) {
-    covered.add(toDateInputValue(new Date(record.clock_in_time)));
-  }
-  for (const row of expandUnavailabilitiesToDailyRows(
-    unavailabilities,
-    range.from,
-    range.to,
-  )) {
-    covered.add(row.date);
-  }
-  return countMissingMonthEntryDays(targetYear, targetMonth, covered, undefined, excludeDates);
+function countMissingEntryPlaceholderRows(rows: MergedWorkingHoursDayRow[]): number {
+  return rows.filter((row) => row.isMissingPlaceholder || row.isHolidayPlaceholder).length;
 }
 
 function MissingDaysBadge({ count, loading }: { count: number; loading: boolean }) {
@@ -252,7 +382,7 @@ function MissingDaysBadge({ count, loading }: { count: number; loading: boolean 
     return (
       <span
         className="badge badge-sm bg-amber-100 text-amber-800 border border-amber-200"
-        title="Sun–Thu workdays (up to today) with no clock-in or unavailability; Fri/Sat and holidays excluded"
+        title="Sun–Thu workdays and holidays (up to today) with no entry — matches gray and purple placeholder rows; Fri/Sat excluded"
       >
         {count} {count === 1 ? 'day' : 'days'} missing
       </span>
@@ -261,7 +391,7 @@ function MissingDaysBadge({ count, loading }: { count: number; loading: boolean 
   return (
     <span
       className="badge badge-sm bg-green-100 text-green-700 border border-green-200"
-      title="All required workdays this month are covered (Fri/Sat and holidays excluded)"
+      title="All required Sun–Thu workdays and holidays this month have an entry (Fri/Sat excluded)"
     >
       No missing days
     </span>
@@ -533,6 +663,9 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
   const [editingRow, setEditingRow] = useState<EmployeeUnavailabilityDayRow | null>(null);
   const [deletingRowKey, setDeletingRowKey] = useState<string | null>(null);
   const [manualClockInOpen, setManualClockInOpen] = useState(false);
+  const [bulkManualClockInOpen, setBulkManualClockInOpen] = useState(false);
+  const [bulkSelectMode, setBulkSelectMode] = useState(false);
+  const [bulkSelectedDateKeys, setBulkSelectedDateKeys] = useState<Set<string>>(() => new Set());
   const [editingClockInDay, setEditingClockInDay] = useState<string | null>(null);
   const [deletingClockInDay, setDeletingClockInDay] = useState<string | null>(null);
   const [selectedDocument, setSelectedDocument] = useState<{
@@ -543,6 +676,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
   } | null>(null);
   const [holidayMapVersion, setHolidayMapVersion] = useState(0);
   const [rowFilters, setRowFilters] = useState<Set<WorkingHoursRowFilter>>(() => new Set());
+  const [manualClockInInitialDateKey, setManualClockInInitialDateKey] = useState<string | null>(null);
+  const [pendingCalendarDateKey, setPendingCalendarDateKey] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -557,6 +692,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
 
   useEffect(() => {
     setRowFilters(new Set());
+    setBulkSelectMode(false);
+    setBulkSelectedDateKeys(new Set());
   }, [year, month]);
 
   const toggleRowFilter = useCallback((filter: WorkingHoursRowFilter) => {
@@ -767,14 +904,47 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
     [dailyRows, unavailabilityDayRows],
   );
 
+  const monthCoverage = useMemo(() => {
+    const pendingApprovalDates = new Set<string>();
+    for (const [dateKey, dayRecords] of recordsByDay) {
+      const status = getDayClockInApprovalStatus(dayRecords, {
+        hasManualClockSummary: dayRecords.some(isManualClockInRecord),
+      });
+      if (status === 'pending') pendingApprovalDates.add(dateKey);
+    }
+    return buildWorkingHoursMonthCoverage(year, month, records, unavailabilities, {
+      pendingApprovalDates,
+    });
+  }, [year, month, records, unavailabilities, recordsByDay, holidayMapVersion]);
+
+  const tableDayRows = useMemo(
+    () => buildFullMonthTableRows(mergedDayRows, monthCoverage.days),
+    [mergedDayRows, monthCoverage.days],
+  );
+
   const filteredMergedDayRows = useMemo(
-    () => mergedDayRows.filter((row) =>
-      rowMatchesWorkingHoursFilters(row, recordsByDay.get(row.dateKey) ?? [], rowFilters),
-    ),
-    [mergedDayRows, recordsByDay, rowFilters],
+    () => {
+      if (rowFilters.size === 0) return tableDayRows;
+      return tableDayRows.filter((row) =>
+        rowMatchesWorkingHoursFilters(row, recordsByDay.get(row.dateKey) ?? [], rowFilters),
+      );
+    },
+    [tableDayRows, recordsByDay, rowFilters],
   );
 
   const hasActiveRowFilters = rowFilters.size > 0;
+
+  const monthWeekLookup = useMemo(
+    () => buildMonthWeekNumberLookup(year, month),
+    [year, month],
+  );
+
+  const weekRowMeta = useMemo(
+    () => buildWorkingHoursWeekRowMeta(filteredMergedDayRows, monthWeekLookup),
+    [filteredMergedDayRows, monthWeekLookup],
+  );
+
+  const tableColSpan = MERGED_COL_SPAN + WEEK_COL_SPAN + (bulkSelectMode ? 1 : 0);
 
   const handleCalendarMonthChange = useCallback((viewYear: number, viewMonth: number) => {
     setCalendarViewYear(viewYear);
@@ -782,14 +952,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
   }, []);
 
   const periodMissingDays = useMemo(
-    () => countMissingForMonth(
-      year,
-      month,
-      records,
-      unavailabilities,
-      getHolidayDatesInMonth(year, month),
-    ),
-    [year, month, records, unavailabilities, holidayMapVersion],
+    () => countMissingEntryPlaceholderRows(tableDayRows),
+    [tableDayRows],
   );
 
   const calendarMissingDays = useMemo(() => {
@@ -797,23 +961,25 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
     const filterRange = monthRange(year, month);
     const sameMonth = viewRange.from === filterRange.from;
 
-    const monthRecords = sameMonth ? records : calendarMonthRecords;
-    const monthUnavail = sameMonth ? unavailabilities : calendarMonthUnavailabilities;
+    if (sameMonth) {
+      return countMissingEntryPlaceholderRows(tableDayRows);
+    }
 
-    return countMissingForMonth(
+    const monthRecords = calendarMonthRecords;
+    const monthUnavail = calendarMonthUnavailabilities;
+
+    return buildWorkingHoursMonthCoverage(
       calendarViewYear,
       calendarViewMonth,
       monthRecords,
       monthUnavail,
-      getHolidayDatesInMonth(calendarViewYear, calendarViewMonth),
-    );
+    ).missingCount;
   }, [
     calendarViewYear,
     calendarViewMonth,
     year,
     month,
-    records,
-    unavailabilities,
+    tableDayRows,
     calendarMonthRecords,
     calendarMonthUnavailabilities,
     holidayMapVersion,
@@ -870,6 +1036,78 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
     setCalendarViewMonth(month);
     setCalendarModalOpen(true);
   };
+
+  const handlePlaceholderAddClockIn = useCallback((dateKey: string) => {
+    if (isMonthSubmitted) {
+      toast.error(monthLockedMessage);
+      return;
+    }
+    setManualClockInInitialDateKey(dateKey);
+    setManualClockInOpen(true);
+  }, [isMonthSubmitted, monthLockedMessage]);
+
+  const selectablePlaceholderRows = useMemo(
+    () =>
+      tableDayRows.filter(
+        (row) =>
+          (row.isMissingPlaceholder || row.isHolidayPlaceholder) && !isMonthSubmitted,
+      ),
+    [tableDayRows, isMonthSubmitted],
+  );
+
+  const exitBulkSelectMode = useCallback(() => {
+    setBulkSelectMode(false);
+    setBulkSelectedDateKeys(new Set());
+  }, []);
+
+  const toggleBulkDateSelection = useCallback((dateKey: string) => {
+    setBulkSelectedDateKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(dateKey)) next.delete(dateKey);
+      else next.add(dateKey);
+      return next;
+    });
+  }, []);
+
+  const selectAllBulkPlaceholders = useCallback(() => {
+    setBulkSelectedDateKeys(new Set(selectablePlaceholderRows.map((row) => row.dateKey)));
+  }, [selectablePlaceholderRows]);
+
+  const handleBulkSelectModeToggle = useCallback(() => {
+    if (isMonthSubmitted) {
+      toast.error(monthLockedMessage);
+      return;
+    }
+    if (bulkSelectMode) {
+      exitBulkSelectMode();
+      return;
+    }
+    setBulkSelectMode(true);
+    toast('Select rows in the table, then apply clock-in', { icon: 'ℹ️' });
+  }, [bulkSelectMode, exitBulkSelectMode, isMonthSubmitted, monthLockedMessage]);
+
+  const handleBulkApplyClockIn = useCallback(() => {
+    if (bulkSelectedDateKeys.size === 0) {
+      toast.error('Select at least one day in the table');
+      return;
+    }
+    setBulkManualClockInOpen(true);
+  }, [bulkSelectedDateKeys.size]);
+
+  const handleBulkSaved = useCallback(() => {
+    void fetchRecords();
+    exitBulkSelectMode();
+  }, [exitBulkSelectMode, fetchRecords]);
+
+  useEffect(() => {
+    if (!calendarModalOpen || !pendingCalendarDateKey) return;
+    const dateKey = pendingCalendarDateKey;
+    const timer = window.setTimeout(() => {
+      calendarRef.current?.openDayForDate(dateKey);
+      setPendingCalendarDateKey(null);
+    }, 150);
+    return () => window.clearTimeout(timer);
+  }, [calendarModalOpen, pendingCalendarDateKey]);
 
   const handleCancelSubmission = async () => {
     const monthLabel = MONTH_NAMES[month - 1] ?? String(month);
@@ -933,7 +1171,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
     }
 
     const confirmed = window.confirm(
-      `Remove unavailability for ${unavailabilityDateLabel(row.date)}?`,
+      `Remove unavailability for ${formatWorkingHoursDateLabel(row.date)}?`,
     );
     if (!confirmed) return;
 
@@ -966,7 +1204,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
     const daySessions = recordsByDay.get(dateKey) ?? [];
     if (daySessions.length === 0) return;
 
-    const label = unavailabilityDateLabel(dateKey);
+    const label = formatWorkingHoursDateLabel(dateKey);
     const confirmed = window.confirm(
       daySessions.length === 1
         ? `Delete clock-in entry for ${label}?`
@@ -1169,12 +1407,31 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
             </button>
             <button
               type="button"
+              className={`btn btn-sm gap-2 ${
+                bulkSelectMode ? 'btn-primary' : 'btn-outline btn-primary'
+              }`}
+              onClick={handleBulkSelectModeToggle}
+              disabled={!user?.id || isMonthSubmitted}
+              title={
+                isMonthSubmitted
+                  ? monthLockedMessage
+                  : bulkSelectMode
+                    ? 'Cancel row selection'
+                    : 'Select table rows to add clock-in in bulk'
+              }
+            >
+              <SquaresPlusIcon className="w-4 h-4" />
+              {bulkSelectMode ? 'Cancel selection' : 'Add multiple clock-in'}
+            </button>
+            <button
+              type="button"
               className="btn btn-sm btn-primary gap-2"
               onClick={() => {
                 if (isMonthSubmitted) {
                   toast.error(monthLockedMessage);
                   return;
                 }
+                setManualClockInInitialDateKey(null);
                 setManualClockInOpen(true);
               }}
               disabled={!user?.id || isMonthSubmitted}
@@ -1185,11 +1442,55 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
             </button>
           </div>
         </div>
+        {bulkSelectMode && (
+          <div className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 mb-3 flex flex-wrap items-center justify-between gap-3">
+            <p className="text-sm text-gray-800">
+              <span className="font-semibold">Select days in the table</span>
+              <span className="text-base-content/55">
+                {' '}
+                — {bulkSelectedDateKeys.size} selected
+              </span>
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                className="btn btn-xs btn-outline"
+                onClick={selectAllBulkPlaceholders}
+                disabled={selectablePlaceholderRows.length === 0}
+              >
+                Select all missing
+              </button>
+              <button
+                type="button"
+                className="btn btn-xs btn-ghost"
+                onClick={() => setBulkSelectedDateKeys(new Set())}
+                disabled={bulkSelectedDateKeys.size === 0}
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                className="btn btn-xs btn-primary"
+                onClick={handleBulkApplyClockIn}
+                disabled={bulkSelectedDateKeys.size === 0}
+              >
+                Apply clock-in{bulkSelectedDateKeys.size > 0 ? ` (${bulkSelectedDateKeys.size})` : ''}
+              </button>
+            </div>
+          </div>
+        )}
         <div className="-mx-4 overflow-x-auto md:mx-0 py-2 pb-4">
           <table className="table my-profile-hours-table w-full min-w-[56rem] text-sm md:text-base">
             <thead>
               <tr>
-                <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]">Date</th>
+                <th
+                  className="w-8 min-w-[2rem] px-1 py-3.5 bg-[#ececec]"
+                  aria-label="Week"
+                />
+                {bulkSelectMode && (
+                  <th className="w-10 min-w-[2.5rem] px-2 py-3.5 bg-[#ececec]" aria-label="Select" />
+                )}
+                <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec] min-w-[9.5rem]">Date</th>
                 <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]">Unavailability</th>
                 <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]">Clock in</th>
                 <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]">Clock out</th>
@@ -1204,13 +1505,13 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={MERGED_COL_SPAN} className="text-center py-12">
+                  <td colSpan={tableColSpan} className="text-center py-12">
                     <span className="loading loading-spinner loading-md text-primary" />
                   </td>
                 </tr>
               ) : filteredMergedDayRows.length === 0 ? (
                 <tr>
-                  <td colSpan={MERGED_COL_SPAN} className="text-center py-12 text-gray-400">
+                  <td colSpan={tableColSpan} className="text-center py-12 text-gray-400">
                     {hasActiveRowFilters
                       ? 'No entries match the selected filters.'
                       : 'No working hours or unavailabilities for this period.'}
@@ -1218,29 +1519,111 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                 </tr>
               ) : (
                 filteredMergedDayRows.map((row) => {
+                  const isPlaceholder = row.isMissingPlaceholder || row.isHolidayPlaceholder;
+                  const isBulkSelectable =
+                    bulkSelectMode && isPlaceholder && !isMonthSubmitted;
+                  const isBulkSelected = bulkSelectedDateKeys.has(row.dateKey);
+                  const weekMeta = weekRowMeta.get(row.dateKey);
+                  const weekDividerCell =
+                    weekMeta?.isFirstInWeek ? (
+                      <WorkingHoursWeekDividerCell
+                        weekNum={weekMeta.weekNum}
+                        rowSpan={weekMeta.weekRowSpan}
+                      />
+                    ) : null;
+
+                  if (isPlaceholder) {
+                    const placeholderInteractive = !isMonthSubmitted;
+                    const isHoliday = row.isHolidayPlaceholder;
+                    const holidayLabel = row.holidayNames?.[0];
+                    const rowClass = isHoliday
+                      ? 'wh-holiday-placeholder'
+                      : 'wh-missing-placeholder';
+                    const hintText = isHoliday
+                      ? holidayLabel
+                        ? `${holidayLabel} — no entry yet`
+                        : 'Holiday — no entry yet'
+                      : 'No entry yet';
+                    return (
+                      <tr
+                        key={row.dateKey}
+                        id={`wh-row-${row.dateKey}`}
+                        className={`${rowClass}${isBulkSelected ? ' wh-bulk-selected' : ''}`}
+                        onClick={
+                          isBulkSelectable
+                            ? () => toggleBulkDateSelection(row.dateKey)
+                            : undefined
+                        }
+                      >
+                        {weekDividerCell}
+                        {bulkSelectMode && (
+                          <td className="w-10 min-w-[2.5rem] px-2 py-3 align-middle">
+                            {isBulkSelectable ? (
+                              <input
+                                type="checkbox"
+                                className="checkbox checkbox-sm checkbox-primary"
+                                checked={isBulkSelected}
+                                onChange={() => toggleBulkDateSelection(row.dateKey)}
+                                onClick={(e) => e.stopPropagation()}
+                                aria-label={`Select ${row.date}`}
+                              />
+                            ) : null}
+                          </td>
+                        )}
+                        <td className="relative whitespace-nowrap font-medium wh-data-date-cell">
+                          <WorkingHoursDateLabel dateKey={row.dateKey} muted />
+                        </td>
+                        <td colSpan={8} className="text-sm text-base-content/40 italic">
+                          {hintText}
+                        </td>
+                        <td className="w-12 min-w-[3rem] px-2 py-3 text-right whitespace-nowrap align-middle">
+                          {placeholderInteractive && !bulkSelectMode ? (
+                            <button
+                              type="button"
+                              className="btn btn-xs btn-primary gap-1 whitespace-nowrap"
+                              onClick={() => handlePlaceholderAddClockIn(row.dateKey)}
+                              title="Add manual clock-in and clock-out"
+                            >
+                              <PlusIcon className="w-3.5 h-3.5 shrink-0" />
+                              <span className="hidden sm:inline">Add clock-in</span>
+                            </button>
+                          ) : (
+                            <span className="text-gray-400 text-xs">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  }
+
                   const hasClock = row.clock != null;
                   const dayRecords = recordsByDay.get(row.dateKey) ?? [];
                   const approvalStatus = getDayClockInApprovalStatus(dayRecords, {
                     hasManualClockSummary: row.clock?.hasManual === true,
                   });
                   return (
-                    <tr key={row.dateKey} className={clockInApprovalRowClass(approvalStatus)}>
-                      <td className="relative overflow-hidden whitespace-nowrap font-medium">
-                        <div className="relative z-10 flex items-center gap-1.5">
-                          <span>{row.date}</span>
+                    <tr
+                      key={row.dateKey}
+                      id={`wh-row-${row.dateKey}`}
+                      className={clockInApprovalRowClass(approvalStatus)}
+                    >
+                      {weekDividerCell}
+                      {bulkSelectMode && <td className="w-10 min-w-[2.5rem] px-2" aria-hidden />}
+                      <td className="relative font-medium wh-data-date-cell min-w-[9.5rem]">
+                        <div className="relative z-10 flex flex-col gap-1.5 min-w-0">
+                          <WorkingHoursDateLabel dateKey={row.dateKey} />
                           {hasClock && (
-                            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                            <div className="flex flex-wrap items-center gap-1.5">
                               {row.clock!.hasManual && (
                                 <>
                                   <span
-                                    className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-amber-100 text-amber-700 border border-amber-200"
+                                    className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-amber-100 text-amber-700 border border-amber-200 shrink-0"
                                     title="Manual entry"
                                   >
                                     <PencilSquareIcon className="w-4 h-4" />
                                   </span>
                                   {clockInApprovalWatermarkLabel(approvalStatus) && (
                                     <span
-                                      className={`text-xs font-medium whitespace-nowrap ${clockInApprovalLabelClass(approvalStatus)}`}
+                                      className={`text-xs font-medium leading-none ${clockInApprovalLabelClass(approvalStatus)}`}
                                     >
                                       {clockInApprovalWatermarkLabel(approvalStatus)}
                                     </span>
@@ -1249,7 +1632,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                               )}
                               {row.clock!.hasAutomatic && (
                                 <span
-                                  className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-gray-100 text-gray-600 border border-gray-200"
+                                  className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-gray-100 text-gray-600 border border-gray-200 shrink-0"
                                   title="Automatic entry"
                                 >
                                   <BoltIcon className="w-4 h-4" />
@@ -1399,7 +1782,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
           padding: 1rem 1.1rem !important;
         }
 
-        .my-profile-hours-shell table.my-profile-hours-table tbody td:first-child {
+        .my-profile-hours-shell table.my-profile-hours-table tbody td.wh-data-date-cell {
           border-top-left-radius: 18px !important;
           border-bottom-left-radius: 18px !important;
         }
@@ -1420,6 +1803,102 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
 
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.approval-row-declined:hover td {
           background: #fecaca !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder td.wh-week-divider-cell,
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder td.wh-week-divider-cell {
+          background: transparent !important;
+          box-shadow: none !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder td {
+          background: #f3f4f6 !important;
+          box-shadow: none !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder td.wh-data-date-cell {
+          border-top-left-radius: 18px !important;
+          border-bottom-left-radius: 18px !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder td:last-child {
+          border-top-right-radius: 18px !important;
+          border-bottom-right-radius: 18px !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder-interactive {
+          cursor: pointer;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder-interactive:hover td {
+          background: #e8eaed !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder td {
+          background: #f5f3ff !important;
+          box-shadow: none !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder td.wh-data-date-cell {
+          border-top-left-radius: 18px !important;
+          border-bottom-left-radius: 18px !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder td:last-child {
+          border-top-right-radius: 18px !important;
+          border-bottom-right-radius: 18px !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder-interactive {
+          cursor: pointer;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder-interactive:hover td {
+          background: #ede9fe !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-bulk-selected td {
+          box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.45) !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody td.wh-week-divider-cell {
+          position: relative;
+          width: 2rem;
+          min-width: 2rem;
+          max-width: 2rem;
+          padding: 1rem 0.2rem 1rem 0.35rem !important;
+          background: transparent !important;
+          box-shadow: none !important;
+          vertical-align: top;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody td.wh-week-divider-cell .wh-week-divider-line {
+          position: absolute;
+          left: 0;
+          top: 0.5rem;
+          bottom: 0.5rem;
+          width: 2px;
+          border-radius: 999px;
+          background: var(--wh-week-accent, #94a3b8);
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody td.wh-week-divider-cell .wh-week-divider-label {
+          display: block;
+          margin-left: 0.45rem;
+          padding-top: 0.35rem;
+          font-size: 10px;
+          font-weight: 600;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: var(--wh-week-accent, #64748b);
+          line-height: 1;
+          white-space: nowrap;
+          writing-mode: vertical-rl;
+          text-orientation: mixed;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr:hover td.wh-week-divider-cell {
+          background: transparent !important;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table thead,
@@ -1503,8 +1982,21 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
         isOpen={manualClockInOpen}
         employeeId={employeeId}
         userId={user?.id ?? ''}
-        onClose={() => setManualClockInOpen(false)}
+        initialDateKey={manualClockInInitialDateKey}
+        onClose={() => {
+          setManualClockInOpen(false);
+          setManualClockInInitialDateKey(null);
+        }}
         onSaved={() => void fetchRecords()}
+      />
+
+      <BulkManualClockInModal
+        isOpen={bulkManualClockInOpen}
+        employeeId={employeeId}
+        userId={user?.id ?? ''}
+        selectedDateKeys={[...bulkSelectedDateKeys]}
+        onClose={() => setBulkManualClockInOpen(false)}
+        onSaved={handleBulkSaved}
       />
 
       <UnavailabilityDayEditModal

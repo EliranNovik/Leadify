@@ -19,6 +19,8 @@ interface ManualClockInModalProps {
   isOpen: boolean;
   employeeId: number;
   userId: string;
+  /** Pre-select this YYYY-MM-DD when opening (e.g. from month coverage calendar). */
+  initialDateKey?: string | null;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -40,6 +42,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
   isOpen,
   employeeId,
   userId,
+  initialDateKey = null,
   onClose,
   onSaved,
 }) => {
@@ -57,7 +60,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
 
   useEffect(() => {
     if (!isOpen) return;
-    const t = toDateInputValue(new Date());
+    const t = initialDateKey?.trim() || toDateInputValue(new Date());
     setDateRows([newDateRow(t)]);
     setClockInTime('09:00');
     setClockOutTime('17:00');
@@ -70,7 +73,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
         setWorksFromHome(wfh);
       },
     );
-  }, [isOpen, employeeId]);
+  }, [isOpen, employeeId, initialDateKey]);
 
   const selectedIn = useMemo(
     () => workplaces.find((wp) => wp.id === (clockInLocationId === '' ? null : clockInLocationId)) ?? null,

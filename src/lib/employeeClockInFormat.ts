@@ -15,6 +15,33 @@ export function formatClockDate(iso: string | null | undefined): string {
   });
 }
 
+/** Parse YYYY-MM-DD as a local calendar date (no timezone shift). */
+export function parseDateKeyLocal(dateKey: string): Date {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'] as const;
+
+/** Three-letter weekday for a YYYY-MM-DD key (e.g. "Mon"). */
+export function formatWorkingHoursWeekday(dateKey: string): string {
+  const [y, m, d] = dateKey.split('-').map(Number);
+  return WEEKDAY_SHORT[new Date(y, m - 1, d).getDay()];
+}
+
+/** Calendar date for working hours UI (e.g. "02 June"). */
+export function formatWorkingHoursDateLabel(dateKey: string): string {
+  return parseDateKeyLocal(dateKey).toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'long',
+  });
+}
+
+/** Long weekday for a YYYY-MM-DD key (e.g. "Monday"). */
+export function formatWorkingHoursWeekdayLong(dateKey: string): string {
+  return parseDateKeyLocal(dateKey).toLocaleDateString('en-GB', { weekday: 'long' });
+}
+
 export function formatClockDuration(start: string, end: string | null): string {
   if (!end) return 'In progress…';
   const diffMs = new Date(end).getTime() - new Date(start).getTime();
@@ -62,6 +89,31 @@ export function eachDayInRange(from: string, to: string): string[] {
     cur.setDate(cur.getDate() + 1);
   }
   return days;
+}
+
+/** Sunday (start of week) for a YYYY-MM-DD key. */
+export function getSundayWeekStartKey(dateKey: string): string {
+  const date = parseDateKeyLocal(dateKey);
+  const sunday = new Date(date);
+  sunday.setDate(date.getDate() - date.getDay());
+  return toDateInputValue(sunday);
+}
+
+/** Maps each Sunday week-start in a month to 1-based week number (Week 1, Week 2, …). */
+export function buildMonthWeekNumberLookup(year: number, month: number): Map<string, number> {
+  const { from, to } = monthRange(year, month);
+  const lookup = new Map<string, number>();
+  let weekNum = 0;
+  let prevWeekStart = '';
+  for (const day of eachDayInRange(from, to)) {
+    const weekStart = getSundayWeekStartKey(day);
+    if (weekStart !== prevWeekStart) {
+      weekNum += 1;
+      prevWeekStart = weekStart;
+      lookup.set(weekStart, weekNum);
+    }
+  }
+  return lookup;
 }
 
 /** Israeli work week: Sunday–Thursday (Fri/Sat excluded). */

@@ -7,12 +7,10 @@ import {
   fetchEmployeeUnavailabilitiesInRange,
 } from '../../lib/employeeUnavailabilities';
 import {
-  countMissingMonthEntryDays,
   monthRange,
   sumClockDurations,
-  toDateInputValue,
 } from '../../lib/employeeClockInFormat';
-import { getHolidayDatesInMonth } from '../../lib/israeliJewishHolidays';
+import { buildWorkingHoursMonthCoverage } from '../../lib/workingHoursMonthCoverage';
 import {
   fetchEmployeeClockInRecords,
   type ClockInExportRecord,
@@ -42,25 +40,12 @@ function countMissingDaysForMonth(
   records: ClockInExportRecord[],
   unavailabilities: Awaited<ReturnType<typeof fetchEmployeeUnavailabilitiesInRange>>,
 ): number {
-  const range = monthRange(targetYear, targetMonth);
-  const covered = new Set<string>();
-  for (const record of records) {
-    covered.add(toDateInputValue(new Date(record.clock_in_time)));
-  }
-  for (const row of expandUnavailabilitiesToDailyRows(
-    unavailabilities,
-    range.from,
-    range.to,
-  )) {
-    covered.add(row.date);
-  }
-  return countMissingMonthEntryDays(
+  return buildWorkingHoursMonthCoverage(
     targetYear,
     targetMonth,
-    covered,
-    undefined,
-    getHolidayDatesInMonth(targetYear, targetMonth),
-  );
+    records,
+    unavailabilities,
+  ).missingCount;
 }
 
 interface SubmitWorkingHoursModalProps {
@@ -279,8 +264,9 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
                 <div className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-900">
                   <p className="font-medium">Note</p>
                   <p className="mt-1 text-amber-800">
-                    This month has {missingDays} required workday{missingDays === 1 ? '' : 's'} without
-                    a clock-in or unavailability. You can still submit, but please review your entries first.
+                    This month has {missingDays} required day{missingDays === 1 ? '' : 's'} (workdays
+                    and holidays) without a clock-in or unavailability. You can still submit, but please
+                    review your entries first.
                   </p>
                 </div>
               )}

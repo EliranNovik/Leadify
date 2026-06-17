@@ -2,8 +2,8 @@ import * as XLSX from 'xlsx';
 import { supabase } from './supabase';
 import {
   dateRangeToIsoBounds,
-  formatClockDate,
   formatClockTime,
+  formatWorkingHoursDateLabel,
   sumClockDurations,
   toDateInputValue,
 } from './employeeClockInFormat';
@@ -278,7 +278,7 @@ export function aggregateClockInRecordsByDay(
 
     summaries.push({
       dateKey,
-      date: formatClockDate(dayRecords[0].clock_in_time),
+      date: formatWorkingHoursDateLabel(dateKey),
       clockIns: clockInTimes.join(', '),
       clockOuts: clockOutTimes.join(', '),
       sessions,
@@ -446,7 +446,7 @@ export function buildMergedTimeAndUnavailabilityExportRows(
     const unavail = unavailByDate.get(dateKey);
     rows.push({
       dateKey,
-      date: unavailabilityDateLabel(dateKey),
+      date: formatWorkingHoursDateLabel(dateKey),
       unavailability: unavail ? unavail.types.join(', ') : '—',
       unavailabilityReason:
         unavail && unavail.reasons.length > 0 ? unavail.reasons.join('; ') : '—',

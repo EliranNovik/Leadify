@@ -20,8 +20,7 @@ import {
   countPendingApprovalBuckets,
   declineClockInRecord,
   fetchActiveClockInsByEmployeeIds,
-  fetchAllManualClockInsForApproval,
-  fetchAllUnapprovedManualClockInsForApproval,
+  fetchPendingManualClockInsForApproval,
   filterManualApprovalModalRecords,
   getClockInApprovalStatus,
   isHomeWfhApprovalRequest,
@@ -316,7 +315,7 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
-  const [periodScope, setPeriodScope] = useState<'month' | 'all'>('month');
+  const [periodScope, setPeriodScope] = useState<'month' | 'all'>('all');
   const [records, setRecords] = useState<ManualClockInApprovalRecord[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
   const [actingId, setActingId] = useState<number | null>(null);
@@ -340,10 +339,9 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
 
   const loadRecordsSilent = useCallback(async () => {
     try {
-      const rows =
-        periodScope === 'all'
-          ? await fetchAllUnapprovedManualClockInsForApproval()
-          : await fetchAllManualClockInsForApproval(year, month);
+      const rows = await fetchPendingManualClockInsForApproval(
+        periodScope === 'all' ? 'all' : { year, month },
+      );
       setRecords(rows);
     } catch (err) {
       console.error('ManualClockInApprovalModal records:', err);
@@ -353,10 +351,9 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
   const loadRecords = useCallback(async () => {
     setLoadingRecords(true);
     try {
-      const rows =
-        periodScope === 'all'
-          ? await fetchAllUnapprovedManualClockInsForApproval()
-          : await fetchAllManualClockInsForApproval(year, month);
+      const rows = await fetchPendingManualClockInsForApproval(
+        periodScope === 'all' ? 'all' : { year, month },
+      );
       setRecords(rows);
     } catch (err) {
       console.error('ManualClockInApprovalModal records:', err);
@@ -380,7 +377,7 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     setEmployeePickerOpen(false);
     setExpandedEmployeeIds(new Set());
     setPendingTypeFilter('all');
-    setPeriodScope('month');
+    setPeriodScope('all');
     setBulkActionMode(null);
     setSelectedRecordIds(new Set());
     setRmqOpen(false);
@@ -736,6 +733,8 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
             </h2>
             <p className="text-sm text-base-content/60 mt-1">
               {periodScope === 'all' ? 'All periods' : `${MONTH_NAMES[month - 1]} ${year}`}
+              {' · '}
+              {totalPending} pending
               {' · '}
               {visibleGroups.length} employee{visibleGroups.length === 1 ? '' : 's'}
             </p>

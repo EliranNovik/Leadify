@@ -344,42 +344,44 @@ const MANUAL_APPROVAL_WITH_EMPLOYEE_SELECT = `
   )
 `;
 
-/** Pending + declined manual entries for one calendar month. */
-export async function fetchAllManualClockInsForApproval(
-  year: number,
-  month: number,
+/** Pending manual entries awaiting admin action (matches fetchPendingManualClockInCount). */
+export async function fetchPendingManualClockInsForApproval(
+  scope: { year: number; month: number } | 'all' = 'all',
 ): Promise<ManualClockInApprovalRecord[]> {
-  const monthStr = String(month).padStart(2, '0');
-  const lastDay = new Date(year, month, 0).getDate();
-  const dateFrom = `${year}-${monthStr}-01`;
-  const dateTo = `${year}-${monthStr}-${String(lastDay).padStart(2, '0')}`;
-  const { start, end } = dateRangeToIsoBounds(dateFrom, dateTo);
-
-  const { data, error } = await supabase
+  let query = supabase
     .from('employee_clock_in')
     .select(MANUAL_APPROVAL_WITH_EMPLOYEE_SELECT)
     .eq('manually', true)
-    .gte('clock_in_time', start)
-    .lte('clock_in_time', end)
+    .eq('approved', false)
+    .eq('declined', false)
     .order('clock_in_time', { ascending: true });
 
+  if (scope !== 'all') {
+    const monthStr = String(scope.month).padStart(2, '0');
+    const lastDay = new Date(scope.year, scope.month, 0).getDate();
+    const dateFrom = `${scope.year}-${monthStr}-01`;
+    const dateTo = `${scope.year}-${monthStr}-${String(lastDay).padStart(2, '0')}`;
+    const { start, end } = dateRangeToIsoBounds(dateFrom, dateTo);
+    query = query.gte('clock_in_time', start).lte('clock_in_time', end);
+  }
+
+  const { data, error } = await query;
   if (error) throw error;
   const mapped = mapManualClockInApprovalRows((data || []) as ManualClockInApprovalRow[]);
   return enrichManualApprovalRowsWithContacts(mapped);
 }
 
-/** All pending + declined manual entries (any date). */
-export async function fetchAllUnapprovedManualClockInsForApproval(): Promise<ManualClockInApprovalRecord[]> {
-  const { data, error } = await supabase
-    .from('employee_clock_in')
-    .select(MANUAL_APPROVAL_WITH_EMPLOYEE_SELECT)
-    .eq('manually', true)
-    .eq('approved', false)
-    .order('clock_in_time', { ascending: true });
+/** Pending + declined manual entries for one calendar month. */
+export async function fetchAllManualClockInsForApproval(
+  year: number,
+  month: number,
+): Promise<ManualClockInApprovalRecord[]> {
+  return fetchPendingManualClockInsForApproval({ year, month });
+}
 
-  if (error) throw error;
-  const mapped = mapManualClockInApprovalRows((data || []) as ManualClockInApprovalRow[]);
-  return enrichManualApprovalRowsWithContacts(mapped);
+/** All pending manual entries (any date). */
+export async function fetchAllUnapprovedManualClockInsForApproval(): Promise<ManualClockInApprovalRecord[]> {
+  return fetchPendingManualClockInsForApproval('all');
 }
 
 export async function approveClockInRecord(
