@@ -1,13 +1,16 @@
-import React, { useEffect } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowRightOnRectangleIcon } from '@heroicons/react/24/outline';
+import { ArrowRightOnRectangleIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { useAuthContext } from '../contexts/AuthContext';
 import { useOptionalClockInGate } from '../hooks/useClockInGate';
 import { useSignOutWithClockOut } from '../hooks/useSignOutWithClockOut';
+import RMQMessagesPage from '../pages/RMQMessagesPage';
 import ClockInModal from './ClockInModal';
 import LoginHeroBackground from './LoginHeroBackground';
 import ClockInGateHelpBox from './ClockInGateHelpBox';
 import ClockInGateHeader from './ClockInGateHeader';
+
+const LazyCalendarPage = lazy(() => import('./CalendarPage'));
 
 const CLOCK_IN_GATE_THEME_COLOR = '#1a1a1a';
 
@@ -19,6 +22,8 @@ const ClockInGate: React.FC<ClockInGateProps> = ({ children }) => {
   const { user } = useAuthContext();
   const gate = useOptionalClockInGate();
   const { requestSignOut, signOutModal } = useSignOutWithClockOut({ redirectOnSignOut: false });
+  const [isMessagingOpen, setIsMessagingOpen] = useState(false);
+  const [isCalendarOpen, setIsCalendarOpen] = useState(false);
 
   const status = gate?.status ?? 'loading';
   const employeeId = gate?.employeeId ?? null;
@@ -140,7 +145,44 @@ const ClockInGate: React.FC<ClockInGateProps> = ({ children }) => {
         <ClockInGateHeader
           employeeId={employeeId}
           onSignOut={() => void handleSignOut()}
+          onOpenMessaging={() => setIsMessagingOpen(true)}
+          onOpenCalendar={() => setIsCalendarOpen(true)}
         />
+      )}
+
+      <RMQMessagesPage
+        isOpen={isMessagingOpen}
+        onClose={() => setIsMessagingOpen(false)}
+      />
+
+      {isCalendarOpen && (
+        <div className="fixed inset-0 z-[300] flex flex-col bg-white overflow-hidden">
+          <div
+            className="shrink-0 flex items-center justify-between gap-3 px-4 py-2 border-b border-gray-200 bg-white"
+            style={{ paddingTop: 'max(0.5rem, env(safe-area-inset-top, 0px))' }}
+          >
+            <h2 className="text-lg font-semibold text-gray-900">Calendar</h2>
+            <button
+              type="button"
+              onClick={() => setIsCalendarOpen(false)}
+              className="btn btn-ghost btn-circle btn-sm"
+              aria-label="Close calendar"
+            >
+              <XMarkIcon className="w-6 h-6" />
+            </button>
+          </div>
+          <div className="flex-1 min-h-0 overflow-auto">
+            <Suspense
+              fallback={(
+                <div className="flex justify-center items-center h-48">
+                  <span className="loading loading-spinner loading-lg text-primary" />
+                </div>
+              )}
+            >
+              <LazyCalendarPage />
+            </Suspense>
+          </div>
+        </div>
       )}
 
       <div

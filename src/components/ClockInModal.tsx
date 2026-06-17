@@ -95,12 +95,19 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
     || ''
   ).trim();
   const greetingFirstName = getGreetingFirstName(greetingName);
+  const isGateStyle = embedded;
   const greetingGradientStyle = {
     background: 'linear-gradient(to right, #7c3aed, #6366f1)',
     WebkitBackgroundClip: 'text',
     WebkitTextFillColor: 'transparent',
     backgroundClip: 'text',
   } as const;
+  const gateGreetingHeadingClass =
+    'text-base md:text-2xl font-semibold leading-snug text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.45)]';
+  const gateGreetingHeadingStyle = {
+    fontFamily: "'Playfair Display', 'Libre Baskerville', serif",
+  } as const;
+  const appGreetingHeadingClass = 'text-base md:text-lg font-extrabold leading-snug';
 
   useEffect(() => {
     if (!isOpen) {
@@ -400,9 +407,21 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
 
   if (!isOpen) return null;
 
+  const dialogSurfaceClass = isGateStyle
+    ? 'bg-gray-500/15 backdrop-blur-[24px] border border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.28)] text-white'
+    : 'bg-white shadow-2xl text-gray-900';
+
+  const dialogSizeClass = isGateStyle
+    ? 'w-[min(380px,92vw)] h-[min(380px,92vw)] md:w-[min(480px,88vh)] md:h-[min(480px,88vh)]'
+    : 'w-[min(380px,92vw)] h-[min(380px,92vw)]';
+
+  const dialogPaddingClass = isGateStyle
+    ? 'pt-12 pb-6 md:pt-16 md:pb-8'
+    : 'pt-12 pb-8 md:pt-14 md:pb-10';
+
   const dialog = (
     <div
-      className="pointer-events-auto relative bg-white rounded-full shadow-2xl w-[min(380px,92vw)] h-[min(380px,92vw)] transform transition-all flex flex-col items-center justify-start text-center pt-12 pb-8 md:pt-14 md:pb-10"
+      className={`pointer-events-auto relative rounded-full transform transition-all flex flex-col items-center justify-between text-center ${dialogSizeClass} ${dialogPaddingClass} ${dialogSurfaceClass}`}
       role="dialog"
       aria-modal="true"
       aria-label="Clock in"
@@ -413,7 +432,9 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
           {!required && (
             <button
               onClick={onClose}
-              className="absolute top-7 right-7 btn btn-sm btn-ghost btn-circle z-10"
+              className={`absolute top-7 right-7 btn btn-sm btn-ghost btn-circle z-10 border-0 ${
+                isGateStyle ? 'text-white hover:bg-white/10' : ''
+              }`}
               title="Close"
             >
               <XMarkIcon className="w-5 h-5" />
@@ -433,7 +454,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
               >
                 <CheckCircleIcon className="w-10 h-10 text-white" />
               </div>
-              <h2 className="text-xl font-bold text-gray-900 mb-1">
+              <h2 className={`text-xl font-bold mb-1 ${isGateStyle ? 'md:text-2xl text-white' : 'text-gray-900'}`}>
                 {successAction === 'approval'
                   ? 'Sent for approval!'
                   : successAction === 'in'
@@ -441,39 +462,56 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                     : 'Clocked out!'}
               </h2>
               {successAction === 'approval' ? (
-                <p className="text-sm text-gray-500">Waiting for admin approval.</p>
+                <p className={`text-sm ${isGateStyle ? 'md:text-base text-white/75' : 'text-gray-500'}`}>Waiting for admin approval.</p>
               ) : successAction === 'out' ? (
-                <p className="text-sm text-gray-500">Signing you out…</p>
+                <p className={`text-sm ${isGateStyle ? 'md:text-base text-white/75' : 'text-gray-500'}`}>Signing you out…</p>
               ) : selectedWorkplaceName ? (
-                <p className="text-sm text-gray-500">{selectedWorkplaceName}</p>
+                <p className={`text-sm ${isGateStyle ? 'md:text-base text-white/75' : 'text-gray-500'}`}>{selectedWorkplaceName}</p>
               ) : null}
-              <p className="text-xs text-gray-400 mt-1">Closing automatically…</p>
+              <p className={`text-xs mt-1 ${isGateStyle ? 'md:text-sm text-white/50' : 'text-gray-400'}`}>Closing automatically…</p>
             </div>
           ) : (
-            <div className="flex flex-col items-center w-full px-8 md:px-10">
+            <>
+            <div className={`flex flex-col items-center w-full flex-1 min-h-0 ${isGateStyle ? 'px-8 md:px-14' : 'px-8 md:px-10'}`}>
               {/* Status text */}
-              <div className="text-center w-full mb-8 md:mb-10">
+              <div
+                className={`text-center w-full ${
+                  isGateStyle && !isClockedIn
+                    ? 'mb-8 md:hidden'
+                    : isGateStyle
+                      ? 'mb-8 md:mb-6'
+                      : 'mb-8 md:mb-10'
+                }`}
+              >
                 {isClockedIn ? (
                   <>
-                    <p className="text-lg font-extrabold leading-tight text-green-700">
+                    <p className={`text-lg font-extrabold leading-tight ${isGateStyle ? 'md:text-2xl text-emerald-400' : 'text-green-700'}`}>
                       {sessionDuration
                         ? <span className="tabular-nums">{sessionDuration}</span>
                         : 'Clocked In'}
                     </p>
-                    <p
-                      className="text-base md:text-lg font-extrabold leading-snug mt-1"
-                      style={greetingGradientStyle}
-                    >
-                      {greetingFirstName
-                        ? `Hi ${greetingFirstName}, ready to clock out?`
-                        : 'Ready to clock out?'}
-                    </p>
+                    {isGateStyle ? (
+                      <p className={`${gateGreetingHeadingClass} mt-1`} style={gateGreetingHeadingStyle}>
+                        {greetingFirstName
+                          ? `Hi ${greetingFirstName}, ready to clock out?`
+                          : 'Ready to clock out?'}
+                      </p>
+                    ) : (
+                      <p className={`${appGreetingHeadingClass} mt-1`} style={greetingGradientStyle}>
+                        {greetingFirstName
+                          ? `Hi ${greetingFirstName}, ready to clock out?`
+                          : 'Ready to clock out?'}
+                      </p>
+                    )}
                   </>
+                ) : isGateStyle ? (
+                  <p className={gateGreetingHeadingClass} style={gateGreetingHeadingStyle}>
+                    {greetingFirstName
+                      ? `${getTimeBasedGreeting()}, ${greetingFirstName}`
+                      : getTimeBasedGreeting()}
+                  </p>
                 ) : (
-                  <p
-                    className="text-base md:text-lg font-extrabold leading-snug"
-                    style={greetingGradientStyle}
-                  >
+                  <p className={appGreetingHeadingClass} style={greetingGradientStyle}>
                     {greetingFirstName
                       ? `${getTimeBasedGreeting()}, ${greetingFirstName}`
                       : getTimeBasedGreeting()}
@@ -481,7 +519,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                 )}
               </div>
 
-              <div className="flex flex-col items-center gap-5 w-full">
+              <div className={`flex flex-col items-center w-full ${isGateStyle ? 'gap-5 md:gap-7' : 'gap-5'}`}>
               {/* Main action button */}
               {!isClockedIn ? (
                 homeNeedsApproval ? (
@@ -489,14 +527,14 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                     type="button"
                     onClick={handleSendHomeForApproval}
                     disabled={isLoading || pendingHomeApproval}
-                    className="btn rounded-full h-20 min-h-20 px-10 gap-3 border-0 shadow-md bg-gradient-to-r from-amber-500 via-orange-500 to-amber-500 text-white hover:from-amber-600 hover:via-orange-600 hover:to-amber-600 hover:shadow-lg transition-all duration-200 disabled:opacity-60 md:h-14 md:min-h-14 md:px-6 md:gap-2"
+                    className="btn rounded-full h-20 min-h-20 px-10 gap-3 border-0 shadow-md bg-gradient-to-r from-amber-500 via-orange-500 to-amber-500 text-white hover:from-amber-600 hover:via-orange-600 hover:to-amber-600 hover:shadow-lg transition-all duration-200 disabled:opacity-60 md:h-[4.5rem] md:min-h-[4.5rem] md:px-12 md:gap-3"
                   >
                     {isLoading ? (
-                      <span className="loading loading-spinner loading-md md:loading-sm" />
+                      <span className="loading loading-spinner loading-md" />
                     ) : (
                       <>
-                        <ClockIcon className="w-6 h-6 md:w-5 md:h-5" />
-                        <span className="font-semibold text-lg md:text-sm">
+                        <ClockIcon className="w-6 h-6 md:w-7 md:h-7" />
+                        <span className="font-semibold text-lg md:text-xl">
                           {pendingHomeApproval ? 'Approval pending' : 'Send for approval'}
                         </span>
                       </>
@@ -507,13 +545,13 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                     type="button"
                     onClick={handleClockIn}
                     disabled={isLoading}
-                    className="btn rounded-full h-20 min-h-20 px-10 gap-3 border-0 shadow-lg bg-gradient-to-r from-green-600 via-emerald-600 to-teal-500 text-white hover:from-green-700 hover:via-emerald-700 hover:to-teal-600 hover:shadow-xl transition-all duration-200 disabled:opacity-60 text-lg md:h-16 md:min-h-16 md:px-8 md:gap-2 md:text-base"
+                    className="btn rounded-full h-20 min-h-20 px-10 gap-3 border-0 shadow-lg bg-gradient-to-r from-green-600 via-emerald-600 to-teal-500 text-white hover:from-green-700 hover:via-emerald-700 hover:to-teal-600 hover:shadow-xl transition-all duration-200 disabled:opacity-60 text-lg md:h-[5rem] md:min-h-[5rem] md:px-12 md:gap-3 md:text-xl"
                   >
                     {isLoading ? (
-                      <span className="loading loading-spinner loading-md md:loading-sm" />
+                      <span className="loading loading-spinner loading-md md:loading-lg" />
                     ) : (
                       <>
-                        <ClockIcon className="w-8 h-8 md:w-6 md:h-6" />
+                        <ClockIcon className="w-8 h-8 md:w-9 md:h-9" />
                         <span className="font-semibold">Clock In</span>
                       </>
                     )}
@@ -524,13 +562,13 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                   type="button"
                   onClick={handleClockOut}
                   disabled={isLoading}
-                  className="btn rounded-full h-20 min-h-20 px-10 gap-3 border-0 shadow-lg bg-gradient-to-r from-violet-600 via-purple-600 to-indigo-500 text-white hover:from-violet-700 hover:via-purple-700 hover:to-indigo-600 hover:shadow-xl transition-all duration-200 disabled:opacity-60 text-lg md:h-16 md:min-h-16 md:px-8 md:gap-2 md:text-base"
+                  className="btn rounded-full h-20 min-h-20 px-10 gap-3 border-0 shadow-lg bg-gradient-to-r from-violet-600 via-purple-600 to-indigo-500 text-white hover:from-violet-700 hover:via-purple-700 hover:to-indigo-600 hover:shadow-xl transition-all duration-200 disabled:opacity-60 text-lg md:h-[5rem] md:min-h-[5rem] md:px-12 md:gap-3 md:text-xl"
                 >
                   {isLoading ? (
-                    <span className="loading loading-spinner loading-md md:loading-sm" />
+                    <span className="loading loading-spinner loading-md md:loading-lg" />
                   ) : (
                     <>
-                      <ClockIcon className="w-6 h-6 md:w-5 md:h-5" />
+                      <ClockIcon className="w-6 h-6 md:w-8 md:h-8" />
                       <span className="font-semibold">Clock Out</span>
                     </>
                   )}
@@ -540,7 +578,13 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
               {/* Workplace */}
               <div className="w-full">
                 {isClockedIn && currentRecord ? (
-                  <div className="h-10 flex items-center justify-center rounded-full border border-gray-200 bg-gray-50 px-4 text-gray-700 font-medium text-sm">
+                  <div
+                    className={`h-10 md:h-12 flex items-center justify-center rounded-full px-4 font-medium text-sm md:text-base ${
+                      isGateStyle
+                        ? 'border border-white/12 bg-white/8 backdrop-blur-sm text-white/90'
+                        : 'border border-gray-200 bg-gray-50 text-gray-700'
+                    }`}
+                  >
                     {resolveWorkplaceName(currentRecord, 'in')}
                   </div>
                 ) : (
@@ -551,19 +595,27 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                         type="button"
                         onClick={() => setWorkplaceDropdownOpen((open) => !open)}
                         disabled={workplaceOptions.length === 0}
-                        className={`w-full h-10 px-4 flex items-center justify-between gap-2 rounded-full border bg-white text-left transition-colors text-sm ${
-                          workplaceDropdownOpen
-                            ? 'border-purple-400 ring-2 ring-purple-100'
-                            : 'border-gray-200 hover:border-gray-300'
-                        } disabled:opacity-60 disabled:cursor-not-allowed`}
+                        className={`w-full h-10 md:h-12 px-4 md:px-5 flex items-center justify-between gap-2 rounded-full border text-left transition-colors text-sm md:text-base disabled:opacity-60 disabled:cursor-not-allowed ${
+                          isGateStyle
+                            ? `bg-white/8 backdrop-blur-sm ${
+                                workplaceDropdownOpen
+                                  ? 'border-[#d4af37]/50 ring-2 ring-[#d4af37]/15'
+                                  : 'border-white/12 hover:border-white/25'
+                              }`
+                            : `bg-white ${
+                                workplaceDropdownOpen
+                                  ? 'border-purple-400 ring-2 ring-purple-100'
+                                  : 'border-gray-200 hover:border-gray-300'
+                              }`
+                        }`}
                       >
-                        <span className="text-gray-900 font-medium truncate">
+                        <span className={`font-medium truncate ${isGateStyle ? 'text-white' : 'text-gray-800'}`}>
                           {workplaceDisplayLabel}
                         </span>
                         <ChevronDownIcon
-                          className={`w-4 h-4 text-gray-400 shrink-0 transition-transform ${
-                            workplaceDropdownOpen ? 'rotate-180' : ''
-                          }`}
+                          className={`w-4 h-4 md:w-5 md:h-5 shrink-0 transition-transform ${
+                            isGateStyle ? 'text-white/50' : 'text-gray-400'
+                          } ${workplaceDropdownOpen ? 'rotate-180' : ''}`}
                         />
                       </button>
                       {workplaceDropdownOpen && workplaceOptions.length > 0 && (
@@ -592,7 +644,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                       )}
                     </div>
                     {homeNeedsApproval && (
-                      <p className="mt-1.5 text-xs text-amber-700">
+                      <p className={`mt-1.5 text-xs md:text-sm ${isGateStyle ? 'text-amber-300' : 'text-amber-700'}`}>
                         {pendingHomeApproval
                           ? 'Home access is pending approval.'
                           : 'Home needs approval.'}
@@ -600,7 +652,9 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                     )}
                     {/* Mobile: native select */}
                     <select
-                      className="select select-bordered w-full md:hidden rounded-full h-10 min-h-10 text-base"
+                      className={`select select-bordered w-full md:hidden rounded-full h-10 min-h-10 text-base ${
+                        isGateStyle ? 'bg-white/90 text-gray-900 border-white/30' : ''
+                      }`}
                       value={selectedWorkplaceId ?? ''}
                       onChange={(e) => setSelectedWorkplaceId(Number(e.target.value))}
                       disabled={workplaceOptions.length === 0}
@@ -616,18 +670,28 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
                   </>
                 )}
               </div>
-              </div>
+            </div>
+            </div>
 
-              {required && onSignOut && (
+            {required && onSignOut && (
+              <div className="w-full shrink-0 px-8 md:px-14 pb-2 text-center flex flex-col items-center gap-2">
+                {isGateStyle && (
+                  <img
+                    src="/DPLOGO1.png"
+                    alt="Decker Pex & Co."
+                    className="hidden md:block h-9 w-auto max-w-[7.5rem] object-contain drop-shadow-[0_2px_6px_rgba(0,0,0,0.4)]"
+                  />
+                )}
                 <button
                   type="button"
-                  className="mt-2 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                  className="text-xs md:text-sm text-white/50 hover:text-white/80 transition-colors"
                   onClick={onSignOut}
                 >
                   Sign out instead
                 </button>
-              )}
-            </div>
+              </div>
+            )}
+            </>
           )}
     </div>
   );
