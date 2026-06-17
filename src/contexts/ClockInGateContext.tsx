@@ -1,6 +1,7 @@
 import React, {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -13,6 +14,11 @@ import {
   resolveClockInGateStatus,
   type ClockInGateStatus,
 } from '../lib/employeeClockInGate';
+import {
+  clearClockInGateCache,
+  readClockInGateCache,
+  writeClockInGateCache,
+} from '../lib/clockInGateCache';
 import { setClockInGateBlocksDataAccess } from '../lib/clockInGateFetchPolicy';
 import { useAuthContext } from './AuthContext';
 import {
@@ -20,11 +26,40 @@ import {
   type ClockInGateContextValue,
 } from './clockInGateContextValue';
 
+function readCachedGateState(userId: string | undefined) {
+  if (!userId) {
+    return { status: 'loading' as ClockInGateStatus, employeeId: null };
+  }
+  const cached = readClockInGateCache(userId);
+  if (!cached) {
+    return { status: 'loading' as ClockInGateStatus, employeeId: null };
+  }
+  return { status: cached.status, employeeId: cached.employeeId };
+}
+
 export function ClockInGateProvider({ children }: { children: React.ReactNode }) {
   const { user, supabaseSessionReady } = useAuthContext();
-  const [status, setStatus] = useState<ClockInGateStatus>('loading');
-  const [employeeId, setEmployeeId] = useState<number | null>(null);
+  const userId = user?.id;
+  const [status, setStatus] = useState<ClockInGateStatus>(
+    () => readCachedGateState(userId).status,
+  );
+  const [employeeId, setEmployeeId] = useState<number | null>(
+    () => readCachedGateState(userId).employeeId,
+  );
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
+
+  useLayoutEffect(() => {
+    if (!userId) {
+      setClockInGateBlocksDataAccess(false);
+      return;
+    }
+    const cached = readClockInGateCache(userId);
+    if (cached) {
+      setClockInGateBlocksDataAccess(
+        cached.status === 'blocked' || cached.status === 'no_employee',
+      );
+    }
+  }, [userId]);
 
   const refreshClockInGate = useCallback(async () => {
     if (!user?.id || !supabaseSessionReady) {
@@ -40,7 +75,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
     }
 
     const run = (async () => {
-      setStatus('loading');
+      setStatus((prev) => (prev === 'loading' ? 'loading' : prev));
       try {
         const profile = await fetchClockInGateProfile(user.id);
         setEmployeeId(profile.employeeId);
@@ -48,12 +83,14 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
         if (profile.isExternalUser) {
           setStatus('exempt');
           setClockInGateBlocksDataAccess(false);
+          writeClockInGateCache(user.id, 'exempt', profile.employeeId);
           return;
         }
 
         if (profile.employeeId == null) {
           setStatus('no_employee');
           setClockInGateBlocksDataAccess(true);
+          writeClockInGateCache(user.id, 'no_employee', null);
           return;
         }
 
@@ -62,10 +99,12 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
         const nextStatus = resolveClockInGateStatus(profile, isClockedIn);
         setStatus(nextStatus);
         setClockInGateBlocksDataAccess(nextStatus === 'blocked');
+        writeClockInGateCache(user.id, nextStatus, profile.employeeId);
       } catch (error) {
         console.error('Clock-in gate refresh failed:', error);
         setStatus('blocked');
         setClockInGateBlocksDataAccess(true);
+        writeClockInGateCache(user.id, 'blocked', null);
       }
     })();
 
@@ -108,6 +147,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
   useEffect(() => {
     if (!user?.id) {
       setClockInGateBlocksDataAccess(false);
+      clearClockInGateCache();
     }
   }, [user?.id]);
 

@@ -24,6 +24,7 @@ import {
   insertHomeWfhApprovalRequest,
 } from '../lib/employeeClockInApproval';
 import { getGreetingFirstName, getTimeBasedGreeting } from '../lib/clockInGreeting';
+import { clearClockInGateCache } from '../lib/clockInGateCache';
 
 interface ClockInModalProps {
   isOpen: boolean;
@@ -165,6 +166,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
           onClockInSuccess?.();
         }
         if (action === 'out') {
+          clearClockInGateCache();
           const { error } = await supabase.auth.signOut();
           if (error) {
             console.error('Error signing out after clock-out:', error);

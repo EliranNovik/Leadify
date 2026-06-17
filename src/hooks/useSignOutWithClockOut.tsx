@@ -4,6 +4,7 @@ import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 import { fetchClockInGateProfile, fetchIsEmployeeClockedIn } from '../lib/employeeClockInGate';
+import { clearClockInGateCache } from '../lib/clockInGateCache';
 import {
   clockOutEmployeeRecord,
   fetchActiveClockInRecord,
@@ -27,6 +28,7 @@ export function useSignOutWithClockOut(options: UseSignOutWithClockOutOptions = 
   const [isProcessing, setIsProcessing] = useState(false);
 
   const performSignOut = useCallback(async () => {
+    clearClockInGateCache();
     const { error } = await supabase.auth.signOut();
     if (error) {
       console.error('Error signing out:', error);

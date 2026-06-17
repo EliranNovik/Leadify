@@ -14,6 +14,28 @@ const LazyCalendarPage = lazy(() => import('./CalendarPage'));
 
 const CLOCK_IN_GATE_THEME_COLOR = '#1a1a1a';
 
+function GateCheckPendingLoader() {
+  return (
+    <div className="relative min-h-[20vh]" aria-busy="true" aria-label="Checking clock-in status">
+      <div className="fixed top-0 left-0 right-0 z-[100] h-0.5 bg-primary/25 overflow-hidden pointer-events-none">
+        <div
+          className="h-full w-1/4 bg-primary/60 rounded-r-full"
+          style={{ animation: 'clockin-gate-shimmer 1s ease-in-out infinite' }}
+        />
+      </div>
+      <style>{`
+        @keyframes clockin-gate-shimmer {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(500%); }
+        }
+      `}</style>
+      <div className="flex justify-center pt-14 opacity-50">
+        <span className="loading loading-spinner loading-sm text-primary" />
+      </div>
+    </div>
+  );
+}
+
 type ClockInGateProps = {
   children: React.ReactNode;
 };
@@ -40,7 +62,7 @@ const ClockInGate: React.FC<ClockInGateProps> = ({ children }) => {
 
   useEffect(() => {
     const html = document.documentElement;
-    const gateScreenActive = !isGateOpen;
+    const gateScreenActive = !isGateOpen && status !== 'loading';
 
     if (!gateScreenActive) {
       html.classList.remove('login-page-active');
@@ -60,10 +82,14 @@ const ClockInGate: React.FC<ClockInGateProps> = ({ children }) => {
       metaTheme?.setAttribute('content', prevTheme);
       document.body.style.overflow = prevOverflow;
     };
-  }, [isGateOpen]);
+  }, [isGateOpen, status]);
 
   if (isGateOpen) {
     return <>{children}</>;
+  }
+
+  if (status === 'loading') {
+    return <GateCheckPendingLoader />;
   }
 
   const handleSignOut = () => {
@@ -79,15 +105,6 @@ const ClockInGate: React.FC<ClockInGateProps> = ({ children }) => {
   const showGateHeader = !isGateOpen;
 
   const gateBody = (() => {
-    if (status === 'loading') {
-      return (
-        <div className="flex flex-col items-center text-center gap-4 px-6">
-          <span className="loading loading-spinner loading-lg text-[#d4af37]" aria-hidden />
-          <p className="text-sm text-white/80">Checking your clock-in status…</p>
-        </div>
-      );
-    }
-
     if (status === 'no_employee') {
       return (
         <div className="w-full max-w-sm p-6 md:p-9 bg-[rgba(20,20,20,0.30)] backdrop-blur-[16px] border border-[rgba(255,255,255,0.08)] shadow-[0_20px_60px_rgba(0,0,0,0.45)] rounded-2xl text-center text-white">

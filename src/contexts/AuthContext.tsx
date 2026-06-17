@@ -452,8 +452,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             return prev; // Already cleared
           }
           const uid = prev.user.id;
-          if (uid) clearAuthDisplayCache(String(uid));
-          clearCachedUserRole();
+          if (uid) {
+            clearAuthDisplayCache(String(uid));
+            clearCachedUserRole(String(uid));
+          }
           lastUserIdRef.current = null;
           return {
             ...prev,
@@ -553,22 +555,57 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Proactive session watchdog:
   // - checks session periodically (no user action needed)
   // - refreshes shortly before expiry
-  // - signs out automatically on confirmed unrecoverable auth state
+  // - signs out only on confirmed unrecoverable auth state (not transient tab resume)
   useEffect(() => {
     if (!authState.user) return;
 
     let isMounted = true;
     let checkInFlight = false;
     let consecutiveAuthFailures = 0;
-    const MAX_CONSECUTIVE_AUTH_FAILURES = 2;
-    const CHECK_INTERVAL_MS = 60000; // 1 minute
+    const MAX_CONSECUTIVE_AUTH_FAILURES = 4;
+    const CHECK_INTERVAL_MS = 120000; // 2 minutes
     const REFRESH_BUFFER_SEC = 90; // refresh when <90s to expiry
+    const VISIBILITY_DEBOUNCE_MS = 800;
+    let visibilityDebounce: ReturnType<typeof setTimeout> | null = null;
 
     const maybeExpireSession = async () => {
       if (!isMounted) return;
       consecutiveAuthFailures += 1;
       if (consecutiveAuthFailures < MAX_CONSECUTIVE_AUTH_FAILURES) return;
+      if (hasAnySupabaseAuthKey()) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user) {
+          consecutiveAuthFailures = 0;
+          return;
+        }
+      }
       await handleSessionExpiration();
+    };
+
+    const tryRecoverSession = async (): Promise<boolean> => {
+      const { data: { session }, error } = await supabase.auth.getSession();
+      if (!error && session?.user) {
+        consecutiveAuthFailures = 0;
+        return true;
+      }
+      if (error && isNetworkError(error)) return true;
+
+      if (!hasAnySupabaseAuthKey()) return false;
+
+      const { data: { session: refreshed }, error: refreshError } = await supabase.auth.refreshSession();
+      if (!refreshError && refreshed?.user) {
+        updateAuthState(refreshed, true);
+        setAuthState((prev) => ({
+          ...prev,
+          sessionRefreshNonce: prev.sessionRefreshNonce + 1,
+        }));
+        consecutiveAuthFailures = 0;
+        return true;
+      }
+      if (refreshError && (isNetworkError(refreshError) || !isExpectedNoSessionError(refreshError))) {
+        return true;
+      }
+      return false;
     };
 
     const runWatchdogCheck = async () => {
@@ -578,12 +615,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const { data: { session }, error } = await supabase.auth.getSession();
 
         if (error) {
-          if (isNetworkError(error)) {
-            // Transient connectivity issues should not force sign-out.
-            return;
-          }
+          if (isNetworkError(error)) return;
           if (isAuthError(error)) {
-            await maybeExpireSession();
+            const recovered = await tryRecoverSession();
+            if (!recovered) await maybeExpireSession();
           }
           return;
         }
@@ -606,35 +641,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               consecutiveAuthFailures = 0;
               return;
             }
-            if (refreshError && !isNetworkError(refreshError)) {
+            if (refreshError && !isNetworkError(refreshError) && isExpectedNoSessionError(refreshError)) {
               await maybeExpireSession();
             }
           }
           return;
         }
 
-        // Missing session while app still thinks user is signed in.
-        const hasTokens = hasAnySupabaseAuthKey();
-        if (hasTokens) {
-          const { data: { session: refreshed }, error: refreshError } = await supabase.auth.refreshSession();
-          if (!refreshError && refreshed?.user) {
-            updateAuthState(refreshed, true);
-            setAuthState((prev) => ({
-              ...prev,
-              sessionRefreshNonce: prev.sessionRefreshNonce + 1,
-            }));
-            consecutiveAuthFailures = 0;
-            return;
-          }
-          if (refreshError && isNetworkError(refreshError)) {
-            return;
-          }
-        }
-
-        await maybeExpireSession();
+        const recovered = await tryRecoverSession();
+        if (!recovered) await maybeExpireSession();
       } catch (e) {
         if (!isNetworkError(e) && isAuthError(e)) {
-          await maybeExpireSession();
+          const recovered = await tryRecoverSession();
+          if (!recovered) await maybeExpireSession();
         }
       } finally {
         checkInFlight = false;
@@ -646,17 +665,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }, CHECK_INTERVAL_MS);
 
     const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
+      if (document.visibilityState !== 'visible') return;
+      if (visibilityDebounce) clearTimeout(visibilityDebounce);
+      visibilityDebounce = setTimeout(() => {
+        visibilityDebounce = null;
         void runWatchdogCheck();
-      }
+      }, VISIBILITY_DEBOUNCE_MS);
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    void runWatchdogCheck();
 
     return () => {
       isMounted = false;
       clearInterval(interval);
+      if (visibilityDebounce) clearTimeout(visibilityDebounce);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [authState.user, updateAuthState]);
@@ -898,8 +920,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                       handleAuthStateChange('SIGNED_IN', session);
                     }
                   } else if (!session) {
-                    // Only clear if we actually had a user
-                    if (lastUserIdRef.current) {
+                    // Only clear if we actually had a user and auth tokens are gone.
+                    if (lastUserIdRef.current && !hasAnySupabaseAuthKey()) {
                       handleAuthStateChange('SIGNED_OUT', null);
                     }
                   }

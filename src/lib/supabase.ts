@@ -6,6 +6,7 @@ import {
   buildClockInGateBlockedResponse,
   isClockInGateRestRequestAllowed,
 } from './clockInGateFetchPolicy';
+import { hasAnySupabaseAuthKey } from './authBootstrap';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -111,6 +112,39 @@ let supabaseForFetch: SupabaseClient | null = null;
 /** Assigned after `handleSessionExpiration` is defined */
 let handleSessionExpiredForFetch: (() => Promise<void>) | null = null;
 
+/** Coalesce parallel refresh attempts (e.g. many 401s on tab resume). */
+let refreshSessionInFlight: Promise<boolean> | null = null;
+
+async function coalescedRefreshSession(): Promise<boolean> {
+  if (refreshSessionInFlight) return refreshSessionInFlight;
+
+  refreshSessionInFlight = (async () => {
+    try {
+      const { data: { session }, error } = await supabase.auth.refreshSession();
+      if (!error && session?.access_token) return true;
+      if (error && (isNetworkError(error) || !isExpectedNoSessionError(error))) {
+        // Transient or unknown — don't treat as hard logout while tokens may still exist.
+        return hasAnySupabaseAuthKey();
+      }
+      return false;
+    } catch (e) {
+      if (isNetworkError(e)) return hasAnySupabaseAuthKey();
+      return false;
+    } finally {
+      refreshSessionInFlight = null;
+    }
+  })();
+
+  return refreshSessionInFlight;
+}
+
+async function shouldForceSignOutAfterRefreshFailure(): Promise<boolean> {
+  if (!hasAnySupabaseAuthKey()) return true;
+  // Tokens still in storage — give Supabase another beat before signing out.
+  const { data: { session } } = await supabase.auth.getSession();
+  return !session?.user;
+}
+
 /**
  * Global fetch for all Supabase HTTP traffic:
  * - On 401 from REST/Storage/Functions (user JWT), refresh once and retry with new access token.
@@ -202,19 +236,27 @@ const supabaseGlobalFetch: typeof fetch = async (input, init) => {
     }
 
     try {
-      const { data: { session }, error } = await client.auth.refreshSession();
-      if (error || !session?.access_token) {
-        await handleSessionExpiredForFetch?.();
-        return response;
+      const refreshed = await coalescedRefreshSession();
+      if (refreshed) {
+        const { data: { session } } = await client.auth.getSession();
+        const token = session?.access_token;
+        if (token) {
+          const retryHeaders = new Headers(init?.headers as HeadersInit | undefined);
+          retryHeaders.set('Authorization', `Bearer ${token}`);
+          const retryInput = clonedForRetry ?? input;
+          return baseFetch(retryInput as RequestInfo, { ...init, headers: retryHeaders });
+        }
       }
 
-      const retryHeaders = new Headers(init?.headers as HeadersInit | undefined);
-      retryHeaders.set('Authorization', `Bearer ${session.access_token}`);
-      const retryInput = clonedForRetry ?? input;
-      return baseFetch(retryInput as RequestInfo, { ...init, headers: retryHeaders });
+      if (await shouldForceSignOutAfterRefreshFailure()) {
+        await handleSessionExpiredForFetch?.();
+      }
+      return response;
     } catch (e) {
       console.warn('Supabase global fetch: recovery after 401 failed', e);
-      await handleSessionExpiredForFetch?.();
+      if (!isNetworkError(e) && (await shouldForceSignOutAfterRefreshFailure())) {
+        await handleSessionExpiredForFetch?.();
+      }
       return response;
     }
   };
