@@ -13,6 +13,7 @@ import {
 import toast from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
+import MobileBottomSheet from './MobileBottomSheet';
 
 type LeadSubEffortRow = any;
 
@@ -658,10 +659,20 @@ export function SubEffortsLogModal({
     }
   };
 
+  if (!open) return null;
+
   return (
-    <div className="fixed inset-0 z-50">
-      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
-      <div className="absolute inset-0 bg-base-100 p-0 overflow-hidden rounded-none">
+    <>
+    <MobileBottomSheet
+      open={open}
+      onClose={onClose}
+      hideDefaultHeader
+      mobileFullHeight
+      zIndex={50}
+      contentClassName="!p-0 flex flex-col min-h-0 !overflow-hidden"
+      sheetClassName="md:max-w-none md:rounded-none md:max-h-full md:h-full"
+    >
+        <div className="flex flex-col min-h-0 h-full flex-1 overflow-hidden bg-base-100">
         <div className="flex items-center justify-between px-4 py-4 border-b border-base-200">
           <div className="min-w-0 flex items-center gap-3">
             {mobileStep === 'details' ? (
@@ -1045,7 +1056,8 @@ export function SubEffortsLogModal({
         </div>
 
         {/* Removed: floating expand/summary side control to declutter mobile modal */}
-      </div>
+        </div>
+    </MobileBottomSheet>
 
       {isNotesModalOpen ? (
         <div className="modal modal-open">
@@ -1205,7 +1217,7 @@ export function SubEffortsLogModal({
           <div className="modal-backdrop" onClick={() => (isAttaching ? null : setIsAttachModalOpen(false))} />
         </div>
       ) : null}
-    </div>
+    </>
   );
 }
 

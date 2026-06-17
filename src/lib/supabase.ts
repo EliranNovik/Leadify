@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { isLegacyLeadRef } from './paymentLinkLeadRef';
 import { insertPaymentLinkRecord } from './paymentLinkQueries';
+import { getMobileAwareCacheTtlMs } from './mobileCache';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -18,7 +19,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
  * for REST/Storage/Functions; Auth uses this fetch directly (see below).
  */
 const baseFetch: typeof fetch = (...args) => fetch(...args);
-const REST_GET_CACHE_TTL_MS = 15000;
+const REST_GET_CACHE_TTL_MS = getMobileAwareCacheTtlMs(15000, 6000);
 const REST_GET_CACHE_MAX_BODY_BYTES = 1024 * 1024; // 1 MB safety cap
 
 type CachedHttpResponse = {
@@ -486,11 +487,9 @@ export async function authRetryQueryOnce<T>(
   }
 
   try {
-    // Prefer storage read first; if session is missing/stale, refresh.
+    // Only refresh when there is no session; avoid extra network on every auth retry.
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user) {
-      await supabase.auth.refreshSession().catch(() => {});
-    } else {
       await supabase.auth.refreshSession().catch(() => {});
     }
   } catch {
@@ -529,7 +528,7 @@ export const sessionManager = {
         // If it's a network error, retry before giving up
         if (isNetworkError(error) && retryCount < MAX_RETRIES) {
           console.warn(`Network error getting session, retrying (${retryCount + 1}/${MAX_RETRIES}):`, error);
-          await new Promise(resolve => setTimeout(resolve, 1000 * (retryCount + 1))); // Exponential backoff
+          await new Promise(resolve => setTimeout(resolve, 500 * (retryCount + 1))); // Exponential backoff
           return this.getSession(retryCount + 1);
         }
         

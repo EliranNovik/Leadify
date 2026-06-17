@@ -8,10 +8,17 @@ import {
   writeAuthDisplayCache,
   clearAuthDisplayCache,
   deriveInitialsFromDisplayName,
+  isCachedSupabaseSessionValid,
 } from '../lib/authBootstrap';
+import {
+  deriveRoleFromUserRow,
+  readCachedUserRole,
+  writeCachedUserRole,
+  clearCachedUserRole,
+} from '../lib/userRole';
 
 const USER_DETAIL_SELECT =
-  'first_name, last_name, full_name, email, is_active, tenants_employee!employee_id(photo_url, photo)';
+  'first_name, last_name, full_name, email, is_active, role, is_staff, is_superuser, tenants_employee!employee_id(photo_url, photo)';
 
 const DEBUG_AUTH = String(import.meta.env.VITE_DEBUG_AUTH || '').toLowerCase() === 'true';
 const debugLog = (...args: any[]) => {
@@ -62,6 +69,8 @@ function buildSyncInitialAuthState(): AuthState {
     accountInactive: false,
     inactiveUserName: null,
     inactiveUserPhoto: null,
+    isAdmin: false,
+    isSuperUser: false,
   };
   if (typeof window === 'undefined') return empty;
 
@@ -70,10 +79,12 @@ function buildSyncInitialAuthState(): AuthState {
     const u = session.user;
     const email = ((u.email as string) || '').trim();
     const display = u.id ? readAuthDisplayCache(String(u.id)) : null;
+    const cachedRole = u.id ? readCachedUserRole(String(u.id)) : null;
     const userFullName = display?.userFullName || email || null;
     const userInitials =
       display?.userInitials || (userFullName ? deriveInitialsFromDisplayName(userFullName) : null);
     const profilePhotoUrl = display?.profilePhotoUrl ?? null;
+    const sessionReady = isCachedSupabaseSessionValid(session);
     return {
       user: u,
       userFullName,
@@ -82,12 +93,14 @@ function buildSyncInitialAuthState(): AuthState {
       isLoading: false,
       isInitialized: true,
       sessionCheckComplete: true,
-      // Cache hydrate allows instant UI, but does not guarantee Supabase has attached JWT yet.
-      supabaseSessionReady: false,
+      // Valid cached JWT → render protected routes immediately; background getSession confirms.
+      supabaseSessionReady: sessionReady,
       sessionRefreshNonce: 0,
       accountInactive: false,
       inactiveUserName: null,
       inactiveUserPhoto: null,
+      isAdmin: cachedRole?.isAdmin ?? false,
+      isSuperUser: cachedRole?.isSuperUser ?? false,
     };
   }
 
@@ -115,6 +128,8 @@ interface AuthState {
   supabaseSessionReady: boolean;
   /** Bumped after token refresh / visibility refresh so consumers (e.g. Header) refetch profile once. */
   sessionRefreshNonce: number;
+  isAdmin: boolean;
+  isSuperUser: boolean;
   /** True when the signed-in user's users-table row has is_active = false; they are blocked + shown a modal. */
   accountInactive: boolean;
   /** Display name of the blocked user (for the friendly inactive-account modal greeting). */
@@ -216,6 +231,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (!error && data) {
         let fullName: string;
         let initials: string;
+        const roleFlags = deriveRoleFromUserRow(data as any);
+        writeCachedUserRole(user.id, roleFlags);
 
         if (data.first_name && data.last_name && data.first_name.trim() && data.last_name.trim()) {
           fullName = `${data.first_name.trim()} ${data.last_name.trim()}`;
@@ -235,6 +252,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           userFullName: fullName,
           userInitials: initials,
           profilePhotoUrl: photoUrl,
+          isAdmin: roleFlags.isAdmin,
+          isSuperUser: roleFlags.isSuperUser,
         }));
       } else {
         // Fallback to auth user metadata
@@ -434,6 +453,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
           const uid = prev.user.id;
           if (uid) clearAuthDisplayCache(String(uid));
+          clearCachedUserRole();
           lastUserIdRef.current = null;
           return {
             ...prev,
@@ -441,6 +461,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             userFullName: null,
             userInitials: null,
             profilePhotoUrl: null,
+            isAdmin: false,
+            isSuperUser: false,
             isLoading: false,
             isInitialized: true,
             supabaseSessionReady: false,
@@ -475,6 +497,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (document.visibilityState !== 'visible' || visibilityRefreshInFlight.current) return;
       visibilityRefreshInFlight.current = true;
       try {
+        const { data: { session: current } } = await supabase.auth.getSession();
+        if (!current?.user) {
+          const { data: { session }, error } = await supabase.auth.refreshSession();
+          if (!error && session?.user) {
+            updateAuthState(session, true);
+            await fetchUserDetails(session.user).catch(() => {});
+            setAuthState((prev) => ({
+              ...prev,
+              sessionRefreshNonce: prev.sessionRefreshNonce + 1,
+            }));
+          }
+          return;
+        }
+
+        const expiresAtSec = typeof current.expires_at === 'number' ? current.expires_at : null;
+        const nowSec = Math.floor(Date.now() / 1000);
+        // Skip network refresh when token is still valid — avoids slow mobile resume.
+        if (expiresAtSec && expiresAtSec - nowSec > 120) {
+          return;
+        }
+
         const { data: { session }, error } = await supabase.auth.refreshSession();
         if (!error && session?.user) {
           updateAuthState(session, true);
@@ -769,8 +812,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     sessionRefreshNonce: prev.sessionRefreshNonce,
                   };
                 });
-                // 4) Retry getSession() after delays (storage may hydrate late on mobile/slow devices).
-                const retryDelays = [300, 900, 2000];
+                // 4) One delayed getSession() retry (storage may hydrate late on mobile).
+                const retryDelays = [250, 750];
                 retryDelays.forEach((delayMs) => {
                   setTimeout(async () => {
                     if (!isMounted) return;
@@ -809,21 +852,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         // Fallback: if INITIAL_SESSION never fires or is delayed, force session check complete
         // after a short delay so unauthenticated users are redirected to login.
+        const fallbackMs = syncHydratedRef.current || restoredFromCacheRef.current ? 400 : 800;
         sessionCheckFallbackTimeout = setTimeout(() => {
           if (!isMounted) return;
           setAuthState(prev => {
-            if (prev.sessionCheckComplete) return prev; // Already determined
+            if (prev.sessionCheckComplete) return prev;
+            const cached = readCachedSupabaseSessionFromStorage();
+            const canTrustCache = !!(prev.user && isCachedSupabaseSessionValid(cached));
             return {
               ...prev,
               sessionCheckComplete: true,
               isLoading: false,
               isInitialized: true,
+              supabaseSessionReady: prev.supabaseSessionReady || canTrustCache,
               ...(prev.user
                 ? {}
                 : { user: null, userFullName: null, userInitials: null, profilePhotoUrl: null }),
             };
           });
-        }, 1500);
+        }, fallbackMs);
 
         // Listen for localStorage changes from other tabs
         // Add debouncing to prevent excessive checks

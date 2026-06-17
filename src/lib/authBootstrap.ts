@@ -8,6 +8,18 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 /** Persisted per auth user id (localStorage — shared across tabs + survives refresh). */
 export const AUTH_DISPLAY_STORAGE_PREFIX = 'crm_auth_display_v1_';
 
+/** Seconds before expiry we still treat a cached session as ready (Supabase auto-refreshes). */
+const SESSION_EXPIRY_BUFFER_SEC = 60;
+
+export function isCachedSupabaseSessionValid(
+  session: { access_token?: string; expires_at?: number } | null | undefined,
+): boolean {
+  if (!session?.access_token) return false;
+  if (typeof session.expires_at !== 'number') return true;
+  const nowSec = Math.floor(Date.now() / 1000);
+  return session.expires_at > nowSec + SESSION_EXPIRY_BUFFER_SEC;
+}
+
 export function parseSupabaseAuthStorageValue(raw: string): { user: any; access_token?: string; expires_at?: number } | null {
   try {
     const parsed = JSON.parse(raw);

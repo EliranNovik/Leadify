@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { XMarkIcon, MagnifyingGlassIcon, LinkIcon } from '@heroicons/react/24/outline';
+import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import { searchLeads } from '../lib/legacyLeadsApi';
 import type { CombinedLead } from '../lib/legacyLeadsApi';
 import { linkLeadToChain } from '../lib/masterLeadApi';
 import { getStageName, getStageColour } from '../lib/stageUtils';
 import toast from 'react-hot-toast';
+import MobileBottomSheet from './MobileBottomSheet';
 
 export interface CurrentLeadForCombine {
   id: string;
@@ -161,31 +162,19 @@ const CombineLeadsModal: React.FC<CombineLeadsModalProps> = ({
   const masterDisplay = currentLead?.lead_number ?? currentLead?.id ?? '—';
 
   return (
-    <div
-      className="fixed inset-0 z-[340] flex items-center justify-center p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="combine-leads-title"
+    <MobileBottomSheet
+      open={isOpen}
+      onClose={onClose}
+      title="Combine leads"
+      zIndex={340}
+      mobileFullHeight
+      sheetClassName="md:max-w-lg"
+      contentClassName="flex flex-col min-h-0 gap-3 !overflow-hidden"
     >
-      <div className="absolute inset-0 z-0 bg-black/50" onClick={onClose} aria-hidden="true" />
-      <div className="relative z-10 flex max-h-[85vh] w-full max-w-lg flex-col rounded-xl border border-base-300 bg-base-100 shadow-xl">
-        <div className="flex shrink-0 items-center justify-between rounded-t-xl border-b border-base-300 bg-base-100 p-4">
-          <h2 id="combine-leads-title" className="flex items-center gap-2 text-lg font-semibold">
-            <LinkIcon className="h-5 w-5 shrink-0" />
-            Combine leads
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="btn btn-ghost btn-sm btn-circle"
-          >
-            <XMarkIcon className="w-5 h-5" />
-          </button>
-        </div>
-        <div className="p-4 flex flex-col gap-3 flex-1 min-h-0 overflow-hidden">
-          <p className="text-sm text-base-content/70">
+          <p className="text-sm text-base-content/70 shrink-0">
             This lead <strong>#{masterDisplay}</strong> will be the master. Choose another lead to link to it (it will appear on the master lead page).
           </p>
+          <div className="flex flex-col gap-3 flex-1 min-h-0 overflow-hidden">
           {!selected ? (
             <>
               <div className="relative">
@@ -255,7 +244,7 @@ const CombineLeadsModal: React.FC<CombineLeadsModalProps> = ({
               <div className="flex gap-2 justify-end mt-2">
                 <button
                   type="button"
-                  className="btn btn-ghost"
+                  className="btn btn-ghost max-md:min-h-12"
                   onClick={() => setSelected(null)}
                   disabled={confirming}
                 >
@@ -263,7 +252,7 @@ const CombineLeadsModal: React.FC<CombineLeadsModalProps> = ({
                 </button>
                 <button
                   type="button"
-                  className="btn btn-primary"
+                  className="btn btn-primary max-md:min-h-12"
                   onClick={handleConfirm}
                   disabled={confirming}
                 >
@@ -279,9 +268,8 @@ const CombineLeadsModal: React.FC<CombineLeadsModalProps> = ({
               </div>
             </>
           )}
-        </div>
-      </div>
-    </div>
+          </div>
+    </MobileBottomSheet>
   );
 };
 

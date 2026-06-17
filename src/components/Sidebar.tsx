@@ -31,8 +31,9 @@ import {
   EnvelopeIcon,
   BriefcaseIcon,
 } from '@heroicons/react/24/outline';
-import { supabase, isExpectedNoSessionError } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
+import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 
 interface SidebarProps {
   userName?: string;
@@ -169,7 +170,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
   const location = useLocation();
   const { isAdmin } = useAdminRole();
   const { isExternalUser, isLoading: isLoadingExternal } = useExternalUser();
-  const { user: authUser, isInitialized, userFullName, userInitials: authUserInitials } = useAuthContext();
+  const { user: authUser, isInitialized, userFullName, userInitials: authUserInitials, isSuperUser } = useAuthContext();
 
   // State for user role and department from database
   // Initialize from cache immediately (synchronous) for instant display
@@ -178,7 +179,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
       const cacheKey = 'sidebar_userData';
       const cacheTimestampKey = 'sidebar_userData_timestamp';
       const cacheUserIdKey = 'sidebar_userData_userId';
-      const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+      const CACHE_DURATION = getMobileAwareCacheTtlMs(30 * 60 * 1000);
 
       const cachedData = sessionStorage.getItem(cacheKey);
       const cachedTimestamp = sessionStorage.getItem(cacheTimestampKey);
@@ -222,7 +223,6 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
   // Use cached name, then AuthContext, then prop, then email
   const initialName = initialUserInfo.userOfficialName || userFullName || userName || authUser?.email || 'User';
   const [userOfficialName, setUserOfficialName] = React.useState<string>(initialName);
-  const [isSuperUser, setIsSuperUser] = React.useState<boolean>(initialUserInfo.isSuperUser);
   const [isLoadingUserInfo, setIsLoadingUserInfo] = React.useState<boolean>(false); // Always false - never show loading
 
   // Sync display name from AuthContext as soon as user is available so we don't show placeholder before DB fetch
@@ -304,33 +304,23 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
       const fetchUserInfo = async (retryCount = 0) => {
         // Never set loading to true - always run in background
         try {
-          // Get the current auth user FIRST to check cache key
-          const { data: { user }, error: authError } = await supabase.auth.getUser();
-
-          if (authError) {
-            if (!isExpectedNoSessionError(authError)) {
-              console.error('Error getting auth user:', authError);
-            }
-            return;
-          }
-
-          if (!user) {
-            // No user logged in - clear cache and state
+          if (!authUser?.id) {
             sessionStorage.removeItem('sidebar_userData');
             sessionStorage.removeItem('sidebar_userData_timestamp');
             sessionStorage.removeItem('sidebar_userData_userId');
             setUserOfficialName('');
             setUserRoleFromDB('User');
             setUserDepartment('General');
-            setIsSuperUser(false);
             return;
           }
+
+          const user = authUser;
 
           // Check cache first - but only if it's for the current user
           const cacheKey = 'sidebar_userData';
           const cacheTimestampKey = 'sidebar_userData_timestamp';
           const cacheUserIdKey = 'sidebar_userData_userId';
-          const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+          const CACHE_DURATION = getMobileAwareCacheTtlMs(30 * 60 * 1000);
 
           try {
             const cachedData = sessionStorage.getItem(cacheKey);
@@ -346,8 +336,6 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                 setUserOfficialName(data.userOfficialName || '');
                 setUserRoleFromDB(data.userRoleFromDB || 'User');
                 setUserDepartment(data.userDepartment || 'General');
-                setIsSuperUser(data.isSuperUser || false);
-                console.log('✅ Sidebar: User data loaded from cache');
                 return; // Skip fetch - use cache
               } else {
                 // Cache expired - clear it
@@ -437,10 +425,6 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
           }
 
           if (userData) {
-            // Set superuser status
-            const isSuperUserValue = userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1;
-            setIsSuperUser(isSuperUserValue);
-
             let officialName = '';
             let roleDisplay = 'User';
             let deptName = 'General';
@@ -483,7 +467,6 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                 userOfficialName: officialName,
                 userRoleFromDB: roleDisplay,
                 userDepartment: deptName,
-                isSuperUser: isSuperUserValue,
               };
               sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
               sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
@@ -506,7 +489,6 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
                 userOfficialName: officialName,
                 userRoleFromDB: 'User',
                 userDepartment: 'General',
-                isSuperUser: false,
               };
               sessionStorage.setItem('sidebar_userData', JSON.stringify(dataToCache));
               sessionStorage.setItem('sidebar_userData_timestamp', Date.now().toString());
@@ -529,31 +511,6 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = '', userInitials, userRole
       };
 
       fetchUserInfo();
-
-      // Listen for auth state changes to refetch user info
-      const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-          if (session?.user) {
-            // Refetch user info when session is refreshed or user signs in
-            fetchUserInfo();
-          }
-        } else if (event === 'SIGNED_OUT') {
-          // Clear user info and cache on sign out
-          sessionStorage.removeItem('sidebar_userData');
-          sessionStorage.removeItem('sidebar_userData_timestamp');
-          sessionStorage.removeItem('sidebar_userData_userId');
-          setUserOfficialName('');
-          setUserRoleFromDB('User');
-          setUserDepartment('');
-          setIsSuperUser(false);
-        }
-      });
-
-      return () => {
-        if (subscription) {
-          subscription.unsubscribe();
-        }
-      };
     }, 0); // Defer to next tick
 
     return () => clearTimeout(timeoutId);

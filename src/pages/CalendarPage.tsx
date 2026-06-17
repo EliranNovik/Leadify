@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
+import { useAuthContext } from '../contexts/AuthContext';
 import { useMsal } from '@azure/msal-react';
 import { 
   CalendarIcon, 
@@ -31,6 +32,7 @@ interface CalendarDay {
 
 const EmployeeAvailability: React.FC = () => {
   const { instance } = useMsal();
+  const { user: authUser } = useAuthContext();
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [unavailableTimes, setUnavailableTimes] = useState<UnavailableTime[]>([]);
@@ -101,14 +103,13 @@ const EmployeeAvailability: React.FC = () => {
   // Fetch user's unavailable times
   const fetchUnavailableTimes = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user?.email) return;
-      if (!currentUserId) setCurrentUserId(user.id);
+      if (!authUser?.email) return;
+      if (!currentUserId) setCurrentUserId(authUser.id);
 
       const { data: employeeData, error } = await supabase
         .from('tenants_employee')
         .select('unavailable_times, outlook_calendar_sync')
-        .eq('user_id', user.id)
+        .eq('user_id', authUser.id)
         .single();
 
       if (error) {
@@ -134,8 +135,7 @@ const EmployeeAvailability: React.FC = () => {
 
     setLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user?.email) {
+      if (!authUser?.email) {
         toast.error('User not authenticated');
         return;
       }
@@ -169,7 +169,7 @@ const EmployeeAvailability: React.FC = () => {
           unavailable_times: updatedTimes,
           last_sync_date: new Date().toISOString()
         })
-        .eq('user_id', user.id);
+        .eq('user_id', authUser.id);
 
       if (error) {
         console.error('Error saving unavailable time:', error);
@@ -242,8 +242,7 @@ const EmployeeAvailability: React.FC = () => {
   const deleteUnavailableTime = async (timeId: string) => {
     setLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user?.email) {
+      if (!authUser?.email) {
         toast.error('User not authenticated');
         return;
       }
@@ -270,7 +269,7 @@ const EmployeeAvailability: React.FC = () => {
           unavailable_times: updatedTimes,
           last_sync_date: new Date().toISOString()
         })
-        .eq('user_id', user.id);
+        .eq('user_id', authUser.id);
 
       if (error) {
         console.error('Error deleting unavailable time:', error);
@@ -313,8 +312,7 @@ const EmployeeAvailability: React.FC = () => {
   const toggleOutlookSync = async () => {
     setLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user?.email) {
+      if (!authUser?.email) {
         toast.error('User not authenticated');
         return;
       }
@@ -328,7 +326,7 @@ const EmployeeAvailability: React.FC = () => {
           outlook_calendar_sync: newSyncStatus,
           last_sync_date: new Date().toISOString()
         })
-        .eq('user_id', user.id);
+        .eq('user_id', authUser.id);
 
       if (error) {
         console.error('Error updating sync status:', error);
@@ -347,50 +345,43 @@ const EmployeeAvailability: React.FC = () => {
   };
 
   useEffect(() => {
-    fetchUnavailableTimes();
-  }, []);
+    if (authUser?.id) {
+      void fetchUnavailableTimes();
+    }
+  }, [authUser?.id]);
 
   // Keep this page automatically up-to-date when `tenants_employee` changes in DB.
-  // This covers changes coming from other sessions/users/admin updates without a refresh.
   useEffect(() => {
-    let isActive = true;
+    const userId = authUser?.id || currentUserId;
+    if (!userId) return;
+
     let channel: ReturnType<typeof supabase.channel> | null = null;
 
-    const start = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      const userId = user?.id || currentUserId;
-      if (!userId) return;
-      if (isActive && !currentUserId) setCurrentUserId(userId);
+    if (!currentUserId) setCurrentUserId(userId);
 
-      channel = supabase
-        .channel(`calendar-availability:${userId}`)
-        .on(
-          'postgres_changes',
-          {
-            event: '*',
-            schema: 'public',
-            table: 'tenants_employee',
-            filter: `user_id=eq.${userId}`
-          },
-          () => {
-            // Re-fetch to ensure we pick up any column changes consistently
-            void fetchUnavailableTimes();
-          }
-        )
-        .subscribe();
-    };
-
-    void start();
+    channel = supabase
+      .channel(`calendar-availability:${userId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'tenants_employee',
+          filter: `user_id=eq.${userId}`
+        },
+        () => {
+          void fetchUnavailableTimes();
+        }
+      )
+      .subscribe();
 
     return () => {
-      isActive = false;
       if (channel) {
         void supabase.removeChannel(channel);
       }
     };
-    // fetchUnavailableTimes is stable enough here; we intentionally subscribe once per userId
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUserId]);
+  }, [authUser?.id, currentUserId]);
 
   const calendarDays = generateCalendarDays();
   const monthNames = [

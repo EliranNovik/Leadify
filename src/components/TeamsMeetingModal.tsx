@@ -12,6 +12,7 @@ import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { loginRequest } from '../msalConfig';
 import { toast } from 'react-hot-toast';
 import { saveOutlookTeamsMeeting, type OutlookTeamsMeeting } from '../lib/outlookTeamsMeetingsApi';
+import MobileBottomSheet from './MobileBottomSheet';
 import { supabase } from '../lib/supabase';
 
 export interface StaffEmployeeForModal {
@@ -755,33 +756,50 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
   };
 
   return (
-    <div className={`fixed inset-0 z-50 flex items-center justify-center ${isOpen ? '' : 'hidden'}`}>
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black bg-opacity-50 transition-opacity"
-        onClick={onClose}
-      />
-
-      {/* Modal */}
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl mx-4 max-h-[90vh] overflow-y-auto">
-        {/* Header */}
-        <div className="sticky top-0 bg-white border-b border-gray-200 p-6 rounded-t-2xl flex items-center justify-between z-10">
-          <div className="flex items-center gap-3">
-            <VideoCameraIcon className="h-6 w-6 text-gray-600" />
-            <div>
-              <h2 className="text-2xl font-bold text-gray-900">Create Internal Meeting</h2>
-              <p className="text-sm text-gray-500">Schedule an internal meeting (optionally with Teams link)</p>
-            </div>
-          </div>
+    <MobileBottomSheet
+      open={isOpen}
+      onClose={onClose}
+      title={(
+        <span className="inline-flex items-center gap-2">
+          <VideoCameraIcon className="h-6 w-6 text-gray-600" />
+          Create Internal Meeting
+        </span>
+      )}
+      subtitle="Schedule an internal meeting (optionally with Teams link)"
+      zIndex={50}
+      sheetClassName="md:max-w-3xl"
+      contentClassName="px-4 md:px-6"
+      footer={(
+        <div className="flex justify-end gap-3 p-4 max-md:flex-col-reverse">
           <button
+            type="button"
             onClick={onClose}
-            className="btn btn-sm btn-circle btn-ghost text-gray-600 hover:bg-gray-100"
+            className="btn btn-ghost max-md:min-h-12 w-full md:w-auto"
             disabled={isLoading}
           >
-            <XMarkIcon className="w-6 h-6" />
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            className="btn btn-primary max-md:min-h-12 w-full md:w-auto"
+            disabled={isLoading || !formData.subject.trim()}
+          >
+            {isLoading ? (
+              <>
+                <span className="loading loading-spinner loading-sm"></span>
+                Creating...
+              </>
+            ) : (
+              <>
+                <VideoCameraIcon className="w-5 h-5" />
+                Create Meeting
+              </>
+            )}
           </button>
         </div>
-
+      )}
+    >
         {/* Popup blocked / redirect option */}
         {showAuthRedirectOption && (
           <div className="mx-6 mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg flex flex-wrap items-center justify-between gap-3">
@@ -1322,38 +1340,7 @@ const TeamsMeetingModal: React.FC<TeamsMeetingModalProps> = ({
             )}
           </div>
         </form>
-
-        {/* Footer */}
-        <div className="sticky bottom-0 bg-gray-50 p-6 rounded-b-2xl flex justify-end gap-3 border-t">
-            <button
-              type="button"
-              onClick={onClose}
-            className="btn btn-ghost"
-              disabled={isLoading}
-            >
-              Cancel
-            </button>
-            <button
-            type="button"
-            onClick={handleSubmit}
-            className="btn btn-primary"
-              disabled={isLoading || !formData.subject.trim()}
-            >
-              {isLoading ? (
-                <>
-                <span className="loading loading-spinner loading-sm"></span>
-                Creating...
-                </>
-              ) : (
-                <>
-                <VideoCameraIcon className="w-5 h-5" />
-                Create Meeting
-                </>
-              )}
-            </button>
-          </div>
-      </div>
-    </div>
+    </MobileBottomSheet>
   );
 };
 

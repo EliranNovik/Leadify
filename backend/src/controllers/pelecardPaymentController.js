@@ -90,6 +90,11 @@ async function createPaymentSession(req, res) {
         status: 'processing',
         pelecard_session_url: session.paymentUrl,
         pelecard_confirmation_key: session.confirmationKey,
+        // New checkout session — drop prior attempt ids so polling won't reconcile the wrong tx
+        pelecard_transaction_id: null,
+        pelecard_status_code: null,
+        pelecard_auth_number: null,
+        pelecard_voucher_id: null,
         ...(sessionRate != null ? { rate: sessionRate } : {}),
         pelecard_raw_response: {
           init: session.rawResponse,

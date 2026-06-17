@@ -26,6 +26,7 @@ import {
 } from '../lib/employeeUnavailabilities';
 import { resolveWorkplaceName } from '../lib/clockInLocations';
 import { fetchActiveStaffEmployeesWithDepartment } from '../lib/employeeSalaries';
+import { useAdminRole } from '../hooks/useAdminRole';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -565,6 +566,7 @@ interface TeamStatusModalProps {
 }
 
 const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) => {
+  const { isSuperUser } = useAdminRole();
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -699,9 +701,15 @@ const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) =>
   }, [mobileToolsOpen]);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (isOpen && !isSuperUser) {
+      onClose();
+    }
+  }, [isOpen, isSuperUser, onClose]);
+
+  useEffect(() => {
+    if (!isOpen || !isSuperUser) return;
     void load(selectedDate);
-  }, [isOpen, selectedDate, load]);
+  }, [isOpen, isSuperUser, selectedDate, load]);
 
   // Derive unique workplace names from clocked-in employees
   const workplaces = useMemo(() => {
@@ -821,7 +829,7 @@ const TeamStatusModal: React.FC<TeamStatusModalProps> = ({ isOpen, onClose }) =>
     setRmqOpen(true);
   }
 
-  if (!isOpen || typeof window === 'undefined') return null;
+  if (!isOpen || !isSuperUser || typeof window === 'undefined') return null;
 
   const curKey = filterKey(activeFilter);
 

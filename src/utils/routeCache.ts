@@ -104,31 +104,35 @@ export function clearRouteCache() {
 export function loadRouteCacheFromStorage() {
   try {
     const stored = sessionStorage.getItem('route_cache');
-    console.log('[routeCache] Loading from sessionStorage:', {
-      hasStored: !!stored,
-      storedLength: stored?.length || 0,
-    });
-    
+    if (ROUTE_CACHE_DEBUG) {
+      console.log('[routeCache] Loading from sessionStorage:', {
+        hasStored: !!stored,
+        storedLength: stored?.length || 0,
+      });
+    }
+
     if (stored) {
       const parsed = JSON.parse(stored) as Array<[string, CachedRouteInstance]>;
-      console.log('[routeCache] Parsed cache entries:', parsed.length);
-      
+      if (ROUTE_CACHE_DEBUG) console.log('[routeCache] Parsed cache entries:', parsed.length);
+
       parsed.forEach(([key, value]) => {
         routeInstanceCache.set(key, value);
-        console.log('[routeCache] Loaded entry:', {
-          pathname: key,
-          scrollPosition: value.scrollPosition,
-          timestamp: value.timestamp,
-        });
+        if (ROUTE_CACHE_DEBUG) {
+          console.log('[routeCache] Loaded entry:', {
+            pathname: key,
+            scrollPosition: value.scrollPosition,
+            timestamp: value.timestamp,
+          });
+        }
       });
-      
-      console.log('[routeCache] Loaded', routeInstanceCache.size, 'entries from sessionStorage');
+
+      if (ROUTE_CACHE_DEBUG) {
+        console.log('[routeCache] Loaded', routeInstanceCache.size, 'entries from sessionStorage');
+      }
       return true;
-    } else {
-      console.log('[routeCache] No cached data in sessionStorage');
     }
   } catch (e) {
-    console.warn('[routeCache] Failed to load from sessionStorage:', e);
+    if (ROUTE_CACHE_DEBUG) console.warn('[routeCache] Failed to load from sessionStorage:', e);
   }
   return false;
 }

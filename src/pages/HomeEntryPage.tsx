@@ -42,7 +42,7 @@ export default function HomeEntryPage() {
         />
       )}
       <DashboardWelcomeReadyProvider onReady={handleDepartmentPerformanceReady}>
-        {isLoading ? null : (
+        {isLoading ? <PageLoader /> : (
           <Suspense fallback={showWelcomeOverlay ? null : <PageLoader />}>
             {/* UiMountDetector fires as soon as the lazy chunk renders */}
             {!uiMounted && <UiMountDetector onMounted={() => setUiMounted(true)} />}

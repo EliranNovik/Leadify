@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { XMarkIcon, CalendarIcon, ClockIcon, UserGroupIcon, PencilIcon, UserIcon } from '@heroicons/react/24/outline';
+import MobileBottomSheet from './MobileBottomSheet';
 import { supabase } from '../lib/supabase';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
@@ -854,29 +855,67 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-stretch justify-center bg-black bg-opacity-50 p-0 md:items-center md:p-4">
-      <div className="flex h-[100dvh] max-h-[100dvh] min-h-0 w-full max-w-none flex-col overflow-y-auto rounded-none bg-white shadow-none md:h-auto md:max-h-[90vh] md:max-w-2xl md:rounded-2xl md:shadow-2xl">
-        {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-gray-200">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
-              <PencilIcon className="w-5 h-5 text-purple-600" />
-            </div>
-            <div>
-              <h2 className="text-xl font-bold text-gray-900">Edit Internal Meeting</h2>
-              <p className="text-sm text-gray-500">Update meeting details and participants</p>
-            </div>
-          </div>
+    <>
+    <MobileBottomSheet
+      open={isOpen}
+      onClose={onClose}
+      title={(
+        <span className="inline-flex items-center gap-2">
+          <PencilIcon className="w-5 h-5 text-purple-600" />
+          Edit Internal Meeting
+        </span>
+      )}
+      subtitle="Update meeting details and participants"
+      mobileFullHeight
+      zIndex={50}
+      sheetClassName="md:max-w-2xl"
+      contentClassName="p-0"
+      footer={(
+        <div className="flex flex-col gap-3 p-4">
           <button
-            onClick={onClose}
-            className="btn btn-ghost btn-circle"
+            type="button"
+            onClick={() => setShowDeleteConfirm(true)}
+            className="btn btn-error btn-outline w-full max-md:min-h-12"
+            disabled={isLoading || isDeleting}
           >
-            <XMarkIcon className="w-6 h-6" />
+            {isDeleting ? (
+              <>
+                <span className="loading loading-spinner loading-sm"></span>
+                Deleting...
+              </>
+            ) : (
+              'Delete Meeting'
+            )}
           </button>
+          <div className="flex flex-col-reverse gap-3 md:flex-row md:justify-end">
+            <button
+              type="button"
+              onClick={onClose}
+              className="btn btn-ghost max-md:min-h-12 w-full md:w-auto"
+              disabled={isLoading || isDeleting}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              form="staff-meeting-edit-form"
+              className="btn btn-primary max-md:min-h-12 w-full md:w-auto"
+              disabled={isLoading || isDeleting}
+            >
+              {isLoading ? (
+                <>
+                  <span className="loading loading-spinner loading-sm"></span>
+                  Updating...
+                </>
+              ) : (
+                'Update Meeting'
+              )}
+            </button>
+          </div>
         </div>
-
-        {/* Form */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-6">
+      )}
+    >
+        <form id="staff-meeting-edit-form" onSubmit={handleSubmit} className="p-4 md:p-6 space-y-6">
           {/* Subject */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1199,93 +1238,47 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
             />
           </div>
 
-          {/* Actions */}
-          <div className="flex justify-between pt-4 border-t border-gray-200">
-            {/* Delete button on the left */}
-            <button
-              type="button"
-              onClick={() => setShowDeleteConfirm(true)}
-              className="btn btn-error btn-outline"
-              disabled={isLoading || isDeleting}
-            >
-              {isDeleting ? (
-                <>
-                  <span className="loading loading-spinner loading-sm"></span>
-                  Deleting...
-                </>
-              ) : (
-                'Delete Meeting'
-              )}
-            </button>
-
-            {/* Update and Cancel buttons on the right */}
-            <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={onClose}
-                className="btn btn-ghost"
-                disabled={isLoading || isDeleting}
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="btn btn-primary"
-                disabled={isLoading || isDeleting}
-              >
-                {isLoading ? (
-                  <>
-                    <span className="loading loading-spinner loading-sm"></span>
-                    Updating...
-                  </>
-                ) : (
-                  'Update Meeting'
-                )}
-              </button>
-            </div>
-          </div>
         </form>
+    </MobileBottomSheet>
 
-        {/* Delete Confirmation Modal */}
-        {showDeleteConfirm && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black bg-opacity-50 p-4">
-            <div className="mx-4 w-full max-w-md rounded-lg bg-white p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">
-                Delete Meeting
-              </h3>
-              <p className="text-gray-600 mb-6">
-                Are you sure you want to delete "{formData.subject}"? This action cannot be undone and will remove the meeting from both the calendar and database.
-              </p>
-              <div className="flex justify-end gap-3">
-                <button
-                  type="button"
-                  onClick={() => setShowDeleteConfirm(false)}
-                  className="btn btn-ghost"
-                  disabled={isDeleting}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  onClick={handleDelete}
-                  className="btn btn-error"
-                  disabled={isDeleting}
-                >
-                  {isDeleting ? (
-                    <>
-                      <span className="loading loading-spinner loading-sm"></span>
-                      Deleting...
-                    </>
-                  ) : (
-                    'Delete Meeting'
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
+    <MobileBottomSheet
+      open={showDeleteConfirm}
+      onClose={() => setShowDeleteConfirm(false)}
+      title="Delete Meeting"
+      zIndex={60}
+      footer={(
+        <div className="flex flex-col-reverse gap-3 p-4 md:flex-row md:justify-end">
+          <button
+            type="button"
+            onClick={() => setShowDeleteConfirm(false)}
+            className="btn btn-ghost max-md:min-h-12 w-full md:w-auto"
+            disabled={isDeleting}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleDelete}
+            className="btn btn-error max-md:min-h-12 w-full md:w-auto"
+            disabled={isDeleting}
+          >
+            {isDeleting ? (
+              <>
+                <span className="loading loading-spinner loading-sm"></span>
+                Deleting...
+              </>
+            ) : (
+              'Delete Meeting'
+            )}
+          </button>
+        </div>
+      )}
+    >
+      <p className="px-4 py-2 text-gray-600">
+        Are you sure you want to delete &quot;{formData.subject}&quot;? This action cannot be undone and will remove the meeting from both the calendar and database.
+      </p>
+    </MobileBottomSheet>
+    </>
   );
 };
 

@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { LockClosedIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { LockClosedIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
 import { convertToNIS } from '../lib/currencyConversion';
 import { getVatRateForLegacyLead } from '../lib/financeUnpaidTotal';
+import MobileBottomSheet from './MobileBottomSheet';
 
 type FirmOption = { id: string; name: string };
 
@@ -664,31 +665,34 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
     : formData.proposal_vat === 'included';
 
   return (
-    <>
-      {isOpen && (
-        <div
-          className="fixed inset-0 z-[340]"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="balance-edit-modal-title"
-        >
-          <div className="fixed inset-0 z-0 bg-black/50" onClick={onClose} aria-hidden="true" />
-          <div className="fixed right-0 top-0 z-10 flex h-full w-full flex-col bg-base-100 shadow-xl md:w-96 dark:bg-base-100">
-            <div className="p-6 h-full overflow-y-auto">
-        <div className="flex justify-between items-center mb-6">
-          <h3 id="balance-edit-modal-title" className="text-2xl font-bold">
-            Update Lead
-          </h3>
-          <button onClick={onClose} className="btn btn-ghost btn-sm">
-            <XMarkIcon className="w-5 h-5" />
+    <MobileBottomSheet
+      open={isOpen}
+      onClose={onClose}
+      title="Update Lead"
+      desktopLayout="drawer-right"
+      mobileFullHeight
+      zIndex={340}
+      sheetClassName="md:max-w-md"
+      contentClassName="!p-0 flex flex-col min-h-0"
+      footer={
+        <div className="flex w-full gap-2">
+          <button type="button" onClick={onClose} className="btn btn-ghost flex-1 max-md:min-h-12" disabled={loading}>
+            Cancel
+          </button>
+          <button type="button" onClick={() => handleSave()} className="btn btn-primary flex-1 max-md:min-h-12" disabled={loading}>
+            {loading ? (
+              <>
+                <span className="loading loading-spinner loading-sm"></span>
+                Saving...
+              </>
+            ) : (
+              'Save'
+            )}
           </button>
         </div>
-
-
-        <form onSubmit={(e) => {
-          e.preventDefault();
-          handleSave();
-        }}>
+      }
+    >
+            <div className="p-6 h-full overflow-y-auto flex-1 min-h-0">
           <div className="space-y-4">
             {/* Currency */}
             <div className="form-control">
@@ -864,39 +868,8 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
               />
             </div>
           </div>
-
-
-          {/* Action Buttons */}
-          <div className="modal-action">
-            <button
-              type="button"
-              onClick={onClose}
-              className="btn btn-ghost"
-              disabled={loading}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              className="btn btn-primary"
-              disabled={loading}
-            >
-              {loading ? (
-                <>
-                  <span className="loading loading-spinner loading-sm"></span>
-                  Saving...
-                </>
-              ) : (
-                'Save'
-              )}
-            </button>
-          </div>
-        </form>
             </div>
-          </div>
-        </div>
-      )}
-    </>
+    </MobileBottomSheet>
   );
 };
 

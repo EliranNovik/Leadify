@@ -130,6 +130,7 @@ import TimePicker from './TimePicker';
 import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
 import ClientHeader from './ClientHeader';
+import MobileBottomSheet from './MobileBottomSheet';
 import type { WhatsAppPageSelectedContact } from '../pages/WhatsAppPage';
 import CombineLeadsModal from './CombineLeadsModal';
 import SendPriceOfferModal from './SendPriceOfferModal';
@@ -3617,8 +3618,15 @@ const Clients: React.FC<ClientsProps> = ({
         try {
           clientsPerfMark('cache-check');
           const persistedKey = `clientsPage_clientData_${effectiveLeadNumber}`;
+          const timestampKey = `clientsPage_clientData_timestamp_${effectiveLeadNumber}`;
+          const clientCacheTtl = getMobileAwareCacheTtlMs(30 * 60 * 1000, 2 * 60 * 1000);
           const persistedData = sessionStorage.getItem(persistedKey);
           if (persistedData) {
+            const cachedTs = sessionStorage.getItem(timestampKey);
+            const cacheAge = cachedTs ? Date.now() - parseInt(cachedTs, 10) : Number.POSITIVE_INFINITY;
+            if (cacheAge > clientCacheTtl) {
+              // Stale cache — fall through to network fetch
+            } else {
             const parsedData = JSON.parse(persistedData);
             // Check if persisted data matches current route
             const isLegacy = parsedData.lead_type === 'legacy' || parsedData.id?.toString().startsWith('legacy_');
@@ -3734,9 +3742,10 @@ const Clients: React.FC<ClientsProps> = ({
               }
               const id = normalizedPersistedData?.id ?? (normalizedPersistedData as any)?.lead_number;
               if (id != null) {
-                void syncClientFromServer(id);
+                void syncClientFromServer(id, { silent: true });
               }
               return; // Skip fetch - use persisted data
+            }
             }
           }
         } catch (error) {
@@ -15253,15 +15262,17 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
           </div>
           {/* Schedule Meeting Right Panel */}
-          {showScheduleMeetingPanel && (
-            <div className="fixed inset-0 z-[320] flex">
-              {/* Overlay */}
-              <div
-                className="fixed inset-0 bg-black/30"
-                onClick={closeSchedulePanel}
-              />
-              {/* Panel */}
-              <div className="ml-auto w-full md:max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
+          <MobileBottomSheet
+            open={showScheduleMeetingPanel}
+            onClose={closeSchedulePanel}
+            hideDefaultHeader
+            mobileFullHeight
+            desktopLayout="drawer-right"
+            zIndex={320}
+            contentClassName="!p-0 flex flex-col min-h-0 !overflow-hidden"
+            sheetClassName="md:max-w-md"
+          >
+              <div className="flex flex-col min-h-0 h-full flex-1 bg-base-100">
                 {showAuthRedirectOption && (
                   <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 flex flex-col gap-2">
                     <p className="text-sm text-amber-800">Sign-in was blocked. Use the button below to sign in in this tab, then try again.</p>
@@ -15668,19 +15679,20 @@ const Clients: React.FC<ClientsProps> = ({
                   </div>
                 </div>
               </div>
-            </div>
-          )}
+          </MobileBottomSheet>
 
           {/* Update Lead Drawer */}
-          {showUpdateDrawer && (
-            <div className="fixed inset-0 z-[320] flex">
-              {/* Overlay */}
-              <div
-                className="fixed inset-0 bg-black/30"
-                onClick={() => setShowUpdateDrawer(false)}
-              />
-              {/* Drawer */}
-              <div className="ml-auto w-full md:max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}>
+          <MobileBottomSheet
+            open={showUpdateDrawer}
+            onClose={() => setShowUpdateDrawer(false)}
+            hideDefaultHeader
+            mobileFullHeight
+            desktopLayout="drawer-right"
+            zIndex={320}
+            contentClassName="!p-0 flex flex-col min-h-0 !overflow-hidden"
+            sheetClassName="md:max-w-md"
+          >
+              <div className="flex flex-col min-h-0 h-full flex-1 bg-base-100" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}>
                 {/* Header */}
                 <div className="flex items-center justify-between p-6 pb-4 flex-shrink-0 border-b border-base-300">
                   <h3 className="text-2xl font-bold">Update Lead</h3>
@@ -15742,17 +15754,20 @@ const Clients: React.FC<ClientsProps> = ({
                   </button>
                 </div>
               </div>
-            </div>
-          )}
+          </MobileBottomSheet>
 
           {/* Meeting Ended Drawer */}
-          {showMeetingEndedDrawer && (
-            <div className="fixed inset-0 z-[320] flex">
-              <div
-                className="fixed inset-0 bg-black/30"
-                onClick={() => setShowMeetingEndedDrawer(false)}
-              />
-              <div className="ml-auto w-full max-w-lg bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50 overflow-y-auto">
+          <MobileBottomSheet
+            open={showMeetingEndedDrawer}
+            onClose={() => setShowMeetingEndedDrawer(false)}
+            hideDefaultHeader
+            mobileFullHeight
+            desktopLayout="drawer-right"
+            zIndex={320}
+            contentClassName="!p-0 flex flex-col min-h-0 !overflow-hidden"
+            sheetClassName="md:max-w-lg"
+          >
+              <div className="flex flex-col min-h-0 h-full flex-1 bg-base-100 p-8 overflow-y-auto">
                 <div className="flex items-center justify-between mb-6">
                   <h3 className="text-2xl font-bold">Update Lead</h3>
                   <button className="btn btn-ghost btn-sm" onClick={() => setShowMeetingEndedDrawer(false)}>
@@ -15942,33 +15957,39 @@ const Clients: React.FC<ClientsProps> = ({
                   </div>
                 </div>
               </div>
-            </div>
-          )}
-          {showMeetingIrrelevantModal && (
-            <div className="fixed inset-0 z-[320] flex items-center justify-center">
-              <div
-                className="fixed inset-0 bg-black/50"
-                onClick={() => {
-                  if (!isProcessingMeetingIrrelevant) {
-                    handleCancelMeetingIrrelevant();
-                  }
-                }}
-              />
-              <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-lg w-full mx-4 z-10">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="flex items-center gap-3 text-2xl font-bold text-gray-900">
-                    <ExclamationTriangleIcon className="w-7 h-7 text-red-500" />
-                    Mark Lead as Irrelevant
-                  </h3>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={handleCancelMeetingIrrelevant}
-                    disabled={isProcessingMeetingIrrelevant}
-                  >
-                    <XMarkIcon className="w-6 h-6" />
-                  </button>
-                </div>
-
+          </MobileBottomSheet>
+          <MobileBottomSheet
+            open={showMeetingIrrelevantModal}
+            onClose={handleCancelMeetingIrrelevant}
+            title="Mark Lead as Irrelevant"
+            zIndex={320}
+            sheetClassName="md:max-w-lg"
+            closeOnOverlayClick={!isProcessingMeetingIrrelevant}
+            footer={
+              <div className="flex w-full gap-2">
+                <button
+                  type="button"
+                  className="btn btn-outline flex-1 max-md:min-h-12"
+                  onClick={handleCancelMeetingIrrelevant}
+                  disabled={isProcessingMeetingIrrelevant}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-error flex-1 max-md:min-h-12"
+                  onClick={handleConfirmMeetingIrrelevant}
+                  disabled={isProcessingMeetingIrrelevant || !meetingIrrelevantReason.trim()}
+                >
+                  {isProcessingMeetingIrrelevant ? (
+                    <span className="loading loading-spinner loading-sm" />
+                  ) : (
+                    'Confirm'
+                  )}
+                </button>
+              </div>
+            }
+          >
                 <div className="space-y-5">
                   <p className="text-sm text-red-600 leading-relaxed">
                     Marking this lead as irrelevant should only be done when you are certain there is no legal eligibility. If you are unsure, please click cancel.
@@ -15988,39 +16009,20 @@ const Clients: React.FC<ClientsProps> = ({
                     </p>
                   </div>
                 </div>
-
-                <div className="flex justify-end gap-3 mt-6">
-                  <button
-                    className="btn btn-outline"
-                    onClick={handleCancelMeetingIrrelevant}
-                    disabled={isProcessingMeetingIrrelevant}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="btn btn-error"
-                    onClick={handleConfirmMeetingIrrelevant}
-                    disabled={isProcessingMeetingIrrelevant || !meetingIrrelevantReason.trim()}
-                  >
-                    {isProcessingMeetingIrrelevant ? (
-                      <span className="loading loading-spinner loading-sm" />
-                    ) : (
-                      'Confirm'
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+          </MobileBottomSheet>
 
           {/* Client Signed Drawer (New) */}
-          {showSuccessDrawer && (
-            <div className="fixed inset-0 z-[320] flex">
-              <div
-                className="fixed inset-0 bg-black/30"
-                onClick={() => setShowSuccessDrawer(false)}
-              />
-              <div className="ml-auto w-full max-w-lg bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
+          <MobileBottomSheet
+            open={showSuccessDrawer}
+            onClose={() => setShowSuccessDrawer(false)}
+            hideDefaultHeader
+            mobileFullHeight
+            desktopLayout="drawer-right"
+            zIndex={320}
+            contentClassName="!p-0 flex flex-col min-h-0 !overflow-hidden"
+            sheetClassName="md:max-w-lg"
+          >
+              <div className="flex flex-col min-h-0 h-full flex-1 bg-base-100 p-8">
                 <div className="flex items-start justify-between mb-6">
                   <div>
                     <h3 className="text-3xl font-black tracking-tight text-primary">Client signed !!!!</h3>
@@ -16188,46 +16190,56 @@ const Clients: React.FC<ClientsProps> = ({
                   </button>
                 </div>
               </div>
-            </div>
-          )}
+          </MobileBottomSheet>
 
           {/* Client Signed Drawer */}
-          {showSignedDrawer && (
-            <div className="fixed inset-0 z-[320] flex">
-              <div className="fixed inset-0 bg-black/30" onClick={() => setShowSignedDrawer(false)} />
-              <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-2xl font-bold">Client Signed Agreement</h3>
-                  <button className="btn btn-ghost btn-sm" onClick={() => setShowSignedDrawer(false)}>
-                    <XMarkIcon className="w-6 h-6" />
-                  </button>
-                </div>
+          <MobileBottomSheet
+            open={showSignedDrawer}
+            onClose={() => setShowSignedDrawer(false)}
+            title="Client Signed Agreement"
+            desktopLayout="drawer-right"
+            mobileFullHeight
+            zIndex={320}
+            sheetClassName="md:max-w-md"
+            contentClassName="flex flex-col min-h-0"
+            footer={
+              <button type="button" className="btn btn-primary w-full max-md:min-h-12" onClick={handleSaveSignedDrawer}>
+                Save
+              </button>
+            }
+          >
                 <div className="flex flex-col gap-4 flex-1">
                   <div>
                     <label className="block font-semibold mb-1">Date Signed</label>
                     <input type="date" className="input input-bordered w-full" value={signedDate} onChange={e => setSignedDate(e.target.value)} />
                   </div>
                 </div>
-                <div className="mt-6 flex justify-end">
-                  <button className="btn btn-primary px-8" onClick={handleSaveSignedDrawer}>
-                    Save
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+          </MobileBottomSheet>
 
           {/* Client Declined Drawer */}
-          {showDeclinedDrawer && (
-            <div className="fixed inset-0 z-[320] flex">
-              <div className="fixed inset-0 bg-black/30" onClick={() => setShowDeclinedDrawer(false)} />
-              <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-2xl font-bold">Client Declined</h3>
-                  <button className="btn btn-ghost btn-sm" onClick={() => setShowDeclinedDrawer(false)}>
-                    <XMarkIcon className="w-6 h-6" />
+          <MobileBottomSheet
+            open={showDeclinedDrawer}
+            onClose={() => setShowDeclinedDrawer(false)}
+            title="Client Declined"
+            desktopLayout="drawer-right"
+            mobileFullHeight
+            zIndex={320}
+            sheetClassName="md:max-w-md"
+            footer={
+              isSuperuser ? (
+                <div className="flex w-full gap-2">
+                  <button type="button" className="btn btn-ghost flex-1 max-md:min-h-12" onClick={() => setShowDeclinedDrawer(false)}>
+                    Cancel
                   </button>
+                  {isAdmin && (
+                    <button type="button" className="btn btn-error flex-1 max-md:min-h-12" onClick={handleConfirmDeclined}>
+                      Yes, decline client
+                    </button>
+                  )}
                 </div>
+              ) : undefined
+            }
+          >
                 <div className="flex flex-col gap-6 flex-1">
                   {isSuperuser ? (
                     <>
@@ -16262,37 +16274,44 @@ const Clients: React.FC<ClientsProps> = ({
                     </div>
                   )}
                 </div>
-                {isSuperuser && (
-                  <div className="mt-6 flex gap-3 justify-end">
-                    <button className="btn btn-ghost" onClick={() => setShowDeclinedDrawer(false)}>
-                      Cancel
-                    </button>
-                    {isAdmin && (
-                      <button className="btn btn-error" onClick={handleConfirmDeclined}>
-                        Yes, decline client
-                      </button>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+          </MobileBottomSheet>
 
           {/* Delete Lead Confirmation Modal */}
-          {showDeleteModal && (
-            <div className="fixed inset-0 z-[320] flex items-center justify-center">
-              <div className="fixed inset-0 bg-black/50" onClick={() => !isDeletingLead && setShowDeleteModal(false)} />
-              <div className="relative bg-base-100 rounded-xl shadow-2xl p-8 max-w-md w-full mx-4 z-50">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-2xl font-bold text-error">Delete Lead</h3>
-                  <button
-                    className="btn btn-ghost btn-sm btn-circle"
-                    onClick={() => setShowDeleteModal(false)}
-                    disabled={isDeletingLead}
-                  >
-                    <XMarkIcon className="w-5 h-5" />
-                  </button>
-                </div>
+          <MobileBottomSheet
+            open={showDeleteModal}
+            onClose={() => setShowDeleteModal(false)}
+            title="Delete Lead"
+            zIndex={320}
+            sheetClassName="md:max-w-md"
+            closeOnOverlayClick={!isDeletingLead}
+            footer={
+              <div className="flex w-full gap-2">
+                <button
+                  type="button"
+                  className="btn btn-ghost flex-1 max-md:min-h-12"
+                  onClick={() => setShowDeleteModal(false)}
+                  disabled={isDeletingLead}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-error flex-1 max-md:min-h-12"
+                  onClick={handleDeleteLead}
+                  disabled={isDeletingLead}
+                >
+                  {isDeletingLead ? (
+                    <>
+                      <span className="loading loading-spinner loading-sm"></span>
+                      Deleting...
+                    </>
+                  ) : (
+                    'Yes, delete lead'
+                  )}
+                </button>
+              </div>
+            }
+          >
                 <div className="flex flex-col gap-4">
                   <div className="alert alert-error">
                     <ExclamationTriangleIcon className="w-6 h-6" />
@@ -16308,95 +16327,82 @@ const Clients: React.FC<ClientsProps> = ({
                     </div>
                   )}
                 </div>
-                <div className="mt-6 flex gap-3 justify-end">
-                  <button
-                    className="btn btn-ghost"
-                    onClick={() => setShowDeleteModal(false)}
-                    disabled={isDeletingLead}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="btn btn-error"
-                    onClick={handleDeleteLead}
-                    disabled={isDeletingLead}
-                  >
-                    {isDeletingLead ? (
-                      <>
-                        <span className="loading loading-spinner loading-sm"></span>
-                        Deleting...
-                      </>
-                    ) : (
-                      'Yes, delete lead'
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+          </MobileBottomSheet>
 
           <LeadSummaryDrawer isOpen={showLeadSummaryDrawer} onClose={() => setShowLeadSummaryDrawer(false)} client={selectedClient} />
           {/* Price Offer Choice Modal */}
-          {showPriceOfferChoiceModal && (
-            <div className="fixed inset-0 z-[320] flex items-center justify-center bg-black/30">
-              <div className="bg-base-100 rounded-xl shadow-xl p-6 max-w-md w-full mx-4">
-                <h3 className="text-lg font-semibold mb-4">Send Price Offer</h3>
-                <p className="text-base-content/70 mb-6">How would you like to send the price offer?</p>
+          <MobileBottomSheet
+            open={showPriceOfferChoiceModal}
+            onClose={() => setShowPriceOfferChoiceModal(false)}
+            title="Send Price Offer"
+            subtitle="How would you like to send the price offer?"
+            zIndex={320}
+            sheetClassName="md:max-w-md"
+            footer={
+              <button
+                type="button"
+                className="btn btn-ghost w-full max-md:min-h-12"
+                onClick={() => setShowPriceOfferChoiceModal(false)}
+              >
+                Cancel
+              </button>
+            }
+          >
                 <div className="flex flex-col gap-3">
                   <button
-                    className="btn btn-primary w-full"
+                    type="button"
+                    className="btn btn-primary w-full max-md:min-h-12"
                     onClick={() => handlePriceOfferChoice('automated')}
                   >
                     Automated Email
                   </button>
                   <button
-                    className="btn btn-outline w-full"
+                    type="button"
+                    className="btn btn-outline w-full max-md:min-h-12"
                     onClick={() => handlePriceOfferChoice('manual')}
                   >
                     Manual Price Offer
                   </button>
-                  <button
-                    className="btn btn-ghost w-full mt-2"
-                    onClick={() => setShowPriceOfferChoiceModal(false)}
-                  >
-                    Cancel
-                  </button>
                 </div>
-              </div>
-            </div>
-          )}
+          </MobileBottomSheet>
 
           {/* Manual Price Offer Modal */}
-          {showManualPriceOfferModal && (
-            <div className="fixed inset-0 z-[10000] md:flex md:items-center md:justify-center md:bg-black/30" style={{ zIndex: 10000 }}>
-              <div className="bg-base-100 h-full w-full flex flex-col p-6 md:h-auto md:rounded-xl md:shadow-xl md:max-w-2xl md:w-full md:mx-4 md:max-h-[90vh] relative" style={{ zIndex: 10001 }}>
-                <h3 className="text-lg font-semibold mb-4">Manual Price Offer</h3>
+          <MobileBottomSheet
+            open={showManualPriceOfferModal}
+            onClose={() => {
+              setShowManualPriceOfferModal(false);
+              setManualPriceOfferText('');
+            }}
+            title="Manual Price Offer"
+            mobileFullHeight
+            zIndex={10000}
+            sheetClassName="md:max-w-2xl"
+            contentClassName="flex flex-col min-h-0"
+            footer={
+              <div className="flex w-full gap-2">
+                <button
+                  type="button"
+                  className="btn btn-ghost flex-1 max-md:min-h-12"
+                  onClick={() => {
+                    setShowManualPriceOfferModal(false);
+                    setManualPriceOfferText('');
+                  }}
+                >
+                  Cancel
+                </button>
+                <button type="button" className="btn btn-primary flex-1 max-md:min-h-12" onClick={handleSaveManualPriceOffer}>
+                  Save
+                </button>
+              </div>
+            }
+          >
                 <textarea
-                  className="textarea textarea-bordered w-full flex-1 min-h-[300px] mb-4"
+                  className="textarea textarea-bordered w-full flex-1 min-h-[300px]"
                   placeholder="Enter price offer text..."
                   value={manualPriceOfferText}
                   onChange={(e) => setManualPriceOfferText(e.target.value)}
                 />
-                <div className="flex gap-3 justify-end">
-                  <button
-                    className="btn btn-ghost"
-                    onClick={() => {
-                      setShowManualPriceOfferModal(false);
-                      setManualPriceOfferText('');
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    className="btn btn-primary"
-                    onClick={handleSaveManualPriceOffer}
-                  >
-                    Save
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+          </MobileBottomSheet>
 
           <SendPriceOfferModal
             isOpen={Boolean(showSendOfferModal && selectedClient)}
@@ -16425,19 +16431,23 @@ const Clients: React.FC<ClientsProps> = ({
               if (selectedClient?.id) refreshClientData(selectedClient.id);
             }}
           />
-          {showSubLeadDrawer && (
-            <div className="fixed inset-0 z-[320] flex">
-              <div
-                className="fixed inset-0 bg-black/30"
-                onClick={() => {
-                  setShowSubLeadDrawer(false);
-                  setSubLeadStep('initial');
-                  setIsSavingSubLead(false);
-                  setSelectedContractContactId(null);
-                  setSelectedContractId(null);
-                }}
-              />
-              <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
+          <MobileBottomSheet
+            open={showSubLeadDrawer}
+            onClose={() => {
+              setShowSubLeadDrawer(false);
+              setSubLeadStep('initial');
+              setIsSavingSubLead(false);
+              setSelectedContractContactId(null);
+              setSelectedContractId(null);
+            }}
+            hideDefaultHeader
+            mobileFullHeight
+            desktopLayout="drawer-right"
+            zIndex={320}
+            contentClassName="!p-0 flex flex-col min-h-0 !overflow-hidden"
+            sheetClassName="md:max-w-md"
+          >
+              <div className="flex flex-col min-h-0 h-full flex-1 bg-base-100">
                 {/* Fixed Header */}
                 <div className="flex items-center justify-between p-8 pb-6 border-b border-base-300">
                   <h3 className="text-2xl font-bold">Create Sub-Lead</h3>
@@ -16977,87 +16987,86 @@ const Clients: React.FC<ClientsProps> = ({
                   </div>
                 )}
               </div>
-            </div>
-          )}
+          </MobileBottomSheet>
 
           {/* Activation Modal */}
-          {showActivationModal && (
-            <div className="fixed inset-0 z-[320] flex items-center justify-center">
-              <div className="fixed inset-0 bg-black/50" onClick={() => setShowActivationModal(false)} />
-              <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 z-10">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-2xl font-bold text-gray-900">Activate Lead</h3>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => setShowActivationModal(false)}
-                  >
-                    <XMarkIcon className="w-6 h-6" />
-                  </button>
-                </div>
+          <MobileBottomSheet
+            open={showActivationModal}
+            onClose={() => setShowActivationModal(false)}
+            title="Activate Lead"
+            zIndex={320}
+            sheetClassName="md:max-w-md"
+            footer={
+              <div className="flex w-full gap-2">
+                <button
+                  type="button"
+                  className="btn btn-outline flex-1 max-md:min-h-12"
+                  onClick={() => setShowActivationModal(false)}
+                >
+                  Cancel
+                </button>
+                <button type="button" className="btn btn-success flex-1 max-md:min-h-12" onClick={handleActivation}>
+                  Activate Lead
+                </button>
+              </div>
+            }
+          >
+                <div className="space-y-4">
+                  <p className="text-gray-600">
+                    Are you sure you want to activate <strong>{selectedClient?.name}</strong> (Lead #{selectedClient?.lead_number})?
+                  </p>
 
-                <div className="space-y-6">
-                  <div>
-                    <p className="text-gray-600 mb-4">
-                      Are you sure you want to activate <strong>{selectedClient?.name}</strong> (Lead #{selectedClient?.lead_number})?
-                    </p>
-
-                    <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                      <div className="flex items-center gap-2">
-                        <CheckCircleIcon className="w-5 h-5 text-green-500" />
-                        <span className="text-green-700 font-medium">
-                          This will restore the lead to its previous stage: <strong>{selectedClient?.previous_stage ? getStageName(selectedClient.previous_stage) : 'Created'}</strong>
-                        </span>
-                      </div>
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                    <div className="flex items-center gap-2">
+                      <CheckCircleIcon className="w-5 h-5 text-green-500" />
+                      <span className="text-green-700 font-medium">
+                        This will restore the lead to its previous stage: <strong>{selectedClient?.previous_stage ? getStageName(selectedClient.previous_stage) : 'Created'}</strong>
+                      </span>
                     </div>
                   </div>
-
-                  <div className="flex gap-3 justify-end">
-                    <button
-                      className="btn btn-outline"
-                      onClick={() => setShowActivationModal(false)}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      className="btn btn-success"
-                      onClick={handleActivation}
-                    >
-                      Activate Lead
-                    </button>
-                  </div>
                 </div>
-              </div>
-            </div>
-          )}
+          </MobileBottomSheet>
           {/* Unactivation Modal */}
-          {showUnactivationModal && (
-            <div className="fixed inset-0 z-[320] flex items-center justify-center">
-              <div className="fixed inset-0 bg-black/50" onClick={() => {
-                setShowUnactivationModal(false);
-                setUnactivationReason('');
-                setDeactivateNotesDescription('');
-              }} />
-              <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 z-10">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-2xl font-bold text-gray-900">Unactivate Lead</h3>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => {
-                      setShowUnactivationModal(false);
-                      setUnactivationReason('');
-                      setDeactivateNotesDescription('');
-                    }}
-                  >
-                    <XMarkIcon className="w-6 h-6" />
-                  </button>
-                </div>
+          <MobileBottomSheet
+            open={showUnactivationModal}
+            onClose={() => {
+              setShowUnactivationModal(false);
+              setUnactivationReason('');
+              setDeactivateNotesDescription('');
+            }}
+            title="Unactivate Lead"
+            zIndex={320}
+            sheetClassName="md:max-w-md"
+            footer={
+              <div className="flex w-full gap-2">
+                <button
+                  type="button"
+                  className="btn btn-outline flex-1 max-md:min-h-12"
+                  onClick={() => {
+                    setShowUnactivationModal(false);
+                    setUnactivationReason('');
+                    setDeactivateNotesDescription('');
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-error flex-1 max-md:min-h-12"
+                  onClick={handleUnactivation}
+                  disabled={!unactivationReason.trim() || !deactivateNotesDescription.trim()}
+                >
+                  Unactivate Lead
+                </button>
+              </div>
+            }
+          >
+                <div className="space-y-4">
+                  <p className="text-gray-600">
+                    Are you sure you want to unactivate <strong>{selectedClient?.name}</strong> (Lead #{selectedClient?.lead_number})?
+                  </p>
 
-                <div className="space-y-6">
                   <div>
-                    <p className="text-gray-600 mb-4">
-                      Are you sure you want to unactivate <strong>{selectedClient?.name}</strong> (Lead #{selectedClient?.lead_number})?
-                    </p>
-
                     <label className="block font-semibold mb-2 text-gray-900">Reason for Unactivation</label>
                     <select
                       className="select select-bordered w-full mb-4"
@@ -17087,51 +17096,25 @@ const Clients: React.FC<ClientsProps> = ({
                       onChange={(e) => setDeactivateNotesDescription(e.target.value)}
                     />
                   </div>
-
-                  <div className="flex gap-3 justify-end">
-                    <button
-                      className="btn btn-outline"
-                      onClick={() => {
-                        setShowUnactivationModal(false);
-                        setUnactivationReason('');
-                        setDeactivateNotesDescription('');
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      className="btn btn-error"
-                      onClick={handleUnactivation}
-                      disabled={!unactivationReason.trim() || !deactivateNotesDescription.trim()}
-                    >
-                      Unactivate Lead
-                    </button>
-                  </div>
                 </div>
-              </div>
-            </div>
-          )}
+          </MobileBottomSheet>
 
           {/* Duplicate Contacts Modal */}
-          {isDuplicateModalOpen && (
-            <div className="fixed inset-0 z-[320] flex items-center justify-center p-0">
-              <div
-                className="fixed inset-0 bg-black/50"
-                onClick={() => setIsDuplicateModalOpen(false)}
-              />
-              <div className="bg-white rounded-none shadow-2xl p-4 md:p-8 w-full h-full z-10 overflow-y-auto">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-xl md:text-2xl font-bold text-gray-900">Duplicate Contacts</h3>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => setIsDuplicateModalOpen(false)}
-                  >
-                    <XMarkIcon className="w-6 h-6" />
-                  </button>
-                </div>
-
+          <MobileBottomSheet
+            open={isDuplicateModalOpen}
+            onClose={() => setIsDuplicateModalOpen(false)}
+            title="Duplicate Contacts"
+            mobileFullHeight
+            zIndex={320}
+            contentClassName="!p-4 md:!p-8"
+            footer={
+              <button type="button" className="btn btn-outline w-full max-md:min-h-12" onClick={() => setIsDuplicateModalOpen(false)}>
+                Close
+              </button>
+            }
+          >
                 <div className="space-y-4">
-                  <p className="text-sm md:text-base text-gray-600 mb-4">
+                  <p className="text-sm md:text-base text-gray-600">
                     The following contacts have matching data (email, phone, or mobile) and are associated with other leads:
                   </p>
 
@@ -17307,36 +17290,28 @@ const Clients: React.FC<ClientsProps> = ({
                     </div>
                   </div>
                 </div>
-
-                <div className="flex gap-3 justify-end mt-6 pt-4 border-t border-gray-200">
-                  <button
-                    className="btn btn-outline"
-                    onClick={() => setIsDuplicateModalOpen(false)}
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+          </MobileBottomSheet>
 
           {/* Reschedule Meeting Drawer */}
-          {showRescheduleDrawer && (
-            <div className="fixed inset-0 z-[320] flex">
-              <div
-                className="fixed inset-0 bg-black/30"
-                onClick={() => {
-                  setShowAuthRedirectOption(false);
-                  authRedirectParamsRef.current = null;
-                  setShowRescheduleDrawer(false);
-                  setNotifyClientOnReschedule(false); // Reset to default
-                  setMeetingToDelete(null);
-                  setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
-                  setRescheduleOption('cancel');
-                  setNotifyClientOnReschedule(false); // Reset to default
-                }}
-              />
-              <div className="ml-auto w-full md:max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
+          <MobileBottomSheet
+            open={showRescheduleDrawer}
+            onClose={() => {
+              setShowAuthRedirectOption(false);
+              authRedirectParamsRef.current = null;
+              setShowRescheduleDrawer(false);
+              setNotifyClientOnReschedule(false);
+              setMeetingToDelete(null);
+              setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
+              setRescheduleOption('cancel');
+            }}
+            hideDefaultHeader
+            mobileFullHeight
+            desktopLayout="drawer-right"
+            zIndex={320}
+            contentClassName="!p-0 flex flex-col min-h-0 !overflow-hidden"
+            sheetClassName="md:max-w-md"
+          >
+              <div className="flex flex-col min-h-0 h-full flex-1 bg-base-100">
                 {showAuthRedirectOption && (
                   <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 flex flex-col gap-2">
                     <p className="text-sm text-amber-800">Sign-in was blocked. Use the button below to sign in in this tab, then try again.</p>
@@ -17690,25 +17665,25 @@ const Clients: React.FC<ClientsProps> = ({
                   </div>
                 </div>
               </div>
-            </div>
-          )}
+          </MobileBottomSheet>
 
-          {showCustomLocationModal && (
-            <div className="fixed inset-0 z-[320] flex items-center justify-center p-4">
-              <div className="absolute inset-0 bg-black/40" onClick={() => setShowCustomLocationModal(false)} />
-              <div className="relative w-full max-w-md rounded-xl bg-base-100 border border-base-300 shadow-2xl p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <h4 className="text-lg font-bold">
-                    {customLocationMode === 'link' ? 'Custom Link' : 'Custom Address'}
-                  </h4>
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm btn-circle"
-                    onClick={() => setShowCustomLocationModal(false)}
-                  >
-                    <XMarkIcon className="w-5 h-5" />
-                  </button>
-                </div>
+          <MobileBottomSheet
+            open={showCustomLocationModal}
+            onClose={() => setShowCustomLocationModal(false)}
+            title={customLocationMode === 'link' ? 'Custom Link' : 'Custom Address'}
+            zIndex={320}
+            sheetClassName="md:max-w-md"
+            footer={
+              <div className="flex w-full gap-2">
+                <button type="button" className="btn btn-ghost flex-1 max-md:min-h-12" onClick={() => setShowCustomLocationModal(false)}>
+                  Cancel
+                </button>
+                <button type="button" className="btn btn-primary flex-1 max-md:min-h-12" onClick={handleSaveCustomLocationValue}>
+                  Save
+                </button>
+              </div>
+            }
+          >
                 <input
                   type={customLocationMode === 'link' ? 'url' : 'text'}
                   className="input input-bordered w-full"
@@ -17716,17 +17691,7 @@ const Clients: React.FC<ClientsProps> = ({
                   onChange={(e) => setCustomLocationDraft(e.target.value)}
                   placeholder={customLocationMode === 'link' ? 'https://example.com/meeting' : 'Enter address'}
                 />
-                <div className="mt-4 flex justify-end gap-2">
-                  <button type="button" className="btn btn-ghost" onClick={() => setShowCustomLocationModal(false)}>
-                    Cancel
-                  </button>
-                  <button type="button" className="btn btn-primary" onClick={handleSaveCustomLocationValue}>
-                    Save
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
+          </MobileBottomSheet>
 
           {/* Balance Edit Modal */}
           <BalanceEditModal

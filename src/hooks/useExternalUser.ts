@@ -122,9 +122,23 @@ type ResolvedExternalSession = {
  * Single source of truth: `public.users.auth_id` = Supabase auth user id.
  * No email-based user or firm_contact lookups (avoids refresh / casing mismatches).
  */
-async function resolveExternalUserFromAuthSession(): Promise<ResolvedExternalSession | null> {
-    const { data: { user }, error: authError } = await supabase.auth.getUser();
-    if (authError || !user) return null;
+async function resolveExternalUserFromAuthSession(
+    authUser?: { id: string; email?: string | null } | null,
+): Promise<ResolvedExternalSession | null> {
+    let user = authUser ?? null;
+    if (!user) {
+        const cached = readCachedSupabaseSessionFromStorage()?.user;
+        if (cached?.id) user = cached;
+    }
+    if (!user) {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.user?.id) user = session.user;
+    }
+    if (!user) {
+        const { data: { user: fetched }, error: authError } = await supabase.auth.getUser();
+        if (authError || !fetched) return null;
+        user = fetched;
+    }
 
     const { data: row, error } = await supabase
         .from('users')
@@ -295,9 +309,14 @@ export const useExternalUser = () => {
         const checkExternalUser = async () => {
             let authUserId: string | null = null;
             try {
-                const { data: { user }, error: authError } = await supabase.auth.getUser();
+                const cachedUser = readCachedSupabaseSessionFromStorage()?.user;
+                let user = cachedUser?.id ? cachedUser : null;
+                if (!user) {
+                    const { data: { session } } = await supabase.auth.getSession();
+                    user = session?.user ?? null;
+                }
 
-                if (authError || !user) {
+                if (!user) {
                     if (!cancelled) {
                         setIsExternalUser(false);
                         setUserName(null);
@@ -336,7 +355,7 @@ export const useExternalUser = () => {
                     }
                 }
 
-                const resolved = await resolveExternalUserFromAuthSession();
+                const resolved = await resolveExternalUserFromAuthSession(user);
                 if (cancelled) return;
 
                 if (!resolved) {

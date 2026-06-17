@@ -239,9 +239,9 @@ function buildCheckoutDisplayOptions(config, payment) {
     FeedbackOnTop: 'False',
     Target: '_self',
     Language: process.env.PELECARD_CHECKOUT_LANGUAGE || 'en',
-    CustomerIdField: 'must',
+    CustomerIdField: 'hide',
     Cvv2Field: 'must',
-    EmailField: 'optional',
+    EmailField: 'hide',
     TelField: 'hide',
     ShowSubmitButton: 'True',
   };
@@ -258,12 +258,6 @@ function buildCheckoutDisplayOptions(config, payment) {
     payment.description?.split(' - ')[1]?.split(' (#')[0]?.trim() || '';
   if (clientName) {
     options.CardHolderName = clientName.slice(0, 80);
-  }
-
-  const email = payment.leads?.email;
-  if (email) {
-    options.EmailField = 'must';
-    options.UserData = { UserData1: String(email).slice(0, 200) };
   }
 
   return options;
@@ -424,17 +418,16 @@ async function getTransaction(transactionId) {
 
 function isSuccessfulStatus(statusCode, resultData) {
   const code = String(statusCode ?? resultData?.StatusCode ?? resultData?.statusCode ?? '').trim();
+
+  // Explicit Pelecard approval
   if (code === '000') return true;
+
+  // Any other non-empty status code is not a successful charge
+  if (code) return false;
+
   if (resultData?.Status === 'Success' || resultData?.Result === 'Success') return true;
-  // Some GetTransaction responses omit StatusCode but include an approval number.
-  const approval =
-    resultData?.DebitApproveNumber ||
-    resultData?.AuthorizationNumber ||
-    resultData?.ApprovalNo;
-  if (approval && String(approval).trim() !== '') {
-    const approvalCode = String(resultData?.StatusCode ?? resultData?.statusCode ?? code).trim();
-    if (!approvalCode || approvalCode === '000') return true;
-  }
+
+  // Do not treat "approval field present but no status code" as paid — that caused false positives.
   return false;
 }
 

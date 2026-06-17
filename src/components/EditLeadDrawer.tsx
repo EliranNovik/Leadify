@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { buildLeadTagJunctionAuditFields } from '../lib/leadTagJunctionAudit';
-import { XMarkIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import ProbabilityFactorsSliders, { type ProbabilityFactors } from './ProbabilityFactorsSliders';
 import { caseProbabilityFromFactors, clampProbabilityPart, splitProbabilityEvenly } from './client-tabs/ProbabilitySlidersModal';
@@ -16,6 +15,7 @@ import {
   resolveSourceIdForEditSave,
   type LeadSourceOption,
 } from '../lib/leadSourceId';
+import MobileBottomSheet from './MobileBottomSheet';
 
 interface EditLeadDrawerProps {
   isOpen: boolean;
@@ -1083,18 +1083,21 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
   if (!isOpen || !lead) return null;
 
   return (
-    <div className="fixed inset-0 z-[320] flex">
-      {/* Overlay */}
-      <div className="fixed inset-0 bg-black/30" onClick={onClose} />
-      {/* Drawer */}
-      <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-2xl font-bold">Edit Lead</h3>
-          <button className="btn btn-ghost btn-sm" onClick={onClose}>
-            <XMarkIcon className="w-6 h-6" />
-          </button>
-        </div>
-        <div className="flex flex-col gap-4 flex-1 overflow-y-auto">
+    <MobileBottomSheet
+      open={isOpen}
+      onClose={onClose}
+      title="Edit Lead"
+      desktopLayout="drawer-right"
+      mobileFullHeight
+      zIndex={320}
+      contentClassName="flex flex-col min-h-0 gap-4 !p-4 md:!p-8"
+      footer={
+        <button type="button" className="btn btn-primary w-full max-md:min-h-12" onClick={handleSaveEditLead}>
+          Save
+        </button>
+      }
+    >
+        <div className="flex flex-col gap-4 flex-1 overflow-y-auto min-h-0">
           <div>
             <label className="block font-semibold mb-1">Tags</label>
             <input
@@ -1298,13 +1301,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
             </p>
           </div>
         </div>
-        <div className="mt-6 flex justify-end">
-          <button className="btn btn-primary px-8" onClick={handleSaveEditLead}>
-            Save
-          </button>
-        </div>
-      </div>
-    </div>
+    </MobileBottomSheet>
   );
 };
 

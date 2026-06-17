@@ -255,7 +255,13 @@ async function verifyPelecardTransaction(transactionId, callbackData) {
   }
 
   const verified = pelecardService.isSuccessfulStatus(resolvedStatusCode, resultData);
-  return { verified, resolvedStatusCode, verifyPayload, resultData };
+  return {
+    verified,
+    resolvedStatusCode,
+    verifyPayload,
+    resultData,
+    getTransactionAttempted: Boolean(transactionId),
+  };
 }
 
 async function persistPaymentSuccess(payment, secureToken, callbackData, verifyResult) {
@@ -341,9 +347,10 @@ async function persistPaymentSuccess(payment, secureToken, callbackData, verifyR
 
   console.info('[Pelecard] Payment recorded as paid', {
     paymentId: secureToken,
-    statusCode: resolvedStatusCode,
+    statusCode: resolvedStatusCode || '(empty)',
     transactionId: transactionId || null,
     planSynced: planResult.ok,
+    pelecardStatus: verifyResult.resultData?.Status ?? verifyResult.resultData?.Result ?? null,
   });
 
   if (!wasAlreadyPaid && planResult.ok) {
@@ -452,11 +459,14 @@ async function tryReconcilePaymentLink(payment) {
   const transactionId = getStoredTransactionId(full);
   if (!transactionId) return full;
 
-  const callbackData = full.pelecard_raw_response?.callback || {
-    PelecardTransactionId: transactionId,
-  };
+  // Only reconcile from polling when we have a callback for this attempt (not a stale tx id alone).
+  const callbackData = full.pelecard_raw_response?.callback;
+  if (!callbackData || typeof callbackData !== 'object') return full;
 
-  const verifyResult = await verifyPelecardTransaction(transactionId, callbackData);
+  const verifyResult = await verifyPelecardTransaction(transactionId, {
+    ...callbackData,
+    PelecardTransactionId: transactionId,
+  });
 
   if (verifyResult.verified) {
     await persistPaymentSuccess(

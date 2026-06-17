@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { TagIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { buildLeadTagJunctionAuditFields } from '../lib/leadTagJunctionAudit';
+import MobileBottomSheet from './MobileBottomSheet';
 
 /** Dev console + set window.__LEAD_TAGS_MODAL_DEBUG__ = true for [LeadTagsModal] logs */
 const leadTagsModalDebug =
@@ -264,28 +264,29 @@ export default function LeadTagsModal({
 
   if (!isOpen) return null;
 
-  return createPortal(
-    <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} aria-hidden />
-      <div
-        className="relative z-[1001] flex max-h-[90vh] w-full max-w-lg flex-col rounded-2xl border border-base-300 bg-base-100 shadow-2xl dark:border-gray-600 dark:bg-gray-900"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="lead-tags-modal-title"
-      >
-        <div className="flex items-center justify-between gap-3 border-b border-base-300 px-4 py-3 sm:px-5 sm:py-4 dark:border-gray-600">
-          <div className="flex min-w-0 items-center gap-2">
-            <TagIcon className="h-6 w-6 shrink-0 text-purple-600" />
-            <h2 id="lead-tags-modal-title" className="truncate text-lg font-semibold">
-              Tags
-            </h2>
+  return (
+    <MobileBottomSheet
+      open={isOpen}
+      onClose={onClose}
+      title="Tags"
+      zIndex={1000}
+      sheetClassName="md:max-w-lg"
+      mobileFullHeight
+      contentClassName="!p-0 flex flex-col min-h-0"
+      footer={
+        !readOnly ? (
+          <div className="flex w-full gap-2">
+            <button type="button" className="btn btn-ghost flex-1 max-md:min-h-12" onClick={onClose} disabled={saving}>
+              Cancel
+            </button>
+            <button type="button" className="btn btn-primary flex-1 max-md:min-h-12" onClick={() => void save()} disabled={saving}>
+              {saving ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
+            </button>
           </div>
-          <button type="button" className="btn btn-circle btn-ghost btn-sm" onClick={onClose} aria-label="Close">
-            <XMarkIcon className="h-5 w-5" />
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-4">
+        ) : undefined
+      }
+    >
+        <div className="flex-1 overflow-y-auto p-4 min-h-0">
           <div className="space-y-3">
             {selected.length > 0 ? (
               <div className="flex flex-wrap gap-2">
@@ -358,20 +359,7 @@ export default function LeadTagsModal({
             )}
           </div>
         </div>
-
-        {!readOnly && (
-          <div className="flex items-center justify-end gap-2 border-t border-base-300 px-4 py-3 dark:border-gray-600">
-            <button type="button" className="btn btn-ghost btn-sm" onClick={onClose} disabled={saving}>
-              Cancel
-            </button>
-            <button type="button" className="btn btn-primary btn-sm" onClick={() => void save()} disabled={saving}>
-              {saving ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
-            </button>
-          </div>
-        )}
-      </div>
-    </div>,
-    document.body
+    </MobileBottomSheet>
   );
 }
 

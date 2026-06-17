@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { XMarkIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
+import MobileBottomSheet from './MobileBottomSheet';
 
 interface CallOptionsModalProps {
   isOpen: boolean;
@@ -129,31 +129,19 @@ const CallOptionsModal: React.FC<CallOptionsModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-        onClick={onClose}
-      />
-
-      {/* Modal */}
-      <div className="relative bg-base-100 rounded-lg shadow-xl p-6 w-full max-w-md mx-4 z-10">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-xl font-bold">Call Options</h3>
-          <button
-            onClick={onClose}
-            className="btn btn-ghost btn-sm btn-circle"
-          >
-            <XMarkIcon className="w-5 h-5" />
-          </button>
-        </div>
-
-        {leadName && (
-          <p className="mb-2 text-sm text-gray-600">
-            Calling: <span className="font-semibold">{leadName}</span>
-          </p>
-        )}
-
+    <MobileBottomSheet
+      open={isOpen}
+      onClose={onClose}
+      title="Call Options"
+      subtitle={leadName ? `Calling: ${leadName}` : undefined}
+      zIndex={50}
+      sheetClassName="md:max-w-md"
+      footer={
+        <button type="button" onClick={onClose} className="btn btn-ghost w-full max-md:min-h-12">
+          Cancel
+        </button>
+      }
+    >
         <p className="mb-4 text-sm text-gray-600">
           Phone: <span className="font-mono">{phoneNumber}</span>
         </p>
@@ -164,10 +152,10 @@ const CallOptionsModal: React.FC<CallOptionsModalProps> = ({
           </div>
         ) : (
           <div className="space-y-3">
-            {/* Option 1: Call without onecom_code */}
             <button
+              type="button"
               onClick={() => handleCall(false)}
-              className="btn btn-outline btn-primary w-full justify-start"
+              className="btn btn-outline btn-primary w-full justify-start max-md:min-h-12"
             >
               <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
@@ -178,11 +166,11 @@ const CallOptionsModal: React.FC<CallOptionsModalProps> = ({
               </span>
             </button>
 
-            {/* Option 2: Call with onecom_code */}
             {onecomCode ? (
               <button
+                type="button"
                 onClick={() => handleCall(true)}
-                className="btn btn-primary w-full justify-start"
+                className="btn btn-primary w-full justify-start max-md:min-h-12"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
@@ -202,17 +190,7 @@ const CallOptionsModal: React.FC<CallOptionsModalProps> = ({
             )}
           </div>
         )}
-
-        <div className="mt-6 flex justify-end">
-          <button
-            onClick={onClose}
-            className="btn btn-ghost btn-sm"
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
-    </div>
+    </MobileBottomSheet>
   );
 };
 

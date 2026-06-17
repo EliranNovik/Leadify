@@ -1,8 +1,8 @@
 // Service Worker for RMQ 2.0 PWA
 // Static cache for assets that don't change often
-const STATIC_CACHE_NAME = 'rmq-2.0-static-v1';
+const STATIC_CACHE_NAME = 'rmq-2.0-static-v2';
 /** Hashed Vite chunks: stale-while-revalidate (fast repeat visits; background update when online) */
-const BUNDLE_CACHE_NAME = 'rmq-2.0-bundles-v1';
+const BUNDLE_CACHE_NAME = 'rmq-2.0-bundles-v2';
 const OFFLINE_PAGE = '/offline.html';
 
 // Files that should always be fetched from network (never cached)

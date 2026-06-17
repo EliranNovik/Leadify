@@ -12,8 +12,21 @@ import { loadRouteCacheFromStorage } from './utils/routeCache'
 (window as any).supabase = supabase;
 (window as any).sessionManager = sessionManager;
 
-// Load route cache from sessionStorage before React mounts
-loadRouteCacheFromStorage();
+// Defer route cache hydration so first paint is not blocked by sessionStorage JSON.parse.
+const deferRouteCacheLoad = () => {
+  try {
+    loadRouteCacheFromStorage();
+  } catch {
+    /* ignore */
+  }
+};
+if (typeof window !== 'undefined') {
+  if ('requestIdleCallback' in window) {
+    window.requestIdleCallback(() => deferRouteCacheLoad(), { timeout: 2000 });
+  } else {
+    setTimeout(deferRouteCacheLoad, 0);
+  }
+}
 
 // Apply saved theme preference before React mounts
 const savedTheme = (() => {
@@ -77,39 +90,44 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
   });
 }
 
-// Initialize MSAL
+// Initialize MSAL — cap wait so Supabase-first UI is not blocked on slow mobile networks.
 const msalInstance = new PublicClientApplication(msalConfig);
+const MSAL_INIT_CAP_MS = 350;
 
-// Initialize MSAL instance before using it
-msalInstance.initialize().then(() => {
-  // MSAL event logging
-  msalInstance.addEventCallback((event) => {
-    if (event.eventType === EventType.LOGIN_SUCCESS) {
-      const payload = event.payload as AuthenticationResult;
-      msalInstance.setActiveAccount(payload.account);
-    }
-  });
-
-  // MSAL token acquisition logging
-  msalInstance.addEventCallback((event) => {
-    if (event.eventType === EventType.ACQUIRE_TOKEN_SUCCESS) {
-      // Token acquired successfully
-    }
-  });
-
+function renderApp() {
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
       <MsalProvider instance={msalInstance}>
         <App />
       </MsalProvider>
     </React.StrictMode>,
-  )
-}).catch(error => {
-  console.error('Failed to initialize MSAL:', error);
-  // Render app without MSAL if initialization fails
-  ReactDOM.createRoot(document.getElementById('root')!).render(
-    <React.StrictMode>
-      <App />
-    </React.StrictMode>,
-  )
+  );
+}
+
+const msalReady = msalInstance.initialize().then(() => {
+  msalInstance.addEventCallback((event) => {
+    if (event.eventType === EventType.LOGIN_SUCCESS) {
+      const payload = event.payload as AuthenticationResult;
+      msalInstance.setActiveAccount(payload.account);
+    }
+  });
+  msalInstance.addEventCallback((event) => {
+    if (event.eventType === EventType.ACQUIRE_TOKEN_SUCCESS) {
+      // Token acquired successfully
+    }
+  });
 });
+
+Promise.race([
+  msalReady,
+  new Promise<void>((resolve) => setTimeout(resolve, MSAL_INIT_CAP_MS)),
+])
+  .then(() => renderApp())
+  .catch((error) => {
+    console.error('Failed to initialize MSAL:', error);
+    ReactDOM.createRoot(document.getElementById('root')!).render(
+      <React.StrictMode>
+        <App />
+      </React.StrictMode>,
+    );
+  });

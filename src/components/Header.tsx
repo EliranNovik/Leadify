@@ -32,6 +32,7 @@ import {
   StarIcon,
   Cog6ToothIcon,
   ShieldCheckIcon,
+  ClipboardDocumentCheckIcon,
 } from '@heroicons/react/24/outline';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
@@ -40,11 +41,15 @@ import { FaWhatsapp } from 'react-icons/fa';
 import EmployeeModal from './EmployeeModal';
 import RMQMessagesPage from '../pages/RMQMessagesPage';
 import HighlightsPanel from './HighlightsPanel';
+import TeamStatusModal from './TeamStatusModal';
+import ManualClockInApprovalModal from './ManualClockInApprovalModal';
+import { fetchPendingManualClockInCount } from '../lib/employeeClockInApproval';
 import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
 import { getRecentLeads, addRecentLead, type RecentLead } from '../lib/recentSearchStorage';
 import { EXTERNAL_USER_HEADER_PADDING } from '../lib/externalUserLayout';
 import { useExternalUser, shouldDeferInternalChrome } from '../hooks/useExternalUser';
 import { useAuthContext } from '../contexts/AuthContext';
+import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 import { runMailboxCatchUpSync } from '../lib/mailboxApi';
 
 interface HeaderProps {
@@ -182,11 +187,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const filterDropdownRef = useRef<HTMLDivElement>(null);
   const { instance } = useMsal();
   const {
+    user: authContextUser,
     userFullName: authUserFullName,
     userInitials: authUserInitials,
     profilePhotoUrl: authProfilePhotoUrl,
     sessionRefreshNonce,
     supabaseSessionReady,
+    isSuperUser,
   } = useAuthContext();
   const [isMsalLoading, setIsMsalLoading] = useState(false);
   const [userAccount, setUserAccount] = useState<any>(null);
@@ -231,7 +238,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       (u) => typeof u === 'string' && u.trim() !== ''
     )?.trim() ?? null;
   const [isEmployeeModalOpen, setIsEmployeeModalOpen] = useState(false);
-  const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [assignmentNotifications, setAssignmentNotifications] = useState<AssignmentNotification[]>([]);
   const [seenAssignmentKeys, setSeenAssignmentKeys] = useState<Set<string>>(new Set());
@@ -258,6 +264,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [selectedConversationId, setSelectedConversationId] = useState<number | undefined>();
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [isHighlightsPanelOpen, setIsHighlightsPanelOpen] = useState(false);
+  const [isTeamStatusModalOpen, setIsTeamStatusModalOpen] = useState(false);
+  const [isClockInApprovalModalOpen, setIsClockInApprovalModalOpen] = useState(false);
+  const [pendingClockInApprovalCount, setPendingClockInApprovalCount] = useState(0);
   const [newLeadsCount, setNewLeadsCount] = useState<number>(0);
   const [showProfileDropdown, setShowProfileDropdown] = useState(false);
   const profileDropdownRef = useRef<HTMLDivElement>(null);
@@ -265,7 +274,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const profileDropdownRefDesktop = useRef<HTMLDivElement>(null);
   const notificationsButtonRef = useRef<HTMLButtonElement>(null);
   const [notificationsDropdownPosition, setNotificationsDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
-  const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
   const createdStageIdsRef = useRef<number[]>([0, 11]);
   const schedulerStageIdsRef = useRef<number[]>([10]);
   const stageIdsReadyRef = useRef(false);
@@ -323,18 +331,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   // Load dismissed assignment keys from database
   useEffect(() => {
-    const loadDismissedAssignments = async () => {
-      // Get auth user ID directly from Supabase auth
-      const { data: { user: authUser } } = await supabase.auth.getUser();
-      if (!authUser?.id) return;
+    if (!authContextUser?.id) return;
 
+    const loadDismissedAssignments = async () => {
       try {
-        // Try to load from database first
         const { data: dismissals, error } = await authRetryQueryOnce(() =>
           supabase
             .from('assignment_notification_dismissals')
             .select('dismissal_key')
-            .eq('user_id', authUser.id)
+            .eq('user_id', authContextUser.id)
         );
 
         if (!error && dismissals) {
@@ -380,7 +385,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     };
 
     loadDismissedAssignments();
-  }, []);
+  }, [authContextUser?.id]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -407,9 +412,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   }, []);
 
   const persistSeenAssignments = useCallback(async (nextSet: Set<string>, keysToAdd: string[] = []) => {
-    // Get auth user ID directly from Supabase auth
-    const { data: { user: authUser } } = await supabase.auth.getUser();
-    if (!authUser?.id) {
+    if (!authContextUser?.id) {
       // Fallback to localStorage if no user
       if (typeof window !== 'undefined') {
         try {
@@ -429,7 +432,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           const { error } = await supabase
             .from('assignment_notification_dismissals')
             .upsert({
-              user_id: authUser.id,
+              user_id: authContextUser.id,
               dismissal_key: key,
               dismissed_at: new Date().toISOString()
             }, {
@@ -470,7 +473,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         }
       }
     }
-  }, []);
+  }, [authContextUser?.id]);
 
   const rememberAssignments = useCallback((keys: string[]) => {
     if (!keys.length) return;
@@ -524,6 +527,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
 
   ];
+
+  const fetchPendingClockInApprovals = useCallback(async () => {
+    if (!isSuperUser) {
+      setPendingClockInApprovalCount(0);
+      return;
+    }
+    try {
+      const count = await fetchPendingManualClockInCount();
+      setPendingClockInApprovalCount(count);
+    } catch (err) {
+      console.error('Header pending clock-in approvals:', err);
+    }
+  }, [isSuperUser]);
+
+  useEffect(() => {
+    void fetchPendingClockInApprovals();
+  }, [fetchPendingClockInApprovals]);
 
   const quickMenuItems = useMemo(() => {
     const items: Array<{
@@ -680,6 +700,32 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
     );
 
+    if (isSuperUser) {
+      items.push({
+        id: 'team_status',
+        label: 'Team Status',
+        description: 'View team availability and clock-in status',
+        keywords: ['team', 'status', 'availability', 'clock', 'unavailability', 'staff', 'employees'],
+        icon: UserGroupIcon,
+        onSelect: () => {
+          setShowQuickActionsDropdown(false);
+          setIsTeamStatusModalOpen(true);
+        },
+      });
+      items.push({
+        id: 'clock_in_approval',
+        label: 'Clock-in approval',
+        description: 'Review manual clock-in and clock-out requests',
+        keywords: ['clock', 'clock-in', 'clock-out', 'approval', 'manual', 'working hours', 'timesheet'],
+        icon: ClipboardDocumentCheckIcon,
+        badge: pendingClockInApprovalCount > 0 ? pendingClockInApprovalCount : null,
+        onSelect: () => {
+          setShowQuickActionsDropdown(false);
+          setIsClockInApprovalModalOpen(true);
+        },
+      });
+    }
+
     if (typeof onOpenAIChat === 'function') {
       items.push({
         id: 'rmq_ai',
@@ -770,7 +816,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     });
 
     return items;
-  }, [isSuperUser, navTabs, newLeadsCount, navigate, onOpenAIChat, onOpenEmailThread, onOpenWhatsApp, whatsappClientsUnreadCount, currentUser]);
+  }, [isSuperUser, navTabs, newLeadsCount, navigate, onOpenAIChat, onOpenEmailThread, onOpenWhatsApp, whatsappClientsUnreadCount, currentUser, pendingClockInApprovalCount]);
 
   const filteredQuickMenuItems = useMemo(() => {
     const q = quickMenuSearchValue.trim().toLowerCase();
@@ -4707,56 +4753,24 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const lastHeaderNonceRef = useRef<number | null>(null);
 
   useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      setAuthUserId(user?.id ?? null);
-    });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setAuthUserId(session?.user?.id ?? null);
-    });
-    return () => subscription?.unsubscribe();
-  }, []);
+    if (!authContextUser?.id) {
+      setCurrentUser(null);
+      setCurrentUserEmployee(null);
+      setUserFullName('');
+      setAllEmployees([]);
+      return;
+    }
 
-  useEffect(() => {
     const skipSessionCache =
       lastHeaderNonceRef.current !== null && sessionRefreshNonce !== lastHeaderNonceRef.current;
     lastHeaderNonceRef.current = sessionRefreshNonce;
 
-    // Fetch the current user's name and employee data from Supabase
+    const user = authContextUser;
+    const cacheKey = `header_userData_${user.id}`;
+    const cacheTimestampKey = `header_userData_${user.id}_timestamp`;
+    const CACHE_DURATION = getMobileAwareCacheTtlMs(30 * 60 * 1000);
+
     const fetchUserData = async () => {
-      // Fast path: session from client (AuthContext already refreshed on visibility when needed)
-      let user = (await supabase.auth.getSession()).data?.session?.user ?? null;
-      if (!user) {
-        user = (await supabase.auth.getUser()).data?.user ?? null;
-      }
-      if (!user) {
-        try {
-          const { data: { session } } = await supabase.auth.refreshSession();
-          if (session?.user) user = session.user;
-        } catch (_) {}
-      }
-      if (!user) {
-        for (const delayMs of [50, 200]) {
-          await new Promise((r) => setTimeout(r, delayMs));
-          const session = (await supabase.auth.getSession()).data?.session;
-          if (session?.user) {
-            user = session.user;
-            break;
-          }
-        }
-      }
-
-      if (!user) {
-        setCurrentUser(null);
-        setCurrentUserEmployee(null);
-        setUserFullName('');
-        setAllEmployees([]);
-        return;
-      }
-
-      const cacheKey = `header_userData_${user.id}`;
-      const cacheTimestampKey = `header_userData_${user.id}_timestamp`;
-      const CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
-
       if (skipSessionCache) {
         try {
           sessionStorage.removeItem(cacheKey);
@@ -4773,16 +4787,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           if (age < CACHE_DURATION) {
             const data = JSON.parse(cachedData);
             // Cache safety: older cached payloads may miss `extern` (used for External settings menu).
-            // If missing, fall through to a fresh fetch so extern users see the right header options.
             if (data?.currentUser && typeof data.currentUser.extern === 'undefined') {
               throw new Error('Header cache missing extern flag; refetching');
             }
             setUserFullName(data.userFullName || '');
-            setIsSuperUser(data.isSuperUser || false);
             if (data.currentUser) setCurrentUser(data.currentUser);
             if (data.currentUserEmployee) setCurrentUserEmployee(data.currentUserEmployee);
             if (data.allEmployees) setAllEmployees(data.allEmployees);
-            console.log('✅ Header: User data loaded from cache');
             return;
           }
         }
@@ -4791,22 +4802,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
 
       if (user.email) {
-        // Declare variables at function scope for caching
         let fullNameValue = '';
-        let isSuperUserValue = false;
 
-        // Fetch user name
         const { data, error } = await supabase
           .from('users')
-          .select('first_name, last_name, full_name, is_superuser')
+          .select('first_name, last_name, full_name')
           .eq('email', user.email)
           .single();
         if (!error && data) {
-          // Set superuser status
-          isSuperUserValue = data.is_superuser === true || data.is_superuser === 'true' || data.is_superuser === 1;
-          setIsSuperUser(isSuperUserValue);
-
-          // Use first_name + last_name if available, otherwise fall back to full_name
           if (data.first_name && data.last_name && data.first_name.trim() && data.last_name.trim()) {
             fullNameValue = `${data.first_name.trim()} ${data.last_name.trim()}`;
             setUserFullName(fullNameValue);
@@ -4814,35 +4817,24 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             fullNameValue = data.full_name.trim();
             setUserFullName(fullNameValue);
           } else {
-            // Fallback to email if no name is available
             fullNameValue = user.email || '';
             setUserFullName(fullNameValue);
           }
         } else {
-          // Try to get name from auth user metadata as fallback
           if (user.user_metadata?.first_name || user.user_metadata?.full_name) {
             const authName = user.user_metadata.first_name || user.user_metadata.full_name;
             fullNameValue = authName;
             setUserFullName(authName);
-
-            // Try to sync user to custom table
             try {
-              const { data: syncResult, error: syncError } = await supabase.rpc('sync_or_update_auth_user', {
-                user_email: user.email
-              });
-              // Silent sync - no logging
-            } catch (syncErr) {
-              // Silent error handling
-            }
+              await supabase.rpc('sync_or_update_auth_user', { user_email: user.email });
+            } catch (_) {}
           } else {
             fullNameValue = user.email || '';
             setUserFullName(fullNameValue);
           }
         }
 
-        // Fetch current user's employee data using the new users-employee relationship
         try {
-          // Get current user's data with employee relationship
           const { data: userData, error: userError } = await supabase
             .from('users')
             .select(`
@@ -4888,21 +4880,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 if (profErr) throw profErr;
                 setExternalUserProfile({ photo_url: (prof as any)?.profile_image_url ?? null });
               } catch (e) {
-                // eslint-disable-next-line no-console
                 console.warn('Header external profile load failed:', e);
                 setExternalUserProfile(null);
               }
             };
 
-            // Set superuser status from userData if not already set
-            if (userData.is_superuser !== undefined) {
-              setIsSuperUser(userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1);
-            }
-
             if (userData.tenants_employee) {
               const empData = userData.tenants_employee;
 
-              // Set current user for RMQ messages
               setCurrentUser(userData);
               void maybeLoadExternalProfile();
 
@@ -4920,7 +4905,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 }
               });
 
-              // Also fetch all employees for the modal using the new pattern - only active users
               const { data: allEmployeesData, error: allEmployeesError } = await supabase
                 .from('users')
                 .select(`
@@ -4951,9 +4935,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
               if (!allEmployeesError && allEmployeesData) {
                 const processedEmployees = allEmployeesData
-                  .filter(user => user.tenants_employee && user.email)
-                  .map(user => {
-                    const employee = user.tenants_employee as any;
+                  .filter(u => u.tenants_employee && u.email)
+                  .map(u => {
+                    const employee = u.tenants_employee as any;
                     return {
                       id: employee.id,
                       display_name: employee.display_name,
@@ -4966,11 +4950,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       mobile: employee.mobile,
                       phone_ext: employee.phone_ext,
                       department: employee.tenant_departement?.name || 'General',
-                      email: user.email
+                      email: u.email
                     };
                   });
 
-                // Deduplicate by employee ID to prevent duplicates
                 const uniqueEmployeesMap = new Map();
                 processedEmployees.forEach(emp => {
                   if (!uniqueEmployeesMap.has(emp.id)) {
@@ -4980,10 +4963,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 const uniqueEmployees = Array.from(uniqueEmployeesMap.values());
                 setAllEmployees(uniqueEmployees);
 
-                // Cache the complete data after all state is set
                 setTimeout(() => {
                   try {
-                    const finalIsSuperUser = userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1;
                     const finalFullName = fullNameValue || userData.full_name || user.email || '';
                     const finalCurrentUserEmployee = {
                       ...empData,
@@ -4998,74 +4979,53 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         last_activity: 'No activity'
                       }
                     };
-                    const dataToCache = {
+                    sessionStorage.setItem(cacheKey, JSON.stringify({
                       userFullName: finalFullName,
-                      isSuperUser: finalIsSuperUser,
                       currentUser: userData,
                       currentUserEmployee: finalCurrentUserEmployee,
                       allEmployees: uniqueEmployees,
-                    };
-                    sessionStorage.setItem(cacheKey, JSON.stringify(dataToCache));
+                    }));
                     sessionStorage.setItem(cacheTimestampKey, Date.now().toString());
-                    console.log('✅ Header: User data cached');
                   } catch (cacheError) {
                     console.error('Error caching header user data:', cacheError);
                   }
                 }, 100);
               }
             } else {
-              // Set current user even if no employee data
               setCurrentUser(userData);
               void maybeLoadExternalProfile();
 
-              // Cache basic user data
               setTimeout(() => {
                 try {
-                  const finalIsSuperUser = userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1;
                   const finalFullName = fullNameValue || userData.full_name || user.email || '';
-                  const dataToCache = {
+                  sessionStorage.setItem(cacheKey, JSON.stringify({
                     userFullName: finalFullName,
-                    isSuperUser: finalIsSuperUser,
                     currentUser: userData,
                     currentUserEmployee: null,
                     allEmployees: [],
-                  };
-                  sessionStorage.setItem(cacheKey, JSON.stringify(dataToCache));
+                  }));
                   sessionStorage.setItem(cacheTimestampKey, Date.now().toString());
                 } catch (cacheError) {
                   console.error('Error caching header user data:', cacheError);
                 }
               }, 100);
             }
-          } else {
-            // Set current user even if no employee data
-            if (userData) {
-              setCurrentUser(userData);
-              // Set superuser status from userData if available
-              const userDataWithSuperuser = userData as any;
-              if (userDataWithSuperuser.is_superuser !== undefined) {
-                setIsSuperUser(userDataWithSuperuser.is_superuser === true || userDataWithSuperuser.is_superuser === 'true' || userDataWithSuperuser.is_superuser === 1);
+          } else if (userData) {
+            setCurrentUser(userData);
+            setTimeout(() => {
+              try {
+                const finalFullName = fullNameValue || (userData as any)?.full_name || user.email || '';
+                sessionStorage.setItem(cacheKey, JSON.stringify({
+                  userFullName: finalFullName,
+                  currentUser: userData,
+                  currentUserEmployee: null,
+                  allEmployees: [],
+                }));
+                sessionStorage.setItem(cacheTimestampKey, Date.now().toString());
+              } catch (cacheError) {
+                console.error('Error caching header user data:', cacheError);
               }
-
-              // Cache basic user data
-              setTimeout(() => {
-                try {
-                  const finalIsSuperUser = userDataWithSuperuser.is_superuser === true || userDataWithSuperuser.is_superuser === 'true' || userDataWithSuperuser.is_superuser === 1;
-                  const finalFullName = fullNameValue || (userDataWithSuperuser as any)?.full_name || user.email || '';
-                  const dataToCache = {
-                    userFullName: finalFullName,
-                    isSuperUser: finalIsSuperUser,
-                    currentUser: userData,
-                    currentUserEmployee: null,
-                    allEmployees: [],
-                  };
-                  sessionStorage.setItem(cacheKey, JSON.stringify(dataToCache));
-                  sessionStorage.setItem(cacheTimestampKey, Date.now().toString());
-                } catch (cacheError) {
-                  console.error('Error caching header user data:', cacheError);
-                }
-              }, 100);
-            }
+            }, 100);
           }
         } catch (error) {
           console.error('Error fetching employee data:', error);
@@ -5073,7 +5033,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
     };
     fetchUserData();
-  }, [authUserId, sessionRefreshNonce]);
+  }, [authContextUser?.id, sessionRefreshNonce]);
 
   // Fetch RMQ messages for notifications
   const fetchRmqMessages = async () => {
@@ -6661,8 +6621,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         window.dispatchEvent(new CustomEvent('msal:signInSuccess'));
 
         try {
-          const { data: authData } = await supabase.auth.getUser();
-          const uid = authData?.user?.id;
+          const uid = authContextUser?.id;
           if (uid) {
             void runMailboxCatchUpSync(uid).catch(() => {});
           }
@@ -8039,7 +7998,41 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                         </div>
                       )
                     ) : (
-                      navTabs
+                      <>
+                        {isSuperUser && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowQuickActionsDropdown(false);
+                                setIsTeamStatusModalOpen(true);
+                              }}
+                              className="flex items-center gap-3 px-4 py-3 transition-all duration-150 text-gray-700 dark:text-base-content w-full text-left hover:bg-base-200"
+                            >
+                              <UserGroupIcon className="w-5 h-5 text-gray-500" />
+                              <span className="text-sm font-medium">Team Status</span>
+                            </button>
+                            <div className="border-t border-base-300" />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowQuickActionsDropdown(false);
+                                setIsClockInApprovalModalOpen(true);
+                              }}
+                              className="flex items-center gap-3 px-4 py-3 transition-all duration-150 text-gray-700 dark:text-base-content w-full text-left hover:bg-base-200"
+                            >
+                              <ClipboardDocumentCheckIcon className="w-5 h-5 text-gray-500" />
+                              <span className="text-sm font-medium">Clock-in approval</span>
+                              {pendingClockInApprovalCount > 0 && (
+                                <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
+                                  {pendingClockInApprovalCount}
+                                </span>
+                              )}
+                            </button>
+                            <div className="border-t border-base-300" />
+                          </>
+                        )}
+                        {navTabs
                         .filter(tab => isSuperUser || tab.path !== '/new-cases')
                         .map((tab, index) => {
                           const Icon = tab.icon;
@@ -8064,7 +8057,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                               </Link>
                             </React.Fragment>
                           );
-                        })
+                        })}
+                      </>
                     )}
                   </div>
                 </div>
@@ -9111,6 +9105,21 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         isOpen={isHighlightsPanelOpen}
         onClose={() => setIsHighlightsPanelOpen(false)}
       />
+
+      {isSuperUser && (
+        <TeamStatusModal
+          isOpen={isTeamStatusModalOpen}
+          onClose={() => setIsTeamStatusModalOpen(false)}
+        />
+      )}
+
+      {isSuperUser && (
+        <ManualClockInApprovalModal
+          isOpen={isClockInApprovalModalOpen}
+          onClose={() => setIsClockInApprovalModalOpen(false)}
+          onUpdated={() => void fetchPendingClockInApprovals()}
+        />
+      )}
 
       <style>{`
         .notification-dropdown {

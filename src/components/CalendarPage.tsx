@@ -1,9 +1,14 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo } from 'react';
-import { supabase } from '../lib/supabase';
+import { supabase, tryRefreshThenExpire } from '../lib/supabase';
+import { useAuthContext } from '../contexts/AuthContext';
+import { resolveSessionUser } from '../lib/resolveSessionUser';
+import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 import { Link, useNavigate, useNavigationType, useLocation } from 'react-router-dom';
 import { useCachedFetch } from '../hooks/useCachedFetch';
 import { usePersistedState } from '../hooks/usePersistedState';
 import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, MapPinIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, UserPlusIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon, PlusIcon, MagnifyingGlassIcon, DocumentTextIcon, BuildingOfficeIcon } from '@heroicons/react/24/outline';
+import MobileBottomSheet from './MobileBottomSheet';
+import { MeetingJoinLinkMenu } from './MeetingJoinLinkMenu';
 import DocumentModal from './DocumentModal';
 import { FaFileExcel, FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
@@ -36,7 +41,25 @@ const calDebug = (...args: any[]) => {
 let cachedCalendarEmailToName: Map<string, string> | null = null;
 let cachedCalendarEmailToNameAtMs: number | null = null;
 let cachedCalendarEmailToNamePromise: Promise<Map<string, string>> | null = null;
-const CALENDAR_EMAILMAP_TTL_MS = 30 * 60 * 1000;
+const CALENDAR_EMAILMAP_DESKTOP_TTL_MS = 30 * 60 * 1000;
+
+function getCalendarEmailMapTtlMs(): number {
+  return getMobileAwareCacheTtlMs(CALENDAR_EMAILMAP_DESKTOP_TTL_MS);
+}
+
+/** Lookup users row by auth user (auth_id first, email fallback). */
+async function fetchCrmUserByAuthUser(
+  user: { id: string; email?: string | null },
+  select: string,
+): Promise<Record<string, unknown> | null> {
+  const byAuth = await supabase.from('users').select(select).eq('auth_id', user.id).maybeSingle();
+  if (byAuth.data) return byAuth.data as Record<string, unknown>;
+  if (user.email) {
+    const byEmail = await supabase.from('users').select(select).eq('email', user.email).maybeSingle();
+    if (byEmail.data) return byEmail.data as Record<string, unknown>;
+  }
+  return null;
+}
 
 // Email templates
 const emailTemplates = [
@@ -51,20 +74,6 @@ const emailTemplates = [
     body: `Dear {client_name},\n\nWe're pleased to inform you that your application has been successfully submitted to the relevant authorities.\n\nYou will be notified once there are any updates or additional requirements. Please note that processing times may vary depending on the case.\n\nIf you have any questions or wish to discuss the next steps, feel free to contact your case manager.`,
   },
 ];
-
-// Helper to get current user's full name from Supabase (auth_id first, then email fallback)
-async function fetchCurrentUserFullName() {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
-  let data: { full_name: string } | null = null;
-  const byAuth = await supabase.from('users').select('full_name').eq('auth_id', user.id).maybeSingle();
-  if (byAuth.data?.full_name) data = byAuth.data;
-  else if (user.email) {
-    const byEmail = await supabase.from('users').select('full_name').eq('email', user.email).maybeSingle();
-    if (byEmail.data?.full_name) data = byEmail.data;
-  }
-  return data?.full_name ?? null;
-}
 
 // Helper to acquire token, falling back to popup/redirect if silent auth fails
 const acquireToken = async (instance: any, account: any) => {
@@ -397,6 +406,7 @@ const CalendarPage: React.FC = () => {
     lead_type?: string;
   } | null>(null);
   const { instance, accounts } = useMsal();
+  const { user: authUser, userFullName: authUserFullName, sessionRefreshNonce } = useAuthContext();
   const realtimeRefreshTimerRef = useRef<number | null>(null);
   // Backed by a module-level Map keyed by range, so the staleness check survives
   // unmount/remount (navigating away and back) and we don't re-fetch unnecessarily.
@@ -588,39 +598,6 @@ const CalendarPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    const fetchCurrentEmployeeMetadata = async () => {
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user?.id) return;
-        let data: { employee_id: number | null; full_name: string; email?: string } | null = null;
-        const byAuth = await supabase
-          .from('users')
-          .select('employee_id, full_name, email')
-          .eq('auth_id', user.id)
-          .maybeSingle();
-        if (byAuth.data) data = byAuth.data;
-        else if (user.email) {
-          const byEmail = await supabase
-            .from('users')
-            .select('employee_id, full_name, email')
-            .eq('email', user.email)
-            .maybeSingle();
-          if (byEmail.data) data = byEmail.data;
-        }
-        if (!data) return;
-        if (data.employee_id != null && !Number.isNaN(Number(data.employee_id))) {
-          setCurrentEmployeeId(Number(data.employee_id));
-        }
-        setCurrentEmployeeName(data.full_name || user.email || '');
-      } catch (error) {
-        console.warn('CalendarPage: failed to load current employee metadata', error);
-      }
-    };
-
-    fetchCurrentEmployeeMetadata();
-  }, []);
-
-  useEffect(() => {
     setStaffSearchTerm(selectedStaff);
   }, [selectedStaff]);
 
@@ -753,6 +730,36 @@ const CalendarPage: React.FC = () => {
   const pendingNameFetchesRef = useRef<Set<string>>(new Set());
   const [currentEmployeeName, setCurrentEmployeeName] = useState<string>('');
   const [meetingConfirmationLoadingId, setMeetingConfirmationLoadingId] = useState<string | number | null>(null);
+
+  useEffect(() => {
+    if (!authUser?.id) {
+      setCurrentEmployeeId(null);
+      setCurrentEmployeeName('');
+      return;
+    }
+
+    let cancelled = false;
+    const loadEmployeeMetadata = async () => {
+      try {
+        const data = await fetchCrmUserByAuthUser(
+          authUser,
+          'employee_id, full_name, email',
+        ) as { employee_id: number | null; full_name: string; email?: string } | null;
+        if (cancelled || !data) return;
+        if (data.employee_id != null && !Number.isNaN(Number(data.employee_id))) {
+          setCurrentEmployeeId(Number(data.employee_id));
+        }
+        setCurrentEmployeeName(data.full_name || authUserFullName || authUser.email || '');
+      } catch (error) {
+        console.warn('CalendarPage: failed to load current employee metadata', error);
+      }
+    };
+
+    void loadEmployeeMetadata();
+    return () => {
+      cancelled = true;
+    };
+  }, [authUser?.id, authUser?.email, authUserFullName, sessionRefreshNonce]);
 
   // State to track legacy loading failures
   const [legacyLoadingDisabled, setLegacyLoadingDisabled] = useState(false);
@@ -1427,16 +1434,10 @@ const CalendarPage: React.FC = () => {
   // Send notification message to employee when added as guest
   const sendGuestNotification = async (employeeId: string | number, meeting: any, guestType: 'extern1' | 'extern2') => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = authUser ?? (await resolveSessionUser(null, tryRefreshThenExpire));
       if (!user?.id) return;
 
-      let currentUserData: { id: string } | null = null;
-      const byAuth = await supabase.from('users').select('id').eq('auth_id', user.id).maybeSingle();
-      if (byAuth.data) currentUserData = byAuth.data;
-      else if (user.email) {
-        const byEmail = await supabase.from('users').select('id').eq('email', user.email).maybeSingle();
-        if (byEmail.data) currentUserData = byEmail.data;
-      }
+      const currentUserData = await fetchCrmUserByAuthUser(user, 'id') as { id: string } | null;
       if (!currentUserData?.id) return;
 
       // Get target employee's user_id from users table
@@ -1616,22 +1617,19 @@ const CalendarPage: React.FC = () => {
 
     try {
       if (employeeIdToUse === null || !currentEmployeeName) {
-        const { data: { user } } = await supabase.auth.getUser();
+        const user = authUser ?? (await resolveSessionUser(null, tryRefreshThenExpire));
         if (user?.id) {
-          let userRecord: { employee_id: number | null; full_name: string; email?: string } | null = null;
-          const byAuth = await supabase.from('users').select('employee_id, full_name, email').eq('auth_id', user.id).maybeSingle();
-          if (byAuth.data) userRecord = byAuth.data;
-          else if (user.email) {
-            const byEmail = await supabase.from('users').select('employee_id, full_name, email').eq('email', user.email).maybeSingle();
-            if (byEmail.data) userRecord = byEmail.data;
-          }
+          const userRecord = await fetchCrmUserByAuthUser(
+            user,
+            'employee_id, full_name, email',
+          ) as { employee_id: number | null; full_name: string; email?: string } | null;
           if (userRecord) {
             if (employeeIdToUse === null && userRecord.employee_id != null && !Number.isNaN(Number(userRecord.employee_id))) {
               employeeIdToUse = Number(userRecord.employee_id);
               setCurrentEmployeeId(Number(userRecord.employee_id));
             }
             if (!currentEmployeeName) {
-              setCurrentEmployeeName(userRecord.full_name || user.email || '');
+              setCurrentEmployeeName(userRecord.full_name || user.email || authUserFullName || '');
             }
           }
         }
@@ -2195,7 +2193,7 @@ const CalendarPage: React.FC = () => {
         const isFresh =
           cachedCalendarEmailToName &&
           typeof cachedCalendarEmailToNameAtMs === 'number' &&
-          now - cachedCalendarEmailToNameAtMs < CALENDAR_EMAILMAP_TTL_MS;
+          now - cachedCalendarEmailToNameAtMs < getCalendarEmailMapTtlMs();
 
         if (!isFresh) {
           if (!cachedCalendarEmailToNamePromise) {
@@ -3078,15 +3076,16 @@ const CalendarPage: React.FC = () => {
     };
   }, [appliedFromDate, appliedToDate]);
 
-  // Refetch when the user signs in to Supabase so meetings are not stuck empty after auth catches up.
+  // Refetch meetings when auth user becomes available or changes (no duplicate onAuthStateChange).
+  const calendarAuthUserIdRef = useRef<string | null>(null);
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === 'SIGNED_IN') {
-        setMeetingsRefreshTrigger((t) => t + 1);
-      }
-    });
-    return () => subscription.unsubscribe();
-  }, []);
+    const id = authUser?.id ?? null;
+    const prev = calendarAuthUserIdRef.current;
+    calendarAuthUserIdRef.current = id;
+    if (id && prev !== id) {
+      setMeetingsRefreshTrigger((t) => t + 1);
+    }
+  }, [authUser?.id]);
 
   // Re-render when categories are loaded to update category names
   useEffect(() => {
@@ -5885,81 +5884,13 @@ const CalendarPage: React.FC = () => {
             return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting || hasCustomLink || hasCustomAddress;
           })() && (
             <>
-              <div className="dropdown dropdown-top">
-                <button
-                  type="button"
-                  className="btn btn-outline btn-primary btn-sm"
-                  title="Meeting Link"
-                  onClick={(e) => {
-                    // Button just opens dropdown via focus; stop row click.
-                    e.stopPropagation();
-                  }}
-                >
-                  <VideoCameraIcon className="w-4 h-4" />
-                </button>
-                <ul
-                  tabIndex={0}
-                  className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-[1000]"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <li>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const url = getMeetingJoinUrl(meeting);
-                        if (!url) {
-                          toast.error('No meeting URL available');
-                          return;
-                        }
-                        window.open(url, '_blank');
-                      }}
-                    >
-                      Enter meeting
-                    </button>
-                  </li>
-                  <li>
-                    <button
-                      type="button"
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        const url = getMeetingJoinUrl(meeting);
-                        if (!url) {
-                          toast.error('No meeting URL available');
-                          return;
-                        }
-                        const ok = await copyTextToClipboard(url);
-                        if (ok) toast.success('Meeting link copied');
-                        else toast.error('Failed to copy link');
-                      }}
-                    >
-                      Copy link
-                    </button>
-                  </li>
-                  {typeof navigator !== 'undefined' && typeof (navigator as any).share === 'function' && (
-                    <li>
-                      <button
-                        type="button"
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          const url = getMeetingJoinUrl(meeting);
-                          if (!url) {
-                            toast.error('No meeting URL available');
-                            return;
-                          }
-                          try {
-                            await (navigator as any).share({ title: 'Meeting link', url });
-                          } catch {
-                            // user cancelled share or unsupported
-                          }
-                        }}
-                      >
-                        Share
-                      </button>
-                    </li>
-                  )}
-                </ul>
-              </div>
+              <MeetingJoinLinkMenu
+                meeting={meeting}
+                getMeetingJoinUrl={getMeetingJoinUrl}
+                copyTextToClipboard={copyTextToClipboard}
+                buttonClassName="btn btn-outline btn-primary btn-sm"
+                iconClassName="w-4 h-4"
+              />
               {meeting.custom_address && (
                 <button
                   className="btn btn-outline btn-secondary btn-sm"
@@ -6470,80 +6401,13 @@ const CalendarPage: React.FC = () => {
                 return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting || hasCustomLink || hasCustomAddress;
               })() && (
                   <>
-                    <div className="dropdown dropdown-top">
-                      <button
-                        type="button"
-                        className="btn btn-primary btn-xs sm:btn-sm"
-                        title="Meeting Link"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                        }}
-                      >
-                        <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-                      </button>
-                      <ul
-                        tabIndex={0}
-                        className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-[1000]"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <li>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              const url = getMeetingJoinUrl(meeting);
-                              if (!url) {
-                                toast.error('No meeting URL available');
-                                return;
-                              }
-                              window.open(url, '_blank');
-                            }}
-                          >
-                            Enter meeting
-                          </button>
-                        </li>
-                        <li>
-                          <button
-                            type="button"
-                            onClick={async (e) => {
-                              e.stopPropagation();
-                              const url = getMeetingJoinUrl(meeting);
-                              if (!url) {
-                                toast.error('No meeting URL available');
-                                return;
-                              }
-                              const ok = await copyTextToClipboard(url);
-                              if (ok) toast.success('Meeting link copied');
-                              else toast.error('Failed to copy link');
-                            }}
-                          >
-                            Copy link
-                          </button>
-                        </li>
-                        {typeof navigator !== 'undefined' && typeof (navigator as any).share === 'function' && (
-                          <li>
-                            <button
-                              type="button"
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                const url = getMeetingJoinUrl(meeting);
-                                if (!url) {
-                                  toast.error('No meeting URL available');
-                                  return;
-                                }
-                                try {
-                                  await (navigator as any).share({ title: 'Meeting link', url });
-                                } catch {
-                                  // user cancelled share or unsupported
-                                }
-                              }}
-                            >
-                              Share
-                            </button>
-                          </li>
-                        )}
-                      </ul>
-                    </div>
+                    <MeetingJoinLinkMenu
+                      meeting={meeting}
+                      getMeetingJoinUrl={getMeetingJoinUrl}
+                      copyTextToClipboard={copyTextToClipboard}
+                      buttonClassName="btn btn-primary btn-xs sm:btn-sm"
+                      iconClassName="w-3 h-3 sm:w-4 sm:h-4"
+                    />
                     {meeting.custom_address && (
                       <button
                         className="btn btn-outline btn-secondary btn-xs sm:btn-sm"
@@ -6916,38 +6780,27 @@ const CalendarPage: React.FC = () => {
         `}
       </style>
 
-      {isCustomAddressModalOpen && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
-          <div
-            className="absolute inset-0 bg-black/40"
-            onClick={() => setIsCustomAddressModalOpen(false)}
-          />
-          <div className="relative w-full max-w-xl bg-base-100 rounded-xl border border-base-300 shadow-2xl p-6">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-lg font-bold">Custom Address</h3>
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm btn-circle"
-                onClick={() => setIsCustomAddressModalOpen(false)}
-              >
-                <XMarkIcon className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="text-base whitespace-pre-wrap break-words text-gray-800">
-              {selectedCustomAddress || 'No address provided'}
-            </div>
-            <div className="mt-5 flex justify-end">
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => setIsCustomAddressModalOpen(false)}
-              >
-                Close
-              </button>
-            </div>
+      <MobileBottomSheet
+        open={isCustomAddressModalOpen}
+        onClose={() => setIsCustomAddressModalOpen(false)}
+        title="Custom Address"
+        zIndex={90}
+        footer={
+          <div className="flex justify-end p-4">
+            <button
+              type="button"
+              className="btn btn-primary w-full max-md:min-h-12 md:w-auto"
+              onClick={() => setIsCustomAddressModalOpen(false)}
+            >
+              Close
+            </button>
           </div>
+        }
+      >
+        <div className="px-4 py-4 md:px-6 text-base whitespace-pre-wrap break-words text-gray-800">
+          {selectedCustomAddress || 'No address provided'}
         </div>
-      )}
+      </MobileBottomSheet>
       {/* Fixed top: filters + date navigation (desktop) */}
       <div className="calendar-page-chrome-top z-30 w-full flex-shrink-0 bg-gray-100 md:sticky md:top-0 md:flex md:flex-col md:gap-2">
       {/* Filters - desktop only; on mobile moved to modal. The toggle button lives
@@ -7063,31 +6916,24 @@ const CalendarPage: React.FC = () => {
 
       {/* Mobile: filter FAB hidden - filters opened via action dropdown (action button is stacked on this spot) */}
 
-      {/* Mobile: filters modal (date, staff, meeting type) */}
-      {showMobileFiltersModal && (
-        <div
-          className="fixed inset-0 z-[100] md:hidden"
-          aria-modal="true"
-          role="dialog"
-          aria-labelledby="mobile-filters-title"
+      {/* Mobile: filters bottom sheet (date, staff, meeting type) */}
+      <div className="md:hidden">
+        <MobileBottomSheet
+          open={showMobileFiltersModal}
+          onClose={() => setShowMobileFiltersModal(false)}
+          title="Filters"
+          zIndex={100}
+          contentClassName="px-4 py-4 flex flex-col gap-4"
+          footer={
+            <button
+              type="button"
+              className="mx-4 mt-2 flex h-12 w-[calc(100%-2rem)] items-center justify-center rounded-xl bg-primary text-base font-semibold text-primary-content active:opacity-90"
+              onClick={() => setShowMobileFiltersModal(false)}
+            >
+              Done
+            </button>
+          }
         >
-          <div
-            className="absolute inset-0 bg-black/50"
-            onClick={() => setShowMobileFiltersModal(false)}
-            aria-hidden="true"
-          />
-          <div className="absolute inset-x-4 top-1/2 -translate-y-1/2 max-h-[85vh] overflow-y-auto bg-base-100 rounded-2xl shadow-xl border border-base-200 p-4 flex flex-col gap-4">
-            <div className="flex items-center justify-between border-b border-base-200 pb-3">
-              <h2 id="mobile-filters-title" className="text-lg font-semibold text-base-content">Filters</h2>
-              <button
-                type="button"
-                className="btn btn-ghost btn-circle btn-sm"
-                onClick={() => setShowMobileFiltersModal(false)}
-                aria-label="Close filters"
-              >
-                <XMarkIcon className="w-6 h-6" />
-              </button>
-            </div>
             {/* Date filter */}
             <div className="flex flex-col gap-2">
               <span className="text-sm font-medium text-base-content/70">Date range</span>
@@ -7198,9 +7044,8 @@ const CalendarPage: React.FC = () => {
             >
               <FaFileExcel className="w-6 h-6 text-green-600" />
             </button>
-          </div>
-        </div>
-      )}
+        </MobileBottomSheet>
+      </div>
 
 
       {/* Date navigation: centered on mobile, sticky above meeting cards */}
@@ -7666,29 +7511,37 @@ const CalendarPage: React.FC = () => {
       />
 
       {/* Guest Selection Modal */}
-      {isGuestSelectionModalOpen && selectedMeetingForGuest && guestSelectionType && createPortal(
-        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-            {/* Header */}
-            <div className="bg-white border-b border-gray-200 p-6 flex items-center justify-between">
-              <div>
-                <h2 className="text-2xl font-bold text-black">Select Guest {guestSelectionType === 'extern1' ? '1' : '2'}</h2>
-                <p className="text-sm text-gray-500 mt-1">Choose an employee to add as a guest participant</p>
-              </div>
-              <button
-                onClick={() => {
-                  setIsGuestSelectionModalOpen(false);
-                  setSelectedMeetingForGuest(null);
-                  setGuestSelectionType(null);
-                }}
-                className="btn btn-ghost btn-sm btn-circle"
-              >
-                <XMarkIcon className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Search employees */}
-            <div className="px-6 pt-2 pb-2 border-b border-gray-100">
+      <MobileBottomSheet
+        open={Boolean(isGuestSelectionModalOpen && selectedMeetingForGuest && guestSelectionType)}
+        onClose={() => {
+          setIsGuestSelectionModalOpen(false);
+          setSelectedMeetingForGuest(null);
+          setGuestSelectionType(null);
+        }}
+        title={`Select Guest ${guestSelectionType === 'extern1' ? '1' : guestSelectionType === 'extern2' ? '2' : ''}`}
+        subtitle="Choose an employee to add as a guest participant"
+        zIndex={50}
+        sheetClassName="md:max-w-2xl"
+        contentClassName="p-4 md:p-6"
+        footer={
+          <div className="flex justify-end p-4">
+            <button
+              type="button"
+              className="btn btn-ghost w-full max-md:min-h-12 md:w-auto"
+              onClick={() => {
+                setIsGuestSelectionModalOpen(false);
+                setSelectedMeetingForGuest(null);
+                setGuestSelectionType(null);
+              }}
+            >
+              Cancel
+            </button>
+          </div>
+        }
+      >
+        {selectedMeetingForGuest && guestSelectionType && (
+          <>
+            <div className="pb-2 border-b border-gray-100 mb-4" data-sheet-no-drag>
               <label className="sr-only" htmlFor="guest-employee-search">Search employees</label>
               <div className="relative">
                 <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -7702,220 +7555,195 @@ const CalendarPage: React.FC = () => {
                 />
               </div>
             </div>
-
-            {/* Employee List */}
-            <div className="flex-1 overflow-y-auto p-6">
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {allEmployees
-                  .filter((employee: any) => {
-                    if (!guestSearchTerm.trim()) return true;
-                    const q = guestSearchTerm.trim().toLowerCase();
-                    const name = (employee.display_name || '').toLowerCase();
-                    const dept = (employee.tenant_departement?.name || '').toLowerCase();
-                    return name.includes(q) || dept.includes(q);
-                  })
-                  .map((employee: any) => {
-                  const isSelected = selectedMeetingForGuest[guestSelectionType] === employee.id.toString();
-                  return (
-                    <button
-                      key={employee.id}
-                      onClick={() => {
-                        if (isSelected) {
-                          handleRemoveGuest(selectedMeetingForGuest.id, guestSelectionType);
-                        } else {
-                          handleSaveGuest(selectedMeetingForGuest.id, guestSelectionType, employee.id);
-                        }
-                      }}
-                      className={`flex flex-row items-center gap-4 p-4 rounded-lg border-2 transition-all text-left ${isSelected
-                        ? 'border-primary bg-primary/10'
-                        : 'border-gray-200 hover:border-primary hover:bg-gray-50'
-                        }`}
-                    >
-                      <div className="flex-shrink-0">
-                        {renderEmployeeAvatar(employee.id, 'lg', false)}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-semibold text-gray-900 text-base">{employee.display_name}</div>
-                        {employee.tenant_departement?.name && (
-                          <div className="text-xs text-gray-500 mt-0.5">{employee.tenant_departement.name}</div>
-                        )}
-                      </div>
-                      {isSelected && (
-                        <CheckIcon className="w-5 h-5 text-primary flex-shrink-0" />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {allEmployees
+                .filter((employee: any) => {
+                  if (!guestSearchTerm.trim()) return true;
+                  const q = guestSearchTerm.trim().toLowerCase();
+                  const name = (employee.display_name || '').toLowerCase();
+                  const dept = (employee.tenant_departement?.name || '').toLowerCase();
+                  return name.includes(q) || dept.includes(q);
+                })
+                .map((employee: any) => {
+                const isSelected = selectedMeetingForGuest[guestSelectionType] === employee.id.toString();
+                return (
+                  <button
+                    key={employee.id}
+                    type="button"
+                    onClick={() => {
+                      if (isSelected) {
+                        handleRemoveGuest(selectedMeetingForGuest.id, guestSelectionType);
+                      } else {
+                        handleSaveGuest(selectedMeetingForGuest.id, guestSelectionType, employee.id);
+                      }
+                    }}
+                    className={`flex flex-row items-center gap-4 p-4 rounded-lg border-2 transition-all text-left min-h-[4.5rem] ${isSelected
+                      ? 'border-primary bg-primary/10'
+                      : 'border-gray-200 hover:border-primary hover:bg-gray-50'
+                      }`}
+                  >
+                    <div className="flex-shrink-0">
+                      {renderEmployeeAvatar(employee.id, 'lg', false)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-semibold text-gray-900 text-base">{employee.display_name}</div>
+                      {employee.tenant_departement?.name && (
+                        <div className="text-xs text-gray-500 mt-0.5">{employee.tenant_departement.name}</div>
                       )}
-                    </button>
-                  );
-                })}
-              </div>
+                    </div>
+                    {isSelected && (
+                      <CheckIcon className="w-5 h-5 text-primary flex-shrink-0" />
+                    )}
+                  </button>
+                );
+              })}
             </div>
-
-            {/* Footer */}
-            <div className="bg-gray-50 border-t border-gray-200 p-4 flex justify-end">
-              <button
-                onClick={() => {
-                  setIsGuestSelectionModalOpen(false);
-                  setSelectedMeetingForGuest(null);
-                  setGuestSelectionType(null);
-                }}
-                className="btn btn-ghost"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
+          </>
+        )}
+      </MobileBottomSheet>
 
       {/* Notes Modal */}
-      {isNotesModalOpen && selectedMeetingForNotes && createPortal(
-        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
-            {/* Header */}
-            <div className="bg-white border-b border-gray-200 p-6 flex items-center justify-between">
-              <div>
-                <h2 className="text-2xl font-bold text-black">Notes</h2>
-                <p className="text-sm text-gray-500 mt-1">
-                  {selectedMeetingForNotes.lead?.name || selectedMeetingForNotes.name || 'Meeting Notes'}
-                  {selectedMeetingForNotes.lead?.lead_number && ` (${selectedMeetingForNotes.lead.lead_number})`}
-                </p>
-              </div>
-              <button
-                onClick={() => {
-                  setIsNotesModalOpen(false);
-                  setSelectedMeetingForNotes(null);
-                }}
-                className="btn btn-ghost btn-sm btn-circle"
-              >
-                <XMarkIcon className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Notes Content */}
-            <div className="flex-1 overflow-y-auto p-6 space-y-6">
-              {(() => {
-                const meetingNotes = expandedMeetingData[selectedMeetingForNotes.id];
-                if (meetingNotes?.loading) {
-                  return (
-                    <div className="flex justify-center items-center py-12">
-                      <span className="loading loading-spinner loading-lg"></span>
-                    </div>
-                  );
-                }
-                return (
-                  <>
-                    {/* Expert Notes */}
-                    <div>
-                      <h3 className="text-lg font-semibold text-gray-900 mb-3">Expert Notes</h3>
-                      {(() => {
-                        const expertNotes = meetingNotes?.expert_notes;
-                        if (Array.isArray(expertNotes) && expertNotes.length > 0) {
-                          return (
-                            <div className="space-y-3">
-                              {expertNotes.map((note: any) => (
-                                <div key={note.id} className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-                                  {note.timestamp && (
-                                    <div className="flex items-center gap-2 text-gray-500 mb-2">
-                                      <ClockIcon className="w-4 h-4" />
-                                      <span className="text-sm">{note.timestamp}</span>
-                                    </div>
-                                  )}
-                                  <p className="text-base text-gray-800 whitespace-pre-wrap">{note.content}</p>
-                                </div>
-                              ))}
-                            </div>
-                          );
-                        }
-                        return (
-                          <p className="text-base text-gray-500 italic">No expert notes available.</p>
-                        );
-                      })()}
-                    </div>
-
-                    {/* Handler Notes */}
-                    <div>
-                      <h3 className="text-lg font-semibold text-gray-900 mb-3">Handler Notes</h3>
-                      {(() => {
-                        const handlerNotes = meetingNotes?.handler_notes;
-                        if (Array.isArray(handlerNotes) && handlerNotes.length > 0) {
-                          return (
-                            <div className="space-y-3">
-                              {handlerNotes.map((note: any) => (
-                                <div key={note.id} className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-                                  {note.timestamp && (
-                                    <div className="flex items-center gap-2 text-gray-500 mb-2">
-                                      <ClockIcon className="w-4 h-4" />
-                                      <span className="text-sm">{note.timestamp}</span>
-                                    </div>
-                                  )}
-                                  <p className="text-base text-gray-800 whitespace-pre-wrap">{note.content}</p>
-                                </div>
-                              ))}
-                            </div>
-                          );
-                        }
-                        return (
-                          <p className="text-base text-gray-500 italic">No handler notes available.</p>
-                        );
-                      })()}
-                    </div>
-
-                    {/* Facts of Case */}
-                    <div>
-                      <h3 className="text-lg font-semibold text-gray-900 mb-3">Facts of Case</h3>
-                      {(() => {
-                        const facts = meetingNotes?.facts;
-                        if (facts) {
-                          return (
-                            <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
-                              <p className="text-base text-gray-800 whitespace-pre-wrap">{facts}</p>
-                            </div>
-                          );
-                        }
-                        return (
-                          <p className="text-base text-gray-500 italic">No facts of case available.</p>
-                        );
-                      })()}
-                    </div>
-                  </>
-                );
-              })()}
-            </div>
-
-            {/* Footer */}
-            <div className="bg-gray-50 border-t border-gray-200 p-4 flex justify-end">
-              <button
-                onClick={() => {
-                  setIsNotesModalOpen(false);
-                  setSelectedMeetingForNotes(null);
-                }}
-                className="btn btn-primary"
-              >
-                Close
-              </button>
-            </div>
+      <MobileBottomSheet
+        open={Boolean(isNotesModalOpen && selectedMeetingForNotes)}
+        onClose={() => {
+          setIsNotesModalOpen(false);
+          setSelectedMeetingForNotes(null);
+        }}
+        title="Notes"
+        subtitle={
+          selectedMeetingForNotes
+            ? `${selectedMeetingForNotes.lead?.name || selectedMeetingForNotes.name || 'Meeting Notes'}${selectedMeetingForNotes.lead?.lead_number ? ` (${selectedMeetingForNotes.lead.lead_number})` : ''}`
+            : undefined
+        }
+        zIndex={50}
+        sheetClassName="md:max-w-4xl"
+        contentClassName="p-4 md:p-6 space-y-6"
+        footer={
+          <div className="flex justify-end p-4">
+            <button
+              type="button"
+              className="btn btn-primary w-full max-md:min-h-12 md:w-auto"
+              onClick={() => {
+                setIsNotesModalOpen(false);
+                setSelectedMeetingForNotes(null);
+              }}
+            >
+              Close
+            </button>
           </div>
-        </div>,
-        document.body
-      )}
+        }
+      >
+        {selectedMeetingForNotes && (() => {
+          const meetingNotes = expandedMeetingData[selectedMeetingForNotes.id];
+          if (meetingNotes?.loading) {
+            return (
+              <div className="flex justify-center items-center py-12">
+                <span className="loading loading-spinner loading-lg"></span>
+              </div>
+            );
+          }
+          return (
+            <>
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900 mb-3">Expert Notes</h3>
+                {(() => {
+                  const expertNotes = meetingNotes?.expert_notes;
+                  if (Array.isArray(expertNotes) && expertNotes.length > 0) {
+                    return (
+                      <div className="space-y-3">
+                        {expertNotes.map((note: any) => (
+                          <div key={note.id} className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                            {note.timestamp && (
+                              <div className="flex items-center gap-2 text-gray-500 mb-2">
+                                <ClockIcon className="w-4 h-4" />
+                                <span className="text-sm">{note.timestamp}</span>
+                              </div>
+                            )}
+                            <p className="text-base text-gray-800 whitespace-pre-wrap">{note.content}</p>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  }
+                  return (
+                    <p className="text-base text-gray-500 italic">No expert notes available.</p>
+                  );
+                })()}
+              </div>
+
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900 mb-3">Handler Notes</h3>
+                {(() => {
+                  const handlerNotes = meetingNotes?.handler_notes;
+                  if (Array.isArray(handlerNotes) && handlerNotes.length > 0) {
+                    return (
+                      <div className="space-y-3">
+                        {handlerNotes.map((note: any) => (
+                          <div key={note.id} className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                            {note.timestamp && (
+                              <div className="flex items-center gap-2 text-gray-500 mb-2">
+                                <ClockIcon className="w-4 h-4" />
+                                <span className="text-sm">{note.timestamp}</span>
+                              </div>
+                            )}
+                            <p className="text-base text-gray-800 whitespace-pre-wrap">{note.content}</p>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  }
+                  return (
+                    <p className="text-base text-gray-500 italic">No handler notes available.</p>
+                  );
+                })()}
+              </div>
+
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900 mb-3">Facts of Case</h3>
+                {(() => {
+                  const facts = meetingNotes?.facts;
+                  if (facts) {
+                    return (
+                      <div className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+                        <p className="text-base text-gray-800 whitespace-pre-wrap">{facts}</p>
+                      </div>
+                    );
+                  }
+                  return (
+                    <p className="text-base text-gray-500 italic">No facts of case available.</p>
+                  );
+                })()}
+              </div>
+            </>
+          );
+        })()}
+      </MobileBottomSheet>
 
       {/* Assign Staff Modal */}
-      {isAssignStaffModalOpen && createPortal(
-        <div className="fixed inset-0 bg-white z-50">
-          <div className="h-full flex flex-col">
+      <MobileBottomSheet
+        open={isAssignStaffModalOpen}
+        onClose={() => setIsAssignStaffModalOpen(false)}
+        hideDefaultHeader
+        mobileFullHeight
+        zIndex={50}
+        sheetClassName="bg-white md:max-w-6xl"
+        contentClassName="!overflow-hidden flex flex-col min-h-0 p-0"
+      >
+          <div className="h-full min-h-0 flex flex-col">
             {/* Header */}
-            <div className="bg-white border-b border-gray-200 p-6">
+            <div className="bg-white border-b border-gray-200 p-4 md:p-6 shrink-0" data-sheet-handle>
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-6">
-                  <span className="text-3xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
-                  <div className="flex items-center gap-2">
-                    <h2 className="text-2xl font-bold text-black">Assign Staff</h2>
+                <div className="flex items-center gap-3 md:gap-6 min-w-0">
+                  <span className="text-xl md:text-3xl font-extrabold tracking-tight shrink-0" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <h2 className="text-lg md:text-2xl font-bold text-black truncate">Assign Staff</h2>
                   </div>
 
                 </div>
                 <button
+                  type="button"
                   onClick={() => setIsAssignStaffModalOpen(false)}
-                  className="btn btn-ghost btn-circle text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+                  className="btn btn-ghost btn-circle text-gray-500 hover:text-gray-700 hover:bg-gray-100 shrink-0"
                 >
                   <XMarkIcon className="w-6 h-6" />
                 </button>
@@ -8689,64 +8517,54 @@ const CalendarPage: React.FC = () => {
               )}
             </div>
           </div>
-        </div>,
-        document.body
-      )}
+      </MobileBottomSheet>
 
-      {/* Row action menu — centered horizontal buttons */}
+      {/* Row action menu — bottom sheet on mobile, centered on desktop */}
       {selectedRowId && (() => {
         const selectedMeetingForActions = meetings.find(m => m.id === selectedRowId) || filteredMeetings.find(m => m.id === selectedRowId);
         if (!selectedMeetingForActions || !selectedMeetingForActions.lead || selectedMeetingForActions.calendar_type === 'staff') return null;
         const lead = selectedMeetingForActions.lead;
 
         return (
-          <>
-            {/* Overlay to close buttons */}
-            <div
-              className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm"
-              onClick={() => {
-                setShowActionMenu(false);
-                setSelectedRowId(null);
-                setSelectedLeadForActions(null);
-              }}
-            />
-
-            {/* Centered action bar */}
-            <div
-              className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div
-                className="pointer-events-auto w-full max-w-5xl max-h-[min(92vh,900px)] overflow-y-auto rounded-2xl bg-white shadow-2xl border border-gray-200 px-4 py-6 sm:px-8 sm:py-8"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="flex flex-wrap items-center justify-center gap-3 sm:gap-4 mb-5 sm:mb-6">
-                  <p className="text-center text-sm font-medium text-gray-500 m-0">
-                    <span className="text-base font-semibold text-gray-900">{lead?.name || 'Client'}</span>
-                    {lead?.lead_number ? (
-                      <>
-                        {' · '}
-                        <span className="font-semibold text-gray-700">{lead.lead_number}</span>
-                      </>
-                    ) : null}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleViewClient(lead, e);
-                      setShowActionMenu(false);
-                      setSelectedRowId(null);
-                      setSelectedLeadForActions(null);
-                    }}
-                    className="btn btn-primary shrink-0 inline-flex h-12 min-w-[8.5rem] sm:h-14 sm:min-w-[10rem] items-center justify-center gap-1.5 rounded-xl text-xs sm:text-sm font-semibold leading-snug px-4 sm:px-5 shadow-md hover:scale-[1.02] transition-all duration-200 border-0"
-                    title="Enter lead page"
-                  >
-                    <span>Enter lead page</span>
-                    <ChevronRightIcon className="w-4 h-4 sm:w-5 sm:h-5 shrink-0" aria-hidden />
-                  </button>
-                </div>
-                <div className="flex flex-wrap items-start justify-center gap-3 sm:gap-5 md:gap-6">
+          <MobileBottomSheet
+            open
+            onClose={() => {
+              setShowActionMenu(false);
+              setSelectedRowId(null);
+              setSelectedLeadForActions(null);
+            }}
+            hideDefaultHeader
+            zIndex={50}
+            sheetClassName="md:max-w-5xl"
+            contentClassName="px-4 py-6 sm:px-8 sm:py-8"
+          >
+              <div className="flex flex-wrap items-center justify-center gap-3 sm:gap-4 mb-5 sm:mb-6">
+                <p className="text-center text-sm font-medium text-gray-500 m-0">
+                  <span className="text-base font-semibold text-gray-900">{lead?.name || 'Client'}</span>
+                  {lead?.lead_number ? (
+                    <>
+                      {' · '}
+                      <span className="font-semibold text-gray-700">{lead.lead_number}</span>
+                    </>
+                  ) : null}
+                </p>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleViewClient(lead, e);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedLeadForActions(null);
+                  }}
+                  className="btn btn-primary shrink-0 inline-flex h-12 min-w-[8.5rem] sm:h-14 sm:min-w-[10rem] items-center justify-center gap-1.5 rounded-xl text-xs sm:text-sm font-semibold leading-snug px-4 sm:px-5 shadow-md hover:scale-[1.02] transition-all duration-200 border-0"
+                  title="Enter lead page"
+                >
+                  <span>Enter lead page</span>
+                  <ChevronRightIcon className="w-4 h-4 sm:w-5 sm:h-5 shrink-0" aria-hidden />
+                </button>
+              </div>
+              <div className="flex flex-wrap items-start justify-center gap-3 sm:gap-5 md:gap-6">
                   {[
                     {
                       label: 'Call',
@@ -8848,9 +8666,7 @@ const CalendarPage: React.FC = () => {
                     setSelectedLeadForActions(null);
                   }}
                 />
-              </div>
-            </div>
-          </>
+          </MobileBottomSheet>
         );
       })()}
 
@@ -8976,13 +8792,17 @@ const CalendarPage: React.FC = () => {
       />
 
       {/* Internal meeting participants modal */}
-      {isStaffParticipantsModalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/50 p-0 md:items-center md:p-4"
-          onClick={() => setIsStaffParticipantsModalOpen(false)}
-        >
+      <MobileBottomSheet
+        open={isStaffParticipantsModalOpen}
+        onClose={() => setIsStaffParticipantsModalOpen(false)}
+        hideDefaultHeader
+        mobileFullHeight
+        zIndex={50}
+        sheetClassName="md:max-w-3xl"
+        contentClassName="!overflow-hidden flex flex-col min-h-0 p-0"
+      >
           <div
-            className="relative flex h-[100dvh] max-h-[100dvh] w-full max-w-none flex-col overflow-hidden rounded-none bg-white shadow-none md:h-[85vh] md:max-h-[85vh] md:max-w-3xl md:rounded-2xl md:shadow-[0_10px_30px_rgba(0,0,0,0.08)]"
+            className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-white"
             onClick={(e) => e.stopPropagation()}
           >
             {(() => {
@@ -9053,7 +8873,7 @@ const CalendarPage: React.FC = () => {
               return (
                 <>
                   {/* Sticky header */}
-                  <div className="sticky top-0 z-30 border-b border-gray-200 bg-white px-6 py-5">
+                  <div className="sticky top-0 z-30 border-b border-gray-200 bg-white px-4 py-4 md:px-6 md:py-5" data-sheet-handle>
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2 gap-y-2">
@@ -9405,8 +9225,7 @@ const CalendarPage: React.FC = () => {
               );
             })()}
           </div>
-        </div>
-      )}
+      </MobileBottomSheet>
     </div>
   );
 };

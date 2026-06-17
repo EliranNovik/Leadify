@@ -79,6 +79,7 @@ import DocumentModal from './DocumentModal';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
 import ClientHeaderTotalInNis from './ClientHeaderTotalInNis';
 import EditLeadDrawer from './EditLeadDrawer';
+import MobileBottomSheet from './MobileBottomSheet';
 
 // Lightweight in-memory caches to avoid refetching static dropdown data on mobile.
 let cachedLeadSources: Array<{ id: string; name: string }> | null = null;
@@ -4799,19 +4800,45 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
 
                 {/* Category Edit Modal */}
-                {showCategoryModal && (
-                    <div
-                        className="fixed inset-0 bg-black/50 flex items-center justify-center z-[330]"
-                        onClick={() => {
-                            setShowCategoryModal(false);
-                            setShowCategoryDropdown(false);
-                            setCategoryInputValue('');
-                        }}
-                    >
-                        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md p-6" onClick={e => e.stopPropagation()}>
-                            <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">Edit Category</h3>
-
-                            <div className="mb-6">
+                <MobileBottomSheet
+                    open={showCategoryModal}
+                    onClose={() => {
+                        setShowCategoryModal(false);
+                        setShowCategoryDropdown(false);
+                        setCategoryInputValue('');
+                    }}
+                    title="Edit Category"
+                    zIndex={330}
+                    sheetClassName="md:max-w-md"
+                    footer={
+                        <div className="flex w-full gap-2">
+                            <button
+                                type="button"
+                                className="btn btn-ghost flex-1 max-md:min-h-12"
+                                onClick={() => {
+                                    setShowCategoryModal(false);
+                                    setShowCategoryDropdown(false);
+                                    setCategoryInputValue('');
+                                }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                className="btn btn-primary flex-1 max-md:min-h-12"
+                                onClick={async () => {
+                                    await handleSaveCategory();
+                                    setShowCategoryModal(false);
+                                    setShowCategoryDropdown(false);
+                                    setCategoryInputValue('');
+                                }}
+                            >
+                                Save
+                            </button>
+                        </div>
+                    }
+                >
+                            <div>
                                 <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Category</label>
                                 <input
                                     autoFocus
@@ -4848,50 +4875,44 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </div>
                                 )}
                             </div>
+                </MobileBottomSheet>
 
-                            <div className="flex gap-3 justify-end">
-                                <button
-                                    className="btn btn-ghost"
-                                    onClick={() => {
-                                        setShowCategoryModal(false);
-                                        setShowCategoryDropdown(false);
-                                        setCategoryInputValue('');
-                                    }}
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    className="btn btn-primary"
-                                    onClick={async () => {
-                                        await handleSaveCategory();
-                                        setShowCategoryModal(false);
-                                        setShowCategoryDropdown(false);
-                                        setCategoryInputValue('');
-                                    }}
-                                >
-                                    Save
-                                </button>
-                            </div>
+                <MobileBottomSheet
+                    open={showLanguageModal}
+                    onClose={() => {
+                        setShowLanguageModal(false);
+                        setShowLanguageDropdown(false);
+                        setLanguageInputValue('');
+                    }}
+                    title="Edit Language"
+                    zIndex={330}
+                    sheetClassName="md:max-w-md"
+                    footer={
+                        <div className="flex w-full gap-2">
+                            <button
+                                type="button"
+                                className="btn btn-ghost flex-1 max-md:min-h-12"
+                                disabled={savingLanguage}
+                                onClick={() => {
+                                    setShowLanguageModal(false);
+                                    setShowLanguageDropdown(false);
+                                    setLanguageInputValue('');
+                                }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                className="btn btn-primary flex-1 max-md:min-h-12"
+                                disabled={savingLanguage}
+                                onClick={() => void handleSaveLanguage()}
+                            >
+                                {savingLanguage ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
+                            </button>
                         </div>
-                    </div>
-                )}
-
-                {showLanguageModal && (
-                    <div
-                        className="fixed inset-0 bg-black/50 flex items-center justify-center z-[330]"
-                        onClick={() => {
-                            setShowLanguageModal(false);
-                            setShowLanguageDropdown(false);
-                            setLanguageInputValue('');
-                        }}
-                    >
-                        <div
-                            className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md p-6"
-                            onClick={(e) => e.stopPropagation()}
-                        >
-                            <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">Edit Language</h3>
-
-                            <div className="mb-6">
+                    }
+                >
+                            <div>
                                 <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
                                     Language
                                 </label>
@@ -4925,48 +4946,42 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     </div>
                                 )}
                             </div>
+                </MobileBottomSheet>
 
-                            <div className="flex gap-3 justify-end">
-                                <button
-                                    type="button"
-                                    className="btn btn-ghost"
-                                    disabled={savingLanguage}
-                                    onClick={() => {
-                                        setShowLanguageModal(false);
-                                        setShowLanguageDropdown(false);
-                                        setLanguageInputValue('');
-                                    }}
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    type="button"
-                                    className="btn btn-primary"
-                                    disabled={savingLanguage}
-                                    onClick={() => void handleSaveLanguage()}
-                                >
-                                    {savingLanguage ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
-                                </button>
-                            </div>
+                <MobileBottomSheet
+                    open={showTopicModal}
+                    onClose={() => {
+                        setShowTopicModal(false);
+                        setTopicInputValue('');
+                    }}
+                    title="Edit Topic"
+                    zIndex={330}
+                    sheetClassName="md:max-w-md"
+                    footer={
+                        <div className="flex w-full gap-2">
+                            <button
+                                type="button"
+                                className="btn btn-ghost flex-1 max-md:min-h-12"
+                                disabled={savingTopic}
+                                onClick={() => {
+                                    setShowTopicModal(false);
+                                    setTopicInputValue('');
+                                }}
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                className="btn btn-primary flex-1 max-md:min-h-12"
+                                disabled={savingTopic}
+                                onClick={() => void handleSaveTopic()}
+                            >
+                                {savingTopic ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
+                            </button>
                         </div>
-                    </div>
-                )}
-
-                {showTopicModal && (
-                    <div
-                        className="fixed inset-0 bg-black/50 flex items-center justify-center z-[330]"
-                        onClick={() => {
-                            setShowTopicModal(false);
-                            setTopicInputValue('');
-                        }}
-                    >
-                        <div
-                            className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md p-6"
-                            onClick={(e) => e.stopPropagation()}
-                        >
-                            <h3 className="text-xl font-bold text-gray-900 dark:text-white mb-4">Edit Topic</h3>
-
-                            <div className="mb-6">
+                    }
+                >
+                            <div>
                                 <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
                                     Topic
                                 </label>
@@ -4979,31 +4994,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     onChange={(e) => setTopicInputValue(e.target.value)}
                                 />
                             </div>
-
-                            <div className="flex gap-3 justify-end">
-                                <button
-                                    type="button"
-                                    className="btn btn-ghost"
-                                    disabled={savingTopic}
-                                    onClick={() => {
-                                        setShowTopicModal(false);
-                                        setTopicInputValue('');
-                                    }}
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    type="button"
-                                    className="btn btn-primary"
-                                    disabled={savingTopic}
-                                    onClick={() => void handleSaveTopic()}
-                                >
-                                    {savingTopic ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                )}
+                </MobileBottomSheet>
 
                 {/* Call Options Modal */}
                 <CallOptionsModal

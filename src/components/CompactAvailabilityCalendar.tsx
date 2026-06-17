@@ -850,23 +850,6 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         }
       }
 
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user?.id) {
-        toast.error('User not authenticated');
-        return;
-      }
-
-      const { data: userData, error: userError } = await supabase
-        .from('users')
-        .select('full_name')
-        .eq('auth_id', user.id)
-        .single();
-
-      if (userError || !userData?.full_name) {
-        toast.error('Could not get user information');
-        return;
-      }
-
       // Upload document if it's a sick day and document is provided
       let documentUrl: string | null = null;
       if (newUnavailableTime.unavailabilityType === 'sick_days' && newUnavailableTime.documentFile) {
@@ -1088,23 +1071,6 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       async () => {
     setLoading(true);
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user?.id) {
-        toast.error('User not authenticated');
-        return;
-      }
-
-      const { data: userData, error: userError } = await supabase
-        .from('users')
-        .select('full_name')
-        .eq('auth_id', user.id)
-        .single();
-
-      if (userError || !userData?.full_name) {
-        toast.error('Could not get user information');
-        return;
-      }
-
       // Upload document if it's a sick day and document is provided
       let documentUrl: string | null = null;
       if (newUnavailableRange.unavailabilityType === 'sick_days' && newUnavailableRange.documentFile) {

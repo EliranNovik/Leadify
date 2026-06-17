@@ -12,6 +12,7 @@ const NewHandlerCasesWidget = lazy(() => import('./NewHandlerCasesWidget'));
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
+import { resolveSessionUser } from '../lib/resolveSessionUser';
 import { getCurrencySymbol } from '../lib/currencyConversion';
 import {
   resolvePaymentPlanBoiAsOfInput,
@@ -173,6 +174,11 @@ const MyAvailabilitySection: React.FC<{ onAvailabilityChange?: () => void; onOpe
 const Dashboard: React.FC = () => {
   // Get auth state from context to skip redundant checks
   const { user: authUser, isInitialized } = useAuthContext();
+
+  const resolveDashboardAuthUser = useCallback(
+    () => resolveSessionUser(authUser, tryRefreshThenExpire),
+    [authUser],
+  );
 
   // Check if alternative (green) theme is active - make it reactive
   const [isAltTheme, setIsAltTheme] = useState(() => document.documentElement.classList.contains('theme-alt'));
@@ -892,14 +898,7 @@ const Dashboard: React.FC = () => {
   const fetchFollowUpLeadsData = async (dateType: 'today' | 'overdue' | 'tomorrow' | 'future', fetchAll = false) => {
     try {
       // Get current user's data
-      const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
-      let user = initialUser;
-      if (authError && isAuthError(authError)) {
-        const recovered = await tryRefreshThenExpire();
-        if (!recovered) return { newLeads: [], legacyLeads: [], totalCount: 0 };
-        const { data: { user: retryUser } } = await supabase.auth.getUser();
-        user = retryUser;
-      }
+      const user = await resolveDashboardAuthUser();
       if (!user) {
         return { newLeads: [], legacyLeads: [], totalCount: 0 };
       }
@@ -1277,33 +1276,27 @@ const Dashboard: React.FC = () => {
     return s || '--';
   };
 
-  // Fetch current user ID on mount
+  // Resolve CRM users.id from AuthContext (no redundant getUser network calls)
   useEffect(() => {
-    const fetchUserId = async () => {
-      try {
-        const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
-        let user = initialUser;
-        if (authError && isAuthError(authError)) {
-          const recovered = await tryRefreshThenExpire();
-          if (!recovered) return;
-          const { data: { user: retryUser } } = await supabase.auth.getUser();
-          user = retryUser;
-        }
-        if (user) {
-          const { data: userData } = await supabase
-            .from('users')
-            .select('id')
-            .eq('auth_id', user.id)
-            .maybeSingle();
-          if (userData) {
-            setCurrentUserId(userData.id);
-          }
-        }
-      } catch (error) {
+    if (!authUser?.id) {
+      setCurrentUserId(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const { data } = await supabase
+        .from('users')
+        .select('id')
+        .eq('auth_id', authUser.id)
+        .maybeSingle();
+      if (!cancelled && data?.id) {
+        setCurrentUserId(data.id);
       }
+    })();
+    return () => {
+      cancelled = true;
     };
-    fetchUserId();
-  }, []);
+  }, [authUser?.id]);
 
   // Handler to edit follow-up date
   const handleEditFollowUp = (lead: any) => {
@@ -1414,14 +1407,8 @@ const Dashboard: React.FC = () => {
       setMeetingsLoading(true);
       try {
         // First, fetch current user's employee_id, display name, and email
-        const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
-        let user = initialUser;
-        if (authError && isAuthError(authError)) {
-          const recovered = await tryRefreshThenExpire();
-          if (!recovered) return;
-          const { data: { user: retryUser } } = await supabase.auth.getUser();
-          user = retryUser;
-        }
+        const user = await resolveDashboardAuthUser();
+        if (!user) return;
         let userEmployeeId: number | null = null;
         let userDisplayName: string | null = null;
         let userEmail: string | null = null;
@@ -2208,17 +2195,7 @@ const Dashboard: React.FC = () => {
     };
 
     try {
-      const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
-      let user = initialUser;
-      if (authError && isAuthError(authError)) {
-        const recovered = await tryRefreshThenExpire();
-        if (!recovered) {
-          resetEmpty();
-          return;
-        }
-        const { data: { user: retryUser } } = await supabase.auth.getUser();
-        user = retryUser;
-      }
+      const user = await resolveDashboardAuthUser();
       if (!user) {
         resetEmpty();
         return;
@@ -2504,7 +2481,7 @@ const Dashboard: React.FC = () => {
       setLatestMessages([]);
       setLatestMessagesAllLeads([]);
     }
-  }, []);
+  }, [resolveDashboardAuthUser]);
 
   // Update meetingsToday count when todayMeetings changes
   useEffect(() => {
@@ -2521,14 +2498,7 @@ const Dashboard: React.FC = () => {
 
       try {
         // Get current user's data with employee relationship using JOIN
-        const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
-        let user = initialUser;
-        if (authError && isAuthError(authError)) {
-          const recovered = await tryRefreshThenExpire();
-          if (!recovered) return;
-          const { data: { user: retryUser } } = await supabase.auth.getUser();
-          user = retryUser;
-        }
+        const user = await resolveDashboardAuthUser();
         if (!user) {
           setOverdueFollowups(0);
           return;
@@ -2568,6 +2538,12 @@ const Dashboard: React.FC = () => {
     })();
     void refreshDashboardMessages();
   }, [refreshDashboardMessages]);
+
+  useEffect(() => {
+    if (!dashboardIsSuperuser && isTeamStatusModalOpen) {
+      setIsTeamStatusModalOpen(false);
+    }
+  }, [dashboardIsSuperuser, isTeamStatusModalOpen]);
 
   // Graph data (mocked)
   const meetingsPerMonth = [
@@ -2866,14 +2842,7 @@ const Dashboard: React.FC = () => {
     if (!opts?.background) setPerformanceLoading(true);
     try {
       // Get current user's employee ID and full name
-      const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
-      let user = initialUser;
-      if (authError && isAuthError(authError)) {
-        const recovered = await tryRefreshThenExpire();
-        if (!recovered) return;
-        const { data: { user: retryUser } } = await supabase.auth.getUser();
-        user = retryUser;
-      }
+      const user = await resolveDashboardAuthUser();
       if (!user) {
         setPerformanceLoading(false);
         return;
@@ -5459,14 +5428,7 @@ const Dashboard: React.FC = () => {
         }
 
         // Get current user info
-        const { data: { user: initialUser }, error: authError } = await supabase.auth.getUser();
-        let user = initialUser;
-        if (authError && isAuthError(authError)) {
-          const recovered = await tryRefreshThenExpire();
-          if (!recovered) return;
-          const { data: { user: retryUser } } = await supabase.auth.getUser();
-          user = retryUser;
-        }
+        const user = await resolveDashboardAuthUser();
         if (!user) {
           setRealSignedLeads([]);
           setRealLeadsLoading(false);
@@ -7773,13 +7735,15 @@ const Dashboard: React.FC = () => {
                       <h2 className="text-lg font-bold text-gray-900">
                         Team Availability
                       </h2>
-                      <button
-                        type="button"
-                        className="btn btn-xs btn-outline btn-primary rounded-full px-3 min-h-0 h-7"
-                        onClick={() => setIsTeamStatusModalOpen(true)}
-                      >
-                        View all
-                      </button>
+                      {dashboardIsSuperuser && (
+                        <button
+                          type="button"
+                          className="btn btn-xs btn-outline btn-primary rounded-full px-3 min-h-0 h-7"
+                          onClick={() => setIsTeamStatusModalOpen(true)}
+                        >
+                          View all
+                        </button>
+                      )}
                     </div>
                     <p className="text-sm text-gray-500">
                   {getDateDescription(teamAvailabilityDate)}
@@ -8313,11 +8277,13 @@ const Dashboard: React.FC = () => {
         onClose={() => setIsUnavailableEmployeesModalOpen(false)}
       />
 
-      {/* Team Status Modal */}
-      <TeamStatusModal
-        isOpen={isTeamStatusModalOpen}
-        onClose={() => setIsTeamStatusModalOpen(false)}
-      />
+      {/* Team Status Modal — superusers only */}
+      {dashboardIsSuperuser && (
+        <TeamStatusModal
+          isOpen={isTeamStatusModalOpen}
+          onClose={() => setIsTeamStatusModalOpen(false)}
+        />
+      )}
 
       {/* My Availability Modal - Mobile Only */}
       {
