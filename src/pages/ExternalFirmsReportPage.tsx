@@ -1086,8 +1086,32 @@ const STATUS_BADGE_OWNER_OFF =
   'shrink-0 rounded-md bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500';
 const STATUS_BADGE_LINKED = 'shrink-0 rounded-md bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-700';
 
-function contactIsActive(contact: { is_active?: boolean | null }): boolean {
-  return contact.is_active !== false;
+function contactIsActive(contact: { is_active?: boolean | string | null }): boolean {
+  const value = contact.is_active;
+  if (value === null || value === undefined) return true;
+  if (typeof value === 'boolean') return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === 'false' || normalized === 'f' || normalized === '0' || normalized === 'no') {
+    return false;
+  }
+  return true;
+}
+
+function contactBooleanField(value: unknown): 't' | 'f' {
+  if (value === null || value === undefined) return 'f';
+  if (typeof value === 'boolean') return value ? 't' : 'f';
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === 'true' || normalized === 't' || normalized === '1' || normalized === 'yes') {
+    return 't';
+  }
+  return 'f';
+}
+
+function formatFirmContactSaveError(err: { code?: string; message?: string }): string {
+  if (err?.code === '23505' && String(err.message || '').includes('user_email')) {
+    return 'A contact with this login email already exists.';
+  }
+  return err?.message || 'Failed to update contact';
 }
 
 /** Curated professional business covers (Unsplash) — stable pick per entity */
@@ -1971,7 +1995,7 @@ export default function ExternalFirmsReportPage() {
     try {
       const { error } = await supabase
         .from('firm_contacts')
-        .update({ [field]: nextValue })
+        .update({ [field]: nextValue ? 't' : 'f' })
         .eq('id', contact.id);
 
       if (error) throw error;
@@ -1982,7 +2006,7 @@ export default function ExternalFirmsReportPage() {
           return {
             ...f,
             firm_contacts: (f.firm_contacts || []).map((c) =>
-              c.id === contact.id ? { ...c, [field]: nextValue } : c,
+              c.id === contact.id ? { ...c, [field]: nextValue ? 't' : 'f' } : c,
             ),
           };
         }),
@@ -2192,7 +2216,7 @@ export default function ExternalFirmsReportPage() {
     }
   };
 
-  const handleUpdateContact = async (formData: Partial<FirmContactRow>) => {
+  const handleUpdateContact = async (formData: Record<string, unknown>) => {
     if (!editingContact) return;
     setIsUpdating(true);
     try {
@@ -2203,7 +2227,6 @@ export default function ExternalFirmsReportPage() {
 
       if (error) throw error;
 
-      // Optimistic Update
       setFirms(prev => prev.map(f => {
         if (f.id !== editingContact.firm_id) return f;
         return {
@@ -2215,7 +2238,6 @@ export default function ExternalFirmsReportPage() {
       toast.success('Contact updated successfully');
       setEditingContact(null);
 
-      // Log Activity
       logActivity({
         firm_id: editingContact.firm_id,
         contact_id: editingContact.id,
@@ -2223,9 +2245,10 @@ export default function ExternalFirmsReportPage() {
         description: `Modified contact ${editingContact.name} via slide-over.`
       });
       if (selectedFirmId) fetchActivityLogs(selectedFirmId);
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      toast.error(err.message || 'Failed to update contact');
+      const payload = err && typeof err === 'object' ? (err as { code?: string; message?: string }) : {};
+      toast.error(formatFirmContactSaveError(payload));
     } finally {
       setIsUpdating(false);
     }
@@ -3498,6 +3521,14 @@ export default function ExternalFirmsReportPage() {
                               Created {formatDate(selectedFirm.created_at)} · Updated{' '}
                               {formatDate(selectedFirm.updated_at)}
                             </p>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm gap-1.5"
+                              onClick={() => setEditingFirm(selectedFirm)}
+                            >
+                              <PencilIcon className="h-4 w-4" />
+                              Edit
+                            </button>
                           </div>
                         </div>
                       </div>
@@ -3609,13 +3640,17 @@ export default function ExternalFirmsReportPage() {
                               <td className="px-5 py-4 hidden sm:table-cell">
                                 <ContactStatusToggleRow
                                   label="Owner"
-                                  pressed={Boolean(c.firm_owner)}
+                                  pressed={contactBooleanField(c.firm_owner) === 't'}
                                   pressedClass={STATUS_BADGE_OWNER}
                                   unpressedClass={STATUS_BADGE_OWNER_OFF}
                                   toggleClass="toggle-warning"
                                   disabled={togglingContactKey === `${c.id}:firm_owner`}
                                   onToggle={() =>
-                                    void patchContactToggle(c, 'firm_owner', !c.firm_owner)
+                                    void patchContactToggle(
+                                      c,
+                                      'firm_owner',
+                                      contactBooleanField(c.firm_owner) !== 't',
+                                    )
                                   }
                                 />
                               </td>
@@ -3851,10 +3886,20 @@ export default function ExternalFirmsReportPage() {
                       <div className="min-w-0 w-full flex-1 sm:pt-1 md:pt-2">
                         <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
                           <div className="min-w-0 w-full">
-                            <p className="mb-2 text-xs text-base-content/35 sm:hidden">
-                              Created {formatDate(selectedContact.created_at)} · Updated{' '}
-                              {formatDate(selectedContact.updated_at)}
-                            </p>
+                            <div className="mb-2 flex items-center justify-between gap-2 sm:hidden">
+                              <p className="text-xs text-base-content/35">
+                                Created {formatDate(selectedContact.created_at)} · Updated{' '}
+                                {formatDate(selectedContact.updated_at)}
+                              </p>
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-xs gap-1 shrink-0"
+                                onClick={() => setEditingContact(selectedContact)}
+                              >
+                                <PencilIcon className="h-3.5 w-3.5" />
+                                Edit
+                              </button>
+                            </div>
                             <div className="flex flex-wrap items-center gap-2">
                               <h2 className="w-full text-xl font-bold leading-snug text-base-content/95 break-words sm:w-auto sm:text-2xl">
                                 {selectedContact.name || 'Contact'}
@@ -3876,7 +3921,7 @@ export default function ExternalFirmsReportPage() {
                               />
                               <ContactStatusToggleRow
                                 label="Owner"
-                                pressed={Boolean(selectedContact.firm_owner)}
+                                pressed={contactBooleanField(selectedContact.firm_owner) === 't'}
                                 pressedClass={STATUS_BADGE_OWNER}
                                 unpressedClass={STATUS_BADGE_OWNER_OFF}
                                 toggleClass="toggle-warning"
@@ -3885,7 +3930,7 @@ export default function ExternalFirmsReportPage() {
                                   void patchContactToggle(
                                     selectedContact,
                                     'firm_owner',
-                                    !selectedContact.firm_owner,
+                                    contactBooleanField(selectedContact.firm_owner) !== 't',
                                   )
                                 }
                               />
@@ -3898,10 +3943,20 @@ export default function ExternalFirmsReportPage() {
                               <FirmTypesBadges firm={selectedFirm} size="sm" />
                             </div>
                           </div>
-                          <p className="hidden shrink-0 text-xs text-base-content/35 text-right whitespace-nowrap sm:block sm:self-start sm:pt-1">
-                            Created {formatDate(selectedContact.created_at)} · Updated{' '}
-                            {formatDate(selectedContact.updated_at)}
-                          </p>
+                          <div className="hidden shrink-0 flex-col items-end gap-1.5 sm:flex sm:self-start sm:pt-1">
+                            <p className="text-xs text-base-content/35 text-right whitespace-nowrap">
+                              Created {formatDate(selectedContact.created_at)} · Updated{' '}
+                              {formatDate(selectedContact.updated_at)}
+                            </p>
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm gap-1.5"
+                              onClick={() => setEditingContact(selectedContact)}
+                            >
+                              <PencilIcon className="h-4 w-4" />
+                              Edit
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -4207,6 +4262,7 @@ export default function ExternalFirmsReportPage() {
             createDefaults: selectedFirmId ? { firm_id: selectedFirmId } : undefined,
             browseFirmId: selectedFirmId ?? undefined,
             onRecordCreated: handleFirmContactRecordSaved,
+            onRecordSaved: handleFirmContactRecordSaved,
           }}
         />
         <FirmTypesManager
@@ -4433,13 +4489,19 @@ export default function ExternalFirmsReportPage() {
                       onSubmit={async (e) => {
                         e.preventDefault();
                         const formData = new FormData(e.currentTarget);
+                        const optionalText = (key: string) => {
+                          const value = String(formData.get(key) ?? '').trim();
+                          return value || null;
+                        };
                         const updates = {
-                          name: String(formData.get('name')),
-                          email: String(formData.get('email')),
-                          second_email: String(formData.get('second_email')),
-                          phone: String(formData.get('phone')),
-                          user_email: String(formData.get('user_email')),
-                          notes: String(formData.get('notes')),
+                          name: String(formData.get('name') ?? '').trim(),
+                          email: optionalText('email'),
+                          second_email: optionalText('second_email'),
+                          phone: optionalText('phone'),
+                          user_email: optionalText('user_email'),
+                          notes: optionalText('notes'),
+                          is_active: formData.get('is_active') === 'on' ? 't' : 'f',
+                          firm_owner: formData.get('firm_owner') === 'on' ? 't' : 'f',
                         };
                         await handleUpdateContact(updates);
                       }}
@@ -4470,6 +4532,26 @@ export default function ExternalFirmsReportPage() {
                       <div className="space-y-1">
                         <label className="text-[11px] font-bold uppercase tracking-wider text-base-content/40 ml-1">Private Notes</label>
                         <textarea name="notes" defaultValue={editingContact.notes || ''} className="textarea textarea-bordered w-full bg-base-100 h-32" />
+                      </div>
+                      <div className="flex flex-col gap-3 pt-2">
+                        <label className="flex items-center gap-3 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            name="is_active"
+                            defaultChecked={contactIsActive(editingContact)}
+                            className="checkbox checkbox-success rounded"
+                          />
+                          <span className="text-sm font-semibold text-base-content/75">Contact is active</span>
+                        </label>
+                        <label className="flex items-center gap-3 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            name="firm_owner"
+                            defaultChecked={contactBooleanField(editingContact.firm_owner) === 't'}
+                            className="checkbox checkbox-warning rounded"
+                          />
+                          <span className="text-sm font-semibold text-base-content/75">Firm owner</span>
+                        </label>
                       </div>
                     </form>
                   </div>

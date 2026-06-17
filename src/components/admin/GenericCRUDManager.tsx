@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../../lib/supabase';
 import { toast } from 'react-hot-toast';
 import { 
@@ -80,6 +80,8 @@ interface GenericCRUDManagerProps {
   createDefaults?: Partial<Record>;
   /** After a successful create while listHidden. */
   onRecordCreated?: (record: Record) => void;
+  /** After a successful create or update while listHidden or elevatedDrawer. */
+  onRecordSaved?: (record: Record) => void;
   /** Stack edit drawer above host overlays (e.g. connect-contact modal). */
   elevatedDrawer?: boolean;
 }
@@ -98,6 +100,23 @@ const coerceToAppBoolean = (value: unknown): boolean => {
   if (s === 'true' || s === 't' || s === '1' || s === 'yes') return true;
   return false;
 };
+
+function resolveEditingRecordId(id: unknown): string | null {
+  if (id == null || id === '') return null;
+  return String(id);
+}
+
+function formatSaveConflictError(tableName: string, error: { code?: string; message?: string }): string | null {
+  if (error?.code !== '23505') return null;
+  const message = String(error.message || '');
+  if (tableName === 'firm_contacts' && message.includes('user_email')) {
+    return 'A contact with this login email already exists. Search for that contact and edit it instead of creating a duplicate.';
+  }
+  if (message.includes('user_email')) {
+    return 'This login email is already in use.';
+  }
+  return message || 'A record with these values already exists.';
+}
 
 const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   tableName,
@@ -125,11 +144,13 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   onExternalAddOpenChange,
   createDefaults,
   onRecordCreated,
+  onRecordSaved,
   elevatedDrawer = false,
 }) => {
   const [records, setRecords] = useState<Record[]>([]);
   const [loading, setLoading] = useState(true);
   const [editingRecord, setEditingRecord] = useState<Record | null>(null);
+  const editingRecordIdRef = useRef<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
   const [recordToDelete, setRecordToDelete] = useState<Record | null>(null);
@@ -819,6 +840,11 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
   // Create or update record
   const saveRecord = async (record: Partial<Record>) => {
+    const existingRecordId =
+      resolveEditingRecordId(editingRecord?.id) ??
+      editingRecordIdRef.current ??
+      resolveEditingRecordId((record as Partial<Record>).id);
+
     // Keep only fields configured for this manager.
     // This prevents stale keys from previous schema versions (e.g. is_active/order_value)
     // from leaking into payloads and causing PostgREST column errors.
@@ -941,7 +967,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
     // Assign manual IDs for tables without database defaults
     if (
-      !editingRecord?.id &&
+      !existingRecordId &&
       manualIdTables.has(tableName) &&
       ((record as any).id === undefined || (record as any).id === null)
     ) {
@@ -1032,7 +1058,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         (record as any).firm_id = currentUserFirmId;
       }
 
-      if (editingRecord?.id) {
+      if (existingRecordId) {
         // Update existing record
         if (tableName === 'users' && record.new_password && record.new_password.trim() !== '') {
           // Special handling for password change in users table
@@ -1042,7 +1068,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           const { new_password, ...updateData } = record;
           
           // Call API to update password
-          const response = await fetch(`${API_BASE_URL}/users/${editingRecord.id}/password`, {
+          const response = await fetch(`${API_BASE_URL}/users/${existingRecordId}/password`, {
             method: 'PUT',
             headers: {
               'Content-Type': 'application/json',
@@ -1077,12 +1103,12 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           const { data: existingRecord, error: checkError } = await supabase
             .from(tableName)
             .select('*')
-            .eq('id', String(editingRecord.id))
+            .eq('id', existingRecordId)
             .single();
           
           if (checkError) {
             console.error(`Record check error for ${tableName}:`, checkError);
-            throw new Error(`Record with ID ${editingRecord.id} not found`);
+            throw new Error(`Record with ID ${existingRecordId} not found`);
           }
           
           console.log(`Record exists:`, existingRecord);
@@ -1095,18 +1121,18 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             delete updateDataWithoutId.updated_by;
           }
           
-          console.log(`Updating ${tableName} record with ID: ${editingRecord.id}`, updateDataWithoutId);
+          console.log(`Updating ${tableName} record with ID: ${existingRecordId}`, updateDataWithoutId);
           
           console.log(`Attempting update with query:`, {
             table: tableName,
-            id: String(editingRecord.id),
+            id: existingRecordId,
             updateData: updateDataWithoutId
           });
           
           const { data, error } = await supabase
             .from(tableName)
             .update(updateDataWithoutId)
-            .eq('id', String(editingRecord.id))
+            .eq('id', existingRecordId)
             .select();
           
           console.log(`Update result:`, { data, error });
@@ -1118,7 +1144,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
           if (!data || data.length === 0) {
             // Try to get more information about why the update failed
-            console.log(`Update failed for ${tableName} record with ID ${editingRecord.id}. Attempting to fetch current user info...`);
+            console.log(`Update failed for ${tableName} record with ID ${existingRecordId}. Attempting to fetch current user info...`);
             
             const { data: currentUser, error: userError } = await supabase.auth.getUser();
             console.log(`Current user:`, currentUser);
@@ -1140,7 +1166,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             const { data: selectData, error: selectError } = await supabase
               .from(tableName)
               .select('*')
-              .eq('id', String(editingRecord.id));
+              .eq('id', existingRecordId);
             
             console.log(`Select test result:`, { selectData, selectError });
             
@@ -1149,7 +1175,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
               const { data: testUpdateData, error: testUpdateError } = await supabase
                 .from(tableName)
                 .update({ updated_at: new Date().toISOString() })
-                .eq('id', String(editingRecord.id))
+                .eq('id', existingRecordId)
                 .select();
               console.log(`Test update result:`, { testUpdateData, testUpdateError });
             } else {
@@ -1173,7 +1199,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
               toast.error(`Access denied: You don't have permission to update ${title.toLowerCase()} records. Only admin or superuser accounts can perform this action.`);
             }
             
-            throw new Error(`Update failed: No rows were updated for ${tableName} record with ID ${editingRecord.id}. This is likely due to Row Level Security policies. Current user: ${currentUser?.user?.email || 'unknown'}`);
+            throw new Error(`Update failed: No rows were updated for ${tableName} record with ID ${existingRecordId}. This is likely due to Row Level Security policies. Current user: ${currentUser?.user?.email || 'unknown'}`);
           }
 
           result = data[0];
@@ -1209,17 +1235,22 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           if (tableName === 'users') {
             delete (updateData as any).password_hash;
           }
+          if (tableName === 'firm_contacts') {
+            if (updateData.password_hash == null || updateData.password_hash === '') {
+              delete updateData.password_hash;
+            }
+          }
 
           // First, check if the record exists and get its structure
           const { data: existingRecord, error: checkError } = await supabase
             .from(tableName)
             .select('*')
-            .eq('id', String(editingRecord.id))
+            .eq('id', existingRecordId)
             .single();
           
           if (checkError) {
             console.error(`Record check error for ${tableName}:`, checkError);
-            throw new Error(`Record with ID ${editingRecord.id} not found`);
+            throw new Error(`Record with ID ${existingRecordId} not found`);
           }
           
           console.log(`Record exists:`, existingRecord);
@@ -1247,14 +1278,14 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
           
           console.log(`Attempting update with query:`, {
             table: tableName,
-            id: String(editingRecord.id),
+            id: existingRecordId,
             updateData: updateData
           });
           
           const { data, error } = await supabase
             .from(tableName)
             .update(updateData)
-            .eq('id', String(editingRecord.id))
+            .eq('id', existingRecordId)
             .select();
           
           console.log(`Update result:`, { data, error });
@@ -1266,7 +1297,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
           if (!data || data.length === 0) {
             // Try to get more information about why the update failed
-            console.log(`Update failed for ${tableName} record with ID ${editingRecord.id}. Attempting to fetch current user info...`);
+            console.log(`Update failed for ${tableName} record with ID ${existingRecordId}. Attempting to fetch current user info...`);
             
             const { data: currentUser, error: userError } = await supabase.auth.getUser();
             console.log(`Current user:`, currentUser);
@@ -1288,7 +1319,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             const { data: selectData, error: selectError } = await supabase
               .from(tableName)
               .select('*')
-              .eq('id', String(editingRecord.id));
+              .eq('id', existingRecordId);
             
             console.log(`Select test result:`, { selectData, selectError });
             
@@ -1297,7 +1328,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
               const { data: testUpdateData, error: testUpdateError } = await supabase
                 .from(tableName)
                 .update({ updated_at: new Date().toISOString() })
-                .eq('id', String(editingRecord.id))
+                .eq('id', existingRecordId)
                 .select();
               console.log(`Test update result:`, { testUpdateData, testUpdateError });
             } else {
@@ -1321,7 +1352,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
               toast.error(`Access denied: You don't have permission to update ${title.toLowerCase()} records. Only admin or superuser accounts can perform this action.`);
             }
             
-            throw new Error(`Update failed: No rows were updated for ${tableName} record with ID ${editingRecord.id}. This is likely due to Row Level Security policies. Current user: ${currentUser?.user?.email || 'unknown'}`);
+            throw new Error(`Update failed: No rows were updated for ${tableName} record with ID ${existingRecordId}. This is likely due to Row Level Security policies. Current user: ${currentUser?.user?.email || 'unknown'}`);
           }
 
           result = data[0];
@@ -1470,6 +1501,10 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
               keys: Object.keys(finalInsertRecord),
               jsonPayload: JSON.stringify(finalInsertRecord)
             });
+            const conflictMessage = formatSaveConflictError(tableName, error);
+            if (conflictMessage) {
+              toast.error(conflictMessage);
+            }
             throw error;
           }
           result = data;
@@ -1478,8 +1513,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       }
 
       setRecords(prev => {
-        if (editingRecord?.id) {
-          return prev.map(r => r.id === editingRecord.id ? result : r);
+        if (existingRecordId) {
+          return prev.map(r => String(r.id) === existingRecordId ? result : r);
         } else {
           return [result, ...prev];
         }
@@ -1490,7 +1525,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
       // Update preferred categories if needed
       if (tableName === 'tenants_employee' && preferredCategories !== undefined) {
-        const targetId = editingRecord?.id ? String(editingRecord.id) : String((result as any)?.id);
+        const targetId = existingRecordId ?? String((result as any)?.id);
         if (targetId) {
           await updatePreferredCategories(targetId, preferredCategories);
           await fetchRecords();
@@ -1498,7 +1533,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       }
 
       if (tableName === 'firms' && firmLeadSourceIds !== undefined) {
-        const targetFirmId = editingRecord?.id ? String(editingRecord.id) : String((result as any)?.id);
+        const targetFirmId = existingRecordId ?? String((result as any)?.id);
         if (targetFirmId) {
           await syncFirmLeadSources(targetFirmId, firmLeadSourceIds);
           await fetchRecords();
@@ -1506,22 +1541,30 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       }
 
       if (tableName === 'firms' && firmFirmTypeIds !== undefined) {
-        const targetFirmId = editingRecord?.id ? String(editingRecord.id) : String((result as any)?.id);
+        const targetFirmId = existingRecordId ?? String((result as any)?.id);
         if (targetFirmId) {
           await syncFirmFirmTypes(targetFirmId, firmFirmTypeIds);
           await fetchRecords();
         }
       }
 
-      const wasCreate = !editingRecord?.id;
-      if ((listHidden || elevatedDrawer) && result && onRecordCreated) {
-        onRecordCreated(result);
+      const wasCreate = !existingRecordId;
+      if ((listHidden || elevatedDrawer) && result) {
+        onRecordSaved?.(result);
+        if (wasCreate) {
+          onRecordCreated?.(result);
+        }
       }
 
       closeModal();
-    } catch (error) {
+    } catch (error: any) {
       console.error(`Error saving ${tableName}:`, error);
-      toast.error(`Failed to save ${title}`);
+      const conflictMessage = formatSaveConflictError(tableName, error);
+      if (conflictMessage) {
+        toast.error(conflictMessage);
+      } else {
+        toast.error(`Failed to save ${title}`);
+      }
     }
   };
 
@@ -1723,7 +1766,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       }
     }
     
-    const isEdit = Boolean(record?.id);
+    const isEdit = Boolean(resolveEditingRecordId(record?.id));
+    editingRecordIdRef.current = isEdit ? resolveEditingRecordId(record?.id) : null;
 
     // If creating new record, initialize with default values from fields
     if (!isEdit) {
@@ -1758,6 +1802,9 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
       setEditingRecord(defaultRecord);
     } else if (record) {
       const transformedRecord: Record = { ...record };
+      if (isEdit) {
+        transformedRecord.id = record.id;
+      }
       fields.forEach(field => {
         if (field.prepareValueForForm) {
           transformedRecord[field.name] = field.prepareValueForForm(record[field.name], record);
@@ -1783,6 +1830,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
   const closeModal = () => {
     setEditingRecord(null);
+    editingRecordIdRef.current = null;
     setIsModalOpen(false);
     onExternalAddOpenChange?.(false);
   };
@@ -2111,6 +2159,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
     }
   };
 
+  const modalExistingId = resolveEditingRecordId(editingRecord?.id) ?? editingRecordIdRef.current;
+
   return (
     <div className="w-full">
       <style>{`
@@ -2418,10 +2468,10 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             <div className="flex items-center justify-between px-8 pt-8 pb-4 border-b border-gray-100">
               <div>
                 <h3 className="text-2xl font-bold text-gray-900">
-                  {editingRecord?.id ? `Edit ${title}` : `Add ${title}`}
+                  {modalExistingId ? `Edit ${title}` : `Add ${title}`}
                 </h3>
                 <div className="text-base font-medium text-gray-500 mt-1">
-                  {editingRecord?.id ? 'Update record details' : 'Create new record'}
+                  {modalExistingId ? 'Update record details' : 'Create new record'}
                 </div>
               </div>
               <button className="btn btn-ghost btn-sm" onClick={closeModal}>
@@ -2437,8 +2487,9 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                 
                 const record: Partial<Record> = { ...editingRecord };
                 
-                // Remove id field when creating new record (not editing) - let database auto-generate it
-                if (!editingRecord.id) {
+                if (modalExistingId) {
+                  record.id = modalExistingId;
+                } else {
                   delete (record as any).id;
                 }
                 
@@ -2466,7 +2517,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                 });
                 
                 // Ensure fields with defaultValue are included even if hidden (for new records)
-                if (!editingRecord?.id) {
+                if (!modalExistingId) {
                   fields.forEach(field => {
                     if (field.defaultValue !== undefined && (record[field.name] === null || record[field.name] === undefined)) {
                       record[field.name] = typeof field.defaultValue === 'function'
@@ -2481,11 +2532,9 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                 <div className="grid grid-cols-1 gap-6">
                   {fields.filter(field => {
                     if (field.type === 'boolean' || field.type === 'custom' || field.type === 'jsonb') return false;
-                    // If we're adding (no id), check hideInAdd - only show if NOT hidden
-                    if (!editingRecord?.id) {
+                    if (!modalExistingId) {
                       return field.hideInAdd !== true;
                     }
-                    // If we're editing (has id), check hideInEdit - only show if NOT hidden
                     return field.hideInEdit !== true;
                   }).map(field => {
                     // Ensure required fields with defaults are initialized
@@ -2507,7 +2556,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                         <label className="label">
                           <span className="label-text font-semibold text-gray-700">
                             {field.label}
-                            {field.required && !editingRecord?.id && <span className="text-error ml-1">*</span>}
+                            {field.required && !modalExistingId && <span className="text-error ml-1">*</span>}
                           </span>
                         </label>
                         {renderField(
@@ -2528,17 +2577,16 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                   {fields.filter(field => {
                     if (field.type !== 'boolean') return false;
                     // If we're adding (no id), check hideInAdd - only show if NOT hidden
-                    if (!editingRecord?.id) {
+                    if (!modalExistingId) {
                       return field.hideInAdd !== true;
                     }
-                    // If we're editing (has id), check hideInEdit - only show if NOT hidden
                     return field.hideInEdit !== true;
                   }).map(field => (
                     <div key={field.name} className="form-control">
                       <label className="label">
                         <span className="label-text font-semibold text-gray-700">
                           {field.label}
-                          {field.required && !editingRecord?.id && <span className="text-error ml-1">*</span>}
+                          {field.required && !modalExistingId && <span className="text-error ml-1">*</span>}
                         </span>
                       </label>
                       {renderField(
@@ -2558,17 +2606,16 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                   {fields.filter(field => {
                     if (field.type !== 'custom' && field.type !== 'jsonb') return false;
                     // If we're adding (no id), check hideInAdd - only show if NOT hidden
-                    if (!editingRecord?.id) {
+                    if (!modalExistingId) {
                       return field.hideInAdd !== true;
                     }
-                    // If we're editing (has id), check hideInEdit - only show if NOT hidden
                     return field.hideInEdit !== true;
                   }).map(field => (
                     <div key={field.name} className="form-control">
                       <label className="label">
                         <span className="label-text font-semibold text-gray-700">
                           {field.label}
-                          {field.required && !editingRecord?.id && <span className="text-error ml-1">*</span>}
+                          {field.required && !modalExistingId && <span className="text-error ml-1">*</span>}
                         </span>
                       </label>
                       {renderField(
@@ -2591,7 +2638,7 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                     Cancel
                   </button>
                   <button type="submit" className="btn btn-primary">
-                    {editingRecord?.id ? 'Update' : 'Create'}
+                    {modalExistingId ? 'Update' : 'Create'}
                   </button>
                 </div>
               </form>

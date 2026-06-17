@@ -28,6 +28,7 @@ import {
   manualClockInWorkplaceLabel,
   type ManualClockInApprovalRecord,
 } from '../lib/employeeClockInApproval';
+import { useManualClockInApprovalLiveRefresh } from '../hooks/useManualClockInApprovalLiveRefresh';
 
 interface ManualClockInApprovalModalProps {
   isOpen: boolean;
@@ -100,7 +101,7 @@ function applyPendingTypeFilterToGroups(
       ).length;
       return { ...group, records, pendingCount };
     })
-    .filter((group) => group.records.length > 0);
+    .filter((group) => group.pendingCount > 0);
 }
 
 const BULK_ACTION_BTN_BASE =
@@ -337,6 +338,18 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     return [y - 2, y - 1, y, y + 1];
   }, [now]);
 
+  const loadRecordsSilent = useCallback(async () => {
+    try {
+      const rows =
+        periodScope === 'all'
+          ? await fetchAllUnapprovedManualClockInsForApproval()
+          : await fetchAllManualClockInsForApproval(year, month);
+      setRecords(rows);
+    } catch (err) {
+      console.error('ManualClockInApprovalModal records:', err);
+    }
+  }, [periodScope, year, month]);
+
   const loadRecords = useCallback(async () => {
     setLoadingRecords(true);
     try {
@@ -353,6 +366,12 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
       setLoadingRecords(false);
     }
   }, [periodScope, year, month]);
+
+  useManualClockInApprovalLiveRefresh({
+    enabled: isOpen,
+    channelSuffix: 'modal',
+    onChange: loadRecordsSilent,
+  });
 
   useEffect(() => {
     if (!isOpen) return;
@@ -422,6 +441,7 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
             new Date(a.clock_in_time).getTime() - new Date(b.clock_in_time).getTime(),
         ),
       }))
+      .filter((group) => group.pendingCount > 0)
       .sort((a, b) => a.employeeName.localeCompare(b.employeeName));
   }, [actionableRecords]);
 
@@ -560,11 +580,7 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     try {
       const result = await declineClockInRecord(recordId, user.id);
       toast.success(result === 'removed' ? 'Home access request removed' : 'Entry declined');
-      if (result === 'removed') {
-        setRecords((prev) => prev.filter((r) => r.id !== recordId));
-      } else {
-        await loadRecords();
-      }
+      setRecords((prev) => prev.filter((r) => r.id !== recordId));
       onUpdated?.();
     } catch (err) {
       console.error('Decline clock-in:', err);
@@ -1070,7 +1086,7 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                   ? 'No pending clock in/out entries.'
                   : actionableRecords.length === 0
                     ? periodScope === 'all'
-                      ? 'No unapproved manual clock-in entries.'
+                      ? 'No pending manual clock-in or work from home requests.'
                       : 'No pending manual clock-in entries for this period.'
                     : 'No employees match your search.'}
             </div>

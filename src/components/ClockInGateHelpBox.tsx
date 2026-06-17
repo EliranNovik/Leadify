@@ -19,14 +19,24 @@ const helpContent = (
   </>
 );
 
-const ClockInGateHelpBox: React.FC = () => {
+type ClockInGateHelpBoxProps = {
+  placement?: 'mobile' | 'desktop' | 'both';
+};
+
+const ClockInGateHelpBox: React.FC<ClockInGateHelpBoxProps> = ({ placement = 'both' }) => {
   const [expanded, setExpanded] = useState(false);
+  const isDesktopPlacement = placement === 'desktop';
+  const expandedMaxHeightClass = isDesktopPlacement
+    ? 'max-h-[min(70vh,calc(100dvh-7rem))]'
+    : 'max-h-[min(40vh,16rem)]';
 
   return (
     <div
-      className={`pointer-events-auto w-full max-w-[min(20rem,calc(100vw-2rem))] md:max-w-sm rounded-2xl bg-[rgba(20,20,20,0.45)] backdrop-blur-[14px] shadow-[0_12px_40px_rgba(0,0,0,0.35)] text-white text-left ${
+      className={`pointer-events-auto w-full max-w-[min(20rem,calc(100vw-2rem))] ${
+        isDesktopPlacement ? 'max-w-sm' : 'md:max-w-sm'
+      } rounded-2xl bg-[rgba(20,20,20,0.45)] backdrop-blur-[14px] shadow-[0_12px_40px_rgba(0,0,0,0.35)] text-white text-left ${
         expanded
-          ? 'max-h-[min(40vh,16rem)] md:max-h-[min(44vh,18rem)] overflow-y-auto overscroll-contain p-4 md:p-6'
+          ? `${expandedMaxHeightClass} overflow-y-auto overscroll-contain p-4 md:p-6`
           : 'p-3 md:p-4'
       }`}
       data-sheet-no-drag

@@ -462,12 +462,7 @@ export async function approveClockInRecord(
 export function filterManualApprovalModalRecords(
   records: ManualClockInApprovalRecord[],
 ): ManualClockInApprovalRecord[] {
-  return records.filter((record) => {
-    const status = getClockInApprovalStatus(record);
-    if (status === 'approved') return false;
-    if (status === 'declined' && isHomeWfhApprovalRequest(record)) return false;
-    return true;
-  });
+  return records.filter((record) => getClockInApprovalStatus(record) === 'pending');
 }
 
 export function countPendingApprovalBuckets(records: ManualClockInApprovalRecord[]): {

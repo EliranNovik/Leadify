@@ -123,18 +123,32 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
   useEffect(() => {
     if (!user?.id || !supabaseSessionReady || employeeId == null) return;
 
+    const matchesEmployeeClockIn = (payload: {
+      new?: Record<string, unknown> | null;
+      old?: Record<string, unknown> | null;
+    }) => {
+      const rowEmployeeId = payload.new?.employee_id ?? payload.old?.employee_id;
+      return Number(rowEmployeeId) === employeeId;
+    };
+
     const channel = supabase
       .channel(`clockin_gate_${employeeId}`)
       .on(
         'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'employee_clock_in',
-          filter: `employee_id=eq.${employeeId}`,
+        { event: '*', schema: 'public', table: 'employee_clock_in' },
+        (payload) => {
+          if (matchesEmployeeClockIn(payload)) {
+            void refreshClockInGate();
+          }
         },
-        () => {
-          void refreshClockInGate();
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'tenants_employee' },
+        (payload) => {
+          if (Number(payload.new?.id) === employeeId) {
+            void refreshClockInGate();
+          }
         },
       )
       .subscribe();

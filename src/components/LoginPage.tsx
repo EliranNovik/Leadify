@@ -7,6 +7,7 @@ import { preCheckExternalUser } from '../hooks/useExternalUser';
 import { fetchWelcomeProfileForEmail } from '../lib/loginWelcomeProfile';
 import { setDashboardWelcomePending } from '../lib/dashboardWelcomeSession';
 import LoginHeroBackground from './LoginHeroBackground';
+import ClockInGateVideos from './ClockInGateVideos';
 
 const LOGIN_PAGE_THEME_COLOR = '#1a1a1a';
 
@@ -192,11 +193,6 @@ const LoginPage: React.FC = () => {
                   Secure. Structured. Scalable.
                 </div>
               </div>
-              <div className="hidden md:flex absolute left-10 bottom-12 z-10 flex-col gap-2 text-white/95 text-[15px] px-4 py-3 drop-shadow-[0_2px_10px_rgba(0,0,0,0.55)]">
-                <div className="flex items-center gap-2"><span className="text-[#d4af37]">✔</span><span>Case tracking</span></div>
-                <div className="flex items-center gap-2"><span className="text-[#d4af37]">✔</span><span>Client management</span></div>
-                <div className="flex items-center gap-2"><span className="text-[#d4af37]">✔</span><span>Automated workflows</span></div>
-              </div>
             </div>
 
             {/* Login box */}
@@ -360,10 +356,21 @@ const LoginPage: React.FC = () => {
                 </div>
               )}
             </div>
+
+            <div className="lg:hidden w-full px-4 mt-2 mb-4 pointer-events-none relative z-20">
+              <ClockInGateVideos placement="mobile" />
+            </div>
+
             {/* Copyright at bottom left */}
-            <div className="absolute left-0 right-0 bottom-0 z-20 pb-[max(1.5rem,env(safe-area-inset-bottom,0px))] flex justify-center w-full">
+            <div className="absolute left-0 right-0 bottom-0 z-20 pb-[max(1.5rem,env(safe-area-inset-bottom,0px))] flex justify-center w-full pointer-events-none">
               <span className="text-white/85 text-lg font-semibold text-center w-full">© Rainmaker Queen 2.0 {new Date().getFullYear()}</span>
             </div>
+          </div>
+
+          <div
+            className="hidden lg:block fixed left-6 xl:left-8 top-1/2 -translate-y-1/2 z-20 w-[min(18rem,22vw)] max-h-[min(70vh,calc(100dvh-6rem))] pointer-events-none"
+          >
+            <ClockInGateVideos placement="desktop" />
           </div>
       </>
     </div>

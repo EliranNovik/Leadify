@@ -15,6 +15,7 @@ export type AdminCrudEmbedProps = {
   addDrawerOpen: boolean;
   onAddDrawerOpenChange: (open: boolean) => void;
   onRecordCreated?: (record: { id: string; [key: string]: unknown }) => void;
+  onRecordSaved?: (record: { id: string; [key: string]: unknown }) => void;
   /** When set, pre-filters browse lists that support firm_id (e.g. create contact). */
   browseFirmId?: string;
 };

@@ -281,22 +281,21 @@ const ClockInGateHeader: React.FC<ClockInGateHeaderProps> = ({
             alt="Decker Pex & Co."
             className="md:hidden h-9 w-auto max-w-[8rem] object-contain drop-shadow-[0_2px_8px_rgba(0,0,0,0.45)] shrink-0"
           />
-        </div>
-
-        <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-0 hidden md:flex items-center gap-3 px-4 max-w-[min(36rem,80vw)]">
           {headerProfile && (
-            <EmployeeCircle
-              employee={headerProfile}
-              sizeClass="w-12 h-12 text-sm shrink-0"
-              showRing={false}
-            />
+            <div className="hidden md:flex items-center gap-3 min-w-0">
+              <EmployeeCircle
+                employee={headerProfile}
+                sizeClass="w-12 h-12 text-sm shrink-0"
+                showRing={false}
+              />
+              <p
+                className="text-white font-semibold text-3xl tracking-wide drop-shadow-[0_1px_4px_rgba(0,0,0,0.55)] text-left truncate"
+                style={{ fontFamily: "'Playfair Display', 'Libre Baskerville', serif" }}
+              >
+                {welcomeText}
+              </p>
+            </div>
           )}
-          <p
-            className="text-white font-semibold text-3xl tracking-wide drop-shadow-[0_1px_4px_rgba(0,0,0,0.55)] text-left"
-            style={{ fontFamily: "'Playfair Display', 'Libre Baskerville', serif" }}
-          >
-            {welcomeText}
-          </p>
         </div>
 
         {/* RMQ messaging, calendar, contact + profile */}

@@ -8,6 +8,7 @@ import RMQMessagesPage from '../pages/RMQMessagesPage';
 import ClockInModal from './ClockInModal';
 import LoginHeroBackground from './LoginHeroBackground';
 import ClockInGateHelpBox from './ClockInGateHelpBox';
+import ClockInGateVideos from './ClockInGateVideos';
 import ClockInGateHeader from './ClockInGateHeader';
 
 const LazyCalendarPage = lazy(() => import('./CalendarPage'));
@@ -203,23 +204,40 @@ const ClockInGate: React.FC<ClockInGateProps> = ({ children }) => {
       )}
 
       <div
-        className="relative z-10 flex flex-1 flex-col items-center justify-center w-full px-4"
+        className="relative z-10 flex flex-1 flex-col w-full min-h-0 overflow-hidden"
         style={{
           paddingTop: 'max(3.5rem, calc(env(safe-area-inset-top, 0px) + 2.75rem))',
           paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))',
         }}
       >
-        {gateBody}
-      </div>
+        <div className="flex flex-1 min-h-0 w-full items-center gap-3 lg:gap-6 px-3 md:px-6 lg:px-8">
+          {showClockInChrome && (
+            <aside className="hidden lg:flex w-[min(18rem,22vw)] shrink-0 items-center justify-end min-h-0 self-center py-2 pointer-events-none">
+              <ClockInGateVideos placement="desktop" />
+            </aside>
+          )}
 
-      {showClockInChrome && (
-        <div
-          className="absolute z-20 right-0 bottom-0 p-4 md:p-6 pointer-events-none"
-          style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}
-        >
-          <ClockInGateHelpBox />
+          <div className="flex flex-1 flex-col items-center justify-center min-h-0 min-w-0 py-2">
+            {gateBody}
+          </div>
+
+          {showClockInChrome && (
+            <aside className="hidden lg:flex w-[min(18rem,22vw)] shrink-0 items-center justify-start min-h-0 self-center py-2 pointer-events-none">
+              <ClockInGateHelpBox placement="desktop" />
+            </aside>
+          )}
         </div>
-      )}
+
+        {showClockInChrome && (
+          <div
+            className="lg:hidden shrink-0 flex flex-col gap-3 px-3 pb-2 pointer-events-none"
+            style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom, 0px))' }}
+          >
+            <ClockInGateVideos placement="mobile" />
+            <ClockInGateHelpBox placement="mobile" />
+          </div>
+        )}
+      </div>
 
       {signOutModal}
     </div>,

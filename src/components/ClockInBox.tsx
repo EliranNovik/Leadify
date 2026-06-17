@@ -7,6 +7,7 @@ import { useAuthContext } from '../contexts/AuthContext';
 import { useAdminRole } from '../hooks/useAdminRole';
 import { resolveWorkplaceName } from '../lib/clockInLocations';
 import { fetchPendingManualClockInCount } from '../lib/employeeClockInApproval';
+import { useManualClockInApprovalLiveRefresh } from '../hooks/useManualClockInApprovalLiveRefresh';
 
 interface ClockInBoxProps {
   employeeId: number | null;
@@ -130,6 +131,12 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
       console.error('Error fetching pending approvals:', error);
     }
   }, [isSuperUser]);
+
+  useManualClockInApprovalLiveRefresh({
+    enabled: isSuperUser,
+    channelSuffix: 'clock-box',
+    onChange: fetchPendingApprovals,
+  });
 
   useEffect(() => {
     if (!employeeId) return;

@@ -44,6 +44,7 @@ import HighlightsPanel from './HighlightsPanel';
 import TeamStatusModal from './TeamStatusModal';
 import ManualClockInApprovalModal from './ManualClockInApprovalModal';
 import { fetchPendingManualClockInCount } from '../lib/employeeClockInApproval';
+import { useManualClockInApprovalLiveRefresh } from '../hooks/useManualClockInApprovalLiveRefresh';
 import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
 import { getRecentLeads, addRecentLead, type RecentLead } from '../lib/recentSearchStorage';
 import { EXTERNAL_USER_HEADER_PADDING } from '../lib/externalUserLayout';
@@ -546,6 +547,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   useEffect(() => {
     void fetchPendingClockInApprovals();
   }, [fetchPendingClockInApprovals]);
+
+  useManualClockInApprovalLiveRefresh({
+    enabled: isSuperUser,
+    channelSuffix: 'header',
+    onChange: fetchPendingClockInApprovals,
+  });
 
   const quickMenuItems = useMemo(() => {
     const items: Array<{

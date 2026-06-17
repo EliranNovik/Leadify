@@ -25,6 +25,10 @@ import {
 } from '../lib/employeeClockInApproval';
 import { getGreetingFirstName, getTimeBasedGreeting } from '../lib/clockInGreeting';
 import { clearClockInGateCache } from '../lib/clockInGateCache';
+import {
+  type HomeWfhApprovalSnapshot,
+  useHomeWfhApprovalAutoClockIn,
+} from '../hooks/useHomeWfhApprovalAutoClockIn';
 
 interface ClockInModalProps {
   isOpen: boolean;
@@ -73,6 +77,9 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
   const [sessionDuration, setSessionDuration] = useState('');
   const [employeeDisplayName, setEmployeeDisplayName] = useState('');
   const workplaceDropdownRef = useRef<HTMLDivElement>(null);
+  const autoClockInInFlightRef = useRef(false);
+  const isClockedInRef = useRef(isClockedIn);
+  isClockedInRef.current = isClockedIn;
 
   const updateSessionDuration = useCallback((clockInTime: string) => {
     const diffMs = Math.max(0, Date.now() - new Date(clockInTime).getTime());
@@ -129,7 +136,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
     ]).then(([locations, wfh, pendingApproval, employeeResult]) => {
       setWorkplaceOptions(locations);
       setWorksFromHome(wfh);
-      setPendingHomeApproval(pendingApproval);
+      setPendingHomeApproval(pendingApproval && !wfh);
       setEmployeeDisplayName(employeeResult.data?.display_name?.trim() || '');
       // Initialize selection (prefer last selected if still valid)
       setSelectedWorkplaceId((prev) => {
@@ -163,7 +170,9 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
         const action = successAction;
         setSuccessAction(null);
         if (action === 'in') {
-          onClockInSuccess?.();
+          if (!required) {
+            onClockInSuccess?.();
+          }
         }
         if (action === 'out') {
           clearClockInGateCache();
@@ -266,6 +275,118 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
   const selectedWorkplace = workplaceOptions.find((o) => o.id === selectedWorkplaceId) ?? null;
   const selectedIsHome = selectedWorkplace != null && isHomeClockInLocation(selectedWorkplace);
   const homeNeedsApproval = selectedIsHome && !worksFromHome;
+  const awaitingWfhApproval = pendingHomeApproval || successAction === 'approval';
+
+  const performClockIn = useCallback(async (options?: {
+    skipHomeApprovalCheck?: boolean;
+    workplaceId?: number;
+  }): Promise<boolean> => {
+    if (!employeeId || !userId) {
+      toast.error('Missing employee or user information');
+      return false;
+    }
+
+    const workplaceId = options?.workplaceId ?? selectedWorkplaceId;
+    if (!workplaceId) {
+      toast.error('Please select a workplace');
+      return false;
+    }
+
+    const workplace = workplaceOptions.find((o) => o.id === workplaceId) ?? null;
+    const clockingInFromHome = workplace != null && isHomeClockInLocation(workplace);
+    if (clockingInFromHome && !worksFromHome && !options?.skipHomeApprovalCheck) {
+      toast.error('You cannot clock in from Home until an admin approves your work-from-home access.');
+      return false;
+    }
+
+    setIsLoading(true);
+    try {
+      const payload = {
+        employee_id: employeeId,
+        user_id: userId,
+        clock_in_time: new Date().toISOString(),
+        clock_in_location_id: workplaceId,
+        ...locationToDbFields(location),
+        notes: null,
+        is_active: true,
+        manually: false,
+        approved: true,
+        declined: false,
+      };
+      let { data, error } = await supabase.from('employee_clock_in').insert(payload).select().single();
+
+      if (error) {
+        const { clock_in_location_id: _drop, ...withoutPreset } = payload;
+        const retry = await supabase.from('employee_clock_in').insert(withoutPreset).select().single();
+        data = retry.data;
+        error = retry.error;
+      }
+
+      if (error) throw error;
+
+      persistLastSelectedWorkplaceId(workplaceId);
+      setIsClockedIn(true);
+      if (data) {
+        setCurrentRecord(data as ClockInRecord);
+      }
+      setSuccessAction('in');
+      if (required) {
+        onClockInSuccess?.();
+      }
+      return true;
+    } catch (error: any) {
+      console.error('Error clocking in:', error);
+      toast.error(error.message || 'Failed to clock in');
+      return false;
+    } finally {
+      setIsLoading(false);
+    }
+  }, [employeeId, userId, selectedWorkplaceId, workplaceOptions, worksFromHome, location, required, onClockInSuccess]);
+
+  const handleWfhApprovalGranted = useCallback(async (snapshot: HomeWfhApprovalSnapshot) => {
+    if (!employeeId || !userId || isClockedInRef.current || autoClockInInFlightRef.current) return;
+
+    setWorksFromHome(snapshot.worksFromHome);
+    setPendingHomeApproval(snapshot.pendingApproval && !snapshot.worksFromHome);
+    setSuccessAction((current) => (current === 'approval' ? null : current));
+
+    const homeWorkplace =
+      workplaceOptions.find((o) => o.id === selectedWorkplaceId && isHomeClockInLocation(o))
+      ?? workplaceOptions.find(isHomeClockInLocation)
+      ?? null;
+
+    if (!homeWorkplace) {
+      toast.success('Home access approved! You can now clock in from Home.');
+      return;
+    }
+
+    if (selectedWorkplaceId !== homeWorkplace.id) {
+      setSelectedWorkplaceId(homeWorkplace.id);
+    }
+
+    autoClockInInFlightRef.current = true;
+    try {
+      toast.success('Home access approved — clocking you in...');
+      await performClockIn({
+        skipHomeApprovalCheck: true,
+        workplaceId: homeWorkplace.id,
+      });
+    } finally {
+      autoClockInInFlightRef.current = false;
+    }
+  }, [employeeId, userId, workplaceOptions, selectedWorkplaceId, performClockIn]);
+
+  useHomeWfhApprovalAutoClockIn({
+    employeeId,
+    enabled: isOpen && !!employeeId && !isClockedIn && awaitingWfhApproval,
+    onApprovalGranted: handleWfhApprovalGranted,
+  });
+
+  useEffect(() => {
+    if (!isOpen) {
+      autoClockInInFlightRef.current = false;
+    }
+  }, [isOpen]);
 
   const handleSendHomeForApproval = async () => {
     if (!employeeId || !userId) {
@@ -295,53 +416,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({
   };
 
   const handleClockIn = async () => {
-    if (!employeeId || !userId) {
-      toast.error('Missing employee or user information');
-      return;
-    }
-    if (!selectedWorkplaceId) {
-      toast.error('Please select a workplace');
-      return;
-    }
-    if (homeNeedsApproval) {
-      toast.error('You cannot clock in from Home until an admin approves your work-from-home access.');
-      return;
-    }
-
-    setIsLoading(true);
-    try {
-      const payload = {
-        employee_id: employeeId,
-        user_id: userId,
-        clock_in_time: new Date().toISOString(),
-        clock_in_location_id: selectedWorkplaceId,
-        ...locationToDbFields(location),
-        notes: null,
-        is_active: true,
-        manually: false,
-        approved: true,
-        declined: false,
-      };
-      let { data, error } = await supabase.from('employee_clock_in').insert(payload).select().single();
-
-      if (error) {
-        const { clock_in_location_id: _drop, ...withoutPreset } = payload;
-        const retry = await supabase.from('employee_clock_in').insert(withoutPreset).select().single();
-        data = retry.data;
-        error = retry.error;
-      }
-
-      if (error) throw error;
-
-      persistLastSelectedWorkplaceId(selectedWorkplaceId);
-
-      setSuccessAction('in');
-    } catch (error: any) {
-      console.error('Error clocking in:', error);
-      toast.error(error.message || 'Failed to clock in');
-    } finally {
-      setIsLoading(false);
-    }
+    await performClockIn();
   };
 
   const handleClockOut = async () => {

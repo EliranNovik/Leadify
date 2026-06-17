@@ -120,7 +120,8 @@ const FirmContactsManager: React.FC<{
       externalAddOpen={embed?.addDrawerOpen}
       onExternalAddOpenChange={embed?.onAddDrawerOpenChange}
       createDefaults={embed?.createDefaults}
-      onRecordCreated={onRecordSaved ?? embed?.onRecordCreated}
+      onRecordCreated={onRecordSaved ?? embed?.onRecordSaved ?? embed?.onRecordCreated}
+      onRecordSaved={onRecordSaved ?? embed?.onRecordSaved ?? embed?.onRecordCreated}
       elevatedDrawer={elevatedDrawer}
       queryModifier={
         firmFilter ? (query) => query.eq('firm_id', firmFilter) : undefined
