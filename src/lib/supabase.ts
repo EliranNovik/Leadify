@@ -2,6 +2,10 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { isLegacyLeadRef } from './paymentLinkLeadRef';
 import { insertPaymentLinkRecord } from './paymentLinkQueries';
 import { getMobileAwareCacheTtlMs } from './mobileCache';
+import {
+  buildClockInGateBlockedResponse,
+  isClockInGateRestRequestAllowed,
+} from './clockInGateFetchPolicy';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -134,6 +138,10 @@ const supabaseGlobalFetch: typeof fetch = async (input, init) => {
 
   const method = getRequestMethod(input as RequestInfo, init);
   const isRestRequest = requestUrl.pathname.startsWith('/rest/v1/');
+  if (isRestRequest && !isClockInGateRestRequestAllowed(requestUrl.pathname)) {
+    return buildClockInGateBlockedResponse();
+  }
+
   const requestHeaders = new Headers(init?.headers as HeadersInit | undefined);
   const canUseRestGetCache = isRestRequest && method === 'GET';
 

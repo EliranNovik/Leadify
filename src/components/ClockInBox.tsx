@@ -179,6 +179,12 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
   const displayValue = isClockedIn && currentDuration ? currentDuration : todayTotal || '0h 0m';
   const displayLabel = isClockedIn ? 'Clocked In' : 'Clocked Out';
 
+  const approvalButtonClass = `inline-flex items-center justify-center min-w-[28px] h-7 px-2 rounded-full shadow-lg ${
+    isDark2Theme
+      ? 'bg-base-100 text-primary ring-2 ring-base-300'
+      : 'bg-white/95 text-primary ring-2 ring-white/80'
+  }`;
+
   const gradientClass = isClockedIn
     ? isAltTheme
       ? 'from-emerald-600 via-green-600 to-teal-500'
@@ -206,28 +212,7 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
         }}
       >
         {isClockedIn && (
-          <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
-            {isSuperUser && (
-              <button
-                type="button"
-                className={`inline-flex items-center justify-center min-w-[28px] h-7 px-2 rounded-full shadow-lg ${
-                  isDark2Theme
-                    ? 'bg-base-100 text-primary ring-2 ring-base-300'
-                    : 'bg-white/95 text-primary ring-2 ring-white/80'
-                }`}
-                title="Approve manual clock-ins"
-                aria-label="Approve manual clock-ins"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setIsApprovalModalOpen(true);
-                }}
-              >
-                <ClipboardDocumentCheckIcon className="w-4 h-4" />
-                {pendingApprovalCount > 0 && (
-                  <span className="ml-1 text-[10px] font-bold">{pendingApprovalCount}</span>
-                )}
-              </button>
-            )}
+          <div className="absolute top-2 right-2 z-10">
             <span
               className={`inline-flex items-center justify-center min-w-[24px] h-6 px-2 text-[10px] font-bold rounded-full shadow-lg animate-pulse ${
                 isDark2Theme
@@ -240,15 +225,11 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
           </div>
         )}
 
-        {!isClockedIn && isSuperUser && (
-          <div className="absolute top-2 right-2 z-10">
+        {isSuperUser && (
+          <div className="absolute bottom-2 left-2 z-10 md:top-2 md:right-2 md:bottom-auto md:left-auto">
             <button
               type="button"
-              className={`inline-flex items-center justify-center min-h-[28px] px-2 rounded-full shadow-lg ${
-                isDark2Theme
-                  ? 'bg-base-100 text-primary ring-2 ring-base-300'
-                  : 'bg-white/95 text-primary ring-2 ring-white/80'
-              }`}
+              className={approvalButtonClass}
               title="Approve manual clock-ins"
               aria-label="Approve manual clock-ins"
               onClick={(e) => {

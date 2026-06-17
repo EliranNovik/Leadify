@@ -1,16 +1,25 @@
 import React from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuthContext } from '../contexts/AuthContext';
+import { ClockInGateProvider } from '../contexts/ClockInGateContext';
+import ClockInGate from './ClockInGate';
 
 /**
  * ProtectedRoute — uses AuthContext only (no extra auth round-trips).
  * With sync session hydrate, returning users see the app on first paint.
+ * Staff with an employee profile must be clocked in before any protected route renders.
  */
 const ProtectedRoute: React.FC<{ user: any; children: React.ReactNode }> = ({ children }) => {
   const { user, sessionCheckComplete, supabaseSessionReady } = useAuthContext();
 
   if (user && supabaseSessionReady) {
-    return <>{children}</>;
+    return (
+      <ClockInGateProvider>
+        <ClockInGate>
+          {children}
+        </ClockInGate>
+      </ClockInGateProvider>
+    );
   }
 
   if (sessionCheckComplete && !user) {

@@ -6,6 +6,7 @@ import { LockClosedIcon } from '@heroicons/react/24/outline';
 import { preCheckExternalUser } from '../hooks/useExternalUser';
 import { fetchWelcomeProfileForEmail } from '../lib/loginWelcomeProfile';
 import { setDashboardWelcomePending } from '../lib/dashboardWelcomeSession';
+import LoginHeroBackground from './LoginHeroBackground';
 
 const LOGIN_PAGE_THEME_COLOR = '#1a1a1a';
 
@@ -89,20 +90,7 @@ const LoginPage: React.FC = () => {
 
   return (
     <div className="login-page fixed inset-0 z-0 flex flex-col overflow-y-auto overflow-x-hidden">
-      {/* Full-page video background */}
-      <video
-        className="login-page-media absolute inset-0 w-full h-full object-cover z-0 pointer-events-none"
-        autoPlay
-        muted
-        loop
-        playsInline
-        preload="metadata"
-      >
-        <source src="/login-hero.mp4" type="video/mp4" />
-      </video>
-      <div className="login-page-media absolute inset-0 w-full h-full bg-gradient-to-b from-[rgba(10,10,10,0.38)] to-[rgba(10,10,10,0.58)] z-0 pointer-events-none" />
-      <div className="login-page-media absolute inset-0 w-full h-full bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.05),transparent_60%)] z-0 pointer-events-none" />
-
+      <LoginHeroBackground />
       <>
           {/* Full width login box */}
           <div className="w-full flex flex-col justify-start items-center flex-1 relative z-10 pt-[calc(4rem+env(safe-area-inset-top,0px))] md:pt-20 min-h-[100dvh] min-h-[100svh]">

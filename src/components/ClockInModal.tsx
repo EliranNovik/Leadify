@@ -23,12 +23,19 @@ import {
   fetchPendingHomeWfhApproval,
   insertHomeWfhApprovalRequest,
 } from '../lib/employeeClockInApproval';
+import { getGreetingFirstName, getTimeBasedGreeting } from '../lib/clockInGreeting';
 
 interface ClockInModalProps {
   isOpen: boolean;
   onClose: () => void;
   employeeId: number;
   userId: string;
+  /** Mandatory gate: no dismiss until clocked in */
+  required?: boolean;
+  /** Render inline (e.g. on login hero video) instead of portaling to document.body */
+  embedded?: boolean;
+  onClockInSuccess?: () => void;
+  onSignOut?: () => void;
 }
 
 interface ClockInRecord {
@@ -41,20 +48,16 @@ interface ClockInRecord {
   clock_in_place?: { name: string } | { name: string }[] | null;
 }
 
-function getTimeBasedGreeting(): string {
-  const hour = new Date().getHours();
-  if (hour < 12) return 'Good morning';
-  if (hour < 17) return 'Good day';
-  return 'Good night';
-}
-
-function getGreetingFirstName(fullName: string): string {
-  const trimmed = fullName.trim();
-  if (!trimmed) return '';
-  return trimmed.split(/\s+/)[0] || trimmed;
-}
-
-const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId, userId }) => {
+const ClockInModal: React.FC<ClockInModalProps> = ({
+  isOpen,
+  onClose,
+  employeeId,
+  userId,
+  required = false,
+  embedded = false,
+  onClockInSuccess,
+  onSignOut,
+}) => {
   const { user, userFullName } = useAuthContext();
   const [isClockedIn, setIsClockedIn] = useState(false);
   const [currentRecord, setCurrentRecord] = useState<ClockInRecord | null>(null);
@@ -148,11 +151,30 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
   useEffect(() => {
     if (!successAction) return;
     const timer = window.setTimeout(() => {
-      setSuccessAction(null);
-      onClose();
+      void (async () => {
+        const action = successAction;
+        setSuccessAction(null);
+        if (action === 'in') {
+          onClockInSuccess?.();
+        }
+        if (action === 'out') {
+          const { error } = await supabase.auth.signOut();
+          if (error) {
+            console.error('Error signing out after clock-out:', error);
+            toast.error('Clocked out but failed to sign out');
+            onClose();
+            return;
+          }
+          window.location.href = '/login';
+          return;
+        }
+        if (!required) {
+          onClose();
+        }
+      })();
     }, AUTO_CLOSE_MS);
     return () => window.clearTimeout(timer);
-  }, [successAction, onClose]);
+  }, [successAction, onClose, onClockInSuccess, required]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -378,42 +400,25 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
 
   if (!isOpen) return null;
 
-  return createPortal(
+  const dialog = (
     <div
-      className="fixed inset-0 z-[10050] overflow-y-auto overscroll-contain"
-      role="presentation"
+      className="pointer-events-auto relative bg-white rounded-full shadow-2xl w-[min(380px,92vw)] h-[min(380px,92vw)] transform transition-all flex flex-col items-center justify-start text-center pt-12 pb-8 md:pt-14 md:pb-10"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Clock in"
+      onClick={(e) => e.stopPropagation()}
     >
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/50 transition-opacity"
-        onClick={onClose}
-        aria-hidden="true"
-      />
 
-      {/* Modal */}
-      <div
-        className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none"
-        style={{
-          paddingTop: 'max(1rem, env(safe-area-inset-top, 0px))',
-          paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))',
-        }}
-      >
-        <div
-          className="pointer-events-auto relative bg-white rounded-full shadow-2xl w-[min(380px,92vw)] h-[min(380px,92vw)] transform transition-all flex flex-col items-center justify-start text-center pt-12 pb-8 md:pt-14 md:pb-10"
-          role="dialog"
-          aria-modal="true"
-          aria-label="Clock in"
-          onClick={(e) => e.stopPropagation()}
-        >
-
-          {/* Close button — always visible */}
-          <button
-            onClick={onClose}
-            className="absolute top-7 right-7 btn btn-sm btn-ghost btn-circle z-10"
-            title="Close"
-          >
-            <XMarkIcon className="w-5 h-5" />
-          </button>
+          {/* Close button */}
+          {!required && (
+            <button
+              onClick={onClose}
+              className="absolute top-7 right-7 btn btn-sm btn-ghost btn-circle z-10"
+              title="Close"
+            >
+              <XMarkIcon className="w-5 h-5" />
+            </button>
+          )}
 
           {successAction ? (
             <div className="flex flex-col items-center justify-center px-10 animate-fade-in">
@@ -437,6 +442,8 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
               </h2>
               {successAction === 'approval' ? (
                 <p className="text-sm text-gray-500">Waiting for admin approval.</p>
+              ) : successAction === 'out' ? (
+                <p className="text-sm text-gray-500">Signing you out…</p>
               ) : selectedWorkplaceName ? (
                 <p className="text-sm text-gray-500">{selectedWorkplaceName}</p>
               ) : null}
@@ -610,9 +617,43 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
                 )}
               </div>
               </div>
+
+              {required && onSignOut && (
+                <button
+                  type="button"
+                  className="mt-2 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                  onClick={onSignOut}
+                >
+                  Sign out instead
+                </button>
+              )}
             </div>
           )}
-        </div>
+    </div>
+  );
+
+  if (embedded) {
+    return dialog;
+  }
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[10050] overflow-y-auto overscroll-contain"
+      role="presentation"
+    >
+      <div
+        className={`fixed inset-0 transition-opacity ${required ? 'bg-transparent' : 'bg-black/50'}`}
+        onClick={required ? undefined : onClose}
+        aria-hidden="true"
+      />
+      <div
+        className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none"
+        style={{
+          paddingTop: 'max(1rem, env(safe-area-inset-top, 0px))',
+          paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))',
+        }}
+      >
+        {dialog}
       </div>
     </div>,
     document.body,

@@ -1,6 +1,7 @@
 import React, { Suspense, lazy, useCallback, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useExternalUser } from '../hooks/useExternalUser';
+import { useOptionalClockInGate } from '../hooks/useClockInGate';
 import PageLoader from '../components/PageLoader';
 import DashboardWelcomeModal from '../components/DashboardWelcomeModal';
 import { DashboardWelcomeReadyProvider } from '../contexts/DashboardWelcomeReadyContext';
@@ -15,6 +16,8 @@ const LazyDashboard = lazy(() => import('../components/Dashboard'));
  */
 export default function HomeEntryPage() {
   const { isExternalUser, isLoading } = useExternalUser();
+  const gate = useOptionalClockInGate();
+  const isGateOpen = gate?.isGateOpen ?? true;
   const [welcomeActive, setWelcomeActive] = useState(() => hasDashboardWelcomePending());
   // Ready as soon as the Dashboard UI renders — no waiting for data fetches.
   const [uiMounted, setUiMounted] = useState(false);
@@ -31,7 +34,7 @@ export default function HomeEntryPage() {
     return <Navigate to="/external-home" replace />;
   }
 
-  const showWelcomeOverlay = welcomeActive;
+  const showWelcomeOverlay = welcomeActive && isGateOpen;
 
   return (
     <>

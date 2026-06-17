@@ -48,6 +48,7 @@ import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } fr
 import { getRecentLeads, addRecentLead, type RecentLead } from '../lib/recentSearchStorage';
 import { EXTERNAL_USER_HEADER_PADDING } from '../lib/externalUserLayout';
 import { useExternalUser, shouldDeferInternalChrome } from '../hooks/useExternalUser';
+import { useSignOutWithClockOut } from '../hooks/useSignOutWithClockOut';
 import { useAuthContext } from '../contexts/AuthContext';
 import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 import { runMailboxCatchUpSync } from '../lib/mailboxApi';
@@ -195,6 +196,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     supabaseSessionReady,
     isSuperUser,
   } = useAuthContext();
+  const { requestSignOut, signOutModal } = useSignOutWithClockOut();
   const [isMsalLoading, setIsMsalLoading] = useState(false);
   const [userAccount, setUserAccount] = useState<any>(null);
   const [isMsalInitialized, setIsMsalInitialized] = useState(false);
@@ -6641,21 +6643,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   };
 
-  const handleSignOut = async () => {
-    try {
-      const { error } = await supabase.auth.signOut();
-      if (error) {
-        console.error('Error signing out:', error);
-        toast.error('Failed to sign out');
-      } else {
-        toast.success('Signed out successfully');
-        // Navigate to login page instead of reload
-        window.location.href = '/login';
-      }
-    } catch (error) {
-      console.error('Unexpected error during sign out:', error);
-      toast.error('Failed to sign out');
-    }
+  const handleSignOut = () => {
+    void requestSignOut();
   };
 
   const handleMicrosoftSignOut = async () => {
@@ -9038,6 +9027,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           )}
         </div>
       </div>
+      {signOutModal}
+
       {/* Sign Out Confirmation Modal */}
       {showSignOutModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[9999]">
