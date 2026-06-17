@@ -20,6 +20,25 @@ const DashboardWelcomeModal: React.FC<DashboardWelcomeModalProps> = ({ ready, on
   const [dismissing, setDismissing] = useState(false);
 
   useEffect(() => {
+    if (!session) return;
+
+    const html = document.documentElement;
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    const prevTheme = metaTheme?.getAttribute('content') ?? '#ffffff';
+    const prevOverflow = document.body.style.overflow;
+
+    html.classList.add('dashboard-welcome-active');
+    metaTheme?.setAttribute('content', '#ffffff');
+    document.body.style.overflow = 'hidden';
+
+    return () => {
+      html.classList.remove('dashboard-welcome-active');
+      metaTheme?.setAttribute('content', prevTheme);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [session]);
+
+  useEffect(() => {
     if (!session || !ready) return;
 
     const elapsed = Date.now() - session.startedAt;
@@ -58,7 +77,7 @@ const DashboardWelcomeModal: React.FC<DashboardWelcomeModalProps> = ({ ready, on
 
   return createPortal(
     <div
-      className={`fixed inset-0 z-[200] flex flex-col items-center justify-center bg-white transition-opacity duration-300 dark:bg-white ${
+      className={`dashboard-welcome-overlay fixed z-[200] flex flex-col items-center justify-center bg-white transition-opacity duration-300 dark:bg-white ${
         dismissing ? 'opacity-0 pointer-events-none' : 'opacity-100'
       }`}
       role="dialog"

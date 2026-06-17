@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { XMarkIcon, ClockIcon, CheckCircleIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
@@ -40,8 +41,21 @@ interface ClockInRecord {
   clock_in_place?: { name: string } | { name: string }[] | null;
 }
 
+function getTimeBasedGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 17) return 'Good day';
+  return 'Good night';
+}
+
+function getGreetingFirstName(fullName: string): string {
+  const trimmed = fullName.trim();
+  if (!trimmed) return '';
+  return trimmed.split(/\s+/)[0] || trimmed;
+}
+
 const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId, userId }) => {
-  const { user } = useAuthContext();
+  const { user, userFullName } = useAuthContext();
   const [isClockedIn, setIsClockedIn] = useState(false);
   const [currentRecord, setCurrentRecord] = useState<ClockInRecord | null>(null);
   const [location, setLocation] = useState<ClockInLocationData>(EMPTY_CLOCK_IN_LOCATION);
@@ -53,6 +67,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
   const [pendingHomeApproval, setPendingHomeApproval] = useState(false);
   const [workplaceDropdownOpen, setWorkplaceDropdownOpen] = useState(false);
   const [sessionDuration, setSessionDuration] = useState('');
+  const [employeeDisplayName, setEmployeeDisplayName] = useState('');
   const workplaceDropdownRef = useRef<HTMLDivElement>(null);
 
   const updateSessionDuration = useCallback((clockInTime: string) => {
@@ -70,20 +85,41 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
   const workplaceDisplayLabel = selectedWorkplaceName
     || (workplaceOptions.length === 0 ? 'Loading workplaces…' : 'Select workplace');
 
+  const greetingName = (
+    employeeDisplayName
+    || userFullName?.trim()
+    || user?.email?.split('@')[0]
+    || ''
+  ).trim();
+  const greetingFirstName = getGreetingFirstName(greetingName);
+  const greetingGradientStyle = {
+    background: 'linear-gradient(to right, #7c3aed, #6366f1)',
+    WebkitBackgroundClip: 'text',
+    WebkitTextFillColor: 'transparent',
+    backgroundClip: 'text',
+  } as const;
+
   useEffect(() => {
     if (!isOpen) {
       setSuccessAction(null);
       setWorkplaceDropdownOpen(false);
+      setEmployeeDisplayName('');
       return;
     }
     void Promise.all([
       fetchActiveClockInLocations(),
       fetchEmployeeWorksFromHome(employeeId),
       fetchPendingHomeWfhApproval(employeeId),
-    ]).then(([locations, wfh, pendingApproval]) => {
+      supabase
+        .from('tenants_employee')
+        .select('display_name')
+        .eq('id', employeeId)
+        .maybeSingle(),
+    ]).then(([locations, wfh, pendingApproval, employeeResult]) => {
       setWorkplaceOptions(locations);
       setWorksFromHome(wfh);
       setPendingHomeApproval(pendingApproval);
+      setEmployeeDisplayName(employeeResult.data?.display_name?.trim() || '');
       // Initialize selection (prefer last selected if still valid)
       setSelectedWorkplaceId((prev) => {
         if (prev != null && locations.some((o) => o.id === prev)) return prev;
@@ -117,6 +153,15 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
     }, AUTO_CLOSE_MS);
     return () => window.clearTimeout(timer);
   }, [successAction, onClose]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen || !isClockedIn || !currentRecord?.clock_in_time) {
@@ -333,17 +378,33 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
 
   if (!isOpen) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 overflow-y-auto">
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[10050] overflow-y-auto overscroll-contain"
+      role="presentation"
+    >
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black bg-opacity-50 transition-opacity"
+        className="fixed inset-0 bg-black/50 transition-opacity"
         onClick={onClose}
+        aria-hidden="true"
       />
 
       {/* Modal */}
-      <div className="flex min-h-full items-center justify-center p-4">
-        <div className="relative bg-white rounded-full shadow-2xl w-[380px] h-[380px] max-w-[92vw] max-h-[92vw] transform transition-all flex flex-col items-center justify-center text-center">
+      <div
+        className="fixed inset-0 flex items-center justify-center p-4 pointer-events-none"
+        style={{
+          paddingTop: 'max(1rem, env(safe-area-inset-top, 0px))',
+          paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))',
+        }}
+      >
+        <div
+          className="pointer-events-auto relative bg-white rounded-full shadow-2xl w-[min(380px,92vw)] h-[min(380px,92vw)] transform transition-all flex flex-col items-center justify-start text-center pt-12 pb-8 md:pt-14 md:pb-10"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Clock in"
+          onClick={(e) => e.stopPropagation()}
+        >
 
           {/* Close button — always visible */}
           <button
@@ -382,28 +443,38 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
               <p className="text-xs text-gray-400 mt-1">Closing automatically…</p>
             </div>
           ) : (
-            <div className="flex flex-col items-center gap-5 px-10 w-full">
+            <div className="flex flex-col items-center w-full px-8 md:px-10">
               {/* Status text */}
-              <div>
-                <p className={`text-lg font-extrabold leading-tight ${
-                  isClockedIn ? 'text-green-700' : ''
-                }`}
-                  style={!isClockedIn ? {
-                    background: 'linear-gradient(to right, #7c3aed, #6366f1)',
-                    WebkitBackgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent',
-                    backgroundClip: 'text',
-                  } : undefined}
-                >
-                  {isClockedIn && sessionDuration
-                    ? <span className="tabular-nums">{sessionDuration}</span>
-                    : isClockedIn ? 'Clocked In' : 'Clocked Out'}
-                </p>
-                {isClockedIn && (
-                  <p className="text-xs text-gray-400 mt-0.5">Currently clocked in</p>
+              <div className="text-center w-full mb-8 md:mb-10">
+                {isClockedIn ? (
+                  <>
+                    <p className="text-lg font-extrabold leading-tight text-green-700">
+                      {sessionDuration
+                        ? <span className="tabular-nums">{sessionDuration}</span>
+                        : 'Clocked In'}
+                    </p>
+                    <p
+                      className="text-base md:text-lg font-extrabold leading-snug mt-1"
+                      style={greetingGradientStyle}
+                    >
+                      {greetingFirstName
+                        ? `Hi ${greetingFirstName}, ready to clock out?`
+                        : 'Ready to clock out?'}
+                    </p>
+                  </>
+                ) : (
+                  <p
+                    className="text-base md:text-lg font-extrabold leading-snug"
+                    style={greetingGradientStyle}
+                  >
+                    {greetingFirstName
+                      ? `${getTimeBasedGreeting()}, ${greetingFirstName}`
+                      : getTimeBasedGreeting()}
+                  </p>
                 )}
               </div>
 
+              <div className="flex flex-col items-center gap-5 w-full">
               {/* Main action button */}
               {!isClockedIn ? (
                 homeNeedsApproval ? (
@@ -411,14 +482,14 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
                     type="button"
                     onClick={handleSendHomeForApproval}
                     disabled={isLoading || pendingHomeApproval}
-                    className="btn rounded-full h-14 min-h-14 px-6 gap-2 border-0 shadow-md bg-gradient-to-r from-amber-500 via-orange-500 to-amber-500 text-white hover:from-amber-600 hover:via-orange-600 hover:to-amber-600 hover:shadow-lg transition-all duration-200 disabled:opacity-60"
+                    className="btn rounded-full h-20 min-h-20 px-10 gap-3 border-0 shadow-md bg-gradient-to-r from-amber-500 via-orange-500 to-amber-500 text-white hover:from-amber-600 hover:via-orange-600 hover:to-amber-600 hover:shadow-lg transition-all duration-200 disabled:opacity-60 md:h-14 md:min-h-14 md:px-6 md:gap-2"
                   >
                     {isLoading ? (
-                      <span className="loading loading-spinner loading-sm" />
+                      <span className="loading loading-spinner loading-md md:loading-sm" />
                     ) : (
                       <>
-                        <ClockIcon className="w-5 h-5" />
-                        <span className="font-semibold text-sm">
+                        <ClockIcon className="w-6 h-6 md:w-5 md:h-5" />
+                        <span className="font-semibold text-lg md:text-sm">
                           {pendingHomeApproval ? 'Approval pending' : 'Send for approval'}
                         </span>
                       </>
@@ -429,13 +500,13 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
                     type="button"
                     onClick={handleClockIn}
                     disabled={isLoading}
-                    className="btn rounded-full h-16 min-h-16 px-8 gap-2 border-0 shadow-lg bg-gradient-to-r from-green-600 via-emerald-600 to-teal-500 text-white hover:from-green-700 hover:via-emerald-700 hover:to-teal-600 hover:shadow-xl transition-all duration-200 disabled:opacity-60 text-base"
+                    className="btn rounded-full h-20 min-h-20 px-10 gap-3 border-0 shadow-lg bg-gradient-to-r from-green-600 via-emerald-600 to-teal-500 text-white hover:from-green-700 hover:via-emerald-700 hover:to-teal-600 hover:shadow-xl transition-all duration-200 disabled:opacity-60 text-lg md:h-16 md:min-h-16 md:px-8 md:gap-2 md:text-base"
                   >
                     {isLoading ? (
-                      <span className="loading loading-spinner loading-sm" />
+                      <span className="loading loading-spinner loading-md md:loading-sm" />
                     ) : (
                       <>
-                        <ClockIcon className="w-5 h-5" />
+                        <ClockIcon className="w-8 h-8 md:w-6 md:h-6" />
                         <span className="font-semibold">Clock In</span>
                       </>
                     )}
@@ -446,13 +517,13 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
                   type="button"
                   onClick={handleClockOut}
                   disabled={isLoading}
-                  className="btn rounded-full h-16 min-h-16 px-8 gap-2 border-0 shadow-lg bg-gradient-to-r from-violet-600 via-purple-600 to-indigo-500 text-white hover:from-violet-700 hover:via-purple-700 hover:to-indigo-600 hover:shadow-xl transition-all duration-200 disabled:opacity-60 text-base"
+                  className="btn rounded-full h-20 min-h-20 px-10 gap-3 border-0 shadow-lg bg-gradient-to-r from-violet-600 via-purple-600 to-indigo-500 text-white hover:from-violet-700 hover:via-purple-700 hover:to-indigo-600 hover:shadow-xl transition-all duration-200 disabled:opacity-60 text-lg md:h-16 md:min-h-16 md:px-8 md:gap-2 md:text-base"
                 >
                   {isLoading ? (
-                    <span className="loading loading-spinner loading-sm" />
+                    <span className="loading loading-spinner loading-md md:loading-sm" />
                   ) : (
                     <>
-                      <ClockIcon className="w-5 h-5" />
+                      <ClockIcon className="w-6 h-6 md:w-5 md:h-5" />
                       <span className="font-semibold">Clock Out</span>
                     </>
                   )}
@@ -522,7 +593,7 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
                     )}
                     {/* Mobile: native select */}
                     <select
-                      className="select select-bordered select-sm w-full md:hidden rounded-full"
+                      className="select select-bordered w-full md:hidden rounded-full h-10 min-h-10 text-base"
                       value={selectedWorkplaceId ?? ''}
                       onChange={(e) => setSelectedWorkplaceId(Number(e.target.value))}
                       disabled={workplaceOptions.length === 0}
@@ -538,11 +609,13 @@ const ClockInModal: React.FC<ClockInModalProps> = ({ isOpen, onClose, employeeId
                   </>
                 )}
               </div>
+              </div>
             </div>
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 };
 

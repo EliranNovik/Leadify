@@ -233,6 +233,43 @@ html,
     max-width: 100%;
     overflow-x: hidden;
   }
+
+  /* Login page: video bleeds into safe areas — no separate top/bottom chrome strip */
+  html.login-page-active,
+  html.login-page-active body,
+  html.login-page-active #root {
+    background-color: transparent !important;
+  }
+
+  html.login-page-active body::before {
+    background-color: transparent !important;
+  }
+
+  .login-page .login-page-media {
+    top: calc(-1 * env(safe-area-inset-top, 0px));
+    bottom: calc(-1 * env(safe-area-inset-bottom, 0px));
+    height: calc(100% + env(safe-area-inset-top, 0px) + env(safe-area-inset-bottom, 0px));
+    min-height: calc(100dvh + env(safe-area-inset-top, 0px) + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* Dashboard welcome overlay: full white through notch + home indicator */
+  html.dashboard-welcome-active,
+  html.dashboard-welcome-active body,
+  html.dashboard-welcome-active #root {
+    background-color: #ffffff !important;
+  }
+
+  html.dashboard-welcome-active body::before {
+    background-color: #ffffff !important;
+  }
+
+  .dashboard-welcome-overlay {
+    left: 0;
+    right: 0;
+    top: calc(-1 * env(safe-area-inset-top, 0px));
+    bottom: calc(-1 * env(safe-area-inset-bottom, 0px));
+    min-height: calc(100dvh + env(safe-area-inset-top, 0px) + env(safe-area-inset-bottom, 0px));
+  }
 }
 
 @media (max-width: 640px) {

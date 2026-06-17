@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { AtSymbolIcon, ArrowRightOnRectangleIcon, CheckCircleIcon, Bars3Icon, XMarkIcon, EyeIcon, EyeSlashIcon } from '@heroicons/react/24/outline';
@@ -6,6 +6,8 @@ import { LockClosedIcon } from '@heroicons/react/24/outline';
 import { preCheckExternalUser } from '../hooks/useExternalUser';
 import { fetchWelcomeProfileForEmail } from '../lib/loginWelcomeProfile';
 import { setDashboardWelcomePending } from '../lib/dashboardWelcomeSession';
+
+const LOGIN_PAGE_THEME_COLOR = '#1a1a1a';
 
 const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -17,6 +19,20 @@ const LoginPage: React.FC = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    const html = document.documentElement;
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    const prevTheme = metaTheme?.getAttribute('content') ?? '#ffffff';
+
+    html.classList.add('login-page-active');
+    metaTheme?.setAttribute('content', LOGIN_PAGE_THEME_COLOR);
+
+    return () => {
+      html.classList.remove('login-page-active');
+      metaTheme?.setAttribute('content', prevTheme);
+    };
+  }, []);
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -72,10 +88,10 @@ const LoginPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen w-full flex relative overflow-hidden">
+    <div className="login-page fixed inset-0 z-0 flex flex-col overflow-y-auto overflow-x-hidden">
       {/* Full-page video background */}
       <video
-        className="absolute inset-0 w-full h-full object-cover z-0"
+        className="login-page-media absolute inset-0 w-full h-full object-cover z-0 pointer-events-none"
         autoPlay
         muted
         loop
@@ -84,14 +100,14 @@ const LoginPage: React.FC = () => {
       >
         <source src="/login-hero.mp4" type="video/mp4" />
       </video>
-      <div className="absolute inset-0 w-full h-full bg-gradient-to-b from-[rgba(10,10,10,0.38)] to-[rgba(10,10,10,0.58)] z-0" />
-      <div className="absolute inset-0 w-full h-full bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.05),transparent_60%)] z-0" />
+      <div className="login-page-media absolute inset-0 w-full h-full bg-gradient-to-b from-[rgba(10,10,10,0.38)] to-[rgba(10,10,10,0.58)] z-0 pointer-events-none" />
+      <div className="login-page-media absolute inset-0 w-full h-full bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.05),transparent_60%)] z-0 pointer-events-none" />
 
       <>
           {/* Full width login box */}
-          <div className="w-full flex flex-col justify-start items-center min-h-screen relative z-10 pt-16 md:pt-20">
+          <div className="w-full flex flex-col justify-start items-center flex-1 relative z-10 pt-[calc(4rem+env(safe-area-inset-top,0px))] md:pt-20 min-h-[100dvh] min-h-[100svh]">
             {/* Header bar - Mobile */}
-            <div className="md:hidden absolute top-0 left-0 right-0 z-30">
+            <div className="md:hidden absolute top-0 left-0 right-0 z-30 pt-safe">
               <div className="flex items-center justify-between py-4 px-6">
                 {/* Hamburger Menu Button */}
                 <button
@@ -212,7 +228,7 @@ const LoginPage: React.FC = () => {
                     <div className="relative">
                       <input
                         type="email"
-                        className="peer input input-bordered w-full h-12 pl-10 bg-[rgba(255,255,255,0.06)] text-white placeholder-transparent border-[rgba(255,255,255,0.18)] rounded-[10px] shadow-none focus:border-[#d4af37] focus:shadow-[0_0_0_2px_rgba(212,175,55,0.2)] focus:bg-[rgba(255,255,255,0.10)] transition-all duration-200 focus:outline-none"
+                        className="peer input input-bordered w-full h-12 pl-10 bg-[rgba(255,255,255,0.14)] text-white placeholder-transparent border-[rgba(255,255,255,0.28)] rounded-[10px] shadow-none focus:border-[#d4af37] focus:shadow-[0_0_0_2px_rgba(212,175,55,0.2)] focus:bg-[rgba(255,255,255,0.18)] transition-all duration-200 focus:outline-none"
                         placeholder="Email"
                         value={email}
                         onChange={e => setEmail(e.target.value)}
@@ -236,7 +252,7 @@ const LoginPage: React.FC = () => {
                     <div className="relative">
                       <input
                         type={showPassword ? 'text' : 'password'}
-                        className="peer input input-bordered w-full h-12 pr-11 pl-10 bg-[rgba(255,255,255,0.06)] text-white placeholder-transparent border-[rgba(255,255,255,0.18)] rounded-[10px] shadow-none focus:border-[#d4af37] focus:shadow-[0_0_0_2px_rgba(212,175,55,0.2)] focus:bg-[rgba(255,255,255,0.10)] transition-all duration-200 focus:outline-none"
+                        className="peer input input-bordered w-full h-12 pr-11 pl-10 bg-[rgba(255,255,255,0.14)] text-white placeholder-transparent border-[rgba(255,255,255,0.28)] rounded-[10px] shadow-none focus:border-[#d4af37] focus:shadow-[0_0_0_2px_rgba(212,175,55,0.2)] focus:bg-[rgba(255,255,255,0.18)] transition-all duration-200 focus:outline-none"
                         placeholder="Password"
                         value={password}
                         onChange={e => setPassword(e.target.value)}
@@ -357,7 +373,7 @@ const LoginPage: React.FC = () => {
               )}
             </div>
             {/* Copyright at bottom left */}
-            <div className="absolute left-0 right-0 bottom-0 z-20 pb-6 flex justify-center w-full">
+            <div className="absolute left-0 right-0 bottom-0 z-20 pb-[max(1.5rem,env(safe-area-inset-bottom,0px))] flex justify-center w-full">
               <span className="text-white/85 text-lg font-semibold text-center w-full">© Rainmaker Queen 2.0 {new Date().getFullYear()}</span>
             </div>
           </div>
