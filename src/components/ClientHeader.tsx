@@ -58,7 +58,7 @@ import {
 import type { ContactInfo } from '../lib/contactHelpers';
 import type { WhatsAppPageSelectedContact } from '../pages/WhatsAppPage';
 import { FaWhatsapp } from 'react-icons/fa';
-import { fetchUnpaidTotalsByCurrency, getVatRateForLegacyLead, pickUnpaidBaseAndVatForCurrency, type UnpaidByCurrencyMap } from '../lib/financeUnpaidTotal';
+import { fetchUnpaidTotalsByCurrency, getVatRateForLegacyLead, pickUnpaidBaseAndVatForCurrency, pickUnpaidExpenseForCurrency, type UnpaidByCurrencyMap, type UnpaidExpenseByCurrencyMap } from '../lib/financeUnpaidTotal';
 import { useAuthContext } from '../contexts/AuthContext';
 import { fetchStageActorInfo } from '../lib/leadStageManager';
 import { SubEffortsLogModal } from './SubEffortsLogModal';
@@ -209,6 +209,8 @@ interface ClientHeaderProps {
     paymentPlanBaseTotal?: number | null;
     /** Sum of payment plan VAT (lead currency) when locked. */
     paymentPlanVatTotal?: number | null;
+    /** Sum of expense (no VAT) payment rows (lead currency) when locked. */
+    paymentPlanExpenseNoVatTotal?: number | null;
     /** When true, category is display-only and does not open the category modal on click (e.g. external user modal) */
     disableCategoryModal?: boolean;
     /** Opens the Combine leads modal (this lead as master, link another lead to it) */
@@ -274,6 +276,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     hasPaymentPlan = false,
     paymentPlanBaseTotal = null,
     paymentPlanVatTotal = null,
+    paymentPlanExpenseNoVatTotal = null,
     disableCategoryModal = false,
     onCombineLeads,
     onOpenWhatsAppForContact,
@@ -312,6 +315,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [isEditingCategory, setIsEditingCategory] = useState(false);
     /** Unpaid finance plan totals by currency (from payment_plans / finances_paymentplanrow, excludes paid rows). */
     const [unpaidByCurrency, setUnpaidByCurrency] = useState<UnpaidByCurrencyMap | null>(null);
+    const [unpaidExpenseByCurrency, setUnpaidExpenseByCurrency] = useState<UnpaidExpenseByCurrencyMap | null>(null);
     const togglingActiveHandlerRef = useRef(false);
     type ActiveRoleRevealState = {
         activeType: 1 | 2;
@@ -512,14 +516,21 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         const id = selectedClient?.id;
         if (id == null || id === '') {
             setUnpaidByCurrency(null);
+            setUnpaidExpenseByCurrency(null);
             return;
         }
         (async () => {
             try {
-                const map = await fetchUnpaidTotalsByCurrency(id, selectedClient?.lead_type);
-                if (!cancelled) setUnpaidByCurrency(map);
+                const { contract, expense } = await fetchUnpaidTotalsByCurrency(id, selectedClient?.lead_type);
+                if (!cancelled) {
+                    setUnpaidByCurrency(contract);
+                    setUnpaidExpenseByCurrency(expense);
+                }
             } catch {
-                if (!cancelled) setUnpaidByCurrency(null);
+                if (!cancelled) {
+                    setUnpaidByCurrency(null);
+                    setUnpaidExpenseByCurrency(null);
+                }
             }
         })();
         return () => {
@@ -536,10 +547,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             if (String(selectedClient.id) !== String(leadId)) return;
             void (async () => {
                 try {
-                    const map = await fetchUnpaidTotalsByCurrency(selectedClient.id, selectedClient?.lead_type);
-                    setUnpaidByCurrency(map);
+                    const { contract, expense } = await fetchUnpaidTotalsByCurrency(selectedClient.id, selectedClient?.lead_type);
+                    setUnpaidByCurrency(contract);
+                    setUnpaidExpenseByCurrency(expense);
                 } catch {
                     setUnpaidByCurrency(null);
+                    setUnpaidExpenseByCurrency(null);
                 }
             })();
         };
@@ -2770,6 +2783,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 unpaidOutstandingPair != null
                                     ? unpaidOutstandingPair.base + unpaidOutstandingPair.vat
                                     : 0;
+                            const unpaidExpenseAmount = pickUnpaidExpenseForCurrency(unpaidExpenseByCurrency, currency);
                             return (
                                 <div className="group relative cursor-pointer text-right" onClick={() => setIsBalanceModalOpen(true)}>
                                     <div className="space-y-2">
@@ -2798,6 +2812,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 {Number(netAfterSubcontractor.toFixed(2)).toLocaleString()}
                                             </p>
                                         )}
+                                        {paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0 && (
+                                            <p className="text-[11px] text-base-content/50">
+                                                Exp. {currency}
+                                                {Number(paymentPlanExpenseNoVatTotal.toFixed(2)).toLocaleString()}
+                                            </p>
+                                        )}
                                         {potentialAmount > 0 && (
                                             <p className="text-[11px] font-medium text-base-content/55">
                                                 Pot. {currency}
@@ -2809,27 +2829,35 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 Pot. appl. {Math.trunc(potentialApplicantsMeeting).toLocaleString()}
                                             </p>
                                         )}
-                                        {unpaidOutstandingPair !== null && unpaidGross > 0 && (
-                                            <div className="pt-2 border-t border-gray-200/80 dark:border-gray-600">
+                                        {(unpaidGross > 0 || unpaidExpenseAmount > 0) && (
+                                            <div className="mt-2 rounded-lg bg-gray-50 px-2.5 py-2 text-right dark:bg-base-200/25">
                                                 <p className="text-[10px] font-semibold uppercase tracking-wide text-base-content/35">
                                                     Outstanding
                                                 </p>
-                                                <div className="flex items-end justify-end gap-2">
-                                                    <p className="text-xl font-bold leading-none text-base-content/55">
-                                                        {currency}
-                                                        {Number(unpaidOutstandingPair.base.toFixed(2)).toLocaleString()}
-                                                    </p>
-                                                    {unpaidOutstandingPair.vat > 0 && (
-                                                        <p className="pb-0.5 text-sm text-base-content/40">
-                                                            +
-                                                            {unpaidOutstandingPair.vat.toLocaleString(undefined, {
-                                                                minimumFractionDigits: 0,
-                                                                maximumFractionDigits: 2,
-                                                            })}{' '}
-                                                            VAT
+                                                {unpaidOutstandingPair !== null && unpaidGross > 0 && (
+                                                    <div className="flex items-end justify-end gap-2">
+                                                        <p className="text-xl font-bold leading-none text-base-content/55">
+                                                            {currency}
+                                                            {Number(unpaidOutstandingPair.base.toFixed(2)).toLocaleString()}
                                                         </p>
-                                                    )}
-                                                </div>
+                                                        {unpaidOutstandingPair.vat > 0 && (
+                                                            <p className="pb-0.5 text-sm text-base-content/40">
+                                                                +
+                                                                {unpaidOutstandingPair.vat.toLocaleString(undefined, {
+                                                                    minimumFractionDigits: 0,
+                                                                    maximumFractionDigits: 2,
+                                                                })}{' '}
+                                                                VAT
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                )}
+                                                {unpaidExpenseAmount > 0 && (
+                                                    <p className="text-[11px] text-base-content/45">
+                                                        + {currency}
+                                                        {Number(unpaidExpenseAmount.toFixed(2)).toLocaleString()} expenses (no VAT)
+                                                    </p>
+                                                )}
                                             </div>
                                         )}
                                     </div>
@@ -3147,6 +3175,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     unpaidOutstandingPairDesktop != null
                                         ? unpaidOutstandingPairDesktop.base + unpaidOutstandingPairDesktop.vat
                                         : 0;
+                                const unpaidExpenseAmountDesktop = pickUnpaidExpenseForCurrency(unpaidExpenseByCurrency, currency);
 
                                 return (
                                     <div
@@ -3179,6 +3208,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     {Number(netAfterSubcontractor.toFixed(2)).toLocaleString()}
                                                 </p>
                                             )}
+                                            {paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0 && (
+                                                <p className="text-[11px] text-base-content/50">
+                                                    Exp. {currency}
+                                                    {Number(paymentPlanExpenseNoVatTotal.toFixed(2)).toLocaleString()}
+                                                </p>
+                                            )}
                                             {potentialAmount > 0 && (
                                                 <p className="text-[11px] font-medium text-base-content/55">
                                                     Pot. {currency}
@@ -3190,34 +3225,42 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     Pot. appl. {Math.trunc(potentialApplicantsMeeting).toLocaleString()}
                                                 </p>
                                             )}
-                                            {unpaidOutstandingPairDesktop !== null && unpaidGrossDesktop > 0 && (
-                                                <div className="border-t border-gray-200/80 pt-1 dark:border-gray-600">
+                                            {(unpaidGrossDesktop > 0 || unpaidExpenseAmountDesktop > 0) && (
+                                                <div className="mt-2 rounded-lg bg-gray-50 px-2.5 py-2 text-right dark:bg-base-200/25">
                                                     <p className="text-[10px] font-semibold uppercase tracking-wide text-base-content/35">
                                                         Outstanding
                                                     </p>
-                                                    <div className="flex items-end justify-end gap-2">
-                                                        <p className="text-2xl font-bold leading-none text-base-content/55">
-                                                            {currency}
-                                                            {Number(unpaidOutstandingPairDesktop.base.toFixed(2)).toLocaleString()}
-                                                        </p>
-                                                        {unpaidOutstandingPairDesktop.vat > 0 && (
-                                                            <p className="pb-1 text-sm text-base-content/40">
-                                                                +
-                                                                {unpaidOutstandingPairDesktop.vat.toLocaleString(undefined, {
-                                                                    minimumFractionDigits: 0,
-                                                                    maximumFractionDigits: 2,
-                                                                })}{' '}
-                                                                VAT
+                                                    {unpaidOutstandingPairDesktop !== null && unpaidGrossDesktop > 0 && (
+                                                        <div className="flex items-end justify-end gap-2">
+                                                            <p className="text-2xl font-bold leading-none text-base-content/55">
+                                                                {currency}
+                                                                {Number(unpaidOutstandingPairDesktop.base.toFixed(2)).toLocaleString()}
                                                             </p>
-                                                        )}
-                                                    </div>
+                                                            {unpaidOutstandingPairDesktop.vat > 0 && (
+                                                                <p className="pb-1 text-sm text-base-content/40">
+                                                                    +
+                                                                    {unpaidOutstandingPairDesktop.vat.toLocaleString(undefined, {
+                                                                        minimumFractionDigits: 0,
+                                                                        maximumFractionDigits: 2,
+                                                                    })}{' '}
+                                                                    VAT
+                                                                </p>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                    {unpaidExpenseAmountDesktop > 0 && (
+                                                        <p className="text-[11px] text-base-content/45">
+                                                            + {currency}
+                                                            {Number(unpaidExpenseAmountDesktop.toFixed(2)).toLocaleString()} expenses (no VAT)
+                                                        </p>
+                                                    )}
                                                 </div>
                                             )}
                                         </div>
                                     </div>
                                 );
                             })()}
-                            <div className="flex w-full max-w-xs flex-wrap items-center justify-end gap-2 border-t border-gray-200/80 pt-3 dark:border-gray-600">
+                            <div className="flex w-full max-w-xs flex-wrap items-center justify-end gap-2 pt-3">
                                 {!hideActionsDropdown && (
                                     <>
                                         <button

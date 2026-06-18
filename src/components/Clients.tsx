@@ -19,6 +19,7 @@ import { fetchAllLeads, fetchLatestLead, fetchLeadById, searchLeads, type Combin
 import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
 import { saveFollowUp } from '../lib/followUpsManager';
 import { displaySymbolForPaymentSave } from '../lib/paymentPlanCurrency';
+import { isExpenseNoVatPayment } from '../lib/proformaVat';
 import { usePersistedState } from '../hooks/usePersistedState';
 import { useRealtimeRefresh, type RealtimeTableSubscription } from '../hooks/useRealtimeRefresh';
 import BalanceEditModal from './BalanceEditModal';
@@ -2146,6 +2147,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [editedBalance, setEditedBalance] = useState(selectedClient?.balance || 0);
   const [paymentPlanBaseTotal, setPaymentPlanBaseTotal] = useState<number | null>(null);
   const [paymentPlanVatTotal, setPaymentPlanVatTotal] = useState<number | null>(null);
+  const [paymentPlanExpenseNoVatTotal, setPaymentPlanExpenseNoVatTotal] = useState<number | null>(null);
   const [paymentPlanGrossTotal, setPaymentPlanGrossTotal] = useState<number | null>(null);
   const [hasPaymentPlan, setHasPaymentPlan] = useState(false);
   const [paymentPlanCurrencyId, setPaymentPlanCurrencyId] = useState<number | null>(null);
@@ -10202,6 +10204,7 @@ const Clients: React.FC<ClientsProps> = ({
           setHasPaymentPlan(false);
           setPaymentPlanBaseTotal(null);
           setPaymentPlanVatTotal(null);
+          setPaymentPlanExpenseNoVatTotal(null);
           setPaymentPlanGrossTotal(null);
           return { hasPlan: false, base: null, vat: null, gross: null, grossNis: null };
         }
@@ -10213,7 +10216,7 @@ const Clients: React.FC<ClientsProps> = ({
         console.log('[paymentPlanTotal][legacy] fetching rows', { legacyId, leadCurrencyId, clientId });
         const { data, error } = await supabase
           .from('finances_paymentplanrow')
-          .select('value, vat_value, currency_id')
+          .select('value, vat_value, currency_id, payment_order, order')
           .eq('lead_id', legacyId)
           .is('cancel_date', null);
         if (error) throw error;
@@ -10230,9 +10233,11 @@ const Clients: React.FC<ClientsProps> = ({
 
         const baseByCurrencyId = new Map<number, number>();
         const vatByCurrencyId = new Map<number, number>();
+        const expenseByCurrencyId = new Map<number, number>();
         let grossNis = 0;
         const currencyIdsSeen = new Set<number>();
         for (const r of rows as any[]) {
+          const order = r?.payment_order ?? r?.order;
           const base = Number(r?.value ?? 0);
           const vat = Number(r?.vat_value ?? 0);
           const rowBase = Number.isFinite(base) ? base : 0;
@@ -10241,6 +10246,15 @@ const Clients: React.FC<ClientsProps> = ({
           const rowCurrencyIdRaw = r?.currency_id ?? leadCurrencyId;
           let rowCurrencyId = typeof rowCurrencyIdRaw === 'string' ? parseInt(rowCurrencyIdRaw, 10) : Number(rowCurrencyIdRaw);
           if (!Number.isFinite(rowCurrencyId) || rowCurrencyId <= 0) rowCurrencyId = leadCurrencyId;
+
+          if (isExpenseNoVatPayment(order)) {
+            expenseByCurrencyId.set(
+              rowCurrencyId,
+              (expenseByCurrencyId.get(rowCurrencyId) || 0) + rowGross,
+            );
+            continue;
+          }
+
           currencyIdsSeen.add(rowCurrencyId);
 
           baseByCurrencyId.set(rowCurrencyId, (baseByCurrencyId.get(rowCurrencyId) || 0) + rowBase);
@@ -10248,11 +10262,14 @@ const Clients: React.FC<ClientsProps> = ({
           grossNis += convertToNIS(rowGross, rowCurrencyId);
         }
 
-        const hasPlan = rows.length > 0;
+        const hasPlan = rows.some((r: any) => !isExpenseNoVatPayment(r?.payment_order ?? r?.order));
         const planCurrencyId =
           hasPlan && currencyIdsSeen.size === 1 ? Array.from(currencyIdsSeen)[0] : leadCurrencyId;
         const baseTotal = baseByCurrencyId.get(leadCurrencyId) ?? Array.from(baseByCurrencyId.values()).reduce((a, b) => a + b, 0);
         const vatTotal = vatByCurrencyId.get(leadCurrencyId) ?? Array.from(vatByCurrencyId.values()).reduce((a, b) => a + b, 0);
+        const expenseTotal =
+          expenseByCurrencyId.get(leadCurrencyId)
+          ?? Array.from(expenseByCurrencyId.values()).reduce((a, b) => a + b, 0);
         const grossTotal = baseTotal + vatTotal;
         console.log('[paymentPlanTotal][legacy] totals computed', {
           legacyId,
@@ -10268,29 +10285,40 @@ const Clients: React.FC<ClientsProps> = ({
         setHasPaymentPlan(hasPlan);
         setPaymentPlanBaseTotal(hasPlan ? baseTotal : null);
         setPaymentPlanVatTotal(hasPlan ? vatTotal : null);
+        setPaymentPlanExpenseNoVatTotal(expenseTotal > 0 ? expenseTotal : null);
         setPaymentPlanGrossTotal(hasPlan ? grossTotal : null);
         setPaymentPlanCurrencyId(hasPlan ? planCurrencyId : null);
-        return { hasPlan, base: hasPlan ? baseTotal : null, vat: hasPlan ? vatTotal : null, gross: hasPlan ? grossTotal : null, grossNis: hasPlan ? grossNis : null, currencyId: hasPlan ? planCurrencyId : null };
+        return { hasPlan, base: hasPlan ? baseTotal : null, vat: hasPlan ? vatTotal : null, gross: hasPlan ? grossTotal : null, grossNis: hasPlan ? grossNis : null, currencyId: hasPlan ? planCurrencyId : null, expenseNoVat: expenseTotal > 0 ? expenseTotal : null };
       } else {
         const { data, error } = await supabase
           .from('payment_plans')
-          .select('value, value_vat, currency')
+          .select('value, value_vat, currency, payment_order, order')
           .eq('lead_id', clientId)
           .is('cancel_date', null);
         if (error) throw error;
         const rows = data || [];
         const baseTotal = rows.reduce((sum, r: any) => {
+          if (isExpenseNoVatPayment(r?.payment_order ?? r?.order)) return sum;
           const base = Number(r?.value ?? 0);
           return sum + (Number.isFinite(base) ? base : 0);
         }, 0);
         const vatTotal = rows.reduce((sum, r: any) => {
+          if (isExpenseNoVatPayment(r?.payment_order ?? r?.order)) return sum;
           const vat = Number(r?.value_vat ?? 0);
           return sum + (Number.isFinite(vat) ? vat : 0);
         }, 0);
+        const expenseTotal = rows.reduce((sum, r: any) => {
+          if (!isExpenseNoVatPayment(r?.payment_order ?? r?.order)) return sum;
+          const base = Number(r?.value ?? 0);
+          const vat = Number(r?.value_vat ?? 0);
+          const gross = (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
+          return sum + gross;
+        }, 0);
         const grossTotal = baseTotal + vatTotal;
-        const hasPlan = rows.length > 0;
+        const hasPlan = rows.some((r: any) => !isExpenseNoVatPayment(r?.payment_order ?? r?.order));
         const currencyIdsSeen = new Set<number>();
         for (const r of rows as any[]) {
+          if (isExpenseNoVatPayment(r?.payment_order ?? r?.order)) continue;
           const c = (r?.currency ?? '').toString().trim();
           let id = 1;
           switch (c) {
@@ -10316,15 +10344,17 @@ const Clients: React.FC<ClientsProps> = ({
         setHasPaymentPlan(hasPlan);
         setPaymentPlanBaseTotal(hasPlan ? baseTotal : null);
         setPaymentPlanVatTotal(hasPlan ? vatTotal : null);
+        setPaymentPlanExpenseNoVatTotal(expenseTotal > 0 ? expenseTotal : null);
         setPaymentPlanGrossTotal(hasPlan ? grossTotal : null);
         setPaymentPlanCurrencyId(hasPlan ? Number(planCurrencyId) : null);
-        return { hasPlan, base: hasPlan ? baseTotal : null, vat: hasPlan ? vatTotal : null, gross: hasPlan ? grossTotal : null, grossNis: null, currencyId: hasPlan ? Number(planCurrencyId) : null };
+        return { hasPlan, base: hasPlan ? baseTotal : null, vat: hasPlan ? vatTotal : null, gross: hasPlan ? grossTotal : null, grossNis: null, currencyId: hasPlan ? Number(planCurrencyId) : null, expenseNoVat: expenseTotal > 0 ? expenseTotal : null };
       }
     } catch (e) {
       console.error('Error fetching payment plan total:', e);
       setHasPaymentPlan(false);
       setPaymentPlanBaseTotal(null);
       setPaymentPlanVatTotal(null);
+      setPaymentPlanExpenseNoVatTotal(null);
       setPaymentPlanGrossTotal(null);
       setPaymentPlanCurrencyId(null);
       return { hasPlan: false, base: null, vat: null, gross: null, grossNis: null, currencyId: null };
@@ -14598,6 +14628,7 @@ const Clients: React.FC<ClientsProps> = ({
             hasPaymentPlan={hasPaymentPlan}
             paymentPlanBaseTotal={paymentPlanBaseTotal}
             paymentPlanVatTotal={paymentPlanVatTotal}
+            paymentPlanExpenseNoVatTotal={paymentPlanExpenseNoVatTotal}
             currentStageName={currentStageName}
             handleStartCase={handleStartCase}
             updateLeadStage={updateLeadStage}

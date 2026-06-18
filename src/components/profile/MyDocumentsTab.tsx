@@ -66,47 +66,43 @@ const MyDocumentsTab: React.FC<MyDocumentsTabProps> = ({ employeeId, employeeNam
 
   return (
     <div className="my-profile-documents-shell w-full max-w-full min-w-0 overflow-x-hidden space-y-4">
-      <div className="rounded-[18px] bg-white px-4 py-4 md:px-5 shadow-sm">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between w-full min-w-0">
-          <div className="flex items-center gap-3 min-w-0">
-            <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-              <DocumentTextIcon className="w-5 h-5 text-primary" />
-            </div>
-            <div className="min-w-0">
-              <h2 className="text-xl md:text-2xl font-bold text-gray-800">My Documents</h2>
-              <p className="text-sm text-gray-500">
-                Documents uploaded for sick days and other unavailabilities
-              </p>
-            </div>
+      <div className="flex flex-col gap-3 px-1 sm:flex-row sm:items-center sm:justify-between w-full min-w-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+            <DocumentTextIcon className="w-5 h-5 text-primary" />
           </div>
-          {!loading && (
-            <span className="inline-flex items-center px-4 py-2 rounded-full text-sm font-semibold bg-gray-100 text-gray-700 border border-gray-200/80 shrink-0">
-              {filteredDocuments.length} document{filteredDocuments.length === 1 ? '' : 's'}
-            </span>
-          )}
+          <div className="min-w-0">
+            <h2 className="text-xl md:text-2xl font-bold text-gray-800">My Documents</h2>
+            <p className="text-sm text-gray-500">
+              Documents uploaded for sick days and other unavailabilities
+            </p>
+          </div>
         </div>
+        {!loading && (
+          <span className="inline-flex items-center px-4 py-2 rounded-full text-sm font-semibold bg-gray-100 text-gray-700 border border-gray-200/80 shrink-0">
+            {filteredDocuments.length} document{filteredDocuments.length === 1 ? '' : 's'}
+          </span>
+        )}
       </div>
 
-      <div className="rounded-[18px] bg-white px-4 py-4 md:px-5 shadow-sm space-y-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div className="flex items-center gap-2 text-base font-semibold text-gray-700">
-            <FunnelIcon className="w-5 h-5" />
-            Filter
-          </div>
-          <label className="form-control w-full sm:max-w-xs">
-            <span className="label-text text-sm text-gray-600 mb-1.5 font-medium">Type</span>
-            <select
-              className="select select-bordered w-full text-base h-12"
-              value={typeFilter}
-              onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
-            >
-              <option value="all">All types</option>
-              <option value="sick_days">Sick day/s</option>
-              <option value="vacation">Vacation</option>
-              <option value="general">General</option>
-            </select>
-          </label>
+      <div className="flex flex-col gap-3 px-1 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex items-center gap-2 text-base font-semibold text-gray-700">
+          <FunnelIcon className="w-5 h-5" />
+          Filter
         </div>
+        <label className="form-control w-full sm:max-w-xs">
+          <span className="label-text text-sm text-gray-600 mb-1.5 font-medium">Type</span>
+          <select
+            className="select select-bordered w-full bg-white text-base h-12"
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value as TypeFilter)}
+          >
+            <option value="all">All types</option>
+            <option value="sick_days">Sick day/s</option>
+            <option value="vacation">Vacation</option>
+            <option value="general">General</option>
+          </select>
+        </label>
       </div>
 
       <div className="rounded-[18px] bg-[#ececec] px-3 py-3 md:px-4 md:py-4 shadow-sm">
@@ -120,7 +116,7 @@ const MyDocumentsTab: React.FC<MyDocumentsTabProps> = ({ employeeId, employeeNam
             <p>No documents uploaded yet.</p>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             {filteredDocuments.map((doc) => {
               const docName = documentNameFromUrl(doc.document_url);
               const reason = unavailabilityReasonText(doc);

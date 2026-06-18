@@ -1,4 +1,5 @@
 import type { CurrencyInput } from './boiCurrencyConversion';
+import { isExpenseNoVatPayment } from './proformaVat';
 import {
   currencyInputFromLegacyProforma,
   currencyInputFromNewPayment,
@@ -34,18 +35,21 @@ function resolvePaymentRowCurrencyInput(payment: PaymentPlanRowLike): CurrencyIn
  * Sum payment-plan rows in NIS using the same rules as proforma / PaymentPage:
  * locked BOI charge when Pelecard session exists; unpaid → BOI today; paid → payment-date rate.
  */
-export async function sumPaymentPlanTotalsInNis(
+async function sumFilteredPaymentPlanTotalsInNis(
   payments: PaymentPlanRowLike[],
+  includePayment: (payment: PaymentPlanRowLike) => boolean,
 ): Promise<PaymentPlanTotalsInNis> {
   let subtotalNis = 0;
   let vatNis = 0;
 
-  const planIds = payments
+  const eligiblePayments = payments.filter(includePayment);
+
+  const planIds = eligiblePayments
     .map((p) => (typeof p.id === 'number' ? p.id : parseInt(String(p.id), 10)))
     .filter((id) => Number.isFinite(id));
   const exchangeContexts = await fetchPaymentPlanExchangeContexts(planIds);
 
-  for (const payment of payments) {
+  for (const payment of eligiblePayments) {
     const subtotal = Number(payment.value) || 0;
     const vat = Number(payment.valueVat) || 0;
     const total = subtotal + vat;
@@ -80,6 +84,24 @@ export async function sumPaymentPlanTotalsInNis(
   };
 }
 
+export async function sumPaymentPlanTotalsInNis(
+  payments: PaymentPlanRowLike[],
+): Promise<PaymentPlanTotalsInNis> {
+  return sumFilteredPaymentPlanTotalsInNis(
+    payments,
+    (p) => !isExpenseNoVatPayment(p.order),
+  );
+}
+
+export async function sumExpenseNoVatPlanTotalsInNis(
+  payments: PaymentPlanRowLike[],
+): Promise<PaymentPlanTotalsInNis> {
+  return sumFilteredPaymentPlanTotalsInNis(
+    payments,
+    (p) => isExpenseNoVatPayment(p.order),
+  );
+}
+
 export function formatOutstandingNisDisplay(totals: PaymentPlanTotalsInNis): {
   primary: string;
 } {
@@ -107,4 +129,9 @@ export function formatContractTotalNisDisplay(totals: PaymentPlanTotalsInNis): {
           })} VAT`
         : undefined,
   };
+}
+
+export function formatExpenseNoVatNisDisplay(totals: PaymentPlanTotalsInNis): string | undefined {
+  if (totals.totalNis <= 0 && totals.subtotalNis <= 0) return undefined;
+  return formatIlsAmount(totals.totalNis);
 }

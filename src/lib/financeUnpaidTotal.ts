@@ -6,6 +6,20 @@
  * - exclude canceled rows (cancel_date set)
  */
 import { supabase } from './supabase';
+import { isExpenseNoVatPayment } from './proformaVat';
+
+function planRowOrderField(plan: Record<string, unknown>): string | number | null | undefined {
+  const row = plan as { payment_order?: string | number | null; order?: string | number | null };
+  return row.payment_order ?? row.order;
+}
+
+function isContractTotalPlanRow(plan: Record<string, unknown>): boolean {
+  return !isExpenseNoVatPayment(planRowOrderField(plan));
+}
+
+function isExpenseNoVatPlanRow(plan: Record<string, unknown>): boolean {
+  return isExpenseNoVatPayment(planRowOrderField(plan));
+}
 
 export function getVatRateForLegacyLead(dateString: string | null | undefined): number {
   if (!dateString) return 0.18;
@@ -110,6 +124,12 @@ function currencyKeyFromLegacyPlan(plan: Record<string, unknown>): string {
 }
 
 export type UnpaidByCurrencyMap = Record<string, { base: number; vat: number }>;
+export type UnpaidExpenseByCurrencyMap = Record<string, number>;
+
+export type UnpaidTotalsFetchResult = {
+  contract: UnpaidByCurrencyMap;
+  expense: UnpaidExpenseByCurrencyMap;
+};
 
 /**
  * Fetch all non-canceled payment rows for the lead and sum base + VAT per currency for rows that are not paid.
@@ -117,21 +137,27 @@ export type UnpaidByCurrencyMap = Record<string, { base: number; vat: number }>;
 export async function fetchUnpaidTotalsByCurrency(
   clientId: string | number,
   leadType: string | null | undefined
-): Promise<UnpaidByCurrencyMap> {
+): Promise<UnpaidTotalsFetchResult> {
   const idStr = String(clientId);
   const isLegacy = leadType === 'legacy' || idStr.startsWith('legacy_');
-  const acc: UnpaidByCurrencyMap = {};
+  const contract: UnpaidByCurrencyMap = {};
+  const expense: UnpaidExpenseByCurrencyMap = {};
 
-  const add = (key: string, base: number, vat: number) => {
-    if (!acc[key]) acc[key] = { base: 0, vat: 0 };
-    acc[key].base += base;
-    acc[key].vat += vat;
+  const addContract = (key: string, base: number, vat: number) => {
+    if (!contract[key]) contract[key] = { base: 0, vat: 0 };
+    contract[key].base += base;
+    contract[key].vat += vat;
+  };
+
+  const addExpense = (key: string, gross: number) => {
+    if (!Number.isFinite(gross) || gross <= 0) return;
+    expense[key] = (expense[key] || 0) + gross;
   };
 
   if (isLegacy) {
     const legacyIdStr = idStr.replace(/^legacy_/, '');
     const legacyId = parseInt(legacyIdStr, 10);
-    if (!legacyId || Number.isNaN(legacyId)) return acc;
+    if (!legacyId || Number.isNaN(legacyId)) return { contract, expense };
 
     const { data, error } = await supabase
       .from('finances_paymentplanrow')
@@ -148,16 +174,21 @@ export async function fetchUnpaidTotalsByCurrency(
       .eq('lead_id', legacyId)
       .is('cancel_date', null);
 
-    if (error || !data?.length) return acc;
+    if (error || !data?.length) return { contract, expense };
 
     for (const plan of data) {
       if (Number(plan.lead_id) !== legacyId) continue;
       if (isLegacyPlanRowPaid(plan as Record<string, unknown>)) continue;
       const key = currencyKeyFromLegacyPlan(plan as Record<string, unknown>);
+      if (isExpenseNoVatPlanRow(plan as Record<string, unknown>)) {
+        addExpense(key, legacyPlanGross(plan as Record<string, unknown>));
+        continue;
+      }
+      if (!isContractTotalPlanRow(plan as Record<string, unknown>)) continue;
       const { base, vat } = legacyPlanBaseAndVat(plan as Record<string, unknown>);
-      add(key, base, vat);
+      addContract(key, base, vat);
     }
-    return acc;
+    return { contract, expense };
   }
 
   const { data, error } = await supabase
@@ -166,17 +197,22 @@ export async function fetchUnpaidTotalsByCurrency(
     .eq('lead_id', clientId)
     .is('cancel_date', null);
 
-  if (error || !data?.length) return acc;
+  if (error || !data?.length) return { contract, expense };
 
   for (const plan of data) {
     const pid = plan.lead_id != null ? String(plan.lead_id) : '';
     if (pid !== String(clientId)) continue;
     if (isNewPlanRowPaid(plan as Record<string, unknown>)) continue;
     const key = ((plan.currency as string) || '₪').trim() || '₪';
+    if (isExpenseNoVatPlanRow(plan as Record<string, unknown>)) {
+      addExpense(key, newPlanGross(plan as Record<string, unknown>));
+      continue;
+    }
+    if (!isContractTotalPlanRow(plan as Record<string, unknown>)) continue;
     const { base, vat } = newPlanBaseAndVat(plan as Record<string, unknown>);
-    add(key, base, vat);
+    addContract(key, base, vat);
   }
-  return acc;
+  return { contract, expense };
 }
 
 function normCurrencyKey(s: string): string {
@@ -219,6 +255,20 @@ export function pickUnpaidAmountForCurrency(
   return pair.base + pair.vat;
 }
 
+/** Unpaid expense (no VAT) gross for the header currency label. */
+export function pickUnpaidExpenseForCurrency(
+  byCurrency: UnpaidExpenseByCurrencyMap | null,
+  currencyLabel: string
+): number {
+  if (!byCurrency || Object.keys(byCurrency).length === 0) return 0;
+  if (byCurrency[currencyLabel]) return byCurrency[currencyLabel];
+  const target = normCurrencyKey(currencyLabel);
+  for (const [k, v] of Object.entries(byCurrency)) {
+    if (normCurrencyKey(k) === target) return v;
+  }
+  return Object.values(byCurrency).reduce((sum, v) => sum + v, 0);
+}
+
 /**
  * Batch-fetch unpaid base+VAT per currency for many leads (same row rules as fetchUnpaidTotalsByCurrency).
  * Map keys: `new:<leads.id uuid>` | `legacy:<leads_lead.id number>`
@@ -250,6 +300,8 @@ export async function fetchUnpaidTotalsBatchByLeadKey(
           date,
           due_date,
           currency_id,
+          payment_order,
+          order,
           accounting_currencies!finances_paymentplanrow_currency_id_fkey (
             id,
             name,
@@ -264,6 +316,7 @@ export async function fetchUnpaidTotalsBatchByLeadKey(
       for (const plan of data) {
         const lid = Number((plan as { lead_id?: number }).lead_id);
         if (!lid || Number.isNaN(lid)) continue;
+        if (!isContractTotalPlanRow(plan as Record<string, unknown>)) continue;
         if (isLegacyPlanRowPaid(plan as Record<string, unknown>)) continue;
         const ckey = currencyKeyFromLegacyPlan(plan as Record<string, unknown>);
         const { base, vat } = legacyPlanBaseAndVat(plan as Record<string, unknown>);
@@ -276,7 +329,7 @@ export async function fetchUnpaidTotalsBatchByLeadKey(
   if (uniqNew.length > 0) {
     const { data, error } = await supabase
       .from('payment_plans')
-      .select('lead_id, value, value_vat, paid, currency, cancel_date')
+      .select('lead_id, value, value_vat, paid, currency, cancel_date, payment_order, order')
       .in('lead_id', uniqNew)
       .is('cancel_date', null);
 
@@ -284,6 +337,7 @@ export async function fetchUnpaidTotalsBatchByLeadKey(
       for (const plan of data) {
         const pid = plan.lead_id != null ? String(plan.lead_id) : '';
         if (!pid) continue;
+        if (!isContractTotalPlanRow(plan as Record<string, unknown>)) continue;
         if (isNewPlanRowPaid(plan as Record<string, unknown>)) continue;
         const ckey = ((plan.currency as string) || '₪').trim() || '₪';
         const { base, vat } = newPlanBaseAndVat(plan as Record<string, unknown>);
