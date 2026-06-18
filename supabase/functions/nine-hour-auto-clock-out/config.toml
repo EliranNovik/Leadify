@@ -1,0 +1,2 @@
+# Cron: POST with header x-cron-secret (NINE_HOUR_AUTO_CLOCKOUT_CRON_SECRET). Suggested: */1 * * * *
+verify_jwt = false

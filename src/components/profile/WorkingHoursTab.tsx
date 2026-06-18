@@ -174,6 +174,10 @@ const WEEK_SIDE_COLORS = [
   '#0891b2',
 ] as const;
 
+function getWeekAccentColor(weekNum: number): string {
+  return WEEK_SIDE_COLORS[(weekNum - 1) % WEEK_SIDE_COLORS.length];
+}
+
 function WorkingHoursWeekDividerCell({
   weekNum,
   rowSpan,
@@ -181,7 +185,7 @@ function WorkingHoursWeekDividerCell({
   weekNum: number;
   rowSpan: number;
 }) {
-  const accent = WEEK_SIDE_COLORS[(weekNum - 1) % WEEK_SIDE_COLORS.length];
+  const accent = getWeekAccentColor(weekNum);
   return (
     <td
       rowSpan={rowSpan}
@@ -191,6 +195,31 @@ function WorkingHoursWeekDividerCell({
       <div className="wh-week-divider-line" aria-hidden />
       <span className="wh-week-divider-label">Week {weekNum}</span>
     </td>
+  );
+}
+
+function WorkingHoursWeekBetweenRow({
+  weekNum,
+  colSpan,
+}: {
+  weekNum: number;
+  colSpan: number;
+}) {
+  const accent = getWeekAccentColor(weekNum);
+  return (
+    <tr className="wh-week-between-row">
+      <td
+        colSpan={colSpan}
+        className="wh-week-between-cell"
+        style={{ '--wh-week-accent': accent } as React.CSSProperties}
+      >
+        <div className="wh-week-between-inner">
+          <span className="wh-week-between-line" aria-hidden />
+          <span className="wh-week-between-label">Week {weekNum}</span>
+          <span className="wh-week-between-line" aria-hidden />
+        </div>
+      </td>
+    </tr>
   );
 }
 
@@ -637,6 +666,8 @@ function WorkingHoursRowActionsMenu({
 const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeName = '' }) => {
   const { user } = useAuthContext();
   const calendarRef = useRef<CompactAvailabilityCalendarRef>(null);
+  const tableScrollRef = useRef<HTMLDivElement>(null);
+  const [useSideWeekColumn, setUseSideWeekColumn] = useState(true);
   const now = useMemo(() => new Date(), []);
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
@@ -944,7 +975,40 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
     [filteredMergedDayRows, monthWeekLookup],
   );
 
-  const tableColSpan = MERGED_COL_SPAN + WEEK_COL_SPAN + (bulkSelectMode ? 1 : 0);
+  const tableColSpan = useMemo(
+    () =>
+      MERGED_COL_SPAN
+      + (useSideWeekColumn ? WEEK_COL_SPAN : 0)
+      + (bulkSelectMode ? 1 : 0),
+    [useSideWeekColumn, bulkSelectMode],
+  );
+
+  const updateWeekLayoutMode = useCallback(() => {
+    const el = tableScrollRef.current;
+    if (!el) return;
+    const overflow = el.scrollWidth > el.clientWidth + 2;
+    setUseSideWeekColumn((prev) => {
+      if (overflow) return false;
+      if (!prev) {
+        return el.clientWidth >= el.scrollWidth + 28;
+      }
+      return true;
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    updateWeekLayoutMode();
+  }, [updateWeekLayoutMode, loading, filteredMergedDayRows, bulkSelectMode, year, month]);
+
+  useEffect(() => {
+    const el = tableScrollRef.current;
+    if (!el) return undefined;
+    const observer = new ResizeObserver(() => updateWeekLayoutMode());
+    observer.observe(el);
+    const table = el.querySelector('table');
+    if (table) observer.observe(table);
+    return () => observer.disconnect();
+  }, [updateWeekLayoutMode]);
 
   const handleCalendarMonthChange = useCallback((viewYear: number, viewMonth: number) => {
     setCalendarViewYear(viewYear);
@@ -1479,14 +1543,16 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
             </div>
           </div>
         )}
-        <div className="-mx-4 overflow-x-auto md:mx-0 py-2 pb-4">
+        <div ref={tableScrollRef} className="-mx-4 overflow-x-auto md:mx-0 py-2 pb-4">
           <table className="table my-profile-hours-table w-full min-w-[56rem] text-sm md:text-base">
             <thead>
               <tr>
-                <th
-                  className="w-8 min-w-[2rem] px-1 py-3.5 bg-[#ececec]"
-                  aria-label="Week"
-                />
+                {useSideWeekColumn && (
+                  <th
+                    className="w-8 min-w-[2rem] px-1 py-3.5 bg-[#ececec]"
+                    aria-label="Week"
+                  />
+                )}
                 {bulkSelectMode && (
                   <th className="w-10 min-w-[2.5rem] px-2 py-3.5 bg-[#ececec]" aria-label="Select" />
                 )}
@@ -1518,17 +1584,26 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                   </td>
                 </tr>
               ) : (
-                filteredMergedDayRows.map((row) => {
+                filteredMergedDayRows.flatMap((row) => {
                   const isPlaceholder = row.isMissingPlaceholder || row.isHolidayPlaceholder;
                   const isBulkSelectable =
                     bulkSelectMode && isPlaceholder && !isMonthSubmitted;
                   const isBulkSelected = bulkSelectedDateKeys.has(row.dateKey);
                   const weekMeta = weekRowMeta.get(row.dateKey);
                   const weekDividerCell =
-                    weekMeta?.isFirstInWeek ? (
+                    useSideWeekColumn && weekMeta?.isFirstInWeek ? (
                       <WorkingHoursWeekDividerCell
                         weekNum={weekMeta.weekNum}
                         rowSpan={weekMeta.weekRowSpan}
+                      />
+                    ) : null;
+
+                  const weekBetweenRow =
+                    !useSideWeekColumn && weekMeta?.isFirstInWeek ? (
+                      <WorkingHoursWeekBetweenRow
+                        key={`wh-week-between-${weekMeta.weekNum}`}
+                        weekNum={weekMeta.weekNum}
+                        colSpan={tableColSpan}
                       />
                     ) : null;
 
@@ -1544,7 +1619,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                         ? `${holidayLabel} — no entry yet`
                         : 'Holiday — no entry yet'
                       : 'No entry yet';
-                    return (
+                    return [
+                      weekBetweenRow,
                       <tr
                         key={row.dateKey}
                         id={`wh-row-${row.dateKey}`}
@@ -1591,8 +1667,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                             <span className="text-gray-400 text-xs">—</span>
                           )}
                         </td>
-                      </tr>
-                    );
+                      </tr>,
+                    ];
                   }
 
                   const hasClock = row.clock != null;
@@ -1600,7 +1676,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                   const approvalStatus = getDayClockInApprovalStatus(dayRecords, {
                     hasManualClockSummary: row.clock?.hasManual === true,
                   });
-                  return (
+                  return [
+                    weekBetweenRow,
                     <tr
                       key={row.dateKey}
                       id={`wh-row-${row.dateKey}`}
@@ -1745,8 +1822,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                             onDeleteClockIn={(dateKey) => void handleDeleteClockInDay(dateKey)}
                         />
                       </td>
-                    </tr>
-                  );
+                    </tr>,
+                  ];
                 })
               )}
             </tbody>
@@ -1899,6 +1976,41 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
 
         .my-profile-hours-shell table.my-profile-hours-table tbody tr:hover td.wh-week-divider-cell {
           background: transparent !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-week-between-row td {
+          background: transparent !important;
+          box-shadow: none !important;
+          padding: 0.35rem 0.75rem 0.15rem !important;
+          border: none !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-week-between-row + tr td.wh-data-date-cell {
+          border-top-left-radius: 18px !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody .wh-week-between-inner {
+          display: flex;
+          align-items: center;
+          gap: 0.65rem;
+          min-width: 0;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody .wh-week-between-line {
+          flex: 1 1 auto;
+          height: 2px;
+          border-radius: 999px;
+          background: var(--wh-week-accent, #94a3b8);
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody .wh-week-between-label {
+          flex: 0 0 auto;
+          font-size: 10px;
+          font-weight: 600;
+          letter-spacing: 0.06em;
+          text-transform: uppercase;
+          color: var(--wh-week-accent, #64748b);
+          white-space: nowrap;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table thead,

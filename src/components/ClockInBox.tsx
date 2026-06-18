@@ -186,11 +186,17 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
   const displayValue = isClockedIn && currentDuration ? currentDuration : todayTotal || '0h 0m';
   const displayLabel = isClockedIn ? 'Clocked In' : 'Clocked Out';
 
-  const approvalButtonClass = `inline-flex items-center justify-center min-w-[28px] h-7 px-2 rounded-full shadow-lg ${
+  const approvalButtonClass = [
+    'relative inline-flex items-center justify-center',
+    'h-10 w-10 md:h-11 md:w-11',
+    'rounded-full shadow-md',
+    'transition-all duration-200',
+    'hover:scale-105 hover:shadow-lg active:scale-95',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2',
     isDark2Theme
-      ? 'bg-base-100 text-primary ring-2 ring-base-300'
-      : 'bg-white/95 text-primary ring-2 ring-white/80'
-  }`;
+      ? 'bg-base-100 text-primary ring-1 ring-base-300 hover:bg-base-100 focus-visible:ring-primary'
+      : 'bg-white/95 text-primary ring-1 ring-white/90 hover:bg-white focus-visible:ring-white',
+  ].join(' ');
 
   const gradientClass = isClockedIn
     ? isAltTheme
@@ -203,7 +209,7 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
   return (
     <>
       <div
-        className={`flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto ${
+        className={`flex-shrink-0 flex flex-col rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.02] relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto min-h-32 md:min-h-0 ${
           isDark2Theme
             ? 'border border-base-300 bg-base-200 text-base-content shadow-none'
             : `bg-gradient-to-tr ${gradientClass} text-white`
@@ -218,8 +224,40 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
           }
         }}
       >
+        {isSuperUser && (
+          <div className="absolute bottom-1 right-1 md:bottom-1.5 md:right-1.5 z-20">
+            <button
+              type="button"
+              className={approvalButtonClass}
+              title="Approve manual clock-ins"
+              aria-label={
+                pendingApprovalCount > 0
+                  ? `Approve manual clock-ins, ${pendingApprovalCount} pending`
+                  : 'Approve manual clock-ins'
+              }
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsApprovalModalOpen(true);
+              }}
+            >
+              <ClipboardDocumentCheckIcon className="w-5 h-5 md:w-[1.375rem] md:h-[1.375rem]" />
+              {pendingApprovalCount > 0 && (
+                <span
+                  className={`absolute -top-1 -right-1 inline-flex items-center justify-center min-w-[1rem] h-4 px-1 text-[9px] font-bold rounded-full ring-2 ${
+                    isDark2Theme
+                      ? 'bg-primary text-primary-content ring-base-100'
+                      : 'bg-primary text-white ring-white'
+                  }`}
+                >
+                  {pendingApprovalCount}
+                </span>
+              )}
+            </button>
+          </div>
+        )}
+
         {isClockedIn && (
-          <div className="absolute top-2 right-2 z-10">
+          <div className="absolute top-1 right-1 md:top-1.5 md:right-1.5 z-10">
             <span
               className={`inline-flex items-center justify-center min-w-[24px] h-6 px-2 text-[10px] font-bold rounded-full shadow-lg animate-pulse ${
                 isDark2Theme
@@ -232,27 +270,7 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
           </div>
         )}
 
-        {isSuperUser && (
-          <div className="absolute bottom-2 left-2 z-10 md:top-2 md:right-2 md:bottom-auto md:left-auto">
-            <button
-              type="button"
-              className={approvalButtonClass}
-              title="Approve manual clock-ins"
-              aria-label="Approve manual clock-ins"
-              onClick={(e) => {
-                e.stopPropagation();
-                setIsApprovalModalOpen(true);
-              }}
-            >
-              <ClipboardDocumentCheckIcon className="w-4 h-4" />
-              {pendingApprovalCount > 0 && (
-                <span className="ml-1 text-[10px] font-bold">{pendingApprovalCount}</span>
-              )}
-            </button>
-          </div>
-        )}
-
-        <div className="flex items-center gap-2 md:gap-4">
+        <div className="flex items-center gap-2 md:gap-4 flex-1 min-h-0">
           <div
             className={`flex items-center justify-center w-12 h-12 md:w-14 md:h-14 rounded-full ${
               isDark2Theme ? 'border border-base-300 bg-base-200/40' : 'bg-white/20'
@@ -294,6 +312,7 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
           </div>
         </div>
 
+        {!isSuperUser && (
         <svg
           className={`absolute bottom-2 right-2 w-10 h-10 md:w-10 md:h-10 ${
             isDark2Theme ? 'text-base-content/35' : 'text-white/40'
@@ -306,6 +325,7 @@ const ClockInBox: React.FC<ClockInBoxProps> = ({
           <circle cx="16" cy="16" r="12" />
           <path d="M16 10v6l4 2" strokeLinecap="round" />
         </svg>
+        )}
       </div>
 
       <ClockInModal

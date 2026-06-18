@@ -1,0 +1,6 @@
+-- Optional: Supabase Dashboard → Edge Functions → nine-hour-auto-clock-out → Schedules
+-- Cron (UTC): every minute → */1 * * * *
+-- HTTP POST body: {}
+-- Header: x-cron-secret: <NINE_HOUR_AUTO_CLOCKOUT_CRON_SECRET>
+--
+-- Alternatively use backend scheduler (ENABLE_NINE_HOUR_AUTO_CLOCKOUT_SCHEDULER=true on Render).

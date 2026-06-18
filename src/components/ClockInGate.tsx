@@ -10,6 +10,9 @@ import LoginHeroBackground from './LoginHeroBackground';
 import ClockInGateHelpBox from './ClockInGateHelpBox';
 import ClockInGateVideos from './ClockInGateVideos';
 import ClockInGateHeader from './ClockInGateHeader';
+import NineHourOvertimeMonitor from './NineHourOvertimeMonitor';
+import ClockInPresenceHeartbeat from './ClockInPresenceHeartbeat';
+import WorkdayEndMonitor from './WorkdayEndMonitor';
 
 const LazyCalendarPage = lazy(() => import('./CalendarPage'));
 
@@ -86,7 +89,14 @@ const ClockInGate: React.FC<ClockInGateProps> = ({ children }) => {
   }, [isGateOpen, status]);
 
   if (isGateOpen) {
-    return <>{children}</>;
+    return (
+      <>
+        {children}
+        <ClockInPresenceHeartbeat />
+        <NineHourOvertimeMonitor />
+        <WorkdayEndMonitor />
+      </>
+    );
   }
 
   if (status === 'loading') {
