@@ -432,7 +432,7 @@ const MyProfilePage: React.FC = () => {
 
             {/* Main Content Area */}
             <div
-              className={`flex-1 w-full py-6 md:py-8 mt-12 md:mt-16 px-4 md:px-8 ${
+              className={`flex-1 w-full py-6 md:py-8 mt-12 md:mt-16 px-4 md:px-6 ${
                 activeTab === 'Working Hours' || activeTab === 'Documents' ? '' : 'max-w-5xl mx-auto'
               }`}
             >
