@@ -34,11 +34,14 @@ export interface CombinedLead {
   isContact?: boolean;
   contactName?: string;
   isMainContact?: boolean;
+  contact_id?: string | null;
+  portal_profile_image_path?: string | null;
   status?: number | string | null;
   /** Set when lead is a sublead (new: UUID, legacy: numeric master id) */
   master_id?: string | number | null;
   /** Set when lead is linked to a master via linked_master_lead column */
   linked_master_lead?: string | number | null;
+  category_id?: number | string | null;
 }
 
 type SearchIntent =
@@ -196,9 +199,29 @@ function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
 // Query functions (small and predictable)
 // -----------------------------------------------------
 
+const NEW_LEAD_CATEGORY_JOIN =
+  "category_id, misc_category!category_id(id, name, parent_id, misc_maincategory!parent_id(id, name))";
+
+const LEGACY_LEAD_CATEGORY_JOIN =
+  "category_id, misc_category!leads_lead_category_id_fkey(id, name, parent_id, misc_maincategory!parent_id(id, name))";
+
+const NEW_LEAD_SEARCH_SELECT = `id, lead_number, name, email, phone, mobile, topic, stage, created_at, status, master_id, linked_master_lead, ${NEW_LEAD_CATEGORY_JOIN}`;
+
+const LEGACY_LEAD_SEARCH_SELECT = `id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number, manual_id, linked_master_lead, ${LEGACY_LEAD_CATEGORY_JOIN}`;
+
+function formatLeadCategoryFromRow(row: any): string {
+  const categoryJoin = Array.isArray(row?.misc_category) ? row.misc_category[0] : row?.misc_category;
+  if (categoryJoin?.name) {
+    const mainRel = categoryJoin.misc_maincategory;
+    const mainCategory = Array.isArray(mainRel) ? mainRel[0]?.name : mainRel?.name;
+    return mainCategory ? `${categoryJoin.name} (${mainCategory})` : categoryJoin.name;
+  }
+  return row?.category || "";
+}
+
 async function searchNewLeads(intent: SearchIntent, opts: Required<SearchOptions>): Promise<any[]> {
   const queryStartTime = performance.now();
-  const selectFields = "id, lead_number, name, email, phone, mobile, topic, stage, created_at, status, master_id, linked_master_lead";
+  const selectFields = NEW_LEAD_SEARCH_SELECT;
 
   let qb = supabase.from("leads").select(selectFields);
 
@@ -321,7 +344,7 @@ async function searchContacts(intent: SearchIntent, opts: Required<SearchOptions
     return [];
   }
 
-  let qb = supabase.from("leads_contact").select("id, name, email, phone, mobile, newlead_id");
+  let qb = supabase.from("leads_contact").select("id, name, email, phone, mobile, newlead_id, portal_profile_image_path");
 
   if (intent.kind === "email") {
     // Use prefix matching instead of contains to avoid matching middle of emails
@@ -395,7 +418,7 @@ async function findContactsForLeadSearch(
     const { data: subleads } = await withTimeout(
       supabase
         .from("leads_lead")
-        .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, linked_master_lead")
+        .select(LEGACY_LEAD_SEARCH_SELECT)
         .eq("master_id", leadIntent.master)
         .not("master_id", "is", null)
         .order("id", { ascending: true }),
@@ -426,7 +449,7 @@ async function findContactsForLeadSearch(
       const { data: prefixData } = await withTimeout(
         supabase
           .from("leads_lead")
-          .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number, linked_master_lead")
+          .select(LEGACY_LEAD_SEARCH_SELECT)
           .ilike("lead_number", `${searchDigits}%`)
           .limit(20), // Limit to avoid too many results
         opts.timeoutMs,
@@ -451,7 +474,7 @@ async function findContactsForLeadSearch(
       const { data: exactLeadNumberData } = await withTimeout(
         supabase
           .from("leads_lead")
-          .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number, manual_id, linked_master_lead")
+          .select(LEGACY_LEAD_SEARCH_SELECT)
           .or(exactOrSublead)
           .limit(20),
         opts.timeoutMs,
@@ -469,7 +492,7 @@ async function findContactsForLeadSearch(
     const { data } = await withTimeout(
       supabase
         .from("leads_lead")
-        .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number, manual_id, linked_master_lead")
+        .select(LEGACY_LEAD_SEARCH_SELECT)
         .eq("id", legacyExactId)
         .limit(1),
       opts.timeoutMs,
@@ -530,7 +553,7 @@ async function findContactsForLeadSearch(
 
   if (contactIds.length) {
     const { data, error } = await withTimeout(
-      supabase.from("leads_contact").select("id, name, email, phone, mobile, newlead_id").in("id", contactIds).limit(opts.contactsLimit),
+      supabase.from("leads_contact").select("id, name, email, phone, mobile, newlead_id, portal_profile_image_path").in("id", contactIds).limit(opts.contactsLimit),
       opts.timeoutMs,
       "contacts fetch for lead search timeout",
     ).catch((err) => {
@@ -550,7 +573,7 @@ async function fetchNewLeadsByIds(ids: string[], opts: Required<SearchOptions>):
   const { data, error } = await withTimeout(
     supabase
       .from("leads")
-      .select("id, lead_number, topic, stage, created_at, status, master_id, linked_master_lead")
+      .select(NEW_LEAD_SEARCH_SELECT)
       .in("id", ids)
       .limit(opts.leadsLimit),
     opts.timeoutMs,
@@ -580,7 +603,7 @@ async function fetchLegacyLeadsByIds(ids: number[], opts: Required<SearchOptions
     // instead of falling back to the row's primary key id (e.g. "20999").
     supabase
       .from("leads_lead")
-      .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status, lead_number, manual_id, linked_master_lead")
+      .select(LEGACY_LEAD_SEARCH_SELECT)
       .in("id", ids)
       .limit(opts.legacyLimit),
     opts.timeoutMs,
@@ -599,6 +622,87 @@ async function fetchLegacyLeadsByIds(ids: number[], opts: Required<SearchOptions
   }
 
   return data;
+}
+
+function applyContactFieldsToResult(r: CombinedLead, c: any, options?: { isContact?: boolean; isMainContact?: boolean }) {
+  if (options?.isContact != null) r.isContact = options.isContact;
+  if (options?.isMainContact != null) r.isMainContact = options.isMainContact;
+  if (c?.id != null) r.contact_id = String(c.id);
+  if (c?.name) r.contactName = c.name;
+  const profilePath = c?.portal_profile_image_path?.trim();
+  if (profilePath) r.portal_profile_image_path = profilePath;
+}
+
+export async function enrichLeadContactSearchProfiles(results: CombinedLead[]): Promise<CombinedLead[]> {
+  const missing = results.filter((r) => !r.portal_profile_image_path?.trim());
+  if (!missing.length) return results;
+
+  const newLeadIds = Array.from(new Set(missing.filter((r) => r.lead_type === "new").map((r) => r.id)));
+  const legacyLeadIds = Array.from(
+    new Set(
+      missing
+        .filter((r) => r.lead_type === "legacy")
+        .map((r) => Number(r.id))
+        .filter((id) => !Number.isNaN(id)),
+    ),
+  );
+
+  const profileByNewLead = new Map<string, { main: boolean; path: string }>();
+  const profileByLegacyLead = new Map<number, { main: boolean; path: string }>();
+
+  const pickProfile = <T extends string | number>(
+    map: Map<T, { main: boolean; path: string }>,
+    key: T,
+    path: string,
+    isMain: boolean,
+  ) => {
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(key, { main: isMain, path });
+      return;
+    }
+    if (isMain && !existing.main) {
+      map.set(key, { main: true, path });
+    }
+  };
+
+  if (newLeadIds.length) {
+    const { data } = await supabase
+      .from("lead_leadcontact")
+      .select("newlead_id, main, leads_contact (portal_profile_image_path)")
+      .in("newlead_id", newLeadIds);
+
+    (data || []).forEach((row: any) => {
+      const path = row?.leads_contact?.portal_profile_image_path?.trim();
+      if (!path || !row?.newlead_id) return;
+      pickProfile(profileByNewLead, String(row.newlead_id), path, row.main === true || row.main === "true");
+    });
+  }
+
+  if (legacyLeadIds.length) {
+    const { data } = await supabase
+      .from("lead_leadcontact")
+      .select("lead_id, main, leads_contact (portal_profile_image_path)")
+      .in("lead_id", legacyLeadIds);
+
+    (data || []).forEach((row: any) => {
+      const path = row?.leads_contact?.portal_profile_image_path?.trim();
+      if (!path || row?.lead_id == null) return;
+      pickProfile(profileByLegacyLead, Number(row.lead_id), path, row.main === true || row.main === "true");
+    });
+  }
+
+  return results.map((result) => {
+    if (result.portal_profile_image_path?.trim()) return result;
+
+    const picked =
+      result.lead_type === "new"
+        ? profileByNewLead.get(result.id)
+        : profileByLegacyLead.get(Number(result.id));
+
+    if (!picked?.path) return result;
+    return { ...result, portal_profile_image_path: picked.path };
+  });
 }
 
 // -----------------------------------------------------
@@ -623,7 +727,8 @@ function mapNewLeadRow(row: any): CombinedLead {
     special_notes: "",
     next_followup: "",
     probability: "",
-    category: "",
+    category: formatLeadCategoryFromRow(row),
+    category_id: row.category_id ?? null,
     language: "",
     balance: "",
     lead_type: "new",
@@ -647,10 +752,16 @@ function mapLegacyLeadRow(row: any, formattedLeadNumber?: string): CombinedLead 
     (row.master_id
       ? `${row.master_id}`
       : (rawLeadNumberFromRow || String(row.id)));
+  const manualIdFromRow =
+    row.manual_id != null && String(row.manual_id).trim() !== ''
+      ? String(row.manual_id).trim()
+      : leadNumber.includes('/')
+        ? leadNumber.split('/')[0]
+        : rawLeadNumberFromRow || null;
   return {
     id: String(row.id),
     lead_number: leadNumber,
-    manual_id: leadNumber,
+    manual_id: manualIdFromRow,
     name: row.name || "",
     email: row.email || "",
     phone: row.phone || "",
@@ -664,7 +775,8 @@ function mapLegacyLeadRow(row: any, formattedLeadNumber?: string): CombinedLead 
     special_notes: "",
     next_followup: "",
     probability: "",
-    category: "",
+    category: formatLeadCategoryFromRow(row),
+    category_id: row.category_id ?? null,
     language: "",
     balance: "",
     lead_type: "legacy",
@@ -992,6 +1104,7 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
             r.email = contact.email || r.email;
             r.phone = contact.phone || r.phone;
             r.mobile = contact.mobile || r.mobile;
+            applyContactFieldsToResult(r, contact);
           }
         }
       }
@@ -1015,9 +1128,7 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
         if (c.newlead_id && newMap.has(c.newlead_id)) {
           const l = newMap.get(c.newlead_id);
           const r = mapNewLeadRow({ ...l, name: c.name, email: c.email, phone: c.phone, mobile: c.mobile });
-          r.isContact = true;
-          r.contactName = c.name || "";
-          r.isMainContact = false;
+          applyContactFieldsToResult(r, c, { isContact: true, isMainContact: false });
 
           const key = `new:${r.id}:contact:${contactId}`;
           if (!seen.has(key)) {
@@ -1033,9 +1144,7 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
           if (rel.newlead_id && newMap.has(rel.newlead_id)) {
             const l = newMap.get(rel.newlead_id);
             const r = mapNewLeadRow({ ...l, name: c.name, email: c.email, phone: c.phone, mobile: c.mobile });
-            r.isContact = !isMain;
-            r.contactName = c.name || "";
-            r.isMainContact = isMain;
+            applyContactFieldsToResult(r, c, { isContact: !isMain, isMainContact: isMain });
 
             const key = `new:${r.id}:contact:${contactId}:main:${isMain ? "1" : "0"}`;
             if (!seen.has(key)) {
@@ -1053,10 +1162,7 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
             r.email = c.email || r.email;
             r.phone = c.phone || r.phone;
             r.mobile = c.mobile || r.mobile;
-
-            r.isContact = !isMain;
-            r.contactName = c.name || "";
-            r.isMainContact = isMain;
+            applyContactFieldsToResult(r, c, { isContact: !isMain, isMainContact: isMain });
 
             const key = `legacy:${r.id}:contact:${contactId}:main:${isMain ? "1" : "0"}`;
             if (!seen.has(key)) {
@@ -1101,6 +1207,7 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
             r.email = contact.email || r.email;
             r.phone = contact.phone || r.phone;
             r.mobile = contact.mobile || r.mobile;
+            applyContactFieldsToResult(r, contact);
           }
         }
       }
@@ -1121,7 +1228,7 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
 
     const finalResults = results.slice(0, opts.limit);
 
-    return finalResults;
+    return enrichLeadContactSearchProfiles(finalResults);
   } catch (error) {
     // Return empty array instead of throwing to prevent UI crashes
     return [];

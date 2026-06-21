@@ -686,7 +686,12 @@ const Clients: React.FC<ClientsProps> = ({
       : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
     const name = selectedClient.name || 'Unknown';
     const leadNumber = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '';
-    addRecentLead({ id: routeId, name, lead_number: leadNumber });
+    addRecentLead({
+      id: routeId,
+      name,
+      lead_number: leadNumber,
+      lead_type: isLegacy ? 'legacy' : 'new',
+    });
   }, [selectedClient?.id]);
 
   // Helper function to extract country code and number from full phone number

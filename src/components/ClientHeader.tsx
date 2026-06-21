@@ -80,6 +80,7 @@ import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
 import ClientHeaderTotalInNis from './ClientHeaderTotalInNis';
 import EditLeadDrawer from './EditLeadDrawer';
 import MobileBottomSheet from './MobileBottomSheet';
+import ClientPortalAdminCard from './portal/ClientPortalAdminCard';
 
 // Lightweight in-memory caches to avoid refetching static dropdown data on mobile.
 let cachedLeadSources: Array<{ id: string; name: string }> | null = null;
@@ -295,6 +296,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [isSubEffortsModalOpen, setIsSubEffortsModalOpen] = useState(false);
     const [subEffortsModalRowId, setSubEffortsModalRowId] = useState<string | number | null>(null);
     const [editLeadDrawerOpen, setEditLeadDrawerOpen] = useState(false);
+    const [clientPortalModalOpen, setClientPortalModalOpen] = useState(false);
 
     const setEditLeadDrawerOpenState = useCallback(
         (open: boolean) => {
@@ -2266,6 +2268,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             }}
                         >
                             <PencilSquareIcon className="h-4 w-4" /> Edit Details
+                        </a>
+                    </li>
+                    <li>
+                        <a
+                            onClick={() => {
+                                setClientPortalModalOpen(true);
+                                blurDropdown();
+                            }}
+                        >
+                            <LinkIcon className="h-4 w-4" /> Client portal
                         </a>
                     </li>
                     <li>
@@ -5259,6 +5271,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     onClose={() => setEditLeadDrawerOpenState(false)}
                     lead={selectedClient}
                     onSave={() => refreshClientData(selectedClient.id)}
+                />
+            )}
+            {selectedClient && (
+                <ClientPortalAdminCard
+                    leadId={String(selectedClient.id ?? '')}
+                    leadType={selectedClient.lead_type}
+                    leadNumber={(selectedClient as { lead_number?: string }).lead_number}
+                    open={clientPortalModalOpen}
+                    onOpenChange={setClientPortalModalOpen}
+                    showTrigger={false}
                 />
             )}
         </div>

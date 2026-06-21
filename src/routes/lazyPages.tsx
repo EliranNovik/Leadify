@@ -71,6 +71,7 @@ export const LazyProformaCreatePage = lazy(() => import('../pages/ProformaCreate
 export const LazyAboutPage = lazy(() => import('../pages/AboutPage'));
 export const LazyDocumentsPage = lazy(() => import('../pages/DocumentsPage'));
 export const LazyContactPage = lazy(() => import('../pages/ContactPage'));
+export const LazyContactBridgePage = lazy(() => import('../pages/ContactBridgePage'));
 export const LazyHowItWorksPage = lazy(() => import('../pages/HowItWorksPage'));
 export const LazyMeetingSummaryTestPage = lazy(() => import('../pages/MeetingSummaryTestPage'));
 export const LazySimpleTestPage = lazy(() => import('../pages/SimpleTestPage'));
@@ -83,3 +84,6 @@ export const LazySignedSalesReportPage = lazy(() => import('../pages/SignedSales
 export const LazyMyProfilePage = lazy(() => import('../pages/MyProfilePage'));
 export const LazyPublicProfilePage = lazy(() => import('../pages/PublicProfilePage'));
 export const LazyBusinessCardPage = lazy(() => import('../pages/BusinessCardPage'));
+export const LazyPortalLoginPage = lazy(() => import('../pages/portal/PortalLoginPage'));
+export const LazyPortalAboutPage = lazy(() => import('../pages/portal/PortalAboutPage'));
+export const LazyPortalCasePage = lazy(() => import('../pages/portal/PortalCasePage'));

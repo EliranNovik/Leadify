@@ -223,7 +223,7 @@ const ClockInGate: React.FC<ClockInGateProps> = ({ children }) => {
         <div className="flex flex-1 min-h-0 w-full items-center gap-3 lg:gap-6 px-3 md:px-6 lg:px-8">
           {showClockInChrome && (
             <aside className="hidden lg:flex w-[min(18rem,22vw)] shrink-0 items-center justify-end min-h-0 self-center py-2 pointer-events-none">
-              <ClockInGateVideos placement="desktop" />
+              <ClockInGateVideos placement="desktop" desktopLayout="vertical" />
             </aside>
           )}
 

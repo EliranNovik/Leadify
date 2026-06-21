@@ -69,6 +69,7 @@ import {
   selectReminderWhatsAppTemplate,
 } from '../../lib/meetingWhatsAppNotify';
 import TimePicker from '../TimePicker';
+import PortalMeetingRequestsPanel from '../portal/PortalMeetingRequestsPanel';
 
 const fakeNames = ['Anna Zh', 'Mindi', 'Sarah L', 'David K', '---'];
 
@@ -7017,6 +7018,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         {/* Schedule/Reschedule Meeting button moved to ClientHeader (top-left stage row).
             See window events 'meeting-tab:open-schedule-drawer' / 'meeting-tab:open-reschedule-drawer'. */}
       </div>
+
+      <PortalMeetingRequestsPanel
+        leadId={String(client?.id ?? '')}
+        leadType={client?.lead_type}
+      />
 
       {/* Scheduling History Table */}
       {schedulingHistory.length > 0 && (

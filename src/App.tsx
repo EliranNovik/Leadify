@@ -42,6 +42,7 @@ import {
   LazyCollectionFinancesReport,
   LazyCollectionPage,
   LazyContactPage,
+  LazyContactBridgePage,
   LazyContractPage,
   LazyCreateNewLead,
   LazyCTIPopupPage,
@@ -80,6 +81,9 @@ import {
   LazyPaymentFailedPage,
   LazyPaymentCancelledPage,
   LazyPipelinePage,
+  LazyPortalCasePage,
+  LazyPortalAboutPage,
+  LazyPortalLoginPage,
   LazyProformaCreatePage,
   LazyProformaLegacyCreatePage,
   LazyProformaLegacyViewPage,
@@ -637,6 +641,9 @@ const AppContentInner: React.FC = () => {
       <Route path="/payment/failed" element={<RouteSuspense><LazyPaymentFailedPage /></RouteSuspense>} />
       <Route path="/payment/cancelled" element={<RouteSuspense><LazyPaymentCancelledPage /></RouteSuspense>} />
       <Route path="/payment/:token" element={<RouteSuspense><LazyPaymentPage /></RouteSuspense>} />
+      <Route path="/portal/:leadRef/case" element={<RouteSuspense><LazyPortalCasePage /></RouteSuspense>} />
+      <Route path="/portal/:leadRef/about" element={<RouteSuspense><LazyPortalAboutPage /></RouteSuspense>} />
+      <Route path="/portal/:leadRef" element={<RouteSuspense><LazyPortalLoginPage /></RouteSuspense>} />
       <Route path="/cti/pop" element={<RouteSuspense><LazyCTIPopupPage /></RouteSuspense>} />
       <Route path="/my-profile/:employeeId" element={<RouteSuspense><LazyPublicProfilePage /></RouteSuspense>} />
       <Route path="/business-card/:employeeId" element={<RouteSuspense><LazyBusinessCardPage /></RouteSuspense>} />
@@ -949,6 +956,7 @@ const AppContentInner: React.FC = () => {
                   <Routes>
                     <Route path="/" element={<HomeEntryPage />} />
                     <Route path="/external-home" element={<RouteSuspense><LazyExternalUserHomePage /></RouteSuspense>} />
+                    <Route path="/contacts/:contactId" element={<RouteSuspense><LazyContactBridgePage /></RouteSuspense>} />
                     <Route path="/clients" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/contract" element={<RouteSuspense><LazyContractPage key="contract-lead" /></RouteSuspense>} />
                     <Route path="/contract/:contractId" element={<RouteSuspense><LazyContractPage key="contract-id" /></RouteSuspense>} />

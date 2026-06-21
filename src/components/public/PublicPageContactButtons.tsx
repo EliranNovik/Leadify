@@ -1,13 +1,27 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { PhoneIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
-import { FaWhatsapp, FaEnvelope } from 'react-icons/fa';
+import React, { useEffect, useRef, useState } from 'react';
+import { ChevronDownIcon } from '@heroicons/react/24/outline';
+import PublicContactMenuPanel from './PublicContactMenuPanel';
 
-const WHATSAPP_URL = 'https://wa.me/972552780162';
-const OFFICE_EMAIL = 'office@lawoffice.org.il';
-const OFFICE_PHONE = '+972737895444';
+type Props = {
+  needHelpLabel?: string;
+  contactUsLabel?: string;
+  whatsappLabel?: string;
+  emailLabel?: string;
+  callLabel?: string;
+  containerClassName?: string;
+  darkSurface?: boolean;
+};
 
-/** Compact “Need help?” contact menu — less visual competition with checkout. */
-const PublicPageContactButtons: React.FC = () => {
+/** Compact “Need help?” contact menu — fixed bottom-right. */
+const PublicPageContactButtons: React.FC<Props> = ({
+  needHelpLabel = 'Need help?',
+  contactUsLabel,
+  whatsappLabel,
+  emailLabel,
+  callLabel,
+  containerClassName = 'fixed bottom-10 end-6 z-40 print-hide flex flex-col items-end gap-2',
+  darkSurface = false,
+}) => {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -22,54 +36,31 @@ const PublicPageContactButtons: React.FC = () => {
     return () => document.removeEventListener('mousedown', onDocClick);
   }, [open]);
 
+  const triggerClass = darkSurface
+    ? 'flex items-center gap-2 rounded-full border border-white/15 bg-white/[0.06] px-3.5 py-2 text-[13px] font-normal text-white/65 transition-colors hover:bg-white/10 hover:text-white/90'
+    : 'flex items-center gap-2 rounded-full border border-gray-200/80 bg-white/95 px-3.5 py-2 text-[13px] font-normal text-gray-600 shadow-sm transition-shadow hover:shadow';
+
   return (
-    <div
-      ref={rootRef}
-      className="fixed bottom-10 right-6 z-40 print-hide flex flex-col items-end gap-2"
-    >
+    <div ref={rootRef} className={containerClassName}>
       {open && (
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg p-3 min-w-[200px] animate-in fade-in">
-          <p className="text-xs text-gray-500 px-2 pb-2 border-b border-gray-100 mb-2">
-            Contact us
-          </p>
-          <div className="flex flex-col gap-1">
-            <a
-              href={WHATSAPP_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-gray-700 hover:bg-gray-50"
-              onClick={() => setOpen(false)}
-            >
-              <FaWhatsapp className="w-4 h-4 text-green-600" />
-              WhatsApp
-            </a>
-            <a
-              href={`mailto:${OFFICE_EMAIL}`}
-              className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-gray-700 hover:bg-gray-50"
-              onClick={() => setOpen(false)}
-            >
-              <FaEnvelope className="w-4 h-4 text-blue-600" />
-              Email
-            </a>
-            <a
-              href={`tel:${OFFICE_PHONE}`}
-              className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm text-gray-700 hover:bg-gray-50"
-              onClick={() => setOpen(false)}
-            >
-              <PhoneIcon className="w-4 h-4 text-violet-600" />
-              Call
-            </a>
-          </div>
+        <div className="mb-2">
+          <PublicContactMenuPanel
+            onItemClick={() => setOpen(false)}
+            contactUsLabel={contactUsLabel}
+            whatsappLabel={whatsappLabel}
+            emailLabel={emailLabel}
+            callLabel={callLabel}
+          />
         </div>
       )}
 
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 bg-white/95 border border-gray-200/80 rounded-full px-3.5 py-2 shadow-sm hover:shadow text-[13px] font-normal text-gray-600 transition-shadow"
+        className={triggerClass}
         aria-expanded={open}
       >
-        Need help?
+        {needHelpLabel}
         <ChevronDownIcon
           className={`w-4 h-4 transition-transform ${open ? 'rotate-180' : ''}`}
         />

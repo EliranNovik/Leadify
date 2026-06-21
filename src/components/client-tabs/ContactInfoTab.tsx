@@ -21,6 +21,8 @@ import CallOptionsModal from '../CallOptionsModal';
 import DocumentModal from '../DocumentModal';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../../lib/leadOneDrivePaths';
 import { getFrontendBaseUrl } from '../../lib/api';
+import ContactProfileAvatar from '../ContactProfileAvatar';
+import { useContactProfileImageUrls } from '../../hooks/useContactProfileImageUrls';
 
 // Function to clean HTML content and make it readable
 const cleanHtmlContent = (html: string): string => {
@@ -233,7 +235,9 @@ interface ContactEntry {
   mobile: string;
   phone: string;
   email: string;
+  id_passport?: string;
   country_id?: number | null;
+  portal_profile_image_path?: string | null;
   isMain?: boolean;
   isEditing?: boolean;
 }
@@ -451,9 +455,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       mobile: client.mobile || '---',
       phone: client.phone || '---',
       email: client.email || '---',
+      id_passport: '---',
       isMain: true,
     }
   ]);
+  const contactProfileImageUrls = useContactProfileImageUrls(
+    contacts.map((c) => c.portal_profile_image_path),
+  );
 
   const [isEditingMainContact, setIsEditingMainContact] = useState(false);
   const [editedMainContact, setEditedMainContact] = useState({
@@ -461,6 +469,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     mobile: client.mobile || '',
     phone: client.phone || '',
     email: client.email || '',
+    id_passport: '',
     country_id: null as number | null
   });
 
@@ -1403,7 +1412,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 address,
                 additional_phones,
                 additional_emails,
-                country_id
+                country_id,
+                portal_profile_image_path,
+                id_passport
               )
             `)
             .eq('lead_id', legacyId);
@@ -1467,7 +1478,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 mobile: contact.mobile || '---',
                 phone: contact.phone || '---',
                 email: contact.email || '---',
+                id_passport: contact.id_passport || '---',
                 country_id: contact.country_id || null,
+                portal_profile_image_path: contact.portal_profile_image_path ?? null,
                 isMain: isMainContact,
               });
             }
@@ -1481,6 +1494,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               mobile: client.mobile || '---',
               phone: client.phone || '---',
               email: client.email || '---',
+              id_passport: '---',
               isMain: true,
             };
             contactEntries.push(fallbackContact);
@@ -1503,7 +1517,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 mobile: (existing.mobile && existing.mobile !== '---') ? existing.mobile : (contact.mobile && contact.mobile !== '---' ? contact.mobile : existing.mobile),
                 phone: (existing.phone && existing.phone !== '---') ? existing.phone : (contact.phone && contact.phone !== '---' ? contact.phone : existing.phone),
                 email: (existing.email && existing.email !== '---') ? existing.email : (contact.email && contact.email !== '---' ? contact.email : existing.email),
+                id_passport:
+                  (existing.id_passport && existing.id_passport !== '---')
+                    ? existing.id_passport
+                    : (contact.id_passport && contact.id_passport !== '---' ? contact.id_passport : existing.id_passport),
                 country_id: existing.country_id || contact.country_id,
+                portal_profile_image_path:
+                  existing.portal_profile_image_path || contact.portal_profile_image_path || null,
                 // If either is marked as main, keep it as main
                 isMain: existing.isMain || contact.isMain,
               };
@@ -1561,7 +1581,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 address,
                 additional_phones,
                 additional_emails,
-                country_id
+                country_id,
+                portal_profile_image_path,
+                id_passport
               )
             `)
             .eq('newlead_id', newLeadId);
@@ -1574,6 +1596,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               mobile: client.mobile || '---',
               phone: client.phone || '---',
               email: client.email || '---',
+              id_passport: '---',
               isMain: true,
             };
             setContacts((prev) => mergeFetchedContactsWithLocalEdits([mainContact], prev));
@@ -1639,7 +1662,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 mobile: contact.mobile || '---',
                 phone: contact.phone || '---',
                 email: contact.email || '---',
+                id_passport: contact.id_passport || '---',
                 country_id: countryId,
+                portal_profile_image_path: contact.portal_profile_image_path ?? null,
                 isMain: isMainContact,
               });
             }
@@ -1652,7 +1677,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             // First, try to find an existing contact for this lead (in case it was created by SQL function but query didn't find it)
             const { data: existingContacts, error: existingError } = await supabase
               .from('leads_contact')
-              .select('id, name, mobile, phone, email, country_id')
+              .select('id, name, mobile, phone, email, country_id, portal_profile_image_path, id_passport')
               .eq('newlead_id', newLeadId)
               .limit(1);
 
@@ -1691,7 +1716,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   mobile: existingContact.mobile || client.mobile || '---',
                   phone: existingContact.phone || client.phone || '---',
                   email: existingContact.email || client.email || '---',
+                  id_passport: existingContact.id_passport || '---',
                   country_id: countryId,
+                  portal_profile_image_path: existingContact.portal_profile_image_path ?? null,
                   isMain: existingRelationship?.main === true || existingRelationship?.main === 'true' || existingRelationship?.main === 't',
                 };
                 contactEntries.push(mainContact);
@@ -1756,7 +1783,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   if (contactError) {
                     const { data: fetchedContact } = await supabase
                       .from('leads_contact')
-                      .select('id, name, mobile, phone, email, country_id')
+                      .select('id, name, mobile, phone, email, country_id, portal_profile_image_path, id_passport')
                       .eq('newlead_id', newLeadId)
                       .limit(1)
                       .single();
@@ -1877,7 +1904,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 mobile: (existing.mobile && existing.mobile !== '---') ? existing.mobile : (contact.mobile && contact.mobile !== '---' ? contact.mobile : existing.mobile),
                 phone: (existing.phone && existing.phone !== '---') ? existing.phone : (contact.phone && contact.phone !== '---' ? contact.phone : existing.phone),
                 email: (existing.email && existing.email !== '---') ? existing.email : (contact.email && contact.email !== '---' ? contact.email : existing.email),
+                id_passport:
+                  (existing.id_passport && existing.id_passport !== '---')
+                    ? existing.id_passport
+                    : (contact.id_passport && contact.id_passport !== '---' ? contact.id_passport : existing.id_passport),
                 country_id: existing.country_id || contact.country_id,
+                portal_profile_image_path:
+                  existing.portal_profile_image_path || contact.portal_profile_image_path || null,
                 // If either is marked as main, keep it as main
                 isMain: existing.isMain || contact.isMain,
               };
@@ -2139,6 +2172,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       mobile: '',
       phone: '',
       email: '',
+      id_passport: '',
       isEditing: true,
     };
     setContacts((prev) => {
@@ -2178,6 +2212,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             mobile: editedMainContact.mobile || null,
             phone: editedMainContact.phone || null,
             email: editedMainContact.email || null,
+            id_passport: editedMainContact.id_passport?.trim() || null,
             country_id: editedMainContact.country_id || null,
             udate: new Date().toISOString().split('T')[0]
           })
@@ -2218,6 +2253,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             mobile: editedMainContact.mobile || '---',
             phone: editedMainContact.phone || '---',
             email: editedMainContact.email || '---',
+            id_passport: editedMainContact.id_passport || '---',
             country_id: editedMainContact.country_id || null
           } : c
         ));
@@ -2257,6 +2293,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             mobile: editedMainContact.mobile || null,
             phone: editedMainContact.phone || null,
             email: editedMainContact.email || null,
+            id_passport: editedMainContact.id_passport?.trim() || null,
             country_id: editedMainContact.country_id || null,
             udate: new Date().toISOString().split('T')[0]
           })
@@ -2297,6 +2334,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             mobile: editedMainContact.mobile || '---',
             phone: editedMainContact.phone || '---',
             email: editedMainContact.email || '---',
+            id_passport: editedMainContact.id_passport || '---',
             country_id: editedMainContact.country_id || null
           } : c
         ));
@@ -2322,6 +2360,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       mobile: client.mobile || '',
       phone: client.phone || '',
       email: client.email || '',
+      id_passport: mainContact?.id_passport && mainContact.id_passport !== '---' ? mainContact.id_passport : '',
       country_id: mainContact?.country_id || null
     });
     setIsEditingMainContact(false);
@@ -2585,6 +2624,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             mobile: contact.mobile || null,
             phone: contact.phone || null,
             email: contact.email || null,
+            id_passport: contact.id_passport && contact.id_passport !== '---' ? contact.id_passport.trim() : null,
             country_id: contact.country_id || null,
             cdate: new Date().toISOString().split('T')[0],
             udate: new Date().toISOString().split('T')[0]
@@ -2758,6 +2798,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               mobile: contact.mobile,
               phone: contact.phone,
               email: contact.email,
+              id_passport: contact.id_passport && contact.id_passport !== '---' ? contact.id_passport.trim() : null,
               country_id: contact.country_id || null,
               udate: new Date().toISOString().split('T')[0]
             })
@@ -2801,6 +2842,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             mobile: contact.mobile || null,
             phone: contact.phone || null,
             email: contact.email || null,
+            id_passport: contact.id_passport && contact.id_passport !== '---' ? contact.id_passport.trim() : null,
             country_id: contact.country_id || null,
             newlead_id: newLeadId,
             cdate: new Date().toISOString().split('T')[0],
@@ -2957,6 +2999,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               mobile: contact.mobile || null,
               phone: contact.phone || null,
               email: contact.email || null,
+              id_passport: contact.id_passport && contact.id_passport !== '---' ? contact.id_passport.trim() : null,
               country_id: contact.country_id || null,
               udate: new Date().toISOString().split('T')[0]
             })
@@ -3553,13 +3596,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     <Fragment>
       <div className="w-full overflow-x-hidden overflow-y-auto">
         <div className="p-2 sm:p-4 md:p-6 max-w-full">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
-              <UserIcon className="w-5 h-5 text-gray-600" />
-            </div>
-            <div>
-              <h2 className="text-xl font-semibold text-gray-900">Contact Information</h2>
-              <p className="text-sm text-gray-500">Manage client contacts and contracts</p>
+          <div className="flex items-center gap-3 mb-6 flex-wrap">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
+                <UserIcon className="w-5 h-5 text-gray-600" />
+              </div>
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">Contact Information</h2>
+                <p className="text-sm text-gray-500">Manage client contacts and contracts</p>
+              </div>
             </div>
           </div>
 
@@ -3573,15 +3618,26 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   {/* Header - clean white, data-first */}
                   <div className="px-4 py-3 border-b border-gray-100">
                     <div className="flex items-start justify-between gap-2">
-                      <div className="flex flex-col gap-1.5 flex-1 min-w-0">
-                        <h4 className="text-base font-semibold text-gray-900 break-words line-clamp-2">
-                          {contact.name && contact.name !== '---' ? contact.name : 'Contact'}
-                        </h4>
-                        {contact.isMain && (
-                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-primary/10 text-primary whitespace-nowrap self-start">
-                            Main
-                          </span>
-                        )}
+                      <div className="flex items-start gap-3 flex-1 min-w-0">
+                        <ContactProfileAvatar
+                          name={contact.name}
+                          imageUrl={
+                            contact.portal_profile_image_path
+                              ? contactProfileImageUrls[contact.portal_profile_image_path]
+                              : undefined
+                          }
+                          className="h-14 w-14 text-base"
+                        />
+                        <div className="flex flex-col gap-1.5 min-w-0">
+                          <h4 className="text-base font-semibold text-gray-900 break-words line-clamp-2">
+                            {contact.name && contact.name !== '---' ? contact.name : 'Contact'}
+                          </h4>
+                          {contact.isMain && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-primary/10 text-primary whitespace-nowrap self-start">
+                              Main
+                            </span>
+                          )}
+                        </div>
                       </div>
                         <div className="flex items-center gap-2 flex-shrink-0">
                           {/* View contract - green if signed, outline if draft */}
@@ -3613,6 +3669,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                       mobile: (contact.mobile && contact.mobile !== '---') ? contact.mobile : '',
                                       phone: (contact.phone && contact.phone !== '---') ? contact.phone : '',
                                       email: (contact.email && contact.email !== '---') ? contact.email : '',
+                                      id_passport: (contact.id_passport && contact.id_passport !== '---') ? contact.id_passport : '',
                                       country_id: contact.country_id || null
                                     };
                                     setEditedMainContact(editedData);
@@ -4081,6 +4138,34 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           ) : (
                             <div className="text-base text-gray-900 flex items-center justify-end gap-2">
                               <span className="text-base font-medium">{contact.email}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* ID / Passport */}
+                      <div className="flex items-center justify-between py-3 border-b border-gray-100">
+                        <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">ID / Passport</label>
+                        <div className="flex-1 ml-4">
+                          {contact.isMain && isEditingMainContact ? (
+                            <input
+                              type="text"
+                              placeholder="Enter ID or passport number"
+                              className="input input-bordered w-full"
+                              value={editedMainContact.id_passport}
+                              onChange={(e) => setEditedMainContact({ ...editedMainContact, id_passport: e.target.value })}
+                            />
+                          ) : contact.isEditing ? (
+                            <input
+                              type="text"
+                              placeholder="Enter ID or passport number"
+                              className="input input-bordered w-full"
+                              value={contact.id_passport && contact.id_passport !== '---' ? contact.id_passport : ''}
+                              onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, id_passport: e.target.value } : c))}
+                            />
+                          ) : (
+                            <div className="text-base text-gray-900 text-right">
+                              <span className="text-base font-medium">{contact.id_passport || '---'}</span>
                             </div>
                           )}
                         </div>

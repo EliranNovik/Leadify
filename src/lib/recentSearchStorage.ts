@@ -11,6 +11,7 @@ export interface RecentLead {
   id: string;       // route id (lead_number or legacy id)
   name: string;
   lead_number: string;
+  lead_type?: 'legacy' | 'new';
 }
 
 export function getRecentSearches(): string[] {

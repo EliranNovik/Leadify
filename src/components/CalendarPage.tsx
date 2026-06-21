@@ -6,7 +6,7 @@ import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 import { Link, useNavigate, useNavigationType, useLocation } from 'react-router-dom';
 import { useCachedFetch } from '../hooks/useCachedFetch';
 import { usePersistedState } from '../hooks/usePersistedState';
-import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, MapPinIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, UserPlusIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon, PlusIcon, MagnifyingGlassIcon, DocumentTextIcon, BuildingOfficeIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, CalendarDaysIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, MapPinIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, UserPlusIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon, PlusIcon, MagnifyingGlassIcon, DocumentTextIcon, BuildingOfficeIcon } from '@heroicons/react/24/outline';
 import MobileBottomSheet from './MobileBottomSheet';
 import { MeetingJoinLinkMenu } from './MeetingJoinLinkMenu';
 import DocumentModal from './DocumentModal';
@@ -22,6 +22,12 @@ import sanitizeHtml from 'sanitize-html';
 import { buildApiUrl } from '../lib/api';
 import { fetchLeadActionPanelData } from '../lib/leadActionCounts';
 import CalendarLeadRecentInteractions from './calendar/CalendarLeadRecentInteractions';
+import CalendarLeadFilterSearch from './calendar/CalendarLeadFilterSearch';
+import {
+  fetchGlobalCalendarMeetings,
+  isCalendarGlobalLeadSearchActive,
+  meetingMatchesCalendarLeadFilter,
+} from '../lib/calendarLeadFilter';
 import { fetchStageNames, getStageName, refreshStageNames, getStageColour } from '../lib/stageUtils';
 import TeamsMeetingModal from './TeamsMeetingModal';
 import StaffMeetingEditModal from './StaffMeetingEditModal';
@@ -29,6 +35,8 @@ import MeetingNotifyControls from './MeetingNotifyControls';
 import DepartmentList from './DepartmentList';
 import SchedulerWhatsAppModal from './SchedulerWhatsAppModal';
 import SchedulerEmailThreadModal from './SchedulerEmailThreadModal';
+import PortalMeetingRequestsModal from './portal/PortalMeetingRequestsModal';
+import { usePortalMeetingRequests } from '../hooks/usePortalMeetingRequests';
 import * as XLSX from 'xlsx';
 
 const DEBUG_CALENDAR = String(import.meta.env.VITE_DEBUG_CALENDAR || '').toLowerCase() === 'true';
@@ -365,6 +373,10 @@ const CalendarPage: React.FC = () => {
   const [employeesCategoriesRefreshToken, setEmployeesCategoriesRefreshToken] = useState(0);
   const [selectedStaff, setSelectedStaff] = useState('');
   const [staffSearchTerm, setStaffSearchTerm] = useState('');
+  const [calendarLeadFilterQuery, setCalendarLeadFilterQuery] = useState('');
+  const [calendarGlobalSearchMeetings, setCalendarGlobalSearchMeetings] = useState<any[] | null>(null);
+  const [calendarGlobalSearchLoading, setCalendarGlobalSearchLoading] = useState(false);
+  const calendarGlobalSearchSeqRef = useRef(0);
   const [showStaffDropdown, setShowStaffDropdown] = useState(false);
   const [totalAmount, setTotalAmount] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -672,6 +684,31 @@ const CalendarPage: React.FC = () => {
       container.scrollTo({ top: Math.max(0, scrollTop), behavior: 'smooth' });
     } else {
       line.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  };
+
+  const scrollToMeetingRow = (meetingId: string | number) => {
+    const el = document.getElementById(`calendar-meeting-${meetingId}`);
+    if (!el) return;
+
+    const container = meetingsScrollRef.current;
+    const overflowY = container ? getComputedStyle(container).overflowY : 'visible';
+    const scrollsInContainer =
+      container &&
+      container.scrollHeight > container.clientHeight &&
+      (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay');
+
+    if (scrollsInContainer) {
+      const elRect = el.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      const scrollTop =
+        container.scrollTop +
+        (elRect.top - containerRect.top) -
+        container.clientHeight / 2 +
+        elRect.height / 2;
+      container.scrollTo({ top: Math.max(0, scrollTop), behavior: 'smooth' });
+    } else {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   };
 
@@ -1084,6 +1121,13 @@ const CalendarPage: React.FC = () => {
 
   // Mobile filters modal (date, staff, meeting type)
   const [showMobileFiltersModal, setShowMobileFiltersModal] = useState(false);
+  const [showPortalMeetingRequestsModal, setShowPortalMeetingRequestsModal] = useState(false);
+  const {
+    requests: portalMeetingRequests,
+    count: portalMeetingRequestCount,
+    loading: portalMeetingRequestsLoading,
+    refresh: refreshPortalMeetingRequests,
+  } = usePortalMeetingRequests();
   // Desktop filter row collapse state (defaults to closed; user can toggle open)
   const [showDesktopFilters, setShowDesktopFilters] = usePersistedState<boolean>(
     'calendar-showDesktopFilters',
@@ -3174,6 +3218,39 @@ const CalendarPage: React.FC = () => {
   }, [appliedFromDate, appliedToDate, datesManuallySet]);
 
   useEffect(() => {
+    const trimmed = calendarLeadFilterQuery.trim();
+    if (!isCalendarGlobalLeadSearchActive(trimmed)) {
+      setCalendarGlobalSearchMeetings(null);
+      setCalendarGlobalSearchLoading(false);
+      return;
+    }
+
+    const seq = ++calendarGlobalSearchSeqRef.current;
+    setCalendarGlobalSearchLoading(true);
+
+    const timer = window.setTimeout(() => {
+      void fetchGlobalCalendarMeetings(trimmed)
+        .then((results) => {
+          if (calendarGlobalSearchSeqRef.current !== seq) return;
+          setCalendarGlobalSearchMeetings(results);
+        })
+        .catch((error) => {
+          if (calendarGlobalSearchSeqRef.current !== seq) return;
+          console.error('CalendarPage global search', error);
+          setCalendarGlobalSearchMeetings([]);
+        })
+        .finally(() => {
+          if (calendarGlobalSearchSeqRef.current !== seq) return;
+          setCalendarGlobalSearchLoading(false);
+        });
+    }, 300);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [calendarLeadFilterQuery]);
+
+  useEffect(() => {
     // Combine meetings table rows + staff Outlook meta rows.
     // IMPORTANT: internal meetings can exist in BOTH sources (meetings.calendar_type='staff' and outlook_teams_meetings),
     // so we dedupe by the underlying Outlook event id (meetings.teams_id == staffMeeting.teams_meeting_id) and
@@ -3256,14 +3333,27 @@ const CalendarPage: React.FC = () => {
     });
 
     const allMeetings = Array.from(meetingsMap.values());
+    const globalSearchActive = isCalendarGlobalLeadSearchActive(calendarLeadFilterQuery);
     let filtered = allMeetings;
 
-    if (appliedFromDate && appliedToDate) {
+    if (globalSearchActive) {
+      const globalResults = calendarGlobalSearchMeetings ?? [];
+      const staffMatches = allMeetings.filter(
+        (meeting) =>
+          meeting.calendar_type === 'staff' &&
+          meetingMatchesCalendarLeadFilter(meeting, calendarLeadFilterQuery),
+      );
+      const merged = new Map<string | number, any>();
+      [...globalResults, ...staffMatches].forEach((meeting) => {
+        if (meeting?.id != null) merged.set(meeting.id, meeting);
+      });
+      filtered = Array.from(merged.values());
+    } else if (appliedFromDate && appliedToDate) {
       const beforeFilter = filtered.length;
       filtered = filtered.filter(m => m.meeting_date >= appliedFromDate && m.meeting_date <= appliedToDate);
     }
 
-    if (selectedStaff) {
+    if (!globalSearchActive && selectedStaff) {
       const beforeFilter = filtered.length;
       // Normalize selectedStaff for comparison (trim and lowercase)
       const normalizedSelectedStaff = selectedStaff.trim().toLowerCase();
@@ -3338,7 +3428,7 @@ const CalendarPage: React.FC = () => {
     }
 
     // Filter by meeting type
-    if (selectedMeetingType !== 'all') {
+    if (!globalSearchActive && selectedMeetingType !== 'all') {
       const beforeFilter = filtered.length;
       filtered = filtered.filter(m => {
         // Physical / Online are treated as location-type filters (exclude staff meetings)
@@ -3395,6 +3485,7 @@ const CalendarPage: React.FC = () => {
 
     // Final filter: Exclude inactive leads (stage 91 or unactivated_at is not null)
     // Also exclude meetings that have a client_id or legacy_lead_id but no lead (because lead was filtered out as inactive)
+    if (!globalSearchActive) {
     filtered = filtered.filter(m => {
       // Staff meetings are always allowed (they don't have leads)
       if (m.calendar_type === 'staff') {
@@ -3428,8 +3519,16 @@ const CalendarPage: React.FC = () => {
 
       return true;
     });
+    }
 
-    // Sort meetings by time (earliest first)
+    // Sort meetings by time (earliest first) or by date when searching globally
+    if (globalSearchActive) {
+      filtered = filtered.sort((a, b) => {
+        const dateCmp = String(b.meeting_date || '').localeCompare(String(a.meeting_date || ''));
+        if (dateCmp !== 0) return dateCmp;
+        return String(a.meeting_time || '').localeCompare(String(b.meeting_time || ''));
+      });
+    } else {
     filtered = filtered.sort((a, b) => {
       const timeA = a.meeting_time || '';
       const timeB = b.meeting_time || '';
@@ -3446,6 +3545,7 @@ const CalendarPage: React.FC = () => {
       // If neither has time, keep original order
       return 0;
     });
+    }
 
     setFilteredMeetings(filtered);
 
@@ -3516,7 +3616,7 @@ const CalendarPage: React.FC = () => {
     setTotalAmount(totalAmountInNIS);
 
 
-  }, [appliedFromDate, appliedToDate, selectedStaff, selectedMeetingType, meetingLocationIsPhysical, meetings, staffMeetings]);
+  }, [appliedFromDate, appliedToDate, selectedStaff, selectedMeetingType, meetingLocationIsPhysical, meetings, staffMeetings, calendarLeadFilterQuery, calendarGlobalSearchMeetings]);
 
 
 
@@ -5519,6 +5619,7 @@ const CalendarPage: React.FC = () => {
     return (
       <div
         key={meeting.id}
+        id={`calendar-meeting-${meeting.id}`}
         className={`rounded-2xl p-6 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-base-300/45 group flex flex-col justify-between h-full min-h-[360px] relative pb-16 md:text-lg md:leading-relaxed bg-white overflow-hidden ${selectedRowId === meeting.id ? 'ring-2 ring-primary ring-offset-2' : ''}`}
       >
         {/* Bottom-right green corner with white check when meeting ended */}
@@ -6134,6 +6235,7 @@ const CalendarPage: React.FC = () => {
     return (
       <React.Fragment key={meeting.id}>
         <tr
+          id={`calendar-meeting-${meeting.id}`}
           className={`calendar-page-meeting-row relative z-0 ${selectedRowId === meeting.id ? 'calendar-page-meeting-row--selected' : ''} ${hasPassedStage ? 'border-l-4 border-l-green-500' : ''}`}
           onClick={() => {
             if (meeting.calendar_type === 'staff') {
@@ -7069,6 +7171,24 @@ const CalendarPage: React.FC = () => {
                 {staffMeetingCount}
               </span>
               <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">IM</span>
+              <button
+                type="button"
+                className="relative ml-0.5 inline-flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/15"
+                title="Client portal meeting requests"
+                aria-label={
+                  portalMeetingRequestCount > 0
+                    ? `Client portal meeting requests (${portalMeetingRequestCount} pending)`
+                    : 'Client portal meeting requests'
+                }
+                onClick={() => setShowPortalMeetingRequestsModal(true)}
+              >
+                <CalendarDaysIcon className="h-4 w-4" aria-hidden />
+                {portalMeetingRequestCount > 0 ? (
+                  <span className="absolute -right-1 -top-1 inline-flex min-h-[1rem] min-w-[1rem] items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-bold leading-none text-primary-content shadow-sm">
+                    {portalMeetingRequestCount > 99 ? '99+' : portalMeetingRequestCount}
+                  </span>
+                ) : null}
+              </button>
             </div>
           </div>
           <div className="hidden md:flex md:items-center md:gap-2.5 md:leading-tight">
@@ -7090,6 +7210,27 @@ const CalendarPage: React.FC = () => {
               </span>
               <span className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">IM</span>
             </div>
+            <span className="text-gray-300 font-light select-none" aria-hidden>
+              |
+            </span>
+            <button
+              type="button"
+              className="relative inline-flex h-7 w-7 items-center justify-center rounded-full bg-primary/10 text-primary hover:bg-primary/15"
+              title="Client portal meeting requests"
+              aria-label={
+                portalMeetingRequestCount > 0
+                  ? `Client portal meeting requests (${portalMeetingRequestCount} pending)`
+                  : 'Client portal meeting requests'
+              }
+              onClick={() => setShowPortalMeetingRequestsModal(true)}
+            >
+              <CalendarDaysIcon className="h-4 w-4" aria-hidden />
+              {portalMeetingRequestCount > 0 ? (
+                <span className="absolute -right-1 -top-1 inline-flex min-h-[1rem] min-w-[1rem] items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-bold leading-none text-primary-content shadow-sm">
+                  {portalMeetingRequestCount > 99 ? '99+' : portalMeetingRequestCount}
+                </span>
+              ) : null}
+            </button>
           </div>
         </div>
 
@@ -7157,6 +7298,11 @@ const CalendarPage: React.FC = () => {
         </div>
 
         <div className="flex flex-shrink-0 items-center gap-1" ref={actionMenuDropdownRef}>
+          <CalendarLeadFilterSearch
+            value={calendarLeadFilterQuery}
+            onChange={setCalendarLeadFilterQuery}
+            loading={calendarGlobalSearchLoading}
+          />
           <button
             type="button"
             className={`hidden md:inline-flex btn btn-circle btn-ghost border-0 shadow-none btn-md md:btn-lg hover:bg-gray-100/80 ${showDesktopFilters ? 'bg-[#4418C4]/15' : ''}`}
@@ -7369,14 +7515,19 @@ const CalendarPage: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {isLoading ? (
-                <tr><td colSpan={10} className="text-center p-8 text-lg">Loading meetings...</td></tr>
+              {isLoading || calendarGlobalSearchLoading ? (
+                <tr><td colSpan={10} className="text-center p-8 text-lg">{calendarGlobalSearchLoading ? 'Searching all meetings…' : 'Loading meetings...'}</td></tr>
               ) : filteredMeetings.length > 0 ? (
                 (() => {
                   const todayStr = new Date().toISOString().split('T')[0];
                   const now = new Date();
                   const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-                  const showNowLine = appliedFromDate && appliedToDate && appliedFromDate <= todayStr && todayStr <= appliedToDate;
+                  const showNowLine =
+                    !isCalendarGlobalLeadSearchActive(calendarLeadFilterQuery) &&
+                    appliedFromDate &&
+                    appliedToDate &&
+                    appliedFromDate <= todayStr &&
+                    todayStr <= appliedToDate;
                   const CurrentTimeRow = () => (
                     <tr id="calendar-current-time-line" className="calendar-page-now-line relative z-0">
                       <td colSpan={10} className="p-0 align-middle relative">
@@ -7411,7 +7562,11 @@ const CalendarPage: React.FC = () => {
                   </div>
                 </td></tr>
               ) : (
-                <tr><td colSpan={10} className="text-center p-8 text-lg">No meetings found for the selected filters.</td></tr>
+                <tr><td colSpan={10} className="text-center p-8 text-lg">
+                  {isCalendarGlobalLeadSearchActive(calendarLeadFilterQuery)
+                    ? 'No meetings found matching your search.'
+                    : 'No meetings found for the selected filters.'}
+                </td></tr>
               )}
             </tbody>
           </table>
@@ -7420,10 +7575,12 @@ const CalendarPage: React.FC = () => {
         {/* Cards View - Show when viewMode is 'cards' */}
         {viewMode === 'cards' && (
           <div>
-            {isLoading ? (
+            {isLoading || calendarGlobalSearchLoading ? (
               <div className="text-center p-8">
                 <div className="loading loading-spinner loading-lg"></div>
-                <p className="mt-4 text-base-content/60">Loading meetings...</p>
+                <p className="mt-4 text-base-content/60">
+                  {calendarGlobalSearchLoading ? 'Searching all meetings…' : 'Loading meetings...'}
+                </p>
               </div>
             ) : filteredMeetings.length > 0 ? (
               <>
@@ -7466,7 +7623,11 @@ const CalendarPage: React.FC = () => {
                     <>
                       <CalendarIcon className="w-16 h-16 mx-auto mb-4 opacity-50" />
                       <p className="text-lg font-medium">No meetings found</p>
-                      <p className="text-sm">Try adjusting your search or filters</p>
+                      <p className="text-sm">
+                        {isCalendarGlobalLeadSearchActive(calendarLeadFilterQuery)
+                          ? 'Try a different name, lead number, phone, or email.'
+                          : 'Try adjusting your search or filters'}
+                      </p>
                     </>
                   )}
                 </div>
@@ -8756,6 +8917,14 @@ const CalendarPage: React.FC = () => {
         </div>,
         document.body
       )}
+
+      <PortalMeetingRequestsModal
+        isOpen={showPortalMeetingRequestsModal}
+        onClose={() => setShowPortalMeetingRequestsModal(false)}
+        requests={portalMeetingRequests}
+        loading={portalMeetingRequestsLoading}
+        onUpdated={() => void refreshPortalMeetingRequests()}
+      />
 
       {/* Teams Meeting Modal */}
       <TeamsMeetingModal

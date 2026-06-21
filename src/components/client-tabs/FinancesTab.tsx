@@ -10,6 +10,7 @@ import {
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
 import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
+import { useContactProfileImageUrls } from '../../hooks/useContactProfileImageUrls';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../../msalConfig';
 import ReactDOM from 'react-dom';
@@ -457,6 +458,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [contracts, setContracts] = useState<any[]>([]);
   const [selectedContract, setSelectedContract] = useState<any>(null);
   const [contacts, setContacts] = useState<any[]>([]);
+  const contactProfileImageUrls = useContactProfileImageUrls(
+    contacts.map((c) => c.portal_profile_image_path),
+  );
+
+  const resolveContactProfileImageUrl = (contactName: string, contactId?: number | null) => {
+    const matched =
+      contactId != null
+        ? contacts.find((c) => Number(c.id) === Number(contactId))
+        : contacts.find((c) => c.name === contactName);
+    const path = matched?.portal_profile_image_path;
+    return path ? contactProfileImageUrls[path] : undefined;
+  };
 
   // Add state for available currencies (moved earlier to be available for useEffect)
   const [availableCurrencies, setAvailableCurrencies] = useState<Array<{ id: number; name: string; iso_code: string }>>([]);
@@ -1537,7 +1550,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               name,
               email,
               phone,
-              mobile
+              mobile,
+              portal_profile_image_path
             )
           `)
           .eq('lead_id', legacyId);
@@ -1561,6 +1575,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               email: contactData?.email || '',
               phone: contactData?.phone || '',
               mobile: contactData?.mobile || '',
+              portal_profile_image_path: contactData?.portal_profile_image_path ?? null,
               isMain: leadContact.main === 'true' || leadContact.main === true,
             };
           });
@@ -1595,7 +1610,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             name,
             email,
             phone,
-            mobile
+            mobile,
+            portal_profile_image_path
           )
         `)
         .eq('newlead_id', client.id);
@@ -1621,6 +1637,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             email: contactData?.email || '',
             phone: contactData?.phone || '',
             mobile: contactData?.mobile || '',
+            portal_profile_image_path: contactData?.portal_profile_image_path ?? null,
             isMain: leadContact.main === 'true' || leadContact.main === true,
           };
         });
@@ -6551,6 +6568,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             setCollapsedContacts((prev) => ({ ...prev, [contactName]: !prev[contactName] }))
                           }
                           totalNis={contactTotalNisByName[contactName]}
+                          profileImageUrl={resolveContactProfileImageUrl(
+                            contactName,
+                            sortedContactPayments[0]?.client_id,
+                          )}
                           automationActiveCount={automationActiveCountForContact(contactName)}
                           onPaymentHistoryClick={() => fetchPaymentHistory(contactName)}
                           paymentHistoryActive={openHistoryContact === contactName}

@@ -238,6 +238,54 @@ export const getStageColour = (stageId: string): string => {
   return stageColoursCache[stageIdStr] || FALLBACK_STAGE_COLOURS[stageIdStr] || '';
 };
 
+export type SoftStageBadgeStyle = {
+  backgroundColor: string;
+  borderColor: string;
+  color: string;
+};
+
+/** Pastel/washed stage badge — light tinted background with saturated stage colour text. */
+export const getSoftStageBadgeStyle = (
+  hexColor?: string | null,
+  stageId?: string | number | null,
+): SoftStageBadgeStyle => {
+  const stageStr = stageId != null ? String(stageId) : '';
+  const isMtngSumAgreement =
+    stageStr === '50' ||
+    areStagesEquivalent(getStageName(stageStr), 'Mtng sum+Agreement sent');
+
+  if (isMtngSumAgreement) {
+    return {
+      backgroundColor: 'rgba(22, 163, 74, 0.3)',
+      borderColor: 'rgba(22, 163, 74, 0.45)',
+      color: '#15803d',
+    };
+  }
+
+  const fallback = '#3f28cd';
+  const color = hexColor || fallback;
+  let sanitized = color.trim();
+  if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+  if (sanitized.length === 3) {
+    sanitized = sanitized.split('').map((char) => char + char).join('');
+  }
+  if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+    return {
+      backgroundColor: 'rgba(63, 40, 205, 0.12)',
+      borderColor: 'rgba(63, 40, 205, 0.28)',
+      color: fallback,
+    };
+  }
+  const r = parseInt(sanitized.slice(0, 2), 16);
+  const g = parseInt(sanitized.slice(2, 4), 16);
+  const b = parseInt(sanitized.slice(4, 6), 16);
+  return {
+    backgroundColor: `rgba(${r}, ${g}, ${b}, 0.14)`,
+    borderColor: `rgba(${r}, ${g}, ${b}, 0.32)`,
+    color: `#${sanitized}`,
+  };
+};
+
 /**
  * Initializes the stage names cache (call this early in your app)
  */

@@ -6,6 +6,7 @@ import {
   PaperAirplaneIcon,
 } from '@heroicons/react/24/outline';
 import { isExpenseNoVatPayment } from '../../lib/proformaVat';
+import ContactProfileAvatar from '../ContactProfileAvatar';
 
 function contactInitials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -516,6 +517,7 @@ export function ContactPlanHeader({
   collapsed,
   onToggle,
   totalNis,
+  profileImageUrl,
   automationActiveCount = 0,
   onPaymentHistoryClick,
   paymentHistoryActive = false,
@@ -526,6 +528,7 @@ export function ContactPlanHeader({
   onToggle: () => void;
   /** Sum of row totals (value + VAT) in NIS — BOI rate per row at payment/due date. */
   totalNis?: { primary: string; loading?: boolean };
+  profileImageUrl?: string | null;
   automationActiveCount?: number;
   onPaymentHistoryClick?: () => void;
   paymentHistoryActive?: boolean;
@@ -533,18 +536,29 @@ export function ContactPlanHeader({
   const stats = computePlanSummary(payments);
   const initials = contactInitials(contactName);
   const avatarStyle = getContactAccentSoftStyle(contactName);
+  const hasProfileImage = Boolean(profileImageUrl?.trim());
 
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
       <div className="flex min-w-0 flex-1 items-start gap-4">
         <button
           type="button"
-          className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-base font-semibold"
+          className={`flex h-16 w-16 shrink-0 items-center justify-center rounded-full font-semibold focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 ${
+            hasProfileImage ? 'p-1' : 'text-lg'
+          }`}
           style={avatarStyle}
           onClick={onToggle}
           aria-label={collapsed ? 'Expand payment plan' : 'Collapse payment plan'}
         >
-          {initials}
+          {hasProfileImage ? (
+            <ContactProfileAvatar
+              name={contactName}
+              imageUrl={profileImageUrl}
+              className="h-full w-full text-base"
+            />
+          ) : (
+            initials
+          )}
         </button>
         <div className="min-w-0 flex-1 pt-0.5">
           <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5">
