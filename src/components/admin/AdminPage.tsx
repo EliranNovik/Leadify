@@ -16,6 +16,7 @@ import {
   ReceiptPercentIcon,
 } from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
+import PoaTemplatesManager from './PoaTemplatesManager';
 import UsersManager from './UsersManager';
 // import PaymentPlanRowsManager from './PaymentPlanRowsManager';
 import PaymentPlansManager from './PaymentPlansManager';
@@ -126,6 +127,7 @@ const ADMIN_TABS: AdminTab[] = [
       'Lead Sources',
       'Lead Tags',
       'Main Categories',
+      'POA Templates',
       'Public messages',
       'Sub efforts',
       'sub categories',
@@ -1582,6 +1584,9 @@ const AdminPage: React.FC = () => {
               return selectedTab?.label === 'Misc' &&
                 selectedTab?.subcategories[selected.sub] === 'Contract templates' ? (
                 <div className="w-full"><ContractTemplatesManager /></div>
+              ) : selectedTab?.label === 'Misc' &&
+                  selectedTab?.subcategories[selected.sub] === 'POA Templates' ? (
+                  <div className="w-full"><PoaTemplatesManager /></div>
               ) : selectedTab?.label === 'Misc' &&
                   selectedTab?.subcategories[selected.sub] === 'Case document categories' ? (
                   <div className="w-full"><CaseDocumentCategoriesManager /></div>

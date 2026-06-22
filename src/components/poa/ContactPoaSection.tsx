@@ -8,6 +8,7 @@ import {
   ArrowTopRightOnSquareIcon,
   TrashIcon,
   XMarkIcon,
+  ChevronDownIcon,
 } from '@heroicons/react/24/outline';
 import {
   buildPoaUrl,
@@ -20,6 +21,16 @@ import {
   type PoaListItem,
   type PoaTypeRow,
 } from '../../lib/poaApi';
+import {
+  createPoaFromTemplate,
+  listActivePoaTemplates,
+  fetchPoaCategories,
+  fetchPoaLanguages,
+  type PoaTemplateRow,
+  type PoaLookupOption,
+  type PoaLanguageOption,
+} from '../../lib/poaTemplatesApi';
+import { buildTemplatePrefill } from '../../lib/poaTemplateFields';
 import { POA_STATUS_LABELS, buildPoaPrefill } from '../../lib/poaTypes';
 
 interface ContactInfo {
@@ -40,11 +51,11 @@ interface Props {
 }
 
 const STATUS_BADGE: Record<string, string> = {
-  pending: 'badge-ghost',
-  sent: 'badge-info',
-  viewed: 'badge-warning',
-  signed: 'bg-purple-600 text-white border-none',
-  cancelled: 'badge-error',
+  pending: 'bg-gray-100 text-gray-500 border-none',
+  sent: 'bg-sky-50 text-sky-600 border-none',
+  viewed: 'bg-amber-50 text-amber-600 border-none',
+  signed: 'bg-violet-50 text-violet-600 border-none',
+  cancelled: 'bg-rose-50 text-rose-500 border-none',
 };
 
 const ContactPoaSection: React.FC<Props> = ({
@@ -58,8 +69,40 @@ const ContactPoaSection: React.FC<Props> = ({
   const [loading, setLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [types, setTypes] = useState<PoaTypeRow[]>([]);
-  const [selectedTypeId, setSelectedTypeId] = useState<number | ''>('');
+  const [templates, setTemplates] = useState<PoaTemplateRow[]>([]);
+  const [categories, setCategories] = useState<PoaLookupOption[]>([]);
+  const [languages, setLanguages] = useState<PoaLanguageOption[]>([]);
+  const [categoryFilter, setCategoryFilter] = useState<number | ''>('');
+  const [languageFilter, setLanguageFilter] = useState<string>('');
+  // Combined picker value: "type:<id>" for built-ins, "tpl:<uuid>" for templates.
+  const [selectedValue, setSelectedValue] = useState<string>('');
   const [creating, setCreating] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  // Built-in POA types we no longer offer in the picker.
+  const HIDDEN_TYPE_KEYS = ['standard_hebrew'];
+
+  /** Apply the category/language filters to the available built-ins + templates. */
+  const computeAvailable = useCallback(
+    (cat: number | '', lang: string) => {
+      const iso = lang ? (languages.find((l) => l.id === lang)?.iso_code || '').toLowerCase() : '';
+      const ft = types
+        .filter((t) => !HIDDEN_TYPE_KEYS.includes(t.key))
+        .filter((t) => {
+          // Built-in types have no category, so a category filter hides them.
+          if (cat !== '') return false;
+          if (iso && (t.language || '').toLowerCase() !== iso) return false;
+          return true;
+        });
+      const ftpl = templates.filter((t) => {
+        if (cat !== '' && t.category_id !== cat) return false;
+        if (lang && t.language_id !== lang) return false;
+        return true;
+      });
+      return { ft, ftpl };
+    },
+    [types, templates, languages],
+  );
 
   const reload = useCallback(async () => {
     if (!contactId) return;
@@ -80,17 +123,28 @@ const ContactPoaSection: React.FC<Props> = ({
 
   const openModal = useCallback(async () => {
     setShowModal(true);
-    if (types.length === 0) {
+    if (types.length === 0 && templates.length === 0) {
       try {
-        const rows = await fetchPoaTypes();
-        setTypes(rows);
-        if (rows.length > 0) setSelectedTypeId(rows[0].id);
+        const [typeRows, tplRows, catRows, langRows] = await Promise.all([
+          fetchPoaTypes().catch(() => [] as PoaTypeRow[]),
+          listActivePoaTemplates().catch(() => [] as PoaTemplateRow[]),
+          fetchPoaCategories().catch(() => [] as PoaLookupOption[]),
+          fetchPoaLanguages().catch(() => [] as PoaLanguageOption[]),
+        ]);
+        setTypes(typeRows);
+        setTemplates(tplRows);
+        setCategories(catRows);
+        setLanguages(langRows);
+        const firstType = typeRows.find((t) => !HIDDEN_TYPE_KEYS.includes(t.key));
+        if (firstType) setSelectedValue(`type:${firstType.id}`);
+        else if (tplRows.length > 0) setSelectedValue(`tpl:${tplRows[0].id}`);
       } catch (err) {
-        toast.error('Could not load POA types');
+        toast.error('Could not load POA options');
         console.error(err);
       }
     }
-  }, [types.length]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [types.length, templates.length]);
 
   const copyLink = useCallback(async (poa: PoaListItem) => {
     const url = buildPoaUrl(poa.secure_token);
@@ -107,21 +161,36 @@ const ContactPoaSection: React.FC<Props> = ({
   }, [reload]);
 
   const handleCreate = useCallback(async () => {
-    if (!selectedTypeId) {
-      toast.error('Please choose a POA type');
+    if (!selectedValue) {
+      toast.error('Please choose a POA');
       return;
     }
-    const type = types.find((t) => t.id === selectedTypeId);
     setCreating(true);
     try {
-      const result = await createPoa({
-        contactId,
-        poaTypeId: Number(selectedTypeId),
-        newLeadId: newLeadId ?? null,
-        legacyLeadId: legacyLeadId ?? null,
-        prefill: type ? buildPoaPrefill(type.key, contact) : {},
-        createdBy: createdBy ?? null,
-      });
+      let result: { id: string; secureToken: string };
+      if (selectedValue.startsWith('tpl:')) {
+        const tplId = selectedValue.slice(4);
+        const tpl = templates.find((t) => t.id === tplId);
+        result = await createPoaFromTemplate({
+          contactId,
+          templateId: tplId,
+          newLeadId: newLeadId ?? null,
+          legacyLeadId: legacyLeadId ?? null,
+          prefill: tpl ? buildTemplatePrefill(tpl.fields, contact) : {},
+          createdBy: createdBy ?? null,
+        });
+      } else {
+        const typeId = Number(selectedValue.slice(5));
+        const type = types.find((t) => t.id === typeId);
+        result = await createPoa({
+          contactId,
+          poaTypeId: typeId,
+          newLeadId: newLeadId ?? null,
+          legacyLeadId: legacyLeadId ?? null,
+          prefill: type ? buildPoaPrefill(type.key, contact) : {},
+          createdBy: createdBy ?? null,
+        });
+      }
 
       const url = buildPoaUrl(result.secureToken);
       try {
@@ -140,7 +209,7 @@ const ContactPoaSection: React.FC<Props> = ({
     } finally {
       setCreating(false);
     }
-  }, [selectedTypeId, types, contactId, newLeadId, legacyLeadId, contact, createdBy, reload]);
+  }, [selectedValue, types, templates, contactId, newLeadId, legacyLeadId, contact, createdBy, reload]);
 
   const handleRemove = useCallback(async (poa: PoaListItem) => {
     if (poa.status === 'signed') {
@@ -167,7 +236,7 @@ const ContactPoaSection: React.FC<Props> = ({
   return (
     <div className="flex items-start justify-between py-3">
       <label className="text-sm font-medium text-gray-500 uppercase tracking-wide pt-1">
-        Power of Attorney
+        POA
       </label>
       <div className="flex-1 ml-4 flex flex-col gap-2 items-end">
         {loading && poas.length === 0 ? (
@@ -175,12 +244,9 @@ const ContactPoaSection: React.FC<Props> = ({
         ) : poas.length === 0 ? (
           <span className="text-xs text-gray-400">No POAs yet</span>
         ) : (
-          <div className="w-full flex flex-col gap-2">
-            {poas.map((poa) => (
-              <div
-                key={poa.id}
-                className="flex flex-col gap-2 rounded-lg border border-gray-100 bg-gray-50/60 p-2.5"
-              >
+          <div className="w-full flex flex-col divide-y divide-gray-100">
+            {(expanded ? poas : poas.slice(0, 1)).map((poa) => (
+              <div key={poa.id} className="flex flex-col gap-2 py-2.5 first:pt-0">
                 <div className="flex items-center justify-end gap-2">
                   <span className="mr-auto text-sm font-medium text-gray-700 truncate">
                     {poa.type_name}
@@ -221,6 +287,18 @@ const ContactPoaSection: React.FC<Props> = ({
                 </div>
               </div>
             ))}
+            {poas.length > 1 && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-xs gap-1 self-end text-gray-500 hover:text-gray-700"
+                onClick={() => setExpanded((v) => !v)}
+              >
+                <ChevronDownIcon
+                  className={`w-3.5 h-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`}
+                />
+                {expanded ? 'Show less' : `Show ${poas.length - 1} more`}
+              </button>
+            )}
           </div>
         )}
 
@@ -257,21 +335,101 @@ const ContactPoaSection: React.FC<Props> = ({
                   For <span className="font-medium text-gray-700">{contact.name || 'this contact'}</span>. A
                   public link will be generated for the client to fill out and sign.
                 </p>
+                <div className="mb-3 grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-500">Category</label>
+                    <select
+                      className="select select-bordered select-sm w-full"
+                      value={categoryFilter}
+                      onChange={(e) => {
+                        const v = e.target.value ? Number(e.target.value) : '';
+                        setCategoryFilter(v);
+                        const { ft, ftpl } = computeAvailable(v, languageFilter);
+                        setSelectedValue(
+                          ft[0] ? `type:${ft[0].id}` : ftpl[0] ? `tpl:${ftpl[0].id}` : '',
+                        );
+                      }}
+                    >
+                      <option value="">All categories</option>
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-gray-500">Language</label>
+                    <select
+                      className="select select-bordered select-sm w-full"
+                      value={languageFilter}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setLanguageFilter(v);
+                        const { ft, ftpl } = computeAvailable(categoryFilter, v);
+                        setSelectedValue(
+                          ft[0] ? `type:${ft[0].id}` : ftpl[0] ? `tpl:${ftpl[0].id}` : '',
+                        );
+                      }}
+                    >
+                      <option value="">All languages</option>
+                      {languages.map((l) => (
+                        <option key={l.id} value={l.id}>
+                          {l.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
                 <label className="mb-1 block text-sm font-medium text-gray-700">POA type</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={selectedTypeId}
-                  onChange={(e) => setSelectedTypeId(e.target.value ? Number(e.target.value) : '')}
-                >
-                  {types.length === 0 && <option value="">Loading types…</option>}
-                  {types.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
                 {(() => {
-                  const t = types.find((x) => x.id === selectedTypeId);
+                  const { ft, ftpl } = computeAvailable(categoryFilter, languageFilter);
+                  const noOptions = ft.length === 0 && ftpl.length === 0;
+                  return (
+                    <select
+                      className="select select-bordered w-full"
+                      value={selectedValue}
+                      onChange={(e) => setSelectedValue(e.target.value)}
+                    >
+                      {types.length === 0 && templates.length === 0 && (
+                        <option value="">Loading options…</option>
+                      )}
+                      {!noOptions ? (
+                        <>
+                          {ft.length > 0 && (
+                            <optgroup label="Built-in POAs">
+                              {ft.map((t) => (
+                                <option key={t.id} value={`type:${t.id}`}>
+                                  {t.name}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                          {ftpl.length > 0 && (
+                            <optgroup label="Templates">
+                              {ftpl.map((t) => (
+                                <option key={t.id} value={`tpl:${t.id}`}>
+                                  {t.name}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                        </>
+                      ) : (
+                        <option value="">No POAs match these filters</option>
+                      )}
+                    </select>
+                  );
+                })()}
+                {(() => {
+                  if (selectedValue.startsWith('tpl:')) {
+                    const t = templates.find((x) => x.id === selectedValue.slice(4));
+                    return t?.description ? (
+                      <p className="mt-2 text-xs text-gray-500">{t.description}</p>
+                    ) : null;
+                  }
+                  const t = types.find((x) => `type:${x.id}` === selectedValue);
                   return t?.description ? (
                     <p className="mt-2 text-xs text-gray-500">{t.description}</p>
                   ) : null;
@@ -286,7 +444,7 @@ const ContactPoaSection: React.FC<Props> = ({
                   type="button"
                   className="btn btn-primary btn-sm gap-1.5"
                   onClick={handleCreate}
-                  disabled={creating || !selectedTypeId}
+                  disabled={creating || !selectedValue}
                 >
                   {creating ? (
                     <>

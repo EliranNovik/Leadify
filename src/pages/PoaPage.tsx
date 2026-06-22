@@ -13,6 +13,7 @@ import PublicContractFooter from '../components/public/PublicContractFooter';
 import { fetchPoaByToken, submitPoa, type PoaPublicData } from '../lib/poaApi';
 import { getPoaTypeMeta } from '../lib/poaTypes';
 import { getPoaDocRenderer } from '../components/poa/documents';
+import TemplatePoaDoc from '../components/poa/documents/TemplatePoaDoc';
 import type { PoaDocController } from '../components/poa/PoaFormPrimitives';
 
 const PAGE_BG: React.CSSProperties = { background: '#f3f4f6' };
@@ -76,6 +77,9 @@ const PoaPage: React.FC = () => {
   const isSigned = data?.poa.status === 'signed' || justSigned;
   const meta = getPoaTypeMeta(data?.type.key);
   const Renderer = getPoaDocRenderer(data?.type.key);
+  const template = data?.template || null;
+  const isTemplate = !!template;
+  const docDir = (meta?.direction || data?.type.direction || 'ltr') as 'ltr' | 'rtl';
   // Shorter documents (Austrian) get more generous spacing in print so they
   // don't look cramped at the top of an otherwise empty page.
   const isRoomyPrint = (data?.type.key || '').startsWith('austrian');
@@ -103,15 +107,28 @@ const PoaPage: React.FC = () => {
   );
 
   const handleSubmit = useCallback(async () => {
-    if (!token || !meta || !data) return;
+    if (!token || !data) return;
+    if (!meta && !template) return;
 
     const missing = new Set<string>();
-    for (const fieldId of meta.requiredFields) {
-      if (!(values[fieldId] && values[fieldId].trim())) missing.add(fieldId);
-    }
-    for (const sigId of meta.requiredSignatures) {
-      const v = signatures[sigId];
-      if (!(typeof v === 'string' && v.startsWith('data:image/'))) missing.add(sigId);
+    if (template) {
+      for (const f of template.fields) {
+        if (!f.required) continue;
+        if (f.type === 'signature') {
+          const v = signatures[f.key];
+          if (!(typeof v === 'string' && v.startsWith('data:image/'))) missing.add(f.key);
+        } else if (!(values[f.key] && values[f.key].trim())) {
+          missing.add(f.key);
+        }
+      }
+    } else if (meta) {
+      for (const fieldId of meta.requiredFields) {
+        if (!(values[fieldId] && values[fieldId].trim())) missing.add(fieldId);
+      }
+      for (const sigId of meta.requiredSignatures) {
+        const v = signatures[sigId];
+        if (!(typeof v === 'string' && v.startsWith('data:image/'))) missing.add(sigId);
+      }
     }
 
     if (missing.size > 0) {
@@ -130,7 +147,12 @@ const PoaPage: React.FC = () => {
         fieldData: values,
         signatures,
         signerName:
-          values.full_name || values.full_name_he || values.applicant_first_name || data.contact.name || null,
+          values.full_name ||
+          values.full_name_he ||
+          values.applicant_first_name ||
+          values.contact_name ||
+          data.contact.name ||
+          null,
         signerEmail: values.email || values.rep_email || data.contact.email || null,
       });
       setJustSigned(true);
@@ -141,7 +163,7 @@ const PoaPage: React.FC = () => {
     } finally {
       setSubmitting(false);
     }
-  }, [token, meta, data, values, signatures]);
+  }, [token, meta, template, data, values, signatures]);
 
   const handleShare = useCallback(async () => {
     const url = typeof window !== 'undefined' ? window.location.href : '';
@@ -186,12 +208,13 @@ const PoaPage: React.FC = () => {
       .map((el) => el.outerHTML)
       .join('\n');
 
-    const dir = meta?.direction || 'ltr';
+    const dir = meta?.direction || data?.type.direction || 'ltr';
+    const lang = meta?.language || data?.type.language || 'en';
     const title = data ? `${LAW_OFFICE_TITLE} — ${data.type.name}` : 'Power of Attorney';
 
     win.document.open();
     win.document.write(`<!doctype html>
-<html dir="${dir}" lang="${meta?.language || 'en'}">
+<html dir="${dir}" lang="${lang}">
 <head>
 <meta charset="utf-8" />
 <title>${title}</title>
@@ -271,7 +294,7 @@ ${headStyles}
     );
   }
 
-  if (error || !data || !Renderer) {
+  if (error || !data || (!Renderer && !template)) {
     return (
       <CenteredCard>
         <ExclamationCircleIcon className="w-14 h-14 text-amber-500 mx-auto mb-4" />
@@ -478,9 +501,9 @@ ${headStyles}
           {!isSigned && (
             <p
               className="poa-print-hide mb-5 text-sm text-gray-600"
-              dir={meta?.direction || 'ltr'}
+              dir={docDir}
             >
-              {meta?.language === 'he'
+              {docDir === 'rtl'
                 ? 'אנא עיינו במסמך שלהלן, מלאו את השדות הנדרשים, חתמו ושלחו.'
                 : 'Please review the document below, fill in the required fields, sign, and submit.'}
             </p>
@@ -490,12 +513,23 @@ ${headStyles}
           <div
             id="poa-print-root"
             ref={docRef}
-            dir={meta?.direction || 'ltr'}
+            dir={docDir}
             className={`rounded-2xl border border-gray-200 bg-white p-5 shadow-sm sm:p-8${
               isRoomyPrint ? ' poa-print--roomy' : ''
             }`}
           >
-            <Renderer ctrl={ctrl} />
+            {isTemplate && template ? (
+              <TemplatePoaDoc
+                ctrl={ctrl}
+                body={template.body}
+                fields={template.fields}
+                direction={docDir}
+                fontFamily={template.font_family}
+                fontSize={template.font_size}
+              />
+            ) : Renderer ? (
+              <Renderer ctrl={ctrl} />
+            ) : null}
           </div>
 
           {/* Actions */}

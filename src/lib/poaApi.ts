@@ -17,7 +17,8 @@ export interface PoaListItem {
   id: string;
   secure_token: string;
   status: PoaStatus;
-  poa_type_id: number;
+  poa_type_id: number | null;
+  template_id: string | null;
   type_key: string;
   type_name: string;
   type_language: string;
@@ -49,6 +50,18 @@ export interface PoaPublicData {
     jurisdiction: string | null;
     description: string | null;
   };
+  /** Present only for template-based POAs (poa_documents.template_id set). */
+  template?: {
+    id: string;
+    name: string;
+    description: string | null;
+    body: string;
+    fields: import('./poaTemplateFields').PoaTemplateField[];
+    direction: string;
+    language: string;
+    font_family?: string | null;
+    font_size?: string | null;
+  } | null;
   contact: {
     id: number;
     name: string | null;
