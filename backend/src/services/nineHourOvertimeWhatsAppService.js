@@ -4,7 +4,7 @@ const { sendMessage } = require('../controllers/whatsappController');
 const { normalizePhoneForWhatsApp } = require('../lib/whatsappPhone');
 
 const NINE_HOUR_WHATSAPP_TEMPLATE_ID = Number(
-  process.env.NINE_HOUR_OVERTIME_WHATSAPP_TEMPLATE_ID || 44,
+  process.env.NINE_HOUR_OVERTIME_WHATSAPP_TEMPLATE_ID || 46,
 );
 
 function sanitizeWhatsAppTemplateVariableText(text) {
@@ -154,7 +154,7 @@ async function sendNineHourOvertimeWhatsApp({ phoneNumber, displayName, template
 }
 
 /**
- * Send template 44 once per employee per day when the nine-hour popup would appear.
+ * Send template 46 once per employee per day when the nine-hour popup would appear.
  * @returns {{ sent: boolean, skipped?: string, error?: string }}
  */
 async function sendNineHourOvertimeWhatsAppIfNeeded(employeeId, workDate) {
