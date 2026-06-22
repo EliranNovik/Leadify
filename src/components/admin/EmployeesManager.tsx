@@ -1,6 +1,46 @@
 import React, { useState, useEffect } from 'react';
 import GenericCRUDManager from './GenericCRUDManager';
 import { supabase } from '../../lib/supabase';
+import { getSalaryEmployeeInitials, salaryAvatarGradientStyle } from '../../lib/employeeSalaries';
+
+const EmployeeTableDisplayName: React.FC<{ value: unknown; record: Record<string, unknown> }> = ({
+  value,
+  record,
+}) => {
+  const [imgErr, setImgErr] = useState(false);
+  const displayName =
+    (typeof value === 'string' && value.trim()) ||
+    (typeof record.display_name === 'string' && record.display_name.trim()) ||
+    '—';
+  const photoUrl =
+    (typeof record.photo_url === 'string' && record.photo_url.trim()) ||
+    (typeof record.photo === 'string' && record.photo.trim()) ||
+    '';
+  const showPhoto = Boolean(photoUrl) && !imgErr;
+  const employeeId = Number(record.id) || 0;
+
+  return (
+    <div className="flex min-w-0 items-center gap-2.5">
+      {showPhoto ? (
+        <img
+          src={photoUrl}
+          alt=""
+          className="h-9 w-9 shrink-0 rounded-full object-cover ring-2 ring-base-200"
+          onError={() => setImgErr(true)}
+        />
+      ) : (
+        <span
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white ring-2 ring-base-200"
+          style={salaryAvatarGradientStyle(employeeId, displayName)}
+          aria-hidden
+        >
+          {getSalaryEmployeeInitials(displayName)}
+        </span>
+      )}
+      <span className="truncate font-medium">{displayName}</span>
+    </div>
+  );
+};
 
 // Helper function to map role codes to display names (same as EmployeePerformancePage)
 const getRoleDisplayName = (roleCode: string): string => {
@@ -116,7 +156,10 @@ const EmployeesManager: React.FC = () => {
       label: 'Display Name',
       type: 'text' as const,
       required: true,
-      placeholder: 'e.g., John Doe'
+      placeholder: 'e.g., John Doe',
+      formatValue: (value: unknown, record: { [key: string]: unknown }) => (
+        <EmployeeTableDisplayName value={value} record={record} />
+      ),
     },
     {
       name: 'user_id',
@@ -174,6 +217,16 @@ const EmployeesManager: React.FC = () => {
       placeholder: 'e.g., +972-50-123-4567'
     },
     {
+      name: 'employee_mobile',
+      label: 'Employee Mobile (WhatsApp)',
+      type: 'text' as const,
+      required: false,
+      placeholder: 'e.g., +972-50-123-4567 — nine-hour alert & internal WhatsApp',
+      hideInTable: false,
+      hideInAdd: false,
+      hideInEdit: false,
+    },
+    {
       name: 'phone',
       label: 'Phone',
       type: 'text' as const,
@@ -209,6 +262,7 @@ const EmployeesManager: React.FC = () => {
       type: 'text' as const,
       required: false,
       placeholder: 'Base64 encoded photo data',
+      hideInTable: true,
       hideInEdit: true // Hide in edit drawer only
     },
     {

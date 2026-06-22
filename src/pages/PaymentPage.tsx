@@ -22,6 +22,7 @@ import toast from 'react-hot-toast';
 import {
   CheckCircleIcon,
   ExclamationCircleIcon,
+  InformationCircleIcon,
   ShieldCheckIcon,
 } from '@heroicons/react/24/outline';
 
@@ -36,8 +37,22 @@ const SUMMARY_GRADIENT_STYLE: React.CSSProperties = {
 
 const CHECKOUT_LAW_OFFICE_TITLE = 'Decker, Pex & Co. Law Office';
 
-/** Desktop gradient panel — served from /public */
+/** Gradient panel — credit card illustration from /public */
 const CHECKOUT_DESKTOP_FOOTER_IMAGE = '/ChatGPT Image May 26, 2026, 09_41_00 AM.png';
+
+const CHECKOUT_CARD_IMAGE_CLASS =
+  'mt-8 w-full max-w-[520px] sm:max-w-[560px] xl:max-w-[600px] h-auto object-contain pointer-events-none select-none';
+
+function CheckoutCardImage() {
+  return (
+    <img
+      src={encodeURI(CHECKOUT_DESKTOP_FOOTER_IMAGE)}
+      alt=""
+      className={CHECKOUT_CARD_IMAGE_CLASS}
+      draggable={false}
+    />
+  );
+}
 
 function CheckoutSummaryHeading({
   summary,
@@ -50,12 +65,12 @@ function CheckoutSummaryHeading({
     <>
       <h1 className={titleClassName}>{CHECKOUT_LAW_OFFICE_TITLE}</h1>
       {summary && (
-        <p className="text-sm text-white/90 mb-6 flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="font-mono text-[12px] text-white/75">Case #{summary.caseNumber}</span>
+        <p className="text-base text-white/90 mb-6 flex flex-wrap items-center gap-x-2.5 gap-y-1">
+          <span className="font-mono text-[15px] font-medium text-white/80">Case #{summary.caseNumber}</span>
           <span className="text-white/40" aria-hidden>
             ·
           </span>
-          <span>{summary.clientName}</span>
+          <span className="text-[17px] font-semibold text-white">{summary.clientName}</span>
         </p>
       )}
     </>
@@ -236,6 +251,28 @@ function CheckoutSecuredStamp({ iconOnly = false }: { iconOnly?: boolean }) {
       {!iconOnly && (
         <span className="text-xs font-medium text-gray-700">Secured</span>
       )}
+    </div>
+  );
+}
+
+function PaymentPassportIdNote({ className = '' }: { className?: string }) {
+  return (
+    <div
+      className={`mt-5 rounded-lg bg-white/10 px-3 py-2 ${className}`.trim()}
+      role="note"
+      aria-label="ID or passport payment tip"
+    >
+      <div className="flex items-center justify-center gap-2 text-center">
+        <InformationCircleIcon
+          className="h-4 w-4 shrink-0 text-white/85"
+          strokeWidth={1.75}
+          aria-hidden
+        />
+        <p className="text-xs text-white/90 leading-snug text-center">
+          Not Israeli? If payment fails, enter{' '}
+          <span className="font-semibold text-white">0</span> in the ID / Passport field.
+        </p>
+      </div>
     </div>
   );
 }
@@ -628,10 +665,10 @@ const PaymentPage: React.FC = () => {
         >
           <PaymentSummaryGradientDecor />
           <div className="relative flex flex-col min-h-full p-10 xl:p-12 z-[1]">
-          <div className="flex-1">
+          <div className="flex-1 flex flex-col">
             <CheckoutSummaryHeading
               summary={summaryData}
-              titleClassName="text-lg xl:text-xl font-semibold text-white leading-snug tracking-tight mb-2 max-w-sm"
+              titleClassName="text-xl xl:text-2xl font-semibold text-white leading-snug tracking-tight mb-2 max-w-sm"
             />
             {summaryData && (
               <PaymentSummaryCard
@@ -641,13 +678,9 @@ const PaymentPage: React.FC = () => {
                 variant="gradient"
               />
             )}
-            <img
-              src={encodeURI(CHECKOUT_DESKTOP_FOOTER_IMAGE)}
-              alt=""
-              className="mt-8 mb-2 w-full max-w-[400px] xl:max-w-[420px] h-auto object-contain pointer-events-none select-none"
-              draggable={false}
-            />
+            <CheckoutCardImage />
             {isAlreadyPaid && <PaymentDoneStamp paidAt={paidAt} />}
+            {canPay && <PaymentPassportIdNote className="lg:mt-auto lg:pt-10 xl:pt-12" />}
           </div>
           <p className="text-[11px] text-white/50 leading-relaxed max-w-xs shrink-0">
             Processed securely by Pelecard. Card details are not stored on our servers.
@@ -671,7 +704,7 @@ const PaymentPage: React.FC = () => {
           <div className="relative z-[1] pr-14">
             <CheckoutSummaryHeading
               summary={summaryData}
-              titleClassName="text-lg font-semibold text-white leading-snug tracking-tight mb-2"
+              titleClassName="text-xl font-semibold text-white leading-snug tracking-tight mb-2"
             />
             {summaryData && (
               <PaymentSummaryCard
@@ -681,6 +714,8 @@ const PaymentPage: React.FC = () => {
                 variant="gradient"
               />
             )}
+            <CheckoutCardImage />
+            {canPay && <PaymentPassportIdNote />}
             {isAlreadyPaid && <PaymentDoneStamp paidAt={paidAt} />}
           </div>
         </div>

@@ -23,6 +23,7 @@ import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../../lib/leadOneDrivePaths';
 import { getFrontendBaseUrl } from '../../lib/api';
 import ContactProfileAvatar from '../ContactProfileAvatar';
 import { useContactProfileImageUrls } from '../../hooks/useContactProfileImageUrls';
+import ContactPoaSection from '../poa/ContactPoaSection';
 
 // Function to clean HTML content and make it readable
 const cleanHtmlContent = (html: string): string => {
@@ -508,6 +509,22 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   }, [client.lead_number, client]);
 
   const [physicalContractDocsModalOpen, setPhysicalContractDocsModalOpen] = useState(false);
+
+  /** Lead identifiers used when creating a POA (new lead UUID vs legacy numeric id). */
+  const poaLeadIds = useMemo(() => {
+    const isLegacy = client?.lead_type === 'legacy' || String(client?.id ?? '').startsWith('legacy_');
+    if (isLegacy) {
+      const legacyNum = parseInt(String(client?.id ?? '').replace('legacy_', ''), 10);
+      return {
+        newLeadId: null as string | null,
+        legacyLeadId: Number.isFinite(legacyNum) ? legacyNum : null,
+      };
+    }
+    return {
+      newLeadId: client?.id ? String(client.id) : null,
+      legacyLeadId: null as number | null,
+    };
+  }, [client?.id, client?.lead_type]);
 
   const openPhysicalContractDocs = () => {
     if (!docsLeadNumber) {
@@ -4372,6 +4389,22 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             )}
                           </div>
                         </div>
+                      )}
+
+                      {/* Power of Attorney — available for every contact, multiple per contact */}
+                      {!contact.isEditing && typeof contact.id === 'number' && (
+                        <ContactPoaSection
+                          contactId={contact.id}
+                          contact={{
+                            name: contact.name,
+                            email: contact.email,
+                            phone: contact.phone,
+                            mobile: contact.mobile,
+                            id_passport: contact.id_passport,
+                          }}
+                          newLeadId={poaLeadIds.newLeadId}
+                          legacyLeadId={poaLeadIds.legacyLeadId}
+                        />
                       )}
                     </div>
                   </div>

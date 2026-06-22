@@ -239,7 +239,7 @@ function buildCheckoutDisplayOptions(config, payment) {
     FeedbackOnTop: 'False',
     Target: '_self',
     Language: process.env.PELECARD_CHECKOUT_LANGUAGE || 'en',
-    CustomerIdField: 'hide',
+    CustomerIdField: 'must',
     Cvv2Field: 'must',
     EmailField: 'hide',
     TelField: 'hide',
