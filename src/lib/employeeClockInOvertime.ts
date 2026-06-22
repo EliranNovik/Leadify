@@ -1,12 +1,17 @@
 import { supabase } from './supabase';
 import { clearClockInGateCache } from './clockInGateCache';
 import {
+  broadcastClockInOptIn,
+  readClockInOptInFlag,
+  writeClockInOptInFlag,
+} from './clockInOptInCrossTab';
+import {
   clockOutEmployeeRecord,
   fetchActiveClockInRecord,
 } from './employeeClockOut';
 
 export const NINE_HOURS_MS = 9 * 60 * 60 * 1000;
-export const OVERTIME_PROMPT_MS = 2 * 60 * 1000;
+export const OVERTIME_PROMPT_MS = 10 * 60 * 1000;
 export const OVERTIME_FINAL_COUNTDOWN_MS = 20 * 1000;
 export const OVERTIME_POLL_MS = 30_000;
 export const JERUSALEM_WORKDAY_END_HOUR = 23;
@@ -42,11 +47,7 @@ export function overtimeContinueStorageKey(dateKey: string): string {
 }
 
 export function hasContinuedOvertimeToday(dateKey = getTodayDateKey()): boolean {
-  try {
-    return sessionStorage.getItem(overtimeContinueStorageKey(dateKey)) === '1';
-  } catch {
-    return false;
-  }
+  return readClockInOptInFlag(overtimeContinueStorageKey(dateKey));
 }
 
 export async function fetchOvertimeOptInFromDb(
@@ -71,14 +72,11 @@ export async function fetchOvertimeOptInFromDb(
 export async function markContinuedOvertimeToday(
   employeeId: number | null | undefined,
   dateKey = getTodayDateKey(),
-): Promise<void> {
-  try {
-    sessionStorage.setItem(overtimeContinueStorageKey(dateKey), '1');
-  } catch {
-    // ignore quota errors
-  }
+): Promise<boolean> {
+  writeClockInOptInFlag(overtimeContinueStorageKey(dateKey));
+  broadcastClockInOptIn('overtime', dateKey, employeeId);
 
-  if (employeeId == null) return;
+  if (employeeId == null) return true;
 
   const { error } = await supabase.from('employee_clock_in_overtime_opt_in').upsert(
     { employee_id: employeeId, work_date: dateKey },
@@ -87,7 +85,10 @@ export async function markContinuedOvertimeToday(
 
   if (error) {
     console.error('Failed to persist overtime opt-in:', error);
+    return false;
   }
+
+  return true;
 }
 
 export async function fetchTodayClockedMs(employeeId: number): Promise<number> {

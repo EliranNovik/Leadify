@@ -5,7 +5,7 @@ import { corsHeaders } from '../_shared/cors.ts';
 const LOG_PREFIX = '[nine-hour-auto-clock-out]';
 const JERUSALEM_TZ = 'Asia/Jerusalem';
 const NINE_HOURS_MS = 9 * 60 * 60 * 1000;
-const OVERTIME_PROMPT_MS = 2 * 60 * 1000;
+const OVERTIME_PROMPT_MS = 10 * 60 * 1000;
 const OVERTIME_FINAL_COUNTDOWN_MS = 20 * 1000;
 const AUTO_ENFORCE_MS = NINE_HOURS_MS + OVERTIME_PROMPT_MS + OVERTIME_FINAL_COUNTDOWN_MS;
 const PRESENCE_STALE_MS = Number(Deno.env.get('CLOCK_IN_PRESENCE_STALE_MS') || 90_000);

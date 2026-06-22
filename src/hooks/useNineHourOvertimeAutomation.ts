@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
+import { subscribeClockInOptIn } from '../lib/clockInOptInCrossTab';
 import { fetchActiveClockInRecord } from '../lib/employeeClockOut';
 import {
   clockOutAndSignOut,
   fetchOvertimeOptInFromDb,
   fetchTodayClockedMs,
+  getTodayDateKey,
   hasContinuedOvertimeToday,
+  isPastJerusalemWorkdayEnd,
   markContinuedOvertimeToday,
   NINE_HOURS_MS,
   OVERTIME_FINAL_COUNTDOWN_MS,
@@ -20,6 +23,8 @@ type UseNineHourOvertimeAutomationOptions = {
   employeeId: number | null;
   enabled: boolean;
 };
+
+const OPT_IN_RECHECK_MS = 2_000;
 
 export function useNineHourOvertimeAutomation({
   employeeId,
@@ -41,6 +46,28 @@ export function useNineHourOvertimeAutomation({
   const autoLogoutInFlightRef = useRef(false);
   const overtimeOptInRef = useRef(false);
 
+  const applyOvertimeOptIn = useCallback(() => {
+    overtimeOptInRef.current = true;
+    promptEndsAtRef.current = null;
+    countdownEndsAtRef.current = null;
+    autoLogoutInFlightRef.current = false;
+    setPhase('idle');
+  }, []);
+
+  const hasOvertimeOptIn = useCallback(async (): Promise<boolean> => {
+    if (overtimeOptInRef.current || hasContinuedOvertimeToday()) {
+      overtimeOptInRef.current = true;
+      return true;
+    }
+    if (!employeeId) return false;
+    const optedIn = await fetchOvertimeOptInFromDb(employeeId);
+    if (optedIn) {
+      overtimeOptInRef.current = true;
+      await markContinuedOvertimeToday(employeeId);
+    }
+    return optedIn;
+  }, [employeeId]);
+
   useEffect(() => {
     if (!employeeId) {
       overtimeOptInRef.current = false;
@@ -51,19 +78,53 @@ export function useNineHourOvertimeAutomation({
     if (overtimeOptInRef.current) return;
 
     void (async () => {
-      const optedIn = await fetchOvertimeOptInFromDb(employeeId);
-      if (optedIn) {
-        overtimeOptInRef.current = true;
-        await markContinuedOvertimeToday(employeeId);
+      if (await fetchOvertimeOptInFromDb(employeeId)) {
+        applyOvertimeOptIn();
       }
     })();
-  }, [employeeId]);
+  }, [employeeId, applyOvertimeOptIn]);
+
+  useEffect(() => {
+    if (!employeeId) return undefined;
+
+    return subscribeClockInOptIn((message) => {
+      if (message.kind !== 'overtime' || message.dateKey !== getTodayDateKey()) return;
+      applyOvertimeOptIn();
+    });
+  }, [employeeId, applyOvertimeOptIn]);
+
+  useEffect(() => {
+    if (!employeeId || phase === 'idle') return undefined;
+
+    const recheck = () => {
+      void (async () => {
+        if (await hasOvertimeOptIn()) {
+          applyOvertimeOptIn();
+        }
+      })();
+    };
+
+    recheck();
+    const interval = window.setInterval(recheck, OPT_IN_RECHECK_MS);
+    return () => window.clearInterval(interval);
+  }, [employeeId, phase, hasOvertimeOptIn, applyOvertimeOptIn]);
 
   const runAutoLogout = useCallback(async () => {
     if (!employeeId || autoLogoutInFlightRef.current) return;
+
+    if (await hasOvertimeOptIn()) {
+      applyOvertimeOptIn();
+      return;
+    }
+
     autoLogoutInFlightRef.current = true;
     setPhase('processing');
     try {
+      if (await hasOvertimeOptIn()) {
+        applyOvertimeOptIn();
+        autoLogoutInFlightRef.current = false;
+        return;
+      }
       await clockOutAndSignOut(employeeId);
       window.location.href = '/login';
     } catch (error) {
@@ -73,11 +134,12 @@ export function useNineHourOvertimeAutomation({
       autoLogoutInFlightRef.current = false;
       setPhase('idle');
     }
-  }, [employeeId]);
+  }, [employeeId, hasOvertimeOptIn, applyOvertimeOptIn]);
 
   const evaluateThreshold = useCallback(async () => {
     if (!enabled || !employeeId || phaseRef.current !== 'idle') return;
-    if (overtimeOptInRef.current || hasContinuedOvertimeToday()) return;
+    if (isPastJerusalemWorkdayEnd()) return;
+    if (await hasOvertimeOptIn()) return;
 
     try {
       const active = await fetchActiveClockInRecord(employeeId);
@@ -93,7 +155,7 @@ export function useNineHourOvertimeAutomation({
     } catch (error) {
       console.error('Nine-hour overtime check failed:', error);
     }
-  }, [enabled, employeeId]);
+  }, [enabled, employeeId, hasOvertimeOptIn]);
 
   useEffect(() => {
     if (!enabled || !employeeId) return undefined;
@@ -128,7 +190,12 @@ export function useNineHourOvertimeAutomation({
   useEffect(() => {
     if (phase !== 'prompt') return undefined;
 
-    const tick = () => {
+    const tick = async () => {
+      if (await hasOvertimeOptIn()) {
+        applyOvertimeOptIn();
+        return;
+      }
+
       const endsAt = promptEndsAtRef.current;
       if (!endsAt) return;
       const remainingMs = endsAt - Date.now();
@@ -141,15 +208,22 @@ export function useNineHourOvertimeAutomation({
       setPromptSecondsLeft(Math.ceil(remainingMs / 1000));
     };
 
-    tick();
-    const interval = window.setInterval(tick, 1000);
+    void tick();
+    const interval = window.setInterval(() => {
+      void tick();
+    }, 1000);
     return () => window.clearInterval(interval);
-  }, [phase]);
+  }, [phase, hasOvertimeOptIn, applyOvertimeOptIn]);
 
   useEffect(() => {
     if (phase !== 'final_countdown') return undefined;
 
-    const tick = () => {
+    const tick = async () => {
+      if (await hasOvertimeOptIn()) {
+        applyOvertimeOptIn();
+        return;
+      }
+
       const endsAt = countdownEndsAtRef.current;
       if (!endsAt) return;
       const remainingMs = endsAt - Date.now();
@@ -160,18 +234,31 @@ export function useNineHourOvertimeAutomation({
       setCountdownSecondsLeft(Math.ceil(remainingMs / 1000));
     };
 
-    tick();
-    const interval = window.setInterval(tick, 1000);
+    void tick();
+    const interval = window.setInterval(() => {
+      void tick();
+    }, 1000);
     return () => window.clearInterval(interval);
-  }, [phase, runAutoLogout]);
+  }, [phase, runAutoLogout, hasOvertimeOptIn, applyOvertimeOptIn]);
 
   const continueOvertime = useCallback(() => {
-    overtimeOptInRef.current = true;
-    void markContinuedOvertimeToday(employeeId);
-    promptEndsAtRef.current = null;
-    countdownEndsAtRef.current = null;
-    setPhase('idle');
-  }, [employeeId]);
+    applyOvertimeOptIn();
+    void (async () => {
+      let persisted = await markContinuedOvertimeToday(employeeId);
+      if (!persisted && employeeId != null) {
+        persisted = await markContinuedOvertimeToday(employeeId);
+      }
+      if (!persisted && employeeId != null) {
+        toast.error('Could not save overtime choice to the server. Retrying…');
+        persisted = await markContinuedOvertimeToday(employeeId);
+      }
+      if (!persisted && employeeId != null) {
+        toast.error(
+          'Overtime choice saved on this device only. Stay on this browser until end of day.',
+        );
+      }
+    })();
+  }, [employeeId, applyOvertimeOptIn]);
 
   const clockOutNow = useCallback(() => {
     void runAutoLogout();

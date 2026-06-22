@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'react-hot-toast';
+import { subscribeClockInOptIn } from '../lib/clockInOptInCrossTab';
 import { fetchActiveClockInRecord } from '../lib/employeeClockOut';
-import { clockOutAndSignOut } from '../lib/employeeClockInOvertime';
+import { clockOutAndSignOut, getTodayDateKey } from '../lib/employeeClockInOvertime';
 import {
   fetchWorkdayEndOptInFromDb,
   hasContinuedWorkdayEndToday,
@@ -18,6 +19,8 @@ type UseWorkdayEndAutomationOptions = {
   employeeId: number | null;
   enabled: boolean;
 };
+
+const OPT_IN_RECHECK_MS = 2_000;
 
 export function useWorkdayEndAutomation({
   employeeId,
@@ -38,6 +41,28 @@ export function useWorkdayEndAutomation({
   const autoLogoutInFlightRef = useRef(false);
   const workdayEndOptInRef = useRef(false);
 
+  const applyWorkdayEndOptIn = useCallback(() => {
+    workdayEndOptInRef.current = true;
+    promptEndsAtRef.current = null;
+    countdownEndsAtRef.current = null;
+    autoLogoutInFlightRef.current = false;
+    setPhase('idle');
+  }, []);
+
+  const hasWorkdayEndOptIn = useCallback(async (): Promise<boolean> => {
+    if (workdayEndOptInRef.current || hasContinuedWorkdayEndToday()) {
+      workdayEndOptInRef.current = true;
+      return true;
+    }
+    if (!employeeId) return false;
+    const optedIn = await fetchWorkdayEndOptInFromDb(employeeId);
+    if (optedIn) {
+      workdayEndOptInRef.current = true;
+      await markContinuedWorkdayEndToday(employeeId);
+    }
+    return optedIn;
+  }, [employeeId]);
+
   useEffect(() => {
     if (!employeeId) {
       workdayEndOptInRef.current = false;
@@ -48,19 +73,53 @@ export function useWorkdayEndAutomation({
     if (workdayEndOptInRef.current) return;
 
     void (async () => {
-      const optedIn = await fetchWorkdayEndOptInFromDb(employeeId);
-      if (optedIn) {
-        workdayEndOptInRef.current = true;
-        await markContinuedWorkdayEndToday(employeeId);
+      if (await fetchWorkdayEndOptInFromDb(employeeId)) {
+        applyWorkdayEndOptIn();
       }
     })();
-  }, [employeeId]);
+  }, [employeeId, applyWorkdayEndOptIn]);
+
+  useEffect(() => {
+    if (!employeeId) return undefined;
+
+    return subscribeClockInOptIn((message) => {
+      if (message.kind !== 'workday_end' || message.dateKey !== getTodayDateKey()) return;
+      applyWorkdayEndOptIn();
+    });
+  }, [employeeId, applyWorkdayEndOptIn]);
+
+  useEffect(() => {
+    if (!employeeId || phase === 'idle') return undefined;
+
+    const recheck = () => {
+      void (async () => {
+        if (await hasWorkdayEndOptIn()) {
+          applyWorkdayEndOptIn();
+        }
+      })();
+    };
+
+    recheck();
+    const interval = window.setInterval(recheck, OPT_IN_RECHECK_MS);
+    return () => window.clearInterval(interval);
+  }, [employeeId, phase, hasWorkdayEndOptIn, applyWorkdayEndOptIn]);
 
   const runAutoLogout = useCallback(async () => {
     if (!employeeId || autoLogoutInFlightRef.current) return;
+
+    if (await hasWorkdayEndOptIn()) {
+      applyWorkdayEndOptIn();
+      return;
+    }
+
     autoLogoutInFlightRef.current = true;
     setPhase('processing');
     try {
+      if (await hasWorkdayEndOptIn()) {
+        applyWorkdayEndOptIn();
+        autoLogoutInFlightRef.current = false;
+        return;
+      }
       await clockOutAndSignOut(employeeId);
       window.location.href = '/login';
     } catch (error) {
@@ -70,12 +129,12 @@ export function useWorkdayEndAutomation({
       autoLogoutInFlightRef.current = false;
       setPhase('idle');
     }
-  }, [employeeId]);
+  }, [employeeId, hasWorkdayEndOptIn, applyWorkdayEndOptIn]);
 
   const evaluateThreshold = useCallback(async () => {
     if (!enabled || !employeeId || phaseRef.current !== 'idle') return;
     if (!isPastJerusalemWorkdayEnd()) return;
-    if (workdayEndOptInRef.current || hasContinuedWorkdayEndToday()) return;
+    if (await hasWorkdayEndOptIn()) return;
 
     try {
       const active = await fetchActiveClockInRecord(employeeId);
@@ -87,7 +146,7 @@ export function useWorkdayEndAutomation({
     } catch (error) {
       console.error('Workday-end check failed:', error);
     }
-  }, [enabled, employeeId]);
+  }, [enabled, employeeId, hasWorkdayEndOptIn]);
 
   useEffect(() => {
     if (!enabled || !employeeId) return undefined;
@@ -103,7 +162,12 @@ export function useWorkdayEndAutomation({
   useEffect(() => {
     if (phase !== 'prompt') return undefined;
 
-    const tick = () => {
+    const tick = async () => {
+      if (await hasWorkdayEndOptIn()) {
+        applyWorkdayEndOptIn();
+        return;
+      }
+
       const endsAt = promptEndsAtRef.current;
       if (!endsAt) return;
       const remainingMs = endsAt - Date.now();
@@ -116,15 +180,22 @@ export function useWorkdayEndAutomation({
       setPromptSecondsLeft(Math.ceil(remainingMs / 1000));
     };
 
-    tick();
-    const interval = window.setInterval(tick, 1000);
+    void tick();
+    const interval = window.setInterval(() => {
+      void tick();
+    }, 1000);
     return () => window.clearInterval(interval);
-  }, [phase]);
+  }, [phase, hasWorkdayEndOptIn, applyWorkdayEndOptIn]);
 
   useEffect(() => {
     if (phase !== 'final_countdown') return undefined;
 
-    const tick = () => {
+    const tick = async () => {
+      if (await hasWorkdayEndOptIn()) {
+        applyWorkdayEndOptIn();
+        return;
+      }
+
       const endsAt = countdownEndsAtRef.current;
       if (!endsAt) return;
       const remainingMs = endsAt - Date.now();
@@ -135,18 +206,17 @@ export function useWorkdayEndAutomation({
       setCountdownSecondsLeft(Math.ceil(remainingMs / 1000));
     };
 
-    tick();
-    const interval = window.setInterval(tick, 1000);
+    void tick();
+    const interval = window.setInterval(() => {
+      void tick();
+    }, 1000);
     return () => window.clearInterval(interval);
-  }, [phase, runAutoLogout]);
+  }, [phase, runAutoLogout, hasWorkdayEndOptIn, applyWorkdayEndOptIn]);
 
   const continueWorking = useCallback(() => {
-    workdayEndOptInRef.current = true;
+    applyWorkdayEndOptIn();
     void markContinuedWorkdayEndToday(employeeId);
-    promptEndsAtRef.current = null;
-    countdownEndsAtRef.current = null;
-    setPhase('idle');
-  }, [employeeId]);
+  }, [employeeId, applyWorkdayEndOptIn]);
 
   const clockOutNow = useCallback(() => {
     void runAutoLogout();

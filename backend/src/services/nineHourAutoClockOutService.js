@@ -1,10 +1,11 @@
 const supabase = require('../config/supabase');
+const nineHourOvertimeWhatsAppService = require('./nineHourOvertimeWhatsAppService');
 
 const JERUSALEM_TZ = 'Asia/Jerusalem';
 const NINE_HOURS_MS = 9 * 60 * 60 * 1000;
-const OVERTIME_PROMPT_MS = 2 * 60 * 1000;
+const OVERTIME_PROMPT_MS = 10 * 60 * 1000;
 const OVERTIME_FINAL_COUNTDOWN_MS = 20 * 1000;
-/** Same deadline as the in-browser prompt (9h + 2m + 20s without a response). */
+/** Same deadline as the in-browser prompt (9h + 10m + 20s without a response). */
 const AUTO_ENFORCE_MS = NINE_HOURS_MS + OVERTIME_PROMPT_MS + OVERTIME_FINAL_COUNTDOWN_MS;
 const PRESENCE_STALE_MS = Number(process.env.CLOCK_IN_PRESENCE_STALE_MS || 90_000);
 const WORKDAY_END_HOUR_JERUSALEM = Number(process.env.CLOCK_IN_WORKDAY_END_HOUR_JERUSALEM || 23);
@@ -172,7 +173,7 @@ function hasRecentPresence(lastSeenAt, now = Date.now()) {
 /**
  * Server enforcement rules:
  * - Below 9h: never
- * - At/above full client deadline (9h + 2m + 20s): always (safety backup)
+ * - At/above full client deadline (9h + 10m + 20s): always (safety backup)
  * - Between 9h and deadline with recent browser heartbeat: skip (client shows friendly UI)
  * - At/above 9h without recent heartbeat: enforce (user left without clocking out)
  */
@@ -187,8 +188,14 @@ function shouldServerEnforce(totalMs, lastSeenAt, now = Date.now()) {
   return !hasRecentPresence(lastSeenAt, now);
 }
 
-function shouldEnforceNineHourLimit(totalMs, lastSeenAt, hasOvertimeOptIn, now = Date.now()) {
-  if (hasOvertimeOptIn) return false;
+function shouldSendNineHourWhatsApp(totalMs, overtimeOptIn, now = new Date()) {
+  if (isPastJerusalemWorkdayEnd(now)) return false;
+  if (overtimeOptIn) return false;
+  return totalMs >= NINE_HOURS_MS;
+}
+
+function shouldEnforceNineHourLimit(totalMs, lastSeenAt, hasOvertimeOptInFlag, now = Date.now()) {
+  if (hasOvertimeOptInFlag) return false;
   return shouldServerEnforce(totalMs, lastSeenAt, now);
 }
 
@@ -243,6 +250,8 @@ async function runNineHourAutoClockOut() {
     clockedOut: 0,
     signedOut: 0,
     endOfDayClockOuts: 0,
+    whatsappSent: 0,
+    whatsappSkipped: 0,
     skipped: 0,
     errors: [],
   };
@@ -288,6 +297,24 @@ async function runNineHourAutoClockOut() {
 
       const overtimeOptIn = await hasOvertimeOptIn(record.employee_id, workDate);
       const totalMs = await fetchTodayClockedMs(record.employee_id);
+
+      if (shouldSendNineHourWhatsApp(totalMs, overtimeOptIn)) {
+        const whatsappResult = await nineHourOvertimeWhatsAppService.sendNineHourOvertimeWhatsAppIfNeeded(
+          record.employee_id,
+          workDate,
+        );
+        if (whatsappResult.sent) {
+          summary.whatsappSent += 1;
+        } else if (whatsappResult.error) {
+          summary.errors.push({
+            employeeId: record.employee_id,
+            message: `Nine-hour WhatsApp: ${whatsappResult.error}`,
+          });
+        } else {
+          summary.whatsappSkipped += 1;
+        }
+      }
+
       if (!shouldEnforceNineHourLimit(totalMs, lastPresenceAt, overtimeOptIn)) {
         summary.skipped += 1;
         continue;
@@ -326,6 +353,7 @@ module.exports = {
     fetchTodayClockedMs,
     shouldServerEnforce,
     shouldEnforceNineHourLimit,
+    shouldSendNineHourWhatsApp,
     shouldEnforceWorkdayEnd,
     hasRecentPresence,
     isPastJerusalemWorkdayEnd,

@@ -1,5 +1,10 @@
 import { supabase } from './supabase';
 import {
+  broadcastClockInOptIn,
+  readClockInOptInFlag,
+  writeClockInOptInFlag,
+} from './clockInOptInCrossTab';
+import {
   getTodayDateKey,
   JERUSALEM_WORKDAY_END_HOUR,
 } from './employeeClockInOvertime';
@@ -20,11 +25,7 @@ export function workdayEndContinueStorageKey(dateKey: string): string {
 }
 
 export function hasContinuedWorkdayEndToday(dateKey = getTodayDateKey()): boolean {
-  try {
-    return sessionStorage.getItem(workdayEndContinueStorageKey(dateKey)) === '1';
-  } catch {
-    return false;
-  }
+  return readClockInOptInFlag(workdayEndContinueStorageKey(dateKey));
 }
 
 export async function fetchWorkdayEndOptInFromDb(
@@ -50,11 +51,8 @@ export async function markContinuedWorkdayEndToday(
   employeeId: number | null | undefined,
   dateKey = getTodayDateKey(),
 ): Promise<void> {
-  try {
-    sessionStorage.setItem(workdayEndContinueStorageKey(dateKey), '1');
-  } catch {
-    // ignore quota errors
-  }
+  writeClockInOptInFlag(workdayEndContinueStorageKey(dateKey));
+  broadcastClockInOptIn('workday_end', dateKey, employeeId);
 
   if (employeeId == null) return;
 
