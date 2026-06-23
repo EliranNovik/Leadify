@@ -6,6 +6,12 @@ import * as XLSX from 'xlsx';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { useMsal } from '@azure/msal-react';
+import {
+  fetchProformaExchangeRateInfo,
+  currencyInputFromNewPayment,
+  currencyInputFromLegacyProforma,
+} from '../lib/proformaExchangeRate';
+import { loadAccountingCurrenciesMap } from '../lib/boiCurrencyConversion';
 
 const EXPORT_COLUMNS = [
   'Lead',
@@ -45,9 +51,46 @@ const IMPORT_COLUMNS = [
 const DEFAULT_IMPORT_LANGUAGE = 'HE';
 const DEFAULT_IMPORT_SOURCE = 'Import';
 
+/** Columns for the paid payments export (by date paid). */
+const PAID_PAYMENTS_COLUMNS = [
+  'Lead',
+  'Client Name',
+  'Paid At',
+  'Total Amount (NIS)',
+  'Order',
+] as const;
+
 type ExportRow = Record<(typeof EXPORT_COLUMNS)[number], string>;
+type PaidPaymentRow = Record<(typeof PAID_PAYMENTS_COLUMNS)[number], string | number>;
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+const daysAgo = (days: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+};
+
+/** Format a paid payment "order" value into a readable label. */
+const orderLabel = (val: unknown): string => {
+  if (val == null || String(val).trim() === '') return '';
+  const s = String(val).trim();
+  const num = Number(s);
+  if (!Number.isFinite(num) || s !== String(num)) return s; // already descriptive text
+  const labels: Record<number, string> = {
+    1: 'First Payment',
+    2: 'Second Payment',
+    3: 'Third Payment',
+    4: 'Fourth Payment',
+    5: 'Fifth Payment',
+    6: 'Sixth Payment',
+    7: 'Seventh Payment',
+    8: 'Eighth Payment',
+    9: 'Ninth Payment',
+    10: 'Tenth Payment',
+  };
+  return labels[num] ?? `Payment ${num}`;
+};
 
 const formatExportDate = (val: string | null | undefined): string => {
   if (val == null) return '';
@@ -224,6 +267,9 @@ export default function LeadsReportPage() {
   const [importing, setImporting] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importDragOver, setImportDragOver] = useState(false);
+  const [exportingPaid, setExportingPaid] = useState(false);
+  const [paidFromDate, setPaidFromDate] = useState(daysAgo(30));
+  const [paidToDate, setPaidToDate] = useState(today());
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const [dropdownSearch, setDropdownSearch] = useState<Record<string, string>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -734,6 +780,125 @@ export default function LeadsReportPage() {
     toast.success('Template downloaded. Only name is required; source_id column accepts lead source name text.');
   };
 
+  const runPaidPaymentsExport = async () => {
+    setExportingPaid(true);
+    try {
+      await loadAccountingCurrenciesMap();
+
+      const fromTs = paidFromDate ? `${paidFromDate}T00:00:00` : null;
+      const toTs = paidToDate ? `${paidToDate}T23:59:59` : null;
+
+      // New leads — paid payment_plans (filter by date paid)
+      let newQuery = supabase
+        .from('payment_plans')
+        .select('id, lead_id, value, value_vat, paid_at, payment_order, "order", currency, currency_id, leads:lead_id(name, lead_number)')
+        .eq('paid', true)
+        .is('cancel_date', null)
+        .not('paid_at', 'is', null)
+        .order('paid_at', { ascending: false });
+      if (fromTs) newQuery = newQuery.gte('paid_at', fromTs);
+      if (toTs) newQuery = newQuery.lte('paid_at', toTs);
+      const { data: newPaid, error: newError } = await newQuery;
+      if (newError) throw newError;
+
+      // Legacy leads — paid finances_paymentplanrow (paid = actual_date set)
+      let legacyQuery = supabase
+        .from('finances_paymentplanrow')
+        .select('id, lead_id, value, vat_value, actual_date, "order", currency_id')
+        .is('cancel_date', null)
+        .not('actual_date', 'is', null)
+        .order('actual_date', { ascending: false });
+      if (fromTs) legacyQuery = legacyQuery.gte('actual_date', fromTs);
+      if (toTs) legacyQuery = legacyQuery.lte('actual_date', toTs);
+      const { data: legacyPaid, error: legacyError } = await legacyQuery;
+      if (legacyError) {
+        console.warn('Legacy paid payments fetch failed (may not have access):', legacyError);
+      }
+
+      // Resolve legacy lead names / numbers
+      const legacyLeadIds = [...new Set((legacyPaid || []).map((r: any) => r.lead_id).filter(Boolean))];
+      const legacyLeadMap = new Map<string, { name: string; manual_id: string }>();
+      if (legacyLeadIds.length > 0) {
+        const { data: legacyLeads } = await supabase
+          .from('leads_lead')
+          .select('id, name, manual_id')
+          .in('id', legacyLeadIds);
+        (legacyLeads || []).forEach((l: any) => {
+          legacyLeadMap.set(String(l.id), {
+            name: l.name ?? '',
+            manual_id: l.manual_id != null ? String(l.manual_id) : '',
+          });
+        });
+      }
+
+      const rows: PaidPaymentRow[] = [];
+
+      for (const p of (newPaid || []) as any[]) {
+        const value = Number(p.value) || 0;
+        const vat = Number(p.value_vat) || 0;
+        const lead = Array.isArray(p.leads) ? p.leads[0] : p.leads;
+        const info = await fetchProformaExchangeRateInfo({
+          currency: currencyInputFromNewPayment({ currency: p.currency, currency_id: p.currency_id }, null),
+          paid: true,
+          paidAt: p.paid_at,
+          subtotal: value,
+          vat,
+          total: value + vat,
+        });
+        const nis = info ? Math.round(info.totalNis) : Math.round(value + vat);
+        rows.push({
+          Lead: lead?.lead_number ?? '',
+          'Client Name': lead?.name ?? '',
+          'Paid At': formatExportDate(p.paid_at),
+          'Total Amount (NIS)': nis,
+          Order: orderLabel(p.payment_order ?? p.order),
+        });
+      }
+
+      for (const p of (legacyPaid || []) as any[]) {
+        const value = Number(p.value) || 0;
+        const vat = Number(p.vat_value) || 0;
+        const lead = legacyLeadMap.get(String(p.lead_id));
+        const info = await fetchProformaExchangeRateInfo({
+          currency: currencyInputFromLegacyProforma({ currency_id: p.currency_id, currency_code: null }),
+          paid: true,
+          paidAt: p.actual_date,
+          subtotal: value,
+          vat,
+          total: value + vat,
+        });
+        const nis = info ? Math.round(info.totalNis) : Math.round(value + vat);
+        rows.push({
+          Lead: lead?.manual_id ?? '',
+          'Client Name': lead?.name ?? '',
+          'Paid At': formatExportDate(p.actual_date),
+          'Total Amount (NIS)': nis,
+          Order: orderLabel(p.order),
+        });
+      }
+
+      if (rows.length === 0) {
+        toast('No paid payments match the selected date range.', { icon: '⚠️' });
+        setExportingPaid(false);
+        return;
+      }
+
+      // Newest paid first across both sources
+      rows.sort((a, b) => String(b['Paid At']).localeCompare(String(a['Paid At'])));
+
+      const ws = XLSX.utils.json_to_sheet(rows, { header: [...PAID_PAYMENTS_COLUMNS] });
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Paid Payments');
+      XLSX.writeFile(wb, `paid_payments_export_${today()}.xlsx`);
+      toast.success(`Exported ${rows.length} paid payment(s) to Excel.`);
+    } catch (err) {
+      console.error('Paid payments export error:', err);
+      toast.error(err instanceof Error ? err.message : 'Paid payments export failed.');
+    } finally {
+      setExportingPaid(false);
+    }
+  };
+
   return (
     <div className="p-4 max-w-5xl mx-auto">
       <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -950,6 +1115,43 @@ export default function LeadsReportPage() {
                 <span className="loading loading-spinner loading-sm" />
               ) : (
                 <ArrowUpTrayIcon className="w-5 h-5" />
+              )}
+            </button>
+          </div>
+        </section>
+
+        <section>
+          <h2 className="text-xl font-semibold flex items-center gap-2 mb-2">
+            <ArrowDownTrayIcon className="w-5 h-5" />
+            Export paid payments to Excel
+          </h2>
+          <p className="text-sm text-base-content/70 mb-4">
+            Export all paid client payments (new and legacy leads) within a date range, filtered by
+            the date the payment was paid. Columns: Lead, Client Name, Paid At, Total Amount (NIS), Order.
+          </p>
+          <div className="grid grid-cols-2 gap-4 max-w-md">
+            <div className="form-control flex flex-col items-stretch">
+              <label className="label justify-start py-1"><span className="label-text">From date (paid)</span></label>
+              <input type="date" className="input input-bordered" value={paidFromDate} onChange={(e) => setPaidFromDate(e.target.value)} />
+            </div>
+            <div className="form-control flex flex-col items-stretch">
+              <label className="label justify-start py-1"><span className="label-text">To date (paid)</span></label>
+              <input type="date" className="input input-bordered" value={paidToDate} onChange={(e) => setPaidToDate(e.target.value)} />
+            </div>
+          </div>
+          <div className="flex justify-end mt-4">
+            <button
+              type="button"
+              className="btn btn-primary btn-circle"
+              onClick={runPaidPaymentsExport}
+              disabled={exportingPaid}
+              title="Export paid payments to Excel"
+              aria-label="Export paid payments to Excel"
+            >
+              {exportingPaid ? (
+                <span className="loading loading-spinner loading-sm" />
+              ) : (
+                <ArrowDownTrayIcon className="w-5 h-5" />
               )}
             </button>
           </div>

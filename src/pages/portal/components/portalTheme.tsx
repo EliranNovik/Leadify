@@ -382,6 +382,37 @@ export function ProfileCover({
   );
 }
 
+const STAT_CARD_THEMES = {
+  primary: {
+    bg: 'bg-[#f4ecff]',
+    border: 'border-[#eadbff]',
+    title: 'text-[#342b56]',
+    subtitle: 'text-[#6d6791]',
+    icon: 'text-[#8a63d2]',
+  },
+  sky: {
+    bg: 'bg-[#eaf0ff]',
+    border: 'border-[#d6e2ff]',
+    title: 'text-[#2f3f7a]',
+    subtitle: 'text-[#5f73a8]',
+    icon: 'text-[#4b63c9]',
+  },
+  emerald: {
+    bg: 'bg-[#e8f8f2]',
+    border: 'border-[#cfeede]',
+    title: 'text-[#2a5f50]',
+    subtitle: 'text-[#578874]',
+    icon: 'text-[#2d947b]',
+  },
+  amber: {
+    bg: 'bg-[#fff4e6]',
+    border: 'border-[#fde4c3]',
+    title: 'text-[#7a4a12]',
+    subtitle: 'text-[#a67c3d]',
+    icon: 'text-[#d97706]',
+  },
+} as const;
+
 export function PortalStatCard({
   label,
   value,
@@ -401,172 +432,74 @@ export function PortalStatCard({
   action?: ReactNode;
   badge?: ReactNode;
   onClick?: () => void;
-  /** Stable key — picks a fixed stat-card cover via getStatCardCoverImage */
+  /** Stable key — picks a faint background photo for the card. */
   coverKey?: string;
 }) {
+  const theme = STAT_CARD_THEMES[accent];
   const coverImageUrl = useMemo(
     () => (coverKey ? getStatCardCoverImage(coverKey) : null),
     [coverKey],
   );
-  const coverFallbackUrl = unsplashCoverUrl(STAT_CARD_COVER_PHOTO_IDS[0]);
   const [imgBroken, setImgBroken] = useState(false);
 
-  const cover = coverImageUrl;
+  const cardClassName = `group relative flex h-full min-h-[11.5rem] w-full flex-col overflow-hidden rounded-[18px] border p-4 text-left shadow-sm transition-all duration-300 hover:shadow-md lg:min-h-[14rem] lg:p-5 ${theme.bg} ${theme.border} ${
+    onClick
+      ? 'cursor-pointer hover:scale-[1.01] focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40'
+      : ''
+  }`;
 
-  const titleMap = {
-    primary: 'text-primary',
-    emerald: 'text-emerald-700',
-    amber: 'text-amber-700',
-    sky: 'text-sky-700',
-  };
-
-  const iconBoxClassName = {
-    primary: 'bg-primary/10 text-primary',
-    emerald: 'bg-emerald-500/10 text-emerald-700',
-    amber: 'bg-amber-500/10 text-amber-700',
-    sky: 'bg-sky-500/10 text-sky-700',
-  };
-
-  const coverIconClassName = {
-    primary: 'h-9 w-9 shrink-0 text-primary md:h-10 md:w-10',
-    emerald: 'h-9 w-9 shrink-0 text-emerald-700 md:h-10 md:w-10',
-    amber: 'h-9 w-9 shrink-0 text-amber-700 md:h-10 md:w-10',
-    sky: 'h-9 w-9 shrink-0 text-sky-700 md:h-10 md:w-10',
-  };
-  const coverValueClassName = 'text-xl font-bold tracking-tight text-neutral-900 md:text-2xl';
-
-  const glassPanelClassName =
-    'rounded-[16px] bg-white/85 shadow-[0_8px_32px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150';
-  const titleClassName = titleMap[accent];
-  const valueClassName = 'text-xl font-bold tracking-tight text-base-content/90 md:text-2xl';
-  const hintClassName =
-    'mt-1 min-h-[2.5rem] text-base leading-relaxed text-neutral-600 line-clamp-2';
-  const coverLabelClassName =
-    'text-xs font-bold uppercase tracking-wide text-white drop-shadow-sm md:text-sm';
-  const coverHintClassName =
-    'text-xs leading-snug text-white/90 drop-shadow-sm line-clamp-2 md:text-sm';
-  const statCardChevronIconClassName = cover
-    ? 'h-4 w-4 stroke-[2.5] text-white md:h-5 md:w-5'
-    : 'h-4 w-4 stroke-[2.5] text-base-content/60 md:h-5 md:w-5';
-  const statCardChevronIcon = onClick ? (
-    <span
-      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full shadow-[0_8px_32px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150 md:h-9 md:w-9 ${
-        cover ? 'bg-white/28' : 'bg-white/80 shadow-[0_4px_16px_rgba(15,23,42,0.08)] backdrop-blur-md'
-      }`}
-      aria-hidden
-    >
-      <ChevronRightIcon className={statCardChevronIconClassName} />
-    </span>
-  ) : null;
-
-  const cardClassName =
-    'group relative flex h-full min-h-[13.5rem] w-full flex-col overflow-hidden rounded-[18px] text-left shadow-sm transition-shadow hover:shadow-md md:min-h-[14rem]';
-
-  const plainInnerContent = (
+  const content = (
     <>
-      <div className="mb-3 flex items-start justify-between gap-2">
-        <p className={`text-base font-bold uppercase tracking-wide ${titleClassName}`}>{label}</p>
-        {statCardChevronIcon}
-      </div>
-      <div className="flex min-h-[3.75rem] flex-1 items-start gap-3 md:gap-4">
-        <div
-          className={`flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl ${iconBoxClassName[accent]}`}
-        >
-          <Icon className="h-8 w-8" aria-hidden />
-        </div>
-        <div className="min-w-0 flex-1 text-left">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className={valueClassName}>{value}</p>
-            {badge ? <span className="inline-flex shrink-0">{badge}</span> : null}
-          </div>
-          <p className={hintClassName}>{hint || '\u00A0'}</p>
-        </div>
-      </div>
+      {coverImageUrl && !imgBroken ? (
+        <img
+          src={coverImageUrl}
+          alt=""
+          className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-[0.12]"
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          onError={() => setImgBroken(true)}
+        />
+      ) : null}
       <div
-        className="relative z-10 flex min-h-[2.25rem] items-end"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
-      >
-        {action ? <div>{action}</div> : null}
-      </div>
-    </>
-  );
+        className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-white/40 blur-2xl"
+        aria-hidden
+      />
+      <div className="relative z-10 flex h-full flex-col">
+        <div className="mb-2.5 flex items-start justify-between gap-2 lg:mb-3">
+          <span
+            className={`text-[10px] font-bold uppercase tracking-wide lg:text-sm ${theme.subtitle}`}
+          >
+            {label}
+          </span>
+          {onClick ? (
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white bg-white/70 shadow-sm lg:h-9 lg:w-9">
+              <ChevronRightIcon className={`h-3.5 w-3.5 stroke-[2.5] lg:h-5 lg:w-5 ${theme.icon}`} />
+            </span>
+          ) : null}
+        </div>
 
-  const coverInnerContent = (
-    <>
-      <div className="mt-auto flex flex-col gap-3">
-        <div className={`${glassPanelClassName} flex items-center gap-3 px-4 py-3 md:gap-4 md:px-5 md:py-4`}>
-          <Icon className={coverIconClassName[accent]} aria-hidden />
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className={coverValueClassName}>{value}</p>
+        <div className="flex min-h-[3rem] flex-1 items-start gap-2.5 lg:min-h-[3.75rem] lg:gap-4">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white bg-white/70 shadow-sm lg:h-16 lg:w-16 lg:rounded-2xl">
+            <Icon className={`h-5 w-5 lg:h-8 lg:w-8 ${theme.icon}`} aria-hidden />
+          </div>
+          <div className="min-w-0 flex-1 text-left">
+            <div className="flex flex-wrap items-center gap-1.5 lg:gap-2">
+              <p className={`text-lg font-bold tracking-tight lg:text-3xl ${theme.title}`}>{value}</p>
               {badge ? <span className="inline-flex shrink-0">{badge}</span> : null}
             </div>
+            <p className={`mt-0.5 line-clamp-2 text-xs leading-relaxed lg:mt-1 lg:text-base ${theme.subtitle}`}>
+              {hint || '\u00A0'}
+            </p>
           </div>
         </div>
+
         <div
-          className="relative z-10 flex min-h-[2.25rem] items-end"
+          className="relative z-10 mt-3 flex min-h-[2.25rem] items-end"
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => e.stopPropagation()}
         >
           {action ? <div>{action}</div> : null}
         </div>
-      </div>
-    </>
-  );
-
-  const coverHeaderTitles = (
-    <div className="absolute right-3 top-3 z-20 flex max-w-[88%] items-center justify-end gap-x-2 md:right-4 md:top-4 md:gap-x-2.5">
-      <p className={`shrink-0 ${coverLabelClassName}`}>{label}</p>
-      {hint && hint !== '\u00A0' ? (
-        <p className={`min-w-0 ${coverHintClassName}`}>{hint}</p>
-      ) : null}
-      {statCardChevronIcon}
-    </div>
-  );
-
-  const content = (
-    <>
-      {cover ? (
-        <>
-          {!imgBroken ? (
-            <img
-              src={coverImageUrl!}
-              alt=""
-              className="pointer-events-none absolute inset-0 h-full w-full object-cover"
-              loading="lazy"
-              referrerPolicy="no-referrer"
-              onError={() => setImgBroken(true)}
-            />
-          ) : (
-            <img
-              src={coverFallbackUrl}
-              alt=""
-              className="pointer-events-none absolute inset-0 h-full w-full object-cover"
-              loading="lazy"
-              referrerPolicy="no-referrer"
-            />
-          )}
-          <div
-            className="pointer-events-none absolute inset-x-0 top-0 z-[1] h-[68%] bg-gradient-to-b from-black/60 via-black/25 to-transparent"
-            aria-hidden
-          />
-          <div
-            className="pointer-events-none absolute inset-x-0 bottom-0 z-[1] h-[50%] bg-gradient-to-t from-white/55 via-white/25 to-transparent"
-            aria-hidden
-          />
-          {coverHeaderTitles}
-        </>
-      ) : (
-        <div
-          className="pointer-events-none absolute inset-0 bg-white transition-colors group-hover:bg-base-200/35"
-          aria-hidden
-        />
-      )}
-      <div
-        className={`relative z-10 flex flex-1 flex-col ${cover ? 'p-3 md:p-4' : 'gap-4 px-4 pb-5 pt-4 md:px-6 md:pb-6 md:pt-5'}`}
-      >
-        {cover ? coverInnerContent : plainInnerContent}
       </div>
     </>
   );

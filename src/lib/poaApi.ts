@@ -73,6 +73,16 @@ export interface PoaPublicData {
   };
 }
 
+/** Sibling POA in the same contact's signing sequence (for chaining + progress). */
+export interface PoaSiblingItem {
+  id: string;
+  secure_token: string;
+  status: PoaStatus;
+  type_name: string | null;
+  created_at: string;
+  signed_at: string | null;
+}
+
 /** Public link a client uses to fill + sign a POA. */
 export function buildPoaUrl(secureToken: string): string {
   return `${getFrontendBaseUrl()}/poa/${encodeURIComponent(secureToken)}`;
@@ -89,6 +99,14 @@ export async function fetchPoaByToken(token: string): Promise<PoaPublicData> {
     throw new Error((data && data.error) || 'POA not found');
   }
   return data as PoaPublicData;
+}
+
+/** All non-cancelled POAs for the same contact, oldest first (signing sequence). */
+export async function fetchPoaSiblings(token: string): Promise<PoaSiblingItem[]> {
+  const { data, error } = await supabase.rpc('poa_siblings_public', { p_token: token });
+  if (error) throw new Error(error.message);
+  if (!data || data.ok === false) return [];
+  return (data.poas || []) as PoaSiblingItem[];
 }
 
 export async function submitPoa(params: {

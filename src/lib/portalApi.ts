@@ -382,6 +382,84 @@ export async function portalGetContacts() {
   } | null;
 }
 
+export type PortalContactPoaRow = {
+  id: string;
+  secure_token: string;
+  status: 'pending' | 'sent' | 'viewed' | 'signed' | 'cancelled' | string;
+  type_name: string | null;
+  signed_at: string | null;
+  created_at: string;
+};
+
+export async function portalGetContactPoas(contactId: number): Promise<PortalContactPoaRow[]> {
+  const { data, error } = await supabase.rpc('portal_poa_list_for_contact', {
+    p_token: tokenOrThrow(),
+    p_contact_id: contactId,
+  });
+  if (error) throw error;
+  if (!data || data.ok === false) {
+    throw new Error((data && data.error) || 'Failed to load POAs');
+  }
+  return (data.poas || []) as PortalContactPoaRow[];
+}
+
+export type PortalNotificationType =
+  | 'poa_new'
+  | 'poa_signed'
+  | 'contract_new'
+  | 'contract_signed'
+  | 'contact_new'
+  | 'meeting_new'
+  | 'document_new'
+  | 'status_new'
+  | 'status_updated'
+  | string;
+
+export type PortalNotificationRow = {
+  id: string;
+  type: PortalNotificationType;
+  title: string;
+  subtitle: string | null;
+  ts: string;
+  tab: 'summary' | 'stages' | 'finance' | 'documents' | 'contacts' | 'meetings' | string;
+};
+
+export async function portalGetNotifications(limit = 50): Promise<PortalNotificationRow[]> {
+  const { data, error } = await supabase.rpc('portal_get_notifications', {
+    p_token: tokenOrThrow(),
+    p_limit: limit,
+  });
+  if (error) throw error;
+  if (!data || data.ok === false) {
+    throw new Error((data && data.error) || 'Failed to load notifications');
+  }
+  return (data.notifications || []) as PortalNotificationRow[];
+}
+
+export type PortalContactContractRow = {
+  id: string;
+  public_token: string;
+  status: 'draft' | 'signed' | string;
+  is_legacy: boolean;
+  title: string | null;
+  signed_at: string | null;
+  created_at: string | null;
+};
+
+export async function portalGetContactContracts(
+  contactId: number,
+): Promise<PortalContactContractRow[]> {
+  const { data, error } = await supabase.rpc('portal_contract_list_for_contact', {
+    p_token: tokenOrThrow(),
+    p_contact_id: contactId,
+  });
+  if (error) throw error;
+  if (!data || data.ok === false) {
+    throw new Error((data && data.error) || 'Failed to load contracts');
+  }
+  return (data.contracts || []) as PortalContactContractRow[];
+}
+
 export async function portalUpdateContact(contactId: number, fields: Record<string, unknown>) {
   const { data, error } = await supabase.rpc('portal_update_contact', {
     p_token: tokenOrThrow(),

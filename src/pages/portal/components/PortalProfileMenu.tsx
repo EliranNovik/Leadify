@@ -13,6 +13,8 @@ type Props = {
   stableKey: string;
   onLogout: () => void;
   onSettings?: () => void;
+  dropUp?: boolean;
+  onDark?: boolean;
 };
 
 const PortalProfileMenu: React.FC<Props> = ({
@@ -22,6 +24,8 @@ const PortalProfileMenu: React.FC<Props> = ({
   stableKey,
   onLogout,
   onSettings,
+  dropUp = false,
+  onDark = false,
 }) => {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -44,7 +48,9 @@ const PortalProfileMenu: React.FC<Props> = ({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex max-w-[220px] items-center gap-2 rounded-full py-1 pl-1 pr-2 transition-colors hover:bg-base-200/70 sm:max-w-[240px] sm:pr-2.5"
+        className={`flex max-w-[220px] items-center gap-2 rounded-full py-1 pl-1 pr-2 transition-colors sm:max-w-[240px] sm:pr-2.5 ${
+          onDark ? 'hover:bg-white/15' : 'hover:bg-base-200/70'
+        }`}
         aria-expanded={open}
         aria-haspopup="menu"
       >
@@ -55,18 +61,36 @@ const PortalProfileMenu: React.FC<Props> = ({
           className="h-9 w-9 shrink-0 text-xs"
         />
         <div className="min-w-0 text-left">
-          <span className="block truncate text-sm font-semibold text-base-content/80">{name}</span>
+          <span
+            className={`block truncate text-sm font-semibold ${
+              onDark ? 'text-primary-content' : 'text-base-content/80'
+            }`}
+          >
+            {name}
+          </span>
           {leadNumber ? (
-            <span className="block truncate text-xs text-base-content/45">Case #{leadNumber}</span>
+            <span
+              className={`block truncate text-xs ${
+                onDark ? 'text-primary-content/70' : 'text-base-content/45'
+              }`}
+            >
+              Case #{leadNumber}
+            </span>
           ) : null}
         </div>
         <ChevronDownIcon
-          className={`h-4 w-4 shrink-0 text-base-content/40 transition-transform ${open ? 'rotate-180' : ''}`}
+          className={`h-4 w-4 shrink-0 transition-transform ${
+            onDark ? 'text-primary-content/70' : 'text-base-content/40'
+          } ${open ? (dropUp ? 'rotate-0' : 'rotate-180') : dropUp ? 'rotate-180' : ''}`}
         />
       </button>
 
       {open ? (
-        <div className="absolute right-0 top-full z-50 mt-2 min-w-[180px] rounded-2xl border border-gray-200 bg-white p-1.5 shadow-lg">
+        <div
+          className={`absolute right-0 z-50 min-w-[180px] rounded-2xl border border-gray-200 bg-white p-1.5 shadow-lg ${
+            dropUp ? 'bottom-full mb-2' : 'top-full mt-2'
+          }`}
+        >
           {onSettings ? (
             <button
               type="button"

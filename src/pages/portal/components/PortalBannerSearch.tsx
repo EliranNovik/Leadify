@@ -88,7 +88,7 @@ const PortalBannerSearch: React.FC<Props> = ({ data, onNavigate, onRequestMeetin
       <label className="sr-only" htmlFor="portal-banner-search">
         Search portal pages and case information
       </label>
-      <div className="relative flex h-11 w-full items-center gap-2.5 rounded-full border border-white/30 bg-white/95 pl-3.5 pr-4 shadow-lg backdrop-blur-sm focus-within:border-primary focus-within:ring-4 focus-within:ring-primary/20 md:h-12 md:pl-4">
+      <div className="relative flex h-11 w-full items-center gap-2.5 rounded-full border border-gray-200/80 bg-white pl-3.5 pr-4 shadow-[inset_0_1px_3px_rgba(15,23,42,0.12),0_1px_2px_rgba(15,23,42,0.04)] focus-within:border-primary focus-within:ring-4 focus-within:ring-primary/20 md:h-12 md:pl-4">
         <MagnifyingGlassIcon className="h-5 w-5 shrink-0 text-neutral-500" aria-hidden />
         <input
           ref={inputRef}
@@ -112,7 +112,7 @@ const PortalBannerSearch: React.FC<Props> = ({ data, onNavigate, onRequestMeetin
         <ul
           id="portal-banner-search-results"
           role="listbox"
-          className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-30 max-h-[min(20rem,50vh)] overflow-y-auto rounded-2xl border border-base-200 bg-white py-2 shadow-xl"
+          className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-40 max-h-[min(20rem,50vh)] overflow-y-auto rounded-2xl border border-base-200 bg-white py-2 shadow-2xl"
         >
           {results.map((result, idx) => (
             <li key={result.id} role="option" aria-selected={idx === activeIndex}>
@@ -141,7 +141,7 @@ const PortalBannerSearch: React.FC<Props> = ({ data, onNavigate, onRequestMeetin
       ) : null}
 
       {open && query.trim().length >= 2 && results.length === 0 ? (
-        <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-30 rounded-2xl border border-base-200 bg-white px-4 py-4 text-sm text-base-content/50 shadow-xl">
+        <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-40 rounded-2xl border border-base-200 bg-white px-4 py-4 text-sm text-base-content/50 shadow-2xl">
           No matches. Try &quot;payments&quot;, &quot;meetings&quot;, or a contact name.
         </div>
       ) : null}

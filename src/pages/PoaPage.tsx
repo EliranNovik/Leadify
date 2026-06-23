@@ -1,16 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   CheckCircleIcon,
+  CheckIcon,
   ExclamationCircleIcon,
   ArrowDownTrayIcon,
+  ArrowRightIcon,
   ShieldCheckIcon,
   ShareIcon,
   PrinterIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import PublicContractFooter from '../components/public/PublicContractFooter';
-import { fetchPoaByToken, submitPoa, type PoaPublicData } from '../lib/poaApi';
+import {
+  fetchPoaByToken,
+  fetchPoaSiblings,
+  submitPoa,
+  type PoaPublicData,
+  type PoaSiblingItem,
+} from '../lib/poaApi';
 import { getPoaTypeMeta } from '../lib/poaTypes';
 import { getPoaDocRenderer } from '../components/poa/documents';
 import TemplatePoaDoc from '../components/poa/documents/TemplatePoaDoc';
@@ -35,6 +43,7 @@ function CenteredCard({ children }: { children: React.ReactNode }) {
 
 const PoaPage: React.FC = () => {
   const { token } = useParams<{ token: string }>();
+  const navigate = useNavigate();
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -45,12 +54,20 @@ const PoaPage: React.FC = () => {
   const [invalid, setInvalid] = useState<Set<string>>(new Set());
   const [submitting, setSubmitting] = useState(false);
   const [justSigned, setJustSigned] = useState(false);
+  const [siblings, setSiblings] = useState<PoaSiblingItem[]>([]);
+  const [advancing, setAdvancing] = useState(false);
 
   const docRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
+      // Reset per-document state so chaining to the next doc starts clean.
+      setLoading(true);
+      setError(null);
+      setJustSigned(false);
+      setAdvancing(false);
+      setInvalid(new Set());
       if (!token) {
         setError('Invalid link');
         setLoading(false);
@@ -62,6 +79,14 @@ const PoaPage: React.FC = () => {
         setData(result);
         setValues(result.poa.field_data || {});
         setSignatures(result.poa.signatures || {});
+        // Load the contact's full signing sequence (best-effort).
+        fetchPoaSiblings(token)
+          .then((rows) => {
+            if (!cancelled) setSiblings(rows);
+          })
+          .catch(() => {
+            if (!cancelled) setSiblings([]);
+          });
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Could not load this power of attorney');
       } finally {
@@ -75,6 +100,20 @@ const PoaPage: React.FC = () => {
   }, [token]);
 
   const isSigned = data?.poa.status === 'signed' || justSigned;
+  const totalDocs = siblings.length;
+  const signedCount = siblings.filter((s) => s.status === 'signed').length;
+  const nextUnsigned =
+    siblings.find((s) => s.secure_token !== token && s.status !== 'signed') || null;
+  const allSigned = totalDocs > 0 && signedCount >= totalDocs;
+
+  const goToNext = useCallback(() => {
+    if (!nextUnsigned) return;
+    setAdvancing(true);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    window.setTimeout(() => {
+      navigate(`/poa/${encodeURIComponent(nextUnsigned.secure_token)}`);
+    }, 700);
+  }, [nextUnsigned, navigate]);
   const meta = getPoaTypeMeta(data?.type.key);
   const Renderer = getPoaDocRenderer(data?.type.key);
   const template = data?.template || null;
@@ -156,14 +195,33 @@ const PoaPage: React.FC = () => {
         signerEmail: values.email || values.rep_email || data.contact.email || null,
       });
       setJustSigned(true);
-      toast.success('Power of attorney signed successfully.');
       window.scrollTo({ top: 0, behavior: 'smooth' });
+
+      // Refresh the signing sequence and smoothly open the next unsigned doc.
+      let next: PoaSiblingItem | null = null;
+      try {
+        const fresh = await fetchPoaSiblings(token);
+        setSiblings(fresh);
+        next = fresh.find((s) => s.secure_token !== token && s.status !== 'signed') || null;
+      } catch {
+        /* sequence is best-effort */
+      }
+
+      if (next) {
+        toast.success('Signed. Opening the next document…');
+        setAdvancing(true);
+        window.setTimeout(() => {
+          navigate(`/poa/${encodeURIComponent(next!.secure_token)}`);
+        }, 1100);
+      } else {
+        toast.success('All documents signed.');
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not submit. Please try again.');
     } finally {
       setSubmitting(false);
     }
-  }, [token, meta, template, data, values, signatures]);
+  }, [token, meta, template, data, values, signatures, navigate]);
 
   const handleShare = useCallback(async () => {
     const url = typeof window !== 'undefined' ? window.location.href : '';
@@ -428,6 +486,22 @@ ${headStyles}
         }
       `}</style>
 
+      {/* Smooth transition while moving to the next document. */}
+      {advancing && (
+        <div className="poa-print-hide fixed inset-0 z-50 flex items-center justify-center bg-gray-900/25 px-4 backdrop-blur-sm">
+          <div className="flex w-full max-w-sm flex-col items-center gap-5 rounded-2xl border border-gray-100 bg-white p-8 text-center shadow-2xl">
+            <span className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 ring-8 ring-emerald-50/60">
+              <CheckCircleIcon className="h-9 w-9 text-emerald-500" />
+            </span>
+            <div className="space-y-1">
+              <p className="text-lg font-semibold tracking-tight text-gray-900">Document signed</p>
+              <p className="text-sm text-gray-500">Taking you to the next document…</p>
+            </div>
+            <span className="loading loading-dots loading-md text-indigo-400" />
+          </div>
+        </div>
+      )}
+
       {/* Header — clean white */}
       <header className="poa-print-hide sticky top-0 z-20 border-b border-gray-200 bg-white/90 backdrop-blur">
         <div className="mx-auto w-full max-w-3xl px-5 py-4 sm:px-8 sm:py-5">
@@ -476,27 +550,115 @@ ${headStyles}
           }`}
         >
          <div className={hasSideHelp ? 'lg:max-w-[44rem]' : ''}>
-          {isSigned && (
-            <div className="poa-print-hide mb-5 flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
-              <CheckCircleIcon className="h-6 w-6 shrink-0 text-emerald-600" />
-              <div className="flex-1">
-                <p className="text-sm font-semibold text-emerald-900">This power of attorney has been signed.</p>
-                {data.poa.signed_at && (
-                  <p className="text-xs text-emerald-700">
-                    Signed on {new Date(data.poa.signed_at).toLocaleString()}
-                  </p>
-                )}
+          {/* Multi-document signing progress. */}
+          {totalDocs > 1 && (
+            <div className="poa-print-hide mb-6 rounded-2xl border border-gray-200/70 bg-white px-5 py-4 shadow-sm sm:px-6">
+              <div className="mb-4 flex items-center justify-between">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400">
+                  Signing progress
+                </p>
+                <span className="rounded-full bg-gray-50 px-2.5 py-0.5 text-xs font-semibold text-gray-500">
+                  {signedCount} of {totalDocs} complete
+                </span>
               </div>
-              <button
-                type="button"
-                onClick={handlePrint}
-                className="btn btn-sm btn-outline border-emerald-300 text-emerald-700 hover:bg-emerald-100 gap-1.5"
-              >
-                <ArrowDownTrayIcon className="h-4 w-4" />
-                Save / Print
-              </button>
+              <div className="flex items-center">
+                {siblings.map((s, i) => {
+                  const done = s.status === 'signed';
+                  const isCurrent = s.secure_token === token;
+                  const prevDone = i > 0 && siblings[i - 1].status === 'signed';
+                  return (
+                    <React.Fragment key={s.id}>
+                      {i > 0 && (
+                        <div className="mx-1.5 h-1 flex-1 overflow-hidden rounded-full bg-gray-100 sm:mx-2.5">
+                          <div
+                            className={`h-full rounded-full bg-emerald-400 transition-all duration-700 ease-out ${
+                              prevDone ? 'w-full' : 'w-0'
+                            }`}
+                          />
+                        </div>
+                      )}
+                      <span
+                        className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold transition-all duration-300 ${
+                          done
+                            ? 'bg-emerald-500 text-white shadow-sm shadow-emerald-200'
+                            : isCurrent
+                            ? 'bg-indigo-600 text-white ring-4 ring-indigo-100'
+                            : 'bg-gray-100 text-gray-400'
+                        }`}
+                        title={s.type_name || `Document ${i + 1}`}
+                      >
+                        {done ? <CheckIcon className="h-5 w-5" /> : i + 1}
+                      </span>
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+              {(() => {
+                const idx = siblings.findIndex((s) => s.secure_token === token);
+                if (idx < 0) return null;
+                return (
+                  <p className="mt-3.5 text-xs text-gray-500">
+                    <span className="font-semibold text-gray-700">
+                      Document {idx + 1} of {totalDocs}
+                    </span>
+                    {siblings[idx].type_name ? ` · ${siblings[idx].type_name}` : ''}
+                  </p>
+                );
+              })()}
             </div>
           )}
+
+          {isSigned &&
+            (allSigned && totalDocs > 1 ? (
+              <div className="poa-print-hide mb-6 overflow-hidden rounded-2xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50 via-white to-white p-7 text-center shadow-sm">
+                <span className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500 shadow-md shadow-emerald-200/70">
+                  <CheckIcon className="h-9 w-9 text-white" />
+                </span>
+                <p className="text-xl font-bold tracking-tight text-emerald-950">All documents signed</p>
+                <p className="mx-auto mt-1.5 max-w-md text-sm text-emerald-700/90">
+                  All {totalDocs} documents for {data.contact.name || 'this contact'} are complete. Thank you.
+                </p>
+                <button
+                  type="button"
+                  onClick={handlePrint}
+                  className="btn btn-sm mt-5 gap-1.5 border-emerald-300 bg-white text-emerald-700 shadow-sm hover:border-emerald-400 hover:bg-emerald-50"
+                >
+                  <ArrowDownTrayIcon className="h-4 w-4" />
+                  Save / Print
+                </button>
+              </div>
+            ) : (
+              <div className="poa-print-hide mb-5 flex flex-col gap-3 rounded-2xl border border-emerald-200/80 bg-emerald-50/80 px-4 py-3.5 sm:flex-row sm:items-center">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-100">
+                  <CheckCircleIcon className="h-5 w-5 text-emerald-600" />
+                </span>
+                <div className="flex-1">
+                  <p className="text-sm font-semibold text-emerald-900">This document has been signed.</p>
+                  <p className="text-xs text-emerald-700">
+                    {nextUnsigned
+                      ? `${totalDocs - signedCount} document${totalDocs - signedCount === 1 ? '' : 's'} still to sign.`
+                      : data.poa.signed_at
+                      ? `Signed on ${new Date(data.poa.signed_at).toLocaleString()}`
+                      : ''}
+                  </p>
+                </div>
+                {nextUnsigned && !advancing ? (
+                  <button type="button" onClick={goToNext} className="btn btn-sm btn-primary gap-1.5">
+                    Continue
+                    <ArrowRightIcon className="h-4 w-4 rtl:rotate-180" />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handlePrint}
+                    className="btn btn-sm btn-outline border-emerald-300 text-emerald-700 hover:bg-emerald-100 gap-1.5"
+                  >
+                    <ArrowDownTrayIcon className="h-4 w-4" />
+                    Save / Print
+                  </button>
+                )}
+              </div>
+            ))}
 
           {!isSigned && (
             <p

@@ -26,11 +26,9 @@ import {
   getInitialsTheme,
   PortalCard,
   PortalLoading,
-  PortalOverdueBadge,
   PortalStatCard,
-  ProfileCover,
-  PORTAL_HERO_GLASS_PANEL_CLASS,
   PORTAL_STAT_ACTION_BTN_CLASS,
+  PORTAL_DEFAULT_BANNER,
   isPaymentOverdue,
 } from '../components/portalTheme';
 import PortalTeamContactButtons from '../components/PortalTeamContactButtons';
@@ -276,85 +274,43 @@ const PortalDashboardTab: React.FC<Props> = ({
 
   return (
     <div className="space-y-8">
-      {/* Case hero */}
-      <section>
-        <div className="hidden md:block md:-mx-8 md:-mt-6 lg:mx-auto lg:mt-0 lg:max-w-4xl lg:px-0 xl:max-w-5xl">
-          <div className="relative overflow-hidden rounded-[18px] shadow-[0_8px_32px_rgba(15,23,42,0.1)] lg:rounded-[20px]">
-            <ProfileCover
-              coverKey={coverKey}
-              className="md:h-52 lg:h-56"
-              showBrandLogo
-              showDimOverlay={false}
-              overlay={bannerSearch}
-            />
-            <div
-              className={`pointer-events-auto absolute left-4 top-[4.25rem] z-10 w-[calc(100%-2rem)] max-w-2xl md:left-6 md:top-[4.75rem] md:w-auto lg:left-8 lg:top-[5rem] ${PORTAL_HERO_GLASS_PANEL_CLASS} px-6 py-5 lg:px-8 lg:py-6`}
-            >
-              <div className="flex items-center gap-5 text-left lg:gap-6">
-                <EntityAvatar
-                  name={lead.display_name}
-                  stableKey={coverKey}
-                  className="h-20 w-20 shrink-0 text-xl shadow-lg lg:h-24 lg:w-24"
-                />
-                <div className="min-w-0 flex-1">
-                  <h2 className="text-xl font-bold tracking-tight text-white lg:text-2xl">
-                    {lead.display_name}
-                  </h2>
-                  <p className="mt-0.5 text-sm font-medium text-white/90">Case #{lead.lead_number}</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {latestSubEffort?.sub_effort_name ? (
-                      <span className="rounded-full bg-primary px-4 py-1.5 text-sm font-semibold text-primary-content shadow-sm">
-                        {latestSubEffort.sub_effort_name}
-                      </span>
-                    ) : null}
-                    {summary.category ? (
-                      <span className="rounded-full bg-base-200 px-4 py-1.5 text-sm font-semibold text-base-content/75 shadow-sm">
-                        {summary.category}
-                      </span>
-                    ) : null}
-                  </div>
-                </div>
+      {/* Top region — shared banner background behind hero + summary cards */}
+      <section className="relative -mx-2 -mt-6 px-2 pt-6 md:-mx-10 md:-mt-[7rem] md:px-10 md:pt-[7rem]">
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <img
+            src={PORTAL_DEFAULT_BANNER}
+            alt=""
+            className="h-full w-full object-cover object-center"
+            loading="lazy"
+          />
+          <div
+            className="absolute inset-0 bg-gradient-to-b from-black/40 via-black/20 to-[#ececec]"
+            aria-hidden
+          />
+        </div>
+
+        <div className="relative z-10 space-y-6 pb-8 md:space-y-8">
+          {/* Case hero — search + badges directly on the banner */}
+          <div className="lg:mx-auto lg:max-w-4xl xl:max-w-5xl">
+            <div className="flex flex-col gap-3 md:flex-row md:flex-wrap md:items-center md:justify-between md:gap-4">
+              <div className="w-full md:max-w-sm">{bannerSearch}</div>
+              <div className="flex flex-wrap gap-2 md:justify-end">
+                {latestSubEffort?.sub_effort_name ? (
+                  <span className="rounded-full bg-primary px-4 py-1.5 text-sm font-semibold text-primary-content shadow-md">
+                    {latestSubEffort.sub_effort_name}
+                  </span>
+                ) : null}
+                {summary.category ? (
+                  <span className="rounded-full bg-white/90 px-4 py-1.5 text-sm font-semibold text-base-content/75 shadow-md backdrop-blur-sm">
+                    {summary.category}
+                  </span>
+                ) : null}
               </div>
             </div>
           </div>
-        </div>
 
-        <div className="md:hidden">
-          <PortalCard padding="p-0" className="relative overflow-hidden">
-            <ProfileCover coverKey={coverKey} showBrandLogo overlay={bannerSearch} />
-            <div className="relative px-4 pb-5 pt-2">
-              <div className="-mt-10 flex flex-col gap-3">
-                <div className="flex min-w-0 items-start gap-3">
-                  <EntityAvatar
-                    name={lead.display_name}
-                    stableKey={coverKey}
-                    className="h-20 w-20 shrink-0 text-xl ring-2 ring-white"
-                  />
-                </div>
-                <p className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5 text-neutral-900">
-                  <span className="text-base font-bold">{lead.display_name}</span>
-                  <span className="text-sm font-medium text-neutral-500">Case #{lead.lead_number}</span>
-                </p>
-                <div className="flex flex-wrap gap-2">
-                  {latestSubEffort?.sub_effort_name ? (
-                    <span className="rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
-                      {latestSubEffort.sub_effort_name}
-                    </span>
-                  ) : null}
-                  {summary.category ? (
-                    <span className="rounded-full bg-base-200 px-3 py-1 text-xs font-semibold text-base-content/70">
-                      {summary.category}
-                    </span>
-                  ) : null}
-                </div>
-              </div>
-            </div>
-          </PortalCard>
-        </div>
-      </section>
-
-      {/* KPI row */}
-      <div className={`${MOBILE_CAROUSEL_ROW_CLASS} sm:grid sm:grid-cols-2 ${pendingRequests > 0 ? 'xl:grid-cols-4' : 'xl:grid-cols-3'}`}>
+          {/* KPI row */}
+          <div className={`${MOBILE_CAROUSEL_ROW_CLASS} sm:grid sm:grid-cols-2 ${pendingRequests > 0 ? 'xl:grid-cols-4' : 'xl:grid-cols-3'}`}>
         <div className={MOBILE_CAROUSEL_ITEM_CLASS}>
           <PortalStatCard
             label="Next meeting"
@@ -388,7 +344,13 @@ const PortalDashboardTab: React.FC<Props> = ({
             accent="emerald"
             coverKey={`${coverKey}::stat-next-payment`}
             onClick={() => onNavigate('finance')}
-            badge={nextPaymentOverdue ? <PortalOverdueBadge /> : undefined}
+            badge={
+              nextPaymentOverdue ? (
+                <span className="inline-flex rounded-full bg-red-100 px-3 py-0.5 text-xs font-semibold text-red-600 md:text-sm">
+                  Overdue
+                </span>
+              ) : undefined
+            }
             action={
               nextPayment?.secure_token ? (
                 <a
@@ -428,7 +390,9 @@ const PortalDashboardTab: React.FC<Props> = ({
             />
           </div>
         ) : null}
-      </div>
+          </div>
+        </div>
+      </section>
 
       <div className="flex flex-col gap-4">
         <h3 className="px-0.5 text-lg font-bold tracking-tight text-base-content/90">Your team</h3>
@@ -447,19 +411,19 @@ const PortalDashboardTab: React.FC<Props> = ({
                 <div key={role.key} className={`${MOBILE_CAROUSEL_ITEM_CLASS} md:min-w-0`}>
                 <PortalCard padding="p-0" className={`${TEAM_CARD_CLASS} w-full`}>
                   <div className="flex min-h-0 flex-1 flex-col">
-                    <div className="relative px-3 pb-1 pt-3 pr-[7.75rem] md:px-4 md:pt-4 md:pr-[8.75rem]">
+                    <div className="relative px-3 pb-1 pt-3 pr-[6rem] md:px-4 md:pt-4 lg:pr-[8.75rem]">
                       <div className="flex min-w-0 items-start gap-2.5">
                         <span
-                          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg md:h-12 md:w-12"
+                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg lg:h-12 lg:w-12"
                           style={{
                             backgroundColor: initialsTheme.avatarStyle.backgroundColor,
                             color: initialsTheme.avatarStyle.color,
                           }}
                         >
-                          <RoleIcon className="h-6 w-6 md:h-7 md:w-7" aria-hidden />
+                          <RoleIcon className="h-5 w-5 lg:h-7 lg:w-7" aria-hidden />
                         </span>
                         <span
-                          className="min-w-0 flex-1 text-sm font-bold uppercase leading-snug tracking-wide md:text-lg"
+                          className="min-w-0 flex-1 text-xs font-bold uppercase leading-snug tracking-wide lg:text-lg"
                           style={{ color: initialsTheme.headerStyle.color }}
                         >
                           {role.label}
@@ -470,17 +434,17 @@ const PortalDashboardTab: React.FC<Props> = ({
                           name={assigned ? displayName : role.label}
                           imageUrl={photoUrl}
                           stableKey={avatarStableKey}
-                          className="h-28 w-28 shrink-0 text-xl md:h-32 md:w-32 md:text-2xl"
+                          className="h-20 w-20 shrink-0 text-lg lg:h-32 lg:w-32 lg:text-2xl"
                         />
                       </div>
                     </div>
-                    <div className="flex flex-1 flex-col items-center justify-center px-3 pb-2 pt-10 text-center md:px-4 md:pt-12">
-                      <p className="text-base font-semibold leading-snug tracking-tight text-neutral-900 md:text-xl">
+                    <div className="flex flex-1 flex-col items-center justify-center px-3 pb-2 pt-8 text-center md:px-4 lg:pt-12">
+                      <p className="text-sm font-semibold leading-snug tracking-tight text-neutral-900 lg:text-xl">
                         {assigned ? displayName : '—'}
                       </p>
                       {assigned && department ? (
                         <span
-                          className="mt-1.5 inline-flex max-w-full rounded-full px-3 py-1 text-xs font-semibold md:mt-2 md:text-sm"
+                          className="mt-1.5 inline-flex max-w-full rounded-full px-3 py-1 text-[11px] font-semibold lg:mt-2 lg:text-sm"
                           style={{
                             backgroundColor: initialsTheme.headerStyle.backgroundColor,
                             color: initialsTheme.headerStyle.color,
@@ -490,7 +454,7 @@ const PortalDashboardTab: React.FC<Props> = ({
                         </span>
                       ) : null}
                       {!assigned ? (
-                        <p className="mt-1 text-xs text-neutral-400 md:text-sm">Not assigned yet</p>
+                        <p className="mt-1 text-xs text-neutral-400 lg:text-sm">Not assigned yet</p>
                       ) : null}
                     </div>
                     {assigned ? (

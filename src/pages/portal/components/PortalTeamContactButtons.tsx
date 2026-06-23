@@ -75,13 +75,12 @@ const PortalTeamContactButtons: React.FC<Props> = ({ contact }) => {
           href={href}
           target={external ? '_blank' : undefined}
           rel={external ? 'noopener noreferrer' : undefined}
-          className="inline-flex min-w-[4.25rem] flex-col items-center gap-0 text-neutral-900 transition-colors hover:text-primary"
+          className="inline-flex flex-col items-center text-neutral-900 transition-colors hover:text-primary"
           aria-label={label}
         >
           <span className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-neutral-100 transition-colors hover:bg-neutral-200 md:h-14 md:w-14">
             <Icon className="h-6 w-6 md:h-7 md:w-7" />
           </span>
-          <span className="-mt-1.5 text-xs font-semibold leading-none md:-mt-2 md:text-sm">{label}</span>
         </a>
       ))}
     </div>
