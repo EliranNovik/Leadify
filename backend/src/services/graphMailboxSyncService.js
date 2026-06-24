@@ -425,8 +425,9 @@ const fetchMessageAttachmentsMetadata = async (accessToken, mailboxAddress, mess
   return collected;
 };
 
-const toGraphRecipients = (list = []) =>
-  (Array.isArray(list) ? list : [])
+const toGraphRecipients = (list = []) => {
+  const normalized = Array.isArray(list) ? list : list != null && list !== '' ? [list] : [];
+  return normalized
     .map((address) => (typeof address === 'string' ? address.trim() : ''))
     .filter((address) => Boolean(address))
     .map((address) => ({
@@ -434,6 +435,7 @@ const toGraphRecipients = (list = []) =>
         address,
       },
     }));
+};
 
 class GraphMailboxSyncService {
   async syncMailboxForUser(userId, options = {}) {

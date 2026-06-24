@@ -127,7 +127,7 @@ import { convertToNIS } from '../lib/currencyConversion';
 import { getVatRateForLegacyLead } from '../lib/financeUnpaidTotal';
 import LeadSummaryDrawer from './LeadSummaryDrawer';
 import { generateProformaName } from '../lib/proforma';
-import TimePicker from './TimePicker';
+import WheelTimePicker from './WheelTimePicker';
 import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
 import ClientHeader from './ClientHeader';
@@ -165,6 +165,18 @@ const CLIENTS_DEBUG = typeof window !== 'undefined' && (window as any).__CLIENTS
 // Keyed by selectedClient.id. Only resolved values are stored, so seeding them is accurate (not a guess).
 const masterChildrenCache = new Map<string, { isMasterLead: boolean; subLeads: any[] }>();
 const subLeadMasterCountCache = new Map<string, number>();
+
+type PaymentPlanBadgeCache = {
+  hasPlan: boolean;
+  nextDuePayment: any | null;
+  base: number | null;
+  vat: number | null;
+  gross: number | null;
+  expenseNoVat: number | null;
+  currencyId: number | null;
+};
+/** Per-lead payment plan + next-due snapshot so the stage-105 banner does not flicker on navigation. */
+const paymentPlanBadgeCache = new Map<string, PaymentPlanBadgeCache>();
 /** Tag manager / saveLeadTags: VITE_DEBUG_TAGS=true, or window.__CLIENTS_TAG_DEBUG__ = true, or CLIENTS_DEBUG */
 const CLIENTS_TAG_DEBUG =
   import.meta.env.DEV ||
@@ -2154,7 +2166,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [paymentPlanVatTotal, setPaymentPlanVatTotal] = useState<number | null>(null);
   const [paymentPlanExpenseNoVatTotal, setPaymentPlanExpenseNoVatTotal] = useState<number | null>(null);
   const [paymentPlanGrossTotal, setPaymentPlanGrossTotal] = useState<number | null>(null);
-  const [hasPaymentPlan, setHasPaymentPlan] = useState(false);
+  const [hasPaymentPlan, setHasPaymentPlan] = useState<boolean | null>(null);
   const [paymentPlanCurrencyId, setPaymentPlanCurrencyId] = useState<number | null>(null);
   const [autoPlan, setAutoPlan] = useState('');
   const autoPlanOptions = [
@@ -2169,6 +2181,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [payments, setPayments] = useState<any[]>([]);
   const [showAddPayment, setShowAddPayment] = useState(false);
   const [nextDuePayment, setNextDuePayment] = useState<any>(null);
+  const paymentPlanActiveClientRef = useRef<string | null>(null);
   const [newPayment, setNewPayment] = useState({
     client: '',
     order: 'Intermediate Payment',
@@ -10189,6 +10202,9 @@ const Clients: React.FC<ClientsProps> = ({
 
       // Optionally, refresh just the payment plans here if needed
       // await refreshPaymentPlans(selectedClient.id);
+      window.dispatchEvent(
+        new CustomEvent('paymentPlan:changed', { detail: { leadId: String(selectedClient.id) } })
+      );
     } catch (error) {
       toast.error('Failed to save payment plan. Please try again.');
       // Optionally, revert UI changes here
@@ -10197,8 +10213,19 @@ const Clients: React.FC<ClientsProps> = ({
     }
   };
 
-  const fetchPaymentPlanTotal = useCallback(async (clientId: string) => {
+  const fetchPaymentPlanTotal = useCallback(async (clientId: string, options?: { updateState?: boolean }) => {
     if (!clientId) return { hasPlan: false, base: null as number | null, vat: null as number | null, gross: null as number | null, grossNis: null as number | null };
+    const shouldUpdateState = options?.updateState !== false;
+    const isActiveClient = () => paymentPlanActiveClientRef.current === clientId;
+    const applyTotals = (patch: Partial<PaymentPlanBadgeCache> & { hasPlan: boolean }) => {
+      if (!shouldUpdateState || !isActiveClient()) return;
+      setHasPaymentPlan(patch.hasPlan);
+      setPaymentPlanBaseTotal(patch.base ?? null);
+      setPaymentPlanVatTotal(patch.vat ?? null);
+      setPaymentPlanExpenseNoVatTotal(patch.expenseNoVat ?? null);
+      setPaymentPlanGrossTotal(patch.gross ?? null);
+      setPaymentPlanCurrencyId(patch.currencyId ?? null);
+    };
     try {
       const isLegacyLead = clientId.toString().startsWith('legacy_');
       if (isLegacyLead) {
@@ -10206,11 +10233,7 @@ const Clients: React.FC<ClientsProps> = ({
         const legacyId = legacyIdStr ? parseInt(legacyIdStr, 10) : NaN;
         if (!Number.isFinite(legacyId)) {
           console.warn('[paymentPlanTotal][legacy] invalid legacyId', { clientId, legacyIdStr });
-          setHasPaymentPlan(false);
-          setPaymentPlanBaseTotal(null);
-          setPaymentPlanVatTotal(null);
-          setPaymentPlanExpenseNoVatTotal(null);
-          setPaymentPlanGrossTotal(null);
+          applyTotals({ hasPlan: false, base: null, vat: null, gross: null, expenseNoVat: null, currencyId: null });
           return { hasPlan: false, base: null, vat: null, gross: null, grossNis: null };
         }
 
@@ -10287,12 +10310,14 @@ const Clients: React.FC<ClientsProps> = ({
           grossNis,
           hasPlan,
         });
-        setHasPaymentPlan(hasPlan);
-        setPaymentPlanBaseTotal(hasPlan ? baseTotal : null);
-        setPaymentPlanVatTotal(hasPlan ? vatTotal : null);
-        setPaymentPlanExpenseNoVatTotal(expenseTotal > 0 ? expenseTotal : null);
-        setPaymentPlanGrossTotal(hasPlan ? grossTotal : null);
-        setPaymentPlanCurrencyId(hasPlan ? planCurrencyId : null);
+        applyTotals({
+          hasPlan,
+          base: hasPlan ? baseTotal : null,
+          vat: hasPlan ? vatTotal : null,
+          gross: hasPlan ? grossTotal : null,
+          expenseNoVat: expenseTotal > 0 ? expenseTotal : null,
+          currencyId: hasPlan ? planCurrencyId : null,
+        });
         return { hasPlan, base: hasPlan ? baseTotal : null, vat: hasPlan ? vatTotal : null, gross: hasPlan ? grossTotal : null, grossNis: hasPlan ? grossNis : null, currencyId: hasPlan ? planCurrencyId : null, expenseNoVat: expenseTotal > 0 ? expenseTotal : null };
       } else {
         const { data, error } = await supabase
@@ -10346,30 +10371,182 @@ const Clients: React.FC<ClientsProps> = ({
           currencyIdsSeen.add(id);
         }
         const planCurrencyId = hasPlan && currencyIdsSeen.size === 1 ? Array.from(currencyIdsSeen)[0] : ((selectedClient as any)?.currency_id ?? 1);
-        setHasPaymentPlan(hasPlan);
-        setPaymentPlanBaseTotal(hasPlan ? baseTotal : null);
-        setPaymentPlanVatTotal(hasPlan ? vatTotal : null);
-        setPaymentPlanExpenseNoVatTotal(expenseTotal > 0 ? expenseTotal : null);
-        setPaymentPlanGrossTotal(hasPlan ? grossTotal : null);
-        setPaymentPlanCurrencyId(hasPlan ? Number(planCurrencyId) : null);
+        applyTotals({
+          hasPlan,
+          base: hasPlan ? baseTotal : null,
+          vat: hasPlan ? vatTotal : null,
+          gross: hasPlan ? grossTotal : null,
+          expenseNoVat: expenseTotal > 0 ? expenseTotal : null,
+          currencyId: hasPlan ? Number(planCurrencyId) : null,
+        });
         return { hasPlan, base: hasPlan ? baseTotal : null, vat: hasPlan ? vatTotal : null, gross: hasPlan ? grossTotal : null, grossNis: null, currencyId: hasPlan ? Number(planCurrencyId) : null, expenseNoVat: expenseTotal > 0 ? expenseTotal : null };
       }
     } catch (e) {
       console.error('Error fetching payment plan total:', e);
-      setHasPaymentPlan(false);
+      if (isActiveClient()) {
+        setHasPaymentPlan(null);
+        setPaymentPlanBaseTotal(null);
+        setPaymentPlanVatTotal(null);
+        setPaymentPlanExpenseNoVatTotal(null);
+        setPaymentPlanGrossTotal(null);
+        setPaymentPlanCurrencyId(null);
+      }
+      return { hasPlan: false, base: null, vat: null, gross: null, grossNis: null, currencyId: null };
+    }
+  }, [selectedClient]);
+
+  const fetchNextDuePayment = useCallback(async (clientId: string, options?: { updateState?: boolean }): Promise<any | null> => {
+    if (!clientId) return null;
+    const shouldUpdateState = options?.updateState !== false;
+    const isActiveClient = () => paymentPlanActiveClientRef.current === clientId;
+
+    try {
+      const isLegacyLead = clientId.toString().startsWith('legacy_');
+
+      if (isLegacyLead) {
+        const legacyId = clientId.toString().replace('legacy_', '');
+
+        const { data, error } = await supabase
+          .from('finances_paymentplanrow')
+          .select(`
+            *,
+            accounting_currencies!finances_paymentplanrow_currency_id_fkey (
+              name,
+              iso_code
+            ),
+            tenants_employee:ready_to_pay_by (
+              id,
+              display_name
+            )
+          `)
+          .eq('lead_id', legacyId)
+          .is('cancel_date', null)
+          .order('due_date', { ascending: true })
+          .order('date', { ascending: true })
+          .limit(25);
+
+        if (error) throw error;
+
+        const rows = (data as any[]) || [];
+        const unpaid = rows.filter(r => !r?.actual_date);
+        if (unpaid.length > 0) {
+          const pick = unpaid.find(p => p?.due_date || p?.date) ?? unpaid[0];
+          const result = { ...(pick as any), isLegacy: true };
+          if (shouldUpdateState && isActiveClient()) setNextDuePayment(result);
+          return result;
+        }
+        if (shouldUpdateState && isActiveClient()) setNextDuePayment(null);
+        return null;
+      }
+
+      const { data, error } = await supabase
+        .from('payment_plans')
+        .select(`
+          *,
+          tenants_employee:ready_to_pay_by (
+            id,
+            display_name
+          )
+        `)
+        .or(`lead_id.eq.${clientId},lead_ids.eq.${clientId}`)
+        .is('cancel_date', null)
+        .order('due_date', { ascending: true, nullsFirst: false })
+        .order('date', { ascending: true })
+        .order('updated_at', { ascending: true })
+        .order('id', { ascending: true })
+        .limit(25);
+
+      if (error) throw error;
+
+      const rows = (data as any[]) || [];
+      const unpaid = rows.filter(r => r?.paid !== true);
+      if (unpaid.length > 0) {
+        const pick = unpaid.find(p => p?.due_date || p?.date) ?? unpaid[0];
+        const result = { ...(pick as any), isLegacy: false };
+        if (shouldUpdateState && isActiveClient()) setNextDuePayment(result);
+        return result;
+      }
+      if (shouldUpdateState && isActiveClient()) setNextDuePayment(null);
+      return null;
+    } catch (error) {
+      console.error('Error fetching next due payment:', error);
+      if (shouldUpdateState && isActiveClient()) setNextDuePayment(null);
+      return null;
+    }
+  }, []);
+
+  const refreshPaymentPlanBadge = useCallback(async (clientId: string) => {
+    if (!clientId) return;
+
+    const [planRes, due] = await Promise.all([
+      fetchPaymentPlanTotal(clientId, { updateState: false }),
+      fetchNextDuePayment(clientId, { updateState: false }),
+    ]);
+
+    if (paymentPlanActiveClientRef.current !== clientId) return;
+
+    const entry: PaymentPlanBadgeCache = {
+      hasPlan: planRes.hasPlan,
+      nextDuePayment: due,
+      base: planRes.hasPlan ? planRes.base : null,
+      vat: planRes.hasPlan ? planRes.vat : null,
+      gross: planRes.hasPlan ? planRes.gross : null,
+      expenseNoVat: planRes.expenseNoVat ?? null,
+      currencyId: planRes.currencyId ?? null,
+    };
+    paymentPlanBadgeCache.set(clientId, entry);
+    setHasPaymentPlan(entry.hasPlan);
+    setNextDuePayment(entry.nextDuePayment);
+    setPaymentPlanBaseTotal(entry.base);
+    setPaymentPlanVatTotal(entry.vat);
+    setPaymentPlanExpenseNoVatTotal(entry.expenseNoVat);
+    setPaymentPlanGrossTotal(entry.gross);
+    setPaymentPlanCurrencyId(entry.currencyId);
+  }, [fetchPaymentPlanTotal, fetchNextDuePayment]);
+
+  useEffect(() => {
+    const clientId = selectedClient?.id ? String(selectedClient.id) : null;
+    paymentPlanActiveClientRef.current = clientId;
+
+    if (!clientId) {
+      setHasPaymentPlan(null);
+      setNextDuePayment(null);
       setPaymentPlanBaseTotal(null);
       setPaymentPlanVatTotal(null);
       setPaymentPlanExpenseNoVatTotal(null);
       setPaymentPlanGrossTotal(null);
       setPaymentPlanCurrencyId(null);
-      return { hasPlan: false, base: null, vat: null, gross: null, grossNis: null, currencyId: null };
+      return;
     }
-  }, [selectedClient]);
+
+    const cached = paymentPlanBadgeCache.get(clientId);
+    if (cached) {
+      setHasPaymentPlan(cached.hasPlan);
+      setNextDuePayment(cached.nextDuePayment);
+      setPaymentPlanBaseTotal(cached.base);
+      setPaymentPlanVatTotal(cached.vat);
+      setPaymentPlanExpenseNoVatTotal(cached.expenseNoVat);
+      setPaymentPlanGrossTotal(cached.gross);
+      setPaymentPlanCurrencyId(cached.currencyId);
+    } else {
+      setHasPaymentPlan(null);
+      setNextDuePayment(null);
+    }
+
+    void refreshPaymentPlanBadge(clientId);
+  }, [selectedClient?.id, refreshPaymentPlanBadge]);
 
   useEffect(() => {
-    if (!selectedClient?.id) return;
-    void fetchPaymentPlanTotal(String(selectedClient.id));
-  }, [selectedClient?.id, fetchPaymentPlanTotal]);
+    const handler = (e: Event) => {
+      const evt = e as CustomEvent<{ leadId?: string }>;
+      const leadId = evt?.detail?.leadId;
+      if (!leadId || !selectedClient?.id) return;
+      if (String(selectedClient.id) !== String(leadId)) return;
+      void refreshPaymentPlanBadge(String(selectedClient.id));
+    };
+    window.addEventListener('paymentPlan:changed', handler as EventListener);
+    return () => window.removeEventListener('paymentPlan:changed', handler as EventListener);
+  }, [selectedClient?.id, refreshPaymentPlanBadge]);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -10379,7 +10556,7 @@ const Clients: React.FC<ClientsProps> = ({
       if (String(selectedClient.id) !== String(leadId)) return;
       void (async () => {
         console.log('[paymentPlanTotal] paymentPlan:changed received', { leadId, selectedClientId: String(selectedClient.id) });
-        const res = await fetchPaymentPlanTotal(String(selectedClient.id));
+        const res = await fetchPaymentPlanTotal(String(selectedClient.id), { updateState: false });
         if (!res.hasPlan) return;
 
         const isLegacyLead = String(selectedClient.id).startsWith('legacy_') || selectedClient.lead_type === 'legacy';
@@ -11333,85 +11510,6 @@ const Clients: React.FC<ClientsProps> = ({
     }
   }, [selectedClient?.master_id]);
 
-  // Function to fetch next due payment
-  const fetchNextDuePayment = useCallback(async (clientId: string) => {
-    if (!clientId) return;
-
-    try {
-      const isLegacyLead = clientId.toString().startsWith('legacy_');
-
-      if (isLegacyLead) {
-        // For legacy leads, fetch from finances_paymentplanrow table
-        const legacyId = clientId.toString().replace('legacy_', '');
-
-        const { data, error } = await supabase
-          .from('finances_paymentplanrow')
-          .select(`
-            *,
-            accounting_currencies!finances_paymentplanrow_currency_id_fkey (
-              name,
-              iso_code
-            ),
-            tenants_employee:ready_to_pay_by (
-              id,
-              display_name
-            )
-          `)
-          .eq('lead_id', legacyId)
-          .is('cancel_date', null) // Only active payments
-          .order('due_date', { ascending: true })
-          .order('date', { ascending: true })
-          .limit(25);
-
-        if (error) throw error;
-
-        const rows = (data as any[]) || [];
-        const unpaid = rows.filter(r => !r?.actual_date);
-        if (unpaid.length > 0) {
-          const pick = unpaid.find(p => p?.due_date || p?.date) ?? unpaid[0];
-          setNextDuePayment({ ...(pick as any), isLegacy: true });
-          return;
-        }
-        setNextDuePayment(null);
-      } else {
-        // For new leads, fetch from payment_plans table
-        const { data, error } = await supabase
-          .from('payment_plans')
-          .select(`
-            *,
-            tenants_employee:ready_to_pay_by (
-              id,
-              display_name
-            )
-          `)
-          // Some rows may be linked via lead_id OR lead_ids (both exist in schema)
-          .or(`lead_id.eq.${clientId},lead_ids.eq.${clientId}`)
-          .is('cancel_date', null) // Only active payments
-          .order('due_date', { ascending: true, nullsFirst: false })
-          .order('date', { ascending: true })
-          .order('updated_at', { ascending: true })
-          .order('id', { ascending: true })
-          .limit(25);
-
-        if (error) throw error;
-
-        const rows = (data as any[]) || [];
-        // Unpaid = paid is not true (covers false/null)
-        const unpaid = rows.filter(r => r?.paid !== true);
-        if (unpaid.length > 0) {
-          // Mirror FinancesTab: "paymentDate = plan.date || plan.due_date"
-          const pick = unpaid.find(p => p?.due_date || p?.date) ?? unpaid[0];
-          setNextDuePayment({ ...(pick as any), isLegacy: false });
-          return;
-        }
-        setNextDuePayment(null);
-      }
-    } catch (error) {
-      console.error('Error fetching next due payment:', error);
-      setNextDuePayment(null);
-    }
-  }, []);
-
   // Fetch master's sub-leads count when viewing a sub-lead
   useEffect(() => {
     const cacheKey = selectedClient?.id?.toString() ?? null;
@@ -11646,28 +11744,6 @@ const Clients: React.FC<ClientsProps> = ({
     }
   }, [fullLeadNumber, selectedClient?.lead_number, selectedClient?.master_id, selectedClient?.id, fetchSubLeads]);
 
-  // Fetch next due payment when client changes
-  useEffect(() => {
-    if (selectedClient?.id) {
-      fetchNextDuePayment(selectedClient.id.toString());
-    } else {
-      setNextDuePayment(null);
-    }
-  }, [selectedClient?.id, fetchNextDuePayment, hasPaymentPlan, paymentPlanBaseTotal, paymentPlanVatTotal, paymentPlanGrossTotal]);
-
-  // Keep "next due payment" in sync with FinancesTab live updates.
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ leadId?: string }>).detail;
-      const leadId = detail?.leadId;
-      if (!leadId || !selectedClient?.id) return;
-      if (String(selectedClient.id) !== String(leadId)) return;
-      fetchNextDuePayment(String(selectedClient.id));
-    };
-    window.addEventListener('paymentPlan:changed', handler as EventListener);
-    return () => window.removeEventListener('paymentPlan:changed', handler as EventListener);
-  }, [selectedClient?.id, fetchNextDuePayment]);
-
   // Get the stage name for comparison (needed for useCallback)
   const currentStageName = selectedClient ? getStageName(selectedClient.stage) : '';
   const stageNumeric =
@@ -11737,7 +11813,7 @@ const Clients: React.FC<ClientsProps> = ({
       areStagesEquivalent(currentStageName, 'Handler Set') || (isStageNumeric && stageNumeric === 105);
 
     if (!isHandlerSetStage) return;
-    if (!hasPaymentPlan) return;
+    if (hasPaymentPlan !== true) return;
 
     if (isAutoAdvancingHandlerStartedRef.current) return;
     isAutoAdvancingHandlerStartedRef.current = true;
@@ -14280,7 +14356,7 @@ const Clients: React.FC<ClientsProps> = ({
                 }
 
                 // If a payment plan exists, the badge must reflect the sum of the plan (legacy + new leads)
-                if (hasPaymentPlan && paymentPlanGrossTotal !== null) {
+                if (hasPaymentPlan === true && paymentPlanGrossTotal !== null) {
                   balanceValue = paymentPlanGrossTotal;
                 }
 
@@ -14349,7 +14425,7 @@ const Clients: React.FC<ClientsProps> = ({
                       <span className="badge badge-lg px-4 py-2 bg-green-100 text-green-800 border border-green-300 font-semibold">
                         <span className="inline-flex items-center gap-2">
                           <span>Value: {balanceCurrency}{formattedValue}</span>
-                          {hasPaymentPlan && (
+                          {hasPaymentPlan === true && (
                             <LockClosedIcon className="w-4 h-4 text-green-800/80" title="Locked by payment plan" />
                           )}
                         </span>
@@ -15423,11 +15499,13 @@ const Clients: React.FC<ClientsProps> = ({
                     </div>
 
                     {/* Time */}
-                    <TimePicker
+                    <WheelTimePicker
                       value={meetingFormData.time}
                       onChange={(time) => setMeetingFormData(prev => ({ ...prev, time }))}
-                      meetingCounts={meetingCountsByTime}
                       label="Time"
+                      minHour={8}
+                      maxHour={23}
+                      disabled={!meetingFormData.date}
                     />
 
                     {/* Manager (Optional) */}
@@ -15860,9 +15938,9 @@ const Clients: React.FC<ClientsProps> = ({
                         }
                         handleMeetingEndedChange('proposalTotal', value);
                       }}
-                      disabled={hasPaymentPlan}
+                      disabled={hasPaymentPlan === true}
                     />
-                    {hasPaymentPlan && (
+                    {hasPaymentPlan === true && (
                       <div className="mt-1 text-xs text-base-content/70">
                         Locked because this lead has a payment plan.
                       </div>
@@ -16191,9 +16269,9 @@ const Clients: React.FC<ClientsProps> = ({
                       className="input input-bordered w-full"
                       value={successForm.proposal}
                       onChange={e => handleSuccessFieldChange('proposal', e.target.value)}
-                      disabled={hasPaymentPlan}
+                      disabled={hasPaymentPlan === true}
                     />
-                    {hasPaymentPlan && (
+                    {hasPaymentPlan === true && (
                       <div className="mt-1 text-xs text-base-content/70">
                         Locked because this lead has a payment plan.
                       </div>
@@ -17568,11 +17646,13 @@ const Clients: React.FC<ClientsProps> = ({
                         </div>
 
                         {/* Time */}
-                        <TimePicker
+                        <WheelTimePicker
                           value={rescheduleFormData.time}
                           onChange={(time) => setRescheduleFormData((prev: any) => ({ ...prev, time }))}
-                          meetingCounts={rescheduleMeetingCountsByTime}
                           label="New Time"
+                          minHour={8}
+                          maxHour={23}
+                          disabled={!rescheduleFormData.date}
                         />
 
                         {/* Manager (Optional) */}
@@ -17734,7 +17814,7 @@ const Clients: React.FC<ClientsProps> = ({
             isOpen={isBalanceModalOpen}
             onClose={() => setIsBalanceModalOpen(false)}
             selectedClient={selectedClient}
-            isLocked={hasPaymentPlan}
+            isLocked={hasPaymentPlan === true}
             lockedBaseTotal={paymentPlanBaseTotal}
             lockedVatTotal={paymentPlanVatTotal}
             onUpdate={async (clientId) => {

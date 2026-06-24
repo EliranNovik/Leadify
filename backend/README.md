@@ -48,7 +48,9 @@ GRAPH_CLIENT_ID=your_aad_app_client_id
 GRAPH_CLIENT_SECRET=your_aad_app_client_secret
 GRAPH_TENANT_ID=your_tenant_id
 GRAPH_REDIRECT_URI=https://your-backend.com/auth/callback
-GRAPH_SCOPES="offline_access Mail.Read Mail.Send"
+GRAPH_SCOPES="offline_access Mail.Read Mail.Send Calendars.ReadWrite Calendars.ReadWrite.Shared OnlineMeetings.ReadWrite"
+# Client booking (public /book page): delegated mailbox for Teams + email (required when tenant blocks app-only Graph)
+BOOKING_MAILBOX_USER_ID=your_supabase_users_id_uuid
 GRAPH_WEBHOOK_NOTIFICATION_URL=https://your-backend.com/api/graph/webhook
 
 # Email storage tables (optional overrides)

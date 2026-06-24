@@ -125,18 +125,18 @@ const PAGE_ENTRIES: PortalSearchEntry[] = [
   {
     id: 'page-meetings',
     title: 'Meetings',
-    subtitle: 'Scheduled appointments and requests',
+    subtitle: 'Schedule appointments and view upcoming meetings',
     category: 'Page',
     keywords: ['meetings', 'meeting', 'schedule', 'appointment', 'calendar', 'video', 'teams', 'zoom'],
     action: { type: 'navigate', tab: 'meetings' },
   },
   {
-    id: 'action-request-meeting',
-    title: 'Request a meeting',
-    subtitle: 'Ask our team to schedule a time',
+    id: 'action-schedule-meeting',
+    title: 'Schedule a meeting',
+    subtitle: 'Pick a date and time for your appointment',
     category: 'Action',
-    keywords: ['request meeting', 'book', 'schedule meeting', 'new meeting', 'appointment request'],
-    action: { type: 'request-meeting' },
+    keywords: ['request meeting', 'book', 'schedule meeting', 'new meeting', 'appointment'],
+    action: { type: 'navigate', tab: 'meetings' },
   },
 ];
 

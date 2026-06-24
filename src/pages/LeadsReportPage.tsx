@@ -92,6 +92,32 @@ const orderLabel = (val: unknown): string => {
   return labels[num] ?? `Payment ${num}`;
 };
 
+const stripLegacyPrefix = (v: unknown): string => String(v ?? '').replace(/^legacy_/i, '').trim();
+
+/**
+ * Resolve the displayed lead number for a NEW lead, handling subleads.
+ * A sublead may have an empty lead_number; its correct number lives on the master
+ * (stored as text in master_id / linked_master_lead). Never fall back to the raw row id.
+ */
+const resolveNewLeadNumber = (lead: any): string => {
+  const ln = String(lead?.lead_number ?? '').trim();
+  if (ln) return stripLegacyPrefix(ln);
+  const base =
+    String(lead?.master_id ?? '').trim() || String(lead?.linked_master_lead ?? '').trim();
+  if (base) return stripLegacyPrefix(base);
+  return String(lead?.manual_id ?? '').trim();
+};
+
+/** Resolve the displayed lead number for a LEGACY lead, handling subleads. */
+const resolveLegacyLeadNumber = (lead: any): string => {
+  const mid = String(lead?.manual_id ?? '').trim();
+  if (mid) return mid;
+  const base =
+    String(lead?.master_id ?? '').trim() || String(lead?.linked_master_lead ?? '').trim();
+  if (base) return stripLegacyPrefix(base);
+  return '';
+};
+
 const formatExportDate = (val: string | null | undefined): string => {
   if (val == null) return '';
   try {
@@ -791,7 +817,7 @@ export default function LeadsReportPage() {
       // New leads — paid payment_plans (filter by date paid)
       let newQuery = supabase
         .from('payment_plans')
-        .select('id, lead_id, value, value_vat, paid_at, payment_order, "order", currency, currency_id, leads:lead_id(name, lead_number)')
+        .select('id, lead_id, value, value_vat, paid_at, payment_order, "order", currency, currency_id, leads:lead_id(name, lead_number, manual_id, master_id, linked_master_lead)')
         .eq('paid', true)
         .is('cancel_date', null)
         .not('paid_at', 'is', null)
@@ -817,16 +843,16 @@ export default function LeadsReportPage() {
 
       // Resolve legacy lead names / numbers
       const legacyLeadIds = [...new Set((legacyPaid || []).map((r: any) => r.lead_id).filter(Boolean))];
-      const legacyLeadMap = new Map<string, { name: string; manual_id: string }>();
+      const legacyLeadMap = new Map<string, { name: string; leadNumber: string }>();
       if (legacyLeadIds.length > 0) {
         const { data: legacyLeads } = await supabase
           .from('leads_lead')
-          .select('id, name, manual_id')
+          .select('id, name, manual_id, master_id, linked_master_lead')
           .in('id', legacyLeadIds);
         (legacyLeads || []).forEach((l: any) => {
           legacyLeadMap.set(String(l.id), {
             name: l.name ?? '',
-            manual_id: l.manual_id != null ? String(l.manual_id) : '',
+            leadNumber: resolveLegacyLeadNumber(l),
           });
         });
       }
@@ -847,7 +873,7 @@ export default function LeadsReportPage() {
         });
         const nis = info ? Math.round(info.totalNis) : Math.round(value + vat);
         rows.push({
-          Lead: lead?.lead_number ?? '',
+          Lead: resolveNewLeadNumber(lead),
           'Client Name': lead?.name ?? '',
           'Paid At': formatExportDate(p.paid_at),
           'Total Amount (NIS)': nis,
@@ -869,7 +895,7 @@ export default function LeadsReportPage() {
         });
         const nis = info ? Math.round(info.totalNis) : Math.round(value + vat);
         rows.push({
-          Lead: lead?.manual_id ?? '',
+          Lead: lead?.leadNumber ?? '',
           'Client Name': lead?.name ?? '',
           'Paid At': formatExportDate(p.actual_date),
           'Total Amount (NIS)': nis,

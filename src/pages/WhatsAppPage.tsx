@@ -48,7 +48,6 @@ import {
   WHATSAPP_OUTGOING_BUBBLE_CLASS,
   WHATSAPP_OUTGOING_MESSAGE_GRADIENT,
   WHATSAPP_OUTGOING_TEXT_COLOR,
-  WHATSAPP_OUTGOING_VOICE_PLAYER_CLASS,
   type WhatsAppMessageLinkStyle,
   whatsAppMessageLinkColor,
   whatsAppMessageLinkFontWeight,
@@ -4881,6 +4880,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     }
   };
 
+  const handleVoiceRecorded = (audioBlob: Blob) => {
+    const mimeType = audioBlob.type || 'audio/webm;codecs=opus';
+    const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
+    const audioFile = new File([audioBlob], `voice_${Date.now()}.${extension}`, { type: mimeType });
+    setSelectedFile(audioFile);
+    setShowVoiceRecorder(false);
+  };
+
   // Handle emoji selection
   const handleEmojiClick = (emojiObject: any) => {
     const emoji = emojiObject.emoji;
@@ -6421,15 +6428,23 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                   )}
 
                                   {(message.message_type === 'audio' || message.voice_note) && (message.media_url || message.media_id) && (
-                                    <div className="mt-2">
+                                    <div className="mt-1 w-full min-w-[300px] sm:min-w-[380px]">
                                       <VoiceMessagePlayer
                                         audioUrl={(message.media_url || message.media_id || '').startsWith('http')
                                           ? (message.media_url || message.media_id || '')
                                           : buildApiUrl(`/api/whatsapp/media/${message.media_url || message.media_id}`)}
-                                        className={message.direction === 'out' ? WHATSAPP_OUTGOING_VOICE_PLAYER_CLASS : 'bg-gray-50'}
-                                        senderName={message.sender_name || 'Unknown'}
-                                        profilePictureUrl={message.profile_picture_url}
-                                        showAvatar={message.direction === 'out'}
+                                        className="w-full"
+                                        variant={message.direction === 'out' ? 'outgoing' : 'incoming'}
+                                        rightAvatar={
+                                          message.direction !== 'out' ? (
+                                            <WhatsAppAvatar
+                                              name={message.sender_name || selectedClient?.name || 'Unknown'}
+                                              profilePictureUrl={null}
+                                              colorSeed={selectedClient?.id?.toString() || message.sender_name}
+                                              size="md"
+                                            />
+                                          ) : undefined
+                                        }
                                       />
                                       {message.caption && (
                                         <p
@@ -6591,6 +6606,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         </div>
                       </div>
                     )}
+                    {selectedFile && !showVoiceRecorder && (
+                      <div className="mb-2 pointer-events-auto flex items-center gap-2 bg-gray-100/80 backdrop-blur-md rounded-lg px-3 py-1 border border-gray-300/50 w-fit max-w-full">
+                        <span className="text-xs text-gray-700 truncate">{selectedFile.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedFile(null)}
+                          className="text-red-500 hover:text-red-700 flex-shrink-0"
+                        >
+                          <XMarkIcon className="w-4 h-4" />
+                        </button>
+                      </div>
+                    )}
                     <div className="flex items-end gap-3 relative pointer-events-auto" style={{ overflow: 'visible' }}>
                       {/* Consolidated Tools Button */}
                       <div className="relative" ref={desktopToolsRef} style={{ overflow: 'visible' }}>
@@ -6692,79 +6719,91 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         )}
                       </div>
 
-                      <div className="flex-1">
-                        <textarea
-                          ref={textareaRef}
-                          value={newMessage}
-                          onChange={(e) => {
-                            if (selectedTemplate) return; // Prevent changes when template is selected
-                            setNewMessage(e.target.value);
-                            const textarea = e.target;
-                            textarea.style.height = 'auto';
-                            // Use larger max height when template is present
-                            const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 200;
-                            textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
-                          }}
-                          onKeyDown={(e) => {
-                            if (selectedTemplate) return; // Prevent changes when template is selected
-                            // Let Enter create new lines
-                          }}
-                          placeholder={
-                            isLocked
-                              ? (messages.length === 0
-                                ? "No messages yet - use templates to start conversation"
-                                : "Window expired - use templates")
-                              : selectedFile
-                                ? "Add a caption..."
-                                : selectedTemplate
-                                  ? selectedTemplate.params === '1'
-                                    ? `Parameter for: ${selectedTemplate.title}`
-                                    : `Template: ${selectedTemplate.title}`
-                                  : "Type a message..."
-                          }
-                          className="textarea w-full resize-none border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
-                          rows={1}
-                          readOnly={!!selectedTemplate}
-                          disabled={sending || uploadingMedia || isLocked}
-                          style={{
-                            backgroundColor: selectedTemplate ? 'rgba(240, 240, 240, 0.9)' : 'rgba(255, 255, 255, 0.8)',
-                            backdropFilter: 'blur(10px)',
-                            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                            maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px',
-                            cursor: selectedTemplate ? 'not-allowed' : 'text',
-                            minHeight: isMobile ? '48px' : '44px',
-                            ...(isMobile && !newMessage ? { height: '48px' } : {})
-                          }}
-                        />
-                      </div>
+                      {showVoiceRecorder ? (
+                        <div className="flex-1 min-w-0">
+                          <VoiceMessageRecorder
+                            className="w-full"
+                            onRecorded={handleVoiceRecorded}
+                            onCancel={() => setShowVoiceRecorder(false)}
+                          />
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex-1">
+                            <textarea
+                              ref={textareaRef}
+                              value={newMessage}
+                              onChange={(e) => {
+                                if (selectedTemplate) return; // Prevent changes when template is selected
+                                setNewMessage(e.target.value);
+                                const textarea = e.target;
+                                textarea.style.height = 'auto';
+                                // Use larger max height when template is present
+                                const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 200;
+                                textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
+                              }}
+                              onKeyDown={(e) => {
+                                if (selectedTemplate) return; // Prevent changes when template is selected
+                                // Let Enter create new lines
+                              }}
+                              placeholder={
+                                isLocked
+                                  ? (messages.length === 0
+                                    ? "No messages yet - use templates to start conversation"
+                                    : "Window expired - use templates")
+                                  : selectedFile
+                                    ? "Add a caption..."
+                                    : selectedTemplate
+                                      ? selectedTemplate.params === '1'
+                                        ? `Parameter for: ${selectedTemplate.title}`
+                                        : `Template: ${selectedTemplate.title}`
+                                      : "Type a message..."
+                              }
+                              className="textarea w-full resize-none border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
+                              rows={1}
+                              readOnly={!!selectedTemplate}
+                              disabled={sending || uploadingMedia || isLocked}
+                              style={{
+                                backgroundColor: selectedTemplate ? 'rgba(240, 240, 240, 0.9)' : 'rgba(255, 255, 255, 0.8)',
+                                backdropFilter: 'blur(10px)',
+                                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+                                maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px',
+                                cursor: selectedTemplate ? 'not-allowed' : 'text',
+                                minHeight: isMobile ? '48px' : '44px',
+                                ...(isMobile && !newMessage ? { height: '48px' } : {})
+                              }}
+                            />
+                          </div>
 
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          if (selectedFile) {
-                            handleSendMedia();
-                          } else {
-                            const syntheticEvent = {
-                              preventDefault: () => { },
-                              stopPropagation: () => { },
-                              currentTarget: e.currentTarget,
-                              target: e.target,
-                            } as React.FormEvent;
-                            handleSendMessage(syntheticEvent);
-                          }
-                        }}
-                        disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
-                        className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50"
-                        style={{ background: '#000000', borderColor: 'transparent' }}
-                        title={selectedFile ? 'Send media' : 'Send message'}
-                      >
-                        {sending || uploadingMedia ? (
-                          <div className="loading loading-spinner loading-sm"></div>
-                        ) : (
-                          <PaperAirplaneIcon className="w-5 h-5" />
-                        )}
-                      </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.preventDefault();
+                              if (selectedFile) {
+                                handleSendMedia();
+                              } else {
+                                const syntheticEvent = {
+                                  preventDefault: () => { },
+                                  stopPropagation: () => { },
+                                  currentTarget: e.currentTarget,
+                                  target: e.target,
+                                } as React.FormEvent;
+                                handleSendMessage(syntheticEvent);
+                              }
+                            }}
+                            disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
+                            className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50"
+                            style={{ background: '#000000', borderColor: 'transparent' }}
+                            title={selectedFile ? 'Send media' : 'Send message'}
+                          >
+                            {sending || uploadingMedia ? (
+                              <div className="loading loading-spinner loading-sm"></div>
+                            ) : (
+                              <PaperAirplaneIcon className="w-5 h-5" />
+                            )}
+                          </button>
+                        </>
+                      )}
                     </div>
 
                     {/* Template Dropdown - Desktop */}
@@ -6988,6 +7027,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         </div>
                       </div>
                     )}
+                    {selectedFile && !showVoiceRecorder && (
+                      <div className="mb-2 pointer-events-auto flex items-center gap-2 bg-gray-100/80 backdrop-blur-md rounded-lg px-3 py-1 border border-gray-300/50 w-fit max-w-full">
+                        <span className="text-xs text-gray-700 truncate">{selectedFile.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedFile(null)}
+                          className="text-red-500 hover:text-red-700 flex-shrink-0"
+                        >
+                          <XMarkIcon className="w-4 h-4" />
+                        </button>
+                      </div>
+                    )}
                     <div className="relative space-y-2 pointer-events-auto" style={{ overflow: 'visible' }}>
                       <div className="flex items-center gap-2">
                         <div className="relative" ref={mobileToolsRef} style={{ overflow: 'visible' }}>
@@ -7026,6 +7077,17 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                               </label>
                               <button
                                 onClick={() => {
+                                  setShowVoiceRecorder(!showVoiceRecorder);
+                                  setShowMobileDropdown(false);
+                                }}
+                                disabled={isLocked}
+                                className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2 disabled:opacity-50"
+                              >
+                                <MicrophoneIcon className="w-4 h-4 text-red-600" />
+                                Voice Message
+                              </button>
+                              <button
+                                onClick={() => {
                                   setIsEmojiPickerOpen(!isEmojiPickerOpen);
                                   setShowMobileDropdown(false);
                                 }}
@@ -7056,99 +7118,111 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           )}
                         </div>
 
-                        <div className="flex-1">
-                          <textarea
-                            ref={textareaRef}
-                            value={newMessage}
-                            onChange={(e) => {
-                              if (selectedTemplate) return; // Prevent changes when template is selected
-                              setNewMessage(e.target.value);
-                              const textarea = e.target;
-                              textarea.style.height = 'auto';
-                              // Use larger max height when template is present
-                              const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : (isInputFocused || aiSuggestions.length > 0 ? 300 : 200);
-                              const calculatedHeight = Math.min(textarea.scrollHeight, maxHeight);
-                              const minHeight = isMobile ? 48 : 36;
-                              textarea.style.height = `${Math.max(calculatedHeight, minHeight)}px`;
-                            }}
-                            onFocus={(e) => {
-                              if (selectedTemplate) return; // Prevent focus changes when template is selected
-                              setIsInputFocused(true);
-                              e.target.style.height = 'auto';
-                              const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 300;
-                              const calculatedHeight = Math.min(e.target.scrollHeight, maxHeight);
-                              const minHeight = isMobile ? 48 : 36;
-                              e.target.style.height = `${Math.max(calculatedHeight, minHeight)}px`;
-                            }}
-                            onBlur={(e) => {
-                              setIsInputFocused(false);
-                              e.target.style.height = 'auto';
-                              const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 200;
-                              const calculatedHeight = Math.min(e.target.scrollHeight, maxHeight);
-                              const minHeight = isMobile ? 48 : 36;
-                              e.target.style.height = `${Math.max(calculatedHeight, minHeight)}px`;
-                            }}
-                            onKeyDown={(e) => {
-                              if (selectedTemplate) return; // Prevent changes when template is selected
-                              // Let Enter create new lines
-                            }}
-                            placeholder={
-                              isLocked
-                                ? (messages.length === 0
-                                  ? "No messages yet - use templates to start conversation"
-                                  : "Window expired - use templates")
-                                : selectedFile
-                                  ? "Add a caption..."
-                                  : selectedTemplate
-                                    ? selectedTemplate.params === '1'
-                                      ? `Parameter for: ${selectedTemplate.title}`
-                                      : `Template: ${selectedTemplate.title}`
-                                    : "Type a message..."
-                            }
-                            className="textarea w-full resize-none text-sm border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
-                            rows={1}
-                            readOnly={!!selectedTemplate}
-                            disabled={sending || uploadingMedia || isLocked}
-                            style={{
-                              lineHeight: '1.4',
-                              backgroundColor: selectedTemplate ? 'rgba(240, 240, 240, 0.9)' : 'rgba(255, 255, 255, 0.8)',
-                              backdropFilter: 'blur(10px)',
-                              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                              maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '160px',
-                              cursor: selectedTemplate ? 'not-allowed' : 'text',
-                              minHeight: isMobile ? '48px' : '36px',
-                              height: isMobile && !newMessage && !selectedTemplate ? '48px' : 'auto'
-                            }}
-                          />
-                        </div>
+                        {showVoiceRecorder ? (
+                          <div className="flex-1 min-w-0">
+                            <VoiceMessageRecorder
+                              className="w-full"
+                              onRecorded={handleVoiceRecorded}
+                              onCancel={() => setShowVoiceRecorder(false)}
+                            />
+                          </div>
+                        ) : (
+                          <>
+                            <div className="flex-1">
+                              <textarea
+                                ref={textareaRef}
+                                value={newMessage}
+                                onChange={(e) => {
+                                  if (selectedTemplate) return; // Prevent changes when template is selected
+                                  setNewMessage(e.target.value);
+                                  const textarea = e.target;
+                                  textarea.style.height = 'auto';
+                                  // Use larger max height when template is present
+                                  const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : (isInputFocused || aiSuggestions.length > 0 ? 300 : 200);
+                                  const calculatedHeight = Math.min(textarea.scrollHeight, maxHeight);
+                                  const minHeight = isMobile ? 48 : 36;
+                                  textarea.style.height = `${Math.max(calculatedHeight, minHeight)}px`;
+                                }}
+                                onFocus={(e) => {
+                                  if (selectedTemplate) return; // Prevent focus changes when template is selected
+                                  setIsInputFocused(true);
+                                  e.target.style.height = 'auto';
+                                  const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 300;
+                                  const calculatedHeight = Math.min(e.target.scrollHeight, maxHeight);
+                                  const minHeight = isMobile ? 48 : 36;
+                                  e.target.style.height = `${Math.max(calculatedHeight, minHeight)}px`;
+                                }}
+                                onBlur={(e) => {
+                                  setIsInputFocused(false);
+                                  e.target.style.height = 'auto';
+                                  const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 200;
+                                  const calculatedHeight = Math.min(e.target.scrollHeight, maxHeight);
+                                  const minHeight = isMobile ? 48 : 36;
+                                  e.target.style.height = `${Math.max(calculatedHeight, minHeight)}px`;
+                                }}
+                                onKeyDown={(e) => {
+                                  if (selectedTemplate) return; // Prevent changes when template is selected
+                                  // Let Enter create new lines
+                                }}
+                                placeholder={
+                                  isLocked
+                                    ? (messages.length === 0
+                                      ? "No messages yet - use templates to start conversation"
+                                      : "Window expired - use templates")
+                                    : selectedFile
+                                      ? "Add a caption..."
+                                      : selectedTemplate
+                                        ? selectedTemplate.params === '1'
+                                          ? `Parameter for: ${selectedTemplate.title}`
+                                          : `Template: ${selectedTemplate.title}`
+                                        : "Type a message..."
+                                }
+                                className="textarea w-full resize-none text-sm border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
+                                rows={1}
+                                readOnly={!!selectedTemplate}
+                                disabled={sending || uploadingMedia || isLocked}
+                                style={{
+                                  lineHeight: '1.4',
+                                  backgroundColor: selectedTemplate ? 'rgba(240, 240, 240, 0.9)' : 'rgba(255, 255, 255, 0.8)',
+                                  backdropFilter: 'blur(10px)',
+                                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+                                  maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '160px',
+                                  cursor: selectedTemplate ? 'not-allowed' : 'text',
+                                  minHeight: isMobile ? '48px' : '36px',
+                                  height: isMobile && !newMessage && !selectedTemplate ? '48px' : 'auto'
+                                }}
+                              />
+                            </div>
 
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            if (selectedFile) {
-                              handleSendMedia();
-                            } else {
-                              const syntheticEvent = {
-                                preventDefault: () => { },
-                                stopPropagation: () => { },
-                                currentTarget: e.currentTarget,
-                                target: e.target,
-                              } as React.FormEvent;
-                              handleSendMessage(syntheticEvent);
-                            }
-                          }}
-                          disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
-                          className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50"
-                          style={{ background: '#000000', borderColor: 'transparent' }}
-                          title={selectedFile ? 'Send media' : 'Send message'}
-                        >
-                          {sending || uploadingMedia ? (
-                            <div className="loading loading-spinner loading-sm"></div>
-                          ) : (
-                            <PaperAirplaneIcon className="w-5 h-5" />
-                          )}
-                        </button>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                if (selectedFile) {
+                                  handleSendMedia();
+                                } else {
+                                  const syntheticEvent = {
+                                    preventDefault: () => { },
+                                    stopPropagation: () => { },
+                                    currentTarget: e.currentTarget,
+                                    target: e.target,
+                                  } as React.FormEvent;
+                                  handleSendMessage(syntheticEvent);
+                                }
+                              }}
+                              disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
+                              className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50"
+                              style={{ background: '#000000', borderColor: 'transparent' }}
+                              title={selectedFile ? 'Send media' : 'Send message'}
+                            >
+                              {sending || uploadingMedia ? (
+                                <div className="loading loading-spinner loading-sm"></div>
+                              ) : (
+                                <PaperAirplaneIcon className="w-5 h-5" />
+                              )}
+                            </button>
+                          </>
+                        )}
                       </div>
 
                       {/* Mobile Emoji Picker */}
@@ -7311,42 +7385,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   </div>
                 )}
 
-
-                {/* Voice Recorder */}
-                {showVoiceRecorder && (
-                  <div className={`w-full mb-2 ${isMobile ? 'p-3' : 'px-4 pb-2'}`}>
-                    <VoiceMessageRecorder
-                      onRecorded={(audioBlob) => {
-                        // Convert blob to File and set as selectedFile
-                        // Use the MIME type from the recorder (should be audio/ogg if supported)
-                        const mimeType = audioBlob.type || 'audio/webm;codecs=opus';
-                        const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
-                        const audioFile = new File([audioBlob], `voice_${Date.now()}.${extension}`, { type: mimeType });
-
-                        // Set as selectedFile so the regular send button can handle it
-                        setSelectedFile(audioFile);
-
-                        // Close the recorder UI
-                        setShowVoiceRecorder(false);
-                      }}
-                      onCancel={() => setShowVoiceRecorder(false)}
-                    />
-                  </div>
-                )}
-
-                {/* Selected file preview */}
-                {selectedFile && (
-                  <div className={`flex items-center gap-2 bg-gray-100/80 backdrop-blur-md rounded-lg px-3 py-1 border border-gray-300/50 ${isMobile ? 'mx-3 mb-2' : 'mx-4 mb-2'}`}>
-                    <span className="text-xs text-gray-700">{selectedFile.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedFile(null)}
-                      className="text-red-500 hover:text-red-700"
-                    >
-                      <XMarkIcon className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
               </>
                 </div>
                 {!isMobile && showClientInfoPanel && (

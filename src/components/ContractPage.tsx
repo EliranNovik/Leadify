@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useRef } from 'react';
-import ReactDOM from 'react-dom/client';
+import { createPortal } from 'react-dom';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { EditorContent, useEditor } from '@tiptap/react';
+import { EditorContent, useEditor, type Editor } from '@tiptap/react';
 import { StarterKit } from '@tiptap/starter-kit';
 import { Placeholder } from '@tiptap/extension-placeholder';
 import { TextAlign } from '@tiptap/extension-text-align';
@@ -12,7 +12,16 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
 import { generateJSON } from '@tiptap/html';
-import { CheckIcon, ArrowLeftIcon, ChevronDownIcon, ChevronUpIcon, PrinterIcon, ArrowDownTrayIcon, XMarkIcon, Cog6ToothIcon, ShareIcon, PencilIcon, CalendarIcon, ClipboardDocumentIcon, TrashIcon, PhoneIcon, EnvelopeIcon, UserIcon, TagIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
+import { CheckIcon, ArrowLeftIcon, ChevronDownIcon, ChevronUpIcon, PrinterIcon, ArrowDownTrayIcon, XMarkIcon, Cog6ToothIcon, ShareIcon, PencilIcon, CalendarIcon, ClipboardDocumentIcon, TrashIcon, PhoneIcon, EnvelopeIcon, UserIcon, TagIcon, DocumentTextIcon, SparklesIcon, ChatBubbleLeftRightIcon, ArrowUturnLeftIcon, ArrowUturnRightIcon, Bars3BottomLeftIcon, Bars3BottomRightIcon } from '@heroicons/react/24/outline';
+import toast from 'react-hot-toast';
+import {
+  fetchLeadMeetingSummaries,
+  formatMeetingSummariesForAi,
+  improveContractWithMeetingSummaries,
+  sendContractAiChatMessage,
+  aiTextToTiptapDoc,
+  tiptapJsonToAiText,
+} from '../lib/contractImprovementApi';
 import { getPricePerApplicant } from '../lib/contractPricing';
 import SignaturePad from 'react-signature-canvas';
 import { v4 as uuidv4 } from 'uuid';
@@ -22,6 +31,7 @@ import { PlusIcon, MinusIcon } from '@heroicons/react/24/solid';
 import html2pdf from 'html2pdf.js';
 import { getFrontendBaseUrl } from '../lib/api';
 import ContractDetailsAndPricingModal from './ContractDetailsAndPricingModal';
+import ContractAiReviewPanel, { type ContractAiReviewMessage } from './ContractAiReviewPanel';
 import CallOptionsModal from './CallOptionsModal';
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
@@ -719,6 +729,507 @@ function buildPaymentPlan(finalAmount: number, archivalFee: number) {
   return plan;
 }
 
+const CONTRACT_BAR_SAVE_BTN =
+  'btn btn-circle h-11 w-11 min-h-11 border-0 bg-emerald-600 text-white shadow-md shadow-emerald-900/20 ring-1 ring-emerald-700/20 hover:bg-emerald-700 hover:shadow-lg transition-all';
+const CONTRACT_BAR_CANCEL_BTN =
+  'btn btn-circle h-11 w-11 min-h-11 border border-slate-200 bg-white text-slate-600 shadow-sm ring-1 ring-slate-100 hover:border-slate-300 hover:bg-slate-50 transition-all';
+const CONTRACT_BAR_DELETE_BTN =
+  'btn btn-circle h-11 w-11 min-h-11 border border-rose-200 bg-gradient-to-b from-rose-50 to-white text-rose-600 shadow-sm ring-1 ring-rose-100 hover:border-rose-300 hover:from-rose-100 hover:to-rose-50 transition-all';
+
+function contractToolbarFocus(editor: Editor) {
+  setTimeout(() => editor.commands.focus(), 10);
+}
+
+function insertNextExtraTextField(editor: Editor) {
+  const content = editor.getJSON();
+  let highestId = 0;
+  const findHighestId = (node: any) => {
+    if (node.type === 'text' && node.text) {
+      const matches = node.text.match(/\{\{text:text-(\d+)\}\}/g);
+      if (matches) {
+        matches.forEach((match: string) => {
+          const idMatch = match.match(/text-(\d+)/);
+          if (idMatch) {
+            const id = parseInt(idMatch[1], 10);
+            if (id > highestId) highestId = id;
+          }
+        });
+      }
+    }
+    if (node.content) {
+      if (Array.isArray(node.content)) {
+        node.content.forEach(findHighestId);
+      } else {
+        findHighestId(node.content);
+      }
+    }
+  };
+  findHighestId(content);
+  const placeholder = `{{text:text-${highestId + 1}}}`;
+  editor.chain().focus().insertContent(placeholder).run();
+  contractToolbarFocus(editor);
+}
+
+const CONTRACT_TOOLBAR_ACTIVE =
+  'bg-violet-600 text-white hover:bg-violet-700';
+const CONTRACT_TOOLBAR_IDLE =
+  'text-gray-600 hover:bg-gray-300/70';
+
+function contractRailBtnClass(active: boolean) {
+  return [
+    'btn btn-ghost btn-circle h-11 min-h-11 w-11 min-w-11 flex-shrink-0 border-0',
+    active ? CONTRACT_TOOLBAR_ACTIVE : CONTRACT_TOOLBAR_IDLE,
+  ].join(' ');
+}
+
+const FONT_FAMILIES = [
+  'Arial',
+  'Times New Roman',
+  'Courier New',
+  'Georgia',
+  'Verdana',
+  'Helvetica',
+  'Comic Sans MS',
+  'Impact',
+  'Trebuchet MS',
+] as const;
+
+const FONT_SIZES = ['8px', '10px', '12px', '14px', '16px', '18px', '20px', '24px', '28px', '32px', '36px', '48px'] as const;
+
+function ContractRailDropdown({
+  label,
+  trigger,
+  panelClassName = 'w-44',
+  children,
+}: {
+  label: string;
+  trigger: React.ReactNode;
+  panelClassName?: string;
+  children: (close: () => void) => React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ top: 0, left: 0 });
+
+  const close = useCallback(() => setOpen(false), []);
+
+  const updatePos = useCallback(() => {
+    const el = triggerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    setPos({ top: rect.top, left: rect.right + 8 });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    updatePos();
+    window.addEventListener('resize', updatePos);
+    const scrollRoot = triggerRef.current?.closest('.app-main-scroll');
+    scrollRoot?.addEventListener('scroll', updatePos, { passive: true });
+    return () => {
+      window.removeEventListener('resize', updatePos);
+      scrollRoot?.removeEventListener('scroll', updatePos);
+    };
+  }, [open, updatePos]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (triggerRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    return () => document.removeEventListener('pointerdown', onPointerDown);
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={contractRailBtnClass(false)}
+        title={label}
+        aria-label={label}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {trigger}
+      </button>
+      {open &&
+        createPortal(
+          <>
+            <div
+              className="fixed inset-0 z-[200] bg-black/10 print-hide"
+              aria-hidden
+              onClick={close}
+            />
+            <div
+              ref={panelRef}
+              className={`fixed z-[201] max-h-60 overflow-y-auto rounded-xl border border-gray-200 bg-white p-1 shadow-2xl print-hide ${panelClassName}`}
+              style={{ top: pos.top, left: pos.left }}
+              role="menu"
+            >
+              {children(close)}
+            </div>
+          </>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+function ContractEditorToolbar({
+  editor,
+  layout,
+  railTopPx = 108,
+}: {
+  editor: Editor;
+  layout: 'mobile' | 'desktop';
+  railTopPx?: number;
+}) {
+  const fontFamily = editor.getAttributes('fontFamily').fontFamily || 'Arial';
+  const fontSize = editor.getAttributes('fontSize').fontSize || '16px';
+
+  const fontFamilySelect = (
+    <select
+      className={
+        layout === 'desktop'
+          ? 'select select-bordered select-sm h-9 min-h-9 w-full text-xs'
+          : 'select select-sm select-bordered'
+      }
+      style={layout === 'mobile' ? { minWidth: '100px', width: '100px' } : undefined}
+      value={fontFamily}
+      onChange={(e) => {
+        editor.chain().focus().setFontFamily(e.target.value).run();
+        contractToolbarFocus(editor);
+      }}
+      title="Font Family"
+    >
+      {FONT_FAMILIES.map((f) => (
+        <option key={f} value={f}>
+          {f}
+        </option>
+      ))}
+    </select>
+  );
+
+  const fontSizeSelect = (
+    <select
+      className={
+        layout === 'desktop'
+          ? 'select select-bordered select-sm h-9 min-h-9 w-full text-xs'
+          : 'select select-sm select-bordered'
+      }
+      style={layout === 'mobile' ? { minWidth: '90px', width: '90px' } : undefined}
+      value={fontSize}
+      onChange={(e) => {
+        editor.chain().focus().setFontSize(e.target.value).run();
+        contractToolbarFocus(editor);
+      }}
+      title="Font Size"
+    >
+      {FONT_SIZES.map((s) => (
+        <option key={s} value={s}>
+          {s}
+        </option>
+      ))}
+    </select>
+  );
+
+  const addFieldButton = (
+    <button
+      type="button"
+      className={
+        layout === 'desktop'
+          ? 'btn btn-sm h-10 min-h-10 w-full gap-1.5 border-0 bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 text-white shadow-md shadow-violet-500/20 hover:from-violet-700 hover:via-fuchsia-700 hover:to-indigo-700'
+          : 'btn btn-sm btn-primary'
+      }
+      onClick={() => insertNextExtraTextField(editor)}
+      title="Add extra field"
+    >
+      <PlusIcon className="h-4 w-4 shrink-0" />
+      <span className={layout === 'desktop' ? 'text-xs font-semibold' : 'ml-1'}>Add extra field</span>
+    </button>
+  );
+
+  if (layout === 'desktop') {
+    const fontSizeShort = fontSize.replace('px', '');
+
+    return (
+      <aside
+        className="print-hide fixed bottom-0 left-0 z-[65] hidden w-[4.5rem] md:flex"
+        style={{ top: railTopPx }}
+      >
+        <div className="flex h-full w-full flex-col items-center overflow-hidden border-r border-gray-200 bg-gray-50 px-1 py-4 pb-24">
+          <div className="flex w-full flex-1 flex-col items-center justify-start gap-3 overflow-hidden">
+            <div className="grid w-full grid-cols-2 place-items-center gap-2 px-0.5">
+              <button
+                type="button"
+                className={contractRailBtnClass(editor.isActive('bold'))}
+                onClick={() => {
+                  editor.chain().focus().toggleBold().run();
+                  contractToolbarFocus(editor);
+                }}
+                title="Bold"
+              >
+                <b className="text-sm font-bold">B</b>
+              </button>
+              <button
+                type="button"
+                className={contractRailBtnClass(editor.isActive('italic'))}
+                onClick={() => {
+                  editor.chain().focus().toggleItalic().run();
+                  contractToolbarFocus(editor);
+                }}
+                title="Italic"
+              >
+                <i className="text-sm italic">I</i>
+              </button>
+              <button
+                type="button"
+                className={contractRailBtnClass(editor.isActive('underline'))}
+                onClick={() => {
+                  editor.chain().focus().toggleUnderline().run();
+                  contractToolbarFocus(editor);
+                }}
+                title="Underline"
+              >
+                <u className="text-sm underline">U</u>
+              </button>
+              <button
+                type="button"
+                className={contractRailBtnClass(editor.isActive('strike'))}
+                onClick={() => {
+                  editor.chain().focus().toggleStrike().run();
+                  contractToolbarFocus(editor);
+                }}
+                title="Strikethrough"
+              >
+                <s className="text-sm line-through">S</s>
+              </button>
+            </div>
+
+            <div className="h-px w-8 bg-gray-200" aria-hidden />
+
+            <div className="grid w-full grid-cols-2 place-items-center gap-2 px-0.5">
+              <button
+                type="button"
+                className={contractRailBtnClass(editor.isActive({ textAlign: 'left' }))}
+                onClick={() => {
+                  editor.chain().focus().setTextAlign('left').run();
+                  contractToolbarFocus(editor);
+                }}
+                title="Align Left"
+              >
+                <Bars3BottomLeftIcon className="h-5 w-5" />
+              </button>
+              <button
+                type="button"
+                className={contractRailBtnClass(editor.isActive({ textAlign: 'right' }))}
+                onClick={() => {
+                  editor.chain().focus().setTextAlign('right').run();
+                  contractToolbarFocus(editor);
+                }}
+                title="Align Right"
+              >
+                <Bars3BottomRightIcon className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="h-px w-8 bg-gray-200" aria-hidden />
+
+            <div className="grid w-full grid-cols-2 place-items-center gap-2 px-0.5">
+              <button
+                type="button"
+                className={contractRailBtnClass(false)}
+                onClick={() => {
+                  editor.chain().focus().undo().run();
+                  contractToolbarFocus(editor);
+                }}
+                title="Undo"
+              >
+                <ArrowUturnLeftIcon className="h-5 w-5" />
+              </button>
+              <button
+                type="button"
+                className={contractRailBtnClass(false)}
+                onClick={() => {
+                  editor.chain().focus().redo().run();
+                  contractToolbarFocus(editor);
+                }}
+                title="Redo"
+              >
+                <ArrowUturnRightIcon className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="h-px w-8 bg-gray-200" aria-hidden />
+
+            <div className="grid w-full grid-cols-2 place-items-center gap-2 px-0.5">
+              <ContractRailDropdown
+                label={`Font: ${fontFamily}`}
+                trigger={<span className="text-xs font-bold leading-none">Aa</span>}
+              >
+                {(close) =>
+                  FONT_FAMILIES.map((f) => (
+                    <button
+                      key={f}
+                      type="button"
+                      className={`block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-gray-100 ${
+                        f === fontFamily ? 'bg-violet-50 font-medium text-violet-700' : 'text-gray-700'
+                      }`}
+                      onClick={() => {
+                        editor.chain().focus().setFontFamily(f).run();
+                        contractToolbarFocus(editor);
+                        close();
+                      }}
+                    >
+                      {f}
+                    </button>
+                  ))
+                }
+              </ContractRailDropdown>
+              <ContractRailDropdown
+                label={`Size: ${fontSize}`}
+                panelClassName="w-24"
+                trigger={<span className="text-xs font-semibold leading-none">{fontSizeShort}</span>}
+              >
+                {(close) =>
+                  FONT_SIZES.map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      className={`block w-full rounded-lg px-3 py-2 text-left text-sm hover:bg-gray-100 ${
+                        s === fontSize ? 'bg-violet-50 font-medium text-violet-700' : 'text-gray-700'
+                      }`}
+                      onClick={() => {
+                        editor.chain().focus().setFontSize(s).run();
+                        contractToolbarFocus(editor);
+                        close();
+                      }}
+                    >
+                      {s}
+                    </button>
+                  ))
+                }
+              </ContractRailDropdown>
+            </div>
+          </div>
+
+          <div className="mt-2 flex w-full justify-center pb-1 pt-2">
+            <button
+              type="button"
+              className="btn btn-circle h-11 min-h-11 w-11 border border-gray-200 bg-gray-200 text-black shadow-sm hover:bg-gray-300"
+              onClick={() => insertNextExtraTextField(editor)}
+              title="Add extra field"
+              aria-label="Add extra field"
+            >
+              <PlusIcon className="h-5 w-5 text-black" />
+            </button>
+          </div>
+        </div>
+      </aside>
+    );
+  }
+
+  return (
+    <div className="sticky top-0 z-30 mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-gray-300 bg-white/95 p-3 shadow-md backdrop-blur-sm print-hide md:hidden">
+      <button
+        type="button"
+        className={`btn btn-sm ${editor.isActive('bold') ? 'btn-primary' : 'btn-ghost'}`}
+        onClick={() => {
+          editor.chain().focus().toggleBold().run();
+          contractToolbarFocus(editor);
+        }}
+        title="Bold"
+      >
+        <b className="text-base font-bold">B</b>
+      </button>
+      <button
+        type="button"
+        className={`btn btn-sm ${editor.isActive('italic') ? 'btn-primary' : 'btn-ghost'}`}
+        onClick={() => {
+          editor.chain().focus().toggleItalic().run();
+          contractToolbarFocus(editor);
+        }}
+        title="Italic"
+      >
+        <i className="text-base italic">I</i>
+      </button>
+      <button
+        type="button"
+        className={`btn btn-sm ${editor.isActive('underline') ? 'btn-primary' : 'btn-ghost'}`}
+        onClick={() => {
+          editor.chain().focus().toggleUnderline().run();
+          contractToolbarFocus(editor);
+        }}
+        title="Underline"
+      >
+        <u className="text-base underline">U</u>
+      </button>
+      <button
+        type="button"
+        className={`btn btn-sm ${editor.isActive('strike') ? 'btn-primary' : 'btn-ghost'}`}
+        onClick={() => {
+          editor.chain().focus().toggleStrike().run();
+          contractToolbarFocus(editor);
+        }}
+        title="Strikethrough"
+      >
+        <s className="text-base line-through">S</s>
+      </button>
+      <button
+        type="button"
+        className={`btn btn-sm ${editor.isActive({ textAlign: 'left' }) ? 'btn-primary' : 'btn-ghost'}`}
+        onClick={() => {
+          editor.chain().focus().setTextAlign('left').run();
+          contractToolbarFocus(editor);
+        }}
+        title="Align Left"
+      >
+        <Bars3BottomLeftIcon className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        className={`btn btn-sm ${editor.isActive({ textAlign: 'right' }) ? 'btn-primary' : 'btn-ghost'}`}
+        onClick={() => {
+          editor.chain().focus().setTextAlign('right').run();
+          contractToolbarFocus(editor);
+        }}
+        title="Align Right"
+      >
+        <Bars3BottomRightIcon className="h-4 w-4" />
+      </button>
+      {fontFamilySelect}
+      {fontSizeSelect}
+      <button
+        type="button"
+        className="btn btn-sm btn-ghost"
+        onClick={() => {
+          editor.chain().focus().undo().run();
+          contractToolbarFocus(editor);
+        }}
+        title="Undo"
+      >
+        <ArrowUturnLeftIcon className="h-4 w-4" />
+      </button>
+      <button
+        type="button"
+        className="btn btn-sm btn-ghost"
+        onClick={() => {
+          editor.chain().focus().redo().run();
+          contractToolbarFocus(editor);
+        }}
+        title="Redo"
+      >
+        <ArrowUturnRightIcon className="h-4 w-4" />
+      </button>
+      {addFieldButton}
+    </div>
+  );
+}
 
 const ContractPage: React.FC = () => {
   const { leadNumber: paramLeadNumber, contractId: paramContractId } = useParams<{ leadNumber?: string; contractId?: string }>();
@@ -1061,7 +1572,26 @@ const ContractPage: React.FC = () => {
 
   const [signaturePads, setSignaturePads] = useState<{ [key: string]: any }>({});
   const [editing, setEditing] = useState(false);
+  const [improvingContract, setImprovingContract] = useState(false);
+  const [aiChatLoading, setAiChatLoading] = useState(false);
+  const [aiReviewNotes, setAiReviewNotes] = useState<string | null>(null);
+  const [aiReviewChatMessages, setAiReviewChatMessages] = useState<ContractAiReviewMessage[]>([]);
+  const [showAiReviewPanel, setShowAiReviewPanel] = useState(false);
+  const [aiRemarksInput, setAiRemarksInput] = useState('');
+  const lastMeetingSummariesRef = useRef('');
+  const aiContentPendingRef = useRef<{
+    doc: { type: 'doc'; content: Array<Record<string, unknown>> };
+    notes: string;
+  } | null>(null);
+  const suppressEditorSyncRef = useRef(false);
   const [contractStatuses, setContractStatuses] = useState<{ [id: string]: { status: string; signed_at?: string } }>({});
+
+  // Reopen AI review panel when re-entering edit mode if chat history exists
+  useEffect(() => {
+    if (editing && (aiReviewNotes || aiReviewChatMessages.length > 0)) {
+      setShowAiReviewPanel(true);
+    }
+  }, [editing, aiReviewNotes, aiReviewChatMessages]);
 
   // Editable right panel state
   const [customPricing, setCustomPricing] = useState<any>(null);
@@ -1215,47 +1745,33 @@ const ContractPage: React.FC = () => {
   const lastEditingStateRef = useRef<boolean>(false);
 
   const headerRef = useRef<HTMLDivElement>(null);
+  const [editorRailTopPx, setEditorRailTopPx] = useState(108);
+
+  useLayoutEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const update = () => {
+      const header = headerRef.current;
+      if (header) setEditorRailTopPx(Math.round(header.getBoundingClientRect().bottom));
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    const scrollRoot = el.closest('.app-main-scroll');
+    scrollRoot?.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    return () => {
+      ro.disconnect();
+      scrollRoot?.removeEventListener('scroll', update);
+      window.removeEventListener('resize', update);
+    };
+  }, [loading, contract]);
 
   // Ref for contract content area (for PDF generation)
   const contractContentRef = useRef<HTMLDivElement>(null);
 
-  /** Viewport top offset so fixed right rail lines up with #contract-print-area */
-  const [rightRailTopPx, setRightRailTopPx] = useState(120);
-
-  /** Right metadata rail only at xl+ — not mounted on mobile/tablet */
-  const [showDesktopSideRail, setShowDesktopSideRail] = useState(false);
-  useLayoutEffect(() => {
-    if (typeof window === 'undefined') return;
-    const mq = window.matchMedia('(min-width: 1280px)');
-    const sync = () => setShowDesktopSideRail(mq.matches);
-    sync();
-    mq.addEventListener('change', sync);
-    return () => mq.removeEventListener('change', sync);
-  }, []);
-
   // PDF loading state
   const [pdfLoading, setPdfLoading] = useState(false);
-
-  // Lock viewport `top` to the card’s initial screen position — do NOT tie to scroll or the rail
-  // creeps up with the document. Still update on resize / layout (ResizeObserver).
-  const updateRightRailTop = useCallback(() => {
-    const card = contractContentRef.current;
-    if (!card) return;
-    setRightRailTopPx(Math.max(0, Math.round(card.getBoundingClientRect().top)));
-  }, []);
-
-  useLayoutEffect(() => {
-    updateRightRailTop();
-    const schedule = () => requestAnimationFrame(updateRightRailTop);
-    window.addEventListener('resize', schedule);
-    const ro = new ResizeObserver(schedule);
-    if (contractContentRef.current) ro.observe(contractContentRef.current);
-    if (headerRef.current) ro.observe(headerRef.current);
-    return () => {
-      window.removeEventListener('resize', schedule);
-      ro.disconnect();
-    };
-  }, [updateRightRailTop, contract?.id, loading]);
 
   // Fetch client data
   useEffect(() => {
@@ -2169,6 +2685,24 @@ const ContractPage: React.FC = () => {
   useEffect(() => {
     if (!editor || !contract || !template) return;
 
+    if (aiContentPendingRef.current && editing) {
+      const pending = aiContentPendingRef.current;
+      aiContentPendingRef.current = null;
+      editor.commands.setContent(pending.doc);
+      setAiReviewNotes(pending.notes);
+      setShowAiReviewPanel(true);
+      editor.setEditable(true);
+      lastEditingStateRef.current = editing;
+      suppressEditorSyncRef.current = true;
+      lastContentHashRef.current = `ai-${Date.now()}`;
+      return;
+    }
+
+    if (suppressEditorSyncRef.current) {
+      suppressEditorSyncRef.current = false;
+      return;
+    }
+
     // Always prefer custom_content if it exists (preserves user edits in both edit and view mode)
     // Otherwise use template.content to ensure we have placeholders to replace
     // When pricing changes, we'll still update placeholders in the current content
@@ -2311,6 +2845,7 @@ const ContractPage: React.FC = () => {
   const handleSaveEdit = async () => {
     if (!editor || !contract) return;
     const content = editor.getJSON();
+    setAiRemarksInput('');
 
     // Debug: Log the content structure to verify paragraphs are present
     console.log('💾 Saving content:', JSON.stringify(content, null, 2));
@@ -2334,6 +2869,143 @@ const ContractPage: React.FC = () => {
 
     // Force re-render to show saved content
     setRenderKey(prev => prev + 1);
+  };
+
+  const getCurrentContractSource = useCallback((): unknown => {
+    if (editing && editor) return editor.getJSON();
+    return contract?.custom_content || template?.content;
+  }, [contract?.custom_content, template?.content, editing, editor]);
+
+  const handleImproveContractWithAi = async () => {
+    if (!editor || !client || !contract || improvingContract || aiChatLoading) return;
+    const contractStatus = contractStatuses[contract.id]?.status || contract.status;
+    if (contractStatus === 'signed') {
+      toast.error('Signed contracts cannot be edited');
+      return;
+    }
+
+    const originalContent = getCurrentContractSource();
+    const currentContractText = tiptapJsonToAiText(originalContent);
+    if (!currentContractText) {
+      toast.error('Contract is empty — add content before using AI improvement');
+      return;
+    }
+
+    setImprovingContract(true);
+    setAiReviewNotes(null);
+    setAiReviewChatMessages([]);
+    try {
+      const summaries = await fetchLeadMeetingSummaries(client);
+      const meetingSummaries = formatMeetingSummariesForAi(summaries);
+      lastMeetingSummariesRef.current = meetingSummaries;
+      if (!meetingSummaries) {
+        toast('No meeting summaries found — improving contract from current text only', { icon: 'ℹ️' });
+      }
+
+      const { improvedContractText, changeSummary } = await improveContractWithMeetingSummaries({
+        leadId: client.id,
+        clientName: client.name,
+        leadNumber: renderLeadNumber(),
+        currentContractText,
+        meetingSummaries,
+      });
+
+      const improvedDoc = aiTextToTiptapDoc(improvedContractText, originalContent);
+
+      if (editing) {
+        editor.commands.setContent(improvedDoc);
+        setAiReviewNotes(changeSummary);
+        setShowAiReviewPanel(true);
+        setAiRemarksInput('');
+        editor.setEditable(true);
+        suppressEditorSyncRef.current = true;
+        lastContentHashRef.current = `ai-${Date.now()}`;
+      } else {
+        aiContentPendingRef.current = { doc: improvedDoc, notes: changeSummary };
+        setEditing(true);
+      }
+
+      toast.success('Contract improved with AI — review and request changes in the panel');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'AI contract improvement failed');
+    } finally {
+      setImprovingContract(false);
+    }
+  };
+
+  const handleApplyAiRemarks = async () => {
+    if (!editor || !client || !contract || aiChatLoading || improvingContract) return;
+    const remarks = aiRemarksInput.trim();
+    if (!remarks) {
+      toast.error('Please enter a question or change request');
+      return;
+    }
+
+    const userMessage: ContractAiReviewMessage = { role: 'user', content: remarks };
+    setAiReviewChatMessages((prev) => [...prev, userMessage]);
+    setAiRemarksInput('');
+
+    const originalContent = editor.getJSON();
+    const currentContractText = tiptapJsonToAiText(originalContent);
+    if (!currentContractText) {
+      toast.error('Contract is empty');
+      return;
+    }
+
+    setAiChatLoading(true);
+    try {
+      const result = await sendContractAiChatMessage({
+        leadId: client.id,
+        clientName: client.name,
+        leadNumber: renderLeadNumber(),
+        currentContractText,
+        meetingSummaries: lastMeetingSummariesRef.current,
+        userRemarks: remarks,
+        chatHistory: [...aiReviewChatMessages, userMessage],
+      });
+
+      if (result.intent === 'question') {
+        setAiReviewChatMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: result.answer, kind: 'answer' },
+        ]);
+      } else {
+        const improvedDoc = aiTextToTiptapDoc(result.improvedContractText, originalContent);
+        editor.commands.setContent(improvedDoc);
+        setAiReviewChatMessages((prev) => [
+          ...prev,
+          { role: 'assistant', content: result.changeSummary, kind: 'change' },
+        ]);
+        suppressEditorSyncRef.current = true;
+        lastContentHashRef.current = `ai-${Date.now()}`;
+        toast.success('Contract updated with your changes');
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Failed to send message');
+    } finally {
+      setAiChatLoading(false);
+    }
+  };
+
+  const handleOpenAiReviewPanel = async () => {
+    if (!editor || !client || !contract) return;
+    const contractStatus = contractStatuses[contract.id]?.status || contract.status;
+    if (contractStatus === 'signed') {
+      toast.error('Signed contracts cannot be edited');
+      return;
+    }
+    if (!editing) {
+      setEditing(true);
+    }
+    setShowAiReviewPanel(true);
+    if (!lastMeetingSummariesRef.current) {
+      try {
+        const summaries = await fetchLeadMeetingSummaries(client);
+        lastMeetingSummariesRef.current = formatMeetingSummariesForAi(summaries);
+      } catch {
+        // Remarks can still be sent without meeting summaries
+      }
+    }
   };
 
   // Update contract.custom_pricing in DB and local state, and refresh contract content
@@ -5169,6 +5841,7 @@ const ContractPage: React.FC = () => {
 
 
   const status = contract ? (contractStatuses[contract.id]?.status || contract.status) : 'draft';
+  const aiReviewOpen = showAiReviewPanel && editing;
 
   // Before the return statement in ContractPage, define VAT logic
   const archivalFee = customPricing?.archival_research_fee || 0;
@@ -5188,6 +5861,48 @@ const ContractPage: React.FC = () => {
 
   const barCategory = client ? getCategoryDisplayName(client.category_id, client.category) : '';
   const barTopic = client?.topic?.trim() || '';
+
+  const openCallContactPicker = async () => {
+    if (!client) return;
+    setShowCallContactModal(true);
+    setLoadingContacts(true);
+    try {
+      const isLegacyLead = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
+      const leadId = isLegacyLead
+        ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+        : client.id;
+      const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+      const contactsWithPhone = contacts.filter(
+        (c) => (c.phone || c.mobile) && (c.phone?.trim() || c.mobile?.trim()),
+      );
+      setAvailableContacts(contactsWithPhone.length > 0 ? contactsWithPhone : contacts);
+    } catch (error) {
+      console.error('Error fetching contacts:', error);
+      setAvailableContacts([]);
+    } finally {
+      setLoadingContacts(false);
+    }
+  };
+
+  const openEmailContactPicker = async () => {
+    if (!client) return;
+    setShowEmailContactModal(true);
+    setLoadingContacts(true);
+    try {
+      const isLegacyLead = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
+      const leadId = isLegacyLead
+        ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+        : client.id;
+      const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+      const contactsWithEmail = contacts.filter((c) => c.email && c.email.trim());
+      setAvailableContacts(contactsWithEmail.length > 0 ? contactsWithEmail : contacts);
+    } catch (error) {
+      console.error('Error fetching contacts:', error);
+      setAvailableContacts([]);
+    } finally {
+      setLoadingContacts(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gray-100 print:bg-white">
@@ -5212,9 +5927,29 @@ const ContractPage: React.FC = () => {
               <p className="text-[10px] font-semibold uppercase leading-none tracking-[0.12em] text-gray-400">Main contact</p>
               <p className="truncate text-base font-semibold leading-snug text-gray-900">{mainContactDisplay}</p>
             </div>
-            <div className="shrink-0">
-              <p className="text-[10px] font-semibold uppercase leading-none tracking-[0.12em] text-gray-400">Lead</p>
-              <p className="font-mono text-base font-bold tabular-nums leading-snug text-gray-900">#{renderLeadNumber()}</p>
+            <div className="flex shrink-0 items-center gap-2">
+              <div>
+                <p className="text-[10px] font-semibold uppercase leading-none tracking-[0.12em] text-gray-400">Lead</p>
+                <p className="font-mono text-base font-bold tabular-nums leading-snug text-gray-900">#{renderLeadNumber()}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void openCallContactPicker()}
+                className="btn btn-circle h-9 min-h-9 w-9 border border-gray-200/90 bg-gray-50/80 text-gray-800 shadow-sm hover:border-gray-300 hover:bg-white hover:shadow"
+                title="Call"
+                aria-label="Call contact"
+              >
+                <PhoneIcon className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => void openEmailContactPicker()}
+                className="btn btn-circle h-9 min-h-9 w-9 border border-gray-200/90 bg-gray-50/80 text-gray-800 shadow-sm hover:border-gray-300 hover:bg-white hover:shadow"
+                title="Email"
+                aria-label="Email contact"
+              >
+                <EnvelopeIcon className="h-4 w-4" />
+              </button>
             </div>
             {barCategory ? (
               <span className="hidden max-w-[min(100%,12rem)] items-center gap-1 rounded-md border border-gray-200/80 bg-gray-50/90 px-2.5 py-1 text-xs font-medium leading-snug text-gray-700 md:inline-flex sm:max-w-[14rem]">
@@ -5244,146 +5979,31 @@ const ContractPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Main Content — centered white card; fixed right rail is metadata only (Share/Edit on desktop bottom bar) */}
-      <div className="print-content-wrapper w-full bg-gray-100 px-3 py-8 pb-24 sm:px-6 xl:pb-20 print:bg-transparent">
+      {editing && editor && (
+        <ContractEditorToolbar editor={editor} layout="desktop" railTopPx={editorRailTopPx} />
+      )}
+
+      {/* Main Content */}
+      <div
+        className={`print-content-wrapper w-full bg-gray-100 px-3 py-4 pb-[13rem] transition-[padding] duration-300 sm:px-6 sm:py-6 sm:pb-28 xl:pb-20 print:bg-transparent ${
+          aiReviewOpen ? 'md:pr-[28rem]' : ''
+        } ${editing ? 'md:pl-[4.5rem]' : ''}`}
+      >
         <div className="relative min-h-[60vh]">
-          <div className="flex w-full justify-center transition-all duration-300">
+          <div className="mx-auto flex w-full max-w-[1920px] min-h-[60vh]">
+            <div className="flex min-w-0 flex-1 justify-center transition-all duration-300">
             <div
               ref={contractContentRef}
               id="contract-print-area"
-              className="w-full max-w-full border border-gray-200/90 bg-white text-gray-900 shadow-sm sm:max-w-[min(100%,44rem)] md:max-w-[min(100%,48rem)] lg:max-w-[min(100%,52rem)] xl:max-w-[56rem] 2xl:max-w-[60rem] rounded-2xl px-5 py-6 sm:px-8 sm:py-8 leading-relaxed print:max-w-none print:rounded-none print:border-0 print:shadow-none [&_.ProseMirror_p]:mb-3 [&_p]:mb-3 text-sm sm:text-base [&_*]:text-sm sm:[&_*]:text-base"
+              className={`relative min-w-0 w-full max-w-full flex-1 border border-gray-200/90 bg-white text-gray-900 shadow-sm sm:max-w-[min(100%,44rem)] md:max-w-[min(100%,48rem)] lg:max-w-[min(100%,52rem)] rounded-2xl px-5 py-6 sm:px-8 sm:py-8 leading-relaxed print:max-w-none print:rounded-none print:border-0 print:shadow-none [&_.ProseMirror_p]:mb-3 [&_p]:mb-3 text-sm sm:text-base [&_*]:text-sm sm:[&_*]:text-base ${
+                aiReviewOpen
+                  ? 'xl:max-w-[min(100%,44rem)]'
+                  : 'xl:max-w-none xl:flex-1'
+              }`}
             >
               {editing ? (
                 <>
-                  {/* Editor Toolbar with Field Insertion - Fixed at top */}
-                  <div className="sticky top-0 z-30 flex flex-wrap gap-2 items-center mb-4 p-4 rounded-xl border border-gray-300 bg-gray-50 print-hide shadow-md backdrop-blur-sm bg-white/95">
-                    {/* Formatting buttons */}
-                    <button className={`btn btn-sm ${editor.isActive('bold') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { editor.chain().focus().toggleBold().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Bold"><b className="text-base font-bold">B</b></button>
-                    <button className={`btn btn-sm ${editor.isActive('italic') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { editor.chain().focus().toggleItalic().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Italic"><i className="text-base italic">I</i></button>
-                    <button className={`btn btn-sm ${editor.isActive('underline') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { editor.chain().focus().toggleUnderline().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Underline"><u className="text-base underline">U</u></button>
-                    <button className={`btn btn-sm ${editor.isActive('strike') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => { editor.chain().focus().toggleStrike().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Strikethrough"><s className="text-base line-through">S</s></button>
-                    {/* Text Alignment Buttons */}
-                    <button
-                      className={`btn btn-sm ${editor.isActive({ textAlign: 'left' }) ? 'btn-primary' : 'btn-ghost'}`}
-                      onClick={() => { editor.chain().focus().setTextAlign('left').run(); setTimeout(() => editor.commands.focus(), 10); }}
-                      title="Align Left"
-                    >
-                      <span className="text-base">⬅</span>
-                    </button>
-                    <button
-                      className={`btn btn-sm ${editor.isActive({ textAlign: 'right' }) ? 'btn-primary' : 'btn-ghost'}`}
-                      onClick={() => { editor.chain().focus().setTextAlign('right').run(); setTimeout(() => editor.commands.focus(), 10); }}
-                      title="Align Right"
-                    >
-                      <span className="text-base">➡</span>
-                    </button>
-
-
-                    {/* Font Family Dropdown */}
-                    <select
-                      className="select select-sm select-bordered"
-                      style={{ minWidth: '100px', width: '100px' }}
-                      value={editor.getAttributes('fontFamily').fontFamily || 'Arial'}
-                      onChange={(e) => {
-                        const value = e.target.value;
-                        editor.chain().focus().setFontFamily(value).run();
-                        setTimeout(() => editor.commands.focus(), 10);
-                      }}
-                      title="Font Family"
-                    >
-                      <option value="Arial">Arial</option>
-                      <option value="Times New Roman">Times New Roman</option>
-                      <option value="Courier New">Courier New</option>
-                      <option value="Georgia">Georgia</option>
-                      <option value="Verdana">Verdana</option>
-                      <option value="Helvetica">Helvetica</option>
-                      <option value="Comic Sans MS">Comic Sans MS</option>
-                      <option value="Impact">Impact</option>
-                      <option value="Trebuchet MS">Trebuchet MS</option>
-                    </select>
-
-                    {/* Font Size Dropdown */}
-                    <select
-                      className="select select-sm select-bordered"
-                      style={{ minWidth: '90px', width: '90px' }}
-                      value={editor.getAttributes('fontSize').fontSize || '16px'}
-                      onChange={(e) => {
-                        const value = e.target.value;
-                        editor.chain().focus().setFontSize(value).run();
-                        setTimeout(() => editor.commands.focus(), 10);
-                      }}
-                      title="Font Size"
-                    >
-                      <option value="8px">8px</option>
-                      <option value="10px">10px</option>
-                      <option value="12px">12px</option>
-                      <option value="14px">14px</option>
-                      <option value="16px">16px</option>
-                      <option value="18px">18px</option>
-                      <option value="20px">20px</option>
-                      <option value="24px">24px</option>
-                      <option value="28px">28px</option>
-                      <option value="32px">32px</option>
-                      <option value="36px">36px</option>
-                      <option value="48px">48px</option>
-                    </select>
-
-                    {/* Undo/Redo */}
-                    <button className="btn btn-sm btn-ghost" onClick={() => { editor.chain().focus().undo().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Undo"><span className="text-lg">⎌</span></button>
-                    <button className="btn btn-sm btn-ghost" onClick={() => { editor.chain().focus().redo().run(); setTimeout(() => editor.commands.focus(), 10); }} title="Redo"><span className="text-lg">⎌⎌</span></button>
-
-                    {/* Add Text Field Button */}
-                    <button
-                      className="btn btn-sm btn-primary"
-                      onClick={() => {
-                        if (!editor) return;
-
-                        // Find the highest text field ID in the content
-                        const content = editor.getJSON();
-                        let highestId = 0;
-                        const findHighestId = (node: any) => {
-                          if (node.type === 'text' && node.text) {
-                            // Match {{text:text-1}}, {{text:text-2}}, etc.
-                            const matches = node.text.match(/\{\{text:text-(\d+)\}\}/g);
-                            if (matches) {
-                              matches.forEach((match: string) => {
-                                const idMatch = match.match(/text-(\d+)/);
-                                if (idMatch) {
-                                  const id = parseInt(idMatch[1], 10);
-                                  if (id > highestId) {
-                                    highestId = id;
-                                  }
-                                }
-                              });
-                            }
-                          }
-                          if (node.content) {
-                            if (Array.isArray(node.content)) {
-                              node.content.forEach(findHighestId);
-                            } else {
-                              findHighestId(node.content);
-                            }
-                          }
-                        };
-                        findHighestId(content);
-
-                        // Create new field ID (highest + 1)
-                        const newFieldId = highestId + 1;
-                        const placeholder = `{{text:text-${newFieldId}}}`;
-
-                        // Insert the placeholder at the current cursor position and maintain focus
-                        editor.chain().focus().insertContent(placeholder).run();
-                        // Ensure focus is maintained after insertion
-                        setTimeout(() => {
-                          editor.commands.focus();
-                        }, 10);
-                      }}
-                      title="Add extra field"
-                    >
-                      <PlusIcon className="w-4 h-4" />
-                      <span className="ml-1">Add extra field</span>
-                    </button>
-                  </div>
+                  {editor && <ContractEditorToolbar editor={editor} layout="mobile" />}
                   {/* Render editor content - placeholders show as plain text in edit mode */}
                   <div
                     key={`edit-content-${editorContentKey}-${renderKey}`}
@@ -5446,247 +6066,10 @@ const ContractPage: React.FC = () => {
                   })()}
                 </div>
               )}
+
+            </div>
             </div>
           </div>
-
-          {/* Sidebar — xl+ only (not mounted on mobile/tablet) */}
-          {!showDetailsAndPricingModal && showDesktopSideRail && (
-            <>
-              {/* Desktop right rail: pricing summary & contact actions only */}
-              <div
-                className="fixed top-0 right-0 z-[60] transition-all duration-300 ease-in-out print-hide"
-                style={{
-                  top: `${rightRailTopPx}px`,
-                  paddingRight: '16px',
-                  height: `calc(100vh - ${rightRailTopPx}px - 12px)`
-                }}
-              >
-                <div className="flex flex-col h-full relative">
-                  {/* Share / Edit / Save / Cancel moved to desktop bottom bar */}
-
-                  {/* Closer, applicants, total — card panel with generous spacing */}
-                  <div className="mt-1 w-[min(100%,15.5rem)] pr-1">
-                    <div className="rounded-2xl border border-gray-200/90 bg-white/85 shadow-[0_1px_3px_rgba(0,0,0,0.06),0_8px_24px_rgba(0,0,0,0.04)] backdrop-blur-sm px-5 py-7 space-y-8">
-                    {/* Lead + main contact (matches top bar) */}
-                    <div className="space-y-5 border-b border-gray-100/90 pb-7">
-                      <div className="space-y-1.5">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400/90">Main contact</p>
-                        <p className="text-sm font-semibold leading-snug text-gray-900 line-clamp-3">{mainContactDisplay}</p>
-                      </div>
-                      <div className="space-y-1.5">
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400/90">Lead number</p>
-                        <p className="font-mono text-base font-bold tabular-nums text-gray-900">#{renderLeadNumber()}</p>
-                      </div>
-                    </div>
-
-                    {/* Closer Role */}
-                    {(() => {
-                      if (!client) return null;
-                      const isLegacyLead = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
-                      let closerId: string | number | null = null;
-
-                      if (isLegacyLead) {
-                        // For legacy leads, check closer_id first, then closer field
-                        closerId = (client as any).closer_id || (client as any).closer || null;
-                      } else {
-                        // For new leads, check closer field
-                        const closer = client.closer;
-                        if (closer && closer !== '---' && closer !== '--' && closer !== null) {
-                          if (/^\d+$/.test(String(closer).trim())) {
-                            closerId = Number(closer);
-                          } else {
-                            // It's a display name, find the employee
-                            const employee = allEmployees.find((emp: any) =>
-                              emp.display_name && emp.display_name.trim().toLowerCase() === String(closer).trim().toLowerCase()
-                            );
-                            closerId = employee?.id || null;
-                          }
-                        }
-                        // Also check if there's a closer_id field for new leads
-                        if (!closerId && (client as any).closer_id) {
-                          closerId = (client as any).closer_id;
-                        }
-                      }
-
-                      const closerDisplay = getEmployeeDisplayNameFromId(closerId);
-                      if (!closerId || closerDisplay === '---' || closerDisplay === '') return null;
-
-                      return (
-                        <div className="flex flex-col items-stretch gap-3">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400/90">Closer</p>
-                          <div className="flex items-center gap-3 min-h-[3rem]">
-                            <div className="ring-2 ring-white shadow-md rounded-full shrink-0">
-                              <EmployeeAvatar employeeId={closerId} size="md" />
-                            </div>
-                            <p className="font-semibold text-gray-900 text-sm leading-snug truncate">{closerDisplay}</p>
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    {/* Applicants Number */}
-                    {(() => {
-                      const applicantCount = customPricing?.applicant_count || contract?.applicant_count || 0;
-                      if (!applicantCount || applicantCount === 0) return null;
-
-                      return (
-                        <div className="flex flex-col items-stretch gap-3">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400/90">Applicants</p>
-                          <div>
-                            <span className="inline-flex items-center rounded-full border border-gray-200/80 bg-gray-50/90 px-3.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm">
-                              {applicantCount} {applicantCount === 1 ? 'Applicant' : 'Applicants'}
-                            </span>
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    {/* Total Value — same currency/amount/VAT logic and styling as ClientHeader (desktop) */}
-                    {(() => {
-                      if (!client) return null;
-                      const isLegacyLead = client?.id?.toString().startsWith('legacy_');
-                      let currency = '';
-                      const accountingCurrencies = (client as any)?.accounting_currencies;
-                      if (accountingCurrencies) {
-                        const currencyRecord = Array.isArray(accountingCurrencies) ? accountingCurrencies[0] : accountingCurrencies;
-                        if (currencyRecord?.name && currencyRecord.name.trim() !== '') {
-                          currency = currencyRecord.name.trim();
-                        }
-                      }
-                      if (!isLegacyLead) {
-                        const currencyId = (client as any)?.currency_id ?? 1;
-                        const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                        if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
-                          currency = getCurrencyName(numericCurrencyId, accountingCurrencies);
-                          if (!currency || currency.trim() === '') currency = getCurrencyName(1);
-                        } else {
-                          currency = getCurrencyName(1);
-                        }
-                      } else {
-                        if (!currency && client?.currency_id) {
-                          const currencyFromId = getCurrencyName(client.currency_id, accountingCurrencies);
-                          if (currencyFromId && currencyFromId.trim() !== '') currency = currencyFromId;
-                        }
-                        if (!currency || currency.trim() === '') currency = client?.balance_currency || '';
-                        if (!currency || currency.trim() === '') currency = getCurrencyName(1);
-                      }
-                      let baseAmount: number;
-                      if (isLegacyLead) {
-                        const currencyId = (client as any)?.currency_id;
-                        let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                        if (!numericCurrencyId || isNaN(numericCurrencyId)) numericCurrencyId = 1;
-                        baseAmount =
-                          numericCurrencyId === 1
-                            ? Number((client as any)?.total_base ?? 0)
-                            : Number((client as any)?.total ?? 0);
-                      } else {
-                        baseAmount = Number(client?.balance || client?.proposal_total || 0);
-                      }
-                      const subcontractorFee = Number(client?.subcontractor_fee ?? 0);
-                      const mainAmount = baseAmount - subcontractorFee;
-                      let vatAmount = 0;
-                      let shouldShowVAT = false;
-                      const vatValue = client?.vat;
-                      if (isLegacyLead) {
-                        shouldShowVAT = true;
-                        if (vatValue !== null && vatValue !== undefined) {
-                          const vatStr = String(vatValue).toLowerCase().trim();
-                          if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
-                        }
-                        if (shouldShowVAT) vatAmount = baseAmount * 0.18;
-                      } else {
-                        shouldShowVAT = true;
-                        if (vatValue !== null && vatValue !== undefined) {
-                          const vatStr = String(vatValue).toLowerCase().trim();
-                          if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
-                        }
-                        if (shouldShowVAT) {
-                          vatAmount =
-                            client?.vat_value && Number(client.vat_value) > 0
-                              ? Number(client.vat_value)
-                              : baseAmount * 0.18;
-                        }
-                      }
-                      return (
-                        <div className="flex flex-col items-stretch gap-3">
-                          <div className="space-y-1.5">
-                            <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-400">Total Value</p>
-                            <div className="flex items-end gap-2">
-                              <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white">
-                                {currency}
-                                {Number(mainAmount.toFixed(2)).toLocaleString()}
-                              </p>
-                              {shouldShowVAT && vatAmount > 0 && (
-                                <p className="pb-1 text-sm text-gray-600 dark:text-gray-400">
-                                  +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
-                                </p>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    {/* Call and Email — grouped action row */}
-                    <div className="flex items-center gap-3">
-                      <button
-                        onClick={async () => {
-                          if (!client) return;
-                          setShowCallContactModal(true);
-                          setLoadingContacts(true);
-                          try {
-                            const isLegacyLead = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
-                            const leadId = isLegacyLead
-                              ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
-                              : client.id;
-                            const contacts = await fetchLeadContacts(leadId, isLegacyLead);
-                            const contactsWithPhone = contacts.filter(c => (c.phone || c.mobile) && (c.phone?.trim() || c.mobile?.trim()));
-                            setAvailableContacts(contactsWithPhone.length > 0 ? contactsWithPhone : contacts);
-                          } catch (error) {
-                            console.error('Error fetching contacts:', error);
-                            setAvailableContacts([]);
-                          } finally {
-                            setLoadingContacts(false);
-                          }
-                        }}
-                        className="btn btn-circle h-11 w-11 min-h-11 border border-gray-200/90 bg-gray-50/80 text-gray-800 shadow-sm hover:bg-white hover:border-gray-300 hover:shadow"
-                        title="Call"
-                      >
-                        <PhoneIcon className="w-5 h-5" />
-                      </button>
-                      <button
-                        onClick={async () => {
-                          if (!client) return;
-                          setShowEmailContactModal(true);
-                          setLoadingContacts(true);
-                          try {
-                            const isLegacyLead = client.lead_type === 'legacy' || client.id?.toString().startsWith('legacy_');
-                            const leadId = isLegacyLead
-                              ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
-                              : client.id;
-                            const contacts = await fetchLeadContacts(leadId, isLegacyLead);
-                            const contactsWithEmail = contacts.filter(c => c.email && c.email.trim());
-                            setAvailableContacts(contactsWithEmail.length > 0 ? contactsWithEmail : contacts);
-                          } catch (error) {
-                            console.error('Error fetching contacts:', error);
-                            setAvailableContacts([]);
-                          } finally {
-                            setLoadingContacts(false);
-                          }
-                        }}
-                        className="btn btn-circle h-11 w-11 min-h-11 border border-gray-200/90 bg-gray-50/80 text-gray-800 shadow-sm hover:bg-white hover:border-gray-300 hover:shadow"
-                        title="Email"
-                      >
-                        <EnvelopeIcon className="w-5 h-5" />
-                      </button>
-                    </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-            </>
-          )}
 
           {/* Mobile Sidebar - Normal layout on mobile */}
           {/* Mobile code removed - use modal component instead */}
@@ -5840,6 +6223,46 @@ const ContractPage: React.FC = () => {
       )}
 
       {/* Call Contact Selection Modal */}
+      {improvingContract ? (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 backdrop-blur-sm print-hide"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ai-contract-cooking-title"
+          aria-busy="true"
+        >
+          <div className="relative mx-4 flex w-full max-w-sm flex-col items-center overflow-hidden rounded-3xl border border-gray-200 bg-white px-8 py-10 text-center shadow-2xl">
+            <div className="ai-cooking-loader relative mb-6 flex items-center justify-center">
+              <div className="ai-cooking-ring-outer" aria-hidden="true" />
+              <div className="ai-cooking-ring-inner" aria-hidden="true" />
+              <div className="ai-cooking-glow" aria-hidden="true" />
+              <SparklesIcon className="ai-cooking-sparkle relative z-10 h-9 w-9 text-violet-600 drop-shadow-sm" />
+            </div>
+
+            <p id="ai-contract-cooking-title" className="bg-gradient-to-r from-fuchsia-600 via-violet-600 to-indigo-600 bg-clip-text text-lg font-bold text-transparent">
+              AI is cooking
+            </p>
+            <p className="mt-2 text-sm text-gray-600">
+              Improving your contract with meeting summaries…
+            </p>
+          </div>
+        </div>
+      ) : null}
+
+      <ContractAiReviewPanel
+        isOpen={showAiReviewPanel && editing}
+        onClose={() => {
+          setShowAiReviewPanel(false);
+          setAiRemarksInput('');
+        }}
+        initialSummary={aiReviewNotes}
+        messages={aiReviewChatMessages}
+        remarks={aiRemarksInput}
+        onRemarksChange={setAiRemarksInput}
+        onApplyRemarks={() => void handleApplyAiRemarks()}
+        isApplying={aiChatLoading}
+      />
+
       {showCallContactModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 max-h-[80vh] flex flex-col">
@@ -5955,6 +6378,54 @@ const ContractPage: React.FC = () => {
 
       {/* Print-specific CSS */}
       <style>{`
+        @keyframes ai-cook-spin {
+          to { transform: rotate(360deg); }
+        }
+        @keyframes ai-cook-spin-rev {
+          to { transform: rotate(-360deg); }
+        }
+        @keyframes ai-cook-pulse {
+          0%, 100% { transform: scale(0.92); opacity: 0.45; }
+          50% { transform: scale(1.05); opacity: 0.9; }
+        }
+        @keyframes ai-cook-sparkle {
+          0%, 100% { transform: scale(1) rotate(0deg); }
+          50% { transform: scale(1.12) rotate(10deg); }
+        }
+        .ai-cooking-loader {
+          width: 5.75rem;
+          height: 5.75rem;
+        }
+        .ai-cooking-ring-outer {
+          position: absolute;
+          inset: 0;
+          border-radius: 9999px;
+          background: conic-gradient(from 0deg, #e879f9, #a855f7, #6366f1, #38bdf8, #e879f9);
+          -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+          mask: radial-gradient(farthest-side, transparent calc(100% - 5px), #000 calc(100% - 4px));
+          animation: ai-cook-spin 1.15s linear infinite;
+        }
+        .ai-cooking-ring-inner {
+          position: absolute;
+          inset: 12px;
+          border-radius: 9999px;
+          border: 2px solid transparent;
+          border-top-color: #c4b5fd;
+          border-right-color: #67e8f9;
+          border-bottom-color: #f0abfc;
+          animation: ai-cook-spin-rev 0.85s linear infinite;
+        }
+        .ai-cooking-glow {
+          position: absolute;
+          inset: 20px;
+          border-radius: 9999px;
+          background: radial-gradient(circle, rgba(167,139,250,0.45) 0%, rgba(56,189,248,0.2) 55%, transparent 72%);
+          animation: ai-cook-pulse 2.1s ease-in-out infinite;
+        }
+        .ai-cooking-sparkle {
+          animation: ai-cook-sparkle 1.7s ease-in-out infinite;
+        }
+
         /* PDF generation mode - convert all colors to supported formats */
         .pdf-generation-mode,
         .pdf-generation-mode * {
@@ -6195,13 +6666,44 @@ const ContractPage: React.FC = () => {
         }
       `}</style>
 
+      {status === 'draft' && contract && client ? (
+        <div
+          className={`fixed bottom-[7.5rem] right-4 z-[45] flex flex-col gap-2 print-hide sm:bottom-28 sm:right-6 sm:flex-row sm:items-center ${
+            aiReviewOpen ? 'md:right-[29rem]' : ''
+          }`}
+        >
+          <button
+            type="button"
+            className="btn h-12 min-h-12 gap-2 rounded-full border-0 bg-gradient-to-r from-fuchsia-600 via-violet-600 to-indigo-600 px-5 text-white shadow-lg shadow-violet-500/35 transition hover:scale-[1.02] hover:shadow-xl hover:shadow-violet-500/45 disabled:opacity-70"
+            onClick={() => void handleImproveContractWithAi()}
+            disabled={improvingContract || aiChatLoading}
+            title="Improve contract with AI using meeting summaries"
+            aria-label="AI Summary — improve contract with meeting summaries"
+          >
+            <SparklesIcon className="h-6 w-6 shrink-0" />
+            <span className="text-sm font-semibold tracking-tight">AI Summary</span>
+          </button>
+          <button
+            type="button"
+            className="btn h-12 min-h-12 gap-2 rounded-full border-2 border-violet-300 bg-white px-5 text-violet-700 shadow-md transition hover:scale-[1.02] hover:border-violet-400 hover:bg-violet-50 disabled:opacity-70"
+            onClick={() => void handleOpenAiReviewPanel()}
+            disabled={improvingContract || aiChatLoading}
+            title="Open AI contract review chat to request changes"
+            aria-label="AI Review — open chat to request contract changes"
+          >
+            <ChatBubbleLeftRightIcon className="h-6 w-6 shrink-0" />
+            <span className="text-sm font-semibold tracking-tight">AI Review</span>
+          </button>
+        </div>
+      ) : null}
+
       {/* Fixed Bottom Bar with Created Date, Template Name, Change Template Button, and Action Buttons */}
       {contract?.created_at && (
-        <div className="fixed bottom-0 left-0 right-0 z-40 print-hide flex justify-center pb-4 sm:pb-0">
+        <div className="fixed bottom-0 left-0 right-0 z-[60] flex justify-center pb-4 pb-safe print-hide pointer-events-none sm:pb-0">
           {/* Mobile: Modern glassy oval container */}
-          <div className="sm:hidden w-[calc(100%-32px)] max-w-md">
+          <div className="pointer-events-auto sm:hidden w-[calc(100%-32px)] max-w-md">
             <div
-              className="bg-white/80 dark:bg-gray-800/80 backdrop-blur-md rounded-full shadow-2xl border-2 border-white/20 dark:border-gray-700/20 px-4 py-3"
+              className="rounded-full border border-gray-200 bg-white shadow-2xl px-4 py-3"
               style={{
                 borderRadius: '9999px',
               }}
@@ -6248,15 +6750,19 @@ const ContractPage: React.FC = () => {
                     {editing && (
                       <>
                         <button
-                          className="btn btn-circle btn-success w-12 h-12"
+                          className={`${CONTRACT_BAR_SAVE_BTN} w-12 h-12`}
                           onClick={handleSaveEdit}
                           title="Save"
                         >
-                          <CheckIcon className="w-6 h-6" />
+                          <CheckIcon className="h-5 w-5" />
                         </button>
                         <button
-                          className="btn btn-circle btn-error w-12 h-12"
+                          className={`${CONTRACT_BAR_CANCEL_BTN} w-12 h-12`}
                           onClick={async () => {
+                            setAiReviewNotes(null);
+                            setAiReviewChatMessages([]);
+                            setShowAiReviewPanel(false);
+                            setAiRemarksInput('');
                             setEditing(false);
                             // Reload contract content to discard changes without full page reload
                             if (contract?.id && editor) {
@@ -6278,7 +6784,7 @@ const ContractPage: React.FC = () => {
                           }}
                           title="Cancel"
                         >
-                          <XMarkIcon className="w-6 h-6" />
+                          <XMarkIcon className="h-5 w-5" />
                         </button>
                       </>
                     )}
@@ -6300,19 +6806,19 @@ const ContractPage: React.FC = () => {
                     {/* Delete button on mobile */}
                     <button
                       onClick={handleDeleteContract}
-                      className="btn btn-circle btn-error w-12 h-12"
+                      className={`${CONTRACT_BAR_DELETE_BTN} w-12 h-12`}
                       title="Delete Contract"
                     >
-                      <TrashIcon className="w-6 h-6" />
+                      <TrashIcon className="h-5 w-5" />
                     </button>
                   </>
                 )}
               </div>
             </div>
-              </div>
+          </div>
 
           {/* Desktop / tablet: bottom bar incl. Share & Edit (right rail is metadata-only on xl+) */}
-          <div className="hidden sm:block">
+          <div className="pointer-events-auto hidden sm:block">
             <div className="backdrop-blur-md bg-white/95 rounded-2xl shadow-lg border border-white/20 px-4 py-3">
               <div className="flex items-center justify-center gap-4 flex-wrap">
                 <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-center">
@@ -6353,15 +6859,19 @@ const ContractPage: React.FC = () => {
                       {editing && (
                         <>
                           <button
-                            className="btn btn-circle btn-success"
+                            className={CONTRACT_BAR_SAVE_BTN}
                             onClick={handleSaveEdit}
                             title="Save"
                           >
                             <CheckIcon className="w-5 h-5" />
                           </button>
                           <button
-                            className="btn btn-circle btn-error"
+                            className={CONTRACT_BAR_CANCEL_BTN}
                             onClick={async () => {
+                              setAiReviewNotes(null);
+                              setAiReviewChatMessages([]);
+                              setShowAiReviewPanel(false);
+                              setAiRemarksInput('');
                               setEditing(false);
                               if (contract?.id && editor) {
                                 const { data: contractData } = await supabase
@@ -6401,7 +6911,7 @@ const ContractPage: React.FC = () => {
                   )}
                   <button
                     onClick={handleDeleteContract}
-                    className="btn btn-circle btn-error"
+                    className={CONTRACT_BAR_DELETE_BTN}
                     title="Delete Contract"
                   >
                     <TrashIcon className="w-5 h-5" />

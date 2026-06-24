@@ -491,6 +491,14 @@ export type PortalMeetingRequestRow = {
   updated_at: string;
 };
 
+export async function portalGetBookingAccess() {
+  const { data, error } = await supabase.rpc('portal_get_booking_access', {
+    p_token: tokenOrThrow(),
+  });
+  if (error) throw error;
+  return data as { ok: boolean; error?: string; booking_token?: string } | null;
+}
+
 export async function portalGetMeetings() {
   const { data, error } = await supabase.rpc('portal_get_meetings', {
     p_token: tokenOrThrow(),

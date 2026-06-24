@@ -1665,10 +1665,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
 
       {/* Main Info Grid */}
       <div className="space-y-8">
-        <div className="space-y-1 mb-4">
-          <h3 className="text-xs font-semibold tracking-wide text-gray-500 uppercase">Overview</h3>
-        </div>
-        {/* Overview: row 1 = Case Probability + Follow-up; row 2 = Eligibility + File ID */}
+        {/* Case Probability + Follow-up; Eligibility + File ID */}
         <div className="mb-10 flex flex-col gap-10 lg:mb-16 lg:gap-14">
           <div className="flex flex-col lg:flex-row lg:items-stretch">
           {/* Case Probability */}
@@ -2061,12 +2058,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
           </div>
         </div>
 
-        <div className="!mt-20 md:!mt-24 mb-4 space-y-1">
-          <h3 className="text-xs font-semibold tracking-wide text-gray-500 uppercase">Case Details</h3>
-          <div className="h-px w-full bg-gradient-to-r from-transparent via-gray-300/45 to-transparent" />
-        </div>
-
-        {/* Row 2: Special Notes and General Notes */}
+        {/* Special Notes and General Notes */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           {/* Special Notes */}
           <div className="p-0">

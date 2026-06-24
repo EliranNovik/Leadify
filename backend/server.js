@@ -22,6 +22,7 @@ const currencyRatesRoutes = require('./src/routes/currencyRatesRoutes');
 const paymentPlanInvoiceAutomationRoutes = require('./src/routes/paymentPlanInvoiceAutomationRoutes');
 const pelecardPaymentRoutes = require('./src/routes/pelecardPaymentRoutes');
 const nineHourAutoClockOutRoutes = require('./src/routes/nineHourAutoClockOutRoutes');
+const clientBookingRoutes = require('./src/routes/clientBookingRoutes');
 const { startMailboxSyncScheduler } = require('./src/services/mailboxSyncScheduler');
 const { startMeetingNotificationScheduler } = require('./src/services/meetingNotificationScheduler');
 const { startBoiExchangeRatesScheduler } = require('./src/services/boiExchangeRatesScheduler');
@@ -412,6 +413,7 @@ app.use('/api/currency-rates', currencyRatesRoutes);
 app.use('/api/payment-plan-invoice-automation', paymentPlanInvoiceAutomationRoutes);
 app.use('/api/payments/pelecard', pelecardPaymentRoutes);
 app.use('/api/nine-hour-auto-clock-out', nineHourAutoClockOutRoutes);
+app.use('/api/client-booking', clientBookingRoutes);
 
 // Pelecard hosted checkout theme (must be publicly reachable HTTPS for CssURL)
 app.get('/pelecard-checkout.css', (req, res) => {

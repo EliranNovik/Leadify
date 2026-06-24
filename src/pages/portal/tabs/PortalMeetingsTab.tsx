@@ -1,17 +1,25 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   CalendarDaysIcon,
   ChevronDownIcon,
-  ClockIcon,
+  ClipboardDocumentIcon,
   MapPinIcon,
-  PlusIcon,
+  ShareIcon,
   VideoCameraIcon,
 } from '@heroicons/react/24/outline';
-import type { PortalMeetingRequestRow, PortalMeetingRow } from '../../../lib/portalApi';
+import toast from 'react-hot-toast';
+import ClientBookingScheduler from '../../../components/client-booking/ClientBookingScheduler';
 import {
-  EntityAvatar,
+  buildGoogleCalendarUrl,
+  copyTextToClipboard,
+  meetingShareText,
+  shareMeetingLink,
+} from '../../../lib/meetingCalendarShare';
+import { portalGetBookingAccess, type PortalMeetingRow } from '../../../lib/portalApi';
+import {
   getPortalTabHeaderCoverImage,
   PortalCard,
+  PortalLoading,
   PortalSectionLabel,
   PortalTabFrame,
 } from '../components/portalTheme';
@@ -34,13 +42,39 @@ function formatTime(t: string | null | undefined): string {
   return raw;
 }
 
-function formatDateTime(value: string | null | undefined): string {
-  if (!value) return '—';
+function formatTime12h(t: string | null | undefined): string {
+  const raw = formatTime(t);
+  if (!raw) return '';
+  const [hStr, mStr] = raw.split(':');
+  const h = Number(hStr);
+  const m = Number(mStr);
+  if (Number.isNaN(h)) return raw;
+  const period = h >= 12 ? 'pm' : 'am';
+  const hour12 = h % 12 || 12;
+  return m ? `${hour12}:${String(m).padStart(2, '0')}${period}` : `${hour12}${period}`;
+}
+
+function formatMeetingTitle(date: string | null | undefined, time: string | null | undefined): string {
+  if (!date) return formatTime12h(time) || 'Meeting';
   try {
-    return new Date(value).toLocaleString();
+    const d = new Date(`${date.includes('T') ? date : `${date}T12:00:00`}`);
+    const dateLabel = d.toLocaleDateString(undefined, {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+    const timeLabel = formatTime12h(time);
+    return timeLabel ? `${dateLabel} · ${timeLabel}` : dateLabel;
   } catch {
-    return value;
+    const timeLabel = formatTime12h(time);
+    return timeLabel ? `${formatDate(date)} · ${timeLabel}` : formatDate(date);
   }
+}
+
+function meetingLocationIcon(location: string | null | undefined) {
+  const isTeams = (location || '').toLowerCase() === 'teams';
+  return isTeams ? VideoCameraIcon : MapPinIcon;
 }
 
 function meetingSortKey(m: PortalMeetingRow): number {
@@ -64,17 +98,6 @@ function ColoredBadge({
   );
 }
 
-function RequestStatusBadge({ status }: { status: string }) {
-  const normalized = status.toLowerCase();
-  if (normalized === 'confirmed') {
-    return <ColoredBadge className="bg-emerald-500/15 text-emerald-800">Confirmed</ColoredBadge>;
-  }
-  if (normalized === 'cancelled') {
-    return <ColoredBadge className="bg-neutral-500/15 text-neutral-700">Cancelled</ColoredBadge>;
-  }
-  return <ColoredBadge className="bg-amber-500/15 text-amber-800">Pending</ColoredBadge>;
-}
-
 function MeetingStatusBadge({ status }: { status: string }) {
   const normalized = status.toLowerCase();
   if (normalized === 'completed') {
@@ -86,46 +109,176 @@ function MeetingStatusBadge({ status }: { status: string }) {
   return <ColoredBadge className="bg-primary/15 text-primary">Scheduled</ColoredBadge>;
 }
 
-type MeetingManagerInfo = {
-  name: string | null | undefined;
-  photoUrl?: string | null;
-};
+const MEETING_ACTION_BTN_CLASS =
+  'btn btn-ghost btn-xs h-9 min-h-0 flex-1 gap-1.5 rounded-full border border-gray-200/90 bg-gray-50/80 px-2.5 text-xs font-medium text-base-content/70 hover:border-gray-300 hover:bg-white hover:text-base-content';
 
-function MeetingManagerRow({ manager }: { manager: MeetingManagerInfo }) {
-  const displayName = manager.name?.trim() || '';
-  const assigned = Boolean(displayName && displayName !== '—' && displayName !== 'Not assigned');
+function MeetingCardActions({ meeting, title }: { meeting: PortalMeetingRow; title: string }) {
+  const joinUrl = meeting.join_url?.trim() || '';
+  const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+  const googleCalendarUrl =
+    meeting.meeting_date && meeting.meeting_time
+      ? buildGoogleCalendarUrl({
+          title,
+          date: meeting.meeting_date,
+          time: meeting.meeting_time,
+          location: meeting.meeting_location,
+          joinUrl: joinUrl || null,
+        })
+      : null;
+
+  const handleCopyLink = async () => {
+    if (!joinUrl) {
+      toast.error('No meeting link available');
+      return;
+    }
+    const ok = await copyTextToClipboard(joinUrl);
+    if (ok) toast.success('Meeting link copied');
+    else toast.error('Could not copy link');
+  };
+
+  const handleShare = async () => {
+    if (!joinUrl) {
+      toast.error('No meeting link available');
+      return;
+    }
+    const result = await shareMeetingLink({
+      title,
+      url: joinUrl,
+      text: meetingShareText(title, meeting.meeting_date, meeting.meeting_time),
+    });
+    if (result === 'copied') toast.success('Meeting link copied');
+    else if (result === 'failed') toast.error('Could not share meeting link');
+  };
+
+  if (!joinUrl && !googleCalendarUrl) return null;
 
   return (
-    <div className="mt-4 flex items-center gap-2.5 border-t border-gray-100 pt-3">
-      <EntityAvatar
-        name={assigned ? displayName : 'Meeting manager'}
-        imageUrl={manager.photoUrl || undefined}
-        stableKey={`portal-meeting-manager::${displayName || 'unassigned'}`}
-        className="h-9 w-9 shrink-0 text-xs"
-      />
-      <div className="min-w-0">
-        <p className="text-[11px] font-bold uppercase tracking-wide text-base-content/40">Meeting manager</p>
-        <p className="truncate text-sm font-medium text-gray-800">
-          {assigned ? displayName : 'Not assigned yet'}
-        </p>
-      </div>
+    <div className="mt-3 flex flex-wrap gap-2">
+      {joinUrl ? (
+        <>
+          <button type="button" className={MEETING_ACTION_BTN_CLASS} onClick={() => void handleCopyLink()}>
+            <ClipboardDocumentIcon className="h-3.5 w-3.5 shrink-0" />
+            Copy link
+          </button>
+          {canShare ? (
+            <button type="button" className={MEETING_ACTION_BTN_CLASS} onClick={() => void handleShare()}>
+              <ShareIcon className="h-3.5 w-3.5 shrink-0" />
+              Share
+            </button>
+          ) : null}
+        </>
+      ) : null}
+      {googleCalendarUrl ? (
+        <a
+          href={googleCalendarUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={MEETING_ACTION_BTN_CLASS}
+        >
+          <CalendarDaysIcon className="h-3.5 w-3.5 shrink-0" />
+          Google Calendar
+        </a>
+      ) : null}
     </div>
+  );
+}
+
+function PortalMeetingCard({
+  meeting,
+  muted = false,
+}: {
+  meeting: PortalMeetingRow;
+  muted?: boolean;
+}) {
+  const title = formatMeetingTitle(meeting.meeting_date, meeting.meeting_time);
+  const LocationIcon = meetingLocationIcon(meeting.meeting_location);
+  const isTeams = (meeting.meeting_location || '').toLowerCase() === 'teams';
+
+  return (
+    <article
+      className={`group relative flex h-full flex-col overflow-hidden rounded-[20px] border border-gray-100/90 bg-white shadow-[0_2px_14px_rgba(15,23,42,0.05)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_10px_28px_rgba(15,23,42,0.09)] ${
+        muted ? 'opacity-80' : ''
+      }`}
+    >
+      <div className="flex flex-1 flex-col p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex min-w-0 flex-1 gap-3">
+            <div
+              className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl ${
+                muted ? 'bg-neutral-100 text-neutral-500' : 'bg-primary/10 text-primary'
+              }`}
+            >
+              <CalendarDaysIcon className="h-5 w-5" aria-hidden />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-base font-bold leading-snug tracking-tight text-gray-900 md:text-[1.05rem]">
+                {title}
+              </h3>
+              {meeting.meeting_location ? (
+                <p className="mt-2 flex items-center gap-1.5 text-sm text-base-content/55">
+                  <LocationIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
+                  <span className="truncate">{meeting.meeting_location}</span>
+                </p>
+              ) : null}
+            </div>
+          </div>
+          <MeetingStatusBadge status={meeting.status || 'scheduled'} />
+        </div>
+
+        {meeting.join_url ? (
+          <a
+            href={meeting.join_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`btn btn-sm mt-5 w-full gap-2 rounded-full border-0 font-semibold shadow-sm ${
+              isTeams ? 'btn-primary' : 'btn-outline'
+            }`}
+          >
+            <VideoCameraIcon className="h-4 w-4" />
+            Join meeting
+          </a>
+        ) : null}
+
+        <MeetingCardActions meeting={meeting} title={title} />
+      </div>
+    </article>
   );
 }
 
 type Props = {
   meetings: PortalMeetingRow[];
-  requests: PortalMeetingRequestRow[];
-  meetingManager: MeetingManagerInfo;
-  onRequestMeeting: () => void;
+  sessionContactId?: number | null;
+  onMeetingsChange?: () => void;
 };
 
 const PortalMeetingsTab: React.FC<Props> = ({
   meetings,
-  requests,
-  meetingManager,
-  onRequestMeeting,
+  sessionContactId = null,
+  onMeetingsChange,
 }) => {
+  const [bookingToken, setBookingToken] = useState<string | null>(null);
+  const [bookingAccessLoading, setBookingAccessLoading] = useState(true);
+  const [bookingAccessError, setBookingAccessError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setBookingAccessLoading(true);
+    void portalGetBookingAccess()
+      .then((result) => {
+        if (result?.ok && result.booking_token) {
+          setBookingToken(result.booking_token);
+          setBookingAccessError(null);
+        } else {
+          setBookingToken(null);
+          setBookingAccessError(result?.error || 'Self-scheduling is not available for your case.');
+        }
+      })
+      .catch((e) => {
+        setBookingToken(null);
+        setBookingAccessError(e instanceof Error ? e.message : 'Could not load scheduling');
+      })
+      .finally(() => setBookingAccessLoading(false));
+  }, []);
+
   const { upcoming, past } = useMemo(() => {
     const now = new Date();
     now.setHours(0, 0, 0, 0);
@@ -150,116 +303,46 @@ const PortalMeetingsTab: React.FC<Props> = ({
     return { upcoming: upcomingList, past: pastList };
   }, [meetings]);
 
-  const renderMeetingCard = (m: PortalMeetingRow) => {
-    const time = formatTime(m.meeting_time);
-    const title = m.meeting_subject || 'Meeting';
-
-    return (
-      <PortalCard key={String(m.id)}>
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div className="min-w-0">
-            <p className="font-medium text-gray-900">{title}</p>
-            <div className="mt-2 space-y-1 text-sm text-gray-600">
-              <p className="flex items-center gap-2">
-                <CalendarDaysIcon className="h-4 w-4 shrink-0 text-gray-400" />
-                {formatDate(m.meeting_date)}
-                {time ? ` · ${time}` : ''}
-              </p>
-              {m.meeting_location && (
-                <p className="flex items-center gap-2">
-                  <MapPinIcon className="h-4 w-4 shrink-0 text-gray-400" />
-                  {m.meeting_location}
-                </p>
-              )}
-            </div>
-          </div>
-          <MeetingStatusBadge status={m.status || 'scheduled'} />
-        </div>
-        {m.join_url && (
-          <a
-            href={m.join_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="btn btn-sm btn-primary mt-3 gap-1.5"
-          >
-            <VideoCameraIcon className="h-4 w-4" />
-            Join meeting
-          </a>
-        )}
-        <MeetingManagerRow manager={meetingManager} />
-      </PortalCard>
-    );
-  };
+  const renderMeetingCard = (m: PortalMeetingRow, muted = false) => (
+    <PortalMeetingCard key={String(m.id)} meeting={m} muted={muted} />
+  );
 
   return (
     <PortalTabFrame
       title="Meetings"
-      subtitle="Scheduled appointments and your meeting requests."
+      subtitle="Schedule appointments and view your upcoming meetings."
       headerCoverImage={getPortalTabHeaderCoverImage('meetings')}
     >
-      <div className="-mt-2 flex justify-end">
-        <button type="button" className="btn btn-primary btn-sm gap-1.5 rounded-full" onClick={onRequestMeeting}>
-          <PlusIcon className="h-4 w-4" />
-          Request meeting
-        </button>
-      </div>
-
       <section className="space-y-5">
         <PortalSectionLabel>Upcoming</PortalSectionLabel>
         {upcoming.length === 0 ? (
           <PortalCard>
             <p className="text-sm text-base-content/45">
-              No upcoming meetings scheduled. Use &quot;Request meeting&quot; to ask our team for a time.
+              No upcoming meetings scheduled. Use the scheduler below to book an appointment.
             </p>
           </PortalCard>
         ) : (
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-            {upcoming.map(renderMeetingCard)}
+          <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
+            {upcoming.map((m) => renderMeetingCard(m))}
           </div>
         )}
       </section>
 
       <section className="space-y-5">
-        <PortalSectionLabel>Your requests</PortalSectionLabel>
-        {requests.length === 0 ? (
-          <PortalCard>
-            <p className="text-sm text-base-content/45">You have not submitted any meeting requests yet.</p>
-          </PortalCard>
+        {bookingAccessLoading ? (
+          <PortalLoading className="py-10" />
+        ) : bookingToken ? (
+          <ClientBookingScheduler
+            bookingToken={bookingToken}
+            variant="embedded"
+            defaultContactId={sessionContactId}
+            hideScheduledMeetings
+            onBooked={onMeetingsChange}
+          />
         ) : (
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-            {requests.map((req) => (
-              <PortalCard key={req.id}>
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="flex items-center gap-2 font-medium text-gray-900">
-                      <CalendarDaysIcon className="h-4 w-4 shrink-0 text-gray-400" />
-                      Preferred {formatDate(req.preferred_date)}
-                    </p>
-                    {req.preferred_time_range && (
-                      <p className="mt-1 flex items-center gap-2 text-sm text-gray-600">
-                        <ClockIcon className="h-4 w-4 shrink-0 text-gray-400" />
-                        {req.preferred_time_range}
-                      </p>
-                    )}
-                    {req.notes && (
-                      <p className="mt-2 whitespace-pre-wrap text-sm text-gray-500">{req.notes}</p>
-                    )}
-                    <p className="mt-2 text-xs text-gray-400">Submitted {formatDateTime(req.created_at)}</p>
-                  </div>
-                  <RequestStatusBadge status={req.status} />
-                </div>
-                {req.status === 'pending' && (
-                  <p className="mt-2 text-xs text-amber-700/90">Request being reviewed.</p>
-                )}
-                {req.status === 'confirmed' && (
-                  <p className="mt-2 text-xs text-emerald-700/90">
-                    Your request was accepted. Check scheduled meetings above for the confirmed time.
-                  </p>
-                )}
-                <MeetingManagerRow manager={meetingManager} />
-              </PortalCard>
-            ))}
-          </div>
+          <PortalCard>
+            <p className="text-sm text-base-content/55">{bookingAccessError}</p>
+          </PortalCard>
         )}
       </section>
 
@@ -275,8 +358,8 @@ const PortalMeetingsTab: React.FC<Props> = ({
                 </span>
               </summary>
               <div className="border-t border-gray-100 px-4 pb-4 pt-2 md:px-6 md:pb-6">
-                <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-                  {past.map(renderMeetingCard)}
+                <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
+                  {past.map((m) => renderMeetingCard(m, true))}
                 </div>
               </div>
             </details>

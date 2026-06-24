@@ -62,6 +62,7 @@ import { fetchUnpaidTotalsByCurrency, getVatRateForLegacyLead, pickUnpaidBaseAnd
 import { useAuthContext } from '../contexts/AuthContext';
 import { fetchStageActorInfo } from '../lib/leadStageManager';
 import { SubEffortsLogModal } from './SubEffortsLogModal';
+import { SubEffortsLogSidebar } from './SubEffortsLogSidebar';
 import {
     fetchPublicUserId,
     fetchLeadFieldFlagsForLead,
@@ -96,6 +97,20 @@ const resolvedLeadSourceCache = new Map<string, ResolvedLeadSource>();
 const leadTagsCache = new Map<string, string[]>();
 const leadFieldFlagMetaCache = new Map<string, Map<string, ContentFlagMeta>>();
 const rmqMessageFlagCountCache = new Map<string, number>();
+
+/** Stage 105 banner: hide while loading (null); show missing only when explicitly false. */
+function shouldShowHandlerPaymentBanner(
+  hasPaymentPlan: boolean | null | undefined,
+  nextDuePayment: unknown
+): boolean {
+  if (hasPaymentPlan === null || hasPaymentPlan === undefined) return false;
+  if (hasPaymentPlan === false) return true;
+  return Boolean(nextDuePayment);
+}
+
+function isMissingPaymentPlanBanner(hasPaymentPlan: boolean | null | undefined): boolean {
+  return hasPaymentPlan === false;
+}
 
 let cachedCurrencies: Array<{ id: number | string; name: string; iso_code: string | null }> | null = null;
 let cachedCurrenciesPromise: Promise<
@@ -204,8 +219,8 @@ interface ClientHeaderProps {
     hideActionsDropdown?: boolean;
     /** When true, hides the Total Value badge (e.g. external user modal) */
     hideTotalValueBadge?: boolean;
-    /** When true, Total Value is driven by payment plan and locked. */
-    hasPaymentPlan?: boolean;
+    /** When true, Total Value is driven by payment plan and locked. null = still loading. */
+    hasPaymentPlan?: boolean | null;
     /** Sum of payment plan base (lead currency) when locked. */
     paymentPlanBaseTotal?: number | null;
     /** Sum of payment plan VAT (lead currency) when locked. */
@@ -274,7 +289,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     hideHistoryAndTimeline = false,
     hideActionsDropdown = false,
     hideTotalValueBadge = false,
-    hasPaymentPlan = false,
+    hasPaymentPlan = null,
     paymentPlanBaseTotal = null,
     paymentPlanVatTotal = null,
     paymentPlanExpenseNoVatTotal = null,
@@ -737,7 +752,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     }, []);
 
     /**
-     * Sub-efforts dropdown + inline log + SubEffortsLogModal for stages 60, 70, 100, 105, 110, 150 (and name equivalents).
+     * Sub-efforts dropdown + collapsible sidebar log + SubEffortsLogModal for stages 60, 70, 100, 105, 110, 150 (and name equivalents).
      * "Finalize case" in that row only for 110 / 150. Stage 200: fetch + catalog for log-only UI elsewhere.
      */
     const subEffortsStageFlags = useMemo(() => {
@@ -2728,7 +2743,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
                             }
 
-                            if (hasPaymentPlan) {
+                            if (hasPaymentPlan === true) {
                                 if (paymentPlanBaseTotal !== null) baseAmount = Number(paymentPlanBaseTotal) || 0;
                             }
                             const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
@@ -2760,10 +2775,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     const vatStr = String(vatValue).toLowerCase().trim();
                                     if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
                                 }
-                                if (hasPaymentPlan && paymentPlanVatTotal !== null) {
+                                if (hasPaymentPlan === true && paymentPlanVatTotal !== null) {
                                     vatAmount = Number(paymentPlanVatTotal) || 0;
                                     shouldShowVAT = vatAmount > 0;
-                                } else if (!hasPaymentPlan && shouldShowVAT) {
+                                } else if (hasPaymentPlan !== true && shouldShowVAT) {
                                     // When there's no payment plan, totals are treated as NET (same mental model as FinancesTab).
                                     const vatRate = getVatRateForLegacyLead((selectedClient as any)?.date_signed || (selectedClient as any)?.created_at || null);
                                     vatAmount = Math.round((baseAmount * vatRate) * 100) / 100;
@@ -2803,7 +2818,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         <div className="flex items-end justify-end gap-2">
                                             <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white inline-flex items-center gap-2">
                                                 <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
-                                                {hasPaymentPlan && <LockClosedIcon className="h-4 w-4 text-gray-500 dark:text-gray-300" title="Locked by payment plan" />}
+                                                {hasPaymentPlan === true && <LockClosedIcon className="h-4 w-4 text-gray-500 dark:text-gray-300" title="Locked by payment plan" />}
                                             </p>
                                             {shouldShowVAT && vatAmount > 0 && (
                                                 <p className="pb-0.5 text-sm text-gray-600 dark:text-gray-400">
@@ -3119,7 +3134,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                 }
 
                                 // When payment plan exists, Total Value should match plan totals (no double VAT).
-                                if (hasPaymentPlan && paymentPlanBaseTotal !== null) {
+                                if (hasPaymentPlan === true && paymentPlanBaseTotal !== null) {
                                     baseAmount = Number(paymentPlanBaseTotal) || 0;
                                 }
 
@@ -3152,10 +3167,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         const vatStr = String(vatValue).toLowerCase().trim();
                                         if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') shouldShowVAT = false;
                                     }
-                                    if (hasPaymentPlan && paymentPlanVatTotal !== null) {
+                                    if (hasPaymentPlan === true && paymentPlanVatTotal !== null) {
                                         vatAmount = Number(paymentPlanVatTotal) || 0;
                                         shouldShowVAT = vatAmount > 0;
-                                    } else if (!hasPaymentPlan && shouldShowVAT) {
+                                    } else if (hasPaymentPlan !== true && shouldShowVAT) {
                                         const vatRate = getVatRateForLegacyLead((selectedClient as any)?.date_signed || (selectedClient as any)?.created_at || null);
                                         vatAmount = Math.round((baseAmount * vatRate) * 100) / 100;
                                     } else if (shouldShowVAT) {
@@ -3199,7 +3214,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             <div className="flex items-end justify-end gap-2">
                                                 <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white inline-flex items-center gap-2">
                                                     <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
-                                                    {hasPaymentPlan && <LockClosedIcon className="h-4 w-4 text-gray-500 dark:text-gray-300" title="Locked by payment plan" />}
+                                                    {hasPaymentPlan === true && <LockClosedIcon className="h-4 w-4 text-gray-500 dark:text-gray-300" title="Locked by payment plan" />}
                                                 </p>
                                                 {shouldShowVAT && vatAmount > 0 && (
                                                     <p className="pb-1 text-sm text-gray-600 dark:text-gray-400">
@@ -3390,70 +3405,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             return null; // Don't show any stage buttons if unactivated
                         }
 
-                        // Closed state: keep showing Sub efforts log for stage 200, otherwise show "No action available"
+                        // Closed state: sub-efforts sidebar handles stage 200 log; otherwise show "No action available"
                         if (selectedClient && (areStagesEquivalent(currentStageName, 'Case Closed') || (isStageNumeric && stageNumeric === 200))) {
                             if ((isStageNumeric && stageNumeric === 200) || Number((selectedClient as any)?.stage) === 200) {
-                                return (
-                                    <>
-                                        <div className="w-full mt-3 flex justify-end">
-                                            <div className="w-full max-w-xl ml-auto">
-                                                {isLoadingLeadSubEfforts ? (
-                                                    <div className="text-sm text-gray-500">Loading sub efforts…</div>
-                                                ) : leadSubEfforts.length > 0 ? (
-                                                    <div className="rounded-2xl border border-base-200 bg-base-100 px-4 py-3 shadow-sm">
-                                                        <div className="flex items-center justify-between gap-3 mb-2">
-                                                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                                                                Sub efforts log
-                                                            </div>
-                                                            <button
-                                                                type="button"
-                                                                className="btn btn-ghost btn-xs"
-                                                                onClick={() => openSubEffortsModal(null)}
-                                                            >
-                                                                View all
-                                                            </button>
-                                                        </div>
-                                                        <div className="space-y-1.5">
-                                                            {leadSubEfforts.map((row: any) => {
-                                                                const name = row?.sub_efforts?.name ?? '—';
-                                                                const who = row?.tenants_employee?.display_name ?? row?.created_by ?? '—';
-                                                                const when = row?.created_at ? new Date(row.created_at).toLocaleString() : '—';
-                                                                return (
-                                                                    <button
-                                                                        key={row.id}
-                                                                        type="button"
-                                                                        onClick={() => openSubEffortsModal(row.id)}
-                                                                        className="w-full text-left rounded-xl border border-base-200 bg-gray-50/60 px-3 py-2 hover:bg-gray-50 transition"
-                                                                    >
-                                                                        <div className="flex items-center justify-between gap-3">
-                                                                            <div className="min-w-0">
-                                                                                <div className="font-semibold text-sm truncate text-gray-800">{name}</div>
-                                                                                <div className="mt-0.5 text-xs text-gray-500 truncate">
-                                                                                    by <span className="font-medium text-gray-700">{String(who)}</span>
-                                                                                </div>
-                                                                            </div>
-                                                                            <div className="text-[11px] text-gray-400 whitespace-nowrap">{when}</div>
-                                                                        </div>
-                                                                    </button>
-                                                                );
-                                                            })}
-                                                        </div>
-                                                    </div>
-                                                ) : (
-                                                    <div className="text-sm text-gray-500">No sub efforts yet.</div>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <SubEffortsLogModal
-                                            open={isSubEffortsModalOpen}
-                                            onClose={() => setIsSubEffortsModalOpen(false)}
-                                            rows={leadSubEfforts}
-                                            leadNumber={selectedClient?.lead_number ?? null}
-                                            initialSelectedRowId={subEffortsModalRowId}
-                                            onRefresh={() => void fetchLeadSubEfforts()}
-                                        />
-                                    </>
-                                );
+                                return null;
                             }
                             return (
                                 <div className="px-4 py-2 text-sm text-gray-600">
@@ -3466,9 +3421,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             <>
                                 {/* Stage 105: no action buttons (advances via payments plan) */}
                                 {(areStagesEquivalent(currentStageName, 'Handler Set') ||
-                                    (isStageNumeric && stageNumeric === 105)) && (!hasPaymentPlan || nextDuePayment) ? (
+                                    (isStageNumeric && stageNumeric === 105)) && shouldShowHandlerPaymentBanner(hasPaymentPlan, nextDuePayment) ? (
                                     <div className="w-full flex justify-center">
-                                        {!hasPaymentPlan ? (
+                                        {isMissingPaymentPlanBanner(hasPaymentPlan) ? (
                                             <div className="w-full max-w-xl rounded-2xl border border-red-200/70 bg-red-50 px-4 py-3 text-red-900 shadow-sm">
                                                 <div className="flex items-center justify-between gap-3">
                                                     <div className="flex items-center gap-2 text-sm font-semibold">
@@ -3632,129 +3587,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 </ul>
                                             </div>
                                         </div>
-                                        <div className="w-full mt-3 flex justify-end">
-                                            <div className="w-full max-w-xl ml-auto">
-                                            {isLoadingLeadSubEfforts ? (
-                                                <div className="text-sm text-gray-500">Loading sub efforts…</div>
-                                            ) : leadSubEfforts.length > 0 ? (
-                                                <div className="rounded-2xl border border-base-200 bg-base-100 px-4 py-3 shadow-sm">
-                                                    <div className="flex items-center justify-between gap-3 mb-2">
-                                                        <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                                                            Sub efforts log
-                                                        </div>
-                                                        <button
-                                                            type="button"
-                                                            className="btn btn-ghost btn-xs"
-                                                            onClick={() => openSubEffortsModal(null)}
-                                                        >
-                                                            View all
-                                                        </button>
-                                                    </div>
-                                                    <div className="space-y-1.5">
-                                                        {leadSubEfforts.map((row: any) => {
-                                                            const name = row?.sub_efforts?.name ?? '—';
-                                                            const who = row?.tenants_employee?.display_name ?? row?.created_by ?? '—';
-                                                            const when = row?.created_at ? new Date(row.created_at).toLocaleString() : '—';
-                                                            return (
-                                                                <button
-                                                                    key={row.id}
-                                                                    type="button"
-                                                                    onClick={() => openSubEffortsModal(row.id)}
-                                                                    className="w-full text-left rounded-xl border border-base-200 bg-gray-50/60 px-3 py-2 hover:bg-gray-50 transition"
-                                                                >
-                                                                    <div className="flex items-center justify-between gap-3">
-                                                                        <div className="min-w-0">
-                                                                            <div className="font-semibold text-sm truncate text-gray-800">{name}</div>
-                                                                            <div className="mt-0.5 text-xs text-gray-500 truncate">
-                                                                                by <span className="font-medium text-gray-700">{String(who)}</span>
-                                                                            </div>
-                                                                        </div>
-                                                                        <div className="text-[11px] text-gray-400 whitespace-nowrap">{when}</div>
-                                                                    </div>
-                                                                </button>
-                                                            );
-                                                        })}
-                                                    </div>
-                                                </div>
-                                            ) : (
-                                                <div className="text-sm text-gray-500">No sub efforts yet.</div>
-                                            )}
-                                            </div>
-                                        </div>
-                                        <SubEffortsLogModal
-                                            open={isSubEffortsModalOpen}
-                                            onClose={() => setIsSubEffortsModalOpen(false)}
-                                            rows={leadSubEfforts}
-                                            leadNumber={selectedClient?.lead_number ?? null}
-                                            initialSelectedRowId={subEffortsModalRowId}
-                                            onRefresh={() => void fetchLeadSubEfforts()}
-                                        />
-                                    </>
-                                )}
-
-                                {/* Stage 200: keep showing Sub efforts log (read-only) */}
-                                {(() => {
-                                    const inferredStageNumeric = Number((selectedClient as any)?.stage ?? stageNumeric ?? NaN);
-                                    return (isStageNumeric && stageNumeric === 200) || inferredStageNumeric === 200;
-                                })() && (
-                                    <>
-                                        <div className="w-full mt-3 flex justify-end">
-                                            <div className="w-full max-w-xl ml-auto">
-                                                {isLoadingLeadSubEfforts ? (
-                                                    <div className="text-sm text-gray-500">Loading sub efforts…</div>
-                                                ) : leadSubEfforts.length > 0 ? (
-                                                    <div className="rounded-2xl border border-base-200 bg-base-100 px-4 py-3 shadow-sm">
-                                                        <div className="flex items-center justify-between gap-3 mb-2">
-                                                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                                                                Sub efforts log
-                                                            </div>
-                                                            <button
-                                                                type="button"
-                                                                className="btn btn-ghost btn-xs"
-                                                                onClick={() => openSubEffortsModal(null)}
-                                                            >
-                                                                View all
-                                                            </button>
-                                                        </div>
-                                                        <div className="space-y-1.5">
-                                                            {leadSubEfforts.map((row: any) => {
-                                                                const name = row?.sub_efforts?.name ?? '—';
-                                                                const who = row?.tenants_employee?.display_name ?? row?.created_by ?? '—';
-                                                                const when = row?.created_at ? new Date(row.created_at).toLocaleString() : '—';
-                                                                return (
-                                                                    <button
-                                                                        key={row.id}
-                                                                        type="button"
-                                                                        onClick={() => openSubEffortsModal(row.id)}
-                                                                        className="w-full text-left rounded-xl border border-base-200 bg-gray-50/60 px-3 py-2 hover:bg-gray-50 transition"
-                                                                    >
-                                                                        <div className="flex items-center justify-between gap-3">
-                                                                            <div className="min-w-0">
-                                                                                <div className="font-semibold text-sm truncate text-gray-800">{name}</div>
-                                                                                <div className="mt-0.5 text-xs text-gray-500 truncate">
-                                                                                    by <span className="font-medium text-gray-700">{String(who)}</span>
-                                                                                </div>
-                                                                            </div>
-                                                                            <div className="text-[11px] text-gray-400 whitespace-nowrap">{when}</div>
-                                                                        </div>
-                                                                    </button>
-                                                                );
-                                                            })}
-                                                        </div>
-                                                    </div>
-                                                ) : (
-                                                    <div className="text-sm text-gray-500">No sub efforts yet.</div>
-                                                )}
-                                            </div>
-                                        </div>
-                                        <SubEffortsLogModal
-                                            open={isSubEffortsModalOpen}
-                                            onClose={() => setIsSubEffortsModalOpen(false)}
-                                            rows={leadSubEfforts}
-                                            leadNumber={selectedClient?.lead_number ?? null}
-                                            initialSelectedRowId={subEffortsModalRowId}
-                                            onRefresh={() => void fetchLeadSubEfforts()}
-                                        />
                                     </>
                                 )}
 
@@ -4284,65 +4116,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             {/* Closed state check */}
                                             {selectedClient && (areStagesEquivalent(currentStageName, 'Case Closed') || (isStageNumeric && stageNumeric === 200)) ? (
                                                 ((isStageNumeric && stageNumeric === 200) || Number((selectedClient as any)?.stage) === 200) ? (
-                                                    <>
-                                                        <div className="w-full mt-3 flex justify-end">
-                                                            <div className="w-full max-w-xl ml-auto">
-                                                                {isLoadingLeadSubEfforts ? (
-                                                                    <div className="text-sm text-gray-500">Loading sub efforts…</div>
-                                                                ) : leadSubEfforts.length > 0 ? (
-                                                                    <div className="rounded-2xl border border-base-200 bg-base-100 px-4 py-3 shadow-sm">
-                                                                        <div className="flex items-center justify-between gap-3 mb-2">
-                                                                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                                                                                Sub efforts log
-                                                                            </div>
-                                                                            <button
-                                                                                type="button"
-                                                                                className="btn btn-ghost btn-xs"
-                                                                                onClick={() => openSubEffortsModal(null)}
-                                                                            >
-                                                                                View all
-                                                                            </button>
-                                                                        </div>
-                                                                        <div className="space-y-1.5">
-                                                                            {leadSubEfforts.map((row: any) => {
-                                                                                const name = row?.sub_efforts?.name ?? '—';
-                                                                                const who = row?.tenants_employee?.display_name ?? row?.created_by ?? '—';
-                                                                                const when = row?.created_at ? new Date(row.created_at).toLocaleString() : '—';
-                                                                                return (
-                                                                                    <button
-                                                                                        key={row.id}
-                                                                                        type="button"
-                                                                                        onClick={() => openSubEffortsModal(row.id)}
-                                                                                        className="w-full text-left rounded-xl border border-base-200 bg-gray-50/60 px-3 py-2 hover:bg-gray-50 transition"
-                                                                                    >
-                                                                                        <div className="flex items-center justify-between gap-3">
-                                                                                            <div className="min-w-0">
-                                                                                                <div className="font-semibold text-sm truncate text-gray-800">{name}</div>
-                                                                                                <div className="mt-0.5 text-xs text-gray-500 truncate">
-                                                                                                    by <span className="font-medium text-gray-700">{String(who)}</span>
-                                                                                                </div>
-                                                                                            </div>
-                                                                                            <div className="text-[11px] text-gray-400 whitespace-nowrap">{when}</div>
-                                                                                        </div>
-                                                                                    </button>
-                                                                                );
-                                                                            })}
-                                                                        </div>
-                                                                    </div>
-                                                                ) : (
-                                                                    <div className="text-sm text-gray-500">No sub efforts yet.</div>
-                                                                )}
-                                                            </div>
-                                                        </div>
-                                                        <SubEffortsLogModal
-                                                            open={isSubEffortsModalOpen}
-                                                            onClose={() => setIsSubEffortsModalOpen(false)}
-                                                            rows={leadSubEfforts}
-                                                            leadNumber={selectedClient?.lead_number ?? null}
-                                                            initialSelectedRowId={subEffortsModalRowId}
-                                                            onRefresh={() => void fetchLeadSubEfforts()}
-                                                        />
-                                                    </>
+                                                    null
                                                 ) : (
                                                     <div className="px-4 py-2 text-sm text-gray-600">
                                                         No action available
@@ -4352,9 +4126,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 <>
                                                     {/* Stage 105 (Handler Nominated): show missing plan or next payment banner */}
                                                     {(((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
-                                                        (!hasPaymentPlan || nextDuePayment)) ? (
+                                                        shouldShowHandlerPaymentBanner(hasPaymentPlan, nextDuePayment)) ? (
                                                         <div className="w-full flex justify-center">
-                                                            {!hasPaymentPlan ? (
+                                                            {isMissingPaymentPlanBanner(hasPaymentPlan) ? (
                                                                 <div className="w-full max-w-xl rounded-2xl border border-red-200/70 bg-red-50 px-4 py-3 text-red-900 shadow-sm">
                                                                     <div className="flex items-center justify-between gap-3">
                                                                         <div className="flex items-center gap-2 text-sm font-semibold">
@@ -4520,129 +4294,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                     </ul>
                                                                 </div>
                                                             </div>
-                                                            <div className="w-full mt-3 flex justify-end">
-                                                                <div className="w-full max-w-xl ml-auto">
-                                                                {isLoadingLeadSubEfforts ? (
-                                                                    <div className="text-sm text-gray-500">Loading sub efforts…</div>
-                                                                ) : leadSubEfforts.length > 0 ? (
-                                                                    <div className="rounded-2xl border border-base-200 bg-base-100 px-4 py-3 shadow-sm">
-                                                                        <div className="flex items-center justify-between gap-3 mb-2">
-                                                                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                                                                                Sub efforts log
-                                                                            </div>
-                                                                            <button
-                                                                                type="button"
-                                                                                className="btn btn-ghost btn-xs"
-                                                                                onClick={() => openSubEffortsModal(null)}
-                                                                            >
-                                                                                View all
-                                                                            </button>
-                                                                        </div>
-                                                                        <div className="space-y-1.5">
-                                                                            {leadSubEfforts.map((row: any) => {
-                                                                                const name = row?.sub_efforts?.name ?? '—';
-                                                                                const who = row?.tenants_employee?.display_name ?? row?.created_by ?? '—';
-                                                                                const when = row?.created_at ? new Date(row.created_at).toLocaleString() : '—';
-                                                                                return (
-                                                                                    <button
-                                                                                        key={row.id}
-                                                                                        type="button"
-                                                                                        onClick={() => openSubEffortsModal(row.id)}
-                                                                                        className="w-full text-left rounded-xl border border-base-200 bg-gray-50/60 px-3 py-2 hover:bg-gray-50 transition"
-                                                                                    >
-                                                                                        <div className="flex items-center justify-between gap-3">
-                                                                                            <div className="min-w-0">
-                                                                                                <div className="font-semibold text-sm truncate text-gray-800">{name}</div>
-                                                                                                <div className="mt-0.5 text-xs text-gray-500 truncate">
-                                                                                                    by <span className="font-medium text-gray-700">{String(who)}</span>
-                                                                                                </div>
-                                                                                            </div>
-                                                                                            <div className="text-[11px] text-gray-400 whitespace-nowrap">{when}</div>
-                                                                                        </div>
-                                                                                    </button>
-                                                                                );
-                                                                            })}
-                                                                        </div>
-                                                                    </div>
-                                                                ) : (
-                                                                    <div className="text-sm text-gray-500">No sub efforts yet.</div>
-                                                                )}
-                                                                </div>
-                                                            </div>
-                                                            <SubEffortsLogModal
-                                                                open={isSubEffortsModalOpen}
-                                                                onClose={() => setIsSubEffortsModalOpen(false)}
-                                                                rows={leadSubEfforts}
-                                                                leadNumber={selectedClient?.lead_number ?? null}
-                                                                initialSelectedRowId={subEffortsModalRowId}
-                                                                onRefresh={() => void fetchLeadSubEfforts()}
-                                                            />
-                                                        </>
-                                                    )}
-
-                                                    {/* Stage 200: keep showing Sub efforts log (read-only) */}
-                                                    {(() => {
-                                                        const inferredStageNumeric = Number((selectedClient as any)?.stage ?? stageNumeric ?? NaN);
-                                                        return (isStageNumeric && stageNumeric === 200) || inferredStageNumeric === 200;
-                                                    })() && (
-                                                        <>
-                                                            <div className="w-full mt-3 flex justify-end">
-                                                                <div className="w-full max-w-xl ml-auto">
-                                                                    {isLoadingLeadSubEfforts ? (
-                                                                        <div className="text-sm text-gray-500">Loading sub efforts…</div>
-                                                                    ) : leadSubEfforts.length > 0 ? (
-                                                                        <div className="rounded-2xl border border-base-200 bg-base-100 px-4 py-3 shadow-sm">
-                                                                            <div className="flex items-center justify-between gap-3 mb-2">
-                                                                                <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                                                                                    Sub efforts log
-                                                                                </div>
-                                                                                <button
-                                                                                    type="button"
-                                                                                    className="btn btn-ghost btn-xs"
-                                                                                    onClick={() => openSubEffortsModal(null)}
-                                                                                >
-                                                                                    View all
-                                                                                </button>
-                                                                            </div>
-                                                                            <div className="space-y-1.5">
-                                                                                {leadSubEfforts.map((row: any) => {
-                                                                                    const name = row?.sub_efforts?.name ?? '—';
-                                                                                    const who = row?.tenants_employee?.display_name ?? row?.created_by ?? '—';
-                                                                                    const when = row?.created_at ? new Date(row.created_at).toLocaleString() : '—';
-                                                                                    return (
-                                                                                        <button
-                                                                                            key={row.id}
-                                                                                            type="button"
-                                                                                            onClick={() => openSubEffortsModal(row.id)}
-                                                                                            className="w-full text-left rounded-xl border border-base-200 bg-gray-50/60 px-3 py-2 hover:bg-gray-50 transition"
-                                                                                        >
-                                                                                            <div className="flex items-center justify-between gap-3">
-                                                                                                <div className="min-w-0">
-                                                                                                    <div className="font-semibold text-sm truncate text-gray-800">{name}</div>
-                                                                                                    <div className="mt-0.5 text-xs text-gray-500 truncate">
-                                                                                                        by <span className="font-medium text-gray-700">{String(who)}</span>
-                                                                                                    </div>
-                                                                                                </div>
-                                                                                                <div className="text-[11px] text-gray-400 whitespace-nowrap">{when}</div>
-                                                                                            </div>
-                                                                                        </button>
-                                                                                    );
-                                                                                })}
-                                                                            </div>
-                                                                        </div>
-                                                                    ) : (
-                                                                        <div className="text-sm text-gray-500">No sub efforts yet.</div>
-                                                                    )}
-                                                                </div>
-                                                            </div>
-                                                            <SubEffortsLogModal
-                                                                open={isSubEffortsModalOpen}
-                                                                onClose={() => setIsSubEffortsModalOpen(false)}
-                                                                rows={leadSubEfforts}
-                                                                leadNumber={selectedClient?.lead_number ?? null}
-                                                                initialSelectedRowId={subEffortsModalRowId}
-                                                                onRefresh={() => void fetchLeadSubEfforts()}
-                                                            />
                                                         </>
                                                     )}
 
@@ -5282,6 +4933,24 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     onOpenChange={setClientPortalModalOpen}
                     showTrigger={false}
                 />
+            )}
+            {selectedClient && subEffortsStageFlags.fetchLeadSubEffortRows && (
+                <>
+                    <SubEffortsLogSidebar
+                        isLoading={isLoadingLeadSubEfforts}
+                        rows={leadSubEfforts}
+                        onRowClick={(id) => openSubEffortsModal(id)}
+                        onViewAll={() => openSubEffortsModal(null)}
+                    />
+                    <SubEffortsLogModal
+                        open={isSubEffortsModalOpen}
+                        onClose={() => setIsSubEffortsModalOpen(false)}
+                        rows={leadSubEfforts}
+                        leadNumber={selectedClient?.lead_number ?? null}
+                        initialSelectedRowId={subEffortsModalRowId}
+                        onRefresh={() => void fetchLeadSubEfforts()}
+                    />
+                </>
             )}
         </div>
     );

@@ -1,21 +1,28 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { PlayIcon, PauseIcon } from '@heroicons/react/24/solid';
+import { PlayIcon } from '@heroicons/react/24/solid';
 import WhatsAppAvatar from './WhatsAppAvatar';
 
 interface VoiceMessagePlayerProps {
   audioUrl: string;
   className?: string;
+  variant?: 'incoming' | 'outgoing';
+  rightAvatar?: React.ReactNode;
+  /** @deprecated Pass `rightAvatar` instead */
   senderName?: string;
+  /** @deprecated Pass `rightAvatar` instead */
   profilePictureUrl?: string | null;
-  showAvatar?: boolean; // Control whether to show the avatar
+  /** @deprecated Pass `rightAvatar` instead */
+  showAvatar?: boolean;
 }
 
 const VoiceMessagePlayer: React.FC<VoiceMessagePlayerProps> = ({
   audioUrl,
   className = '',
+  variant = 'incoming',
+  rightAvatar,
   senderName = 'User',
   profilePictureUrl = null,
-  showAvatar = true
+  showAvatar = false,
 }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -79,64 +86,87 @@ const VoiceMessagePlayer: React.FC<VoiceMessagePlayerProps> = ({
   };
 
   const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const isOutgoing = variant === 'outgoing';
+
+  const resolvedRightAvatar =
+    rightAvatar ??
+    (showAvatar ? (
+      <WhatsAppAvatar name={senderName} profilePictureUrl={profilePictureUrl} size="md" />
+    ) : null);
+
+  const playButtonClass = isOutgoing
+    ? 'text-gray-300 hover:text-white'
+    : 'text-gray-500 hover:text-gray-700';
+
+  const playControl = (
+    <button
+      type="button"
+      onClick={togglePlay}
+      disabled={isLoading || hasError}
+      className={`flex h-9 w-9 shrink-0 items-center justify-center border-0 bg-transparent p-0 transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${playButtonClass}`}
+      aria-label={isPlaying ? 'Pause' : 'Play'}
+    >
+      {isLoading ? (
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-current border-t-transparent" />
+      ) : isPlaying ? (
+        <span className="flex h-6 w-6 items-center justify-center gap-[3px]" aria-hidden>
+          <span className="h-[18px] w-[5px] rounded-[2px] bg-current" />
+          <span className="h-[18px] w-[5px] rounded-[2px] bg-current" />
+        </span>
+      ) : (
+        <PlayIcon className="h-7 w-7" />
+      )}
+    </button>
+  );
 
   if (hasError) {
     return (
-      <div className={`flex items-center gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200 max-w-md ${className}`}>
-        {showAvatar && (
-          <WhatsAppAvatar name={senderName} profilePictureUrl={profilePictureUrl} size="md" />
-        )}
-        <div className="flex-shrink-0 w-10 h-10 rounded-full bg-gray-300 flex items-center justify-center">
-          <PlayIcon className="w-5 h-5 text-gray-500" />
+      <div
+        className={`flex w-full min-w-[300px] max-w-full items-center gap-2 rounded-lg bg-transparent p-2 sm:min-w-[380px] ${className}`}
+      >
+        {playControl}
+        <div className="min-w-0 flex-1">
+          <p className="text-sm italic text-gray-500">Voice message unavailable (may have expired)</p>
         </div>
-        <div className="flex-1 min-w-0">
-          <p className="text-sm text-gray-500 italic">Voice message unavailable (may have expired)</p>
-        </div>
+        {resolvedRightAvatar ? <div className="shrink-0">{resolvedRightAvatar}</div> : null}
       </div>
     );
   }
 
   return (
-    <div className={`flex items-center gap-3 p-3 bg-white rounded-lg shadow-sm border border-gray-200 max-w-md ${className}`}>
+    <div
+      className={`flex w-full min-w-[300px] max-w-full items-center gap-2 rounded-lg bg-transparent p-2 sm:min-w-[380px] ${className}`}
+    >
       <audio ref={audioRef} src={audioUrl} preload="metadata" />
-      
-      {/* Avatar */}
-      {showAvatar && (
-        <WhatsAppAvatar name={senderName} profilePictureUrl={profilePictureUrl} size="md" />
-      )}
-      
-      {/* Play/Pause Button */}
-      <button
-        onClick={togglePlay}
-        disabled={isLoading}
-        className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 hover:bg-green-600 text-white flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        aria-label={isPlaying ? 'Pause' : 'Play'}
-      >
-        {isLoading ? (
-          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-        ) : isPlaying ? (
-          <PauseIcon className="w-5 h-5" />
-        ) : (
-          <PlayIcon className="w-5 h-5 ml-0.5" />
-        )}
-      </button>
 
-      {/* Progress Bar and Time */}
-      <div className="flex-1 min-w-0">
-        <div className="relative h-2 bg-gray-200 rounded-full overflow-hidden">
+      {playControl}
+
+      <div className="min-w-0 flex-1">
+        <div
+          className={`relative h-2 overflow-hidden rounded-full ${
+            isOutgoing ? 'bg-white/25' : 'bg-black/[0.06]'
+          }`}
+        >
           <div
-            className="absolute top-0 left-0 h-full bg-green-500 transition-all duration-100"
+            className={`absolute left-0 top-0 h-full transition-all duration-100 ${
+              isOutgoing ? 'bg-white' : 'bg-gray-400'
+            }`}
             style={{ width: `${progress}%` }}
           />
         </div>
-        <div className="flex justify-between items-center mt-1 text-xs text-gray-600">
+        <div
+          className={`mt-1 flex items-center justify-between text-xs ${
+            isOutgoing ? 'text-white/80' : 'text-gray-600'
+          }`}
+        >
           <span>{formatTime(currentTime)}</span>
           <span>{formatTime(duration)}</span>
         </div>
       </div>
+
+      {resolvedRightAvatar ? <div className="shrink-0">{resolvedRightAvatar}</div> : null}
     </div>
   );
 };
 
 export default VoiceMessagePlayer;
-

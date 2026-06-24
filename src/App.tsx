@@ -91,6 +91,7 @@ import {
   LazyProformaViewPage,
   LazyPublicProformaLegacyViewPage,
   LazyPublicProformaViewPage,
+  LazyPublicBookingPage,
   LazyPublicContractView,
   LazyPublicLegacyContractView,
   LazyPublicProfilePage,
@@ -643,6 +644,7 @@ const AppContentInner: React.FC = () => {
       <Route path="/payment/cancelled" element={<RouteSuspense><LazyPaymentCancelledPage /></RouteSuspense>} />
       <Route path="/payment/:token" element={<RouteSuspense><LazyPaymentPage /></RouteSuspense>} />
       <Route path="/poa/:token" element={<RouteSuspense><LazyPoaPage /></RouteSuspense>} />
+      <Route path="/book/:token" element={<RouteSuspense><LazyPublicBookingPage /></RouteSuspense>} />
       <Route path="/portal/:leadRef/case" element={<RouteSuspense><LazyPortalCasePage /></RouteSuspense>} />
       <Route path="/portal/:leadRef/about" element={<RouteSuspense><LazyPortalAboutPage /></RouteSuspense>} />
       <Route path="/portal/:leadRef" element={<RouteSuspense><LazyPortalLoginPage /></RouteSuspense>} />

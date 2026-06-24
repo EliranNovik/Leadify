@@ -68,8 +68,9 @@ import {
   generateMeetingWhatsAppTemplateParameters,
   selectReminderWhatsAppTemplate,
 } from '../../lib/meetingWhatsAppNotify';
-import TimePicker from '../TimePicker';
+import WheelTimePicker from '../WheelTimePicker';
 import PortalMeetingRequestsPanel from '../portal/PortalMeetingRequestsPanel';
+import LeadBookingSettingsPanel from '../client-booking/LeadBookingSettingsPanel';
 
 const fakeNames = ['Anna Zh', 'Mindi', 'Sarah L', 'David K', '---'];
 
@@ -5946,7 +5947,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               /* Edit Mode */
               <div className="space-y-4">
                 {/* Date and Time */}
-                <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-4">
                   <div className="space-y-2">
                     <label className={meetingFieldLabelClass}>Date</label>
                     <input
@@ -5959,14 +5960,14 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       }}
                     />
                   </div>
-                  <div className="space-y-2">
-                    <TimePicker
-                      value={editedMeeting.time || (meeting.time ? meeting.time.substring(0, 5) : '09:00')}
-                      onChange={(time) => setEditedMeeting(prev => ({ ...prev, time }))}
-                      meetingCounts={editedMeeting.date ? meetingCountsByTime : {}}
-                      label="Time"
-                    />
-                  </div>
+                  <WheelTimePicker
+                    value={editedMeeting.time || (meeting.time ? meeting.time.substring(0, 5) : '09:00')}
+                    onChange={(time) => setEditedMeeting(prev => ({ ...prev, time }))}
+                    label="Time"
+                    minHour={8}
+                    maxHour={23}
+                    disabled={!editedMeeting.date}
+                  />
                 </div>
 
                 {/* Location (+ role / participant fields by meeting type) */}
@@ -7024,6 +7025,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         leadType={client?.lead_type}
       />
 
+      <LeadBookingSettingsPanel
+        leadId={String(client?.id ?? '')}
+        leadType={client?.lead_type}
+      />
+
       {/* Scheduling History Table */}
       {schedulingHistory.length > 0 && (
         <div className="mb-16">
@@ -7975,15 +7981,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 </div>
 
                 {/* Time */}
-                <TimePicker
-                  variant="inline"
+                <WheelTimePicker
                   label="Time"
                   value={scheduleMeetingFormData.time}
                   onChange={(time) =>
                     setScheduleMeetingFormData((prev) => ({ ...prev, time }))
-                  }
-                  meetingCounts={
-                    scheduleMeetingFormData.date ? meetingCountsByTime : {}
                   }
                   minHour={8}
                   maxHour={23}
@@ -8552,15 +8554,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     </div>
 
                     {/* Time */}
-                    <TimePicker
-                      variant="inline"
+                    <WheelTimePicker
                       label="New Time"
                       value={rescheduleFormData.time}
                       onChange={(time) =>
                         setRescheduleFormData((prev: any) => ({ ...prev, time }))
-                      }
-                      meetingCounts={
-                        rescheduleFormData.date ? meetingCountsByTime : {}
                       }
                       minHour={8}
                       maxHour={23}

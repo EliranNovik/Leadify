@@ -34,6 +34,8 @@ export type MobileBottomSheetProps = {
   /** When false, tapping the backdrop does nothing */
   closeOnOverlayClick?: boolean;
   onOverlayClick?: () => void;
+  /** Lock background page scroll. Use `mobile` to keep desktop page scrollable (e.g. side drawer). */
+  scrollLock?: 'always' | 'mobile';
 };
 
 export default function MobileBottomSheet({
@@ -55,6 +57,7 @@ export default function MobileBottomSheet({
   desktopLayout = 'center',
   closeOnOverlayClick = true,
   onOverlayClick,
+  scrollLock = 'always',
 }: MobileBottomSheetProps) {
   const autoTitleId = useId();
   const titleId = ariaLabelledBy || (title ? autoTitleId : undefined);
@@ -70,14 +73,19 @@ export default function MobileBottomSheet({
       setDragY(0);
       return;
     }
+    const shouldLockScroll = scrollLock === 'always' || isNarrowViewport();
     const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    if (shouldLockScroll) {
+      document.body.style.overflow = 'hidden';
+    }
     const raf = requestAnimationFrame(() => setEntered(true));
     return () => {
       cancelAnimationFrame(raf);
-      document.body.style.overflow = prevOverflow;
+      if (shouldLockScroll) {
+        document.body.style.overflow = prevOverflow;
+      }
     };
-  }, [open]);
+  }, [open, scrollLock]);
 
   const canStartDrag = useCallback((target: EventTarget | null) => {
     if (!isNarrowViewport()) return false;
@@ -139,7 +147,11 @@ export default function MobileBottomSheet({
     : 'md:rounded-2xl md:border md:max-w-3xl md:max-h-[90vh]';
 
   return createPortal(
-    <div className="fixed inset-0" style={{ zIndex }} role="presentation">
+    <div
+      className={`fixed inset-0 ${scrollLock === 'mobile' ? 'md:pointer-events-none' : ''}`}
+      style={{ zIndex }}
+      role="presentation"
+    >
       <div
         className={`absolute inset-0 bg-black/50 transition-opacity duration-300 ${overlayClassName}`}
         onClick={() => {

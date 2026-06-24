@@ -2237,7 +2237,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                               className={message.direction === 'out' ? WHATSAPP_OUTGOING_VOICE_PLAYER_CLASS : 'bg-gray-50'}
                               senderName={message.sender_name || 'Unknown'}
                               profilePictureUrl={message.profile_picture_url}
-                              showAvatar={message.direction === 'out'}
+                              showAvatar={false}
                             />
                             {message.caption && (
                               <p

@@ -88,3 +88,4 @@ export const LazyPoaPage = lazy(() => import('../pages/PoaPage'));
 export const LazyPortalLoginPage = lazy(() => import('../pages/portal/PortalLoginPage'));
 export const LazyPortalAboutPage = lazy(() => import('../pages/portal/PortalAboutPage'));
 export const LazyPortalCasePage = lazy(() => import('../pages/portal/PortalCasePage'));
+export const LazyPublicBookingPage = lazy(() => import('../pages/PublicBookingPage'));

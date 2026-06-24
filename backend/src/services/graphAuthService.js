@@ -42,7 +42,10 @@ const GRAPH_REDIRECT_URI = resolveEnv(
   'MSAL_REDIRECT_URI'
 );
 
-const GRAPH_SCOPES = (resolveEnv('GRAPH_SCOPES', 'MS_GRAPH_SCOPES') || 'offline_access Mail.Read Mail.Send').split(/\s+/);
+const GRAPH_SCOPES = (
+  resolveEnv('GRAPH_SCOPES', 'MS_GRAPH_SCOPES') ||
+  'offline_access Mail.Read Mail.Send Calendars.ReadWrite Calendars.ReadWrite.Shared OnlineMeetings.ReadWrite'
+).split(/\s+/);
 
 if (!GRAPH_CLIENT_ID || !GRAPH_CLIENT_SECRET || !GRAPH_TENANT_ID || !GRAPH_REDIRECT_URI) {
   console.warn('⚠️  Missing Graph OAuth configuration. Auth endpoints will not work until configured.');
@@ -247,11 +250,11 @@ class GraphAuthService {
     });
   }
 
-  async acquireTokenByRefreshToken(refreshToken, account) {
+  async acquireTokenByRefreshToken(refreshToken, account, scopes = GRAPH_SCOPES) {
     try {
       return await this.msalClient.acquireTokenByRefreshToken({
         refreshToken,
-        scopes: GRAPH_SCOPES,
+        scopes,
         account,
       });
     } catch (error) {

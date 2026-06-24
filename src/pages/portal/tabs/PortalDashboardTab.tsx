@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   BanknotesIcon,
   CalendarDaysIcon,
-  ClockIcon,
   VideoCameraIcon,
   BriefcaseIcon,
   ArrowPathIcon,
@@ -140,7 +139,6 @@ const PortalDashboardTab: React.FC<Props> = ({
   const [summary, setSummary] = useState<Awaited<ReturnType<typeof portalGetCaseSummary>>>(null);
   const [contacts, setContacts] = useState<ContactRow[]>([]);
   const [meetings, setMeetings] = useState<PortalMeetingRow[]>([]);
-  const [requests, setRequests] = useState<Array<{ status: string }>>([]);
   const [payments, setPayments] = useState<PortalPaymentRow[]>([]);
   const [subEfforts, setSubEfforts] = useState<SubEffortRow[]>([]);
   const [documents, setDocuments] = useState<PortalDocumentRow[]>([]);
@@ -160,7 +158,6 @@ const PortalDashboardTab: React.FC<Props> = ({
         setSummary(summaryData);
         setContacts((contactsData?.contacts ?? []) as ContactRow[]);
         setMeetings(meetingsData?.meetings ?? []);
-        setRequests(meetingsData?.requests ?? []);
         setPayments(financeData?.payments ?? []);
         setSubEfforts((subEffortsData?.rows ?? []) as SubEffortRow[]);
         setDocuments(documentsData?.documents ?? []);
@@ -172,10 +169,6 @@ const PortalDashboardTab: React.FC<Props> = ({
 
   const nextMeeting = useMemo(() => pickNextMeeting(meetings), [meetings]);
   const nextPayment = useMemo(() => pickNextPayment(payments), [payments]);
-  const pendingRequests = useMemo(
-    () => requests.filter((r) => r.status === 'pending').length,
-    [requests],
-  );
   const latestSubEffort = useMemo(() => {
     if (!subEfforts.length) return null;
     return [...subEfforts].sort((a, b) => {
@@ -310,12 +303,12 @@ const PortalDashboardTab: React.FC<Props> = ({
           </div>
 
           {/* KPI row */}
-          <div className={`${MOBILE_CAROUSEL_ROW_CLASS} sm:grid sm:grid-cols-2 ${pendingRequests > 0 ? 'xl:grid-cols-4' : 'xl:grid-cols-3'}`}>
+          <div className={`${MOBILE_CAROUSEL_ROW_CLASS} sm:grid sm:grid-cols-2 xl:grid-cols-3`}>
         <div className={MOBILE_CAROUSEL_ITEM_CLASS}>
           <PortalStatCard
             label="Next meeting"
             value={nextMeetingLabel}
-            hint={nextMeeting?.meeting_location || (nextMeeting ? 'Tap Meetings for details' : 'Request a time with our team')}
+            hint={nextMeeting?.meeting_location || (nextMeeting ? 'Tap Meetings for details' : 'Schedule a time in Meetings')}
             icon={CalendarDaysIcon}
             accent="sky"
             coverKey={`${coverKey}::stat-next-meeting`}
@@ -377,19 +370,6 @@ const PortalDashboardTab: React.FC<Props> = ({
             onClick={() => onNavigate('stages')}
           />
         </div>
-        {pendingRequests > 0 ? (
-          <div className={MOBILE_CAROUSEL_ITEM_CLASS}>
-            <PortalStatCard
-              label="Meeting requests"
-              value={`${pendingRequests} pending`}
-              hint="Request being reviewed"
-              icon={ClockIcon}
-              accent="amber"
-              coverKey={`${coverKey}::stat-meeting-requests`}
-              onClick={() => onNavigate('meetings')}
-            />
-          </div>
-        ) : null}
           </div>
         </div>
       </section>

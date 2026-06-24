@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import SignaturePad from 'react-signature-canvas';
@@ -11,7 +11,9 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
 import { PrinterIcon, ArrowDownTrayIcon, ShareIcon, PhoneIcon, ArrowDownIcon, EnvelopeIcon, DevicePhoneMobileIcon, ArrowsRightLeftIcon, XMarkIcon } from '@heroicons/react/24/outline';
-import { FaWhatsapp, FaEnvelope, FaLinkedin } from 'react-icons/fa';
+import { FaLinkedin, FaWhatsapp, FaEnvelope } from 'react-icons/fa';
+import PublicNeedAssistanceWidget from '../components/public/PublicNeedAssistanceWidget';
+import { OFFICE_EMAIL, OFFICE_PHONE_TEL, WHATSAPP_URL } from '../components/public/publicContactInfo';
 
 // Lazy load html2pdf only when needed (for PDF download)
 let html2pdf: any = null;
@@ -219,6 +221,62 @@ function convertTemplateToLineBreaks(content: any): any {
   return content;
 }
 
+function isRTL(text: string): boolean {
+  if (!text || typeof text !== 'string') return false;
+  const rtlRegex = /[\u0590-\u05FF\u0600-\u06FF]/;
+  return rtlRegex.test(text);
+}
+
+function extractTextContent(content: any): string {
+  if (!content) return '';
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(extractTextContent).join(' ');
+  }
+  if (content.type === 'text' && content.text) {
+    return content.text;
+  }
+  if (content.content) {
+    return extractTextContent(content.content);
+  }
+  return '';
+}
+
+function getInputPlaceholder(fieldId: string, rtl: boolean, isApplicantField = false): string {
+  if (isApplicantField) {
+    return rtl ? 'הזן שם מועמד' : 'Enter applicant name';
+  }
+
+  const idLower = fieldId.toLowerCase();
+
+  if (rtl) {
+    if (idLower.includes('document') || idLower.startsWith('text:document')) return 'הזן שם מסמך';
+    if (idLower.includes('country') || idLower.startsWith('text:country')) return 'הזן מדינה';
+    if (idLower.includes('address') || idLower.startsWith('text:address')) return 'הזן כתובת';
+    if (idLower.includes('city') || idLower.startsWith('text:city')) return 'הזן עיר';
+    if (idLower.includes('postal') || idLower.startsWith('text:postal')) return 'הזן מיקוד';
+    if (idLower.includes('notes') || idLower.startsWith('text:notes')) return 'הזן הערות';
+    if (idLower.includes('reference') || idLower.startsWith('text:reference')) return 'הזן מספר אסמכתא';
+    if (idLower.includes('phone') || idLower.startsWith('text:phone')) return 'הזן טלפון';
+    if (idLower.includes('email') || idLower.startsWith('text:email')) return 'הזן דוא״ל';
+    if (idLower.includes('id') || idLower.includes('document') || idLower.startsWith('text:id')) return 'הזן מספר';
+    return 'הזן טקסט';
+  }
+
+  if (idLower.includes('applicant') || idLower.startsWith('text:applicant')) {
+    return 'Enter applicant name';
+  }
+  if (idLower.includes('document') || idLower.startsWith('text:document')) return 'Enter document name';
+  if (idLower.includes('country') || idLower.startsWith('text:country')) return 'Enter country';
+  if (idLower.includes('address') || idLower.startsWith('text:address')) return 'Enter address';
+  if (idLower.includes('city') || idLower.startsWith('text:city')) return 'Enter city';
+  if (idLower.includes('postal') || idLower.startsWith('text:postal')) return 'Enter postal code';
+  if (idLower.includes('notes') || idLower.startsWith('text:notes')) return 'Enter notes';
+  if (idLower.includes('reference') || idLower.startsWith('text:reference')) return 'Enter reference number';
+  if (idLower.includes('other') || idLower.startsWith('text:other')) return 'Enter text';
+  return 'Enter text';
+}
+
 const PublicContractView: React.FC = () => {
   const { contractId, token } = useParams();
   const [contract, setContract] = useState<any>(null);
@@ -255,6 +313,11 @@ const PublicContractView: React.FC = () => {
 
   // Ref for contract content area (for PDF generation)
   const contractContentRef = useRef<HTMLDivElement>(null);
+
+  const contractIsRTL = useMemo(() => {
+    const content = contract?.custom_content || template?.content;
+    return isRTL(extractTextContent(content));
+  }, [contract?.custom_content, template?.content]);
 
   // PDF loading state
   const [pdfLoading, setPdfLoading] = useState(false);
@@ -1249,76 +1312,75 @@ const PublicContractView: React.FC = () => {
   // Helper function to render a single applicant field (used for both template and dynamic fields)
   const renderApplicantField = useCallback((id: string, index: number, total: number) => {
     return (
-      <div key={id} className="mb-3 flex items-center gap-2">
+      <div key={id} className="mb-3 flex items-center gap-2" dir={contractIsRTL ? 'rtl' : 'ltr'}>
         <span className="inline-flex items-center gap-2 flex-1">
           <input
             type="text"
             className="input input-bordered input-lg flex-1 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
-            placeholder="Enter applicant name"
+            placeholder={getInputPlaceholder(id, contractIsRTL, true)}
             value={clientFields[id] || ''}
             onChange={e => handleClientFieldChange(id, e.target.value)}
             disabled={contract?.status === 'signed'}
             data-field-id={id}
             data-is-applicant="true"
-            style={{ minWidth: 200 }}
+            dir={contractIsRTL ? 'rtl' : 'ltr'}
+            style={{ minWidth: 200, textAlign: contractIsRTL ? 'right' : 'left' }}
           />
         </span>
       </div>
     );
-  }, [clientFields, contract?.status, activeApplicantFields, applicantFieldIds, dynamicApplicantFieldCounter]);
+  }, [clientFields, contract?.status, activeApplicantFields, applicantFieldIds, dynamicApplicantFieldCounter, contractIsRTL]);
 
-  // Helper function to get placeholder text based on field ID type
-  const getTextFieldPlaceholder = (fieldId: string): string => {
-    const idLower = fieldId.toLowerCase();
-
-    // Check for specific field types
-    if (idLower.includes('applicant') || idLower.startsWith('text:applicant')) {
-      // This will be handled separately for applicant fields with index
-      return 'Enter applicant name';
-    } else if (idLower.includes('document') || idLower.startsWith('text:document')) {
-      return 'Enter document name';
-    } else if (idLower.includes('country') || idLower.startsWith('text:country')) {
-      return 'Enter country';
-    } else if (idLower.includes('address') || idLower.startsWith('text:address')) {
-      return 'Enter address';
-    } else if (idLower.includes('city') || idLower.startsWith('text:city')) {
-      return 'Enter city';
-    } else if (idLower.includes('postal') || idLower.startsWith('text:postal')) {
-      return 'Enter postal code';
-    } else if (idLower.includes('notes') || idLower.startsWith('text:notes')) {
-      return 'Enter notes';
-    } else if (idLower.includes('reference') || idLower.startsWith('text:reference')) {
-      return 'Enter reference number';
-    } else if (idLower.includes('other') || idLower.startsWith('text:other')) {
-      return 'Enter text';
+  const getBlockDirection = (
+    textContent: string,
+    savedAlign?: string | null
+  ): { dir?: 'rtl' | 'ltr'; textAlign: React.CSSProperties['textAlign'] } => {
+    if (savedAlign === 'right') return { dir: 'rtl', textAlign: 'right' };
+    if (savedAlign === 'left') return { dir: 'ltr', textAlign: 'left' };
+    if (savedAlign === 'center') return { textAlign: 'center' };
+    if (savedAlign === 'justify') {
+      const rtl = isRTL(textContent);
+      return { dir: rtl ? 'rtl' : 'ltr', textAlign: 'justify' };
     }
-
-    // Default placeholder for generic text fields
-    return 'Enter text';
+    const rtl = isRTL(textContent);
+    return { dir: rtl ? 'rtl' : 'ltr', textAlign: rtl ? 'right' : 'left' };
   };
 
-  // Helper function to detect RTL text (Hebrew/Arabic)
-  const isRTL = (text: string): boolean => {
-    if (!text || typeof text !== 'string') return false;
-    // Check for Hebrew (U+0590 to U+05FF) or Arabic (U+0600 to U+06FF) characters
-    const rtlRegex = /[\u0590-\u05FF\u0600-\u06FF]/;
-    return rtlRegex.test(text);
-  };
-
-  // Helper function to extract text content from TipTap content
-  const extractTextContent = (content: any): string => {
-    if (!content) return '';
-    if (typeof content === 'string') return content;
-    if (Array.isArray(content)) {
-      return content.map(extractTextContent).join(' ');
-    }
-    if (content.type === 'text' && content.text) {
-      return content.text;
-    }
-    if (content.content) {
-      return extractTextContent(content.content);
-    }
-    return '';
+  const renderInlineTextField = (
+    id: string,
+    labelText: string,
+    surroundingText: string,
+    isApplicantField: boolean
+  ) => {
+    const fieldIsRTL = contractIsRTL || isRTL(labelText) || isRTL(surroundingText);
+    return (
+      <span
+        key={id}
+        className="inline relative field-wrapper group align-middle"
+        dir={fieldIsRTL ? 'rtl' : 'ltr'}
+        style={{ verticalAlign: 'middle', display: 'inline', unicodeBidi: 'embed' }}
+        data-field-id={id}
+        data-is-applicant={isApplicantField ? 'true' : 'false'}
+      >
+        {labelText}
+        <input
+          className="input input-bordered input-lg mx-2 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
+          placeholder={getInputPlaceholder(id, fieldIsRTL, isApplicantField)}
+          value={clientFields[id] || ''}
+          onChange={e => handleClientFieldChange(id, e.target.value)}
+          disabled={contract?.status === 'signed'}
+          dir={fieldIsRTL ? 'rtl' : 'ltr'}
+          style={{
+            minWidth: 150,
+            maxWidth: 280,
+            width: 'auto',
+            display: 'inline-block',
+            verticalAlign: 'middle',
+            textAlign: fieldIsRTL ? 'right' : 'left',
+          }}
+        />
+      </span>
+    );
   };
 
   function renderTiptapContent(
@@ -1756,16 +1818,18 @@ const PublicContractView: React.FC = () => {
                   className="flex items-center gap-2 mb-2 relative field-wrapper group w-full"
                   data-field-id={id}
                   data-is-applicant="true"
+                  dir={contractIsRTL ? 'rtl' : 'ltr'}
                   style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}
                 >
                   <input
                     type="text"
                     className="input input-bordered input-lg flex-1 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
-                    placeholder="Enter applicant name"
+                    placeholder={getInputPlaceholder(id, contractIsRTL, true)}
                     value={clientFields[id] || ''}
                     onChange={e => handleClientFieldChange(id, e.target.value)}
                     disabled={contract?.status === 'signed'}
-                    style={{ minWidth: 200 }}
+                    dir={contractIsRTL ? 'rtl' : 'ltr'}
+                    style={{ minWidth: 200, textAlign: contractIsRTL ? 'right' : 'left' }}
                   />
                 </div>
               );
@@ -1786,16 +1850,18 @@ const PublicContractView: React.FC = () => {
                       className="flex items-center gap-2 mb-2 relative field-wrapper group w-full"
                       data-field-id={dynamicFieldId}
                       data-is-applicant="true"
+                      dir={contractIsRTL ? 'rtl' : 'ltr'}
                       style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}
                     >
                       <input
                         type="text"
                         className="input input-bordered input-lg flex-1 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
-                        placeholder="Enter applicant name"
+                        placeholder={getInputPlaceholder(dynamicFieldId, contractIsRTL, true)}
                         value={clientFields[dynamicFieldId] || ''}
                         onChange={e => handleClientFieldChange(dynamicFieldId, e.target.value)}
                         disabled={contract?.status === 'signed'}
-                        style={{ minWidth: 200 }}
+                        dir={contractIsRTL ? 'rtl' : 'ltr'}
+                        style={{ minWidth: 200, textAlign: contractIsRTL ? 'right' : 'left' }}
                       />
                     </div>
                   );
@@ -1806,25 +1872,10 @@ const PublicContractView: React.FC = () => {
               continue; // Skip the rest of the text field processing
             }
 
-            // For non-applicant text fields, render inline as before
-            parts.push(
-              <span
-                key={id}
-                className="inline-block relative field-wrapper group"
-                style={{ verticalAlign: 'middle', display: 'inline-flex', alignItems: 'center', gap: '4px', maxWidth: '100%' }}
-                data-field-id={id}
-                data-is-applicant={isApplicantField ? 'true' : 'false'}
-              >
-                <input
-                  className="input input-bordered input-lg mx-2 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
-                  placeholder={isApplicantField ? 'Enter applicant name' : getTextFieldPlaceholder(id)}
-                  value={clientFields[id] || ''}
-                  onChange={e => handleClientFieldChange(id, e.target.value)}
-                  disabled={contract?.status === 'signed'}
-                  style={{ minWidth: 150, maxWidth: 'calc(100% - 1rem)', display: 'inline-block', verticalAlign: 'middle' }}
-                />
-              </span>
-            );
+            // For non-applicant text fields, keep label text before the input (RTL-safe)
+            parts.push(renderInlineTextField(id, textBeforePlaceholder, text, isApplicantField));
+            lastIndex = match.index + match[1].length;
+            continue;
           } else if (sigMatch) {
             const id = sigMatch[1] ? sigMatch[1].substring(1) : `signature-${++placeholderIndex.signature}`;
 
@@ -1916,11 +1967,6 @@ const PublicContractView: React.FC = () => {
             parts.push(<br key={keyPrefix + '-br-' + match.index} />);
             lastIndex = match.index + match[1].length;
             continue;
-          } else {
-            // For text fields, push the text before and continue normally
-            if (textBeforePlaceholder) {
-              parts.push(textBeforePlaceholder);
-            }
           }
           lastIndex = match.index + match[1].length;
         }
@@ -2083,7 +2129,6 @@ const PublicContractView: React.FC = () => {
         const paragraphContent = renderTiptapContent(content.content, keyPrefix + '-p', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex);
         // Always render paragraph, even if empty, to preserve line breaks
         const paragraphText = content.content?.map((n: any) => n.text || '').join('') || '';
-        const isRTLParagraph = isRTL(paragraphText);
 
         // Check if paragraph contains input fields (React elements)
         const hasInputFields = React.isValidElement(paragraphContent) ||
@@ -2095,21 +2140,18 @@ const PublicContractView: React.FC = () => {
         const hasSignatureField = paragraphTextLower.includes('signature:') && paragraphText.includes('{{signature');
         const hasBothFields = hasDateField && hasSignatureField;
 
-        // Extract text to determine direction
         const textContent = extractTextContent(content.content);
-        const direction = isRTLParagraph || isRTL(textContent) ? 'rtl' : 'ltr';
-        const textAlign = isRTLParagraph || isRTL(textContent) ? 'right' : 'left';
+        const savedTextAlign = content.attrs?.textAlign as string | undefined;
+        const { dir: direction, textAlign } = getBlockDirection(textContent || paragraphText, savedTextAlign);
 
         if (hasInputFields) {
           // Use div instead of p to avoid DOM nesting issues with input fields
           return (
             <div
               key={keyPrefix}
-              className={`mb-2 md:mb-3 text-sm md:text-base ${hasBothFields ? 'md:flex md:flex-row md:items-start md:gap-8' : ''}`}
+              className={`contract-paragraph-with-fields mb-2 md:mb-3 text-sm md:text-base ${hasBothFields ? 'md:flex md:flex-row md:items-start md:gap-8' : ''}`}
               dir={direction}
-              style={{
-                textAlign: hasBothFields ? 'left' : textAlign
-              }}
+              style={{ textAlign }}
             >
               {paragraphContent || <br />}
             </div>
@@ -2140,18 +2182,17 @@ const PublicContractView: React.FC = () => {
         };
         const sizeClass = headingSizes[HeadingTag as keyof typeof headingSizes] || 'text-base md:text-lg';
 
-        // Extract text to determine direction
-        const textContent = extractTextContent(content.content);
-        const direction = isRTL(textContent) ? 'rtl' : 'ltr';
-        const textAlign = isRTL(textContent) ? 'right' : 'left';
+        const headingTextContent = extractTextContent(content.content);
+        const savedHeadingAlign = content.attrs?.textAlign as string | undefined;
+        const { dir: headingDirection, textAlign: headingTextAlign } = getBlockDirection(headingTextContent, savedHeadingAlign);
 
         return React.createElement(
           HeadingTag,
           {
             key: keyPrefix,
             className: `${sizeClass} font-semibold mb-2 md:mb-3`,
-            dir: direction,
-            style: { textAlign }
+            dir: headingDirection,
+            style: { textAlign: headingTextAlign }
           },
           renderTiptapContent(content.content, keyPrefix + '-h', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex)
         );
@@ -2253,11 +2294,11 @@ const PublicContractView: React.FC = () => {
   if (!contract || !template) return null;
 
   return (
-    <div className="min-h-screen bg-white">
-      {/* Fixed Header - Glassy Blurred Oval */}
-      <header className="fixed top-4 left-1/2 -translate-x-1/2 z-50 print-hide w-[95%] md:w-[80%] max-w-4xl">
-        <div className="bg-white/20 backdrop-blur-md rounded-full border border-white/30 shadow-lg">
-          <div className="flex items-center justify-between px-4 py-2 md:px-8 md:py-3">
+    <div className="min-h-screen bg-white md:bg-gray-100">
+      {/* Header — scrolls on mobile, fixed floating pill on desktop */}
+      <header className="print-hide w-full bg-white md:fixed md:top-4 md:left-1/2 md:z-50 md:w-[80%] md:max-w-4xl md:-translate-x-1/2 md:border-0 md:bg-transparent">
+        <div className="md:bg-white/90 md:backdrop-blur-md md:rounded-full md:shadow-lg">
+          <div className="flex items-center justify-between px-4 py-3 md:px-8 md:py-3">
             {/* Logo - Left */}
             <div className="flex-shrink-0">
               <img
@@ -2269,10 +2310,10 @@ const PublicContractView: React.FC = () => {
 
             {/* Company Name and Contact Name - Center */}
             <div className="flex-1 flex flex-col justify-center items-center min-w-0 px-2">
-              <p className="text-xs md:text-sm font-medium text-gray-600 drop-shadow-sm text-center">
+              <p className="text-xs md:text-sm font-medium text-gray-600 text-center md:drop-shadow-sm">
                 Decker Pex Levi Law Offices
               </p>
-              <h1 className="text-sm md:text-lg font-semibold text-gray-800 drop-shadow-sm text-center">
+              <h1 className="text-sm md:text-lg font-semibold text-gray-800 text-center md:drop-shadow-sm">
                 {(contract?.contact_name && contract.contact_name.trim() !== '') 
                   ? contract.contact_name 
                   : (client?.name && client.name.trim() !== '') 
@@ -2284,7 +2325,7 @@ const PublicContractView: React.FC = () => {
             {/* Case Number - Right */}
             <div className="flex-shrink-0 flex items-center">
               {leadNumber && (
-                <span className="text-xs md:text-sm font-mono font-semibold text-black drop-shadow-sm">
+                <span className="text-xs md:text-sm font-mono font-semibold text-black md:drop-shadow-sm">
                   #{leadNumber}
                 </span>
               )}
@@ -2293,9 +2334,9 @@ const PublicContractView: React.FC = () => {
         </div>
       </header>
 
-      {/* Main Content with top padding to account for fixed header */}
-      <div className="pt-32 md:pt-36 px-2 py-4 md:flex md:items-center md:justify-center md:py-8 pb-32 md:pb-8">
-        <div className="w-full max-w-6xl md:bg-white md:rounded-lg md:shadow-lg md:border md:border-gray-200 p-4 md:p-8 relative">
+      {/* Main Content */}
+      <div className="bg-white px-4 py-4 md:pt-36 md:flex md:items-center md:justify-center md:py-8 pb-32 md:pb-8">
+        <div className="w-full max-w-6xl bg-white md:rounded-lg md:shadow-lg md:border md:border-gray-200 p-0 md:p-8 relative">
           {/* Share button in top right corner - removed since we have it in floating buttons on desktop */}
 
           {/* Show signed message at the top if contract is signed */}
@@ -2350,7 +2391,7 @@ const PublicContractView: React.FC = () => {
           {contract.status !== 'signed' && !thankYou && (
             <div className="mt-8">
               <button
-                className="btn btn-lg w-full print-hide bg-green-800 text-white border-none hover:bg-green-900"
+                className="btn btn-lg w-full print-hide bg-blue-950 text-white border-none hover:bg-blue-900"
                 onClick={handleSubmitContract}
                 disabled={isSubmitting}
               >
@@ -2362,110 +2403,78 @@ const PublicContractView: React.FC = () => {
       </div>
 
       {/* Footer */}
-      <footer className="bg-white border-t border-gray-200 mt-8 md:mt-24 print-hide">
+      <footer className="bg-blue-950 text-white mt-8 md:mt-24 print-hide">
         <div className="max-w-5xl mx-auto px-4 py-8 md:py-20 md:px-8">
           <div className="flex flex-col items-center justify-center gap-4 md:gap-8">
             {/* Company Info & Addresses */}
             <div className="text-center space-y-2 md:space-y-3">
               <div className="flex items-center justify-center gap-3">
-                <img src="/DPL-LOGO1.png" alt="DPL Logo" className="h-12 w-auto object-contain" />
-                <p className="font-bold text-xl text-gray-900">Decker, Pex, Levi Law Offices</p>
+                <img src="/DPLOGO1.png" alt="DPL Logo" className="h-12 w-auto object-contain" />
+                <p className="font-bold text-xl text-white">Decker, Pex, Levi Law Offices</p>
               </div>
-              <div className="text-gray-500 text-sm flex flex-col md:flex-row items-center justify-center gap-1 md:gap-3">
+              <div className="text-blue-100 text-sm flex flex-col md:flex-row items-center justify-center gap-1 md:gap-3">
                 <p>Yad Harutzim 10, Jerusalem, Israel</p>
-                <span className="hidden md:inline text-gray-400">•</span>
+                <span className="hidden md:inline text-blue-200/80">•</span>
                 <p>Menachem Begin Rd. 150, Tel Aviv, Israel</p>
               </div>
             </div>
           </div>
 
-          <div className="mt-6 md:mt-12 pt-4 md:pt-8 border-t border-gray-100 text-center text-xs text-gray-400">
+          <div className="mt-6 md:mt-12 pt-4 md:pt-8 border-t border-blue-900 text-center text-xs text-blue-200/90">
             RMQ 2.0 - Copyright © {new Date().getFullYear()} - All right reserved
           </div>
         </div>
       </footer>
 
-      {/* Floating Contact Buttons (Right Side Center) - Desktop Only */}
-      <div className="hidden md:flex fixed right-4 md:right-6 top-1/2 -translate-y-1/2 flex-col items-end gap-3 md:gap-4 z-50 print-hide">
-        {/* Closer Employee Button */}
-        {closerEmployee && (
-          <div className="flex items-center gap-3">
-            <span className="text-sm md:text-base font-medium text-gray-700 whitespace-nowrap">
-              {closerEmployee.official_name}
-            </span>
+      <PublicNeedAssistanceWidget
+        className="hidden md:flex"
+        closerSlot={
+          closerEmployee ? (
             <button
+              type="button"
               onClick={() => setShowCloserModal(true)}
-              className="btn btn-circle btn-md md:btn-lg bg-white border-2 border-gray-300 hover:border-gray-400 shadow-lg hover:scale-110 transition-transform overflow-hidden p-0"
+              className="btn btn-circle h-12 w-12 min-h-12 min-w-12 shrink-0 overflow-hidden border-2 border-gray-300 bg-white p-0 shadow-lg transition-transform hover:scale-105 active:scale-95"
               title={`View ${closerEmployee.official_name}'s business card`}
             >
               <img
                 src={closerEmployee.photo_url || 'https://ui-avatars.com/api/?background=random'}
                 alt={closerEmployee.official_name}
-                className="w-full h-full object-cover"
+                className="h-full w-full object-cover"
               />
             </button>
-          </div>
-        )}
+          ) : undefined
+        }
+      />
 
-        {/* Professional Text */}
-        <div className="bg-white/90 backdrop-blur-sm rounded-lg px-4 py-3 shadow-lg border border-gray-200 max-w-[200px] mb-2">
-          <p className="text-sm font-medium text-gray-700 leading-relaxed text-right">
-            Need assistance? Contact us anytime with your questions.
-          </p>
-        </div>
-
-        <a
-          href="https://wa.me/972552780162"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="btn btn-circle btn-md md:btn-lg bg-green-500 text-white border-none hover:bg-green-600 shadow-lg hover:scale-110 transition-transform"
-          title="Chat on WhatsApp"
-        >
-          <FaWhatsapp className="w-5 h-5 md:w-8 md:h-8" />
-        </a>
-        <a
-          href="mailto:office@lawoffice.org.il"
-          className="btn btn-circle btn-md md:btn-lg bg-blue-600 text-white border-none hover:bg-blue-700 shadow-lg hover:scale-110 transition-transform"
-          title="Send Email"
-        >
-          <FaEnvelope className="w-5 h-5 md:w-8 md:h-8" />
-        </a>
-        <a
-          href="tel:+972737895444"
-          className="btn btn-circle btn-md md:btn-lg bg-purple-600 text-white border-none hover:bg-purple-700 shadow-lg hover:scale-110 transition-transform"
-          title="Call Office"
-        >
-          <PhoneIcon className="w-5 h-5 md:w-8 md:h-8" />
-        </a>
-      </div>
-
-      {/* Scroll to Date Button - Mobile: Bottom Right, Centered Vertically | Desktop: Top Right, Next to Header */}
-      <div className="fixed right-4 bottom-1/2 -translate-y-1/2 md:bottom-auto md:top-4 md:right-6 md:translate-y-0 z-40 print-hide flex flex-col gap-3 md:gap-4">
+      {/* Scroll to Date + Share — Desktop only (top right) */}
+      <div className="hidden md:flex fixed top-4 right-6 z-40 print-hide flex-col gap-4">
         <button
           onClick={scrollToDateField}
-          className="btn btn-circle btn-md md:btn-lg bg-green-800 text-white border-none hover:bg-green-900 shadow-lg hover:scale-110 transition-transform"
+          className="btn btn-circle btn-lg bg-blue-950 text-white border-none hover:bg-blue-900 shadow-lg hover:scale-110 transition-transform"
           title="Scroll to date field"
         >
-          <ArrowDownIcon className="w-6 h-6 md:w-8 md:h-8" />
+          <ArrowDownIcon className="w-8 h-8" />
         </button>
 
-        {/* Share Button - Desktop Only, Below Arrow Button */}
         <button
           onClick={handleShareContract}
-          className="hidden md:flex btn btn-circle btn-md md:btn-lg bg-indigo-600 text-white border-none hover:bg-indigo-700 shadow-lg hover:scale-110 transition-transform"
+          className="btn btn-circle btn-lg bg-indigo-600 text-white border-none hover:bg-indigo-700 shadow-lg hover:scale-110 transition-transform"
           title="Share contract"
         >
-          <ShareIcon className="w-5 h-5 md:w-8 md:h-8" />
+          <ShareIcon className="w-8 h-8" />
         </button>
       </div>
 
       {/* Mobile Bottom Oval Box with Contact Buttons */}
-      <div className="md:hidden fixed bottom-4 left-1/2 -translate-x-1/2 z-50 print-hide">
+      <div
+        className="md:hidden fixed bottom-4 left-1/2 -translate-x-1/2 z-50 print-hide"
+        style={{ paddingBottom: 'max(0px, env(safe-area-inset-bottom))' }}
+      >
         <div className="bg-white/20 backdrop-blur-md rounded-full border border-white/30 shadow-lg">
-          <div className="flex items-center justify-center gap-3 md:gap-4 px-4 md:px-6 py-2.5 md:py-3">
-            {/* Closer Employee Button - Mobile */}
+          <div className="flex items-center justify-center gap-3 px-4 py-2.5">
             {closerEmployee && (
               <button
+                type="button"
                 onClick={() => setShowCloserModal(true)}
                 className="btn btn-ghost btn-circle text-black hover:bg-white/20 overflow-hidden p-0"
                 title={`View ${closerEmployee.official_name}'s business card`}
@@ -2478,6 +2487,7 @@ const PublicContractView: React.FC = () => {
               </button>
             )}
             <button
+              type="button"
               onClick={handleShareContract}
               className="btn btn-ghost btn-circle text-black hover:bg-white/20"
               title="Share contract"
@@ -2485,7 +2495,7 @@ const PublicContractView: React.FC = () => {
               <ShareIcon className="w-6 h-6" />
             </button>
             <a
-              href="https://wa.me/972552780162"
+              href={WHATSAPP_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-ghost btn-circle text-black hover:bg-white/20"
@@ -2494,14 +2504,14 @@ const PublicContractView: React.FC = () => {
               <FaWhatsapp className="w-6 h-6" />
             </a>
             <a
-              href="mailto:office@lawoffice.org.il"
+              href={`mailto:${OFFICE_EMAIL}`}
               className="btn btn-ghost btn-circle text-black hover:bg-white/20"
               title="Send Email"
             >
               <FaEnvelope className="w-6 h-6" />
             </a>
             <a
-              href="tel:+972503489649"
+              href={OFFICE_PHONE_TEL}
               className="btn btn-ghost btn-circle text-black hover:bg-white/20"
               title="Call Office"
             >
@@ -2744,9 +2754,35 @@ const PublicContractView: React.FC = () => {
         #contract-print-area h3,
         #contract-print-area h4,
         #contract-print-area h5,
-        #contract-print-area h6,
-        #contract-print-area div {
+        #contract-print-area h6 {
           unicode-bidi: plaintext;
+        }
+
+        /* Paragraphs with inline fields need stable RTL/LTR — plaintext bidi breaks label placement */
+        #contract-print-area .contract-paragraph-with-fields {
+          unicode-bidi: normal;
+        }
+
+        #contract-print-area .field-wrapper {
+          unicode-bidi: embed;
+          max-width: none;
+        }
+
+        #contract-print-area .field-wrapper input[type="text"] {
+          position: relative;
+          z-index: auto;
+          flex: none;
+          width: auto;
+        }
+
+        #contract-print-area div[dir="rtl"] .field-wrapper input[type="text"] {
+          text-align: right;
+        }
+
+        #contract-print-area div[dir="rtl"] .field-wrapper input[type="text"]::placeholder,
+        #contract-print-area .field-wrapper input[dir="rtl"]::placeholder {
+          text-align: right;
+          direction: rtl;
         }
         
         /* Preserve original font weights - don't force bold */

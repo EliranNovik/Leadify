@@ -14,6 +14,7 @@ import {
   MagnifyingGlassIcon,
   HomeIcon,
   ReceiptPercentIcon,
+  CalendarDaysIcon,
 } from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
 import PoaTemplatesManager from './PoaTemplatesManager';
@@ -27,6 +28,7 @@ import EmployeesManager from './EmployeesManager';
 import SourcesManager from './SourcesManager';
 import BankAccountsManager from './BankAccountsManager';
 import MeetingLocationsManager from './MeetingLocationsManager';
+import MeetingBookingManager from './MeetingBookingManager';
 import FirmTypesManager from './FirmTypesManager';
 import FirmsManager from './FirmsManager';
 import FirmContactsManager from './FirmContactsManager';
@@ -155,6 +157,12 @@ const ADMIN_TABS: AdminTab[] = [
     label: 'Whatsapp',
     icon: ChatBubbleLeftRightIcon,
     subcategories: ['Whatsapp numbers', 'Whats app templates'],
+    requiresAdmin: true,
+  },
+  {
+    label: 'Meeting Booking',
+    icon: CalendarDaysIcon,
+    subcategories: ['Manager'],
     requiresAdmin: true,
   },
   {
@@ -1650,6 +1658,11 @@ const AdminPage: React.FC = () => {
                   selectedTab?.subcategories[selected.sub] === 'Meeting Locations' ? (
                   <div className="w-full">
                     <MeetingLocationsManager />
+                  </div>
+                ) : selectedTab?.label === 'Meeting Booking' &&
+                  selectedTab?.subcategories[selected.sub] === 'Manager' ? (
+                  <div className="w-full">
+                    <MeetingBookingManager />
                   </div>
                 ) : selectedTab?.label === 'Misc' &&
                   selectedTab?.subcategories[selected.sub] === 'Languages' ? (

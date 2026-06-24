@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import PortalLayout from './PortalLayout';
 import { usePortalSession } from './usePortalSession';
 import PortalDashboardTab from './tabs/PortalDashboardTab';
@@ -7,7 +8,6 @@ import PortalFinanceTab from './tabs/PortalFinanceTab';
 import PortalDocumentsTab from './tabs/PortalDocumentsTab';
 import PortalContactsTab from './tabs/PortalContactsTab';
 import PortalMeetingsTab from './tabs/PortalMeetingsTab';
-import PortalMeetingRequestDrawer from './PortalMeetingRequestDrawer';
 import { portalGetFinances, portalGetMeetings } from '../../lib/portalApi';
 import { PortalLoading } from './components/portalTheme';
 import { usePortalContactProfileUrls } from './hooks/usePortalContactProfileUrls';
@@ -24,9 +24,9 @@ const TABS: { id: PortalTabId; label: string }[] = [
 ];
 
 const PortalCasePage: React.FC = () => {
+  const [searchParams] = useSearchParams();
   const { loading, valid, leadSummary, contact, logout, refresh } = usePortalSession(true);
   const [activeTab, setActiveTab] = useState<PortalTabId>('summary');
-  const [meetingOpen, setMeetingOpen] = useState(false);
   const [financeData, setFinanceData] = useState<Awaited<ReturnType<typeof portalGetFinances>>>(null);
   const [meetingsData, setMeetingsData] = useState<Awaited<ReturnType<typeof portalGetMeetings>>>(null);
   const [dashboardKey, setDashboardKey] = useState(0);
@@ -38,12 +38,24 @@ const PortalCasePage: React.FC = () => {
 
   const loadMeetings = useCallback(async () => {
     try {
-      setMeetingsData(await portalGetMeetings());
+      const data = await portalGetMeetings();
+      setMeetingsData(data);
     } catch (err) {
       console.error('portal_get_meetings', err);
       setMeetingsData({ meetings: [], requests: [] });
     }
   }, []);
+
+  const goToMeetingsTab = useCallback(() => {
+    setActiveTab('meetings');
+  }, []);
+
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    if (tab === 'meetings' || tab === 'summary' || tab === 'stages' || tab === 'finance' || tab === 'documents' || tab === 'contacts') {
+      setActiveTab(tab as PortalTabId);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     if (activeTab !== 'finance') return;
@@ -88,7 +100,7 @@ const PortalCasePage: React.FC = () => {
           key={dashboardKey}
           sessionContact={contact}
           onNavigate={setActiveTab}
-          onRequestMeeting={() => setMeetingOpen(true)}
+          onRequestMeeting={goToMeetingsTab}
           onSessionRefresh={() => void refresh()}
         />
       )}
@@ -108,24 +120,14 @@ const PortalCasePage: React.FC = () => {
       {activeTab === 'meetings' && meetingsData && (
         <PortalMeetingsTab
           meetings={meetingsData.meetings ?? []}
-          requests={meetingsData.requests ?? []}
-          meetingManager={{
-            name: leadSummary?.meeting_manager_name,
-            photoUrl: leadSummary?.meeting_manager_photo_url,
+          sessionContactId={contact?.id ?? null}
+          onMeetingsChange={() => {
+            void loadMeetings();
+            setDashboardKey((k) => k + 1);
           }}
-          onRequestMeeting={() => setMeetingOpen(true)}
         />
       )}
       {activeTab === 'meetings' && !meetingsData && <PortalLoading />}
-
-      <PortalMeetingRequestDrawer
-        open={meetingOpen}
-        onClose={() => setMeetingOpen(false)}
-        onSubmitted={() => {
-          if (activeTab === 'meetings') void loadMeetings();
-          if (activeTab === 'summary') setDashboardKey((k) => k + 1);
-        }}
-      />
     </PortalLayout>
   );
 };
