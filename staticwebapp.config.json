@@ -1,7 +1,11 @@
 {
   "navigationFallback": {
     "rewrite": "/index.html",
-    "exclude": ["/assets/*", "/*.{css,js,png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,eot,webp}"]
+    "exclude": [
+      "/assets/*",
+      "/.well-known/*",
+      "/*.{css,js,png,jpg,jpeg,gif,svg,ico,woff,woff2,ttf,eot,webp,txt}"
+    ]
   },
   "globalHeaders": {
     "Cache-Control": "no-cache, no-store, must-revalidate"
@@ -17,6 +21,13 @@
       "route": "/sw.js",
       "headers": {
         "Cache-Control": "no-cache, no-store, must-revalidate"
+      }
+    },
+    {
+      "route": "/.well-known/apple-developer-merchantid-domain-association.txt",
+      "headers": {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "public, max-age=3600"
       }
     },
     {

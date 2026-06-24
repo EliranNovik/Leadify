@@ -209,7 +209,7 @@ const PelecardCheckoutFrame: React.FC<PelecardCheckoutFrameProps> = ({
                 : { height: iframeHeight, minHeight: iframeHeight, maxHeight: 'none' }
             }
             scrolling={isLgViewport ? 'yes' : 'no'}
-            allow="payment; publickey-credentials-get *"
+            allow="payment *; publickey-credentials-get *"
             referrerPolicy="strict-origin-when-cross-origin"
             onLoad={handleLoad}
           />

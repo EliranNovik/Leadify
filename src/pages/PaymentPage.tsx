@@ -17,6 +17,7 @@ import {
   type ProformaExchangeRateInfo,
 } from '../lib/proformaExchangeRate';
 import { isLegacyPaymentLinkRow } from '../lib/paymentLinkLeadRef';
+import { ensurePelecardClientSecureScript } from '../lib/pelecardWalletSetup';
 import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 import toast from 'react-hot-toast';
 import {
@@ -504,6 +505,11 @@ const PaymentPage: React.FC = () => {
   useEffect(() => {
     void loadCheckoutExchange();
   }, [loadCheckoutExchange]);
+
+  /** Pelecard Apple Pay / Google Pay: parent page must load ClientSecureV2 + host Apple domain file. */
+  useEffect(() => {
+    ensurePelecardClientSecureScript();
+  }, []);
 
   const isAlreadyPaid = paymentLink ? isPaymentComplete(paymentLink) : false;
   const paidAt = paymentLink ? getPaymentPaidAt(paymentLink) : null;

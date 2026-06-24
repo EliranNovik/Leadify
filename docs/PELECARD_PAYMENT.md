@@ -178,6 +178,34 @@ Frontend:
 
 ## Apple Pay and Google Pay
 
+### Apple domain verification (merchant site)
+
+Apple Pay requires a domain association file on your **public payment domain** (no redirects):
+
+`https://rainmakerqueen.org/.well-known/apple-developer-merchantid-domain-association.txt`
+
+This repo ships the file at:
+
+`public/.well-known/apple-developer-merchantid-domain-association.txt`
+
+After deploy, verify with:
+
+```bash
+curl -I https://rainmakerqueen.org/.well-known/apple-developer-merchantid-domain-association.txt
+```
+
+Expect **HTTP 200**, `Content-Type: text/plain`, and **no** redirect to `www` or another host. During Apple’s verification, Pelecard may ask you to **disable reverse-proxy** on that path temporarily.
+
+`staticwebapp.config.json` and `vercel.json` exclude `/.well-known/*` from SPA fallback so the file is served as a static asset.
+
+### Pelecard ClientSecureV2 (parent page script)
+
+`PaymentPage` loads once per visit:
+
+`https://gateway21.pelecard.biz/Scripts/Payment/ClientSecureV2.js`
+
+See `src/lib/pelecardWalletSetup.ts`. (Pelecard notes this step may be optional for Gateway 2.0 plugin ≥ 1.5.1; we load it for wallet support in the iframe.)
+
 ### How our integration handles wallets
 
 **We do not call separate Apple Pay or Google Pay APIs.** Pelecard Gateway 2.0 renders wallet buttons on the **hosted checkout page** inside the iframe when:

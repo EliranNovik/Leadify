@@ -54,7 +54,7 @@ interface SidebarItem {
 
 const desktopSidebarItems: SidebarItem[] = [
   { icon: HomeIcon, label: 'Dashboard', path: '/' },
-  { icon: BanknotesIcon, label: 'Collection', path: '/collection' },
+  // { icon: BanknotesIcon, label: 'Collection', path: '/collection' },
   { icon: CalendarIcon, label: 'Calendar', path: '/calendar' },
   { icon: ReceiptRefundIcon, label: 'Waiting for Price Offer', path: '/waiting-for-price-offer' },
   { icon: FireIcon, label: 'Hot Leads', path: '/scheduler-tool' },
@@ -82,8 +82,8 @@ const desktopSidebarItems: SidebarItem[] = [
     ],
   },
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
-  { icon: UserGroupIcon, label: 'Employee Performance', path: '/employee-performance' },
-  { icon: DocumentArrowUpIcon, label: 'Documents', path: '/documents' },
+  // { icon: UserGroupIcon, label: 'Employee Performance', path: '/employee-performance' },
+  // { icon: DocumentArrowUpIcon, label: 'Documents', path: '/documents' },
   { icon: ChatBubbleLeftRightIcon, label: 'WhatsApp Leads', path: '/whatsapp-leads' },
   { icon: EnvelopeIcon, label: 'Email Leads', path: '/email-leads' },
   { icon: PhoneIcon, label: 'Calls Ledger', path: '/calls-ledger' },
@@ -93,7 +93,7 @@ const desktopSidebarItems: SidebarItem[] = [
 
 const mobileSidebarItems: SidebarItem[] = [
   { icon: HomeIcon, label: 'Dashboard', path: '/' },
-  { icon: BanknotesIcon, label: 'Collection', path: '/collection' },
+  // { icon: BanknotesIcon, label: 'Collection', path: '/collection' },
   { icon: CalendarIcon, label: 'Calendar', path: '/calendar' },
   { icon: ReceiptRefundIcon, label: 'Waiting for Price Offer', path: '/waiting-for-price-offer' },
   { icon: FireIcon, label: 'Hot Leads', path: '/scheduler-tool' },
@@ -121,8 +121,8 @@ const mobileSidebarItems: SidebarItem[] = [
     ],
   },
   { icon: ChartPieIcon, label: 'My Performance', path: '/performance' },
-  { icon: UserGroupIcon, label: 'Employee Performance', path: '/employee-performance' },
-  { icon: DocumentArrowUpIcon, label: 'Documents', path: '/documents' },
+  // { icon: UserGroupIcon, label: 'Employee Performance', path: '/employee-performance' },
+  // { icon: DocumentArrowUpIcon, label: 'Documents', path: '/documents' },
   { icon: ChatBubbleLeftRightIcon, label: 'WhatsApp Leads', path: '/whatsapp-leads' },
   { icon: EnvelopeIcon, label: 'Email Leads', path: '/email-leads' },
   { icon: PhoneIcon, label: 'Calls Ledger', path: '/calls-ledger' },

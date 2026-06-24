@@ -33,6 +33,7 @@ const ALLOWED_REST_PREFIXES = [
   '/rest/v1/call_logs',
   '/rest/v1/whatsapp_messages',
   '/rest/v1/lead_case_documents',
+  '/rest/v1/staff_meeting_documents',
 ];
 
 export function setClockInGateBlocksDataAccess(blocked: boolean): void {

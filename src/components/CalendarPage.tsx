@@ -10,6 +10,12 @@ import { CalendarIcon, CalendarDaysIcon, FunnelIcon, UserIcon, CurrencyDollarIco
 import MobileBottomSheet from './MobileBottomSheet';
 import { MeetingJoinLinkMenu } from './MeetingJoinLinkMenu';
 import DocumentModal from './DocumentModal';
+import {
+  resolveStaffMeetingDocumentsContext,
+  resolveStaffMeetingLinkedLead,
+  type StaffMeetingDocumentsContext,
+} from '../lib/staffMeetingDocuments';
+import { InternalMeetingTypeBadge } from '../lib/internalMeetingTypeBadge';
 import { FaFileExcel, FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
 import { createPortal } from 'react-dom';
@@ -393,6 +399,8 @@ const CalendarPage: React.FC = () => {
   }>({});
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const [selectedMeeting, setSelectedMeeting] = useState<any>(null);
+  const [isStaffMeetingDocumentModalOpen, setIsStaffMeetingDocumentModalOpen] = useState(false);
+  const [staffMeetingDocsContext, setStaffMeetingDocsContext] = useState<StaffMeetingDocumentsContext | null>(null);
   const [leadsWithPastStages, setLeadsWithPastStages] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
   const navType = useNavigationType();
@@ -900,11 +908,15 @@ const CalendarPage: React.FC = () => {
         const { data: mtMeta } = await supabase
           .from('meetings')
           .select(
-            'internal_meeting_type_id, meeting_location, manual_address, custom_address, custom_link, meeting_brief, calendar_type, internal_meeting_types ( id, code, label )',
+            'internal_meeting_type_id, meeting_location, manual_address, custom_address, custom_link, meeting_brief, calendar_type, client_id, legacy_lead_id, meeting_subject, internal_meeting_types ( id, code, label ), leads!meetings_client_id_fkey ( id, name, lead_number, email ), leads_lead!meetings_legacy_lead_id_fkey ( id, name, lead_number, email )',
           )
           .eq('id', dbMeetingId)
           .maybeSingle();
         if (mtMeta) {
+          const joinedLead = Array.isArray((mtMeta as any).leads) ? (mtMeta as any).leads[0] : (mtMeta as any).leads;
+          const joinedLegacy = Array.isArray((mtMeta as any).leads_lead)
+            ? (mtMeta as any).leads_lead[0]
+            : (mtMeta as any).leads_lead;
           setSelectedStaffMeetingForParticipants((prev: any) =>
             prev
               ? {
@@ -915,8 +927,13 @@ const CalendarPage: React.FC = () => {
                   custom_address: mtMeta.custom_address ?? prev.custom_address,
                   custom_link: mtMeta.custom_link ?? prev.custom_link,
                   meeting_brief: mtMeta.meeting_brief ?? prev.meeting_brief,
+                  meeting_subject: mtMeta.meeting_subject ?? prev.meeting_subject,
+                  client_id: mtMeta.client_id ?? prev.client_id,
+                  legacy_lead_id: mtMeta.legacy_lead_id ?? prev.legacy_lead_id,
                   internal_meeting_type_id: mtMeta.internal_meeting_type_id ?? prev.internal_meeting_type_id,
                   internal_meeting_types: mtMeta.internal_meeting_types ?? prev.internal_meeting_types,
+                  lead: joinedLead ?? prev.lead,
+                  legacy_lead: joinedLegacy ?? prev.legacy_lead,
                 }
               : prev
           );
@@ -3763,51 +3780,15 @@ const CalendarPage: React.FC = () => {
     return rel ?? null;
   };
 
-  const INTERNAL_MEETING_TYPE_BADGE_PALETTE: Record<string, { bg: string; fg: string; border: string }> = {
-    staff: { bg: '#eef2ff', fg: '#3730a3', border: '#c7d2fe' },
-    providers: { bg: '#ecfdf5', fg: '#065f46', border: '#a7f3d0' },
-    sub_contractor: { bg: '#fffbeb', fg: '#92400e', border: '#fde68a' },
-    extern: { bg: '#fff7ed', fg: '#9a3412', border: '#fed7aa' },
-    firm: { bg: '#fdf4ff', fg: '#86198f', border: '#f5d0fe' },
-    lawyer_group: { bg: '#eff6ff', fg: '#1e40af', border: '#bfdbfe' },
-    sponsor: { bg: '#f0fdf4', fg: '#166534', border: '#bbf7d0' },
-    other: { bg: '#f9fafb', fg: '#4b5563', border: '#e5e7eb' },
-  };
-
-  const NEUTRAL_TYPE_BADGE = { bg: '#f3f4f6', fg: '#374151', border: '#e5e7eb' };
-
   /** Badge for internal meeting classification (calendar status column + participants modal). Defaults to Staff when unset. */
   const renderInternalMeetingTypeBadge = (meeting: any) => {
     const typeRow = getInternalMeetingTypeRow(meeting);
-    const hasFk =
-      meeting?.internal_meeting_type_id != null &&
-      meeting.internal_meeting_type_id !== '' &&
-      !(typeof meeting.internal_meeting_type_id === 'number' && !Number.isFinite(meeting.internal_meeting_type_id));
-    let label: string;
-    let code: string;
-    if (typeRow?.label) {
-      label = String(typeRow.label);
-      code = String(typeRow.code || 'staff').toLowerCase() || 'staff';
-    } else if (hasFk) {
-      label = 'Type';
-      code = '';
-    } else {
-      label = 'Staff';
-      code = 'staff';
-    }
-    const pal =
-      code && INTERNAL_MEETING_TYPE_BADGE_PALETTE[code] ? INTERNAL_MEETING_TYPE_BADGE_PALETTE[code] : hasFk ? NEUTRAL_TYPE_BADGE : INTERNAL_MEETING_TYPE_BADGE_PALETTE.staff;
-    const titleParts: string[] = [];
-    if (typeRow?.code) titleParts.push(`Internal meeting type (${typeRow.code})`);
-    if (!typeRow?.code && !hasFk) titleParts.push('Default: Staff (no type selected)');
     return (
-      <span
-        className="stage-badge inline-flex items-center px-2 py-1 sm:px-2.5 sm:py-1 rounded-md text-xs sm:text-sm font-semibold border"
-        style={{ backgroundColor: pal.bg, color: pal.fg, borderColor: pal.border }}
-        title={titleParts.length ? titleParts.join(' · ') : undefined}
-      >
-        {label}
-      </span>
+      <InternalMeetingTypeBadge
+        typeLabel={typeRow?.label}
+        typeCode={typeRow?.code}
+        internalMeetingTypeId={meeting?.internal_meeting_type_id}
+      />
     );
   };
 
@@ -3922,6 +3903,55 @@ const CalendarPage: React.FC = () => {
     return '/clients';
   };
 
+  const renderStaffMeetingLeadLabel = (meeting: any, lead: any) => {
+    const displayText = String(lead?.name || meeting?.meeting_subject || meeting?.name || '').trim() || '—';
+    const linkedLead = resolveStaffMeetingLinkedLead(meeting);
+    if (!linkedLead?.lead_number) {
+      return (
+        <span className="text-black text-sm sm:text-base break-words line-clamp-2">{displayText}</span>
+      );
+    }
+
+    const leadNumber = String(linkedLead.lead_number);
+    const hashToken = `[#${leadNumber}]`;
+    const stopNav = (e: React.MouseEvent) => e.stopPropagation();
+    const linkClass = 'hover:opacity-80 font-semibold';
+    const linkStyle = { color: '#3b28c7' };
+
+    if (displayText.includes(hashToken)) {
+      const rest = displayText.slice(displayText.indexOf(hashToken) + hashToken.length);
+      return (
+        <span className="text-black text-sm sm:text-base break-words line-clamp-2">
+          <Link
+            to={buildClientRoute(linkedLead)}
+            className={linkClass}
+            style={linkStyle}
+            onClick={stopNav}
+            title={`Open client ${leadNumber}`}
+          >
+            {hashToken}
+          </Link>
+          {rest}
+        </span>
+      );
+    }
+
+    return (
+      <div className="flex flex-col min-w-0">
+        <span className="text-black text-sm sm:text-base break-words line-clamp-2">{displayText}</span>
+        <Link
+          to={buildClientRoute(linkedLead)}
+          className={`text-xs sm:text-sm ${linkClass}`}
+          style={linkStyle}
+          onClick={stopNav}
+          title={`Open client ${leadNumber}`}
+        >
+          ({leadNumber})
+        </Link>
+      </div>
+    );
+  };
+
   // Handle row selection (for action menu)
   const handleRowSelect = (meetingId: string | number) => {
     setSelectedRowId(meetingId);
@@ -4012,6 +4042,16 @@ const CalendarPage: React.FC = () => {
   const handleDocuments = (lead: any, meeting: any) => {
     setSelectedMeeting(meeting);
     setIsDocumentModalOpen(true);
+  };
+
+  const openStaffMeetingDocuments = (meeting: any, dbMeetingId: number | null) => {
+    const ctx = resolveStaffMeetingDocumentsContext(meeting, dbMeetingId);
+    if (!ctx) {
+      toast.error('Save this meeting first before uploading documents.');
+      return;
+    }
+    setStaffMeetingDocsContext(ctx);
+    setIsStaffMeetingDocumentModalOpen(true);
   };
 
   // Helper function to handle Email button click
@@ -5651,7 +5691,27 @@ const CalendarPage: React.FC = () => {
           <div className="mb-3 flex items-start justify-between gap-2 relative">
             <div className="flex items-center gap-2 flex-1 min-w-0">
               <span className="text-sm md:text-base font-semibold text-gray-400 tracking-widest">
-                {meeting.calendar_type === 'staff' ? 'STAFF' : (lead.lead_number || meeting.lead_number)}
+                {meeting.calendar_type === 'staff' ? (
+                  (() => {
+                    const linkedLead = resolveStaffMeetingLinkedLead(meeting);
+                    if (linkedLead?.lead_number) {
+                      return (
+                        <Link
+                          to={buildClientRoute(linkedLead)}
+                          className="hover:opacity-80 font-semibold"
+                          style={{ color: '#3b28c7' }}
+                          onClick={(e) => e.stopPropagation()}
+                          title={`Open client ${linkedLead.lead_number}`}
+                        >
+                          {linkedLead.lead_number}
+                        </Link>
+                      );
+                    }
+                    return 'STAFF';
+                  })()
+                ) : (
+                  lead.lead_number || meeting.lead_number
+                )}
               </span>
               <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
               <h3 className="text-sm md:text-base font-extrabold text-gray-900 group-hover:text-primary transition-colors flex-1 break-words line-clamp-2">{lead.name || meeting.name}</h3>
@@ -6275,11 +6335,7 @@ const CalendarPage: React.FC = () => {
           <td className="font-bold">
             <div className="flex items-center gap-1 sm:gap-2">
               {meeting.calendar_type === 'staff' ? (
-                <>
-                  <span className="text-black text-sm sm:text-base break-words line-clamp-2">
-                    {lead.name || meeting.name}
-                  </span>
-                </>
+                renderStaffMeetingLeadLabel(meeting, lead)
               ) : (
                 <>
                   <div className="flex flex-col min-w-0 flex-1">
@@ -7303,6 +7359,14 @@ const CalendarPage: React.FC = () => {
             onChange={setCalendarLeadFilterQuery}
             loading={calendarGlobalSearchLoading}
           />
+          <Link
+            to="/calendar/internal-meeting-documents"
+            className="btn btn-circle btn-ghost border-0 shadow-none btn-md md:btn-lg hover:bg-gray-100/80"
+            title="Internal meeting documents"
+            aria-label="Internal meeting documents"
+          >
+            <FolderIcon className="h-6 w-6 md:h-6 md:w-6" />
+          </Link>
           <button
             type="button"
             className={`hidden md:inline-flex btn btn-circle btn-ghost border-0 shadow-none btn-md md:btn-lg hover:bg-gray-100/80 ${showDesktopFilters ? 'bg-[#4418C4]/15' : ''}`}
@@ -8263,9 +8327,7 @@ const CalendarPage: React.FC = () => {
                                         )}
                                         <div className="flex flex-col">
                                           {meeting.calendar_type === 'staff' ? (
-                                            <span className="font-medium">
-                                              {meeting.lead?.name || 'N/A'}
-                                            </span>
+                                            renderStaffMeetingLeadLabel(meeting, meeting.lead || {})
                                           ) : (
                                             <>
                                               <Link
@@ -8843,6 +8905,31 @@ const CalendarPage: React.FC = () => {
         onDocumentCountChange={() => { }}
       />
 
+      {staffMeetingDocsContext ? (
+        <DocumentModal
+          isOpen={isStaffMeetingDocumentModalOpen}
+          onClose={() => {
+            setIsStaffMeetingDocumentModalOpen(false);
+            setStaffMeetingDocsContext(null);
+          }}
+          {...(staffMeetingDocsContext.mode === 'lead'
+            ? {
+                leadNumber: staffMeetingDocsContext.leadNumber,
+                clientName: staffMeetingDocsContext.clientName,
+                clientId: staffMeetingDocsContext.clientId,
+                requireCaseDocumentClassification: true,
+                restrictToClassificationSlug: 'sequence_of_events',
+                initialClassificationSlug: 'sequence_of_events',
+                modalTitle: 'Meeting documents',
+              }
+            : {
+                staffMeetingId: staffMeetingDocsContext.staffMeetingId,
+                staffMeetingTitle: staffMeetingDocsContext.meetingTitle,
+                modalTitle: 'Meeting documents',
+              })}
+        />
+      ) : null}
+
 
       {/* Portal-based Dropdown */}
       {activeDropdown && createPortal(
@@ -8944,6 +9031,7 @@ const CalendarPage: React.FC = () => {
         isOpen={isStaffMeetingEditModalOpen}
         onClose={() => setIsStaffMeetingEditModalOpen(false)}
         meeting={selectedStaffMeeting}
+        onOpenDocuments={(meeting, dbMeetingId) => openStaffMeetingDocuments(meeting, dbMeetingId)}
         onUpdate={() => {
           // Refresh staff meetings when updated
           if (appliedFromDate && appliedToDate) {
@@ -9102,6 +9190,19 @@ const CalendarPage: React.FC = () => {
                             };
                           })()}
                         />
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-sm font-medium text-gray-700 gap-1.5"
+                          onClick={() => {
+                            openStaffMeetingDocuments(
+                              selectedStaffMeetingForParticipants,
+                              staffMeetingDbId,
+                            );
+                          }}
+                        >
+                          <DocumentArrowUpIcon className="h-5 w-5" />
+                          Documents
+                        </button>
                         <button
                           type="button"
                           className="btn btn-ghost btn-sm font-medium text-gray-700"

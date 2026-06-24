@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { XMarkIcon, CalendarIcon, ClockIcon, UserGroupIcon, PencilIcon, UserIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, CalendarIcon, ClockIcon, UserGroupIcon, PencilIcon, UserIcon, DocumentArrowUpIcon } from '@heroicons/react/24/outline';
 import MobileBottomSheet from './MobileBottomSheet';
 import { supabase } from '../lib/supabase';
 import { useMsal } from '@azure/msal-react';
@@ -18,6 +18,7 @@ interface StaffMeetingEditModalProps {
   meeting: any;
   onUpdate: () => void;
   onDelete?: () => void;
+  onOpenDocuments?: (meeting: any, dbMeetingId: number | null) => void;
 }
 
 interface Employee {
@@ -59,7 +60,8 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
   onClose,
   meeting,
   onUpdate,
-  onDelete
+  onDelete,
+  onOpenDocuments,
 }) => {
   const { instance, accounts } = useMsal();
   const [isLoading, setIsLoading] = useState(false);
@@ -916,6 +918,18 @@ const StaffMeetingEditModal: React.FC<StaffMeetingEditModalProps> = ({
       )}
     >
         <form id="staff-meeting-edit-form" onSubmit={handleSubmit} className="p-4 md:p-6 space-y-6">
+          {onOpenDocuments ? (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                className="btn btn-outline btn-sm gap-2"
+                onClick={() => onOpenDocuments(meeting, resolvedDbMeetingId)}
+              >
+                <DocumentArrowUpIcon className="h-4 w-4" />
+                Documents
+              </button>
+            </div>
+          ) : null}
           {/* Subject */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">

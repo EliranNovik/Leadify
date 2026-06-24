@@ -62,6 +62,7 @@ import {
   LazyExternalUserHomePage,
   LazyExternalUserSettingsPage,
   LazyHandlerManagementPage,
+  LazyInternalMeetingDocumentsPage,
   LazyHistoryPage,
   LazyHowItWorksPage,
   LazyLeadSearchPage,
@@ -969,6 +970,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/clients/:lead_number/master" element={<RouteSuspense><LazyMasterLeadPage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/*" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} /></RouteSuspense>} />
                     <Route path="/calendar" element={<RouteSuspense><LazyCalendarPage /></RouteSuspense>} />
+                    <Route path="/calendar/internal-meeting-documents" element={<RouteSuspense><LazyInternalMeetingDocumentsPage /></RouteSuspense>} />
                     <Route path="/outlook-calendar" element={<RouteSuspense><LazyOutlookCalendarPage /></RouteSuspense>} />
                     <Route path="/waiting-for-price-offer" element={<RouteSuspense><LazyWaitingForPriceOfferPage /></RouteSuspense>} />
                     <Route path="/expert" element={<RouteSuspense><LazyExpertPage /></RouteSuspense>} />

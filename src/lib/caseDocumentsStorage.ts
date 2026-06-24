@@ -26,3 +26,10 @@ export function buildCaseDocumentStoragePath(
   const safeBase = originalFileName.replace(/[^\w.\-()+\s]/g, '_');
   return `case-documents/${leadSeg}/${subSeg}/${Date.now()}_${safeBase}`;
 }
+
+/** Staff internal meetings (no lead) — separate prefix from case / sub-effort paths. */
+export function buildStaffMeetingDocumentStoragePath(meetingId: number, originalFileName: string): string {
+  const meetingSeg = sanitizeSegment(String(meetingId), 40);
+  const safeBase = originalFileName.replace(/[^\w.\-()+\s]/g, '_');
+  return `staff-meetings/${meetingSeg}/${Date.now()}_${safeBase}`;
+}

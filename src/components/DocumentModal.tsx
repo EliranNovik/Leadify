@@ -22,7 +22,10 @@ import {
   CASE_DOCUMENTS_STORAGE_BUCKET,
   CASE_DOCUMENTS_SIGNED_URL_SECONDS,
   buildCaseDocumentStoragePath,
+  buildStaffMeetingDocumentStoragePath,
 } from '../lib/caseDocumentsStorage';
+import { isSequenceOfEventsSlug } from '../lib/staffMeetingDocuments';
+import { initialsFromUploaderName, resolveUploaderDisplayByKey } from '../lib/uploaderDisplay';
 import { createPortal } from 'react-dom';
 import { toast } from 'react-hot-toast';
 import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
@@ -66,8 +69,8 @@ interface CaseClassificationRow {
 interface DocumentModalProps {
   isOpen: boolean;
   onClose: () => void;
-  leadNumber: string;
-  clientName: string;
+  leadNumber?: string;
+  clientName?: string;
   /** Optional: stable client id (`leads.id` for new; `legacy_123` for legacy). Enables attaching sub-efforts documents. */
   clientId?: string | null;
   onDocumentCountChange?: (count: number) => void;
@@ -80,6 +83,12 @@ interface DocumentModalProps {
   requireCaseDocumentClassification?: boolean;
   /** After opening, select the classification tab matching this slug (e.g. `contract`). Requires `requireCaseDocumentClassification`. */
   initialClassificationSlug?: string | null;
+  /** When set, only this classification slug is shown and used for uploads (e.g. sequence of events). */
+  restrictToClassificationSlug?: string | null;
+  /** Internal calendar meeting without a lead — uses `staff_meeting_documents` instead of lead buckets. */
+  staffMeetingId?: number | null;
+  /** Header subtitle when `staffMeetingId` is set (no lead line). */
+  staffMeetingTitle?: string | null;
 }
 
 function copyTextToClipboardFallback(text: string): boolean {
@@ -416,97 +425,6 @@ interface UploadedFile {
   error?: string;
 }
 
-function employeePhotoFromUserRow(row: {
-  tenants_employee?: { photo_url?: string | null } | { photo_url?: string | null }[] | null;
-}): string | null {
-  const emp = row.tenants_employee;
-  const e = Array.isArray(emp) ? emp[0] : emp;
-  const url = e?.photo_url;
-  return typeof url === 'string' && url.trim() ? url.trim() : null;
-}
-
-function displayNameFromUserRow(row: {
-  full_name?: string | null;
-  email?: string | null;
-}): string {
-  const fn = row.full_name?.trim();
-  if (fn) return fn;
-  const em = row.email?.trim();
-  if (em) return em;
-  return 'Unknown';
-}
-
-/** Map `lead_case_documents.uploaded_by` text → display name + photo (matches full_name or email). */
-async function resolveUploaderDisplayByKey(
-  keys: string[],
-): Promise<Map<string, { name: string; photoUrl: string | null }>> {
-  const out = new Map<string, { name: string; photoUrl: string | null }>();
-  const unique = [...new Set(keys.map((k) => k.trim()).filter(Boolean))];
-  if (unique.length === 0) return out;
-
-  const userSelect = 'full_name, email, tenants_employee!users_employee_id_fkey(photo_url)';
-
-  const { data: byFullName, error: errName } = await supabase
-    .from('users')
-    .select(userSelect)
-    .in('full_name', unique);
-  if (errName) console.warn('resolveUploaderDisplayByName:', errName);
-
-  for (const row of (byFullName || []) as {
-    full_name?: string | null;
-    email?: string | null;
-    tenants_employee?: { photo_url?: string | null } | { photo_url?: string | null }[] | null;
-  }[]) {
-    const fn = row.full_name?.trim();
-    if (fn && unique.includes(fn)) {
-      out.set(fn, { name: displayNameFromUserRow(row), photoUrl: employeePhotoFromUserRow(row) });
-    }
-  }
-
-  const needEmail = unique.filter((k) => !out.has(k));
-  if (needEmail.length === 0) return out;
-
-  const { data: byEmail, error: errEmail } = await supabase
-    .from('users')
-    .select(userSelect)
-    .in('email', needEmail);
-  if (errEmail) console.warn('resolveUploaderDisplayByEmail:', errEmail);
-
-  for (const row of (byEmail || []) as {
-    full_name?: string | null;
-    email?: string | null;
-    tenants_employee?: { photo_url?: string | null } | { photo_url?: string | null }[] | null;
-  }[]) {
-    const em = row.email?.trim();
-    if (!em) continue;
-    for (const key of needEmail) {
-      if (key === em) {
-        out.set(key, { name: displayNameFromUserRow(row), photoUrl: employeePhotoFromUserRow(row) });
-      }
-    }
-  }
-
-  for (const k of unique) {
-    if (!out.has(k)) {
-      out.set(k, { name: k, photoUrl: null });
-    }
-  }
-  return out;
-}
-
-/** Same idea as Assigned Team / ClientHeader — first + last initial, or first two letters. */
-function initialsFromUploaderName(name: string): string {
-  const t = name.trim();
-  if (!t) return '?';
-  const parts = t.split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) {
-    const a = parts[0][0];
-    const b = parts[parts.length - 1][0];
-    if (a && b) return (a + b).toUpperCase();
-  }
-  return t.slice(0, 2).toUpperCase();
-}
-
 function DocumentUploaderAttribution({ doc }: { doc: Document }) {
   const name = doc.uploadedByName?.trim();
   const [photoFailed, setPhotoFailed] = useState(false);
@@ -565,6 +483,56 @@ function formatDocumentPreviewDate(dateString: string) {
   return `${dd}.${mm}.${yy}, ${hh}:${min}`;
 }
 
+export async function shareDocumentPreviewItem(
+  item: Pick<DocumentPreviewItem, 'name' | 'downloadUrl'>,
+): Promise<void> {
+  const url = item.downloadUrl?.trim();
+  if (!url) {
+    toast.error('No link is available to share for this file.');
+    return;
+  }
+
+  const shareData: ShareData = {
+    title: item.name,
+    text: item.name,
+    url,
+  };
+
+  if (typeof navigator !== 'undefined' && typeof navigator.share === 'function') {
+    const canTry =
+      typeof navigator.canShare !== 'function' || navigator.canShare(shareData);
+    if (canTry) {
+      try {
+        await navigator.share(shareData);
+        return;
+      } catch (err: unknown) {
+        const aborted =
+          err instanceof DOMException
+            ? err.name === 'AbortError'
+            : (err as { name?: string })?.name === 'AbortError';
+        if (aborted) return;
+      }
+    }
+  }
+
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success('Link copied to clipboard');
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
+
+  if (copyTextToClipboardFallback(url)) {
+    toast.success('Link copied to clipboard');
+    return;
+  }
+
+  toast.error('Sharing is not available in this browser.');
+}
+
 async function downloadPreviewFile(item: Pick<DocumentPreviewItem, 'downloadUrl' | 'name'>): Promise<void> {
   const response = await fetch(item.downloadUrl);
   if (!response.ok) throw new Error('Download failed');
@@ -594,6 +562,7 @@ export function DocumentPreviewModal({
   const documentsRef = useRef(documents);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [sharing, setSharing] = useState(false);
 
   useEffect(() => {
     documentsRef.current = documents;
@@ -685,6 +654,16 @@ export function DocumentPreviewModal({
     }
   }, [previewDocument, downloading]);
 
+  const handleShare = useCallback(async () => {
+    if (!previewDocument || sharing) return;
+    setSharing(true);
+    try {
+      await shareDocumentPreviewItem(previewDocument);
+    } finally {
+      setSharing(false);
+    }
+  }, [previewDocument, sharing]);
+
   useEffect(() => {
     if (!isOpen || previewIndex === null) return;
     const onKey = (e: KeyboardEvent) => {
@@ -731,6 +710,20 @@ export function DocumentPreviewModal({
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            className="btn btn-ghost btn-circle shrink-0"
+            onClick={() => void handleShare()}
+            disabled={sharing || !previewDocument.downloadUrl}
+            aria-label={`Share ${previewDocument.name}`}
+            title="Share"
+          >
+            {sharing ? (
+              <span className="loading loading-spinner loading-sm" />
+            ) : (
+              <ShareIcon className="h-6 w-6" />
+            )}
+          </button>
           <button
             type="button"
             className="btn btn-ghost btn-circle shrink-0"
@@ -896,8 +889,8 @@ export function DocumentPreviewModal({
 const DocumentModal: React.FC<DocumentModalProps> = ({
   isOpen,
   onClose,
-  leadNumber,
-  clientName,
+  leadNumber = '',
+  clientName = '',
   clientId = null,
   onDocumentCountChange,
   onedriveSubFolder = null,
@@ -905,7 +898,11 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   folderPathHint = null,
   requireCaseDocumentClassification = false,
   initialClassificationSlug = null,
+  restrictToClassificationSlug = null,
+  staffMeetingId = null,
+  staffMeetingTitle = null,
 }) => {
+  const isStaffMeetingDocs = staffMeetingId != null && Number.isFinite(staffMeetingId);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -936,8 +933,9 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     setIsSavingSummary(true);
     try {
       const next = opts?.clear ? '' : editedSummaryText;
+      const table = isStaffMeetingDocs ? 'staff_meeting_documents' : 'lead_case_documents';
       const { error } = await supabase
-        .from('lead_case_documents')
+        .from(table)
         .update({
           ai_summary: next,
           ai_summary_status: next.trim() ? 'ready' : 'skipped',
@@ -999,10 +997,10 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
   // Fetch documents when modal opens
   useEffect(() => {
-    if (isOpen && leadNumber) {
+    if (isOpen && (isStaffMeetingDocs || leadNumber)) {
       fetchDocuments();
     }
-  }, [isOpen, leadNumber, onedriveSubFolder]);
+  }, [isOpen, leadNumber, onedriveSubFolder, staffMeetingId, isStaffMeetingDocs]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -1032,12 +1030,21 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         setClassifications([]);
         return;
       }
-      setClassifications((data as CaseClassificationRow[]) || []);
+      let rows = (data as CaseClassificationRow[]) || [];
+      const restrictSlug = restrictToClassificationSlug?.trim();
+      if (restrictSlug) {
+        rows = rows.filter(
+          (c) =>
+            c.slug === restrictSlug ||
+            (isSequenceOfEventsSlug(restrictSlug) && isSequenceOfEventsSlug(c.slug)),
+        );
+      }
+      setClassifications(rows);
     })();
     return () => {
       cancelled = true;
     };
-  }, [isOpen, requireCaseDocumentClassification]);
+  }, [isOpen, requireCaseDocumentClassification, restrictToClassificationSlug]);
 
   useEffect(() => {
     classificationsRef.current = classifications;
@@ -1282,6 +1289,84 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
     setLoading(true);
     setError(null);
     try {
+      if (isStaffMeetingDocs && staffMeetingId != null) {
+        const { data: rows, error: qErr } = await supabase
+          .from('staff_meeting_documents')
+          .select(
+            'id, storage_path, file_name, file_size, mime_type, uploaded_by, created_at, ai_summary, ai_summary_status, ai_summary_error',
+          )
+          .eq('meeting_id', staffMeetingId)
+          .not('storage_path', 'is', null)
+          .order('created_at', { ascending: false });
+
+        if (qErr) {
+          console.error('staff_meeting_documents fetch:', qErr);
+          setError(`Failed to fetch documents: ${qErr.message}`);
+          return;
+        }
+
+        const list = (rows ?? []) as {
+          id: string;
+          storage_path: string;
+          file_name: string;
+          file_size: number | null;
+          mime_type: string | null;
+          uploaded_by: string | null;
+          created_at: string;
+          ai_summary: string | null;
+          ai_summary_status: string | null;
+          ai_summary_error: string | null;
+        }[];
+
+        const uploaderKeys = [...new Set(list.map((r) => r.uploaded_by?.trim()).filter(Boolean))] as string[];
+        const uploaderMap = await resolveUploaderDisplayByKey(uploaderKeys);
+
+        const mappedDocuments: Document[] = await Promise.all(
+          list.map(async (r) => {
+            const { data: signed, error: signErr } = await supabase.storage
+              .from(CASE_DOCUMENTS_STORAGE_BUCKET)
+              .createSignedUrl(r.storage_path, CASE_DOCUMENTS_SIGNED_URL_SECONDS);
+
+            if (signErr) {
+              console.warn('createSignedUrl:', signErr.message, r.storage_path);
+            }
+
+            const url = signed?.signedUrl?.trim() || '';
+            const rawUploader = r.uploaded_by?.trim() || null;
+            const resolved = rawUploader ? uploaderMap.get(rawUploader) : undefined;
+            const mime =
+              r.mime_type?.trim() ||
+              (r.file_name.match(/\.([^.]+)$/)?.[1]?.toLowerCase() === 'pdf'
+                ? 'application/pdf'
+                : 'application/octet-stream');
+
+            const validAi: CaseDocumentAiSummaryStatus[] = ['pending', 'ready', 'failed', 'skipped'];
+            const aiStRaw = typeof r.ai_summary_status === 'string' ? r.ai_summary_status.trim().toLowerCase() : '';
+            const aiSt = (aiStRaw as CaseDocumentAiSummaryStatus) || null;
+            return {
+              id: r.id,
+              caseDocDbId: r.id,
+              name: r.file_name,
+              webUrl: url,
+              downloadUrl: url,
+              storagePath: r.storage_path,
+              fileType: mime,
+              size: r.file_size ?? 0,
+              lastModified: r.created_at,
+              uploadedByName: resolved?.name ?? rawUploader ?? null,
+              uploadedByPhotoUrl: resolved?.photoUrl ?? null,
+              aiSummary: r.ai_summary,
+              aiSummaryStatus: validAi.includes(aiSt as CaseDocumentAiSummaryStatus) ? aiSt : null,
+              aiSummaryError: r.ai_summary_error,
+              source: 'case' as const,
+            };
+          }),
+        );
+
+        setDocuments(mappedDocuments);
+        return;
+      }
+
       const subKey = onedriveSubFolder?.trim() ? onedriveSubFolder.trim() : null;
 
       let query = supabase
@@ -1616,8 +1701,13 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         const { error: rmErr } = await supabase.storage.from(CASE_DOCUMENTS_STORAGE_BUCKET).remove([path]);
         if (rmErr) throw rmErr;
 
-        const { error: delErr } = await supabase.from('lead_case_documents').delete().eq('id', dbId);
-        if (delErr) throw delErr;
+        if (isStaffMeetingDocs) {
+          const { error: delErr } = await supabase.from('staff_meeting_documents').delete().eq('id', dbId);
+          if (delErr) throw delErr;
+        } else {
+          const { error: delErr } = await supabase.from('lead_case_documents').delete().eq('id', dbId);
+          if (delErr) throw delErr;
+        }
       }
 
       setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
@@ -1684,7 +1774,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   const handleFileDrop = async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    if (requireCaseDocumentClassification && !uploadClassificationId) {
+    if (!isStaffMeetingDocs && requireCaseDocumentClassification && !uploadClassificationId) {
       toast.error('Select a document category below to upload.');
       return;
     }
@@ -1696,7 +1786,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
   // Handle file input change
   const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (requireCaseDocumentClassification && !uploadClassificationId) {
+    if (!isStaffMeetingDocs && requireCaseDocumentClassification && !uploadClassificationId) {
       toast.error('Select a document category below to upload.');
       e.target.value = '';
       return;
@@ -1710,7 +1800,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
   // The main upload function
   const uploadFiles = async (files: File[]) => {
     const classificationIdForBatch = uploadClassificationId;
-    if (requireCaseDocumentClassification && !classificationIdForBatch) {
+    if (!isStaffMeetingDocs && requireCaseDocumentClassification && !classificationIdForBatch) {
       toast.error('Select a document category below to upload.');
       return;
     }
@@ -1768,6 +1858,42 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       startProgressSimulation(file.name, file.size);
       
       try {
+        if (isStaffMeetingDocs && staffMeetingId != null) {
+          const storagePath = buildStaffMeetingDocumentStoragePath(staffMeetingId, file.name);
+
+          const { error: storageErr } = await supabase.storage
+            .from(CASE_DOCUMENTS_STORAGE_BUCKET)
+            .upload(storagePath, file, {
+              contentType: file.type?.trim() || undefined,
+              upsert: false,
+            });
+
+          stopProgressSimulation(file.name);
+
+          if (storageErr) throw storageErr;
+
+          const uploadedBy = await getCurrentUserName();
+          const mimeType = file.type?.trim() || 'application/octet-stream';
+
+          const { error: insErr } = await supabase.from('staff_meeting_documents').insert({
+            meeting_id: staffMeetingId,
+            storage_path: storagePath,
+            file_name: file.name,
+            file_size: file.size,
+            mime_type: mimeType,
+            uploaded_by: uploadedBy,
+            ai_summary_status: 'skipped',
+          });
+
+          if (insErr) throw insErr;
+
+          setUploadedFiles((prev) =>
+            prev.map((f) => (f.name === file.name ? { ...f, status: 'success' as const, progress: 100 } : f)),
+          );
+          await fetchDocuments();
+          continue;
+        }
+
         const storagePath = buildCaseDocumentStoragePath(leadNumber, subKey ?? undefined, file.name);
 
         const { error: storageErr } = await supabase.storage
@@ -1845,7 +1971,8 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
 
   if (typeof window === 'undefined') return null;
 
-  const showUploadZone = !requireCaseDocumentClassification || !!uploadClassificationId;
+  const showUploadZone =
+    isStaffMeetingDocs || !requireCaseDocumentClassification || !!uploadClassificationId;
   const uploadDisabled = !showUploadZone || isUploading || caseUploadBlocked;
 
   return createPortal(
@@ -1871,7 +1998,13 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           <div className="flex min-w-0 items-start justify-between gap-2 md:gap-6">
             <div className="min-w-0 flex-1 md:pr-2">
               <h2 className="mb-1 text-xl font-bold sm:text-2xl">{modalTitle ?? 'Documents'}</h2>
-              <p className="text-sm text-base-content/70">Lead: {clientName} ({leadNumber})</p>
+              {isStaffMeetingDocs ? (
+                <p className="text-sm text-base-content/70">
+                  Meeting: {staffMeetingTitle?.trim() || 'Internal meeting'}
+                </p>
+              ) : (
+                <p className="text-sm text-base-content/70">Lead: {clientName} ({leadNumber})</p>
+              )}
               {folderPathHint ? (
                 <p className="mt-1 text-xs text-base-content/60">{folderPathHint}</p>
               ) : null}
