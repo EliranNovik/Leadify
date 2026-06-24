@@ -59,6 +59,10 @@ function shouldUseViteApiProxy(): boolean {
   }
 }
 
+export function getPelecardPaymentsApiBase(): string {
+  return getApiBase();
+}
+
 function getApiBase(): string {
   if (shouldUseViteApiProxy()) {
     return '/api/payments/pelecard';

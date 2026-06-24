@@ -159,6 +159,35 @@ async function verifyCssAppliedOnPaymentPage(paymentUrl, cssUrl) {
   }
 }
 
+function analyzeCheckoutHtmlForWallets(html) {
+  if (!html || typeof html !== 'string') {
+    return {
+      applePayMentioned: false,
+      googlePayMentioned: false,
+      walletScriptUrls: [],
+      pelecardPaymentScripts: [],
+      pelecardWalletsLikelyEnabled: false,
+    };
+  }
+  const walletScriptUrls = [];
+  const pelecardPaymentScripts = [];
+  for (const match of html.matchAll(/src=["']([^"']+)["']/gi)) {
+    const src = match[1] || '';
+    const lower = src.toLowerCase();
+    if (/apple|google|wallet|gpay/.test(lower)) walletScriptUrls.push(src);
+    if (/payment\/.*\.js/i.test(src)) pelecardPaymentScripts.push(src);
+  }
+  const applePayMentioned = /apple[\s-]?pay|applepaysession|apple-pay-button/i.test(html);
+  const googlePayMentioned = /google[\s-]?pay|gpay/i.test(html);
+  return {
+    applePayMentioned,
+    googlePayMentioned,
+    walletScriptUrls,
+    pelecardPaymentScripts,
+    pelecardWalletsLikelyEnabled: applePayMentioned || googlePayMentioned || walletScriptUrls.length > 0,
+  };
+}
+
 function getCheckoutCssDebugInfo() {
   const config = getConfig();
   const cssUrl = resolvePelecardCssUrl(config);
@@ -171,6 +200,7 @@ function getCheckoutCssDebugInfo() {
     cssVariant: cssVariant ?? (builtin ? 4 : null),
     checkoutLanguage: language,
     availableBuiltinVariants: PELECARD_BUILTIN_VARIANTS,
+    sandboxMode: config.sandboxMode,
     appPublicUrl: config.appPublicUrl,
     backendPublicUrl: config.backendPublicUrl,
     explicitCssUrl: (process.env.PELECARD_CSS_URL || '').trim() || null,
@@ -210,14 +240,29 @@ async function probeTerminalCssUrlSupport() {
   }
   const cssApplied = await verifyCssAppliedOnPaymentPage(paymentUrl, cssUrl);
   let variantStylesheet = null;
+  let walletProbe = null;
   try {
     const html = await fetch(paymentUrl).then((r) => r.text());
     const match = html.match(/href=["']([^"']*variant-[^"']+\.css[^"']*)["']/i);
     variantStylesheet = match?.[1] || null;
+    const walletSignals = analyzeCheckoutHtmlForWallets(html);
+    walletProbe = {
+      probePaymentUrlHost: (() => {
+        try {
+          return new URL(paymentUrl).hostname;
+        } catch {
+          return null;
+        }
+      })(),
+      ...walletSignals,
+      interpretation: walletSignals.pelecardWalletsLikelyEnabled
+        ? 'Pelecard checkout HTML references wallet UI — terminal may have wallets enabled; test on Safari with a card in Wallet.'
+        : 'Pelecard checkout HTML has no Apple/Google Pay markup — wallets are likely NOT enabled on this terminal (contact Pelecard).',
+    };
   } catch {
     /* ignore */
   }
-  return { cssUrl, cssApplied, variantStylesheet };
+  return { cssUrl, cssApplied, variantStylesheet, walletProbe };
 }
 
 function buildCheckoutDisplayOptions(config, payment) {

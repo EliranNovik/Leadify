@@ -19,6 +19,7 @@ import {
 import { isLegacyPaymentLinkRow } from '../lib/paymentLinkLeadRef';
 import { ensurePelecardClientSecureScript } from '../lib/pelecardWalletSetup';
 import { runPelecardWalletDiagnostics } from '../lib/pelecardWalletDiagnostics';
+import PaymentWalletDebugPanel from '../components/payment/PaymentWalletDebugPanel';
 import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 import toast from 'react-hot-toast';
 import {
@@ -768,6 +769,7 @@ const PaymentPage: React.FC = () => {
       </main>
 
       <PublicPageContactButtons />
+      {walletDebug && <PaymentWalletDebugPanel paymentUrl={paymentUrl} />}
     </div>
   );
 };
