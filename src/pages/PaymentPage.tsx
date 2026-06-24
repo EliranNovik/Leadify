@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { createPelecardPaymentSession, fetchPaymentStatus } from '../lib/pelecardPaymentApi';
 import PelecardCheckoutFrame from '../components/PelecardCheckoutFrame';
@@ -18,6 +18,7 @@ import {
 } from '../lib/proformaExchangeRate';
 import { isLegacyPaymentLinkRow } from '../lib/paymentLinkLeadRef';
 import { ensurePelecardClientSecureScript } from '../lib/pelecardWalletSetup';
+import { runPelecardWalletDiagnostics } from '../lib/pelecardWalletDiagnostics';
 import { resolvePaymentPlanContact } from '../lib/resolvePaymentPlanContact';
 import toast from 'react-hot-toast';
 import {
@@ -281,6 +282,8 @@ function PaymentPassportIdNote({ className = '' }: { className?: string }) {
 const PaymentPage: React.FC = () => {
   const { token } = useParams<{ token: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const walletDebug = searchParams.get('walletDebug') === '1';
 
   const [paymentLink, setPaymentLink] = useState<PaymentLink | null>(null);
   const [loading, setLoading] = useState(true);
@@ -510,6 +513,14 @@ const PaymentPage: React.FC = () => {
   useEffect(() => {
     ensurePelecardClientSecureScript();
   }, []);
+
+  useEffect(() => {
+    if (!walletDebug) return;
+    const timer = window.setTimeout(() => {
+      void runPelecardWalletDiagnostics();
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [walletDebug]);
 
   const isAlreadyPaid = paymentLink ? isPaymentComplete(paymentLink) : false;
   const paidAt = paymentLink ? getPaymentPaidAt(paymentLink) : null;
