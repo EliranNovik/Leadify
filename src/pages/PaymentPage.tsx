@@ -519,7 +519,7 @@ const PaymentPage: React.FC = () => {
     if (!walletDebug) return;
     const timer = window.setTimeout(() => {
       void runPelecardWalletDiagnostics();
-    }, 500);
+    }, 800);
     return () => window.clearTimeout(timer);
   }, [walletDebug]);
 
@@ -547,6 +547,8 @@ const PaymentPage: React.FC = () => {
       if (!result.success || !result.paymentUrl) {
         throw new Error(result.error || 'Failed to create payment session');
       }
+      // Iframe wallets need ClientSecureV2 on the parent page before checkout loads.
+      await ensurePelecardClientSecureScript();
       setPaymentUrl(result.paymentUrl);
       // Pelecard session was built with fresh BOI — refresh summary NIS to match iframe charge.
       await loadCheckoutExchange({ forceBoiRefresh: true });

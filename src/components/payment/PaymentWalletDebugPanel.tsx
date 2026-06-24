@@ -53,10 +53,10 @@ const PaymentWalletDebugPanel: React.FC<PaymentWalletDebugPanelProps> = ({ payme
   }, []);
 
   return (
-    <div className="fixed bottom-0 inset-x-0 z-[100] p-3 pointer-events-none">
+    <div className="fixed bottom-0 inset-x-0 z-[9999] p-3 pointer-events-none safe-area-pb">
       <div className="pointer-events-auto mx-auto max-w-lg rounded-xl border border-amber-300 bg-amber-50 shadow-lg text-xs text-gray-800 max-h-[45vh] overflow-y-auto">
         <div className="sticky top-0 bg-amber-100 border-b border-amber-200 px-3 py-2 font-semibold">
-          Wallet debug (`?walletDebug=1`)
+          Wallet debug — staff only (<code className="text-[10px]">?walletDebug=1</code>)
         </div>
         <div className="px-3 py-2 space-y-3">
           <section>
@@ -87,7 +87,7 @@ const PaymentWalletDebugPanel: React.FC<PaymentWalletDebugPanelProps> = ({ payme
             {!serverError && (
               <ul className="space-y-1">
                 <li className="flex justify-between gap-2">
-                  <span>Sandbox mode</span>
+                  <span>Production terminal (not sandbox)</span>
                   {statusBadge(server?.sandboxMode === false ? true : server?.sandboxMode ? false : null)}
                 </li>
                 <li className="flex justify-between gap-2">
@@ -115,6 +115,21 @@ const PaymentWalletDebugPanel: React.FC<PaymentWalletDebugPanelProps> = ({ payme
               • {note}
             </p>
           ))}
+
+          {client && !client.applePayApiAvailable && (
+            <p className="text-amber-800 font-medium leading-relaxed">
+              Apple Pay on web requires Safari on iPhone/Mac — this browser does not expose ApplePaySession.
+            </p>
+          )}
+          {client?.applePayApiAvailable &&
+            client.applePayCanMakePayments &&
+            client.clientSecureScriptPresent &&
+            server?.walletProbe?.pelecardWalletsLikelyEnabled && (
+              <p className="text-amber-900 font-medium leading-relaxed">
+                Device + Pelecard look ready. If the button is still missing, tap PaymentGW tab below — if it
+                appears there but not in the iframe, tell Pelecard iframe + Apple Pay needs configuration.
+              </p>
+            )}
         </div>
       </div>
     </div>

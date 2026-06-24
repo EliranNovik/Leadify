@@ -9,7 +9,7 @@ export type PelecardWalletDiagnostics = {
   notes: string[];
 };
 
-/** Run in browser on /payment/...?walletDebug=1 — logs wallet prerequisites (parent page only). */
+/** Run on /payment/...?walletDebug=1 only — logs wallet prerequisites (parent page). */
 export async function runPelecardWalletDiagnostics(): Promise<PelecardWalletDiagnostics> {
   const notes: string[] = [];
   const w = typeof window !== 'undefined' ? window : null;
@@ -96,6 +96,11 @@ export async function runPelecardWalletDiagnostics(): Promise<PelecardWalletDiag
     paymentRequestApi: result.paymentRequestAvailable,
   });
   for (const note of result.notes) console.info('•', note);
+  if (result.applePayApiAvailable && result.applePayCanMakePayments && result.clientSecureScriptPresent) {
+    console.warn(
+      '[Pelecard wallet] This device is ready. If Apple Pay is still missing inside the Pelecard form, Pelecard has not enabled wallets on your terminal — contact Pelecard support.',
+    );
+  }
   console.groupEnd();
 
   return result;

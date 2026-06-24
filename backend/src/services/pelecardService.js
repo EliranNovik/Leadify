@@ -177,14 +177,18 @@ function analyzeCheckoutHtmlForWallets(html) {
     if (/apple|google|wallet|gpay/.test(lower)) walletScriptUrls.push(src);
     if (/payment\/.*\.js/i.test(src)) pelecardPaymentScripts.push(src);
   }
-  const applePayMentioned = /apple[\s-]?pay|applepaysession|apple-pay-button/i.test(html);
-  const googlePayMentioned = /google[\s-]?pay|gpay/i.test(html);
+  const applePayMentioned =
+    /applepaysession|id=["'][^"']*apple[^"']*pay|class=["'][^"']*apple-pay-button/i.test(html);
+  const googlePayMentioned =
+    /google[\s-]?pay-button|gpay-button|googlepay/i.test(html);
+  const hasWalletScripts = walletScriptUrls.length > 0;
   return {
     applePayMentioned,
     googlePayMentioned,
     walletScriptUrls,
     pelecardPaymentScripts,
-    pelecardWalletsLikelyEnabled: applePayMentioned || googlePayMentioned || walletScriptUrls.length > 0,
+    pelecardWalletsLikelyEnabled:
+      hasWalletScripts || applePayMentioned || googlePayMentioned,
   };
 }
 

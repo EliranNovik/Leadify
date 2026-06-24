@@ -810,9 +810,15 @@ const CalendarPage: React.FC = () => {
   const [legacyLoadingDisabled, setLegacyLoadingDisabled] = useState(false);
 
   // Meeting type filter state
-  const [selectedMeetingType, setSelectedMeetingType] = useState<
-    'all' | 'potential' | 'active' | 'staff' | 'paid' | 'physical' | 'online'
-  >('all');
+  type CalendarMeetingTypeFilter =
+    | 'all'
+    | 'potential'
+    | 'active'
+    | 'staff'
+    | 'paid'
+    | 'physical'
+    | 'online';
+  const [selectedMeetingType, setSelectedMeetingType] = useState<CalendarMeetingTypeFilter>('all');
 
   // Staff meetings state
   const [staffMeetings, setStaffMeetings] = useState<any[]>([]);
@@ -3446,36 +3452,45 @@ const CalendarPage: React.FC = () => {
 
     // Filter by meeting type
     if (!globalSearchActive && selectedMeetingType !== 'all') {
-      const beforeFilter = filtered.length;
+      const resolveMeetingLocationId = (m: any): number => {
+        const lead = m.lead || {};
+        const legacyLead = m.legacy_lead || {};
+        const locationIdRaw =
+          (m as any).meeting_location_id ??
+          (lead as any).meeting_location_id ??
+          (legacyLead as any).meeting_location_id ??
+          null;
+        if (locationIdRaw != null) {
+          const fromExplicitId = Number(locationIdRaw);
+          if (Number.isFinite(fromExplicitId)) return fromExplicitId;
+        }
+
+        const locationRaw =
+          (m as any).meeting_location ??
+          (m as any).location ??
+          (lead as any).meeting_location ??
+          (legacyLead as any).meeting_location ??
+          null;
+        if (locationRaw == null) return NaN;
+
+        if (/^\d+$/.test(String(locationRaw))) {
+          const fromNumericField = Number(locationRaw);
+          if (Number.isFinite(fromNumericField)) return fromNumericField;
+        }
+
+        const fromName = meetingLocationNameToId[String(locationRaw)];
+        return fromName != null ? Number(fromName) : NaN;
+      };
+
+      const isPhysicalMeetingLocation = (m: any): boolean => {
+        const locationId = resolveMeetingLocationId(m);
+        return Number.isFinite(locationId) ? meetingLocationIsPhysical[locationId] === true : false;
+      };
+
       filtered = filtered.filter(m => {
-        // Physical / Online are treated as location-type filters (exclude staff meetings)
+        // Physical / Online by tenants_meetinglocation (client + physical internal meetings)
         if (selectedMeetingType === 'physical' || selectedMeetingType === 'online') {
-          if (m.calendar_type === 'staff') return false;
-          const lead = m.lead || {};
-          const legacyLead = m.legacy_lead || {};
-          const locationIdRaw =
-            (m as any).meeting_location_id ??
-            (lead as any).meeting_location_id ??
-            (legacyLead as any).meeting_location_id ??
-            null;
-          const locationIdDirect = locationIdRaw != null ? Number(locationIdRaw) : NaN;
-
-          // Fallback: if we only have a location name, resolve it to an ID using tenants_meetinglocation mapping.
-          const locationName =
-            (m as any).meeting_location ??
-            (m as any).location ??
-            (lead as any).meeting_location ??
-            (legacyLead as any).meeting_location ??
-            null;
-          const locationIdFromName =
-            locationName && meetingLocationNameToId[String(locationName)]
-              ? Number(meetingLocationNameToId[String(locationName)])
-              : NaN;
-
-          const locationId = Number.isFinite(locationIdDirect) ? locationIdDirect : locationIdFromName;
-
-          // Requirement: physical if is_phisical_location === true, otherwise online.
-          const isPhysical = Number.isFinite(locationId) ? meetingLocationIsPhysical[locationId] === true : false;
+          const isPhysical = isPhysicalMeetingLocation(m);
           return selectedMeetingType === 'physical' ? isPhysical : !isPhysical;
         }
         if (selectedMeetingType === 'potential' && m.calendar_type !== 'potential_client') {
@@ -3633,7 +3648,7 @@ const CalendarPage: React.FC = () => {
     setTotalAmount(totalAmountInNIS);
 
 
-  }, [appliedFromDate, appliedToDate, selectedStaff, selectedMeetingType, meetingLocationIsPhysical, meetings, staffMeetings, calendarLeadFilterQuery, calendarGlobalSearchMeetings]);
+  }, [appliedFromDate, appliedToDate, selectedStaff, selectedMeetingType, meetingLocationIsPhysical, meetingLocationNameToId, meetings, staffMeetings, calendarLeadFilterQuery, calendarGlobalSearchMeetings]);
 
 
 
@@ -7054,9 +7069,7 @@ const CalendarPage: React.FC = () => {
                 className="select select-bordered flex-1"
                 value={selectedMeetingType}
                 onChange={(e) =>
-                  setSelectedMeetingType(
-                    e.target.value as 'all' | 'potential' | 'active' | 'staff' | 'paid' | 'physical' | 'online'
-                  )
+                  setSelectedMeetingType(e.target.value as CalendarMeetingTypeFilter)
                 }
               >
                 <option value="all">All Meetings</option>
@@ -7179,9 +7192,7 @@ const CalendarPage: React.FC = () => {
                 className="select select-bordered w-full"
                 value={selectedMeetingType}
               onChange={(e) =>
-                setSelectedMeetingType(
-                  e.target.value as 'all' | 'potential' | 'active' | 'staff' | 'paid' | 'physical' | 'online'
-                )
+                setSelectedMeetingType(e.target.value as CalendarMeetingTypeFilter)
               }
               >
                 <option value="all">All Meetings</option>
