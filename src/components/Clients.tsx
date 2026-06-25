@@ -132,6 +132,10 @@ import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
 import ClientHeader from './ClientHeader';
 import MobileBottomSheet from './MobileBottomSheet';
+import MeetingFormDrawerSheet, {
+  MeetingFormDrawerActionButton,
+  MeetingFormDrawerFooter,
+} from './meeting/MeetingFormDrawerSheet';
 import type { WhatsAppPageSelectedContact } from '../pages/WhatsAppPage';
 import CombineLeadsModal from './CombineLeadsModal';
 import SendPriceOfferModal from './SendPriceOfferModal';
@@ -5775,6 +5779,30 @@ const Clients: React.FC<ClientsProps> = ({
     });
     setMeetingType('regular');
     setNotifyClientOnSchedule(false); // Reset to default
+  };
+
+  const closeReschedulePanel = () => {
+    setShowAuthRedirectOption(false);
+    authRedirectParamsRef.current = null;
+    setShowRescheduleDrawer(false);
+    setNotifyClientOnReschedule(false);
+    setMeetingToDelete(null);
+    setRescheduleFormData({
+      date: getTomorrowDate(),
+      time: '09:00',
+      location: 'Teams',
+      calendar: 'current',
+      manager: '',
+      helper: '',
+      amount: '',
+      currency: 'NIS',
+      attendance_probability: 'Medium',
+      complexity: 'Simple',
+      car_number: '',
+      custom_link: '',
+      custom_address: '',
+    });
+    setRescheduleOption('cancel');
   };
 
   const handleMeetingLocationChange = (
@@ -15374,19 +15402,31 @@ const Clients: React.FC<ClientsProps> = ({
           </div>
           </div>
           {/* Schedule Meeting Right Panel */}
-          <MobileBottomSheet
+          <MeetingFormDrawerSheet
             open={showScheduleMeetingPanel}
             onClose={closeSchedulePanel}
-            hideDefaultHeader
-            mobileFullHeight
-            desktopLayout="drawer-right"
-            zIndex={320}
-            contentClassName="!p-0 flex flex-col min-h-0 !overflow-hidden"
-            sheetClassName="md:max-w-md"
+            title="Schedule Meeting"
+            footer={(
+              <MeetingFormDrawerFooter>
+                <MeetingFormDrawerActionButton
+                  className="btn-primary"
+                  onClick={handleScheduleMeeting}
+                  disabled={!meetingFormData.date || !meetingFormData.time || isCreatingMeeting}
+                >
+                  {isCreatingMeeting ? (
+                    <>
+                      <span className="loading loading-spinner loading-sm" />
+                      Creating Meeting...
+                    </>
+                  ) : (
+                    'Create Meeting'
+                  )}
+                </MeetingFormDrawerActionButton>
+              </MeetingFormDrawerFooter>
+            )}
           >
-              <div className="flex flex-col min-h-0 h-full flex-1 bg-base-100">
                 {showAuthRedirectOption && (
-                  <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 flex flex-col gap-2">
+                  <div className="bg-amber-50 border-b border-amber-200 -mx-4 px-4 py-3 mb-4 flex flex-col gap-2 md:-mx-6 md:px-6">
                     <p className="text-sm text-amber-800">Sign-in was blocked. Use the button below to sign in in this tab, then try again.</p>
                     <button
                       type="button"
@@ -15404,16 +15444,7 @@ const Clients: React.FC<ClientsProps> = ({
                     </button>
                   </div>
                 )}
-                {/* Fixed Header */}
-                <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
-                  <h3 className="text-2xl font-bold">Schedule Meeting</h3>
-                  <button className="btn btn-ghost btn-sm" onClick={closeSchedulePanel}>
-                    <XMarkIcon className="w-6 h-6" />
-                  </button>
-                </div>
 
-                {/* Scrollable Content */}
-                <div className="flex-1 overflow-y-auto p-8 pt-4">
                   {/* Notify Client Toggle */}
                   <div className="mb-6 flex items-center justify-between">
                     <label className="block font-semibold text-base">Notify Client</label>
@@ -15771,29 +15802,8 @@ const Clients: React.FC<ClientsProps> = ({
                       />
                     </div>
                   </div>
-                </div>
 
-                {/* Fixed Footer */}
-                <div className="p-8 pt-4 border-t border-base-300 bg-base-100">
-                  <div className="flex justify-end">
-                    <button
-                      className="btn btn-primary px-8"
-                      onClick={handleScheduleMeeting}
-                      disabled={!meetingFormData.date || !meetingFormData.time || isCreatingMeeting}
-                    >
-                      {isCreatingMeeting ? (
-                        <>
-                          <span className="loading loading-spinner loading-sm"></span>
-                          Creating Meeting...
-                        </>
-                      ) : (
-                        'Create Meeting'
-                      )}
-                    </button>
-                  </div>
-                </div>
-              </div>
-          </MobileBottomSheet>
+          </MeetingFormDrawerSheet>
 
           {/* Update Lead Drawer */}
           <MobileBottomSheet
@@ -17407,27 +17417,47 @@ const Clients: React.FC<ClientsProps> = ({
           </MobileBottomSheet>
 
           {/* Reschedule Meeting Drawer */}
-          <MobileBottomSheet
+          <MeetingFormDrawerSheet
             open={showRescheduleDrawer}
-            onClose={() => {
-              setShowAuthRedirectOption(false);
-              authRedirectParamsRef.current = null;
-              setShowRescheduleDrawer(false);
-              setNotifyClientOnReschedule(false);
-              setMeetingToDelete(null);
-              setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
-              setRescheduleOption('cancel');
-            }}
-            hideDefaultHeader
-            mobileFullHeight
-            desktopLayout="drawer-right"
-            zIndex={320}
-            contentClassName="!p-0 flex flex-col min-h-0 !overflow-hidden"
-            sheetClassName="md:max-w-md"
+            onClose={closeReschedulePanel}
+            title="Reschedule Meeting"
+            footer={(
+              <MeetingFormDrawerFooter>
+                <MeetingFormDrawerActionButton
+                  className="btn-ghost"
+                  onClick={closeReschedulePanel}
+                >
+                  Cancel
+                </MeetingFormDrawerActionButton>
+                {rescheduleOption === 'cancel' ? (
+                  <MeetingFormDrawerActionButton
+                    className="btn-primary"
+                    onClick={handleCancelMeeting}
+                    disabled={!meetingToDelete}
+                  >
+                    Cancel Meeting
+                  </MeetingFormDrawerActionButton>
+                ) : (
+                  <MeetingFormDrawerActionButton
+                    className="btn-primary"
+                    onClick={handleRescheduleMeeting}
+                    disabled={!rescheduleFormData.date || !rescheduleFormData.time || isReschedulingMeeting}
+                  >
+                    {isReschedulingMeeting ? (
+                      <>
+                        <span className="loading loading-spinner loading-sm" />
+                        Rescheduling...
+                      </>
+                    ) : (
+                      'Reschedule Meeting'
+                    )}
+                  </MeetingFormDrawerActionButton>
+                )}
+              </MeetingFormDrawerFooter>
+            )}
           >
-              <div className="flex flex-col min-h-0 h-full flex-1 bg-base-100">
                 {showAuthRedirectOption && (
-                  <div className="bg-amber-50 border-b border-amber-200 px-4 py-3 flex flex-col gap-2">
+                  <div className="bg-amber-50 border-b border-amber-200 -mx-4 px-4 py-3 mb-4 flex flex-col gap-2 md:-mx-6 md:px-6">
                     <p className="text-sm text-amber-800">Sign-in was blocked. Use the button below to sign in in this tab, then try again.</p>
                     <button
                       type="button"
@@ -17445,28 +17475,7 @@ const Clients: React.FC<ClientsProps> = ({
                     </button>
                   </div>
                 )}
-                {/* Fixed Header */}
-                <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
-                  <h3 className="text-2xl font-bold">Reschedule Meeting</h3>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => {
-                      setShowAuthRedirectOption(false);
-                      authRedirectParamsRef.current = null;
-                      setShowRescheduleDrawer(false);
-                      setNotifyClientOnReschedule(false); // Reset to default
-                      setMeetingToDelete(null);
-                      setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
-                      setRescheduleOption('cancel');
-                      setNotifyClientOnReschedule(false); // Reset to default
-                    }}
-                  >
-                    <XMarkIcon className="w-6 h-6" />
-                  </button>
-                </div>
 
-                {/* Scrollable Content */}
-                <div className="flex-1 overflow-y-auto p-8 pt-4">
                   {/* Notify Client Toggle */}
                   <div className="mb-6 flex items-center justify-between">
                     <label className="block font-semibold text-base">Notify Client</label>
@@ -17737,51 +17746,8 @@ const Clients: React.FC<ClientsProps> = ({
                       </>
                     )}
                   </div>
-                </div>
 
-                {/* Fixed Footer */}
-                <div className="p-8 pt-4 border-t border-base-300 bg-base-100">
-                  <div className="flex justify-end gap-3">
-                    <button
-                      className="btn btn-ghost"
-                      onClick={() => {
-                        setShowRescheduleDrawer(false);
-                        setNotifyClientOnReschedule(false); // Reset to default
-                        setMeetingToDelete(null);
-                        setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '', custom_link: '', custom_address: '' });
-                        setRescheduleOption('cancel');
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    {rescheduleOption === 'cancel' ? (
-                      <button
-                        className="btn btn-primary px-8"
-                        onClick={handleCancelMeeting}
-                        disabled={!meetingToDelete}
-                      >
-                        Cancel Meeting
-                      </button>
-                    ) : (
-                      <button
-                        className="btn btn-primary px-8"
-                        onClick={handleRescheduleMeeting}
-                        disabled={!rescheduleFormData.date || !rescheduleFormData.time || isReschedulingMeeting}
-                      >
-                        {isReschedulingMeeting ? (
-                          <>
-                            <span className="loading loading-spinner loading-sm"></span>
-                            Rescheduling...
-                          </>
-                        ) : (
-                          'Reschedule Meeting'
-                        )}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-          </MobileBottomSheet>
+          </MeetingFormDrawerSheet>
 
           <MobileBottomSheet
             open={showCustomLocationModal}

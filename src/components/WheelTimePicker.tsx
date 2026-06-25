@@ -1,12 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ClockIcon } from '@heroicons/react/24/outline';
 
 const ITEM_HEIGHT = 44;
 const WHEEL_HEIGHT = 220;
 const WHEEL_PAD = (WHEEL_HEIGHT - ITEM_HEIGHT) / 2;
-const SNAP_DURATION_MS = 320;
-
-const ALL_MINUTES = Array.from({ length: 60 }, (_, i) => i);
+const SNAP_DURATION_MS = 220;
+const SETTLE_DELAY_MS = 280;
+const POINTER_SETTLE_DELAY_MS = 0;
 
 function normalizeTime(time: string): string {
   const parts = time.trim().split(':');
@@ -16,13 +15,13 @@ function normalizeTime(time: string): string {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
-function formatDisplay12h(time: string): string {
-  const normalized = normalizeTime(time);
-  if (!normalized) return time;
-  const [h, m] = normalized.split(':').map(Number);
-  const period = h >= 12 ? 'pm' : 'am';
-  const hour12 = h % 12 || 12;
-  return `${hour12}:${String(m).padStart(2, '0')}${period}`;
+function isHourEntryComplete(digits: string, minH: number, maxH: number): boolean {
+  if (digits.length >= 2) return true;
+  if (digits.length !== 1) return false;
+  const d = Number(digits);
+  if (!Number.isFinite(d)) return false;
+  if (d > 2) return d >= minH && d <= maxH;
+  return false;
 }
 
 function pad2(n: number): string {
@@ -106,7 +105,7 @@ export type WheelTimePickerProps = {
   emptyMessage?: string;
   minHour?: number;
   maxHour?: number;
-  showSummary?: boolean;
+  minuteStep?: number;
   className?: string;
 };
 
@@ -114,7 +113,6 @@ type WheelColumnProps = {
   label: string;
   items: number[];
   selected: number;
-  activeValue: number;
   scrollRef: React.RefObject<HTMLDivElement | null>;
   onActiveChange: (value: number) => void;
   onSettled: () => void;
@@ -124,18 +122,17 @@ function WheelColumn({
   label,
   items,
   selected,
-  activeValue,
   scrollRef,
   onActiveChange,
   onSettled,
 }: WheelColumnProps) {
   const [scrollTop, setScrollTop] = useState(0);
-  const [isScrolling, setIsScrolling] = useState(false);
   const isUserScroll = useRef(false);
   const isAnimating = useRef(false);
   const isSnapping = useRef(false);
   const rafRef = useRef<number | null>(null);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const snapLockUntil = useRef(0);
 
   const reportFrame = useCallback(
     (top: number) => {
@@ -153,10 +150,12 @@ function WheelColumn({
       const idx = items.indexOf(target);
       if (idx < 0) return;
       const top = getSnapTop(idx);
-      if (Math.abs(el.scrollTop - top) < 0.5) return;
+      if (Math.abs(el.scrollTop - top) < 0.5) {
+        reportFrame(top);
+        return;
+      }
 
       isAnimating.current = true;
-      setIsScrolling(true);
       if (smooth) {
         await animateScrollTop(el, top, reportFrame);
       } else {
@@ -164,7 +163,7 @@ function WheelColumn({
         reportFrame(top);
       }
       isAnimating.current = false;
-      setIsScrolling(false);
+      snapLockUntil.current = Date.now() + 120;
     },
     [items, reportFrame, scrollRef],
   );
@@ -172,35 +171,54 @@ function WheelColumn({
   const snapToNearest = useCallback(async () => {
     const el = scrollRef.current;
     if (!el || isAnimating.current || isSnapping.current) return;
+    if (Date.now() < snapLockUntil.current) return;
 
     const idx = getSnapIndex(el.scrollTop, items.length - 1);
     const top = getSnapTop(idx);
     if (Math.abs(el.scrollTop - top) < 0.5) {
       reportFrame(top);
-      setIsScrolling(false);
       onSettled();
       return;
     }
 
     isSnapping.current = true;
     isAnimating.current = true;
-    setIsScrolling(true);
     await animateScrollTop(el, top, reportFrame);
     isAnimating.current = false;
     isSnapping.current = false;
-    setIsScrolling(false);
+    snapLockUntil.current = Date.now() + 120;
     onSettled();
   }, [items, onSettled, reportFrame, scrollRef]);
 
+  const scheduleSettle = useCallback(
+    (delay = SETTLE_DELAY_MS) => {
+      if (settleTimer.current) clearTimeout(settleTimer.current);
+      settleTimer.current = setTimeout(() => {
+        settleTimer.current = null;
+        void snapToNearest().finally(() => {
+          isUserScroll.current = false;
+        });
+      }, delay);
+    },
+    [snapToNearest],
+  );
+
+  const finishScrollInteraction = useCallback(() => {
+    if (settleTimer.current) clearTimeout(settleTimer.current);
+    settleTimer.current = null;
+    void snapToNearest().finally(() => {
+      isUserScroll.current = false;
+    });
+  }, [snapToNearest]);
+
   useEffect(() => {
     if (isUserScroll.current || isAnimating.current) return;
-    void scrollToValue(selected, true);
+    void scrollToValue(selected, false);
   }, [selected, scrollToValue]);
 
   const handleScroll = useCallback(() => {
-    if (isAnimating.current) return;
+    if (isAnimating.current || isSnapping.current) return;
     isUserScroll.current = true;
-    setIsScrolling(true);
 
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(() => {
@@ -211,41 +229,52 @@ function WheelColumn({
       onActiveChange(readCenteredValue(el, items));
     });
 
-    if (settleTimer.current) clearTimeout(settleTimer.current);
-    settleTimer.current = setTimeout(() => {
-      void snapToNearest().finally(() => {
+    scheduleSettle();
+  }, [items, onActiveChange, scheduleSettle, scrollRef]);
+
+  const handleItemSelect = useCallback(
+    (item: number) => {
+      if (settleTimer.current) {
+        clearTimeout(settleTimer.current);
+        settleTimer.current = null;
+      }
+      isUserScroll.current = true;
+      void scrollToValue(item, true).then(() => {
+        onSettled();
         isUserScroll.current = false;
       });
-    }, 120);
-  }, [items, onActiveChange, scrollRef, snapToNearest]);
+    },
+    [onSettled, scrollToValue],
+  );
 
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
 
-    const onScrollEnd = () => {
-      void snapToNearest().finally(() => {
-        isUserScroll.current = false;
-      });
-    };
     const onPointerUp = () => {
-      void snapToNearest().finally(() => {
-        isUserScroll.current = false;
-      });
+      if (isAnimating.current || isSnapping.current) return;
+      scheduleSettle(POINTER_SETTLE_DELAY_MS);
+    };
+
+    const onScrollEnd = () => {
+      if (isAnimating.current || isSnapping.current) return;
+      finishScrollInteraction();
     };
 
     el.addEventListener('scrollend', onScrollEnd);
     el.addEventListener('touchend', onPointerUp, { passive: true });
     el.addEventListener('mouseup', onPointerUp);
+    el.addEventListener('pointerup', onPointerUp);
 
     return () => {
       el.removeEventListener('scrollend', onScrollEnd);
       el.removeEventListener('touchend', onPointerUp);
       el.removeEventListener('mouseup', onPointerUp);
+      el.removeEventListener('pointerup', onPointerUp);
       if (settleTimer.current) clearTimeout(settleTimer.current);
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     };
-  }, [scrollRef, snapToNearest]);
+  }, [finishScrollInteraction, scheduleSettle, scrollRef]);
 
   return (
     <div className="flex min-w-0 flex-1 flex-col items-center">
@@ -254,55 +283,41 @@ function WheelColumn({
       </span>
       <div className="relative w-full" style={{ height: WHEEL_HEIGHT }}>
         <div
-          className={`pointer-events-none absolute inset-x-1 top-1/2 z-[15] flex h-11 -translate-y-1/2 items-center justify-center rounded-lg text-lg font-semibold tabular-nums ${
-            isScrolling
-              ? 'border border-primary/40 bg-transparent shadow-none'
-              : 'border border-transparent bg-primary text-primary-content shadow-sm'
-          }`}
-          style={{
-            transition: isScrolling
-              ? 'background-color 140ms ease-in, border-color 140ms ease-in, box-shadow 140ms ease-in'
-              : 'background-color 100ms ease-out, border-color 100ms ease-out, box-shadow 100ms ease-out',
-          }}
-          aria-hidden
-        >
-          <span
-            className={isScrolling ? 'opacity-0' : 'opacity-100'}
-            style={{
-              transition: isScrolling ? 'opacity 140ms ease-in' : 'opacity 100ms ease-out',
-            }}
-          >
-            {pad2(activeValue)}
-          </span>
-        </div>
-        <div
-          className="pointer-events-none absolute inset-x-0 top-0 z-20 h-16 bg-gradient-to-b from-base-100 via-base-100/85 to-transparent"
+          className="pointer-events-none absolute inset-x-1 top-1/2 z-10 h-11 -translate-y-1/2 rounded-lg border border-primary/35 bg-base-100/70 shadow-sm"
           aria-hidden
         />
         <div
-          className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-16 bg-gradient-to-t from-base-100 via-base-100/85 to-transparent"
+          className="pointer-events-none absolute inset-x-0 top-0 z-20 h-[72px] bg-gradient-to-b from-base-100 via-base-100/90 to-transparent"
+          aria-hidden
+        />
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-[72px] bg-gradient-to-t from-base-100 via-base-100/90 to-transparent"
           aria-hidden
         />
         <div
           ref={scrollRef}
-          className="wheel-time-picker-scroll relative z-0 h-full w-full overflow-y-auto overscroll-contain"
+          role="listbox"
+          aria-label={label}
+          className="wheel-time-picker-scroll relative z-0 h-full w-full overflow-y-auto overscroll-contain touch-pan-y select-none"
           onScroll={handleScroll}
         >
           <div style={{ height: WHEEL_PAD }} aria-hidden />
           {items.map((item, index) => {
             const visual = getItemVisualStyle(index, scrollTop);
-            const isNearCenter = visual.opacity > 0.88;
+            const isCentered = index === getSnapIndex(scrollTop, items.length - 1);
             return (
               <div
                 key={item}
-                className={`mx-1 flex h-11 shrink-0 snap-center items-center justify-center rounded-lg text-lg font-semibold tabular-nums will-change-transform ${
-                  isNearCenter ? 'text-gray-800' : 'text-gray-400'
+                role="option"
+                aria-selected={isCentered}
+                className={`mx-1 flex h-11 w-[calc(100%-0.5rem)] shrink-0 cursor-pointer items-center justify-center rounded-lg text-lg font-semibold tabular-nums will-change-transform ${
+                  isCentered ? 'text-primary' : 'text-gray-500'
                 }`}
                 style={{
                   opacity: visual.opacity,
                   transform: visual.transform,
-                  transition: 'opacity 200ms ease, transform 200ms ease, color 200ms ease',
                 }}
+                onClick={() => handleItemSelect(item)}
               >
                 {pad2(item)}
               </div>
@@ -313,7 +328,7 @@ function WheelColumn({
       </div>
     </div>
   );
-}
+};
 
 const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
   value,
@@ -326,12 +341,15 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
   emptyMessage = 'No times available.',
   minHour = 8,
   maxHour = 23,
-  showSummary = true,
+  minuteStep = 1,
   className = '',
 }) => {
   const hourScrollRef = useRef<HTMLDivElement>(null);
   const minuteScrollRef = useRef<HTMLDivElement>(null);
+  const hourInputRef = useRef<HTMLInputElement>(null);
+  const minuteInputRef = useRef<HTMLInputElement>(null);
   const changeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastEmitted = useRef<string | null>(null);
 
   const hours = useMemo(() => {
     const list: number[] = [];
@@ -339,33 +357,162 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
     return list;
   }, [minHour, maxHour]);
 
+  const minutes = useMemo(() => {
+    const step = Math.max(1, Math.min(30, minuteStep));
+    const list: number[] = [];
+    for (let m = 0; m < 60; m += step) list.push(m);
+    return list;
+  }, [minuteStep]);
+
   const normalizedValue = normalizeTime(value);
   const parsedHour = normalizedValue ? Number(normalizedValue.split(':')[0]) : null;
   const parsedMinute = normalizedValue ? Number(normalizedValue.split(':')[1]) : null;
 
+  const snapMinuteToStep = useCallback(
+    (minute: number) => {
+      if (minutes.includes(minute)) return minute;
+      const step = Math.max(1, minuteStep);
+      const snapped = Math.round(minute / step) * step;
+      return Math.min(59, Math.max(0, snapped));
+    },
+    [minuteStep, minutes],
+  );
+
   const selectedHour =
     parsedHour != null && hours.includes(parsedHour) ? parsedHour : hours[0] ?? minHour;
   const selectedMinute =
-    parsedMinute != null && parsedMinute >= 0 && parsedMinute <= 59 ? parsedMinute : 0;
+    parsedMinute != null ? snapMinuteToStep(parsedMinute) : minutes[0] ?? 0;
 
   const [liveHour, setLiveHour] = useState(selectedHour);
   const [liveMinute, setLiveMinute] = useState(selectedMinute);
+  const [hourDraft, setHourDraft] = useState<string | null>(null);
+  const [minuteDraft, setMinuteDraft] = useState<string | null>(null);
 
   useEffect(() => {
     setLiveHour(selectedHour);
     setLiveMinute(selectedMinute);
+    setHourDraft(null);
+    setMinuteDraft(null);
   }, [selectedHour, selectedMinute]);
+
+  const clampHour = useCallback(
+    (hour: number) => {
+      if (!Number.isFinite(hour)) return selectedHour;
+      if (hours.includes(hour)) return hour;
+      const clamped = Math.max(minHour, Math.min(maxHour, Math.round(hour)));
+      if (hours.includes(clamped)) return clamped;
+      return hours.reduce((prev, curr) =>
+        Math.abs(curr - hour) < Math.abs(prev - hour) ? curr : prev,
+      );
+    },
+    [hours, maxHour, minHour, selectedHour],
+  );
+
+  const clampMinute = useCallback(
+    (minute: number) => {
+      if (!Number.isFinite(minute)) return selectedMinute;
+      const snapped = snapMinuteToStep(minute);
+      if (minutes.includes(snapped)) return snapped;
+      return minutes.reduce((prev, curr) =>
+        Math.abs(curr - snapped) < Math.abs(prev - snapped) ? curr : prev,
+      );
+    },
+    [minutes, selectedMinute, snapMinuteToStep],
+  );
+
+  const applyTime = useCallback(
+    (hour: number, minute: number) => {
+      const nextHour = clampHour(hour);
+      const nextMinute = clampMinute(minute);
+      const next = `${pad2(nextHour)}:${pad2(nextMinute)}`;
+      setLiveHour(nextHour);
+      setLiveMinute(nextMinute);
+      setHourDraft(null);
+      setMinuteDraft(null);
+      lastEmitted.current = next;
+      if (next !== normalizeTime(value)) onChange(next);
+    },
+    [clampHour, clampMinute, onChange, value],
+  );
+
+  const commitHourInput = useCallback(() => {
+    if (hourDraft === null) return;
+    const raw = hourDraft.trim();
+    setHourDraft(null);
+    if (!raw) return;
+    applyTime(Number(raw), liveMinute);
+  }, [applyTime, hourDraft, liveMinute]);
+
+  const commitMinuteInput = useCallback(() => {
+    if (minuteDraft === null) return;
+    const raw = minuteDraft.trim();
+    setMinuteDraft(null);
+    if (!raw) return;
+    applyTime(liveHour, Number(raw));
+  }, [applyTime, liveHour, minuteDraft]);
+
+  const focusMinuteInput = useCallback(() => {
+    setMinuteDraft('');
+    requestAnimationFrame(() => {
+      const el = minuteInputRef.current;
+      if (!el) return;
+      el.focus();
+      el.select();
+    });
+  }, []);
+
+  const handleHourFocus = useCallback(() => {
+    setHourDraft('');
+    requestAnimationFrame(() => hourInputRef.current?.select());
+  }, []);
+
+  const handleMinuteFocus = useCallback(() => {
+    setMinuteDraft('');
+    requestAnimationFrame(() => minuteInputRef.current?.select());
+  }, []);
+
+  const handleHourInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const next = e.target.value.replace(/\D/g, '').slice(0, 2);
+      setHourDraft(next);
+
+      if (!next) return;
+
+      if (isHourEntryComplete(next, minHour, maxHour)) {
+        applyTime(Number(next), liveMinute);
+        focusMinuteInput();
+      }
+    },
+    [applyTime, focusMinuteInput, liveMinute, maxHour, minHour],
+  );
+
+  const handleMinuteInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const next = e.target.value.replace(/\D/g, '').slice(0, 2);
+      setMinuteDraft(next);
+
+      if (next.length >= 2) {
+        applyTime(liveHour, Number(next));
+        requestAnimationFrame(() => minuteInputRef.current?.blur());
+      }
+    },
+    [applyTime, liveHour],
+  );
 
   const emitChange = useCallback(() => {
     const hour = readCenteredValue(hourScrollRef.current, hours);
-    const minute = readCenteredValue(minuteScrollRef.current, ALL_MINUTES);
+    const minute = readCenteredValue(minuteScrollRef.current, minutes);
     const next = `${pad2(hour)}:${pad2(minute)}`;
+    if (next === lastEmitted.current) return;
+    lastEmitted.current = next;
+    setLiveHour(hour);
+    setLiveMinute(minute);
     if (next !== normalizeTime(value)) onChange(next);
-  }, [hours, onChange, value]);
+  }, [hours, minutes, onChange, value]);
 
   const handleSettled = useCallback(() => {
     if (changeTimer.current) clearTimeout(changeTimer.current);
-    changeTimer.current = setTimeout(() => emitChange(), 40);
+    changeTimer.current = setTimeout(() => emitChange(), 60);
   }, [emitChange]);
 
   useEffect(
@@ -376,9 +523,13 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
   );
 
   useEffect(() => {
+    lastEmitted.current = normalizeTime(value) || null;
+  }, [value]);
+
+  useEffect(() => {
     if (loading || unavailable || disabled || hours.length === 0) return;
-    if (!normalizeTime(value)) onChange(`${pad2(hours[0])}:${pad2(0)}`);
-  }, [loading, unavailable, disabled, hours, value, onChange]);
+    if (!normalizeTime(value)) onChange(`${pad2(hours[0])}:${pad2(minutes[0] ?? 0)}`);
+  }, [loading, unavailable, disabled, hours, minutes, value, onChange]);
 
   if (loading) {
     return (
@@ -400,19 +551,68 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
     );
   }
 
-  const displayTime = `${pad2(liveHour)}:${pad2(liveMinute)}`;
+  const hourInputValue = hourDraft !== null ? hourDraft : pad2(liveHour);
+  const minuteInputValue = minuteDraft !== null ? minuteDraft : pad2(liveMinute);
 
   return (
     <div className={className}>
       {label ? <label className={labelClassName}>{label}</label> : null}
       <div className={disabled ? 'pointer-events-none opacity-50' : ''}>
         <div className="relative mx-auto max-w-xs">
+          <div className="mb-3 flex items-end justify-center gap-2">
+            <div className="flex flex-col items-center gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">
+                Hour
+              </span>
+              <input
+                ref={hourInputRef}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={2}
+                className="input input-bordered input-sm h-11 w-[4.25rem] text-center text-lg font-semibold tabular-nums"
+                value={hourInputValue}
+                onFocus={handleHourFocus}
+                onChange={handleHourInputChange}
+                onBlur={commitHourInput}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    commitHourInput();
+                    focusMinuteInput();
+                  }
+                }}
+                aria-label="Hour"
+              />
+            </div>
+            <span className="mb-2 text-2xl font-bold text-base-content/25">:</span>
+            <div className="flex flex-col items-center gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-base-content/45">
+                Min
+              </span>
+              <input
+                ref={minuteInputRef}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={2}
+                className="input input-bordered input-sm h-11 w-[4.25rem] text-center text-lg font-semibold tabular-nums"
+                value={minuteInputValue}
+                onFocus={handleMinuteFocus}
+                onChange={handleMinuteInputChange}
+                onBlur={commitMinuteInput}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.currentTarget.blur();
+                }}
+                aria-label="Minute"
+              />
+            </div>
+          </div>
+
           <div className="flex items-stretch justify-center gap-1 sm:gap-2">
             <WheelColumn
               label="Hour"
               items={hours}
-              selected={selectedHour}
-              activeValue={liveHour}
+              selected={liveHour}
               scrollRef={hourScrollRef}
               onActiveChange={setLiveHour}
               onSettled={handleSettled}
@@ -425,29 +625,18 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
             </div>
             <WheelColumn
               label="Min"
-              items={ALL_MINUTES}
-              selected={selectedMinute}
-              activeValue={liveMinute}
+              items={minutes}
+              selected={liveMinute}
               scrollRef={minuteScrollRef}
               onActiveChange={setLiveMinute}
               onSettled={handleSettled}
             />
           </div>
         </div>
-
-        {showSummary ? (
-          <div className="mt-4 flex items-center justify-center gap-2 text-sm font-semibold text-gray-800">
-            <ClockIcon className="h-4 w-4 text-primary" aria-hidden />
-            <span className="tabular-nums">{displayTime}</span>
-            <span className="text-base-content/45">({formatDisplay12h(displayTime)})</span>
-          </div>
-        ) : null}
       </div>
 
       <style>{`
         .wheel-time-picker-scroll {
-          scroll-snap-type: y proximity;
-          scroll-behavior: smooth;
           -webkit-overflow-scrolling: touch;
           scrollbar-width: none;
           -ms-overflow-style: none;
