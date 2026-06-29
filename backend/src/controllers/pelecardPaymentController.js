@@ -488,6 +488,18 @@ async function createPayperInvoice(req, res) {
       payment.payper_invoice_status === 'failed' ||
       payment.payper_invoice_status === 'skipped_no_email'
     ) {
+      const lastAttemptAt = payment.payper_raw_response?.createdAt;
+      if (lastAttemptAt) {
+        const elapsedMs = Date.now() - new Date(lastAttemptAt).getTime();
+        if (elapsedMs >= 0 && elapsedMs < 15_000) {
+          return sendNoCacheJson(res, {
+            success: false,
+            error: 'Please wait 15 seconds between tax receipt retries',
+            reason: 'retry_cooldown',
+          });
+        }
+      }
+
       await supabase
         .from('payment_links')
         .update({ payper_invoice_status: null })

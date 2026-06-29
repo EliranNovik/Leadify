@@ -37,6 +37,7 @@ const PAYPER_PATH_FALLBACKS = [
   'services/CreatePayperInvoice',
   'PaymentGW/CreatePayperInvoice',
 ];
+const PAYPER_SAMPLE_INCOME_ID = Number(process.env.PAYPER_SAMPLE_INCOME_ID || '-100000000');
 
 function isPayperEnabled() {
   const flag = (process.env.ENABLE_PAYPER_INVOICE || 'true').trim().toLowerCase();
@@ -104,27 +105,123 @@ function formatIlsFromAgorot(agorot) {
   return `${shekels}.${String(cents).padStart(2, '0')}`;
 }
 
+function getVatRateForPayment(paymentLink) {
+  const netIls = Number(paymentLink.amount) || 0;
+  const vatIls = Number(paymentLink.vat_amount) || 0;
+  if (netIls > 0 && vatIls > 0) return vatIls / netIls;
+  const paidAt = paymentLink.paid_at || paymentLink.created_at;
+  const date = paidAt ? new Date(paidAt) : new Date();
+  return date < new Date('2025-01-01T00:00:00') ? 0.17 : 0.18;
+}
+
+/** Net agorot where net + round(net * vatRate) === gross (Payper exclusive-VAT invoice line). */
+function findNetAgorotForGross(grossAgorot, vatRate) {
+  const gross = Math.round(Number(grossAgorot));
+  if (!Number.isFinite(gross) || gross <= 0) return null;
+
+  let netAgorot = Math.round(gross / (1 + vatRate));
+  for (let delta = -50; delta <= 50; delta += 1) {
+    const tryNet = netAgorot + delta;
+    if (tryNet <= 0) continue;
+    if (tryNet + Math.round(tryNet * vatRate) === gross) return tryNet;
+  }
+  return netAgorot;
+}
+
+function estimateInvoiceTotalAgorot(unitPriceStr, includeVat, vatRate) {
+  const unitAgorot = Math.round(Number.parseFloat(unitPriceStr) * 100);
+  if (!Number.isFinite(unitAgorot) || unitAgorot <= 0) return null;
+  if (!includeVat) return unitAgorot;
+  return unitAgorot + Math.round(unitAgorot * vatRate);
+}
+
 /**
- * Pelecard CreatePayperInvoice sample contract:
- * - price_per_unit and receipt_lines[].amount are the SAME value (e.g. "100" / "100")
- * - include_vat: "true", quantity: "1"
- * - Amount = gross charged on the card (DebitTotal from GetTransaction)
+ * Pelecard doc sample (income_id -100000000): same gross on invoice + receipt, include_vat "true".
+ * Production income types (e.g. 599): include_vat "true" means unit price is BEFORE VAT — invoice net,
+ * receipt gross (DebitTotal), so Payper document total equals receipt sum.
  */
 function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, config) {
   const grossAgorot = resolveChargedAgorot(paymentLink, callbackData, verifyPayload);
-  const amount =
+  const grossAmount =
     grossAgorot != null
       ? formatIlsFromAgorot(grossAgorot)
       : formatIlsAmount(chargeAmountFromPayment(paymentLink));
-  const includeVat =
+  const taxableIls =
     config.includeVat && !config.documentNoVat && isIsraeliIlsPayment(paymentLink);
 
+  if (!taxableIls) {
+    return {
+      invoiceUnitPrice: grossAmount,
+      receiptAmount: grossAmount,
+      includeVat: false,
+      vatLineMode: 'no_vat',
+      pelecardTotalAgorot: grossAgorot,
+    };
+  }
+
+  if (config.incomeId === PAYPER_SAMPLE_INCOME_ID) {
+    return {
+      invoiceUnitPrice: grossAmount,
+      receiptAmount: grossAmount,
+      includeVat: true,
+      vatLineMode: 'sample_same_gross',
+      pelecardTotalAgorot: grossAgorot,
+    };
+  }
+
+  const netIls = Number(paymentLink.amount) || 0;
+  const vatIls = Number(paymentLink.vat_amount) || 0;
+  const crmGrossAgorot = Math.round((netIls + vatIls) * 100);
+  const vatRate = getVatRateForPayment(paymentLink);
+  let netAgorot = null;
+
+  if (netIls > 0 && grossAgorot != null && Math.abs(crmGrossAgorot - grossAgorot) <= 1) {
+    netAgorot = Math.round(netIls * 100);
+  } else if (grossAgorot != null) {
+    netAgorot = findNetAgorotForGross(grossAgorot, vatRate);
+  }
+
+  if (netAgorot == null) {
+    return {
+      invoiceUnitPrice: grossAmount,
+      receiptAmount: grossAmount,
+      includeVat: false,
+      vatLineMode: 'fallback_gross_no_vat',
+      pelecardTotalAgorot: grossAgorot,
+    };
+  }
+
   return {
-    invoiceUnitPrice: amount,
-    receiptAmount: amount,
-    includeVat,
+    invoiceUnitPrice: formatIlsFromAgorot(netAgorot),
+    receiptAmount: grossAmount,
+    includeVat: true,
+    vatLineMode: 'exclusive_net_invoice',
     pelecardTotalAgorot: grossAgorot,
   };
+}
+
+function buildLineAmountsOverride(paymentLink, grossAgorot, mode) {
+  const grossAmount = formatIlsFromAgorot(grossAgorot);
+  if (mode === 'gross_no_vat') {
+    return {
+      invoiceUnitPrice: grossAmount,
+      receiptAmount: grossAmount,
+      includeVat: false,
+      vatLineMode: 'retry_gross_no_vat',
+      pelecardTotalAgorot: grossAgorot,
+    };
+  }
+  return resolvePayperLineAmounts(paymentLink, {}, {}, getPayperConfig(paymentLink));
+}
+
+function isPayperTotalMismatchError(data) {
+  const message = String(data?.ErrorMessage ?? data?.error ?? '');
+  const lower = message.toLowerCase();
+  return (
+    (lower.includes('total') && lower.includes('receipt')) ||
+    message.includes('חוסר התאמה') ||
+    message.includes('סכום התקבולים')
+  );
 }
 
 function buildReceiptLines(paymentLink, callbackData, verifyPayload, paidAt, receiptAmount) {
@@ -368,6 +465,8 @@ async function persistPayperInvoiceResult(
           payload.PayperParameters?.DataPayper?.invoice_lines?.[0]?.price_per_unit ?? null,
         receiptAmount:
           payload.PayperParameters?.DataPayper?.receipt_lines?.[0]?.amount ?? null,
+        include_vat:
+          payload.PayperParameters?.DataPayper?.invoice_lines?.[0]?.include_vat ?? null,
       },
       response: responseData,
       createdAt: new Date().toISOString(),
@@ -446,10 +545,44 @@ async function createPayperInvoiceForPayment(
     }
 
     const attempt = await buildPayperInvoiceAttempt(paymentLink, callbackData, verifyPayload);
-    const { payload, lineAmounts, enrichedVerify } = attempt;
-    const { ok, status: httpStatus, data, invoicePath } = await postCreatePayperInvoice(payload, config);
+    let { payload, lineAmounts, enrichedVerify } = attempt;
+    let { ok, status: httpStatus, data, invoicePath } = await postCreatePayperInvoice(payload, config);
+
+    if (
+      forceRetry &&
+      (!ok || !isPayperSuccess(data)) &&
+      isPayperTotalMismatchError(data) &&
+      lineAmounts.includeVat &&
+      lineAmounts.vatLineMode !== 'retry_gross_no_vat'
+    ) {
+      console.info('[Payper] Manual retry: trying include_vat false with same gross', {
+        paymentLinkId: paymentLink.id,
+        from: lineAmounts.vatLineMode,
+      });
+      const fallbackAmounts = buildLineAmountsOverride(
+        paymentLink,
+        lineAmounts.pelecardTotalAgorot,
+        'gross_no_vat',
+      );
+      const retryAttempt = await buildPayperInvoiceAttempt(
+        paymentLink,
+        callbackData,
+        enrichedVerify,
+        fallbackAmounts,
+      );
+      payload = retryAttempt.payload;
+      lineAmounts = retryAttempt.lineAmounts;
+      ({ ok, status: httpStatus, data, invoicePath } = await postCreatePayperInvoice(payload, config));
+    }
 
     if (!ok || !isPayperSuccess(data)) {
+      const vatRate = getVatRateForPayment(paymentLink);
+      const invoiceTotalAgorot = estimateInvoiceTotalAgorot(
+        payload.PayperParameters?.DataPayper?.invoice_lines?.[0]?.price_per_unit,
+        lineAmounts.includeVat,
+        vatRate,
+      );
+      const receiptAgorot = lineAmounts.pelecardTotalAgorot;
       const message =
         data?.ErrorMessage ||
         data?.PayperData?.InvoiceStatus ||
@@ -465,6 +598,9 @@ async function createPayperInvoiceForPayment(
         trxRecordId: payload.trxRecordId,
         transactionUuid: extractTransactionUuid(callbackData, enrichedVerify, paymentLink),
         pelecardTotalAgorot: lineAmounts.pelecardTotalAgorot ?? null,
+        vatLineMode: lineAmounts.vatLineMode ?? null,
+        invoiceTotalAgorot,
+        receiptAgorot,
         pelecardTotalDebug: summarizePelecardTotalDebug(callbackData, enrichedVerify),
         requestPayload: {
           trxRecordId: payload.trxRecordId,

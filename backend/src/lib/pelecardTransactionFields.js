@@ -173,10 +173,16 @@ function findTotalAgorotDeep(root, depth = 0) {
   return null;
 }
 
-/** Pelecard Gateway Total is in agorot (885000 = ₪8850). Prefer GetTransaction ResultData. */
+/** Pelecard Gateway Total is in agorot. Prefer DebitTotal (actual ILS charge) over Total. */
 function extractTransactionTotalAgorot(callbackData, verifyPayload) {
   const resultData = extractGetTransactionResultData(verifyPayload);
   if (resultData) {
+    const debitKeys = ['DebitTotal', 'debitTotal', 'CreditCardTotal', 'creditCardTotal'];
+    const debitRaw = pickFirst(resultData, debitKeys);
+    if (debitRaw) {
+      const agorot = Number(String(debitRaw).replace(/[^\d]/g, ''));
+      if (Number.isFinite(agorot) && agorot > 0) return Math.round(agorot);
+    }
     const fromResult = findTotalAgorotDeep(resultData, 0);
     if (fromResult != null) return fromResult;
   }
