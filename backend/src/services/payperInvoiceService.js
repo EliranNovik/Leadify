@@ -219,8 +219,10 @@ function buildPelecardSampleLineAmounts(grossAgorot, grossAmount, overrides = {}
 }
 
 function estimateInvoiceTotalAgorot(unitPriceStr, lineAmounts, vatRate) {
-  const unitAgorot = Math.round(Number.parseFloat(unitPriceStr) * 100);
-  if (!Number.isFinite(unitAgorot) || unitAgorot <= 0) return null;
+  const unitAgorot = lineAmounts.amountsInAgorot
+    ? parsePayperAmountToAgorot(unitPriceStr, true)
+    : Math.round(Number.parseFloat(unitPriceStr) * 100);
+  if (unitAgorot == null || unitAgorot <= 0) return null;
   if (lineAmounts.documentNoVat) {
     return unitAgorot;
   }
@@ -276,6 +278,7 @@ function summarizeAttempt(phase, lineAmounts, payload, data) {
     documentNoVat: dataPayper?.document_no_vat ?? null,
     includeVat: dataPayper?.invoice_lines?.[0]?.include_vat ?? null,
     omitReceiptLines: lineAmounts.omitReceiptLines ?? false,
+    amountsInAgorot: lineAmounts.amountsInAgorot ?? false,
     receiptLinesCount: dataPayper?.receipt_lines?.length ?? 0,
     statusCode: data?.StatusCode ?? null,
     error: data?.ErrorMessage ?? data?.PayperData?.InvoiceStatus ?? null,
@@ -336,7 +339,7 @@ async function runPayperAttempts(
     if (postResult.ok && isPayperSuccess(postResult.data)) {
       return { success: true, ...lastResult };
     }
-    if (!isPayperTotalMismatchError(postResult.data)) {
+    if (!isPayperRetryableInvoiceError(postResult.data)) {
       return { success: false, ...lastResult };
     }
   }
@@ -393,8 +396,12 @@ function buildFallbackLineAmounts(paymentLink, grossAgorot, primary) {
     );
   }
 
+  if (primary.vatLineMode !== 'pelecard_doc_sample_agorot') {
+    strategies.push(buildPelecardAgorotLineAmounts(grossAgorot));
+  }
+
   const lineKey = (item) =>
-    `${item.incomeIdOverride ?? ''}|${item.invoiceUnitPrice}|${item.receiptAmount}|${item.includeVat}|${item.documentNoVat}|${item.omitReceiptLines}|${item.minimalReceiptLines}|${item.useCatalogIdNull}`;
+    `${item.incomeIdOverride ?? ''}|${item.invoiceUnitPrice}|${item.receiptAmount}|${item.includeVat}|${item.documentNoVat}|${item.omitReceiptLines}|${item.minimalReceiptLines}|${item.useCatalogIdNull}|${item.amountsInAgorot ?? false}`;
   const seen = new Set([lineKey(primary)]);
   return strategies.filter((item) => {
     const key = lineKey(item);
@@ -404,18 +411,37 @@ function buildFallbackLineAmounts(paymentLink, grossAgorot, primary) {
   });
 }
 
-function resolveAlternateIncomeIds(config) {
-  const ids = [config.incomeId];
-  if (config.profile === 'sandbox' && config.incomeId !== PAYPER_SAMPLE_INCOME_ID) {
-    ids.push(PAYPER_SAMPLE_INCOME_ID);
+function formatAgorotString(agorot) {
+  const n = Math.round(Number(agorot));
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  return String(n);
+}
+
+function parsePayperAmountToAgorot(amountStr, amountsInAgorot) {
+  if (amountsInAgorot) {
+    const n = Math.round(Number.parseFloat(String(amountStr).replace(/[^\d.-]/g, '')));
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return n;
   }
-  return [...new Set(ids.filter((id) => Number.isFinite(id)))];
+  return parseShekelAmountToAgorot(amountStr);
 }
 
 function parseShekelAmountToAgorot(amountStr) {
   const n = Number.parseFloat(String(amountStr).replace(/[^\d.-]/g, ''));
   if (!Number.isFinite(n) || n <= 0) return null;
   return Math.round(n * 100);
+}
+
+/** Late fallback: some terminals may expect Pelecard DebitTotal-style agorot in Payper line fields. */
+function buildPelecardAgorotLineAmounts(grossAgorot, overrides = {}) {
+  const agorotStr = formatAgorotString(grossAgorot);
+  return buildPelecardSampleLineAmounts(grossAgorot, formatIlsFromAgorot(grossAgorot), {
+    invoiceUnitPrice: agorotStr,
+    receiptAmount: agorotStr,
+    amountsInAgorot: true,
+    vatLineMode: 'pelecard_doc_sample_agorot',
+    ...overrides,
+  });
 }
 
 /** Validate invoice/receipt totals before calling Payper. */
@@ -460,7 +486,10 @@ function validateInvoiceReceiptPayload(payload, lineAmounts, paymentLink) {
     throw err;
   }
 
-  const receiptAgorot = parseShekelAmountToAgorot(receiptLines[0]?.amount);
+  const receiptAgorot = parsePayperAmountToAgorot(
+    receiptLines[0]?.amount,
+    lineAmounts.amountsInAgorot,
+  );
   if (receiptAgorot == null || receiptAgorot <= 0) {
     const err = new Error('Invoice-Receipt receipt_lines[0].amount is missing or invalid');
     err.code = 'PAYPER_INVALID_RECEIPT_AMOUNT';
@@ -498,6 +527,25 @@ function isPayperTotalMismatchError(data) {
     message.includes('סכום התשלומים') ||
     lower.includes('not equal to receipt')
   );
+}
+
+/** Keep trying alternate payloads when Payper returns retryable 599 (mismatch, trx state, etc.). */
+function isPayperRetryableInvoiceError(data) {
+  const statusCode = String(data?.StatusCode ?? data?.statusCode ?? '').trim();
+  if (statusCode === '599') return true;
+  return isPayperTotalMismatchError(data);
+}
+
+function isPayperTrxStateError(data) {
+  const message = payperErrorText(data);
+  return message.includes('בדוק האם העסקה עברה') || message.includes('שגיאה כללית');
+}
+
+function incomeIdsForAttempts(config) {
+  if (config.profile === 'sandbox') {
+    return [...new Set([PAYPER_SAMPLE_INCOME_ID, config.incomeId])];
+  }
+  return [config.incomeId];
 }
 
 function buildReceiptLines(
@@ -964,46 +1012,32 @@ async function createPayperInvoiceForPayment(
       ...buildFallbackLineAmounts(paymentLink, grossAgorot, primaryLineAmounts),
     ];
 
-    let runResult = await runPayperAttempts(
-      paymentLink,
-      callbackData,
-      verifyPayload,
-      config,
-      amountStrategies,
-      attemptHistory,
-    );
-
-    if (!runResult.success && isPayperTotalMismatchError(runResult.data)) {
-      const alternateIncomeIds = resolveAlternateIncomeIds(config).filter(
-        (id) => id !== (runResult.payload?.PayperParameters?.DataPayper?.income_id ?? config.incomeId),
-      );
-      for (const incomeId of alternateIncomeIds) {
-        console.info('[Payper] Total mismatch — trying alternate income_id', {
+    let runResult = { success: false };
+    for (const incomeId of incomeIdsForAttempts(config)) {
+      if (incomeId !== config.incomeId) {
+        console.info('[Payper] Trying alternate income_id (sandbox)', {
           paymentLinkId: paymentLink.id,
           incomeId,
           terminal: config.terminal,
         });
-        const incomeStrategies = [
-          buildPelecardSampleLineAmounts(
-            grossAgorot,
-            formatIlsFromAgorot(grossAgorot),
-            {
-              incomeIdOverride: incomeId,
-              vatLineMode: `pelecard_doc_sample_income_${incomeId}`,
-              attemptPhase: `income_fallback:${incomeId}`,
-            },
-          ),
-        ];
-        runResult = await runPayperAttempts(
-          paymentLink,
-          callbackData,
-          verifyPayload,
-          config,
-          incomeStrategies,
-          attemptHistory,
-        );
-        if (runResult.success) break;
       }
+      const strategiesForIncome = amountStrategies.map((strategy, index) => ({
+        ...strategy,
+        incomeIdOverride: incomeId,
+        attemptPhase:
+          incomeId !== config.incomeId
+            ? `income${incomeId}:${index === 0 ? 'primary' : `fallback:${strategy.vatLineMode}`}`
+            : strategy.attemptPhase,
+      }));
+      runResult = await runPayperAttempts(
+        paymentLink,
+        callbackData,
+        verifyPayload,
+        config,
+        strategiesForIncome,
+        attemptHistory,
+      );
+      if (runResult.success) break;
     }
 
     const {
@@ -1024,8 +1058,9 @@ async function createPayperInvoiceForPayment(
         vatRate,
       );
       const receiptAgorot =
-        parseShekelAmountToAgorot(
+        parsePayperAmountToAgorot(
           payload.PayperParameters?.DataPayper?.receipt_lines?.[0]?.amount,
+          lineAmounts.amountsInAgorot,
         ) ?? lineAmounts.pelecardTotalAgorot;
       const message =
         data?.ErrorMessage ||
@@ -1041,6 +1076,11 @@ async function createPayperInvoiceForPayment(
         incomeId: payload.PayperParameters?.DataPayper?.income_id ?? config.incomeId,
         trxRecordId: payload.trxRecordId,
         attemptHistory,
+        trxStateError: isPayperTrxStateError(data),
+        opsHint:
+          config.profile === 'sandbox'
+            ? 'Sandbox: income -100000000 is tried before 599. If all fail, ask Pelecard whether Payper is linked to test terminal 0882577012 and retry with a fresh payment (trx may have partial Payper state).'
+            : 'If all payloads fail with matching amounts, ask Pelecard to confirm Payper is enabled and income_id 599 is linked to your production terminal.',
         transactionUuid: extractTransactionUuid(callbackData, enrichedVerify, paymentLink),
         pelecardTotalAgorot: lineAmounts.pelecardTotalAgorot ?? null,
         crmGrossAgorot: crmGrossAgorot(paymentLink),
