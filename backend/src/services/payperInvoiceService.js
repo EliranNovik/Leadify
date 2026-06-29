@@ -46,10 +46,16 @@ function isPayperEnabled() {
 
 function getPayperConfig(paymentLink) {
   const config = pelecardService.getConfig(profileFromPayment(paymentLink));
+  const profile = profileFromPayment(paymentLink);
+  const productionIncomeId = Number(process.env.PAYPER_INCOME_ID || '-100000000');
+  const sandboxIncomeId = process.env.PAYPER_SANDBOX_INCOME_ID
+    ? Number(process.env.PAYPER_SANDBOX_INCOME_ID)
+    : productionIncomeId;
   return {
     ...config,
+    profile,
     invoicePath: (process.env.PELECARD_PAYPER_INVOICE_PATH || DEFAULT_PAYPER_PATH).trim(),
-    incomeId: Number(process.env.PAYPER_INCOME_ID || '-100000000'),
+    incomeId: profile === 'sandbox' ? sandboxIncomeId : productionIncomeId,
     sendByMail: (process.env.PAYPER_SEND_BY_MAIL || 'true').trim().toLowerCase() !== 'false',
     documentNoVat: (process.env.PAYPER_DOCUMENT_NO_VAT || 'false').trim().toLowerCase() === 'true',
     documentRounded: (process.env.PAYPER_DOCUMENT_ROUNDED || 'false').trim().toLowerCase() === 'true',
@@ -207,8 +213,9 @@ function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, conf
 
   if (!paymentHasIsraeliVat(paymentLink)) {
     return buildLineAmounts(grossAgorot, grossAmount, {
+      includeVat: false,
       documentNoVat: true,
-      vatLineMode: 'no_vat_inclusive_gross',
+      vatLineMode: 'no_vat_literal_gross',
     });
   }
 
@@ -221,9 +228,28 @@ function buildFallbackLineAmounts(paymentLink, grossAgorot, primary) {
   if (grossAgorot == null) return [];
 
   const grossAmount = formatIlsFromAgorot(grossAgorot);
+  const noVat = !paymentHasIsraeliVat(paymentLink);
   const strategies = [];
 
-  if (!primary.documentNoVat) {
+  if (noVat) {
+    if (!primary.includeVat) {
+      strategies.push(
+        buildLineAmounts(grossAgorot, grossAmount, {
+          includeVat: true,
+          documentNoVat: true,
+          vatLineMode: 'no_vat_inclusive_gross',
+        }),
+      );
+    } else {
+      strategies.push(
+        buildLineAmounts(grossAgorot, grossAmount, {
+          includeVat: false,
+          documentNoVat: true,
+          vatLineMode: 'no_vat_literal_gross',
+        }),
+      );
+    }
+  } else if (!primary.documentNoVat) {
     strategies.push(
       buildLineAmounts(grossAgorot, grossAmount, {
         documentNoVat: true,
@@ -244,20 +270,36 @@ function buildFallbackLineAmounts(paymentLink, grossAgorot, primary) {
     );
   }
 
+  const omitDocNoVat = primary.documentNoVat ?? noVat;
   strategies.push(
     buildLineAmounts(grossAgorot, grossAmount, {
+      documentNoVat: omitDocNoVat,
+      includeVat: primary.includeVat,
       omitReceiptLines: true,
-      vatLineMode: 'omit_receipt_doc_sample',
+      vatLineMode: 'omit_receipt_same_flags',
     }),
   );
 
-  strategies.push(
-    buildLineAmounts(grossAgorot, grossAmount, {
-      documentNoVat: true,
-      omitReceiptLines: true,
-      vatLineMode: 'omit_receipt_document_no_vat',
-    }),
-  );
+  if (!noVat && !omitDocNoVat) {
+    strategies.push(
+      buildLineAmounts(grossAgorot, grossAmount, {
+        documentNoVat: true,
+        omitReceiptLines: true,
+        vatLineMode: 'omit_receipt_document_no_vat',
+      }),
+    );
+  }
+
+  if (noVat) {
+    strategies.push(
+      buildLineAmounts(grossAgorot, grossAmount, {
+        includeVat: !primary.includeVat,
+        documentNoVat: true,
+        omitReceiptLines: true,
+        vatLineMode: 'omit_receipt_no_vat_alt',
+      }),
+    );
+  }
 
   const seen = new Set([
     `${primary.invoiceUnitPrice}|${primary.receiptAmount}|${primary.includeVat}|${primary.documentNoVat}|${primary.omitReceiptLines}`,
@@ -270,13 +312,21 @@ function buildFallbackLineAmounts(paymentLink, grossAgorot, primary) {
   });
 }
 
+function payperErrorText(data) {
+  return [data?.ErrorMessage, data?.PayperData?.InvoiceStatus, data?.error]
+    .filter(Boolean)
+    .join(' ');
+}
+
 function isPayperTotalMismatchError(data) {
-  const message = String(data?.ErrorMessage ?? data?.error ?? '');
+  const message = payperErrorText(data);
   const lower = message.toLowerCase();
   return (
     (lower.includes('total') && lower.includes('receipt')) ||
     message.includes('חוסר התאמה') ||
-    message.includes('סכום התקבולים')
+    message.includes('סכום התקבולים') ||
+    message.includes('סכום התשלומים') ||
+    lower.includes('not equal to receipt')
   );
 }
 
