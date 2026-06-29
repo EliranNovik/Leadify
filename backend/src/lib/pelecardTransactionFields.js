@@ -99,28 +99,49 @@ function extractCardValidity(callbackData, verifyPayload) {
   return null;
 }
 
-/** Charged amount in ILS from Pelecard Total field (agorot → shekels). */
-function extractTransactionTotalIls(callbackData, verifyPayload) {
+function extractGetTransactionResultData(verifyPayload) {
+  const pelecard = verifyPayload?.pelecard;
+  if (pelecard && typeof pelecard === 'object') {
+    const nested = pelecard.ResultData || pelecard.resultData;
+    if (nested && typeof nested === 'object') return nested;
+  }
+  const direct = verifyPayload?.resultData;
+  if (direct && typeof direct === 'object') return direct;
+  return null;
+}
+
+/** Pelecard Gateway Total is in agorot (885000 = ₪8850). Prefer GetTransaction ResultData. */
+function extractTransactionTotalAgorot(callbackData, verifyPayload) {
+  const totalKeys = ['Total', 'total', 'DebitTotal', 'debitTotal'];
+  const resultData = extractGetTransactionResultData(verifyPayload);
+  if (resultData) {
+    const raw = pickFirst(resultData, totalKeys);
+    if (raw) {
+      const agorot = Number(String(raw).replace(/[^\d]/g, ''));
+      if (Number.isFinite(agorot) && agorot > 0) return Math.round(agorot);
+    }
+  }
+
   const keys = [
-    'Total',
-    'total',
-    'DebitTotal',
-    'debitTotal',
+    ...totalKeys,
     'TransactionTotal',
     'transactionTotal',
-    'FirstPaymentTotal',
-    'firstPaymentTotal',
   ];
   for (const src of flattenPelecardSources(callbackData, verifyPayload)) {
+    if (resultData && src === resultData) continue;
     const raw = pickFirst(src, keys);
     if (!raw) continue;
-    const digits = String(raw).replace(/[^\d]/g, '');
-    if (!digits) continue;
-    const agorot = Number(digits);
-    if (!Number.isFinite(agorot) || agorot <= 0) continue;
-    return Math.round(agorot) / 100;
+    const agorot = Number(String(raw).replace(/[^\d]/g, ''));
+    if (Number.isFinite(agorot) && agorot > 0) return Math.round(agorot);
   }
   return null;
+}
+
+/** Charged amount in ILS from Pelecard Total field (agorot → shekels). */
+function extractTransactionTotalIls(callbackData, verifyPayload) {
+  const agorot = extractTransactionTotalAgorot(callbackData, verifyPayload);
+  if (agorot == null) return null;
+  return Math.round(agorot) / 100;
 }
 
 /** Numeric Pelecard record id for Payper trxRecordId (TransactionPelecardId from GetTransaction). */
@@ -133,7 +154,16 @@ function extractTrxRecordId(callbackData, verifyPayload) {
     'RecordId',
     'recordId',
   ];
+  const resultData = extractGetTransactionResultData(verifyPayload);
+  if (resultData) {
+    const fromTx = pickFirst(resultData, keys);
+    if (fromTx) {
+      const digits = String(fromTx).replace(/\D/g, '');
+      if (digits) return digits;
+    }
+  }
   for (const src of flattenPelecardSources(callbackData, verifyPayload)) {
+    if (resultData && src === resultData) continue;
     const raw = pickFirst(src, keys);
     if (!raw) continue;
     const digits = String(raw).replace(/\D/g, '');
@@ -247,6 +277,7 @@ module.exports = {
   extractNumOfPayments,
   extractCcPaymentType,
   extractTrxRecordId,
+  extractTransactionTotalAgorot,
   extractTransactionTotalIls,
   extractTransactionUuid,
   formatPayperReceiptDate,
