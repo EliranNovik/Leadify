@@ -469,8 +469,18 @@ async function getBillingContact(req, res) {
 async function createPayperInvoice(req, res) {
   try {
     const paymentId = req.params.paymentId;
+    const authUserId = req.body?.userId || req.body?.authUserId || req.query?.userId;
     if (!paymentId) {
       return sendNoCacheJson(res, { success: false, error: 'Missing paymentId' });
+    }
+
+    const { canRetryPayperInvoice } = require('../lib/payperInvoicePermissions');
+    if (!(await canRetryPayperInvoice(authUserId))) {
+      return res.status(403).json({
+        success: false,
+        error: 'Tax receipt retry is only available for superusers or collection staff',
+        reason: 'payper_retry_forbidden',
+      });
     }
 
     let payment = await reconciliation.fetchPaymentByToken(paymentId);

@@ -175,11 +175,16 @@ export interface RetryPayperInvoiceResponse {
 
 export async function retryPayperInvoice(
   paymentId: string,
+  userId: string,
 ): Promise<RetryPayperInvoiceResponse> {
   try {
     const response = await fetch(
       `${getApiBase()}/create-payper-invoice/${encodeURIComponent(paymentId)}`,
-      { method: 'POST', headers: buildHeaders() },
+      {
+        method: 'POST',
+        headers: buildHeaders(),
+        body: JSON.stringify({ userId }),
+      },
     );
     return await parseJsonResponse<RetryPayperInvoiceResponse>(response);
   } catch (error) {

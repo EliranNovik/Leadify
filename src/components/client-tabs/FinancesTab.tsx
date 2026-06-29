@@ -6067,6 +6067,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   };
 
   const canRetryTaxReceipt = (payment: PaymentPlan, info: PaymentPlanTaxReceiptInfo | null) => {
+    if (!isSuperuser && !isCollection) return false;
     if (!info?.secure_token?.trim() || !isPaidViaPaymentLink(payment)) return false;
     if (info.payper_invoice_link?.trim()) return false;
     const status = info.payper_invoice_status;
@@ -6084,7 +6085,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     setRetryingTaxReceiptPlanIds((prev) => new Set(prev).add(planId));
     try {
-      const result = await retryPayperInvoice(token);
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError || !user?.id) {
+        toast.error('You must be signed in to retry tax receipt');
+        return;
+      }
+
+      const result = await retryPayperInvoice(token, user.id);
       await refreshTaxReceipts();
 
       if (!result.success) {

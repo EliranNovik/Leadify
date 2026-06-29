@@ -183,7 +183,8 @@ sequenceDiagram
 
 | Variable | Role |
 | -------- | ---- |
-| `ENABLE_PAYPER_INVOICE` | `false` to disable (default `true`) |
+| `AUTOMATED_INVOICE` | `true` to auto-create invoices after payment (default `false`) |
+| `ENABLE_PAYPER_INVOICE` | Legacy master switch; `false` disables manual retry too |
 | `PELECARD_PAYPER_INVOICE_PATH` | Default `PaymentGW/CreatePayperInvoice` |
 | `PAYPER_INCOME_ID` | Payper income category (sample: `-100000000`) |
 | `PAYPER_SEND_BY_MAIL` | Payper emails client directly |

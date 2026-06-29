@@ -39,9 +39,34 @@ const PAYPER_PATH_FALLBACKS = [
 ];
 const PAYPER_SAMPLE_INCOME_ID = Number(process.env.PAYPER_SAMPLE_INCOME_ID || '-100000000');
 
+function parseEnvFlag(raw, defaultValue = false) {
+  if (raw == null || String(raw).trim() === '') return defaultValue;
+  const value = String(raw).trim().toLowerCase();
+  if (['true', '1', 'on', 'yes'].includes(value)) return true;
+  if (['false', '0', 'off', 'no'].includes(value)) return false;
+  return defaultValue;
+}
+
+/** Master kill switch (legacy). When false, disables all Payper invoice calls including manual retry. */
+function isPayperFullyDisabled() {
+  if (process.env.ENABLE_PAYPER_INVOICE == null) return false;
+  return !parseEnvFlag(process.env.ENABLE_PAYPER_INVOICE, true);
+}
+
+/**
+ * Automatic invoice after payment, status-poll retry, and reconcile batch.
+ * Set AUTOMATED_INVOICE=true on Render when ready. Default: off.
+ * Manual POST /create-payper-invoice still works when this is off.
+ */
+function isAutomatedInvoiceEnabled() {
+  if (isPayperFullyDisabled()) return false;
+  const raw = process.env.AUTOMATED_INVOICE ?? process.env.ENABLE_AUTOMATED_INVOICE ?? 'false';
+  return parseEnvFlag(raw, false);
+}
+
+/** @deprecated Use isAutomatedInvoiceEnabled() for auto flows; manual API bypasses automated flag. */
 function isPayperEnabled() {
-  const flag = (process.env.ENABLE_PAYPER_INVOICE || 'true').trim().toLowerCase();
-  return flag !== 'false' && flag !== '0';
+  return !isPayperFullyDisabled();
 }
 
 function getPayperConfig(paymentLink) {
@@ -945,11 +970,15 @@ async function persistPayperInvoiceResult(
  */
 async function createPayperInvoiceForPayment(
   paymentLink,
-  { callbackData = {}, verifyPayload = {}, forceRetry = false } = {},
+  { callbackData = {}, verifyPayload = {}, forceRetry = false, automatic = false } = {},
 ) {
   try {
-    if (!isPayperEnabled()) {
+    if (isPayperFullyDisabled()) {
       return { skipped: true, reason: 'disabled' };
+    }
+
+    if (automatic && !isAutomatedInvoiceEnabled()) {
+      return { skipped: true, reason: 'automated_invoice_disabled' };
     }
 
     if (!paymentLink?.id) {
@@ -1170,6 +1199,10 @@ async function createPayperInvoiceForPayment(
  * Retry invoice creation for paid links missing a successful Payper invoice.
  */
 async function reconcilePendingPayperInvoices(options = {}) {
+  if (!isAutomatedInvoiceEnabled()) {
+    return { ok: true, processed: 0, succeeded: 0, skipped: true, reason: 'automated_invoice_disabled' };
+  }
+
   const limit = Number(options.limit || process.env.PAYPER_RECONCILE_BATCH_SIZE || '20');
   const lookbackHours = Number(options.lookbackHours || process.env.PAYPER_RECONCILE_LOOKBACK_HOURS || '168');
   const since = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString();
@@ -1197,7 +1230,11 @@ async function reconcilePendingPayperInvoices(options = {}) {
     processed += 1;
     const callbackData = row.pelecard_raw_response?.callback || {};
     const verifyPayload = row.pelecard_raw_response?.pelecard || {};
-    const result = await createPayperInvoiceForPayment(row, { callbackData, verifyPayload });
+    const result = await createPayperInvoiceForPayment(row, {
+      callbackData,
+      verifyPayload,
+      automatic: true,
+    });
     if (result.success) succeeded += 1;
   }
 
@@ -1210,6 +1247,8 @@ async function reconcilePendingPayperInvoices(options = {}) {
 
 module.exports = {
   isPayperEnabled,
+  isAutomatedInvoiceEnabled,
+  isPayperFullyDisabled,
   getPayperConfig,
   createPayperInvoiceForPayment,
   reconcilePendingPayperInvoices,

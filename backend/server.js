@@ -486,6 +486,19 @@ server.listen(PORT, () => {
     }
   }
 
+  try {
+    const { isAutomatedInvoiceEnabled, isPayperFullyDisabled } = require('./src/services/payperInvoiceService');
+    if (isPayperFullyDisabled()) {
+      console.log('⏸️  Payper invoices: fully disabled (ENABLE_PAYPER_INVOICE=false)');
+    } else if (isAutomatedInvoiceEnabled()) {
+      console.log('✅ Payper automated invoices: ON (AUTOMATED_INVOICE=true)');
+    } else {
+      console.log('⏸️  Payper automated invoices: OFF — set AUTOMATED_INVOICE=true on Render when ready');
+    }
+  } catch {
+    /* payper service optional at boot */
+  }
+
   // Email fetching scheduler enabled - fetches emails every 5 minutes
   startMailboxSyncScheduler();
   startMeetingNotificationScheduler();

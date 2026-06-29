@@ -388,6 +388,7 @@ async function persistPaymentSuccess(payment, secureToken, callbackData, verifyR
         const invoiceResult = await createPayperInvoiceForPayment(paidPayment, {
           callbackData,
           verifyPayload,
+          automatic: true,
         });
 
         const fresh = await fetchPaymentByToken(secureToken);
@@ -631,7 +632,11 @@ async function tryCreatePayperInvoiceForPaidLink(payment) {
 
   const callbackData = payment.pelecard_raw_response?.callback || {};
   const verifyPayload = payment.pelecard_raw_response?.pelecard || {};
-  await createPayperInvoiceForPayment(payment, { callbackData, verifyPayload });
+  await createPayperInvoiceForPayment(payment, {
+    callbackData,
+    verifyPayload,
+    automatic: true,
+  });
   return fetchPaymentByToken(payment.secure_token);
 }
 
