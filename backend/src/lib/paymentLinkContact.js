@@ -77,7 +77,7 @@ async function resolvePlanBillingContact(paymentLink) {
 
   const { data: row, error } = await supabase
     .from('leads_contact')
-    .select('name, email, phone, mobile, id_number')
+    .select('name, email, phone, mobile, id_passport')
     .eq('id', contactId)
     .maybeSingle();
 
@@ -99,7 +99,7 @@ async function resolvePlanBillingContact(paymentLink) {
     name: row.name?.trim() || resolveClientNameFromDescription(link),
     email: row.email?.trim() || '',
     phone: row.mobile?.trim() || row.phone?.trim() || '',
-    idNumber: row.id_number?.trim() || '',
+    idNumber: row.id_passport?.trim() || '',
     contactId,
   };
 }

@@ -229,6 +229,7 @@ async function probeTerminalCssUrlSupport(profile = 'production') {
     Language: process.env.PELECARD_CHECKOUT_LANGUAGE || 'en',
     CssURL: cssUrl,
   };
+  Object.assign(payload, buildInstallmentOptions());
   if (config.sandboxMode) payload.QAResultStatus = '000';
 
   const { ok, data } = await pelecardPost(PELECARD_INIT_PATH, payload, config);
@@ -263,6 +264,19 @@ async function probeTerminalCssUrlSupport(profile = 'production') {
   return { cssUrl, cssApplied, variantStylesheet, walletProbe };
 }
 
+function buildInstallmentOptions() {
+  const minRaw = (process.env.PELECARD_MIN_PAYMENTS || '1').trim();
+  const maxRaw = (process.env.PELECARD_MAX_PAYMENTS || '1').trim();
+  const min = Math.max(1, Number(minRaw) || 1);
+  const max = Math.max(min, Number(maxRaw) || min);
+  return {
+    MinPayments: String(min),
+    MaxPayments: String(max),
+    // Pelecard: 'auto' splits total evenly; prevents 0-payment NaN in installment breakdown.
+    FirstPayment: (process.env.PELECARD_FIRST_PAYMENT || 'auto').trim() || 'auto',
+  };
+}
+
 function buildCheckoutDisplayOptions(config, payment) {
   const cssUrl = resolvePelecardCssUrl(config);
   console.info('[Pelecard] Checkout CssURL:', cssUrl);
@@ -287,6 +301,7 @@ function buildCheckoutDisplayOptions(config, payment) {
     EmailField: 'hide',
     TelField: 'hide',
     ShowSubmitButton: 'True',
+    ...buildInstallmentOptions(),
   };
 
   if (topText) {
