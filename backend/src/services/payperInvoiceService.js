@@ -198,7 +198,6 @@ function buildLineAmounts(grossAgorot, grossAmount, overrides = {}) {
     receiptAmount: grossAmount,
     includeVat: true,
     documentNoVat: false,
-    omitReceiptLines: false,
     pelecardTotalAgorot: grossAgorot,
     ...overrides,
   };
@@ -218,10 +217,8 @@ function estimateInvoiceTotalAgorot(unitPriceStr, lineAmounts, vatRate) {
 }
 
 /**
- * Payper line amounts:
- * - include_vat "false" = NET (Payper adds VAT) — never on gross amounts.
- * - No-VAT (vat_amount=0): document_no_vat true + include_vat true + gross (trxRecordId required).
- * - VAT payments: Pelecard doc sample (document_no_vat false, include_vat true, gross/gross).
+ * Payper Invoice-Receipt always requires receipt_lines matching invoice total (shekels).
+ * include_vat "false" = NET when document has VAT; with document_no_vat true = literal gross.
  */
 function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, config) {
   const grossAgorot = resolveChargedAgorot(paymentLink, callbackData, verifyPayload);
@@ -241,8 +238,18 @@ function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, conf
   if (!paymentHasIsraeliVat(paymentLink)) {
     return buildLineAmounts(grossAgorot, grossAmount, {
       documentNoVat: true,
-      vatLineMode: 'no_vat_document_flag',
+      includeVat: false,
+      vatLineMode: 'no_vat_consistent',
     });
+  }
+
+  if (!chargeMatchesCrmGross(paymentLink, grossAgorot)) {
+    return buildChargedNetExclusiveLineAmounts(
+      paymentLink,
+      grossAgorot,
+      grossAmount,
+      'rounded_charge_net_exclusive',
+    );
   }
 
   return buildLineAmounts(grossAgorot, grossAmount, {
@@ -255,69 +262,119 @@ function buildFallbackLineAmounts(paymentLink, grossAgorot, primary) {
 
   const grossAmount = formatIlsFromAgorot(grossAgorot);
   const noVat = !paymentHasIsraeliVat(paymentLink);
-  const hasVat = !noVat;
-  const crmMismatch = hasVat && !chargeMatchesCrmGross(paymentLink, grossAgorot);
   const strategies = [];
 
-  if (noVat && primary.vatLineMode !== 'pelecard_doc_sample') {
-    strategies.push(
-      buildLineAmounts(grossAgorot, grossAmount, {
-        vatLineMode: 'pelecard_doc_sample',
-      }),
-    );
-  }
-
-  if (crmMismatch && primary.vatLineMode !== 'rounded_charge_net_exclusive') {
-    strategies.push(
-      buildChargedNetExclusiveLineAmounts(
-        paymentLink,
-        grossAgorot,
-        grossAmount,
-        'rounded_charge_net_exclusive',
-      ),
-    );
-  }
-
-  const trxOnlyMode = noVat ? 'trx_only_no_vat' : 'trx_only_doc_sample';
-  if (primary.vatLineMode !== trxOnlyMode) {
-    strategies.push(
-      buildLineAmounts(grossAgorot, grossAmount, {
-        omitReceiptLines: true,
-        documentNoVat: noVat,
-        vatLineMode: trxOnlyMode,
-      }),
-    );
-  }
-
-  if (noVat && primary.vatLineMode !== 'no_vat_document_flag') {
-    strategies.push(
-      buildLineAmounts(grossAgorot, grossAmount, {
-        documentNoVat: true,
-        vatLineMode: 'no_vat_document_flag',
-      }),
-    );
-  }
-
-  if (hasVat && primary.vatLineMode !== 'charged_net_inclusive_add') {
+  if (noVat) {
+    if (primary.vatLineMode !== 'pelecard_doc_sample') {
+      strategies.push(
+        buildLineAmounts(grossAgorot, grossAmount, {
+          vatLineMode: 'pelecard_doc_sample',
+        }),
+      );
+    }
+    if (primary.vatLineMode !== 'no_vat_consistent') {
+      strategies.push(
+        buildLineAmounts(grossAgorot, grossAmount, {
+          documentNoVat: true,
+          includeVat: false,
+          vatLineMode: 'no_vat_consistent',
+        }),
+      );
+    }
+    if (primary.vatLineMode !== 'no_vat_include_true') {
+      strategies.push(
+        buildLineAmounts(grossAgorot, grossAmount, {
+          documentNoVat: true,
+          includeVat: true,
+          vatLineMode: 'no_vat_include_true',
+        }),
+      );
+    }
+  } else {
+    if (primary.vatLineMode !== 'pelecard_doc_sample') {
+      strategies.push(
+        buildLineAmounts(grossAgorot, grossAmount, {
+          vatLineMode: 'pelecard_doc_sample',
+        }),
+      );
+    }
+    if (primary.vatLineMode !== 'rounded_charge_net_exclusive') {
+      strategies.push(
+        buildChargedNetExclusiveLineAmounts(
+          paymentLink,
+          grossAgorot,
+          grossAmount,
+          'rounded_charge_net_exclusive',
+        ),
+      );
+    }
     const netAgorot = resolveNetAgorotForPayper(paymentLink, grossAgorot);
-    strategies.push(
-      buildLineAmounts(grossAgorot, grossAmount, {
-        invoiceUnitPrice: formatIlsFromAgorot(netAgorot),
-        receiptAmount: grossAmount,
-        vatLineMode: 'charged_net_inclusive_add',
-      }),
-    );
+    if (primary.vatLineMode !== 'charged_net_inclusive_add') {
+      strategies.push(
+        buildLineAmounts(grossAgorot, grossAmount, {
+          invoiceUnitPrice: formatIlsFromAgorot(netAgorot),
+          receiptAmount: grossAmount,
+          vatLineMode: 'charged_net_inclusive_add',
+        }),
+      );
+    }
   }
 
-  const seen = new Set([
-    `${primary.invoiceUnitPrice}|${primary.receiptAmount}|${primary.includeVat}|${primary.documentNoVat}|${primary.omitReceiptLines}`,
-  ]);
+  const lineKey = (item) =>
+    `${item.invoiceUnitPrice}|${item.receiptAmount}|${item.includeVat}|${item.documentNoVat}`;
+  const seen = new Set([lineKey(primary)]);
   return strategies.filter((item) => {
-    const key = `${item.invoiceUnitPrice}|${item.receiptAmount}|${item.includeVat}|${item.documentNoVat}|${item.omitReceiptLines}`;
+    const key = lineKey(item);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+}
+
+function parseShekelAmountToAgorot(amountStr) {
+  const n = Number.parseFloat(String(amountStr).replace(/[^\d.-]/g, ''));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n * 100);
+}
+
+/** Invoice-Receipt must always include receipt_lines; totals must match in agorot. */
+function validateInvoiceReceiptPayload(payload, lineAmounts, paymentLink) {
+  if (payload.PayperParameters?.typeDocument !== 'Invoice-Receipt') return;
+
+  const dataPayper = payload.PayperParameters.DataPayper;
+  const receiptLines = dataPayper?.receipt_lines;
+  if (!Array.isArray(receiptLines) || receiptLines.length === 0) {
+    const err = new Error('Invoice-Receipt requires receipt_lines');
+    err.code = 'PAYPER_MISSING_RECEIPT_LINES';
+    throw err;
+  }
+
+  const receiptAgorot = parseShekelAmountToAgorot(receiptLines[0]?.amount);
+  if (receiptAgorot == null || receiptAgorot <= 0) {
+    const err = new Error('Invoice-Receipt receipt_lines[0].amount is missing or invalid');
+    err.code = 'PAYPER_INVALID_RECEIPT_AMOUNT';
+    throw err;
+  }
+
+  const invoicePriceStr = dataPayper?.invoice_lines?.[0]?.price_per_unit;
+  const vatRate = getVatRateForPayment(paymentLink);
+  const invoiceTotalAgorot = estimateInvoiceTotalAgorot(invoicePriceStr, lineAmounts, vatRate);
+
+  if (invoiceTotalAgorot != null && invoiceTotalAgorot !== receiptAgorot) {
+    const err = new Error(
+      `Invoice total ${invoiceTotalAgorot} agorot does not equal receipt ${receiptAgorot} agorot`,
+    );
+    err.code = 'PAYPER_LOCAL_AMOUNT_MISMATCH';
+    err.invoiceTotalAgorot = invoiceTotalAgorot;
+    err.receiptAgorot = receiptAgorot;
+    throw err;
+  }
+
+  if (!payload.trxRecordId) {
+    const err = new Error('Invoice-Receipt requires trxRecordId');
+    err.code = 'PAYPER_MISSING_TRX';
+    throw err;
+  }
 }
 
 function payperErrorText(data) {
@@ -452,21 +509,17 @@ async function buildPayperInvoiceAttempt(
         quantity: '1',
         price_per_unit: lineAmounts.invoiceUnitPrice,
         include_vat: lineAmounts.includeVat ? 'true' : 'false',
-        catalog_id: 'null',
         currency_symbol: 'ILS',
       },
     ],
-  };
-
-  if (!lineAmounts.omitReceiptLines) {
-    dataPayper.receipt_lines = buildReceiptLines(
+    receipt_lines: buildReceiptLines(
       paymentLink,
       callbackData,
       enrichedVerify,
       paymentLink.paid_at,
       lineAmounts.receiptAmount,
-    );
-  }
+    ),
+  };
 
   const payload = {
     terminalNumber: config.terminal,
@@ -478,6 +531,8 @@ async function buildPayperInvoiceAttempt(
       DataPayper: dataPayper,
     },
   };
+
+  validateInvoiceReceiptPayload(payload, lineAmounts, paymentLink);
 
   return {
     payload,
@@ -682,14 +737,29 @@ async function createPayperInvoiceForPayment(
           receiptAmount: fallbackAmounts.receiptAmount,
           includeVat: fallbackAmounts.includeVat,
           documentNoVat: fallbackAmounts.documentNoVat,
-          omitReceiptLines: fallbackAmounts.omitReceiptLines,
         });
-        attempt = await buildPayperInvoiceAttempt(
-          paymentLink,
-          callbackData,
-          enrichedVerify,
-          fallbackAmounts,
-        );
+        try {
+          attempt = await buildPayperInvoiceAttempt(
+            paymentLink,
+            callbackData,
+            enrichedVerify,
+            fallbackAmounts,
+          );
+        } catch (buildErr) {
+          if (
+            buildErr.code === 'PAYPER_LOCAL_AMOUNT_MISMATCH' ||
+            buildErr.code === 'PAYPER_MISSING_RECEIPT_LINES' ||
+            buildErr.code === 'PAYPER_INVALID_RECEIPT_AMOUNT'
+          ) {
+            console.warn('[Payper] Skipping invalid fallback payload', {
+              paymentLinkId: paymentLink.id,
+              vatLineMode: fallbackAmounts.vatLineMode,
+              message: buildErr.message,
+            });
+            continue;
+          }
+          throw buildErr;
+        }
         payload = attempt.payload;
         lineAmounts = attempt.lineAmounts;
         ({ ok, status: httpStatus, data, invoicePath } = await postCreatePayperInvoice(
@@ -708,7 +778,10 @@ async function createPayperInvoiceForPayment(
         lineAmounts,
         vatRate,
       );
-      const receiptAgorot = lineAmounts.pelecardTotalAgorot;
+      const receiptAgorot =
+        parseShekelAmountToAgorot(
+          payload.PayperParameters?.DataPayper?.receipt_lines?.[0]?.amount,
+        ) ?? lineAmounts.pelecardTotalAgorot;
       const message =
         data?.ErrorMessage ||
         data?.PayperData?.InvoiceStatus ||
@@ -732,7 +805,6 @@ async function createPayperInvoiceForPayment(
           total_amount: paymentLink.total_amount ?? null,
         },
         vatLineMode: lineAmounts.vatLineMode ?? null,
-        omitReceiptLines: lineAmounts.omitReceiptLines ?? false,
         invoiceTotalAgorot,
         receiptAgorot,
         pelecardTotalDebug: summarizePelecardTotalDebug(callbackData, enrichedVerify),
@@ -741,7 +813,6 @@ async function createPayperInvoiceForPayment(
           typeDocument: payload.PayperParameters?.typeDocument,
           incomeId: payload.PayperParameters?.DataPayper?.income_id,
           documentNoVat: payload.PayperParameters?.DataPayper?.document_no_vat ?? null,
-          omitReceiptLines: lineAmounts.omitReceiptLines ?? false,
           invoiceLine: payload.PayperParameters?.DataPayper?.invoice_lines?.[0],
           receiptLine: payload.PayperParameters?.DataPayper?.receipt_lines?.[0],
         },
