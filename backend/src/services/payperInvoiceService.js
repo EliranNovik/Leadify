@@ -26,6 +26,7 @@ const {
   extractTransactionTotalAgorot,
   extractTransactionTotalIls,
   extractTransactionUuid,
+  summarizePelecardTotalDebug,
   formatPayperReceiptDate,
   parsePayperDocumentSystemId,
 } = require('../lib/pelecardTransactionFields');
@@ -125,6 +126,15 @@ function buildPayperAmountStrategy(paymentLink, grossAgorot, config, mode = 'aut
     };
   }
 
+  if (mode === 'gross_gross_vat_true') {
+    return {
+      invoiceUnitPrice: grossAmount,
+      receiptAmount: grossAmount,
+      includeVat: true,
+      amountMode: 'gross_gross_vat_true',
+    };
+  }
+
   if (hasIsraeliVat && config.includeVat) {
     if (netIls > 0 && Math.abs(expectedGrossAgorot - grossAgorot) <= 1) {
       return {
@@ -172,9 +182,33 @@ function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, conf
   };
 }
 
-function payperAmountFallbackStrategies(paymentLink, grossAgorot, config, primaryMode) {
-  if (primaryMode === 'gross_no_vat' || grossAgorot == null) return [];
-  return [buildPayperAmountStrategy(paymentLink, grossAgorot, config, 'gross_no_vat')];
+function payperInvoiceFallbackAttempts(paymentLink, grossAgorot, config, primaryMode) {
+  if (grossAgorot == null) return [];
+
+  const attempts = [];
+  const push = (strategy, omitReceiptLines = false) => {
+    if (strategy.amountMode === primaryMode && !omitReceiptLines) return;
+    attempts.push({
+      lineAmounts: { ...strategy, pelecardTotalAgorot: grossAgorot },
+      omitReceiptLines,
+    });
+  };
+
+  push(buildPayperAmountStrategy(paymentLink, grossAgorot, config, 'gross_no_vat'));
+  push(buildPayperAmountStrategy(paymentLink, grossAgorot, config, 'gross_gross_vat_true'));
+
+  if (primaryMode === 'crm_net_gross' || primaryMode === 'derived_net_gross') {
+    push(buildPayperAmountStrategy(paymentLink, grossAgorot, config), true);
+    push(buildPayperAmountStrategy(paymentLink, grossAgorot, config, 'gross_no_vat'), true);
+  }
+
+  const seen = new Set();
+  return attempts.filter((attempt) => {
+    const key = `${attempt.lineAmounts.amountMode}:${attempt.omitReceiptLines}:${attempt.lineAmounts.invoiceUnitPrice}:${attempt.lineAmounts.receiptAmount}:${attempt.lineAmounts.includeVat}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function isPayperTotalMismatchError(data) {
@@ -240,6 +274,7 @@ async function buildPayperInvoiceAttempt(
   callbackData,
   verifyPayload,
   lineAmountsOverride = null,
+  options = {},
 ) {
   const config = getPayperConfig(paymentLink);
   pelecardService.assertCredentials(config);
@@ -276,6 +311,39 @@ async function buildPayperInvoiceAttempt(
     lineAmountsOverride ??
     resolvePayperLineAmounts(paymentLink, callbackData, enrichedVerify, config);
   const description = buildInvoiceDescription(paymentLink);
+  const omitReceiptLines = Boolean(options.omitReceiptLines);
+
+  const dataPayper = {
+    customer_unique_id: customerUniqueId,
+    customer_mail: customerEmail,
+    customer_name: customerName,
+    discount_with_vat: '0',
+    customer_mobile: customerMobile,
+    document_no_vat: config.documentNoVat,
+    document_rounded: config.documentRounded,
+    send_by_mail: config.sendByMail,
+    income_id: config.incomeId,
+    invoice_lines: [
+      {
+        description,
+        quantity: '1',
+        price_per_unit: lineAmounts.invoiceUnitPrice,
+        include_vat: lineAmounts.includeVat ? 'true' : 'false',
+        catalog_id: 'null',
+        currency_symbol: 'ILS',
+      },
+    ],
+  };
+
+  if (!omitReceiptLines) {
+    dataPayper.receipt_lines = buildReceiptLines(
+      paymentLink,
+      callbackData,
+      enrichedVerify,
+      paymentLink.paid_at,
+      lineAmounts.receiptAmount,
+    );
+  }
 
   const payload = {
     terminalNumber: config.terminal,
@@ -284,34 +352,7 @@ async function buildPayperInvoiceAttempt(
     trxRecordId: String(trxRecordId),
     PayperParameters: {
       typeDocument: 'Invoice-Receipt',
-      DataPayper: {
-        customer_unique_id: customerUniqueId,
-        customer_mail: customerEmail,
-        customer_name: customerName,
-        discount_with_vat: '0',
-        customer_mobile: customerMobile,
-        document_no_vat: config.documentNoVat,
-        document_rounded: config.documentRounded,
-        send_by_mail: config.sendByMail,
-        income_id: config.incomeId,
-        invoice_lines: [
-          {
-            description,
-            quantity: '1',
-            price_per_unit: lineAmounts.invoiceUnitPrice,
-            include_vat: lineAmounts.includeVat ? 'true' : 'false',
-            catalog_id: 'null',
-            currency_symbol: 'ILS',
-          },
-        ],
-        receipt_lines: buildReceiptLines(
-          paymentLink,
-          callbackData,
-          enrichedVerify,
-          paymentLink.paid_at,
-          lineAmounts.receiptAmount,
-        ),
-      },
+      DataPayper: dataPayper,
     },
   };
 
@@ -322,6 +363,7 @@ async function buildPayperInvoiceAttempt(
     lineAmounts,
     callbackData,
     verifyPayload,
+    omitReceiptLines,
   };
 }
 
@@ -330,12 +372,14 @@ async function buildCreatePayperInvoicePayload(
   callbackData,
   verifyPayload,
   lineAmountsOverride = null,
+  options = {},
 ) {
   const attempt = await buildPayperInvoiceAttempt(
     paymentLink,
     callbackData,
     verifyPayload,
     lineAmountsOverride,
+    options,
   );
   return attempt.payload;
 }
@@ -494,33 +538,37 @@ async function createPayperInvoiceForPayment(
     }
 
     const attempt = await buildPayperInvoiceAttempt(paymentLink, callbackData, verifyPayload);
-    let { payload, lineAmounts, enrichedVerify } = attempt;
+    let { payload, lineAmounts, enrichedVerify, omitReceiptLines } = attempt;
     let { ok, status: httpStatus, data, invoicePath } = await postCreatePayperInvoice(payload, config);
 
     if ((!ok || !isPayperSuccess(data)) && isPayperTotalMismatchError(data)) {
-      const fallbacks = payperAmountFallbackStrategies(
+      const fallbacks = payperInvoiceFallbackAttempts(
         paymentLink,
         lineAmounts.pelecardTotalAgorot,
         config,
         lineAmounts.amountMode,
       );
-      for (const altAmounts of fallbacks) {
+      for (const fallback of fallbacks) {
         console.info('[Payper] Retrying invoice with alternate amount strategy', {
           paymentLinkId: paymentLink.id,
           from: lineAmounts.amountMode,
-          to: altAmounts.amountMode,
-          invoiceUnitPrice: altAmounts.invoiceUnitPrice,
-          receiptAmount: altAmounts.receiptAmount,
-          includeVat: altAmounts.includeVat,
+          to: fallback.lineAmounts.amountMode,
+          omitReceiptLines: fallback.omitReceiptLines,
+          invoiceUnitPrice: fallback.lineAmounts.invoiceUnitPrice,
+          receiptAmount: fallback.lineAmounts.receiptAmount,
+          includeVat: fallback.lineAmounts.includeVat,
+          pelecardTotalAgorot: fallback.lineAmounts.pelecardTotalAgorot,
         });
         const retryAttempt = await buildPayperInvoiceAttempt(
           paymentLink,
           callbackData,
           enrichedVerify,
-          altAmounts,
+          fallback.lineAmounts,
+          { omitReceiptLines: fallback.omitReceiptLines },
         );
         payload = retryAttempt.payload;
         lineAmounts = retryAttempt.lineAmounts;
+        omitReceiptLines = retryAttempt.omitReceiptLines;
         ({ ok, status: httpStatus, data, invoicePath } = await postCreatePayperInvoice(payload, config));
         if (ok && isPayperSuccess(data)) break;
       }
@@ -543,6 +591,8 @@ async function createPayperInvoiceForPayment(
         transactionUuid: extractTransactionUuid(callbackData, enrichedVerify, paymentLink),
         pelecardTotalAgorot: lineAmounts.pelecardTotalAgorot ?? null,
         amountMode: lineAmounts.amountMode ?? null,
+        omitReceiptLines,
+        pelecardTotalDebug: summarizePelecardTotalDebug(callbackData, enrichedVerify),
         numOfPayments: extractNumOfPayments(callbackData, enrichedVerify),
         invoiceUnitPrice:
           payload.PayperParameters?.DataPayper?.invoice_lines?.[0]?.price_per_unit ?? null,

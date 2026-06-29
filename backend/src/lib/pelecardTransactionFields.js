@@ -99,42 +99,111 @@ function extractCardValidity(callbackData, verifyPayload) {
   return null;
 }
 
-function extractGetTransactionResultData(verifyPayload) {
-  const pelecard = verifyPayload?.pelecard;
-  if (pelecard && typeof pelecard === 'object') {
-    const nested = pelecard.ResultData || pelecard.resultData;
-    if (nested && typeof nested === 'object') return nested;
+function parseMaybeJson(value) {
+  if (value && typeof value === 'object') return value;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return null;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
   }
-  const direct = verifyPayload?.resultData;
-  if (direct && typeof direct === 'object') return direct;
+}
+
+function extractGetTransactionResultData(verifyPayload) {
+  if (!verifyPayload || typeof verifyPayload !== 'object') return null;
+
+  const candidates = [
+    verifyPayload.resultData,
+    verifyPayload.ResultData,
+    verifyPayload.pelecard?.resultData,
+    verifyPayload.pelecard?.ResultData,
+  ];
+
+  for (const candidate of candidates) {
+    const parsed = parseMaybeJson(candidate) ?? candidate;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+
+    const inner = parsed.ResultData || parsed.resultData;
+    const innerParsed = parseMaybeJson(inner) ?? inner;
+    if (innerParsed && typeof innerParsed === 'object' && !Array.isArray(innerParsed)) {
+      return innerParsed;
+    }
+    return parsed;
+  }
+
+  return null;
+}
+
+function findTotalAgorotDeep(root, depth = 0) {
+  if (!root || depth > 5) return null;
+  const obj = parseMaybeJson(root) ?? root;
+  if (!obj || typeof obj !== 'object') return null;
+
+  const totalKeys = [
+    'Total',
+    'total',
+    'DebitTotal',
+    'debitTotal',
+    'TransactionTotal',
+    'transactionTotal',
+    'CreditCardTotal',
+    'creditCardTotal',
+  ];
+  const direct = pickFirst(obj, totalKeys);
+  if (direct) {
+    const agorot = Number(String(direct).replace(/[^\d]/g, ''));
+    if (Number.isFinite(agorot) && agorot > 0) return Math.round(agorot);
+  }
+
+  for (const value of Object.values(obj)) {
+    if (value && typeof value === 'object') {
+      const nested = findTotalAgorotDeep(value, depth + 1);
+      if (nested != null) return nested;
+    }
+    if (typeof value === 'string' && (value.includes('Total') || value.includes('total'))) {
+      const parsed = parseMaybeJson(value);
+      if (parsed) {
+        const nested = findTotalAgorotDeep(parsed, depth + 1);
+        if (nested != null) return nested;
+      }
+    }
+  }
   return null;
 }
 
 /** Pelecard Gateway Total is in agorot (885000 = ₪8850). Prefer GetTransaction ResultData. */
 function extractTransactionTotalAgorot(callbackData, verifyPayload) {
-  const totalKeys = ['Total', 'total', 'DebitTotal', 'debitTotal'];
   const resultData = extractGetTransactionResultData(verifyPayload);
   if (resultData) {
-    const raw = pickFirst(resultData, totalKeys);
-    if (raw) {
-      const agorot = Number(String(raw).replace(/[^\d]/g, ''));
-      if (Number.isFinite(agorot) && agorot > 0) return Math.round(agorot);
-    }
+    const fromResult = findTotalAgorotDeep(resultData, 0);
+    if (fromResult != null) return fromResult;
   }
 
-  const keys = [
-    ...totalKeys,
-    'TransactionTotal',
-    'transactionTotal',
-  ];
-  for (const src of flattenPelecardSources(callbackData, verifyPayload)) {
-    if (resultData && src === resultData) continue;
-    const raw = pickFirst(src, keys);
-    if (!raw) continue;
-    const agorot = Number(String(raw).replace(/[^\d]/g, ''));
-    if (Number.isFinite(agorot) && agorot > 0) return Math.round(agorot);
+  const roots = [
+    verifyPayload?.pelecard,
+    verifyPayload,
+    callbackData,
+  ].filter(Boolean);
+  for (const root of roots) {
+    const found = findTotalAgorotDeep(root, 0);
+    if (found != null) return found;
   }
   return null;
+}
+
+function summarizePelecardTotalDebug(callbackData, verifyPayload) {
+  const resultData = extractGetTransactionResultData(verifyPayload);
+  if (!resultData) return { resultData: null };
+  return {
+    Total: resultData.Total ?? resultData.total ?? null,
+    DebitTotal: resultData.DebitTotal ?? resultData.debitTotal ?? null,
+    TransactionPelecardId:
+      resultData.TransactionPelecardId ?? resultData.transactionPelecardId ?? null,
+    PaymentsNumber: resultData.PaymentsNumber ?? resultData.paymentsNumber ?? null,
+    callbackTotal: callbackData?.Total ?? callbackData?.total ?? null,
+  };
 }
 
 /** Charged amount in ILS from Pelecard Total field (agorot → shekels). */
@@ -280,6 +349,7 @@ module.exports = {
   extractTransactionTotalAgorot,
   extractTransactionTotalIls,
   extractTransactionUuid,
+  summarizePelecardTotalDebug,
   formatPayperReceiptDate,
   parsePayperDocumentSystemId,
   flattenPelecardSources,
