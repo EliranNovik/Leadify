@@ -6,25 +6,18 @@
 const PELECARD_INIT_PATH = 'PaymentGW/init';
 const PELECARD_GET_TRANSACTION_PATH = 'PaymentGW/GetTransaction';
 const { resolvePelecardChargeAmount } = require('./paymentChargeAmountService');
+const {
+  getPelecardConfig,
+  assertCredentials: assertProfileCredentials,
+  normalizeProfile,
+} = require('../lib/pelecardProfiles');
 
-function getConfig() {
-  const baseUrl = (process.env.PELECARD_BASE_URL || 'https://gateway20.pelecard.biz').replace(/\/$/, '');
-  const terminal = process.env.PELECARD_TERMINAL;
-  const user = process.env.PELECARD_USER;
-  const password = process.env.PELECARD_PASSWORD;
-  const appPublicUrl = (process.env.APP_PUBLIC_URL || 'http://localhost:5173').replace(/\/$/, '');
-  const backendPublicUrl = (process.env.BACKEND_PUBLIC_URL || process.env.API_PUBLIC_URL || appPublicUrl).replace(/\/$/, '');
-  const sandboxMode = process.env.PELECARD_SANDBOX === 'true' || process.env.PELECARD_ENV === 'sandbox';
-
-  return { baseUrl, terminal, user, password, appPublicUrl, backendPublicUrl, sandboxMode };
+function getConfig(profile = 'production') {
+  return getPelecardConfig(normalizeProfile(profile));
 }
 
 function assertCredentials(config) {
-  if (!config.terminal || !config.user || !config.password) {
-    const err = new Error('Pelecard is not configured on the server (missing PELECARD_TERMINAL, PELECARD_USER, or PELECARD_PASSWORD)');
-    err.code = 'PELECARD_NOT_CONFIGURED';
-    throw err;
-  }
+  assertProfileCredentials(config);
 }
 
 function isLocalUrl(url) {
@@ -192,8 +185,8 @@ function analyzeCheckoutHtmlForWallets(html) {
   };
 }
 
-function getCheckoutCssDebugInfo() {
-  const config = getConfig();
+function getCheckoutCssDebugInfo(profile = 'production') {
+  const config = getConfig(profile);
   const cssUrl = resolvePelecardCssUrl(config);
   const language = normalizeCheckoutLanguage(process.env.PELECARD_CHECKOUT_LANGUAGE);
   const cssVariant = parsePelecardCssVariant(process.env.PELECARD_CSS_VARIANT);
@@ -205,6 +198,7 @@ function getCheckoutCssDebugInfo() {
     checkoutLanguage: language,
     availableBuiltinVariants: PELECARD_BUILTIN_VARIANTS,
     sandboxMode: config.sandboxMode,
+    profile: config.profile,
     appPublicUrl: config.appPublicUrl,
     backendPublicUrl: config.backendPublicUrl,
     explicitCssUrl: (process.env.PELECARD_CSS_URL || '').trim() || null,
@@ -217,8 +211,8 @@ function getCheckoutCssDebugInfo() {
   };
 }
 
-async function probeTerminalCssUrlSupport() {
-  const config = getConfig();
+async function probeTerminalCssUrlSupport(profile = 'production') {
+  const config = getConfig(profile);
   assertCredentials(config);
   const cssUrl = resolvePelecardCssUrl(config);
   const payload = {
@@ -237,7 +231,7 @@ async function probeTerminalCssUrlSupport() {
   };
   if (config.sandboxMode) payload.QAResultStatus = '000';
 
-  const { ok, data } = await pelecardPost(PELECARD_INIT_PATH, payload);
+  const { ok, data } = await pelecardPost(PELECARD_INIT_PATH, payload, config);
   const paymentUrl = extractPaymentUrl(data);
   if (!ok || !paymentUrl || !pelecardErrorOk(data)) {
     return { cssUrl, cssApplied: false, probeError: 'Could not create probe session' };
@@ -340,9 +334,9 @@ function pelecardErrorOk(pelecardData) {
   return code === 0 || code === '0';
 }
 
-async function pelecardPost(path, body) {
-  const { baseUrl } = getConfig();
-  const url = `${baseUrl}/${path.replace(/^\//, '')}`;
+async function pelecardPost(path, body, configOverride) {
+  const config = configOverride || getConfig();
+  const url = `${config.baseUrl}/${path.replace(/^\//, '')}`;
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -361,9 +355,10 @@ async function pelecardPost(path, body) {
 /**
  * @param {object} payment - payment_links row
  * @param {string} secureToken - ParamX reference
+ * @param {'production'|'sandbox'} [profile='production']
  */
-async function createPaymentSession(payment, secureToken) {
-  const config = getConfig();
+async function createPaymentSession(payment, secureToken, profile = 'production') {
+  const config = getConfig(profile);
   assertCredentials(config);
 
   const charge = await resolvePelecardChargeAmount(payment);
@@ -396,7 +391,7 @@ async function createPaymentSession(payment, secureToken) {
 
   Object.assign(payload, buildCheckoutDisplayOptions(config, payment));
 
-  const { ok, data } = await pelecardPost(PELECARD_INIT_PATH, payload);
+  const { ok, data } = await pelecardPost(PELECARD_INIT_PATH, payload, config);
 
   if (!ok || !pelecardErrorOk(data)) {
     const err = new Error('Pelecard session creation failed');
@@ -433,6 +428,7 @@ async function createPaymentSession(payment, secureToken) {
     confirmationKey: data.ConfirmationKey || data.confirmationKey || null,
     rawResponse: data,
     charge,
+    profile: config.profile,
   };
 }
 
@@ -443,16 +439,20 @@ function buildPelecardDetails(payment, charge) {
   return `${base}${note}`.slice(0, 250);
 }
 
-async function getTransaction(transactionId) {
-  const config = getConfig();
+async function getTransaction(transactionId, profile = 'production') {
+  const config = getConfig(profile);
   assertCredentials(config);
 
-  const { ok, data } = await pelecardPost(PELECARD_GET_TRANSACTION_PATH, {
-    terminal: config.terminal,
-    user: config.user,
-    password: config.password,
-    TransactionId: transactionId,
-  });
+  const { ok, data } = await pelecardPost(
+    PELECARD_GET_TRANSACTION_PATH,
+    {
+      terminal: config.terminal,
+      user: config.user,
+      password: config.password,
+      TransactionId: transactionId,
+    },
+    config,
+  );
 
   if (!ok) {
     const err = new Error('Pelecard transaction lookup failed');
@@ -483,6 +483,7 @@ function isSuccessfulStatus(statusCode, resultData) {
 module.exports = {
   getConfig,
   assertCredentials,
+  normalizeProfile,
   totalToAgorot,
   createPaymentSession,
   getTransaction,
@@ -493,4 +494,5 @@ module.exports = {
   getCheckoutCssDebugInfo,
   probeTerminalCssUrlSupport,
   verifyCssAppliedOnPaymentPage,
+  pelecardPost,
 };

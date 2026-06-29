@@ -22,6 +22,9 @@ export interface PaymentStatusResponse {
   pelecard_status_code?: string | null;
   pelecard_status_description?: string | null;
   confirmation_email_sent?: boolean;
+  payper_invoice_link?: string | null;
+  payper_invoice_number?: string | null;
+  payper_invoice_status?: string | null;
   error?: string;
 }
 

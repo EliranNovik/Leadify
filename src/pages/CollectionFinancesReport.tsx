@@ -51,6 +51,10 @@ import {
   parsePaymentPlanIdFromCollectionRowId,
   resolvePaymentBoiAsOf,
 } from '../lib/proformaExchangeRate';
+import {
+  loadPaymentPlanTaxReceipts,
+  type PaymentPlanTaxReceiptInfo,
+} from '../lib/paymentLinkQueries';
 
 type MainCategory = {
   id: string;
@@ -117,6 +121,126 @@ type RowNisAmounts = {
   rateSource: 'boi' | 'legacy';
   rateDate: string | null;
 };
+
+const TAX_RECEIPT_PLAN_ID_BATCH_SIZE = 200;
+
+function mergeTaxReceiptMaps(
+  target: Map<number, PaymentPlanTaxReceiptInfo>,
+  source: Map<number, PaymentPlanTaxReceiptInfo>,
+) {
+  for (const [planId, info] of source) {
+    target.set(planId, info);
+  }
+}
+
+function getTaxReceiptForRow(
+  row: PaymentRow,
+  taxReceiptByPlanId: Map<number, PaymentPlanTaxReceiptInfo>,
+): PaymentPlanTaxReceiptInfo | null {
+  const planId = parsePaymentPlanIdFromCollectionRowId(row.id);
+  if (planId == null) return null;
+  return taxReceiptByPlanId.get(planId) ?? null;
+}
+
+function isRowPaidViaPaymentLink(
+  row: PaymentRow,
+  taxReceiptByPlanId: Map<number, PaymentPlanTaxReceiptInfo>,
+): boolean {
+  const planId = parsePaymentPlanIdFromCollectionRowId(row.id);
+  return planId != null && taxReceiptByPlanId.has(planId);
+}
+
+function taxReceiptExportLabel(
+  row: PaymentRow,
+  taxReceiptByPlanId: Map<number, PaymentPlanTaxReceiptInfo>,
+): string {
+  const info = getTaxReceiptForRow(row, taxReceiptByPlanId);
+  const paidViaLink = isRowPaidViaPaymentLink(row, taxReceiptByPlanId);
+
+  if (info?.payper_invoice_link?.trim()) {
+    return info.payper_invoice_number
+      ? `#${info.payper_invoice_number}`
+      : info.payper_invoice_link;
+  }
+
+  if (!paidViaLink && !info?.payper_invoice_status) return '—';
+
+  const status = info?.payper_invoice_status;
+  if (status === 'success') return 'Sent';
+  if (status === 'pending') return 'Pending';
+  if (status === 'failed') return 'Failed';
+  if (paidViaLink) return 'Not sent';
+  return '—';
+}
+
+function CollectionTaxReceiptCell({
+  row,
+  taxReceiptByPlanId,
+}: {
+  row: PaymentRow;
+  taxReceiptByPlanId: Map<number, PaymentPlanTaxReceiptInfo>;
+}) {
+  const info = getTaxReceiptForRow(row, taxReceiptByPlanId);
+  const paidViaLink = isRowPaidViaPaymentLink(row, taxReceiptByPlanId);
+
+  if (info?.payper_invoice_link?.trim()) {
+    return (
+      <a
+        href={info.payper_invoice_link}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="link link-primary inline-flex max-w-[140px] truncate"
+        title={
+          info.payper_invoice_number
+            ? `Tax receipt #${info.payper_invoice_number}`
+            : 'View tax receipt'
+        }
+      >
+        {info.payper_invoice_number ? `#${info.payper_invoice_number}` : 'View receipt'}
+      </a>
+    );
+  }
+
+  if (!paidViaLink && !info?.payper_invoice_status) {
+    return <span className="text-gray-400">—</span>;
+  }
+
+  const status = info?.payper_invoice_status;
+  if (status === 'success') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+        <CheckIcon className="h-4 w-4" aria-hidden />
+        Sent
+      </span>
+    );
+  }
+  if (status === 'pending') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
+        <ClockIconOutline className="h-4 w-4" aria-hidden />
+        Pending
+      </span>
+    );
+  }
+  if (status === 'failed') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-700">
+        <XMarkIcon className="h-4 w-4" aria-hidden />
+        Failed
+      </span>
+    );
+  }
+
+  if (paidViaLink) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500">
+        Not sent
+      </span>
+    );
+  }
+
+  return <span className="text-gray-400">—</span>;
+}
 
 const collectedOptions = [
   { value: 'all', label: 'All' },
@@ -1052,6 +1176,9 @@ const CollectionFinancesReport: React.FC = () => {
     storage: 'sessionStorage',
   });
   const [nisByRowId, setNisByRowId] = useState<Record<string, RowNisAmounts>>({});
+  const [taxReceiptByPlanId, setTaxReceiptByPlanId] = useState<
+    Map<number, PaymentPlanTaxReceiptInfo>
+  >(() => new Map());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [handlerOptions, setHandlerOptions] = useState<{ id: number; name: string }[]>([]);
@@ -1360,7 +1487,7 @@ const CollectionFinancesReport: React.FC = () => {
   }, [rowSearchQuery]);
 
   const tableColumnCount = useMemo(() => {
-    let count = 8;
+    let count = 9;
     if (showClientColumn) count += 1;
     if (showNisColumn) count += 1;
     if (showProformaDateColumn) count += 1;
@@ -1986,6 +2113,52 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
     };
   }, [nisSourceRows]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadTaxReceipts = async () => {
+      if (!nisSourceRows.length) {
+        setTaxReceiptByPlanId(new Map());
+        return;
+      }
+
+      const planIds = [
+        ...new Set(
+          nisSourceRows
+            .map((row) => parsePaymentPlanIdFromCollectionRowId(row.id))
+            .filter((id): id is number => id != null),
+        ),
+      ];
+
+      if (!planIds.length) {
+        setTaxReceiptByPlanId(new Map());
+        return;
+      }
+
+      try {
+        const merged = new Map<number, PaymentPlanTaxReceiptInfo>();
+        for (let i = 0; i < planIds.length; i += TAX_RECEIPT_PLAN_ID_BATCH_SIZE) {
+          const batch = planIds.slice(i, i + TAX_RECEIPT_PLAN_ID_BATCH_SIZE);
+          const batchMap = await loadPaymentPlanTaxReceipts({
+            leadId: '',
+            paymentPlanIds: batch,
+            planIdsOnly: true,
+          });
+          mergeTaxReceiptMaps(merged, batchMap);
+        }
+        if (!cancelled) setTaxReceiptByPlanId(merged);
+      } catch (e) {
+        console.warn('[CollectionFinancesReport] failed to load tax receipts:', e);
+        if (!cancelled) setTaxReceiptByPlanId(new Map());
+      }
+    };
+
+    loadTaxReceipts();
+    return () => {
+      cancelled = true;
+    };
+  }, [nisSourceRows]);
+
   const totals = useMemo(() => {
     let estimatedWithVat = 0;
     let estimatedWithoutVat = 0;
@@ -2043,6 +2216,7 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
         if (showProformaDateColumn) {
           rowData['Proforma Date'] = formatRowDate(row.proformaDate);
         }
+        rowData['Tax receipt'] = taxReceiptExportLabel(row, taxReceiptByPlanId);
         if (showPaidDateColumn) {
           rowData['Paid Date'] = formatRowDate(row.collectedDate);
         }
@@ -2070,6 +2244,7 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
   }, [
     sortedVisibleRows,
     nisByRowId,
+    taxReceiptByPlanId,
     showPaidDateColumn,
     showNisColumn,
     showProformaDateColumn,
@@ -3445,6 +3620,7 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
                     onClick={() => toggleSort('proformaDate')}
                   />
                 ) : null}
+                <th>Tax receipt</th>
                 {showPaidDateColumn ? (
                   <SortableTableHeader
                     label="Paid Date"
@@ -3587,6 +3763,9 @@ const loadPayments = async ({ silent = false }: { silent?: boolean } = {}) => {
                       {row.proformaDate ? new Date(row.proformaDate).toLocaleDateString() : '—'}
                     </td>
                   ) : null}
+                  <td>
+                    <CollectionTaxReceiptCell row={row} taxReceiptByPlanId={taxReceiptByPlanId} />
+                  </td>
                   {showPaidDateColumn ? (
                     <td>
                       {row.collectedDate ? new Date(row.collectedDate).toLocaleDateString() : '—'}

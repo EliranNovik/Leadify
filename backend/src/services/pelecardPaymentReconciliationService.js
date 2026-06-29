@@ -5,9 +5,12 @@
  */
 const supabase = require('../config/supabase');
 const pelecardService = require('./pelecardService');
+const { profileFromPayment } = require('../lib/pelecardProfiles');
 const { rateFromPelecardRawResponse } = require('../lib/paymentLinkExchangeRate');
 const { chargeAmountFromPayment } = require('./paymentChargeAmountService');
 const { sendPaymentConfirmationEmail } = require('./paymentConfirmationEmailService');
+const { extractPelecardCustomerId } = require('../lib/pelecardTransactionFields');
+const { createPayperInvoiceForPayment } = require('./payperInvoiceService');
 
 const DB_RETRY_ATTEMPTS = Number(process.env.PELECARD_DB_RETRY_ATTEMPTS || '3');
 const DB_RETRY_DELAY_MS = Number(process.env.PELECARD_DB_RETRY_DELAY_MS || '300');
@@ -211,11 +214,13 @@ async function recordTransaction(paymentLinkId, status, amount, method, extra = 
 async function persistCallbackSnapshot(payment, callbackData, extraRaw = {}) {
   if (!payment?.id) return { ok: false };
 
-  const { transactionId, statusCode } = extractPelecardMeta(callbackData);
   const previousRaw =
     payment.pelecard_raw_response && typeof payment.pelecard_raw_response === 'object'
       ? payment.pelecard_raw_response
       : {};
+
+  const { transactionId, statusCode } = extractPelecardMeta(callbackData);
+  const customerId = extractPelecardCustomerId(callbackData, previousRaw?.pelecard);
 
   const update = {
     pelecard_raw_response: {
@@ -226,6 +231,7 @@ async function persistCallbackSnapshot(payment, callbackData, extraRaw = {}) {
     },
     ...(transactionId ? { pelecard_transaction_id: String(transactionId) } : {}),
     ...(statusCode ? { pelecard_status_code: statusCode } : {}),
+    ...(customerId ? { pelecard_customer_id: customerId } : {}),
   };
 
   const { error } = await supabase.from('payment_links').update(update).eq('id', payment.id);
@@ -236,14 +242,14 @@ async function persistCallbackSnapshot(payment, callbackData, extraRaw = {}) {
   return { ok: true };
 }
 
-async function verifyPelecardTransaction(transactionId, callbackData) {
+async function verifyPelecardTransaction(transactionId, callbackData, profile = 'production') {
   let resolvedStatusCode = extractPelecardMeta(callbackData).statusCode;
   let verifyPayload = { callback: callbackData };
   let resultData = callbackData;
 
   if (transactionId) {
     try {
-      const tx = await pelecardService.getTransaction(String(transactionId));
+      const tx = await pelecardService.getTransaction(String(transactionId), profile);
       verifyPayload.pelecard = tx.raw;
       resultData = tx.result || {};
       resolvedStatusCode = String(
@@ -282,6 +288,8 @@ async function persistPaymentSuccess(payment, secureToken, callbackData, verifyR
       ? Number(payment.rate)
       : null);
 
+  const customerId = extractPelecardCustomerId(callbackData, verifyPayload);
+
   const linkResult = await withDbRetry('payment_links paid update', async () => {
     const { error: linkError } = await supabase
       .from('payment_links')
@@ -292,6 +300,8 @@ async function persistPaymentSuccess(payment, secureToken, callbackData, verifyR
         transaction_reference: txRef,
         ...(paidRate != null ? { rate: paidRate } : {}),
         pelecard_transaction_id: transactionId ? String(transactionId) : null,
+        ...(customerId ? { pelecard_customer_id: customerId } : {}),
+        payper_invoice_status: payment.payper_invoice_status === 'success' ? 'success' : 'pending',
         pelecard_confirmation_key:
           callbackData.ConfirmationKey ||
           callbackData.confirmationKey ||
@@ -354,8 +364,46 @@ async function persistPaymentSuccess(payment, secureToken, callbackData, verifyR
   });
 
   if (!wasAlreadyPaid && planResult.ok) {
-    setImmediate(() => {
-      void sendPaymentConfirmationEmail(payment, { paidAt });
+    setImmediate(async () => {
+      try {
+        const paidPayment = {
+          ...payment,
+          status: 'paid',
+          paid_at: paidAt,
+          pelecard_transaction_id: transactionId ? String(transactionId) : payment.pelecard_transaction_id,
+          pelecard_customer_id: customerId || payment.pelecard_customer_id,
+          pelecard_raw_response: {
+            ...previousRaw,
+            callback: callbackData,
+            pelecard: verifyPayload?.pelecard ?? verifyPayload,
+          },
+        };
+
+        const invoiceResult = await createPayperInvoiceForPayment(paidPayment, {
+          callbackData,
+          verifyPayload,
+        });
+
+        const fresh = await fetchPaymentByToken(secureToken);
+        await sendPaymentConfirmationEmail(fresh || paidPayment, {
+          paidAt,
+          invoiceLink:
+            fresh?.payper_invoice_link ||
+            invoiceResult.invoiceLink ||
+            null,
+          invoiceNumber:
+            fresh?.payper_invoice_number ||
+            invoiceResult.invoiceNumber ||
+            null,
+        });
+      } catch (postPaidErr) {
+        console.error('[Pelecard] Post-payment Payper/email step failed:', postPaidErr.message || postPaidErr);
+        try {
+          await sendPaymentConfirmationEmail(payment, { paidAt });
+        } catch (emailErr) {
+          console.error('[PaymentConfirmationEmail] Fallback send failed:', emailErr.message || emailErr);
+        }
+      }
     });
   }
 
@@ -453,7 +501,8 @@ async function tryReconcilePaymentLink(payment) {
 
   if (full.status === 'paid') {
     await reconcilePaidLinkPlan(full);
-    return fetchPaymentByToken(full.secure_token);
+    const withInvoice = await tryCreatePayperInvoiceForPaidLink(full);
+    return fetchPaymentByToken(withInvoice?.secure_token || full.secure_token);
   }
 
   const transactionId = getStoredTransactionId(full);
@@ -466,7 +515,7 @@ async function tryReconcilePaymentLink(payment) {
   const verifyResult = await verifyPelecardTransaction(transactionId, {
     ...callbackData,
     PelecardTransactionId: transactionId,
-  });
+  }, profileFromPayment(full));
 
   if (verifyResult.verified) {
     await persistPaymentSuccess(
@@ -566,6 +615,16 @@ async function reconcileStalePaymentLinks(options = {}) {
   return { ok: true, checked, reconciled };
 }
 
+async function tryCreatePayperInvoiceForPaidLink(payment) {
+  if (!payment || payment.status !== 'paid') return payment;
+  if (payment.payper_invoice_status === 'success' && payment.payper_invoice_link) return payment;
+
+  const callbackData = payment.pelecard_raw_response?.callback || {};
+  const verifyPayload = payment.pelecard_raw_response?.pelecard || {};
+  await createPayperInvoiceForPayment(payment, { callbackData, verifyPayload });
+  return fetchPaymentByToken(payment.secure_token);
+}
+
 module.exports = {
   extractPelecardMeta,
   isSessionExpiredCode,
@@ -581,4 +640,5 @@ module.exports = {
   reconcileStalePaymentLinks,
   reconcilePaidLinkPlan,
   getStoredTransactionId,
+  tryCreatePayperInvoiceForPaidLink,
 };

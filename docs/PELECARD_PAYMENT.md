@@ -12,10 +12,11 @@ Related code:
 | Payment link creation | `src/lib/proformaPaymentLink.ts`, `src/lib/paymentLinkQueries.ts` |
 | Backend API | `backend/src/controllers/pelecardPaymentController.js`, `backend/src/routes/pelecardPaymentRoutes.js` |
 | Pelecard gateway | `backend/src/services/pelecardService.js` |
+| Payper invoice | `backend/src/services/payperInvoiceService.js`, `backend/src/services/payperRefundService.js` |
 | Charge amount / FX | `backend/src/services/paymentChargeAmountService.js` |
 | Reconciliation | `backend/src/services/pelecardPaymentReconciliationService.js` |
 | Env template | `backend/env.pelecard.example` |
-| DB columns | `sql/2026-05-24_payment_links_pelecard.sql` |
+| DB columns | `sql/2026-05-24_payment_links_pelecard.sql`, `sql/2026-06-23_payment_links_payper.sql` |
 
 ---
 
@@ -137,6 +138,81 @@ If a charge succeeds at Pelecard but DB update fails:
 - Manual ops: **`POST /api/payments/pelecard/reconcile/:paymentId`** with optional `transactionId`.
 
 On success, a **payment confirmation email** may be sent (template id 184, Microsoft Graph mailbox).
+
+### 7. Payper tax invoice-receipt (CreatePayperInvoice)
+
+After a successful charge, the backend calls **Pelecard `CreatePayperInvoice`** with `typeDocument: "Invoice-Receipt"`. Payper generates the legal document and can email it to the client (`send_by_mail: true`).
+
+```mermaid
+sequenceDiagram
+  participant CRM as Backend
+  participant PC as Pelecard
+  participant PP as Payper
+  participant Client
+
+  CRM->>PC: CreatePayperInvoice (trxRecordId + invoice/receipt lines)
+  PC->>PP: Issue Invoice-Receipt
+  PP-->>CRM: InvoiceLink, InvoiceNumber, document_system_id
+  PP->>Client: Email (if send_by_mail)
+  CRM->>Client: Success page + CRM email with invoice link
+```
+
+**Implementation:** `backend/src/services/payperInvoiceService.js`, hooked from `persistPaymentSuccess` in `pelecardPaymentReconciliationService.js`.
+
+**Stored on `payment_links`:** `payper_invoice_link`, `payper_invoice_number`, `payper_document_system_id`, `payper_invoice_status`, `pelecard_customer_id`.
+
+**Client delivery:**
+
+1. Payper email (when `PAYPER_SEND_BY_MAIL=true`)
+2. Payment success page — “View tax invoice” button (`PaymentResultPage.tsx`)
+3. CRM confirmation email — `{invoice_link}` / `{invoice_number}` placeholders (template 184)
+
+**Ops / recovery:**
+
+- Status poll retries invoice creation for paid links: `GET /api/payments/pelecard/status/:paymentId`
+- Manual retry: `POST /api/payments/pelecard/create-payper-invoice/:paymentId`
+- Scheduler batch: `reconcilePendingPayperInvoices` (runs with Pelecard reconciliation)
+
+**Refunds (phase 2):** `backend/src/services/payperRefundService.js` — Credit document (with `trxRecordId` + `reference_document_id`), then Receipt (no `trxRecordId`).
+
+**Prerequisites (confirm with Pelecard):**
+
+- Payper enabled on your terminal
+- Valid `PAYPER_INCOME_ID` for your Payper account
+- `GetTransaction` returns card metadata for `receipt_lines` (last 4, expiry, brand)
+
+| Variable | Role |
+| -------- | ---- |
+| `ENABLE_PAYPER_INVOICE` | `false` to disable (default `true`) |
+| `PELECARD_PAYPER_INVOICE_PATH` | Default `PaymentGW/CreatePayperInvoice` |
+| `PAYPER_INCOME_ID` | Payper income category (sample: `-100000000`) |
+| `PAYPER_SEND_BY_MAIL` | Payper emails client directly |
+| `PAYPER_INCLUDE_VAT` | `include_vat` on invoice lines |
+
+Run SQL: `sql/2026-06-23_payment_links_payper.sql`, `sql/2026-06-23_payment_links_pelecard_profile.sql`
+
+### 8. Dual terminal profiles (production + sandbox test)
+
+Use **two separate Pelecard terminals** on one backend: live production credentials and a sandbox/test terminal for the Render staging frontend only.
+
+| Variable | Role |
+| -------- | ---- |
+| `PELECARD_TERMINAL` / `USER` / `PASSWORD` | Production — **rainmakerqueen.org** and all other domains |
+| `PELECARD_SANDBOX_TERMINAL` / `USER` / `PASSWORD` | Test terminal — **only** when checkout starts from [https://rainmakerqueen.onrender.com](https://rainmakerqueen.onrender.com) |
+| `PELECARD_SANDBOX_FRONTEND_ORIGINS` | Optional override (default: `https://rainmakerqueen.onrender.com` only) |
+| `PELECARD_SANDBOX_APP_PUBLIC_URL` | Optional override (default: `https://rainmakerqueen.onrender.com`) |
+
+**How it works:**
+
+1. User opens a payment link on **rainmakerqueen.onrender.com** → browser sends `Origin: https://rainmakerqueen.onrender.com`
+2. Backend matches that origin → uses `PELECARD_SANDBOX_*` test terminal
+3. `payment_links.pelecard_profile` is set to `sandbox` (run SQL migration)
+4. Pelecard callbacks and `GetTransaction` use the same stored profile
+5. Return redirects go to **rainmakerqueen.onrender.com** (not production `APP_PUBLIC_URL`)
+
+**rainmakerqueen.org**, localhost, and any other origin always use the production terminal. There is no header/body override to force sandbox.
+
+Debug: `GET /api/payments/pelecard/checkout-css-info?profile=sandbox` probes the test terminal.
 
 ---
 

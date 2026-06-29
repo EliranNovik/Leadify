@@ -1,6 +1,7 @@
 const {
   reconcileStalePaymentLinks,
 } = require('./pelecardPaymentReconciliationService');
+const { reconcilePendingPayperInvoices } = require('./payperInvoiceService');
 
 const SCHEDULER_ENABLED =
   (process.env.ENABLE_PELECARD_RECONCILE_SCHEDULER || 'true').toLowerCase() !== 'false';
@@ -18,7 +19,9 @@ async function runReconciliation(trigger = 'scheduled') {
   }
   isRunning = true;
   try {
-    return await reconcileStalePaymentLinks({ trigger });
+    const pelecardResult = await reconcileStalePaymentLinks({ trigger });
+    const payperResult = await reconcilePendingPayperInvoices({ trigger });
+    return { pelecard: pelecardResult, payper: payperResult };
   } catch (error) {
     console.error('[Pelecard] Reconciliation scheduler error:', error.message || error);
     return { ok: false, error };

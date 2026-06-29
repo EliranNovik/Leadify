@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   CheckCircleIcon,
+  DocumentTextIcon,
   ExclamationCircleIcon,
   XCircleIcon,
 } from '@heroicons/react/24/outline';
@@ -28,6 +29,8 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
   const [statusData, setStatusData] = useState<PaymentStatusResponse | null>(null);
   const [loading, setLoading] = useState(!!paymentId);
   const [confirmationEmailSent, setConfirmationEmailSent] = useState(false);
+  const [invoiceLink, setInvoiceLink] = useState<string | null>(null);
+  const [invoiceNumber, setInvoiceNumber] = useState<string | null>(null);
 
   const redirectMeta = useMemo(
     () => ({
@@ -75,6 +78,12 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
         if (data.confirmation_email_sent) {
           setConfirmationEmailSent(true);
         }
+        if (data.payper_invoice_link) {
+          setInvoiceLink(data.payper_invoice_link);
+        }
+        if (data.payper_invoice_number) {
+          setInvoiceNumber(data.payper_invoice_number);
+        }
 
         logPelecardResult('Payment status from API', {
           variant,
@@ -110,18 +119,15 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
     };
   }, [paymentId, variant, redirectMeta]);
 
-  // Email is sent asynchronously after redirect — poll briefly for confirmation
+  // Email + tax invoice are created asynchronously after redirect — poll briefly
   useEffect(() => {
     if (variant !== 'success' || !paymentId || loading || statusData?.status !== 'paid') {
-      return;
-    }
-    if (confirmationEmailSent || statusData?.confirmation_email_sent) {
       return;
     }
 
     let cancelled = false;
     let attempts = 0;
-    const maxAttempts = 12;
+    const maxAttempts = 15;
     const intervalMs = 2000;
 
     const timer = window.setInterval(async () => {
@@ -131,8 +137,18 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
       if (cancelled) return;
       if (data.confirmation_email_sent) {
         setConfirmationEmailSent(true);
-        window.clearInterval(timer);
-      } else if (attempts >= maxAttempts) {
+      }
+      if (data.payper_invoice_link) {
+        setInvoiceLink(data.payper_invoice_link);
+      }
+      if (data.payper_invoice_number) {
+        setInvoiceNumber(data.payper_invoice_number);
+      }
+      const invoiceDone =
+        Boolean(data.payper_invoice_link) ||
+        data.payper_invoice_status === 'failed' ||
+        data.payper_invoice_status === 'skipped';
+      if ((data.confirmation_email_sent && invoiceDone) || attempts >= maxAttempts) {
         window.clearInterval(timer);
       }
     }, intervalMs);
@@ -141,14 +157,7 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [
-    variant,
-    paymentId,
-    loading,
-    statusData?.status,
-    statusData?.confirmation_email_sent,
-    confirmationEmailSent,
-  ]);
+  }, [variant, paymentId, loading, statusData?.status]);
 
   const pelecardStatusCode =
     statusData?.pelecard_status_code ||
@@ -226,6 +235,20 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
                 <p className="text-sm text-gray-600 mb-4 rounded-lg bg-violet-50 px-4 py-3 border border-violet-100">
                   A confirmation email has been sent to your email address.
                 </p>
+              )}
+              {invoiceLink && (
+                <a
+                  href={invoiceLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-outline btn-primary w-full mb-4 gap-2"
+                >
+                  <DocumentTextIcon className="w-5 h-5" />
+                  {invoiceNumber ? `View tax invoice #${invoiceNumber}` : 'View tax invoice-receipt'}
+                </a>
+              )}
+              {!invoiceLink && statusData?.payper_invoice_status === 'pending' && (
+                <p className="text-sm text-gray-500 mb-4">Preparing your tax invoice…</p>
               )}
               <p className="text-xs text-gray-500">You can safely close this window.</p>
             </div>

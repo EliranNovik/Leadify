@@ -6,6 +6,8 @@ import {
   fetchContactPaymentHistory,
   insertPaymentLinkRecord,
   loadPaidPaymentLinkPlanIds,
+  loadPaymentPlanTaxReceipts,
+  type PaymentPlanTaxReceiptInfo,
 } from '../../lib/paymentLinkQueries';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
@@ -341,6 +343,22 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         { table: 'payment_plans', event: '*' as const, match: matchLead },
         { table: 'finances_paymentplanrow', event: '*' as const, match: matchLead },
         { table: 'proformainvoice', event: '*' as const, match: matchLead },
+        {
+          table: 'payment_links',
+          event: '*' as const,
+          match: (payload: RealtimeChangePayload) => {
+            const row = payload?.new ?? payload?.old;
+            if (!row) return true;
+            const r = row as Record<string, unknown>;
+            const clientId = r.client_id != null ? String(r.client_id) : '';
+            const legacyId = r.legacy_id != null ? String(r.legacy_id) : '';
+            const leadIdRaw = String(client?.id ?? '');
+            const leadIdStripped = leadIdRaw.replace(/^legacy_/, '');
+            if (clientId && clientId === leadIdRaw) return true;
+            if (legacyId && legacyId === leadIdStripped) return true;
+            return false;
+          },
+        },
       ];
     })(),
     onChange: () => {
@@ -589,6 +607,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   /** Payment plan IDs settled via payment_links (Pelecard / public link), not manual mark-as-paid */
   const [linkPaidPlanIds, setLinkPaidPlanIds] = useState<Set<string | number>>(new Set());
+  /** Payper tax invoice-receipt per payment plan (from paid payment_links) */
+  const [taxReceiptByPlanId, setTaxReceiptByPlanId] = useState<Map<number, PaymentPlanTaxReceiptInfo>>(
+    () => new Map(),
+  );
 
   const isPaidViaPaymentLink = (p: PaymentPlan) =>
     Boolean(p.paid) && linkPaidPlanIds.has(p.id);
@@ -1701,21 +1723,38 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
     }
 
+    const loadPaymentLinkMeta = async (
+      leadId: string | number,
+      leadType: string | null | undefined,
+      paymentPlanIds?: Array<number | string>,
+    ) => {
+      try {
+        const [paidIds, taxReceipts] = await Promise.all([
+          loadPaidPaymentLinkPlanIds({
+            leadId,
+            leadType,
+            paymentPlanIds,
+          }),
+          loadPaymentPlanTaxReceipts({
+            leadId,
+            leadType,
+            paymentPlanIds,
+          }),
+        ]);
+        setLinkPaidPlanIds(paidIds);
+        setTaxReceiptByPlanId(taxReceipts);
+      } catch (err) {
+        console.error('Error loading payment link metadata:', err);
+        setLinkPaidPlanIds(new Set());
+        setTaxReceiptByPlanId(new Map());
+      }
+    };
+
     const loadLinkPaidPlanIds = async (
       clientId: string | number,
       paymentPlanIds?: Array<number | string>,
     ) => {
-      try {
-        const ids = await loadPaidPaymentLinkPlanIds({
-          leadId: clientId,
-          leadType: client.lead_type,
-          paymentPlanIds,
-        });
-        setLinkPaidPlanIds(ids);
-      } catch (err) {
-        console.error('Error loading paid payment links:', err);
-        setLinkPaidPlanIds(new Set());
-      }
+      await loadPaymentLinkMeta(clientId, client.lead_type, paymentPlanIds);
     };
 
     const fetchPaymentPlans = async () => {
@@ -2466,15 +2505,22 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     try {
       const planIds = (financePlan?.payments || []).map((p) => p.id);
-      const ids = await loadPaidPaymentLinkPlanIds({
-        leadId: client.id,
-        leadType: client.lead_type,
-        paymentPlanIds: planIds,
-      });
-      setLinkPaidPlanIds(ids);
+      await Promise.all([
+        loadPaidPaymentLinkPlanIds({
+          leadId: client.id,
+          leadType: client.lead_type,
+          paymentPlanIds: planIds,
+        }).then(setLinkPaidPlanIds),
+        loadPaymentPlanTaxReceipts({
+          leadId: client.id,
+          leadType: client.lead_type,
+          paymentPlanIds: planIds,
+        }).then(setTaxReceiptByPlanId),
+      ]);
     } catch (err) {
       console.error('Error loading paid payment links:', err);
       setLinkPaidPlanIds(new Set());
+      setTaxReceiptByPlanId(new Map());
     }
 
     // CRITICAL: Ensure contacts are loaded BEFORE fetching payment plans
@@ -2832,6 +2878,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           paymentPlanIds: payments.map((p) => p.id),
         });
         setLinkPaidPlanIds(ids);
+        const taxReceipts = await loadPaymentPlanTaxReceipts({
+          leadId: client.id,
+          leadType: client.lead_type,
+          paymentPlanIds: payments.map((p) => p.id),
+        });
+        setTaxReceiptByPlanId(taxReceipts);
       } else {
         setFinancePlan(null);
         setPaidMap({});
@@ -5990,6 +6042,76 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     );
   };
 
+  const getTaxReceiptForPlan = (payment: PaymentPlan): PaymentPlanTaxReceiptInfo | null => {
+    const planId = Number(payment.id);
+    if (!Number.isFinite(planId)) return null;
+    return taxReceiptByPlanId.get(planId) ?? null;
+  };
+
+  const renderTaxReceiptCell = (payment: PaymentPlan) => {
+    const info = getTaxReceiptForPlan(payment);
+    const paidViaLink = isPaidViaPaymentLink(payment);
+
+    if (info?.payper_invoice_link?.trim()) {
+      return (
+        <a
+          href={info.payper_invoice_link}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`${getExistingProformaBtnClass(!!payment.paid)} inline-flex max-w-[140px] truncate`}
+          title={
+            info.payper_invoice_number
+              ? `Tax receipt #${info.payper_invoice_number}`
+              : 'View tax receipt'
+          }
+          onClick={(e) => e.stopPropagation()}
+        >
+          {info.payper_invoice_number ? `#${info.payper_invoice_number}` : 'View receipt'}
+        </a>
+      );
+    }
+
+    if (!paidViaLink && !info?.payper_invoice_status) {
+      return <span className="text-slate-400">—</span>;
+    }
+
+    const status = info?.payper_invoice_status;
+    if (status === 'success') {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+          <CheckIcon className="h-4 w-4" aria-hidden />
+          Sent
+        </span>
+      );
+    }
+    if (status === 'pending') {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
+          <ClockIcon className="h-4 w-4" aria-hidden />
+          Pending
+        </span>
+      );
+    }
+    if (status === 'failed') {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-700">
+          <XMarkIcon className="h-4 w-4" aria-hidden />
+          Failed
+        </span>
+      );
+    }
+
+    if (paidViaLink) {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500">
+          Not sent
+        </span>
+      );
+    }
+
+    return <span className="text-slate-400">—</span>;
+  };
+
   const renderPaymentPickCell = (payment: PaymentPlan) => {
     if (!paymentRowPickMode) return null;
 
@@ -6631,6 +6753,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     <th className="px-4 py-3.5 text-left">Payment date</th>
                                     <th className="px-4 py-3.5 text-left">Type</th>
                                     <th className="px-4 py-3.5 text-left">Proforma</th>
+                                    <th className="px-4 py-3.5 text-left">Tax receipt</th>
                                     <th className="px-4 py-3.5 text-left">Notes</th>
                                     <th className="px-4 py-3.5 text-right">Actions</th>
                                   </tr>
@@ -6760,6 +6883,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             </button>
                                           )}
                                         </td>
+                                        <td className="px-4 py-4 align-middle whitespace-nowrap">
+                                          {renderTaxReceiptCell(p)}
+                                        </td>
                                         <td className="px-4 py-4 align-middle whitespace-nowrap max-w-[180px]">
                                           <button
                                             type="button"
@@ -6844,6 +6970,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <option value="Expense (no VAT)">Expense (no VAT)</option>
                                           </select>
                                         </td>
+                                        <td className="px-4 py-4 align-middle text-slate-400">—</td>
                                         <td className="px-4 py-4 align-middle text-slate-400">—</td>
                                         <td className="px-4 py-4 align-middle">
                                           <input className="input input-bordered input-sm mb-2 w-full max-w-[180px]" value={newPaymentData.notes} onChange={e => setNewPaymentData((d: any) => ({ ...d, notes: e.target.value }))} placeholder="Notes" />
@@ -7310,6 +7437,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                 </button>
                                               )}
                                             </div>
+                                          </div>
+                                          <div className="flex items-center justify-between py-3">
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">TAX RECEIPT</span>
+                                            <div className="text-sm">{renderTaxReceiptCell(p)}</div>
                                           </div>
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">NOTES</span>

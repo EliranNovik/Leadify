@@ -1,9 +1,15 @@
 const supabase = require('../config/supabase');
 const pelecardService = require('../services/pelecardService');
 const reconciliation = require('../services/pelecardPaymentReconciliationService');
+const payperInvoiceService = require('../services/payperInvoiceService');
+const {
+  resolvePelecardProfileFromRequest,
+  profileFromPayment,
+  getProfilesStatus,
+} = require('../lib/pelecardProfiles');
 
-function appRedirect(path, query = {}) {
-  const { appPublicUrl } = pelecardService.getConfig();
+function appRedirect(path, query = {}, profile = 'production') {
+  const { appPublicUrl } = pelecardService.getConfig(profile);
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
     if (value != null && String(value).trim() !== '') {
@@ -77,7 +83,8 @@ async function createPaymentSession(req, res) {
       return res.status(400).json({ success: false, error: 'Payment link expired' });
     }
 
-    const session = await pelecardService.createPaymentSession(payment, paymentId);
+    const pelecardProfile = resolvePelecardProfileFromRequest(req);
+    const session = await pelecardService.createPaymentSession(payment, paymentId, pelecardProfile);
 
     const sessionRate =
       session.charge?.rateToIls != null && Number.isFinite(Number(session.charge.rateToIls))
@@ -88,6 +95,7 @@ async function createPaymentSession(req, res) {
       .from('payment_links')
       .update({
         status: 'processing',
+        pelecard_profile: session.profile || pelecardProfile,
         pelecard_session_url: session.paymentUrl,
         pelecard_confirmation_key: session.confirmationKey,
         // New checkout session — drop prior attempt ids so polling won't reconcile the wrong tx
@@ -111,6 +119,7 @@ async function createPaymentSession(req, res) {
       success: true,
       paymentUrl: session.paymentUrl,
       paymentId,
+      pelecardProfile: session.profile || pelecardProfile,
       cssUrl: session.cssUrl,
       cssApplied: session.cssApplied,
     });
@@ -154,6 +163,10 @@ async function getPaymentStatus(req, res) {
       payment = (await reconciliation.tryReconcilePaymentLink(payment)) || payment;
     }
 
+    if (payment.status === 'paid' && payment.payper_invoice_status !== 'success') {
+      payment = (await reconciliation.tryCreatePayperInvoiceForPaidLink(payment)) || payment;
+    }
+
     return sendNoCacheJson(res, {
       success: true,
       paymentId: payment.secure_token,
@@ -171,6 +184,9 @@ async function getPaymentStatus(req, res) {
         payment.pelecard_raw_response,
       ),
       confirmation_email_sent: Boolean(payment.payment_confirmation_email_sent_at),
+      payper_invoice_link: payment.payper_invoice_link || null,
+      payper_invoice_number: payment.payper_invoice_number || null,
+      payper_invoice_status: payment.payper_invoice_status || null,
     });
   } catch (error) {
     console.error('Get payment status error:', error);
@@ -222,6 +238,7 @@ async function handlePelecardReturn(req, res, outcome) {
   let secureToken = null;
   let payment = null;
   let data = {};
+  let redirectProfile = 'production';
 
   try {
     data = mergeCallbackData(req);
@@ -253,15 +270,17 @@ async function handlePelecardReturn(req, res, outcome) {
     payment = await reconciliation.fetchPaymentByToken(secureToken);
     if (!payment) {
       return res.redirect(
-        appRedirect('/payment/failed', { paymentId: secureToken, reason: 'payment_not_found' }),
+        appRedirect('/payment/failed', { paymentId: secureToken, reason: 'payment_not_found' }, redirectProfile),
       );
     }
+
+    redirectProfile = profileFromPayment(payment);
 
     // Save callback + transaction id immediately — survives later verification/DB failures.
     await reconciliation.persistCallbackSnapshot(payment, data, { returnOutcome: outcome });
 
     if (payment.status === 'paid') {
-      return res.redirect(appRedirect('/payment/success', { paymentId: secureToken }));
+      return res.redirect(appRedirect('/payment/success', { paymentId: secureToken }, redirectProfile));
     }
 
     const failedRedirectQuery = {
@@ -282,7 +301,7 @@ async function handlePelecardReturn(req, res, outcome) {
           pelecard_raw_response: { ...previousRaw, callback: data },
         })
         .eq('id', payment.id);
-      return res.redirect(appRedirect('/payment/cancelled', { paymentId: secureToken }));
+      return res.redirect(appRedirect('/payment/cancelled', { paymentId: secureToken }, redirectProfile));
     }
 
     if (reconciliation.isSessionExpiredCode(statusCode)) {
@@ -292,11 +311,15 @@ async function handlePelecardReturn(req, res, outcome) {
           ...failedRedirectQuery,
           pelecardStatus: statusCode,
           pelecardMessage: 'Your secure payment session has expired. Please try again.',
-        }),
+        }, redirectProfile),
       );
     }
 
-    const verifyResult = await reconciliation.verifyPelecardTransaction(transactionId, data);
+    const verifyResult = await reconciliation.verifyPelecardTransaction(
+      transactionId,
+      data,
+      redirectProfile,
+    );
 
     if (verifyResult.verified) {
       const persistResult = await reconciliation.persistPaymentSuccess(
@@ -314,10 +337,10 @@ async function handlePelecardReturn(req, res, outcome) {
           appRedirect('/payment/failed', {
             paymentId: secureToken,
             reason: 'server_error',
-          }),
+          }, redirectProfile),
         );
       }
-      return res.redirect(appRedirect('/payment/success', { paymentId: secureToken }));
+      return res.redirect(appRedirect('/payment/success', { paymentId: secureToken }, redirectProfile));
     }
 
     const failDesc =
@@ -334,7 +357,7 @@ async function handlePelecardReturn(req, res, outcome) {
         ...failedRedirectQuery,
         pelecardStatus: verifyResult.resolvedStatusCode || failedRedirectQuery.pelecardStatus,
         pelecardMessage: String(failDesc).slice(0, 300),
-      }),
+      }, redirectProfile),
     );
   } catch (error) {
     console.error('Pelecard return handler error:', error);
@@ -351,7 +374,7 @@ async function handlePelecardReturn(req, res, outcome) {
       appRedirect('/payment/failed', {
         ...(secureToken ? { paymentId: secureToken } : {}),
         reason: 'server_error',
-      }),
+      }, redirectProfile),
     );
   }
 }
@@ -370,20 +393,62 @@ function returnCancel(req, res) {
 
 async function getCheckoutCssInfo(req, res) {
   try {
-    const info = pelecardService.getCheckoutCssDebugInfo();
-    const probe = await pelecardService.probeTerminalCssUrlSupport();
+    const profile = pelecardService.normalizeProfile(req.query?.profile);
+    const info = pelecardService.getCheckoutCssDebugInfo(profile);
+    const probe = await pelecardService.probeTerminalCssUrlSupport(profile);
     return res.json({
       success: true,
       ...info,
       ...probe,
+      profiles: getProfilesStatus(),
     });
   } catch (error) {
     console.error('Pelecard CSS info error:', error);
+    const profile = pelecardService.normalizeProfile(req.query?.profile);
     return res.status(500).json({
       success: false,
       error: error.message || 'Failed to probe Pelecard CSS',
-      ...pelecardService.getCheckoutCssDebugInfo(),
+      ...pelecardService.getCheckoutCssDebugInfo(profile),
+      profiles: getProfilesStatus(),
     });
+  }
+}
+
+async function createPayperInvoice(req, res) {
+  try {
+    const paymentId = req.params.paymentId;
+    if (!paymentId) {
+      return sendNoCacheJson(res, { success: false, error: 'Missing paymentId' });
+    }
+
+    let payment = await reconciliation.fetchPaymentByToken(paymentId);
+    if (!payment) {
+      return sendNoCacheJson(res, { success: false, error: 'Payment not found' });
+    }
+
+    if (payment.status !== 'paid') {
+      return sendNoCacheJson(res, { success: false, error: 'Payment is not paid' });
+    }
+
+    const callbackData = payment.pelecard_raw_response?.callback || {};
+    const verifyPayload = payment.pelecard_raw_response?.pelecard || {};
+    const result = await payperInvoiceService.createPayperInvoiceForPayment(payment, {
+      callbackData,
+      verifyPayload,
+    });
+
+    payment = (await reconciliation.fetchPaymentByToken(paymentId)) || payment;
+
+    return sendNoCacheJson(res, {
+      success: Boolean(result.success || result.skipped),
+      ...result,
+      payper_invoice_link: payment.payper_invoice_link || result.invoiceLink || null,
+      payper_invoice_number: payment.payper_invoice_number || result.invoiceNumber || null,
+      payper_invoice_status: payment.payper_invoice_status || null,
+    });
+  } catch (error) {
+    console.error('Create Payper invoice error:', error);
+    return sendNoCacheJson(res, { success: false, error: 'Internal server error' });
   }
 }
 
@@ -391,6 +456,7 @@ module.exports = {
   createPaymentSession,
   getPaymentStatus,
   reconcilePayment,
+  createPayperInvoice,
   getCheckoutCssInfo,
   returnSuccess,
   returnError,

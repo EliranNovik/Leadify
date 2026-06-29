@@ -467,10 +467,23 @@ server.listen(PORT, () => {
     process.env.PELECARD_USER &&
     process.env.PELECARD_PASSWORD;
   if (pelecardOk) {
-    console.log(`✅ Pelecard configured (terminal ${process.env.PELECARD_TERMINAL})`);
+    console.log(`✅ Pelecard production configured (terminal ${process.env.PELECARD_TERMINAL})`);
     console.log(`   Callback base: ${process.env.BACKEND_PUBLIC_URL || process.env.BACKEND_URL || 'http://localhost:' + PORT}`);
   } else {
-    console.warn(`⚠️  Pelecard not configured — set PELECARD_TERMINAL, PELECARD_USER, PELECARD_PASSWORD in backend/.env`);
+    console.warn(`⚠️  Pelecard production not configured — set PELECARD_TERMINAL, PELECARD_USER, PELECARD_PASSWORD in backend/.env`);
+  }
+
+  const sandboxOk =
+    process.env.PELECARD_SANDBOX_TERMINAL &&
+    process.env.PELECARD_SANDBOX_USER &&
+    process.env.PELECARD_SANDBOX_PASSWORD;
+  if (sandboxOk) {
+    const origins = (process.env.PELECARD_SANDBOX_FRONTEND_ORIGINS || '').trim() || '(none — set PELECARD_SANDBOX_FRONTEND_ORIGINS)';
+    console.log(`✅ Pelecard sandbox configured (terminal ${process.env.PELECARD_SANDBOX_TERMINAL})`);
+    console.log(`   Sandbox frontend origins: ${origins}`);
+    if (process.env.PELECARD_SANDBOX_APP_PUBLIC_URL) {
+      console.log(`   Sandbox redirect URL: ${process.env.PELECARD_SANDBOX_APP_PUBLIC_URL}`);
+    }
   }
 
   // Email fetching scheduler enabled - fetches emails every 5 minutes

@@ -1,6 +1,10 @@
 const supabase = require('../config/supabase');
 const graphMailboxSyncService = require('./graphMailboxSyncService');
-const { paymentOrderLabel } = require('../lib/paymentOrderLabel');
+const {
+  resolveClientName,
+  resolvePaymentDescription,
+  resolveRecipientEmail,
+} = require('../lib/paymentLinkContact');
 const {
   parseEmailTemplateContent,
   escapeHtml,
@@ -8,7 +12,6 @@ const {
   stripRemainingBraces,
 } = require('../lib/emailTemplateContent');
 
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DEFAULT_TEMPLATE_ID = 184;
 
 function getTemplateId() {
@@ -19,14 +22,6 @@ function getTemplateId() {
 
 function getMailboxUserId() {
   return (process.env.PAYMENT_CONFIRMATION_MAILBOX_USER_ID || '').trim();
-}
-
-function isLegacyPaymentLink(paymentLink) {
-  return (
-    paymentLink?.legacy_id != null ||
-    paymentLink?.is_legacy_payment_plan === true ||
-    String(paymentLink?.client_id || '').startsWith('legacy_')
-  );
 }
 
 function getCurrencySymbol(currency) {
@@ -58,70 +53,6 @@ function formatPaymentDate(paidAt) {
   });
 }
 
-function resolveClientName(paymentLink) {
-  if (paymentLink.leads?.name?.trim()) return paymentLink.leads.name.trim();
-  const desc = paymentLink.description || '';
-  const match = desc.match(/^[^-]+-\s*(.+?)\s*\(#/);
-  if (match?.[1]) return match[1].trim();
-  return 'Client';
-}
-
-function resolvePaymentDescription(paymentLink) {
-  if (paymentLink.payment_plans?.payment_order != null) {
-    return paymentOrderLabel(paymentLink.payment_plans.payment_order);
-  }
-  if (paymentLink.legacy_payment_plan?.order != null) {
-    return paymentOrderLabel(paymentLink.legacy_payment_plan.order);
-  }
-  const desc = paymentLink.description || '';
-  const prefix = desc.split(' - ')[0]?.trim();
-  return prefix ? paymentOrderLabel(prefix) : 'Payment';
-}
-
-async function resolveRecipientEmail(paymentLink) {
-  const leadEmail = paymentLink.leads?.email?.trim();
-  if (leadEmail && EMAIL_REGEX.test(leadEmail)) return leadEmail;
-
-  const planId = paymentLink.payment_plan_id;
-  if (!planId) return null;
-
-  const legacy = isLegacyPaymentLink(paymentLink);
-
-  if (legacy) {
-    const { data: ppr } = await supabase
-      .from('finances_paymentplanrow')
-      .select('client_id')
-      .eq('id', planId)
-      .maybeSingle();
-    if (ppr?.client_id) {
-      const { data: contact } = await supabase
-        .from('leads_contact')
-        .select('email')
-        .eq('id', ppr.client_id)
-        .maybeSingle();
-      const email = contact?.email?.trim();
-      if (email && EMAIL_REGEX.test(email)) return email;
-    }
-  } else {
-    const { data: plan } = await supabase
-      .from('payment_plans')
-      .select('client_id')
-      .eq('id', planId)
-      .maybeSingle();
-    if (plan?.client_id) {
-      const { data: contact } = await supabase
-        .from('contacts')
-        .select('email')
-        .eq('id', plan.client_id)
-        .maybeSingle();
-      const email = contact?.email?.trim();
-      if (email && EMAIL_REGEX.test(email)) return email;
-    }
-  }
-
-  return null;
-}
-
 async function fetchEmailTemplate(templateId) {
   const { data, error } = await supabase
     .from('misc_emailtemplate')
@@ -145,19 +76,25 @@ function applyPaymentConfirmationPlaceholders(content, vars) {
     total: escapeHtml(vars.total),
     payment_date: escapeHtml(vars.payment_date),
     description: escapeHtml(vars.description),
+    invoice_link: escapeHtml(vars.invoice_link),
+    invoice_number: escapeHtml(vars.invoice_number),
   };
 
-  return stripRemainingBraces(
-    content
-      .replace(/\{\{\s*client\s*\}\}/gi, safe.client)
-      .replace(/\{\s*client\s*\}/gi, safe.client)
-      .replace(/\{\{\s*total\s*\}\}/gi, safe.total)
-      .replace(/\{\s*total\s*\}/gi, safe.total)
-      .replace(/\{\{\s*payment_date\s*\}\}/gi, safe.payment_date)
-      .replace(/\{\s*payment_date\s*\}/gi, safe.payment_date)
-      .replace(/\{\{\s*description\s*\}\}/gi, safe.description)
-      .replace(/\{\s*description\s*\}/gi, safe.description),
-  );
+  let result = content
+    .replace(/\{\{\s*client\s*\}\}/gi, safe.client)
+    .replace(/\{\s*client\s*\}/gi, safe.client)
+    .replace(/\{\{\s*total\s*\}\}/gi, safe.total)
+    .replace(/\{\s*total\s*\}/gi, safe.total)
+    .replace(/\{\{\s*payment_date\s*\}\}/gi, safe.payment_date)
+    .replace(/\{\s*payment_date\s*\}/gi, safe.payment_date)
+    .replace(/\{\{\s*description\s*\}\}/gi, safe.description)
+    .replace(/\{\s*description\s*\}/gi, safe.description)
+    .replace(/\{\{\s*invoice_link\s*\}\}/gi, safe.invoice_link)
+    .replace(/\{\s*invoice_link\s*\}/gi, safe.invoice_link)
+    .replace(/\{\{\s*invoice_number\s*\}\}/gi, safe.invoice_number)
+    .replace(/\{\s*invoice_number\s*\}/gi, safe.invoice_number);
+
+  return stripRemainingBraces(result);
 }
 
 function buildSubject(templateName, vars) {
@@ -166,13 +103,25 @@ function buildSubject(templateName, vars) {
   return base;
 }
 
+function appendInvoiceBlock(bodyHtml, invoiceLink, invoiceNumber) {
+  if (!invoiceLink) return bodyHtml;
+  const label = invoiceNumber
+    ? `Tax invoice-receipt #${escapeHtml(String(invoiceNumber))}`
+    : 'View tax invoice-receipt';
+  const block = `<p style="margin-top:16px"><a href="${escapeHtml(invoiceLink)}" style="color:#3b28c7;font-weight:600">${label}</a></p>`;
+  if (bodyHtml.includes('</body>')) {
+    return bodyHtml.replace('</body>', `${block}</body>`);
+  }
+  return `${bodyHtml}${block}`;
+}
+
 /**
  * Send payment confirmation email to the client after a successful online payment.
  * Uses misc_emailtemplate id 184 (override via PAYMENT_CONFIRMATION_EMAIL_TEMPLATE_ID).
  * Sends via Microsoft Graph using PAYMENT_CONFIRMATION_MAILBOX_USER_ID (connected mailbox).
  * Never throws — payment flow must not be affected by mail failures.
  */
-async function sendPaymentConfirmationEmail(paymentLink, { paidAt } = {}) {
+async function sendPaymentConfirmationEmail(paymentLink, { paidAt, invoiceLink, invoiceNumber } = {}) {
   try {
     const mailboxUserId = getMailboxUserId();
     if (!mailboxUserId) {
@@ -204,17 +153,28 @@ async function sendPaymentConfirmationEmail(paymentLink, { paidAt } = {}) {
     }
 
     const templateId = getTemplateId();
-    const legacy = isLegacyPaymentLink(paymentLink);
+    const resolvedInvoiceLink =
+      invoiceLink || paymentLink.payper_invoice_link || null;
+    const resolvedInvoiceNumber =
+      invoiceNumber || paymentLink.payper_invoice_number || null;
+
     const vars = {
       client: resolveClientName(paymentLink),
       total: formatPaidTotal(paymentLink),
       payment_date: formatPaymentDate(paidAt || paymentLink.paid_at),
       description: resolvePaymentDescription(paymentLink),
+      invoice_link: resolvedInvoiceLink || '',
+      invoice_number: resolvedInvoiceNumber || '',
     };
 
     const template = await fetchEmailTemplate(templateId);
-    const plainBody = applyPaymentConfirmationPlaceholders(template.content, vars);
-    const bodyHtml = formatPlainEmailHtml(plainBody);
+    let plainBody = applyPaymentConfirmationPlaceholders(template.content, vars);
+    let bodyHtml = formatPlainEmailHtml(plainBody);
+
+    if (resolvedInvoiceLink && !plainBody.includes(resolvedInvoiceLink)) {
+      bodyHtml = appendInvoiceBlock(bodyHtml, resolvedInvoiceLink, resolvedInvoiceNumber);
+    }
+
     const subject = buildSubject(template.name, vars);
 
     await graphMailboxSyncService.sendEmail(mailboxUserId, {
@@ -223,9 +183,9 @@ async function sendPaymentConfirmationEmail(paymentLink, { paidAt } = {}) {
       bodyContentType: 'HTML',
       to: [recipient],
       context: {
-        clientId: legacy ? null : paymentLink.client_id || null,
-        legacyLeadId: legacy ? paymentLink.legacy_id : null,
-        leadType: legacy ? 'legacy' : null,
+        clientId: paymentLink.client_id || null,
+        legacyLeadId: paymentLink.legacy_id || null,
+        leadType: paymentLink.legacy_id != null ? 'legacy' : null,
         contactEmail: recipient,
         contactName: vars.client,
         userInternalId: mailboxUserId,
@@ -247,6 +207,7 @@ async function sendPaymentConfirmationEmail(paymentLink, { paidAt } = {}) {
       paymentLinkId: paymentLink.id,
       recipient,
       templateId,
+      hasInvoiceLink: Boolean(resolvedInvoiceLink),
     });
 
     return { sent: true, recipient };

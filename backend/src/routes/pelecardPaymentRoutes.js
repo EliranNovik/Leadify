@@ -7,6 +7,7 @@ router.post('/create-payment-session', controller.createPaymentSession);
 router.get('/checkout-css-info', controller.getCheckoutCssInfo);
 router.get('/status/:paymentId', controller.getPaymentStatus);
 router.post('/reconcile/:paymentId', controller.reconcilePayment);
+router.post('/create-payper-invoice/:paymentId', controller.createPayperInvoice);
 
 router.get('/return/success', controller.returnSuccess);
 router.post('/return/success', controller.returnSuccess);
