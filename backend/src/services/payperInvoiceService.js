@@ -19,6 +19,8 @@ const {
   extractCardTypeCode,
   extractNumOfPayments,
   extractCcPaymentType,
+  extractTrxRecordId,
+  extractTransactionUuid,
   formatPayperReceiptDate,
   parsePayperDocumentSystemId,
 } = require('../lib/pelecardTransactionFields');
@@ -91,19 +93,61 @@ function buildReceiptLines(paymentLink, callbackData, verifyPayload, paidAt) {
   ];
 }
 
+async function enrichVerifyPayloadForPayper(paymentLink, callbackData, verifyPayload = {}) {
+  const merged = {
+    ...(verifyPayload && typeof verifyPayload === 'object' ? verifyPayload : {}),
+  };
+
+  const existingTrx = extractTrxRecordId(callbackData, merged);
+  if (existingTrx) {
+    return merged;
+  }
+
+  const transactionUuid = extractTransactionUuid(callbackData, merged, paymentLink);
+  if (!transactionUuid) {
+    return merged;
+  }
+
+  const profile = profileFromPayment(paymentLink);
+  try {
+    const tx = await pelecardService.getTransaction(String(transactionUuid), profile);
+    merged.pelecard = tx.raw;
+    merged.resultData = tx.result;
+  } catch (err) {
+    console.warn('[Payper] GetTransaction before invoice failed:', err.message || err);
+  }
+
+  return merged;
+}
+
+async function resolveTrxRecordId(paymentLink, callbackData, verifyPayload) {
+  const fromPayload = extractTrxRecordId(callbackData, verifyPayload);
+  if (fromPayload) return fromPayload;
+
+  const stored = paymentLink?.pelecard_transaction_id;
+  if (stored && /^\d+$/.test(String(stored).trim())) {
+    return String(stored).trim();
+  }
+
+  return null;
+}
+
 async function buildCreatePayperInvoicePayload(paymentLink, callbackData, verifyPayload) {
   const config = getPayperConfig(paymentLink);
   pelecardService.assertCredentials(config);
 
-  const trxRecordId =
-    paymentLink.pelecard_transaction_id ||
-    callbackData?.PelecardTransactionId ||
-    callbackData?.TransactionId ||
-    null;
+  const enrichedVerify = await enrichVerifyPayloadForPayper(
+    paymentLink,
+    callbackData,
+    verifyPayload,
+  );
+
+  const trxRecordId = await resolveTrxRecordId(paymentLink, callbackData, enrichedVerify);
 
   if (!trxRecordId) {
-    const err = new Error('Missing Pelecard transaction id for Payper invoice');
+    const err = new Error('Missing Pelecard trxRecordId (TransactionPelecardId) for Payper invoice');
     err.code = 'PAYPER_MISSING_TRX';
+    err.transactionUuid = extractTransactionUuid(callbackData, enrichedVerify, paymentLink);
     throw err;
   }
 
@@ -119,7 +163,7 @@ async function buildCreatePayperInvoicePayload(paymentLink, callbackData, verify
 
   const customerName = await resolveClientName(paymentLink);
   const customerMobile = (await resolveRecipientPhone(paymentLink)) || '';
-  const customerUniqueId = await resolveCustomerUniqueId(paymentLink, callbackData, verifyPayload);
+  const customerUniqueId = await resolveCustomerUniqueId(paymentLink, callbackData, enrichedVerify);
   const ilsAmount = formatIlsAmount(chargeAmountFromPayment(paymentLink));
   const description = buildInvoiceDescription(paymentLink);
 
@@ -153,7 +197,7 @@ async function buildCreatePayperInvoicePayload(paymentLink, callbackData, verify
         receipt_lines: buildReceiptLines(
           paymentLink,
           callbackData,
-          verifyPayload,
+          enrichedVerify,
           paymentLink.paid_at,
         ),
       },
@@ -220,6 +264,11 @@ async function persistPayperInvoiceResult(paymentLinkId, payload, responseData, 
     payper_raw_response: {
       request: {
         trxRecordId: payload.trxRecordId,
+        transactionUuid: extractTransactionUuid(
+          paymentLink.pelecard_raw_response?.callback || {},
+          paymentLink.pelecard_raw_response?.pelecard || {},
+          paymentLink,
+        ),
         typeDocument: payload.PayperParameters?.typeDocument,
         customer_mail: payload.PayperParameters?.DataPayper?.customer_mail,
       },
@@ -306,8 +355,10 @@ async function createPayperInvoiceForPayment(
         invoicePath: invoicePath || config.invoicePath,
         incomeId: config.incomeId,
         trxRecordId: payload.trxRecordId,
+        transactionUuid: extractTransactionUuid(callbackData, verifyPayload, paymentLink),
         customerMail: payload.PayperParameters?.DataPayper?.customer_mail,
         httpStatus,
+        statusCode: data?.StatusCode ?? data?.statusCode ?? null,
         response: summarizePelecardResponse(data),
         message,
       });

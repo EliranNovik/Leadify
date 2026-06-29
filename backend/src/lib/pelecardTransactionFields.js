@@ -88,8 +88,44 @@ function extractCardValidity(callbackData, verifyPayload) {
       if (year.length === 2) year = `20${year}`;
       return `${month}/${year}`;
     }
+    const compact = raw.match(/^(\d{2})(\d{2,4})$/);
+    if (compact) {
+      const month = compact[1];
+      let year = compact[2];
+      if (year.length === 2) year = `20${year}`;
+      return `${month}/${year}`;
+    }
   }
   return null;
+}
+
+/** Numeric Pelecard record id for Payper trxRecordId (TransactionPelecardId from GetTransaction). */
+function extractTrxRecordId(callbackData, verifyPayload) {
+  const keys = [
+    'TransactionPelecardId',
+    'transactionPelecardId',
+    'TrxRecordId',
+    'trxRecordId',
+    'RecordId',
+    'recordId',
+  ];
+  for (const src of flattenPelecardSources(callbackData, verifyPayload)) {
+    const raw = pickFirst(src, keys);
+    if (!raw) continue;
+    const digits = String(raw).replace(/\D/g, '');
+    if (digits) return digits;
+  }
+  return null;
+}
+
+function extractTransactionUuid(callbackData, verifyPayload, paymentLink) {
+  const keys = ['PelecardTransactionId', 'pelecardTransactionId', 'TransactionId', 'transactionId'];
+  for (const src of flattenPelecardSources(callbackData, verifyPayload)) {
+    const val = pickFirst(src, keys);
+    if (val) return val;
+  }
+  const stored = paymentLink?.pelecard_transaction_id;
+  return stored ? String(stored).trim() : null;
 }
 
 /** Pelecard cc_type codes: 1 Visa, 2 MC, 3 Amex, 4 Diners, etc. */
@@ -186,6 +222,9 @@ module.exports = {
   extractCardTypeCode,
   extractNumOfPayments,
   extractCcPaymentType,
+  extractTrxRecordId,
+  extractTransactionUuid,
   formatPayperReceiptDate,
   parsePayperDocumentSystemId,
+  flattenPelecardSources,
 };
