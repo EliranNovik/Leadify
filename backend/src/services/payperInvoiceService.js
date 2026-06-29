@@ -150,19 +150,46 @@ function findNetAgorotForGross(grossAgorot, vatRate) {
   return netAgorot;
 }
 
-function paymentHasValidIsraeliVatBreakdown(paymentLink, grossAgorot) {
+function crmGrossAgorot(paymentLink) {
   const netIls = Number(paymentLink.amount) || 0;
   const vatIls = Number(paymentLink.vat_amount) || 0;
-  if (vatIls <= 0 || netIls <= 0) return false;
-  const grossIls =
-    grossAgorot != null
-      ? grossAgorot / 100
-      : Number(paymentLink.total_amount) ||
-        Number(paymentLink.pelecard_raw_response?.pelecardCharge?.chargeTotalNis) ||
-        0;
-  if (!Number.isFinite(grossIls) || grossIls <= 0) return false;
-  if (netIls >= grossIls - 0.001) return false;
-  return Math.abs(netIls + vatIls - grossIls) <= 0.02;
+  if (vatIls > 0 && netIls > 0) return Math.round((netIls + vatIls) * 100);
+  const totalIls = Number(paymentLink.total_amount);
+  if (Number.isFinite(totalIls) && totalIls > 0) return Math.round(totalIls * 100);
+  return null;
+}
+
+/** Pelecard charges whole shekels for ILS (Math.round); CRM may keep agorot (e.g. 35.4 vs 35). */
+function chargeMatchesCrmGross(paymentLink, grossAgorot) {
+  const crmGross = crmGrossAgorot(paymentLink);
+  if (crmGross == null || grossAgorot == null) return true;
+  return Math.abs(crmGross - grossAgorot) <= 2;
+}
+
+function resolveNetAgorotForPayper(paymentLink, grossAgorot) {
+  const vatRate = getVatRateForPayment(paymentLink);
+  const crmNetAgorot = Math.round(Number(paymentLink.amount) * 100);
+  const crmGross = crmGrossAgorot(paymentLink);
+  if (
+    crmNetAgorot > 0 &&
+    crmGross != null &&
+    Math.abs(crmGross - grossAgorot) <= 2 &&
+    crmNetAgorot + Math.round(crmNetAgorot * vatRate) === grossAgorot
+  ) {
+    return crmNetAgorot;
+  }
+  return findNetAgorotForGross(grossAgorot, vatRate);
+}
+
+function buildChargedNetExclusiveLineAmounts(paymentLink, grossAgorot, grossAmount, vatLineMode) {
+  const netAgorot = resolveNetAgorotForPayper(paymentLink, grossAgorot);
+  return buildLineAmounts(grossAgorot, grossAmount, {
+    invoiceUnitPrice: formatIlsFromAgorot(netAgorot),
+    receiptAmount: grossAmount,
+    includeVat: false,
+    documentNoVat: false,
+    vatLineMode,
+  });
 }
 
 function buildLineAmounts(grossAgorot, grossAmount, overrides = {}) {
@@ -172,6 +199,7 @@ function buildLineAmounts(grossAgorot, grossAmount, overrides = {}) {
     includeVat: true,
     documentNoVat: false,
     omitReceiptLines: false,
+    omitTrxRecordId: false,
     pelecardTotalAgorot: grossAgorot,
     ...overrides,
   };
@@ -180,21 +208,20 @@ function buildLineAmounts(grossAgorot, grossAmount, overrides = {}) {
 function estimateInvoiceTotalAgorot(unitPriceStr, lineAmounts, vatRate) {
   const unitAgorot = Math.round(Number.parseFloat(unitPriceStr) * 100);
   if (!Number.isFinite(unitAgorot) || unitAgorot <= 0) return null;
-  if (lineAmounts.documentNoVat || !lineAmounts.includeVat) return unitAgorot;
-  if (lineAmounts.vatLineMode === 'exclusive_net_invoice') {
+  if (lineAmounts.documentNoVat) return unitAgorot;
+  if (!lineAmounts.includeVat) {
     return unitAgorot + Math.round(unitAgorot * vatRate);
   }
-  // include_vat true on income 599 = gross/inclusive line (document total = price_per_unit)
+  if (lineAmounts.vatLineMode === 'charged_net_inclusive_add') {
+    return unitAgorot + Math.round(unitAgorot * vatRate);
+  }
   return unitAgorot;
 }
 
 /**
- * Payper income 599 (deduced from failures):
- * - include_vat "true"  → price_per_unit is GROSS (invoice total = price)
- * - include_vat "false" → price_per_unit is NET (invoice total = price × 1.18)
- * So net-on-invoice + include_vat true (invoice 100, receipt 118) fails: total 100 ≠ 118.
- * And gross + include_vat false (invoice 118, receipt 118) fails: total ≈ 139 ≠ 118.
- * Primary = Pelecard doc sample: same gross, include_vat "true", document_no_vat false.
+ * Payper line amounts — only known-good pattern is Pelecard's working sample:
+ * same gross on invoice + receipt, include_vat "true", document_no_vat false.
+ * include_vat "false" means NET (Payper adds VAT) — never use for gross amounts.
  */
 function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, config) {
   const grossAgorot = resolveChargedAgorot(paymentLink, callbackData, verifyPayload);
@@ -211,14 +238,6 @@ function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, conf
     });
   }
 
-  if (!paymentHasIsraeliVat(paymentLink)) {
-    return buildLineAmounts(grossAgorot, grossAmount, {
-      includeVat: false,
-      documentNoVat: true,
-      vatLineMode: 'no_vat_literal_gross',
-    });
-  }
-
   return buildLineAmounts(grossAgorot, grossAmount, {
     vatLineMode: 'pelecard_doc_sample',
   });
@@ -229,83 +248,64 @@ function buildFallbackLineAmounts(paymentLink, grossAgorot, primary) {
 
   const grossAmount = formatIlsFromAgorot(grossAgorot);
   const noVat = !paymentHasIsraeliVat(paymentLink);
+  const hasVat = !noVat;
+  const crmMismatch = hasVat && !chargeMatchesCrmGross(paymentLink, grossAgorot);
   const strategies = [];
 
-  if (noVat) {
-    if (!primary.includeVat) {
-      strategies.push(
-        buildLineAmounts(grossAgorot, grossAmount, {
-          includeVat: true,
-          documentNoVat: true,
-          vatLineMode: 'no_vat_inclusive_gross',
-        }),
-      );
-    } else {
-      strategies.push(
-        buildLineAmounts(grossAgorot, grossAmount, {
-          includeVat: false,
-          documentNoVat: true,
-          vatLineMode: 'no_vat_literal_gross',
-        }),
-      );
-    }
-  } else if (!primary.documentNoVat) {
+  if (crmMismatch && primary.vatLineMode !== 'rounded_charge_net_exclusive') {
+    strategies.push(
+      buildChargedNetExclusiveLineAmounts(
+        paymentLink,
+        grossAgorot,
+        grossAmount,
+        'rounded_charge_net_exclusive',
+      ),
+    );
+  }
+
+  if (primary.vatLineMode !== 'trx_only_doc_sample') {
     strategies.push(
       buildLineAmounts(grossAgorot, grossAmount, {
-        documentNoVat: true,
-        vatLineMode: 'inclusive_gross_document_no_vat',
+        omitReceiptLines: true,
+        vatLineMode: 'trx_only_doc_sample',
       }),
     );
   }
 
-  if (paymentHasValidIsraeliVatBreakdown(paymentLink, grossAgorot)) {
-    const netAgorot = Math.round(Number(paymentLink.amount) * 100);
+  if (primary.vatLineMode !== 'receipt_only_doc_sample') {
+    strategies.push(
+      buildLineAmounts(grossAgorot, grossAmount, {
+        omitTrxRecordId: true,
+        vatLineMode: 'receipt_only_doc_sample',
+      }),
+    );
+  }
+
+  if (noVat && primary.vatLineMode !== 'no_vat_document_flag') {
+    strategies.push(
+      buildLineAmounts(grossAgorot, grossAmount, {
+        documentNoVat: true,
+        vatLineMode: 'no_vat_document_flag',
+      }),
+    );
+  }
+
+  if (hasVat && primary.vatLineMode !== 'charged_net_inclusive_add') {
+    const netAgorot = resolveNetAgorotForPayper(paymentLink, grossAgorot);
     strategies.push(
       buildLineAmounts(grossAgorot, grossAmount, {
         invoiceUnitPrice: formatIlsFromAgorot(netAgorot),
         receiptAmount: grossAmount,
-        documentNoVat: false,
-        vatLineMode: 'exclusive_net_invoice',
-      }),
-    );
-  }
-
-  const omitDocNoVat = primary.documentNoVat ?? noVat;
-  strategies.push(
-    buildLineAmounts(grossAgorot, grossAmount, {
-      documentNoVat: omitDocNoVat,
-      includeVat: primary.includeVat,
-      omitReceiptLines: true,
-      vatLineMode: 'omit_receipt_same_flags',
-    }),
-  );
-
-  if (!noVat && !omitDocNoVat) {
-    strategies.push(
-      buildLineAmounts(grossAgorot, grossAmount, {
-        documentNoVat: true,
-        omitReceiptLines: true,
-        vatLineMode: 'omit_receipt_document_no_vat',
-      }),
-    );
-  }
-
-  if (noVat) {
-    strategies.push(
-      buildLineAmounts(grossAgorot, grossAmount, {
-        includeVat: !primary.includeVat,
-        documentNoVat: true,
-        omitReceiptLines: true,
-        vatLineMode: 'omit_receipt_no_vat_alt',
+        vatLineMode: 'charged_net_inclusive_add',
       }),
     );
   }
 
   const seen = new Set([
-    `${primary.invoiceUnitPrice}|${primary.receiptAmount}|${primary.includeVat}|${primary.documentNoVat}|${primary.omitReceiptLines}`,
+    `${primary.invoiceUnitPrice}|${primary.receiptAmount}|${primary.includeVat}|${primary.documentNoVat}|${primary.omitReceiptLines}|${primary.omitTrxRecordId}`,
   ]);
   return strategies.filter((item) => {
-    const key = `${item.invoiceUnitPrice}|${item.receiptAmount}|${item.includeVat}|${item.documentNoVat}|${item.omitReceiptLines}`;
+    const key = `${item.invoiceUnitPrice}|${item.receiptAmount}|${item.includeVat}|${item.documentNoVat}|${item.omitReceiptLines}|${item.omitTrxRecordId}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -399,8 +399,11 @@ async function buildPayperInvoiceAttempt(
   );
 
   const trxRecordId = await resolveTrxRecordId(paymentLink, callbackData, enrichedVerify);
+  const lineAmounts =
+    lineAmountsOverride ??
+    resolvePayperLineAmounts(paymentLink, callbackData, enrichedVerify, config);
 
-  if (!trxRecordId) {
+  if (!lineAmounts.omitTrxRecordId && !trxRecordId) {
     const err = new Error('Missing Pelecard trxRecordId (TransactionPelecardId) for Payper invoice');
     err.code = 'PAYPER_MISSING_TRX';
     err.transactionUuid = extractTransactionUuid(callbackData, enrichedVerify, paymentLink);
@@ -420,9 +423,6 @@ async function buildPayperInvoiceAttempt(
   const customerName = await resolveClientName(paymentLink);
   const customerMobile = (await resolveRecipientPhone(paymentLink)) || '';
   const customerUniqueId = await resolveCustomerUniqueId(paymentLink, callbackData, enrichedVerify);
-  const lineAmounts =
-    lineAmountsOverride ??
-    resolvePayperLineAmounts(paymentLink, callbackData, enrichedVerify, config);
   const description = buildInvoiceDescription(paymentLink);
 
   const documentNoVat =
@@ -464,12 +464,15 @@ async function buildPayperInvoiceAttempt(
     terminalNumber: config.terminal,
     user: config.user,
     password: config.password,
-    trxRecordId: String(trxRecordId),
     PayperParameters: {
       typeDocument: 'Invoice-Receipt',
       DataPayper: dataPayper,
     },
   };
+
+  if (!lineAmounts.omitTrxRecordId && trxRecordId) {
+    payload.trxRecordId = String(trxRecordId);
+  }
 
   return {
     payload,
@@ -675,6 +678,7 @@ async function createPayperInvoiceForPayment(
           includeVat: fallbackAmounts.includeVat,
           documentNoVat: fallbackAmounts.documentNoVat,
           omitReceiptLines: fallbackAmounts.omitReceiptLines,
+          omitTrxRecordId: fallbackAmounts.omitTrxRecordId,
         });
         attempt = await buildPayperInvoiceAttempt(
           paymentLink,
@@ -716,6 +720,8 @@ async function createPayperInvoiceForPayment(
         trxRecordId: payload.trxRecordId,
         transactionUuid: extractTransactionUuid(callbackData, enrichedVerify, paymentLink),
         pelecardTotalAgorot: lineAmounts.pelecardTotalAgorot ?? null,
+        crmGrossAgorot: crmGrossAgorot(paymentLink),
+        chargeMatchesCrm: chargeMatchesCrmGross(paymentLink, lineAmounts.pelecardTotalAgorot),
         crmAmounts: {
           amount: paymentLink.amount ?? null,
           vat_amount: paymentLink.vat_amount ?? null,
@@ -723,6 +729,7 @@ async function createPayperInvoiceForPayment(
         },
         vatLineMode: lineAmounts.vatLineMode ?? null,
         omitReceiptLines: lineAmounts.omitReceiptLines ?? false,
+        omitTrxRecordId: lineAmounts.omitTrxRecordId ?? false,
         invoiceTotalAgorot,
         receiptAgorot,
         pelecardTotalDebug: summarizePelecardTotalDebug(callbackData, enrichedVerify),
@@ -732,6 +739,8 @@ async function createPayperInvoiceForPayment(
           incomeId: payload.PayperParameters?.DataPayper?.income_id,
           documentNoVat: payload.PayperParameters?.DataPayper?.document_no_vat ?? null,
           omitReceiptLines: lineAmounts.omitReceiptLines ?? false,
+          omitTrxRecordId: lineAmounts.omitTrxRecordId ?? false,
+          trxRecordId: payload.trxRecordId ?? null,
           invoiceLine: payload.PayperParameters?.DataPayper?.invoice_lines?.[0],
           receiptLine: payload.PayperParameters?.DataPayper?.receipt_lines?.[0],
         },
