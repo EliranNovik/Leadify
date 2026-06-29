@@ -24,7 +24,6 @@ const {
   extractCcPaymentType,
   extractTrxRecordId,
   extractTransactionTotalAgorot,
-  extractTransactionTotalIls,
   extractTransactionUuid,
   summarizePelecardTotalDebug,
   formatPayperReceiptDate,
@@ -81,10 +80,6 @@ async function resolveCustomerUniqueId(paymentLink, callbackData, verifyPayload)
   return '000000000';
 }
 
-function agorotToIls(agorot) {
-  return Math.round(Number(agorot)) / 100;
-}
-
 function resolveChargedAgorot(paymentLink, callbackData, verifyPayload) {
   const fromTx = extractTransactionTotalAgorot(callbackData, verifyPayload);
   if (fromTx != null) return fromTx;
@@ -100,40 +95,34 @@ function isIsraeliIlsPayment(paymentLink) {
   return resolvePaymentIsoCode(paymentLink) === 'ILS';
 }
 
-/**
- * Pelecard/Payper contract: invoice_lines total must equal receipt_lines sum.
- * Official samples use the same amount on both (e.g. 100/100, 1500/1500) with include_vat: "true".
- * Payper derives VAT breakdown from the gross line; splitting net on invoice vs gross on receipt fails validation.
- */
-function buildPayperAmountStrategy(paymentLink, grossAgorot, config) {
-  const grossAmount = formatIlsAmount(agorotToIls(grossAgorot));
-  const isIls = isIsraeliIlsPayment(paymentLink);
-  const includeVat = isIls && config.includeVat && !config.documentNoVat;
-
-  return {
-    invoiceUnitPrice: grossAmount,
-    receiptAmount: grossAmount,
-    includeVat,
-    amountMode: includeVat ? 'gross_inclusive_vat' : 'gross_no_vat',
-  };
+function formatIlsFromAgorot(agorot) {
+  const n = Math.round(Number(agorot));
+  if (!Number.isFinite(n) || n <= 0) return '0';
+  const shekels = Math.floor(n / 100);
+  const cents = Math.abs(n % 100);
+  if (cents === 0) return String(shekels);
+  return `${shekels}.${String(cents).padStart(2, '0')}`;
 }
 
+/**
+ * Pelecard CreatePayperInvoice sample contract:
+ * - price_per_unit and receipt_lines[].amount are the SAME value (e.g. "100" / "100")
+ * - include_vat: "true", quantity: "1"
+ * - Amount = gross charged on the card (DebitTotal from GetTransaction)
+ */
 function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, config) {
   const grossAgorot = resolveChargedAgorot(paymentLink, callbackData, verifyPayload);
-  if (grossAgorot == null) {
-    const fallback = formatIlsAmount(chargeAmountFromPayment(paymentLink));
-    return {
-      invoiceUnitPrice: fallback,
-      receiptAmount: fallback,
-      includeVat: false,
-      amountMode: 'fallback',
-      pelecardTotalAgorot: null,
-    };
-  }
+  const amount =
+    grossAgorot != null
+      ? formatIlsFromAgorot(grossAgorot)
+      : formatIlsAmount(chargeAmountFromPayment(paymentLink));
+  const includeVat =
+    config.includeVat && !config.documentNoVat && isIsraeliIlsPayment(paymentLink);
 
-  const strategy = buildPayperAmountStrategy(paymentLink, grossAgorot, config);
   return {
-    ...strategy,
+    invoiceUnitPrice: amount,
+    receiptAmount: amount,
+    includeVat,
     pelecardTotalAgorot: grossAgorot,
   };
 }
@@ -153,7 +142,6 @@ function buildReceiptLines(paymentLink, callbackData, verifyPayload, paidAt, rec
       num_of_payments: extractNumOfPayments(callbackData, verifyPayload),
       amount,
       currency_symbol: 'ILS',
-      conversion_rate: null,
     },
   ];
 }
@@ -436,6 +424,10 @@ async function createPayperInvoiceForPayment(
       return { skipped: true, reason: 'no_email' };
     }
 
+    if (paymentLink.payper_invoice_status === 'failed' && !forceRetry) {
+      return { skipped: true, reason: 'failed_use_manual_retry' };
+    }
+
     paymentLink = await ensurePaymentLinkPlanContact(paymentLink);
 
     const config = getPayperConfig(paymentLink);
@@ -473,7 +465,6 @@ async function createPayperInvoiceForPayment(
         trxRecordId: payload.trxRecordId,
         transactionUuid: extractTransactionUuid(callbackData, enrichedVerify, paymentLink),
         pelecardTotalAgorot: lineAmounts.pelecardTotalAgorot ?? null,
-        amountMode: lineAmounts.amountMode ?? null,
         pelecardTotalDebug: summarizePelecardTotalDebug(callbackData, enrichedVerify),
         requestPayload: {
           trxRecordId: payload.trxRecordId,

@@ -301,7 +301,13 @@ async function persistPaymentSuccess(payment, secureToken, callbackData, verifyR
         ...(paidRate != null ? { rate: paidRate } : {}),
         pelecard_transaction_id: transactionId ? String(transactionId) : null,
         ...(customerId ? { pelecard_customer_id: customerId } : {}),
-        payper_invoice_status: payment.payper_invoice_status === 'success' ? 'success' : 'pending',
+        payper_invoice_status:
+          payment.payper_invoice_status === 'success' ||
+          payment.payper_invoice_status === 'failed' ||
+          payment.payper_invoice_status === 'skipped_no_email' ||
+          payment.payper_invoice_status === 'skipped'
+            ? payment.payper_invoice_status
+            : 'pending',
         pelecard_confirmation_key:
           callbackData.ConfirmationKey ||
           callbackData.confirmationKey ||
@@ -618,6 +624,7 @@ async function reconcileStalePaymentLinks(options = {}) {
 async function tryCreatePayperInvoiceForPaidLink(payment) {
   if (!payment || payment.status !== 'paid') return payment;
   if (payment.payper_invoice_status === 'success' && payment.payper_invoice_link) return payment;
+  if (payment.payper_invoice_status === 'failed') return payment;
 
   const { ensurePaymentLinkPlanContact } = require('../lib/ensurePaymentLinkPlanContact');
   payment = await ensurePaymentLinkPlanContact(payment);

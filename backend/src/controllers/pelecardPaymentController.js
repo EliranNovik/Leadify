@@ -169,7 +169,11 @@ async function getPaymentStatus(req, res) {
       payment = (await reconciliation.tryReconcilePaymentLink(payment)) || payment;
     }
 
-    if (payment.status === 'paid' && payment.payper_invoice_status !== 'success') {
+    if (
+      payment.status === 'paid' &&
+      payment.payper_invoice_status !== 'success' &&
+      payment.payper_invoice_status !== 'failed'
+    ) {
       payment = (await reconciliation.tryCreatePayperInvoiceForPaidLink(payment)) || payment;
     }
 
