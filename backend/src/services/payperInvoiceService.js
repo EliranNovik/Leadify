@@ -4,7 +4,10 @@
  */
 const supabase = require('../config/supabase');
 const pelecardService = require('./pelecardService');
-const { chargeAmountFromPayment } = require('./paymentChargeAmountService');
+const {
+  chargeAmountFromPayment,
+  resolvePaymentIsoCode,
+} = require('./paymentChargeAmountService');
 const {
   resolveClientName,
   resolvePaymentDescription,
@@ -20,6 +23,7 @@ const {
   extractNumOfPayments,
   extractCcPaymentType,
   extractTrxRecordId,
+  extractTransactionTotalIls,
   extractTransactionUuid,
   formatPayperReceiptDate,
   parsePayperDocumentSystemId,
@@ -75,8 +79,43 @@ async function resolveCustomerUniqueId(paymentLink, callbackData, verifyPayload)
   return '000000000';
 }
 
-function buildReceiptLines(paymentLink, callbackData, verifyPayload, paidAt) {
-  const amount = formatIlsAmount(chargeAmountFromPayment(paymentLink));
+function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, config) {
+  const chargedIls =
+    extractTransactionTotalIls(callbackData, verifyPayload) ??
+    chargeAmountFromPayment(paymentLink);
+  const receiptAmount = formatIlsAmount(chargedIls);
+
+  const iso = resolvePaymentIsoCode(paymentLink);
+  const isIls = iso === 'ILS';
+  const subtotal = Number(paymentLink.amount);
+  const vat = Number(paymentLink.vat_amount);
+  const total = Number(paymentLink.total_amount);
+  const hasIsraeliVat =
+    isIls &&
+    config.includeVat &&
+    !config.documentNoVat &&
+    subtotal > 0 &&
+    vat > 0 &&
+    Math.abs(subtotal + vat - total) < 0.05;
+
+  if (hasIsraeliVat) {
+    return {
+      invoiceUnitPrice: formatIlsAmount(subtotal),
+      receiptAmount,
+      includeVat: true,
+    };
+  }
+
+  return {
+    invoiceUnitPrice: receiptAmount,
+    receiptAmount,
+    includeVat: config.includeVat && !config.documentNoVat,
+  };
+}
+
+function buildReceiptLines(paymentLink, callbackData, verifyPayload, paidAt, receiptAmount) {
+  const amount =
+    receiptAmount ?? formatIlsAmount(chargeAmountFromPayment(paymentLink));
   const validity = extractCardValidity(callbackData, verifyPayload) || '12/2030';
   return [
     {
@@ -164,7 +203,12 @@ async function buildCreatePayperInvoicePayload(paymentLink, callbackData, verify
   const customerName = await resolveClientName(paymentLink);
   const customerMobile = (await resolveRecipientPhone(paymentLink)) || '';
   const customerUniqueId = await resolveCustomerUniqueId(paymentLink, callbackData, enrichedVerify);
-  const ilsAmount = formatIlsAmount(chargeAmountFromPayment(paymentLink));
+  const lineAmounts = resolvePayperLineAmounts(
+    paymentLink,
+    callbackData,
+    enrichedVerify,
+    config,
+  );
   const description = buildInvoiceDescription(paymentLink);
 
   return {
@@ -188,8 +232,8 @@ async function buildCreatePayperInvoicePayload(paymentLink, callbackData, verify
           {
             description,
             quantity: '1',
-            price_per_unit: ilsAmount,
-            include_vat: config.includeVat ? 'true' : 'false',
+            price_per_unit: lineAmounts.invoiceUnitPrice,
+            include_vat: lineAmounts.includeVat ? 'true' : 'false',
             catalog_id: 'null',
             currency_symbol: 'ILS',
           },
@@ -199,6 +243,7 @@ async function buildCreatePayperInvoicePayload(paymentLink, callbackData, verify
           callbackData,
           enrichedVerify,
           paymentLink.paid_at,
+          lineAmounts.receiptAmount,
         ),
       },
     },
@@ -254,23 +299,37 @@ function isPayperSuccess(data) {
   return statusCode === '000' && invoiceStatus.toLowerCase() === 'success';
 }
 
-async function persistPayperInvoiceResult(paymentLinkId, payload, responseData, status) {
+async function persistPayperInvoiceResult(
+  paymentLinkId,
+  payload,
+  responseData,
+  status,
+  paymentLink = null,
+) {
   const payperData = responseData?.PayperData || {};
   const documentSystemId = parsePayperDocumentSystemId(payperData);
   const createdAt = status === 'success' ? new Date().toISOString() : null;
+
+  const transactionUuid = paymentLink
+    ? extractTransactionUuid(
+        paymentLink.pelecard_raw_response?.callback || {},
+        paymentLink.pelecard_raw_response?.pelecard || {},
+        paymentLink,
+      )
+    : null;
 
   const update = {
     payper_invoice_status: status,
     payper_raw_response: {
       request: {
-        trxRecordId: payload.trxRecordId,
-        transactionUuid: extractTransactionUuid(
-          paymentLink.pelecard_raw_response?.callback || {},
-          paymentLink.pelecard_raw_response?.pelecard || {},
-          paymentLink,
-        ),
-        typeDocument: payload.PayperParameters?.typeDocument,
-        customer_mail: payload.PayperParameters?.DataPayper?.customer_mail,
+        trxRecordId: payload.trxRecordId ?? null,
+        transactionUuid,
+        typeDocument: payload.PayperParameters?.typeDocument ?? null,
+        customer_mail: payload.PayperParameters?.DataPayper?.customer_mail ?? null,
+        invoiceUnitPrice:
+          payload.PayperParameters?.DataPayper?.invoice_lines?.[0]?.price_per_unit ?? null,
+        receiptAmount:
+          payload.PayperParameters?.DataPayper?.receipt_lines?.[0]?.amount ?? null,
       },
       response: responseData,
       createdAt: new Date().toISOString(),
@@ -334,7 +393,13 @@ async function createPayperInvoiceForPayment(
       pelecardService.assertCredentials(config);
     } catch {
       console.warn('[Payper] Pelecard credentials missing — skipping invoice');
-      await persistPayperInvoiceResult(paymentLink.id, {}, { error: 'not_configured' }, 'skipped');
+      await persistPayperInvoiceResult(
+        paymentLink.id,
+        {},
+        { error: 'not_configured' },
+        'skipped',
+        paymentLink,
+      );
       return { skipped: true, reason: 'not_configured' };
     }
 
@@ -356,17 +421,27 @@ async function createPayperInvoiceForPayment(
         incomeId: config.incomeId,
         trxRecordId: payload.trxRecordId,
         transactionUuid: extractTransactionUuid(callbackData, verifyPayload, paymentLink),
+        invoiceUnitPrice:
+          payload.PayperParameters?.DataPayper?.invoice_lines?.[0]?.price_per_unit ?? null,
+        receiptAmount:
+          payload.PayperParameters?.DataPayper?.receipt_lines?.[0]?.amount ?? null,
         customerMail: payload.PayperParameters?.DataPayper?.customer_mail,
         httpStatus,
         statusCode: data?.StatusCode ?? data?.statusCode ?? null,
         response: summarizePelecardResponse(data),
         message,
       });
-      await persistPayperInvoiceResult(paymentLink.id, payload, data || {}, 'failed');
+      await persistPayperInvoiceResult(
+        paymentLink.id,
+        payload,
+        data || {},
+        'failed',
+        paymentLink,
+      );
       return { failed: true, reason: message };
     }
 
-    await persistPayperInvoiceResult(paymentLink.id, payload, data, 'success');
+    await persistPayperInvoiceResult(paymentLink.id, payload, data, 'success', paymentLink);
     console.info('[Payper] Invoice created', {
       paymentLinkId: paymentLink.id,
       invoiceNumber: data?.PayperData?.InvoiceNumber,
@@ -394,6 +469,7 @@ async function createPayperInvoiceForPayment(
         {},
         { error: String(error.message || error), code: error.code ?? null },
         isMissingEmail ? 'skipped_no_email' : 'failed',
+        paymentLink,
       );
     }
     return { failed: true, reason: error.message || String(error), skipped: isMissingEmail };
