@@ -96,26 +96,33 @@ function resolveChargedAgorot(paymentLink, callbackData, verifyPayload) {
   return null;
 }
 
-function paymentHasIsraeliVat(paymentLink, config) {
-  if (config.documentNoVat) return false;
-  const iso = resolvePaymentIsoCode(paymentLink);
-  if (iso !== 'ILS') return false;
-  const subtotal = Number(paymentLink.amount) || 0;
-  const vat = Number(paymentLink.vat_amount) || 0;
-  const total = Number(paymentLink.total_amount) || 0;
-  return (
-    subtotal > 0 &&
-    vat > 0 &&
-    Math.abs(subtotal + vat - total) < 0.05
-  );
+function getVatRateForPayment(paymentLink) {
+  const netIls = Number(paymentLink.amount) || 0;
+  const vatIls = Number(paymentLink.vat_amount) || 0;
+  if (netIls > 0 && vatIls > 0) return vatIls / netIls;
+  const paidAt = paymentLink.paid_at || paymentLink.created_at;
+  const date = paidAt ? new Date(paidAt) : new Date();
+  return date < new Date('2025-01-01T00:00:00') ? 0.17 : 0.18;
+}
+
+function deriveNetAgorotFromGross(grossAgorot, paymentLink) {
+  const netIls = Number(paymentLink.amount) || 0;
+  const vatIls = Number(paymentLink.vat_amount) || 0;
+  const expectedGrossAgorot = Math.round((netIls + vatIls) * 100);
+  if (netIls > 0 && vatIls > 0 && Math.abs(expectedGrossAgorot - grossAgorot) <= 1) {
+    return Math.round(netIls * 100);
+  }
+  const rate = getVatRateForPayment(paymentLink);
+  return Math.round(grossAgorot / (1 + rate));
+}
+
+function isIsraeliIlsPayment(paymentLink) {
+  return resolvePaymentIsoCode(paymentLink) === 'ILS';
 }
 
 function buildPayperAmountStrategy(paymentLink, grossAgorot, config, mode = 'auto') {
   const grossAmount = formatIlsAmount(agorotToIls(grossAgorot));
-  const hasIsraeliVat = paymentHasIsraeliVat(paymentLink, config);
-  const netIls = Number(paymentLink.amount) || 0;
-  const vatIls = Number(paymentLink.vat_amount) || 0;
-  const expectedGrossAgorot = Math.round((netIls + vatIls) * 100);
+  const isIls = isIsraeliIlsPayment(paymentLink);
 
   if (mode === 'gross_no_vat') {
     return {
@@ -126,31 +133,23 @@ function buildPayperAmountStrategy(paymentLink, grossAgorot, config, mode = 'aut
     };
   }
 
-  if (mode === 'gross_gross_vat_true') {
-    return {
-      invoiceUnitPrice: grossAmount,
-      receiptAmount: grossAmount,
-      includeVat: true,
-      amountMode: 'gross_gross_vat_true',
-    };
-  }
+  if (isIls && config.includeVat && !config.documentNoVat) {
+    const netAgorot = deriveNetAgorotFromGross(grossAgorot, paymentLink);
+    const netIls = Number(paymentLink.amount) || 0;
+    const vatIls = Number(paymentLink.vat_amount) || 0;
+    const expectedGrossAgorot = Math.round((netIls + vatIls) * 100);
+    const amountMode =
+      netIls > 0 &&
+      vatIls > 0 &&
+      Math.abs(expectedGrossAgorot - grossAgorot) <= 1
+        ? 'crm_net_gross'
+        : 'ils_derived_net_gross';
 
-  if (hasIsraeliVat && config.includeVat) {
-    if (netIls > 0 && Math.abs(expectedGrossAgorot - grossAgorot) <= 1) {
-      return {
-        invoiceUnitPrice: formatIlsAmount(netIls),
-        receiptAmount: grossAmount,
-        includeVat: true,
-        amountMode: 'crm_net_gross',
-      };
-    }
-    const rate = netIls > 0 && vatIls > 0 ? vatIls / netIls : 0.18;
-    const netFromGross = formatIlsAmount(agorotToIls(Math.round(grossAgorot / (1 + rate))));
     return {
-      invoiceUnitPrice: netFromGross,
+      invoiceUnitPrice: formatIlsAmount(agorotToIls(netAgorot)),
       receiptAmount: grossAmount,
       includeVat: true,
-      amountMode: 'derived_net_gross',
+      amountMode,
     };
   }
 
@@ -194,12 +193,12 @@ function payperInvoiceFallbackAttempts(paymentLink, grossAgorot, config, primary
     });
   };
 
-  push(buildPayperAmountStrategy(paymentLink, grossAgorot, config, 'gross_no_vat'));
-  push(buildPayperAmountStrategy(paymentLink, grossAgorot, config, 'gross_gross_vat_true'));
+  const isIls = isIsraeliIlsPayment(paymentLink);
 
-  if (primaryMode === 'crm_net_gross' || primaryMode === 'derived_net_gross') {
+  if (isIls && config.includeVat && !config.documentNoVat) {
     push(buildPayperAmountStrategy(paymentLink, grossAgorot, config), true);
-    push(buildPayperAmountStrategy(paymentLink, grossAgorot, config, 'gross_no_vat'), true);
+  } else {
+    push(buildPayperAmountStrategy(paymentLink, grossAgorot, config, 'gross_no_vat'));
   }
 
   const seen = new Set();
