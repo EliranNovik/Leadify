@@ -79,37 +79,33 @@ async function resolveCustomerUniqueId(paymentLink, callbackData, verifyPayload)
   return '000000000';
 }
 
+function paymentHasIsraeliVat(paymentLink, config) {
+  if (config.documentNoVat) return false;
+  const iso = resolvePaymentIsoCode(paymentLink);
+  if (iso !== 'ILS') return false;
+  const subtotal = Number(paymentLink.amount) || 0;
+  const vat = Number(paymentLink.vat_amount) || 0;
+  const total = Number(paymentLink.total_amount) || 0;
+  return (
+    subtotal > 0 &&
+    vat > 0 &&
+    Math.abs(subtotal + vat - total) < 0.05
+  );
+}
+
 function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, config) {
   const chargedIls =
     extractTransactionTotalIls(callbackData, verifyPayload) ??
     chargeAmountFromPayment(paymentLink);
-  const receiptAmount = formatIlsAmount(chargedIls);
+  const grossAmount = formatIlsAmount(chargedIls);
+  const hasIsraeliVat = paymentHasIsraeliVat(paymentLink, config);
 
-  const iso = resolvePaymentIsoCode(paymentLink);
-  const isIls = iso === 'ILS';
-  const subtotal = Number(paymentLink.amount);
-  const vat = Number(paymentLink.vat_amount);
-  const total = Number(paymentLink.total_amount);
-  const hasIsraeliVat =
-    isIls &&
-    config.includeVat &&
-    !config.documentNoVat &&
-    subtotal > 0 &&
-    vat > 0 &&
-    Math.abs(subtotal + vat - total) < 0.05;
-
-  if (hasIsraeliVat) {
-    return {
-      invoiceUnitPrice: formatIlsAmount(subtotal),
-      receiptAmount,
-      includeVat: true,
-    };
-  }
-
+  // Pelecard sample uses the same gross ILS on invoice + receipt.
+  // include_vat:true means the unit price already includes VAT (not ex-VAT).
   return {
-    invoiceUnitPrice: receiptAmount,
-    receiptAmount,
-    includeVat: config.includeVat && !config.documentNoVat,
+    invoiceUnitPrice: grossAmount,
+    receiptAmount: grossAmount,
+    includeVat: hasIsraeliVat && config.includeVat,
   };
 }
 
@@ -137,8 +133,9 @@ async function enrichVerifyPayloadForPayper(paymentLink, callbackData, verifyPay
     ...(verifyPayload && typeof verifyPayload === 'object' ? verifyPayload : {}),
   };
 
-  const existingTrx = extractTrxRecordId(callbackData, merged);
-  if (existingTrx) {
+  const hasTrxRecordId = Boolean(extractTrxRecordId(callbackData, merged));
+  const hasChargedTotal = extractTransactionTotalIls(callbackData, merged) != null;
+  if (hasTrxRecordId && hasChargedTotal) {
     return merged;
   }
 
@@ -425,6 +422,8 @@ async function createPayperInvoiceForPayment(
           payload.PayperParameters?.DataPayper?.invoice_lines?.[0]?.price_per_unit ?? null,
         receiptAmount:
           payload.PayperParameters?.DataPayper?.receipt_lines?.[0]?.amount ?? null,
+        includeVat:
+          payload.PayperParameters?.DataPayper?.invoice_lines?.[0]?.include_vat ?? null,
         customerMail: payload.PayperParameters?.DataPayper?.customer_mail,
         httpStatus,
         statusCode: data?.StatusCode ?? data?.statusCode ?? null,
