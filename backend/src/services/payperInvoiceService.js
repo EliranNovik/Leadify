@@ -22,6 +22,7 @@ const {
   formatPayperReceiptDate,
   parsePayperDocumentSystemId,
 } = require('../lib/pelecardTransactionFields');
+const { profileFromPayment } = require('../lib/pelecardProfiles');
 
 const DEFAULT_PAYPER_PATH = 'PaymentGW/CreatePayperInvoice';
 
