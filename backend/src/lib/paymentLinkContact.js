@@ -1,10 +1,16 @@
 /**
- * Resolve billing contact fields from a payment_links row (new + legacy leads).
+ * Billing contact fields from payment_links.plan_contact_id (payment plan row contact).
  */
 const supabase = require('../config/supabase');
 const { paymentOrderLabel } = require('./paymentOrderLabel');
+const { ensurePaymentLinkPlanContact } = require('./ensurePaymentLinkPlanContact');
+const { resolvePaymentPlanContact } = require('./resolvePaymentPlanContact');
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function isValidEmail(email) {
+  return Boolean(email && EMAIL_REGEX.test(String(email).trim()));
+}
 
 function isLegacyPaymentLink(paymentLink) {
   return (
@@ -14,7 +20,16 @@ function isLegacyPaymentLink(paymentLink) {
   );
 }
 
-function resolveClientName(paymentLink) {
+function resolveLeadIdFromPaymentLink(paymentLink) {
+  if (paymentLink?.legacy_id != null) return paymentLink.legacy_id;
+  const clientId = paymentLink?.client_id;
+  if (clientId && !String(clientId).startsWith('legacy_')) return clientId;
+  const legacyFromClient = String(clientId || '').replace(/^legacy_/, '');
+  if (legacyFromClient && /^\d+$/.test(legacyFromClient)) return legacyFromClient;
+  return null;
+}
+
+function resolveClientNameFromDescription(paymentLink) {
   if (paymentLink.leads?.name?.trim()) return paymentLink.leads.name.trim();
   const desc = paymentLink.description || '';
   const match = desc.match(/^[^-]+-\s*(.+?)\s*\(#/);
@@ -34,135 +49,93 @@ function resolvePaymentDescription(paymentLink) {
   return prefix ? paymentOrderLabel(prefix) : paymentLink.description || 'Payment';
 }
 
-async function resolveRecipientEmail(paymentLink) {
-  const leadEmail = paymentLink.leads?.email?.trim();
-  if (leadEmail && EMAIL_REGEX.test(leadEmail)) return leadEmail;
+/**
+ * Resolve billing contact strictly from plan_contact_id (ensured from payment plan row).
+ */
+async function resolvePlanBillingContact(paymentLink) {
+  const link = await ensurePaymentLinkPlanContact(paymentLink);
+  const contactId =
+    link.plan_contact_id != null ? Number(link.plan_contact_id) : null;
 
-  const planId = paymentLink.payment_plan_id;
-  if (!planId) return null;
-
-  const legacy = isLegacyPaymentLink(paymentLink);
-
-  if (legacy) {
-    const { data: ppr } = await supabase
-      .from('finances_paymentplanrow')
-      .select('client_id')
-      .eq('id', planId)
-      .maybeSingle();
-    if (ppr?.client_id) {
-      const { data: contact } = await supabase
-        .from('leads_contact')
-        .select('email')
-        .eq('id', ppr.client_id)
-        .maybeSingle();
-      const email = contact?.email?.trim();
-      if (email && EMAIL_REGEX.test(email)) return email;
-    }
-  } else {
-    const { data: plan } = await supabase
-      .from('payment_plans')
-      .select('client_id')
-      .eq('id', planId)
-      .maybeSingle();
-    if (plan?.client_id) {
-      const { data: contact } = await supabase
-        .from('contacts')
-        .select('email')
-        .eq('id', plan.client_id)
-        .maybeSingle();
-      const email = contact?.email?.trim();
-      if (email && EMAIL_REGEX.test(email)) return email;
-    }
+  if (!Number.isFinite(contactId) || contactId <= 0) {
+    return null;
   }
 
-  return null;
+  const leadId = resolveLeadIdFromPaymentLink(link);
+  const numericLeadId =
+    leadId != null && !String(leadId).includes('-') ? Number(leadId) : null;
+
+  // Legacy main-client rows store lead_id as client_id — resolve via lead_leadcontact.
+  if (numericLeadId != null && contactId === numericLeadId) {
+    return resolvePaymentPlanContact({
+      leadId,
+      clientId: contactId,
+      clientNameFallback: resolveClientNameFromDescription(link),
+      leadNameFallback: link.leads?.name,
+    });
+  }
+
+  const { data: row, error } = await supabase
+    .from('leads_contact')
+    .select('name, email, phone, mobile, id_number')
+    .eq('id', contactId)
+    .maybeSingle();
+
+  if (error) {
+    console.warn('[payment_links] leads_contact lookup failed:', error.message || error);
+    return null;
+  }
+
+  if (!row) {
+    return resolvePaymentPlanContact({
+      leadId,
+      clientId: contactId,
+      clientNameFallback: resolveClientNameFromDescription(link),
+      leadNameFallback: link.leads?.name,
+    });
+  }
+
+  return {
+    name: row.name?.trim() || resolveClientNameFromDescription(link),
+    email: row.email?.trim() || '',
+    phone: row.mobile?.trim() || row.phone?.trim() || '',
+    idNumber: row.id_number?.trim() || '',
+    contactId,
+  };
+}
+
+async function resolveRecipientEmail(paymentLink) {
+  const contact = await resolvePlanBillingContact(paymentLink);
+  const email = contact?.email?.trim();
+  return isValidEmail(email) ? email : null;
 }
 
 async function resolveRecipientPhone(paymentLink) {
-  const leadPhone = paymentLink.leads?.phone?.trim();
-  if (leadPhone) return leadPhone;
-
-  const planId = paymentLink.payment_plan_id;
-  if (!planId) return null;
-
-  const legacy = isLegacyPaymentLink(paymentLink);
-
-  if (legacy) {
-    const { data: ppr } = await supabase
-      .from('finances_paymentplanrow')
-      .select('client_id')
-      .eq('id', planId)
-      .maybeSingle();
-    if (ppr?.client_id) {
-      const { data: contact } = await supabase
-        .from('leads_contact')
-        .select('phone, mobile')
-        .eq('id', ppr.client_id)
-        .maybeSingle();
-      return contact?.mobile?.trim() || contact?.phone?.trim() || null;
-    }
-  } else {
-    const { data: plan } = await supabase
-      .from('payment_plans')
-      .select('client_id')
-      .eq('id', planId)
-      .maybeSingle();
-    if (plan?.client_id) {
-      const { data: contact } = await supabase
-        .from('contacts')
-        .select('phone, mobile')
-        .eq('id', plan.client_id)
-        .maybeSingle();
-      return contact?.mobile?.trim() || contact?.phone?.trim() || null;
-    }
-  }
-
-  return null;
+  const contact = await resolvePlanBillingContact(paymentLink);
+  return contact?.phone?.trim() || null;
 }
 
 async function resolveContactIdNumber(paymentLink) {
-  const planId = paymentLink.payment_plan_id;
-  if (!planId) return null;
+  const contact = await resolvePlanBillingContact(paymentLink);
+  return contact?.idNumber?.trim() || null;
+}
 
-  const legacy = isLegacyPaymentLink(paymentLink);
+async function resolveClientName(paymentLink) {
+  const contact = await resolvePlanBillingContact(paymentLink);
+  return contact?.name?.trim() || resolveClientNameFromDescription(paymentLink);
+}
 
-  if (legacy) {
-    const { data: ppr } = await supabase
-      .from('finances_paymentplanrow')
-      .select('client_id')
-      .eq('id', planId)
-      .maybeSingle();
-    if (ppr?.client_id) {
-      const { data: contact } = await supabase
-        .from('leads_contact')
-        .select('id_number')
-        .eq('id', ppr.client_id)
-        .maybeSingle();
-      return contact?.id_number?.trim() || null;
-    }
-  } else {
-    const { data: plan } = await supabase
-      .from('payment_plans')
-      .select('client_id')
-      .eq('id', planId)
-      .maybeSingle();
-    if (plan?.client_id) {
-      const { data: contact } = await supabase
-        .from('contacts')
-        .select('id_number')
-        .eq('id', plan.client_id)
-        .maybeSingle();
-      return contact?.id_number?.trim() || null;
-    }
-  }
-
-  return null;
+/** @deprecated sync helper — prefer resolveClientName (async) */
+function resolveClientNameSync(paymentLink) {
+  return resolveClientNameFromDescription(paymentLink);
 }
 
 module.exports = {
   isLegacyPaymentLink,
   resolveClientName,
+  resolveClientNameSync,
   resolvePaymentDescription,
+  resolvePlanBillingContact,
   resolveRecipientEmail,
   resolveRecipientPhone,
   resolveContactIdNumber,

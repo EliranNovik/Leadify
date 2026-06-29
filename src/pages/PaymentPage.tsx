@@ -397,9 +397,12 @@ const PaymentPage: React.FC = () => {
           const leadId = isLegacyPaymentLink(enriched)
             ? enriched.legacy_id ?? null
             : enriched.client_id ?? null;
-          const clientId = isLegacyPaymentLink(enriched)
-            ? enriched.legacy_payment_plan?.client_id ?? null
-            : enriched.payment_plans?.client_id ?? null;
+          const clientId =
+            enriched.plan_contact_id != null
+              ? Number(enriched.plan_contact_id)
+              : isLegacyPaymentLink(enriched)
+                ? enriched.legacy_payment_plan?.client_id ?? null
+                : enriched.payment_plans?.client_id ?? null;
 
           const resolved = await resolvePaymentPlanContact({
             leadId,

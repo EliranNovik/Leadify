@@ -75,12 +75,7 @@ async function resolvePaymentPlanContact(params) {
   const numericLeadId = isNewLeadId(String(leadId)) ? null : parseNumericId(leadId);
 
   if (numericLeadId != null && clientId != null && clientId === numericLeadId) {
-    return {
-      name: params.leadNameFallback?.trim() || fallbackName,
-      email: '',
-      phone: '',
-      contactId: clientId,
-    };
+    return fetchMainContactForLead(leadId, params.leadNameFallback?.trim() || fallbackName);
   }
 
   if (clientId != null) {
@@ -105,4 +100,4 @@ async function resolvePaymentPlanContact(params) {
   return fetchMainContactForLead(leadId, fallbackName);
 }
 
-module.exports = { resolvePaymentPlanContact };
+module.exports = { resolvePaymentPlanContact, fetchMainContactForLead };

@@ -132,7 +132,7 @@ async function fetchPaymentByToken(secureToken) {
     const { data: legacyPlan } = await supabase
       .from('finances_paymentplanrow')
       .select(`
-        id, order, currency_id, actual_date,
+        id, order, currency_id, actual_date, client_id,
         accounting_currencies!finances_paymentplanrow_currency_id_fkey (name, iso_code)
       `)
       .eq('id', enriched.payment_plan_id)
@@ -618,6 +618,9 @@ async function reconcileStalePaymentLinks(options = {}) {
 async function tryCreatePayperInvoiceForPaidLink(payment) {
   if (!payment || payment.status !== 'paid') return payment;
   if (payment.payper_invoice_status === 'success' && payment.payper_invoice_link) return payment;
+
+  const { ensurePaymentLinkPlanContact } = require('../lib/ensurePaymentLinkPlanContact');
+  payment = await ensurePaymentLinkPlanContact(payment);
 
   const callbackData = payment.pelecard_raw_response?.callback || {};
   const verifyPayload = payment.pelecard_raw_response?.pelecard || {};

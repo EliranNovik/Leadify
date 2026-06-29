@@ -22,6 +22,7 @@ const {
   formatPayperReceiptDate,
   parsePayperDocumentSystemId,
 } = require('../lib/pelecardTransactionFields');
+const { ensurePaymentLinkPlanContact } = require('../lib/ensurePaymentLinkPlanContact');
 const { profileFromPayment } = require('../lib/pelecardProfiles');
 
 const DEFAULT_PAYPER_PATH = 'PaymentGW/CreatePayperInvoice';
@@ -103,13 +104,15 @@ async function buildCreatePayperInvoicePayload(paymentLink, callbackData, verify
   }
 
   const customerEmail = await resolveRecipientEmail(paymentLink);
-  if (!customerEmail) {
-    const err = new Error('Missing customer email for Payper invoice');
-    err.code = 'PAYPER_MISSING_EMAIL';
-    throw err;
-  }
+    if (!customerEmail) {
+      const err = new Error('Missing customer email for Payper invoice');
+      err.code = 'PAYPER_MISSING_EMAIL';
+      err.planContactId = paymentLink.plan_contact_id ?? null;
+      err.paymentPlanId = paymentLink.payment_plan_id ?? null;
+      throw err;
+    }
 
-  const customerName = resolveClientName(paymentLink);
+  const customerName = await resolveClientName(paymentLink);
   const customerMobile = (await resolveRecipientPhone(paymentLink)) || '';
   const customerUniqueId = await resolveCustomerUniqueId(paymentLink, callbackData, verifyPayload);
   const ilsAmount = formatIlsAmount(chargeAmountFromPayment(paymentLink));
@@ -220,6 +223,8 @@ async function createPayperInvoiceForPayment(paymentLink, { callbackData = {}, v
       };
     }
 
+    paymentLink = await ensurePaymentLinkPlanContact(paymentLink);
+
     const config = getPayperConfig(paymentLink);
     try {
       pelecardService.assertCredentials(config);
@@ -240,6 +245,8 @@ async function createPayperInvoiceForPayment(paymentLink, { callbackData = {}, v
         'CreatePayperInvoice failed';
       console.error('[Payper] Invoice creation failed', {
         paymentLinkId: paymentLink.id,
+        planContactId: paymentLink.plan_contact_id ?? null,
+        paymentPlanId: paymentLink.payment_plan_id ?? null,
         statusCode: data?.StatusCode,
         message,
       });

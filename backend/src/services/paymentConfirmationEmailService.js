@@ -159,7 +159,7 @@ async function sendPaymentConfirmationEmail(paymentLink, { paidAt, invoiceLink, 
       invoiceNumber || paymentLink.payper_invoice_number || null;
 
     const vars = {
-      client: resolveClientName(paymentLink),
+      client: await resolveClientName(paymentLink),
       total: formatPaidTotal(paymentLink),
       payment_date: formatPaymentDate(paidAt || paymentLink.paid_at),
       description: resolvePaymentDescription(paymentLink),

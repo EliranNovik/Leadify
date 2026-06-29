@@ -107,12 +107,7 @@ export async function resolvePaymentPlanContact(params: {
   const numericLeadId = isNewLeadId(String(leadId)) ? null : parseNumericId(leadId);
 
   if (numericLeadId != null && clientId != null && clientId === numericLeadId) {
-    return {
-      name: params.leadNameFallback?.trim() || fallbackName,
-      email: '',
-      phone: '',
-      contactId: clientId,
-    };
+    return fetchMainContactForLead(leadId, params.leadNameFallback?.trim() || fallbackName);
   }
 
   if (clientId != null) {

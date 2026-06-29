@@ -2,6 +2,7 @@ const supabase = require('../config/supabase');
 const pelecardService = require('../services/pelecardService');
 const reconciliation = require('../services/pelecardPaymentReconciliationService');
 const payperInvoiceService = require('../services/payperInvoiceService');
+const { ensurePaymentLinkPlanContact } = require('../lib/ensurePaymentLinkPlanContact');
 const {
   resolvePelecardProfileFromRequest,
   profileFromPayment,
@@ -84,6 +85,7 @@ async function createPaymentSession(req, res) {
     }
 
     const pelecardProfile = resolvePelecardProfileFromRequest(req);
+    payment = await ensurePaymentLinkPlanContact(payment);
     const session = await pelecardService.createPaymentSession(payment, paymentId, pelecardProfile);
 
     const sessionRate =

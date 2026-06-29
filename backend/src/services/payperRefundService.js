@@ -76,7 +76,7 @@ async function createPayperCreditDocument(paymentLink, options = {}) {
       DataPayper: {
         customer_unique_id: paymentLink.pelecard_customer_id || '000000000',
         customer_mail: customerEmail,
-        customer_name: resolveClientName(paymentLink),
+        customer_name: await resolveClientName(paymentLink),
         document_remarks: options.remarks || '',
         reference_document_id: String(referenceDocumentId),
         invoice_lines: [
@@ -138,7 +138,7 @@ async function createPayperReceiptDocument(paymentLink, options = {}) {
       DataPayper: {
         customer_unique_id: paymentLink.pelecard_customer_id || '000000000',
         customer_mail: customerEmail,
-        customer_name: resolveClientName(paymentLink),
+        customer_name: await resolveClientName(paymentLink),
         customer_mobile: (await resolveRecipientPhone(paymentLink)) || '',
         document_remarks: options.remarks || '',
         reference_document_id: String(referenceDocumentId),

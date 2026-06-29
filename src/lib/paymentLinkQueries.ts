@@ -30,7 +30,7 @@ export type InsertPaymentLinkInput = {
   status?: string;
 };
 
-/** Insert payment_links with required lead ref (client_id or legacy_id) + optional plan_contact_id. */
+/** Insert payment_links with required lead ref (client_id or legacy_id) + plan_contact_id from payment plan row. */
 export async function insertPaymentLinkRecord(input: InsertPaymentLinkInput) {
   const leadRef = buildPaymentLinkLeadRef({
     leadId: input.leadId,
@@ -40,6 +40,21 @@ export async function insertPaymentLinkRecord(input: InsertPaymentLinkInput) {
 
   if (!leadRef.client_id && leadRef.legacy_id == null) {
     throw new Error('Payment link requires lead id (client_id or legacy_id)');
+  }
+
+  let planContactId =
+    input.planContactId != null ? Number(input.planContactId) : null;
+  if (planContactId == null || !Number.isFinite(planContactId)) {
+    const table = input.isLegacyPaymentPlan ? 'finances_paymentplanrow' : 'payment_plans';
+    const { data: planRow } = await supabase
+      .from(table)
+      .select('client_id')
+      .eq('id', input.paymentPlanId)
+      .maybeSingle();
+    const fromPlan = planRow?.client_id != null ? Number(planRow.client_id) : NaN;
+    if (Number.isFinite(fromPlan)) {
+      planContactId = fromPlan;
+    }
   }
 
   const row: Record<string, unknown> = {
@@ -55,10 +70,8 @@ export async function insertPaymentLinkRecord(input: InsertPaymentLinkInput) {
     expires_at: input.expiresAt,
   };
 
-  const contactId =
-    input.planContactId != null ? Number(input.planContactId) : null;
-  if (contactId != null && Number.isFinite(contactId)) {
-    row.plan_contact_id = contactId;
+  if (planContactId != null && Number.isFinite(planContactId)) {
+    row.plan_contact_id = planContactId;
   }
 
   return supabase.from('payment_links').insert(row).select().single();
