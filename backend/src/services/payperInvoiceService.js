@@ -96,6 +96,12 @@ function isIsraeliIlsPayment(paymentLink) {
   return resolvePaymentIsoCode(paymentLink) === 'ILS';
 }
 
+/** Only apply include_vat when the payment plan actually has VAT (vat_amount > 0). */
+function paymentHasIsraeliVat(paymentLink) {
+  if (!isIsraeliIlsPayment(paymentLink)) return false;
+  return (Number(paymentLink.vat_amount) || 0) > 0;
+}
+
 function formatIlsFromAgorot(agorot) {
   const n = Math.round(Number(agorot));
   if (!Number.isFinite(n) || n <= 0) return '0';
@@ -136,9 +142,10 @@ function estimateInvoiceTotalAgorot(unitPriceStr, includeVat, vatRate) {
 }
 
 /**
- * Pelecard doc sample (income_id -100000000): same gross on invoice + receipt, include_vat "true".
- * Production income types (e.g. 599): include_vat "true" means unit price is BEFORE VAT — invoice net,
- * receipt gross (DebitTotal), so Payper document total equals receipt sum.
+ * Amount rules:
+ * - No VAT (vat_amount=0 or foreign): same gross on both lines, include_vat "false"
+ * - VAT + sample income (-100000000): same gross on both, include_vat "true" (Pelecard doc)
+ * - VAT + production income (599): net invoice + gross receipt, include_vat "true"
  */
 function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, config) {
   const grossAgorot = resolveChargedAgorot(paymentLink, callbackData, verifyPayload);
@@ -146,15 +153,15 @@ function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, conf
     grossAgorot != null
       ? formatIlsFromAgorot(grossAgorot)
       : formatIlsAmount(chargeAmountFromPayment(paymentLink));
-  const taxableIls =
-    config.includeVat && !config.documentNoVat && isIsraeliIlsPayment(paymentLink);
+  const hasVat =
+    paymentHasIsraeliVat(paymentLink) && config.includeVat && !config.documentNoVat;
 
-  if (!taxableIls) {
+  if (!hasVat) {
     return {
       invoiceUnitPrice: grossAmount,
       receiptAmount: grossAmount,
       includeVat: false,
-      vatLineMode: 'no_vat',
+      vatLineMode: 'gross_no_vat',
       pelecardTotalAgorot: grossAgorot,
     };
   }
@@ -200,18 +207,60 @@ function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, conf
   };
 }
 
-function buildLineAmountsOverride(paymentLink, grossAgorot, mode) {
+function buildFallbackLineAmounts(paymentLink, grossAgorot, primary) {
   const grossAmount = formatIlsFromAgorot(grossAgorot);
-  if (mode === 'gross_no_vat') {
-    return {
+  const fallbacks = [];
+
+  if (primary.vatLineMode !== 'gross_no_vat') {
+    fallbacks.push({
       invoiceUnitPrice: grossAmount,
       receiptAmount: grossAmount,
       includeVat: false,
-      vatLineMode: 'retry_gross_no_vat',
+      vatLineMode: 'fallback_gross_no_vat',
       pelecardTotalAgorot: grossAgorot,
-    };
+    });
   }
-  return resolvePayperLineAmounts(paymentLink, {}, {}, getPayperConfig(paymentLink));
+
+  if (
+    paymentHasIsraeliVat(paymentLink) &&
+    primary.vatLineMode !== 'exclusive_net_invoice' &&
+    getPayperConfig(paymentLink).incomeId !== PAYPER_SAMPLE_INCOME_ID
+  ) {
+    const vatRate = getVatRateForPayment(paymentLink);
+    const netAgorot = findNetAgorotForGross(grossAgorot, vatRate);
+    if (netAgorot != null) {
+      fallbacks.push({
+        invoiceUnitPrice: formatIlsFromAgorot(netAgorot),
+        receiptAmount: grossAmount,
+        includeVat: true,
+        vatLineMode: 'fallback_exclusive_net',
+        pelecardTotalAgorot: grossAgorot,
+      });
+    }
+  }
+
+  if (
+    getPayperConfig(paymentLink).incomeId === PAYPER_SAMPLE_INCOME_ID &&
+    primary.vatLineMode !== 'sample_same_gross'
+  ) {
+    fallbacks.push({
+      invoiceUnitPrice: grossAmount,
+      receiptAmount: grossAmount,
+      includeVat: true,
+      vatLineMode: 'fallback_sample_gross',
+      pelecardTotalAgorot: grossAgorot,
+    });
+  }
+
+  const seen = new Set([
+    `${primary.invoiceUnitPrice}|${primary.receiptAmount}|${primary.includeVat}`,
+  ]);
+  return fallbacks.filter((item) => {
+    const key = `${item.invoiceUnitPrice}|${item.receiptAmount}|${item.includeVat}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function isPayperTotalMismatchError(data) {
@@ -544,35 +593,40 @@ async function createPayperInvoiceForPayment(
       return { skipped: true, reason: 'not_configured' };
     }
 
-    const attempt = await buildPayperInvoiceAttempt(paymentLink, callbackData, verifyPayload);
+    let attempt = await buildPayperInvoiceAttempt(paymentLink, callbackData, verifyPayload);
     let { payload, lineAmounts, enrichedVerify } = attempt;
     let { ok, status: httpStatus, data, invoicePath } = await postCreatePayperInvoice(payload, config);
 
-    if (
-      forceRetry &&
-      (!ok || !isPayperSuccess(data)) &&
-      isPayperTotalMismatchError(data) &&
-      lineAmounts.includeVat &&
-      lineAmounts.vatLineMode !== 'retry_gross_no_vat'
-    ) {
-      console.info('[Payper] Manual retry: trying include_vat false with same gross', {
-        paymentLinkId: paymentLink.id,
-        from: lineAmounts.vatLineMode,
-      });
-      const fallbackAmounts = buildLineAmountsOverride(
+    if ((!ok || !isPayperSuccess(data)) && isPayperTotalMismatchError(data)) {
+      const fallbacks = buildFallbackLineAmounts(
         paymentLink,
         lineAmounts.pelecardTotalAgorot,
-        'gross_no_vat',
+        lineAmounts,
       );
-      const retryAttempt = await buildPayperInvoiceAttempt(
-        paymentLink,
-        callbackData,
-        enrichedVerify,
-        fallbackAmounts,
-      );
-      payload = retryAttempt.payload;
-      lineAmounts = retryAttempt.lineAmounts;
-      ({ ok, status: httpStatus, data, invoicePath } = await postCreatePayperInvoice(payload, config));
+      for (const fallbackAmounts of fallbacks) {
+        console.info('[Payper] Total mismatch — trying alternate line amounts', {
+          paymentLinkId: paymentLink.id,
+          from: lineAmounts.vatLineMode,
+          to: fallbackAmounts.vatLineMode,
+          invoiceUnitPrice: fallbackAmounts.invoiceUnitPrice,
+          receiptAmount: fallbackAmounts.receiptAmount,
+          includeVat: fallbackAmounts.includeVat,
+        });
+        attempt = await buildPayperInvoiceAttempt(
+          paymentLink,
+          callbackData,
+          enrichedVerify,
+          fallbackAmounts,
+        );
+        payload = attempt.payload;
+        lineAmounts = attempt.lineAmounts;
+        ({ ok, status: httpStatus, data, invoicePath } = await postCreatePayperInvoice(
+          payload,
+          config,
+        ));
+        if (ok && isPayperSuccess(data)) break;
+        if (!isPayperTotalMismatchError(data)) break;
+      }
     }
 
     if (!ok || !isPayperSuccess(data)) {
