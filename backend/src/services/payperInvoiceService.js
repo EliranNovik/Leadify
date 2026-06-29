@@ -102,6 +102,16 @@ function paymentHasIsraeliVat(paymentLink) {
   return (Number(paymentLink.vat_amount) || 0) > 0;
 }
 
+/**
+ * income_id 599 applies VAT at document level when document_no_vat is false — even if
+ * include_vat is "false" on the line (invoice total becomes price × 1.18 ≠ receipt).
+ * No-VAT payments must send document_no_vat: true.
+ */
+function resolveDocumentNoVat(paymentLink, config) {
+  if (config.documentNoVat) return true;
+  return !paymentHasIsraeliVat(paymentLink);
+}
+
 function formatIlsFromAgorot(agorot) {
   const n = Math.round(Number(agorot));
   if (!Number.isFinite(n) || n <= 0) return '0';
@@ -134,10 +144,10 @@ function findNetAgorotForGross(grossAgorot, vatRate) {
   return netAgorot;
 }
 
-function estimateInvoiceTotalAgorot(unitPriceStr, includeVat, vatRate) {
+function estimateInvoiceTotalAgorot(unitPriceStr, includeVat, vatRate, documentNoVat) {
   const unitAgorot = Math.round(Number.parseFloat(unitPriceStr) * 100);
   if (!Number.isFinite(unitAgorot) || unitAgorot <= 0) return null;
-  if (!includeVat) return unitAgorot;
+  if (documentNoVat || !includeVat) return unitAgorot;
   return unitAgorot + Math.round(unitAgorot * vatRate);
 }
 
@@ -153,15 +163,16 @@ function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, conf
     grossAgorot != null
       ? formatIlsFromAgorot(grossAgorot)
       : formatIlsAmount(chargeAmountFromPayment(paymentLink));
-  const hasVat =
-    paymentHasIsraeliVat(paymentLink) && config.includeVat && !config.documentNoVat;
+  const hasVat = paymentHasIsraeliVat(paymentLink) && config.includeVat;
+  const documentNoVat = resolveDocumentNoVat(paymentLink, config);
 
   if (!hasVat) {
     return {
       invoiceUnitPrice: grossAmount,
       receiptAmount: grossAmount,
       includeVat: false,
-      vatLineMode: 'gross_no_vat',
+      documentNoVat,
+      vatLineMode: documentNoVat ? 'gross_document_no_vat' : 'gross_no_vat',
       pelecardTotalAgorot: grossAgorot,
     };
   }
@@ -171,6 +182,7 @@ function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, conf
       invoiceUnitPrice: grossAmount,
       receiptAmount: grossAmount,
       includeVat: true,
+      documentNoVat: false,
       vatLineMode: 'sample_same_gross',
       pelecardTotalAgorot: grossAgorot,
     };
@@ -193,7 +205,8 @@ function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, conf
       invoiceUnitPrice: grossAmount,
       receiptAmount: grossAmount,
       includeVat: false,
-      vatLineMode: 'fallback_gross_no_vat',
+      documentNoVat: true,
+      vatLineMode: 'fallback_gross_document_no_vat',
       pelecardTotalAgorot: grossAgorot,
     };
   }
@@ -202,6 +215,7 @@ function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, conf
     invoiceUnitPrice: formatIlsFromAgorot(netAgorot),
     receiptAmount: grossAmount,
     includeVat: true,
+    documentNoVat: false,
     vatLineMode: 'exclusive_net_invoice',
     pelecardTotalAgorot: grossAgorot,
   };
@@ -211,11 +225,23 @@ function buildFallbackLineAmounts(paymentLink, grossAgorot, primary) {
   const grossAmount = formatIlsFromAgorot(grossAgorot);
   const fallbacks = [];
 
-  if (primary.vatLineMode !== 'gross_no_vat') {
+  if (!primary.documentNoVat) {
     fallbacks.push({
       invoiceUnitPrice: grossAmount,
       receiptAmount: grossAmount,
       includeVat: false,
+      documentNoVat: true,
+      vatLineMode: 'fallback_document_no_vat',
+      pelecardTotalAgorot: grossAgorot,
+    });
+  }
+
+  if (primary.vatLineMode !== 'gross_no_vat' && primary.vatLineMode !== 'gross_document_no_vat') {
+    fallbacks.push({
+      invoiceUnitPrice: grossAmount,
+      receiptAmount: grossAmount,
+      includeVat: false,
+      documentNoVat: true,
       vatLineMode: 'fallback_gross_no_vat',
       pelecardTotalAgorot: grossAgorot,
     });
@@ -233,6 +259,7 @@ function buildFallbackLineAmounts(paymentLink, grossAgorot, primary) {
         invoiceUnitPrice: formatIlsFromAgorot(netAgorot),
         receiptAmount: grossAmount,
         includeVat: true,
+        documentNoVat: false,
         vatLineMode: 'fallback_exclusive_net',
         pelecardTotalAgorot: grossAgorot,
       });
@@ -247,16 +274,17 @@ function buildFallbackLineAmounts(paymentLink, grossAgorot, primary) {
       invoiceUnitPrice: grossAmount,
       receiptAmount: grossAmount,
       includeVat: true,
+      documentNoVat: false,
       vatLineMode: 'fallback_sample_gross',
       pelecardTotalAgorot: grossAgorot,
     });
   }
 
   const seen = new Set([
-    `${primary.invoiceUnitPrice}|${primary.receiptAmount}|${primary.includeVat}`,
+    `${primary.invoiceUnitPrice}|${primary.receiptAmount}|${primary.includeVat}|${primary.documentNoVat}`,
   ]);
   return fallbacks.filter((item) => {
-    const key = `${item.invoiceUnitPrice}|${item.receiptAmount}|${item.includeVat}`;
+    const key = `${item.invoiceUnitPrice}|${item.receiptAmount}|${item.includeVat}|${item.documentNoVat}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -368,13 +396,16 @@ async function buildPayperInvoiceAttempt(
     resolvePayperLineAmounts(paymentLink, callbackData, enrichedVerify, config);
   const description = buildInvoiceDescription(paymentLink);
 
+  const documentNoVat =
+    lineAmounts.documentNoVat ?? resolveDocumentNoVat(paymentLink, config);
+
   const dataPayper = {
     customer_unique_id: customerUniqueId,
     customer_mail: customerEmail,
     customer_name: customerName,
     discount_with_vat: '0',
     customer_mobile: customerMobile,
-    document_no_vat: config.documentNoVat,
+    document_no_vat: documentNoVat,
     document_rounded: config.documentRounded,
     send_by_mail: config.sendByMail,
     income_id: config.incomeId,
@@ -635,6 +666,7 @@ async function createPayperInvoiceForPayment(
         payload.PayperParameters?.DataPayper?.invoice_lines?.[0]?.price_per_unit,
         lineAmounts.includeVat,
         vatRate,
+        payload.PayperParameters?.DataPayper?.document_no_vat,
       );
       const receiptAgorot = lineAmounts.pelecardTotalAgorot;
       const message =
@@ -660,6 +692,7 @@ async function createPayperInvoiceForPayment(
           trxRecordId: payload.trxRecordId,
           typeDocument: payload.PayperParameters?.typeDocument,
           incomeId: payload.PayperParameters?.DataPayper?.income_id,
+          documentNoVat: payload.PayperParameters?.DataPayper?.document_no_vat ?? null,
           invoiceLine: payload.PayperParameters?.DataPayper?.invoice_lines?.[0],
           receiptLine: payload.PayperParameters?.DataPayper?.receipt_lines?.[0],
         },
