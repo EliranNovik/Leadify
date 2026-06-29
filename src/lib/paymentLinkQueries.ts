@@ -147,6 +147,7 @@ export async function loadPaidPaymentLinkPlanIds(options: {
 }
 
 export type PaymentPlanTaxReceiptInfo = {
+  secure_token: string | null;
   payper_invoice_link: string | null;
   payper_invoice_number: string | null;
   payper_invoice_status: string | null;
@@ -154,6 +155,7 @@ export type PaymentPlanTaxReceiptInfo = {
 };
 
 type TaxReceiptLinkRow = {
+  secure_token?: string | null;
   payment_plan_id?: number | null;
   payper_invoice_link?: string | null;
   payper_invoice_number?: string | null;
@@ -202,7 +204,7 @@ export async function loadPaymentPlanTaxReceipts(options: {
   ];
 
   const selectCols =
-    'payment_plan_id, payper_invoice_link, payper_invoice_number, payper_invoice_status, payper_invoice_created_at, status, paid_at';
+    'secure_token, payment_plan_id, payper_invoice_link, payper_invoice_number, payper_invoice_status, payper_invoice_created_at, status, paid_at';
 
   const rowByPlanId = new Map<number, TaxReceiptLinkRow>();
 
@@ -226,6 +228,7 @@ export async function loadPaymentPlanTaxReceipts(options: {
     if (options.planIdsOnly) {
       for (const [planId, row] of rowByPlanId) {
         result.set(planId, {
+          secure_token: row.secure_token ?? null,
           payper_invoice_link: row.payper_invoice_link ?? null,
           payper_invoice_number: row.payper_invoice_number ?? null,
           payper_invoice_status: row.payper_invoice_status ?? null,
@@ -247,6 +250,7 @@ export async function loadPaymentPlanTaxReceipts(options: {
     if (legacyId == null) {
       for (const [planId, row] of rowByPlanId) {
         result.set(planId, {
+          secure_token: row.secure_token ?? null,
           payper_invoice_link: row.payper_invoice_link ?? null,
           payper_invoice_number: row.payper_invoice_number ?? null,
           payper_invoice_status: row.payper_invoice_status ?? null,
@@ -266,6 +270,7 @@ export async function loadPaymentPlanTaxReceipts(options: {
 
   for (const [planId, row] of rowByPlanId) {
     result.set(planId, {
+      secure_token: row.secure_token ?? null,
       payper_invoice_link: row.payper_invoice_link ?? null,
       payper_invoice_number: row.payper_invoice_number ?? null,
       payper_invoice_status: row.payper_invoice_status ?? null,

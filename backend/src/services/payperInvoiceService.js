@@ -25,7 +25,11 @@ const {
 const { ensurePaymentLinkPlanContact } = require('../lib/ensurePaymentLinkPlanContact');
 const { profileFromPayment } = require('../lib/pelecardProfiles');
 
-const DEFAULT_PAYPER_PATH = 'PaymentGW/CreatePayperInvoice';
+const DEFAULT_PAYPER_PATH = 'services/CreatePayperInvoice';
+const PAYPER_PATH_FALLBACKS = [
+  'services/CreatePayperInvoice',
+  'PaymentGW/CreatePayperInvoice',
+];
 
 function isPayperEnabled() {
   const flag = (process.env.ENABLE_PAYPER_INVOICE || 'true').trim().toLowerCase();
@@ -157,6 +161,37 @@ async function buildCreatePayperInvoicePayload(paymentLink, callbackData, verify
   };
 }
 
+function isHtmlNotFoundResponse(data) {
+  const raw = data?.raw;
+  return typeof raw === 'string' && /not found|error code:\s*404/i.test(raw);
+}
+
+function payperInvoicePaths(config) {
+  const configured = (config.invoicePath || DEFAULT_PAYPER_PATH).trim();
+  return [...new Set([configured, ...PAYPER_PATH_FALLBACKS])];
+}
+
+async function postCreatePayperInvoice(payload, config) {
+  const paths = payperInvoicePaths(config);
+  let last = null;
+
+  for (const path of paths) {
+    const result = await pelecardService.pelecardPost(path, payload, config);
+    last = { ...result, invoicePath: path };
+
+    if (!isHtmlNotFoundResponse(result.data)) {
+      return last;
+    }
+
+    console.warn('[Payper] CreatePayperInvoice path returned HTML 404, trying next', {
+      path,
+      baseUrl: config.baseUrl,
+    });
+  }
+
+  return last;
+}
+
 function summarizePelecardResponse(data) {
   if (!data || typeof data !== 'object') return data;
   if (data.raw) {
@@ -213,7 +248,10 @@ async function persistPayperInvoiceResult(paymentLinkId, payload, responseData, 
  * Create Payper Invoice-Receipt for a paid payment link. Idempotent.
  * @returns {Promise<{ skipped?: boolean, success?: boolean, failed?: boolean, reason?: string, invoiceLink?: string }>}
  */
-async function createPayperInvoiceForPayment(paymentLink, { callbackData = {}, verifyPayload = {} } = {}) {
+async function createPayperInvoiceForPayment(
+  paymentLink,
+  { callbackData = {}, verifyPayload = {}, forceRetry = false } = {},
+) {
   try {
     if (!isPayperEnabled()) {
       return { skipped: true, reason: 'disabled' };
@@ -236,7 +274,7 @@ async function createPayperInvoiceForPayment(paymentLink, { callbackData = {}, v
       };
     }
 
-    if (paymentLink.payper_invoice_status === 'skipped_no_email') {
+    if (paymentLink.payper_invoice_status === 'skipped_no_email' && !forceRetry) {
       return { skipped: true, reason: 'no_email' };
     }
 
@@ -252,11 +290,7 @@ async function createPayperInvoiceForPayment(paymentLink, { callbackData = {}, v
     }
 
     const payload = await buildCreatePayperInvoicePayload(paymentLink, callbackData, verifyPayload);
-    const { ok, status: httpStatus, data } = await pelecardService.pelecardPost(
-      config.invoicePath,
-      payload,
-      config,
-    );
+    const { ok, status: httpStatus, data, invoicePath } = await postCreatePayperInvoice(payload, config);
 
     if (!ok || !isPayperSuccess(data)) {
       const message =
@@ -269,7 +303,7 @@ async function createPayperInvoiceForPayment(paymentLink, { callbackData = {}, v
         planContactId: paymentLink.plan_contact_id ?? null,
         paymentPlanId: paymentLink.payment_plan_id ?? null,
         pelecardProfile: config.profile,
-        invoicePath: config.invoicePath,
+        invoicePath: invoicePath || config.invoicePath,
         incomeId: config.incomeId,
         trxRecordId: payload.trxRecordId,
         customerMail: payload.PayperParameters?.DataPayper?.customer_mail,

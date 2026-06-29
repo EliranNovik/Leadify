@@ -121,7 +121,10 @@ function appendInvoiceBlock(bodyHtml, invoiceLink, invoiceNumber) {
  * Sends via Microsoft Graph using PAYMENT_CONFIRMATION_MAILBOX_USER_ID (connected mailbox).
  * Never throws — payment flow must not be affected by mail failures.
  */
-async function sendPaymentConfirmationEmail(paymentLink, { paidAt, invoiceLink, invoiceNumber } = {}) {
+async function sendPaymentConfirmationEmail(
+  paymentLink,
+  { paidAt, invoiceLink, invoiceNumber, force = false } = {},
+) {
   try {
     const mailboxUserId = getMailboxUserId();
     if (!mailboxUserId) {
@@ -153,7 +156,7 @@ async function sendPaymentConfirmationEmail(paymentLink, { paidAt, invoiceLink, 
       return { skipped: true, reason: 'read_error' };
     }
 
-    if (existingRow?.payment_confirmation_email_sent_at) {
+    if (existingRow?.payment_confirmation_email_sent_at && !force) {
       return { skipped: true, reason: 'already_sent' };
     }
 

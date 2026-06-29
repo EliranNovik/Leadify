@@ -15,7 +15,7 @@ const {
   resolveRecipientPhone,
 } = require('../lib/paymentLinkContact');
 
-const DEFAULT_PAYPER_PATH = 'PaymentGW/CreatePayperInvoice';
+const DEFAULT_PAYPER_PATH = 'services/CreatePayperInvoice';
 
 function getRefundConfig(paymentLink) {
   const config = pelecardService.getConfig(profileFromPayment(paymentLink));

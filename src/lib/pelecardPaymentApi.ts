@@ -161,6 +161,33 @@ export async function fetchBillingContact(
   }
 }
 
+export interface RetryPayperInvoiceResponse {
+  success: boolean;
+  invoiceLink?: string | null;
+  invoiceNumber?: string | null;
+  payper_invoice_link?: string | null;
+  payper_invoice_number?: string | null;
+  payper_invoice_status?: string | null;
+  confirmation_email_sent?: boolean;
+  reason?: string;
+  error?: string;
+}
+
+export async function retryPayperInvoice(
+  paymentId: string,
+): Promise<RetryPayperInvoiceResponse> {
+  try {
+    const response = await fetch(
+      `${getApiBase()}/create-payper-invoice/${encodeURIComponent(paymentId)}`,
+      { method: 'POST', headers: buildHeaders() },
+    );
+    return await parseJsonResponse<RetryPayperInvoiceResponse>(response);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to retry tax receipt';
+    return { success: false, error: message };
+  }
+}
+
 export async function fetchPaymentStatus(
   paymentId: string
 ): Promise<PaymentStatusResponse> {

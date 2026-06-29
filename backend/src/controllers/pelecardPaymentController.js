@@ -478,21 +478,46 @@ async function createPayperInvoice(req, res) {
       return sendNoCacheJson(res, { success: false, error: 'Payment is not paid' });
     }
 
+    payment = await ensurePaymentLinkPlanContact(payment);
+
+    if (
+      payment.payper_invoice_status === 'failed' ||
+      payment.payper_invoice_status === 'skipped_no_email'
+    ) {
+      await supabase
+        .from('payment_links')
+        .update({ payper_invoice_status: null })
+        .eq('id', payment.id);
+      payment.payper_invoice_status = null;
+    }
+
     const callbackData = payment.pelecard_raw_response?.callback || {};
     const verifyPayload = payment.pelecard_raw_response?.pelecard || {};
     const result = await payperInvoiceService.createPayperInvoiceForPayment(payment, {
       callbackData,
       verifyPayload,
+      forceRetry: true,
+    });
+
+    payment = (await reconciliation.fetchPaymentByToken(paymentId)) || payment;
+
+    const emailResult = await sendPaymentConfirmationEmail(payment, {
+      paidAt: payment.paid_at,
+      invoiceLink: payment.payper_invoice_link || result.invoiceLink || null,
+      invoiceNumber: payment.payper_invoice_number || result.invoiceNumber || null,
+      force: true,
     });
 
     payment = (await reconciliation.fetchPaymentByToken(paymentId)) || payment;
 
     return sendNoCacheJson(res, {
-      success: Boolean(result.success || result.skipped),
+      success: Boolean(result.success),
       ...result,
       payper_invoice_link: payment.payper_invoice_link || result.invoiceLink || null,
       payper_invoice_number: payment.payper_invoice_number || result.invoiceNumber || null,
       payper_invoice_status: payment.payper_invoice_status || null,
+      confirmation_email_sent: Boolean(payment.payment_confirmation_email_sent_at),
+      confirmation_email: emailResult,
     });
   } catch (error) {
     console.error('Create Payper invoice error:', error);

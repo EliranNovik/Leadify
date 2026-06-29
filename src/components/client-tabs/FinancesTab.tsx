@@ -9,6 +9,7 @@ import {
   loadPaymentPlanTaxReceipts,
   type PaymentPlanTaxReceiptInfo,
 } from '../../lib/paymentLinkQueries';
+import { retryPayperInvoice } from '../../lib/pelecardPaymentApi';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
 import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
@@ -610,6 +611,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   /** Payper tax invoice-receipt per payment plan (from paid payment_links) */
   const [taxReceiptByPlanId, setTaxReceiptByPlanId] = useState<Map<number, PaymentPlanTaxReceiptInfo>>(
     () => new Map(),
+  );
+  const [retryingTaxReceiptPlanIds, setRetryingTaxReceiptPlanIds] = useState<Set<number>>(
+    () => new Set(),
   );
 
   const isPaidViaPaymentLink = (p: PaymentPlan) =>
@@ -6048,6 +6052,90 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     return taxReceiptByPlanId.get(planId) ?? null;
   };
 
+  const refreshTaxReceipts = async () => {
+    if (!client?.id || !financePlan?.payments?.length) return;
+    try {
+      const taxReceipts = await loadPaymentPlanTaxReceipts({
+        leadId: client.id,
+        leadType: client.lead_type,
+        paymentPlanIds: financePlan.payments.map((p) => p.id),
+      });
+      setTaxReceiptByPlanId(taxReceipts);
+    } catch (err) {
+      console.error('Failed to refresh tax receipts:', err);
+    }
+  };
+
+  const canRetryTaxReceipt = (payment: PaymentPlan, info: PaymentPlanTaxReceiptInfo | null) => {
+    if (!info?.secure_token?.trim() || !isPaidViaPaymentLink(payment)) return false;
+    if (info.payper_invoice_link?.trim()) return false;
+    const status = info.payper_invoice_status;
+    return status === 'failed' || status === 'skipped_no_email' || !status;
+  };
+
+  const handleRetryTaxReceipt = async (payment: PaymentPlan) => {
+    const info = getTaxReceiptForPlan(payment);
+    const token = info?.secure_token?.trim();
+    const planId = Number(payment.id);
+    if (!token || !Number.isFinite(planId)) {
+      toast.error('No payment link found for this row');
+      return;
+    }
+
+    setRetryingTaxReceiptPlanIds((prev) => new Set(prev).add(planId));
+    try {
+      const result = await retryPayperInvoice(token);
+      await refreshTaxReceipts();
+
+      if (!result.success) {
+        toast.error(result.error || result.reason || 'Tax receipt retry failed');
+        return;
+      }
+
+      const parts: string[] = [];
+      if (result.payper_invoice_link || result.invoiceLink) {
+        parts.push('Tax receipt created');
+      }
+      if (result.confirmation_email_sent) {
+        parts.push('confirmation email sent');
+      }
+      toast.success(parts.length ? parts.join(' · ') : 'Retry completed');
+    } catch (err) {
+      console.error('handleRetryTaxReceipt:', err);
+      toast.error(err instanceof Error ? err.message : 'Tax receipt retry failed');
+    } finally {
+      setRetryingTaxReceiptPlanIds((prev) => {
+        const next = new Set(prev);
+        next.delete(planId);
+        return next;
+      });
+    }
+  };
+
+  const renderTaxReceiptRetryButton = (
+    payment: PaymentPlan,
+    info: PaymentPlanTaxReceiptInfo | null,
+  ) => {
+    if (!canRetryTaxReceipt(payment, info)) return null;
+    const planId = Number(payment.id);
+    const isRetrying = retryingTaxReceiptPlanIds.has(planId);
+    return (
+      <button
+        type="button"
+        className="btn btn-ghost btn-xs btn-square min-h-0 h-7 w-7 text-red-600 hover:bg-red-50"
+        title="Retry tax receipt and confirmation email"
+        aria-label="Retry tax receipt and confirmation email"
+        disabled={isRetrying}
+        onClick={(e) => {
+          e.stopPropagation();
+          void handleRetryTaxReceipt(payment);
+        }}
+      >
+        <ArrowPathIcon className={`h-4 w-4 ${isRetrying ? 'animate-spin' : ''}`} aria-hidden />
+      </button>
+    );
+  };
+
   const renderTaxReceiptCell = (payment: PaymentPlan) => {
     const info = getTaxReceiptForPlan(payment);
     const paidViaLink = isPaidViaPaymentLink(payment);
@@ -6092,19 +6180,25 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         </span>
       );
     }
-    if (status === 'failed') {
+    if (status === 'failed' || status === 'skipped_no_email') {
       return (
-        <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-700">
-          <XMarkIcon className="h-4 w-4" aria-hidden />
-          Failed
+        <span className="inline-flex items-center gap-0.5">
+          <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-700">
+            <XMarkIcon className="h-4 w-4" aria-hidden />
+            Failed
+          </span>
+          {renderTaxReceiptRetryButton(payment, info)}
         </span>
       );
     }
 
     if (paidViaLink) {
       return (
-        <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500">
-          Not sent
+        <span className="inline-flex items-center gap-0.5">
+          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500">
+            Not sent
+          </span>
+          {renderTaxReceiptRetryButton(payment, info)}
         </span>
       );
     }
