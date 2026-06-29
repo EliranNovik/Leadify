@@ -2,6 +2,7 @@ const supabase = require('../config/supabase');
 const pelecardService = require('../services/pelecardService');
 const reconciliation = require('../services/pelecardPaymentReconciliationService');
 const payperInvoiceService = require('../services/payperInvoiceService');
+const { sendPaymentConfirmationEmail } = require('../services/paymentConfirmationEmailService');
 const {
   resolvePlanBillingContact,
 } = require('../lib/paymentLinkContact');
@@ -170,6 +171,16 @@ async function getPaymentStatus(req, res) {
 
     if (payment.status === 'paid' && payment.payper_invoice_status !== 'success') {
       payment = (await reconciliation.tryCreatePayperInvoiceForPaidLink(payment)) || payment;
+    }
+
+    if (payment.status === 'paid' && !payment.payment_confirmation_email_sent_at) {
+      payment = await ensurePaymentLinkPlanContact(payment);
+      await sendPaymentConfirmationEmail(payment, {
+        paidAt: payment.paid_at,
+        invoiceLink: payment.payper_invoice_link || null,
+        invoiceNumber: payment.payper_invoice_number || null,
+      });
+      payment = (await reconciliation.fetchPaymentByToken(paymentId)) || payment;
     }
 
     return sendNoCacheJson(res, {
@@ -436,8 +447,12 @@ async function getBillingContact(req, res) {
 
     return sendNoCacheJson(res, {
       success: true,
-      name: contact?.name || null,
-      email: contact?.email || null,
+      name: contact?.name || payment.billing_contact_name || null,
+      email:
+        payment.billing_contact_email ||
+        contact?.email ||
+        payment.leads?.email ||
+        null,
       phone: contact?.phone || null,
       planContactId: payment.plan_contact_id ?? null,
     });

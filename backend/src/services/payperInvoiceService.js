@@ -104,13 +104,14 @@ async function buildCreatePayperInvoicePayload(paymentLink, callbackData, verify
   }
 
   const customerEmail = await resolveRecipientEmail(paymentLink);
-    if (!customerEmail) {
-      const err = new Error('Missing customer email for Payper invoice');
-      err.code = 'PAYPER_MISSING_EMAIL';
-      err.planContactId = paymentLink.plan_contact_id ?? null;
-      err.paymentPlanId = paymentLink.payment_plan_id ?? null;
-      throw err;
-    }
+  if (!customerEmail) {
+    const err = new Error('Missing customer email for Payper invoice');
+    err.code = 'PAYPER_MISSING_EMAIL';
+    err.planContactId = paymentLink.plan_contact_id ?? null;
+    err.paymentPlanId = paymentLink.payment_plan_id ?? null;
+    err.billingContactEmail = paymentLink.billing_contact_email ?? null;
+    throw err;
+  }
 
   const customerName = await resolveClientName(paymentLink);
   const customerMobile = (await resolveRecipientPhone(paymentLink)) || '';
@@ -235,6 +236,10 @@ async function createPayperInvoiceForPayment(paymentLink, { callbackData = {}, v
       };
     }
 
+    if (paymentLink.payper_invoice_status === 'skipped_no_email') {
+      return { skipped: true, reason: 'no_email' };
+    }
+
     paymentLink = await ensurePaymentLinkPlanContact(paymentLink);
 
     const config = getPayperConfig(paymentLink);
@@ -290,21 +295,23 @@ async function createPayperInvoiceForPayment(paymentLink, { callbackData = {}, v
       documentSystemId: parsePayperDocumentSystemId(data?.PayperData),
     };
   } catch (error) {
+    const isMissingEmail = error.code === 'PAYPER_MISSING_EMAIL';
     console.error('[Payper] Invoice creation error (payment unaffected):', error.message || error, {
       paymentLinkId: paymentLink?.id ?? null,
       planContactId: paymentLink?.plan_contact_id ?? error.planContactId ?? null,
       paymentPlanId: paymentLink?.payment_plan_id ?? error.paymentPlanId ?? null,
+      billingContactEmail: paymentLink?.billing_contact_email ?? error.billingContactEmail ?? null,
       code: error.code ?? null,
     });
     if (paymentLink?.id) {
       await persistPayperInvoiceResult(
         paymentLink.id,
         {},
-        { error: String(error.message || error) },
-        'failed',
+        { error: String(error.message || error), code: error.code ?? null },
+        isMissingEmail ? 'skipped_no_email' : 'failed',
       );
     }
-    return { failed: true, reason: error.message || String(error) };
+    return { failed: true, reason: error.message || String(error), skipped: isMissingEmail };
   }
 }
 

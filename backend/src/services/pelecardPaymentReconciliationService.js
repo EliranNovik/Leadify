@@ -141,7 +141,7 @@ async function fetchPaymentByToken(secureToken) {
   } else if (enriched.payment_plan_id) {
     const { data: planRow } = await supabase
       .from('payment_plans')
-      .select('payment_order, currency, currency_id, paid, paid_at')
+      .select('payment_order, currency, currency_id, client_id, paid, paid_at')
       .eq('id', enriched.payment_plan_id)
       .maybeSingle();
     if (planRow) enriched = { ...enriched, payment_plans: planRow };

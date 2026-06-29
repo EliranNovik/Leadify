@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { resolvePaymentPlanContact } from './resolvePaymentPlanContact';
 import {
   buildPaymentLinkLeadRef,
   isLegacyLeadRef,
@@ -72,6 +73,23 @@ export async function insertPaymentLinkRecord(input: InsertPaymentLinkInput) {
 
   if (planContactId != null && Number.isFinite(planContactId)) {
     row.plan_contact_id = planContactId;
+
+    try {
+      const billing = await resolvePaymentPlanContact({
+        leadId: input.leadId,
+        clientId: planContactId,
+        clientNameFallback:
+          input.description?.split(' - ')[1]?.split(' (#')[0]?.trim() || null,
+      });
+      if (billing.email?.trim()) {
+        row.billing_contact_email = billing.email.trim();
+      }
+      if (billing.name?.trim()) {
+        row.billing_contact_name = billing.name.trim();
+      }
+    } catch (err) {
+      console.warn('[insertPaymentLinkRecord] billing contact snapshot failed:', err);
+    }
   }
 
   return supabase.from('payment_links').insert(row).select().single();

@@ -131,9 +131,14 @@ async function sendPaymentConfirmationEmail(paymentLink, { paidAt, invoiceLink, 
       return { skipped: true, reason: 'no_mailbox_user' };
     }
 
-    const recipient = await resolveRecipientEmail(paymentLink);
+    const recipient = await resolveRecipientEmail(paymentLink, { allowLeadFallback: true });
     if (!recipient) {
-      console.warn('[PaymentConfirmationEmail] No valid client email for payment link', paymentLink.id);
+      console.warn('[PaymentConfirmationEmail] No valid client email for payment link', {
+        paymentLinkId: paymentLink.id,
+        planContactId: paymentLink.plan_contact_id ?? null,
+        billingContactEmail: paymentLink.billing_contact_email ?? null,
+        leadEmail: paymentLink.leads?.email ?? null,
+      });
       return { skipped: true, reason: 'no_recipient' };
     }
 

@@ -127,10 +127,20 @@ async function resolvePlanBillingContact(paymentLink) {
   };
 }
 
-async function resolveRecipientEmail(paymentLink) {
+async function resolveRecipientEmail(paymentLink, { allowLeadFallback = false } = {}) {
+  const stored = paymentLink?.billing_contact_email?.trim();
+  if (isValidEmail(stored)) return stored;
+
   const contact = await resolvePlanBillingContact(paymentLink);
   const email = contact?.email?.trim();
-  return isValidEmail(email) ? email : null;
+  if (isValidEmail(email)) return email;
+
+  if (allowLeadFallback) {
+    const leadEmail = paymentLink?.leads?.email?.trim();
+    if (isValidEmail(leadEmail)) return leadEmail;
+  }
+
+  return null;
 }
 
 async function resolveRecipientPhone(paymentLink) {
