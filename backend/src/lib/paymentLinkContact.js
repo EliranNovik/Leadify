@@ -95,6 +95,29 @@ async function resolvePlanBillingContact(paymentLink) {
     });
   }
 
+  const email = row.email?.trim() || '';
+  if (!email) {
+    const { data: altRow } = await supabase
+      .from('contacts')
+      .select('name, email, phone, mobile')
+      .eq('id', contactId)
+      .maybeSingle();
+    if (altRow?.email?.trim()) {
+      return {
+        name: altRow.name?.trim() || row.name?.trim() || resolveClientNameFromDescription(link),
+        email: altRow.email.trim(),
+        phone: altRow.mobile?.trim() || altRow.phone?.trim() || row.mobile?.trim() || row.phone?.trim() || '',
+        idNumber: row.id_passport?.trim() || '',
+        contactId,
+      };
+    }
+    console.warn('[payment_links] plan contact has no email', {
+      paymentLinkId: link.id,
+      planContactId: contactId,
+      contactName: row.name?.trim() || null,
+    });
+  }
+
   return {
     name: row.name?.trim() || resolveClientNameFromDescription(link),
     email: row.email?.trim() || '',

@@ -28,6 +28,15 @@ export interface PaymentStatusResponse {
   error?: string;
 }
 
+export interface BillingContactResponse {
+  success: boolean;
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  planContactId?: number | null;
+  error?: string;
+}
+
 export interface CreatePelecardSessionResponse {
   success: boolean;
   paymentUrl?: string;
@@ -133,6 +142,21 @@ export async function createPelecardPaymentSession(
     return await parseJsonResponse<CreatePelecardSessionResponse>(response);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to create payment session';
+    return { success: false, error: message };
+  }
+}
+
+export async function fetchBillingContact(
+  paymentId: string,
+): Promise<BillingContactResponse> {
+  try {
+    const response = await fetch(
+      `${getApiBase()}/billing-contact/${encodeURIComponent(paymentId)}`,
+      { headers: buildHeaders(), cache: 'no-store' },
+    );
+    return await parseJsonResponse<BillingContactResponse>(response);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to load billing contact';
     return { success: false, error: message };
   }
 }

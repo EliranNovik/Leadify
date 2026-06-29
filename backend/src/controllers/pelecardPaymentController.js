@@ -2,6 +2,9 @@ const supabase = require('../config/supabase');
 const pelecardService = require('../services/pelecardService');
 const reconciliation = require('../services/pelecardPaymentReconciliationService');
 const payperInvoiceService = require('../services/payperInvoiceService');
+const {
+  resolvePlanBillingContact,
+} = require('../lib/paymentLinkContact');
 const { ensurePaymentLinkPlanContact } = require('../lib/ensurePaymentLinkPlanContact');
 const {
   resolvePelecardProfileFromRequest,
@@ -416,6 +419,34 @@ async function getCheckoutCssInfo(req, res) {
   }
 }
 
+async function getBillingContact(req, res) {
+  try {
+    const paymentId = req.params.paymentId;
+    if (!paymentId) {
+      return sendNoCacheJson(res, { success: false, error: 'Missing paymentId' });
+    }
+
+    let payment = await reconciliation.fetchPaymentByToken(paymentId);
+    if (!payment) {
+      return sendNoCacheJson(res, { success: false, error: 'Payment not found' });
+    }
+
+    payment = await ensurePaymentLinkPlanContact(payment);
+    const contact = await resolvePlanBillingContact(payment);
+
+    return sendNoCacheJson(res, {
+      success: true,
+      name: contact?.name || null,
+      email: contact?.email || null,
+      phone: contact?.phone || null,
+      planContactId: payment.plan_contact_id ?? null,
+    });
+  } catch (error) {
+    console.error('Get billing contact error:', error);
+    return sendNoCacheJson(res, { success: false, error: 'Internal server error' });
+  }
+}
+
 async function createPayperInvoice(req, res) {
   try {
     const paymentId = req.params.paymentId;
@@ -457,6 +488,7 @@ async function createPayperInvoice(req, res) {
 module.exports = {
   createPaymentSession,
   getPaymentStatus,
+  getBillingContact,
   reconcilePayment,
   createPayperInvoice,
   getCheckoutCssInfo,

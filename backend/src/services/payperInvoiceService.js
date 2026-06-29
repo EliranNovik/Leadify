@@ -156,6 +156,18 @@ async function buildCreatePayperInvoicePayload(paymentLink, callbackData, verify
   };
 }
 
+function summarizePelecardResponse(data) {
+  if (!data || typeof data !== 'object') return data;
+  if (data.raw) {
+    return { raw: String(data.raw).replace(/\s+/g, ' ').slice(0, 400) };
+  }
+  return {
+    StatusCode: data.StatusCode ?? data.statusCode ?? null,
+    ErrorMessage: data.ErrorMessage ?? data.error ?? null,
+    InvoiceStatus: data.PayperData?.InvoiceStatus ?? null,
+  };
+}
+
 function isPayperSuccess(data) {
   const statusCode = String(data?.StatusCode ?? data?.statusCode ?? '').trim();
   const invoiceStatus = String(data?.PayperData?.InvoiceStatus ?? '').trim();
@@ -235,19 +247,29 @@ async function createPayperInvoiceForPayment(paymentLink, { callbackData = {}, v
     }
 
     const payload = await buildCreatePayperInvoicePayload(paymentLink, callbackData, verifyPayload);
-    const { ok, data } = await pelecardService.pelecardPost(config.invoicePath, payload, config);
+    const { ok, status: httpStatus, data } = await pelecardService.pelecardPost(
+      config.invoicePath,
+      payload,
+      config,
+    );
 
     if (!ok || !isPayperSuccess(data)) {
       const message =
         data?.ErrorMessage ||
         data?.PayperData?.InvoiceStatus ||
         data?.error ||
-        'CreatePayperInvoice failed';
+        (data?.raw ? 'Non-JSON response from Pelecard' : 'CreatePayperInvoice failed');
       console.error('[Payper] Invoice creation failed', {
         paymentLinkId: paymentLink.id,
         planContactId: paymentLink.plan_contact_id ?? null,
         paymentPlanId: paymentLink.payment_plan_id ?? null,
-        statusCode: data?.StatusCode,
+        pelecardProfile: config.profile,
+        invoicePath: config.invoicePath,
+        incomeId: config.incomeId,
+        trxRecordId: payload.trxRecordId,
+        customerMail: payload.PayperParameters?.DataPayper?.customer_mail,
+        httpStatus,
+        response: summarizePelecardResponse(data),
         message,
       });
       await persistPayperInvoiceResult(paymentLink.id, payload, data || {}, 'failed');
@@ -268,7 +290,12 @@ async function createPayperInvoiceForPayment(paymentLink, { callbackData = {}, v
       documentSystemId: parsePayperDocumentSystemId(data?.PayperData),
     };
   } catch (error) {
-    console.error('[Payper] Invoice creation error (payment unaffected):', error.message || error);
+    console.error('[Payper] Invoice creation error (payment unaffected):', error.message || error, {
+      paymentLinkId: paymentLink?.id ?? null,
+      planContactId: paymentLink?.plan_contact_id ?? error.planContactId ?? null,
+      paymentPlanId: paymentLink?.payment_plan_id ?? error.paymentPlanId ?? null,
+      code: error.code ?? null,
+    });
     if (paymentLink?.id) {
       await persistPayperInvoiceResult(
         paymentLink.id,

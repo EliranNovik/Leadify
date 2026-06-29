@@ -19,9 +19,33 @@ function fromContactRow(row, fallbackName, contactId) {
   return {
     name: row?.name?.trim() || fallbackName,
     email: row?.email?.trim() || '',
-    phone: row?.phone?.trim() || '',
+    phone: row?.mobile?.trim() || row?.phone?.trim() || '',
     contactId,
   };
+}
+
+async function lookupContactById(contactId, fallbackName) {
+  const { data: legacyRow } = await supabase
+    .from('leads_contact')
+    .select('name, email, phone, mobile')
+    .eq('id', contactId)
+    .maybeSingle();
+
+  if (legacyRow) {
+    return fromContactRow(legacyRow, fallbackName, contactId);
+  }
+
+  const { data: newRow } = await supabase
+    .from('contacts')
+    .select('name, email, phone, mobile')
+    .eq('id', contactId)
+    .maybeSingle();
+
+  if (newRow) {
+    return fromContactRow(newRow, fallbackName, contactId);
+  }
+
+  return null;
 }
 
 async function fetchMainContactForLead(leadId, fallbackName) {
@@ -81,7 +105,7 @@ async function resolvePaymentPlanContact(params) {
   if (clientId != null) {
     const linkQuery = supabase
       .from('lead_leadcontact')
-      .select('contact_id, leads_contact(name, email, phone)');
+      .select('contact_id, leads_contact(name, email, phone, mobile)');
 
     const { data: link } = isNewLeadId(String(leadId))
       ? await linkQuery.eq('newlead_id', leadId).eq('contact_id', clientId).maybeSingle()
@@ -94,10 +118,19 @@ async function resolvePaymentPlanContact(params) {
       return fromContactRow(row, fallbackName, clientId);
     }
 
+    const direct = await lookupContactById(clientId, fallbackName);
+    if (direct) {
+      return direct;
+    }
+
     return { name: fallbackName, email: '', phone: '', contactId: clientId };
   }
 
   return fetchMainContactForLead(leadId, fallbackName);
 }
 
-module.exports = { resolvePaymentPlanContact, fetchMainContactForLead };
+module.exports = {
+  resolvePaymentPlanContact,
+  fetchMainContactForLead,
+  lookupContactById,
+};

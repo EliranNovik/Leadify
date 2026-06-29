@@ -33,12 +33,40 @@ function fromContactRow(
   fallbackName: string,
   contactId: number | null,
 ): ResolvedPaymentPlanContact {
+  const contact = row as ContactRow & { mobile?: string | null };
   return {
-    name: row?.name?.trim() || fallbackName,
-    email: row?.email?.trim() || '',
-    phone: row?.phone?.trim() || '',
+    name: contact?.name?.trim() || fallbackName,
+    email: contact?.email?.trim() || '',
+    phone: contact?.mobile?.trim() || contact?.phone?.trim() || '',
     contactId,
   };
+}
+
+async function lookupContactById(
+  contactId: number,
+  fallbackName: string,
+): Promise<ResolvedPaymentPlanContact | null> {
+  const { data: legacyRow } = await supabase
+    .from('leads_contact')
+    .select('name, email, phone, mobile')
+    .eq('id', contactId)
+    .maybeSingle();
+
+  if (legacyRow) {
+    return fromContactRow(legacyRow, fallbackName, contactId);
+  }
+
+  const { data: newRow } = await supabase
+    .from('contacts')
+    .select('name, email, phone, mobile')
+    .eq('id', contactId)
+    .maybeSingle();
+
+  if (newRow) {
+    return fromContactRow(newRow, fallbackName, contactId);
+  }
+
+  return null;
 }
 
 async function fetchMainContactForLead(
@@ -49,7 +77,7 @@ async function fetchMainContactForLead(
 
   const query = supabase
     .from('lead_leadcontact')
-    .select('contact_id, main, leads_contact(name, email, phone)');
+    .select('contact_id, main, leads_contact(name, email, phone, mobile)');
 
   const { data: links } = isNewLead
     ? await query.eq('newlead_id', leadId)
@@ -113,7 +141,7 @@ export async function resolvePaymentPlanContact(params: {
   if (clientId != null) {
     const linkQuery = supabase
       .from('lead_leadcontact')
-      .select('contact_id, leads_contact(name, email, phone)');
+      .select('contact_id, leads_contact(name, email, phone, mobile)');
 
     const { data: link } = isNewLeadId(String(leadId))
       ? await linkQuery.eq('newlead_id', leadId).eq('contact_id', clientId).maybeSingle()
@@ -124,6 +152,11 @@ export async function resolvePaymentPlanContact(params: {
     const row = pickContactRow(link?.leads_contact as ContactRow | ContactRow[] | null | undefined);
     if (row) {
       return fromContactRow(row, fallbackName, clientId);
+    }
+
+    const direct = await lookupContactById(clientId, fallbackName);
+    if (direct) {
+      return direct;
     }
 
     return { name: fallbackName, email: '', phone: '', contactId: clientId };

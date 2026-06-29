@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { createPelecardPaymentSession, fetchPaymentStatus } from '../lib/pelecardPaymentApi';
+import { createPelecardPaymentSession, fetchBillingContact, fetchPaymentStatus } from '../lib/pelecardPaymentApi';
 import PelecardCheckoutFrame from '../components/PelecardCheckoutFrame';
 import PaymentSummaryCard, {
   type PaymentSummaryData,
@@ -91,6 +91,7 @@ interface PaymentLink {
   status: string;
   expires_at: string;
   payment_plan_id: number;
+  plan_contact_id?: number | null;
   client_id: string | null;
   legacy_id?: number | null;
   is_legacy_payment_plan?: boolean;
@@ -390,39 +391,50 @@ const PaymentPage: React.FC = () => {
           }
         }
 
-        // Resolve billing contact (summary box should reflect invoice/payment-row contact, not lead main contact).
-        // For legacy links: use finances_paymentplanrow.client_id when present; otherwise main contact.
-        // For new links: use payment_plans.client_id when present; otherwise main contact.
+        // Billing contact from backend (service role) — anon cannot read leads_contact via Supabase RLS.
         try {
-          const leadId = isLegacyPaymentLink(enriched)
-            ? enriched.legacy_id ?? null
-            : enriched.client_id ?? null;
-          const clientId =
-            enriched.plan_contact_id != null
-              ? Number(enriched.plan_contact_id)
-              : isLegacyPaymentLink(enriched)
-                ? enriched.legacy_payment_plan?.client_id ?? null
-                : enriched.payment_plans?.client_id ?? null;
+          const billing = await fetchBillingContact(token);
+          if (billing.success && (billing.name || billing.email || billing.phone)) {
+            enriched = {
+              ...enriched,
+              leads: {
+                ...(enriched.leads || {}),
+                name: billing.name || enriched.leads?.name || '',
+                email: billing.email || enriched.leads?.email || '',
+                phone: billing.phone || enriched.leads?.phone || '',
+              },
+            };
+          } else {
+            const leadId = isLegacyPaymentLink(enriched)
+              ? enriched.legacy_id ?? null
+              : enriched.client_id ?? null;
+            const clientId =
+              enriched.plan_contact_id != null
+                ? Number(enriched.plan_contact_id)
+                : isLegacyPaymentLink(enriched)
+                  ? enriched.legacy_payment_plan?.client_id ?? null
+                  : enriched.payment_plans?.client_id ?? null;
 
-          const resolved = await resolvePaymentPlanContact({
-            leadId,
-            clientId,
-            clientNameFallback:
-              enriched.description?.split(' - ')[1]?.split(' (#')[0]?.trim() ||
-              enriched.leads?.name ||
-              null,
-            leadNameFallback: enriched.leads?.name || null,
-          });
+            const resolved = await resolvePaymentPlanContact({
+              leadId,
+              clientId,
+              clientNameFallback:
+                enriched.description?.split(' - ')[1]?.split(' (#')[0]?.trim() ||
+                enriched.leads?.name ||
+                null,
+              leadNameFallback: enriched.leads?.name || null,
+            });
 
-          enriched = {
-            ...enriched,
-            leads: {
-              ...(enriched.leads || {}),
-              name: resolved.name,
-              email: resolved.email,
-              phone: resolved.phone,
-            },
-          };
+            enriched = {
+              ...enriched,
+              leads: {
+                ...(enriched.leads || {}),
+                name: resolved.name,
+                email: resolved.email,
+                phone: resolved.phone,
+              },
+            };
+          }
         } catch (err) {
           console.warn('[PaymentPage] billing contact resolution failed:', err);
         }
