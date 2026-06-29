@@ -96,68 +96,25 @@ function resolveChargedAgorot(paymentLink, callbackData, verifyPayload) {
   return null;
 }
 
-function getVatRateForPayment(paymentLink) {
-  const netIls = Number(paymentLink.amount) || 0;
-  const vatIls = Number(paymentLink.vat_amount) || 0;
-  if (netIls > 0 && vatIls > 0) return vatIls / netIls;
-  const paidAt = paymentLink.paid_at || paymentLink.created_at;
-  const date = paidAt ? new Date(paidAt) : new Date();
-  return date < new Date('2025-01-01T00:00:00') ? 0.17 : 0.18;
-}
-
-function deriveNetAgorotFromGross(grossAgorot, paymentLink) {
-  const netIls = Number(paymentLink.amount) || 0;
-  const vatIls = Number(paymentLink.vat_amount) || 0;
-  const expectedGrossAgorot = Math.round((netIls + vatIls) * 100);
-  if (netIls > 0 && vatIls > 0 && Math.abs(expectedGrossAgorot - grossAgorot) <= 1) {
-    return Math.round(netIls * 100);
-  }
-  const rate = getVatRateForPayment(paymentLink);
-  return Math.round(grossAgorot / (1 + rate));
-}
-
 function isIsraeliIlsPayment(paymentLink) {
   return resolvePaymentIsoCode(paymentLink) === 'ILS';
 }
 
-function buildPayperAmountStrategy(paymentLink, grossAgorot, config, mode = 'auto') {
+/**
+ * Pelecard/Payper contract: invoice_lines total must equal receipt_lines sum.
+ * Official samples use the same amount on both (e.g. 100/100, 1500/1500) with include_vat: "true".
+ * Payper derives VAT breakdown from the gross line; splitting net on invoice vs gross on receipt fails validation.
+ */
+function buildPayperAmountStrategy(paymentLink, grossAgorot, config) {
   const grossAmount = formatIlsAmount(agorotToIls(grossAgorot));
   const isIls = isIsraeliIlsPayment(paymentLink);
-
-  if (mode === 'gross_no_vat') {
-    return {
-      invoiceUnitPrice: grossAmount,
-      receiptAmount: grossAmount,
-      includeVat: false,
-      amountMode: 'gross_no_vat',
-    };
-  }
-
-  if (isIls && config.includeVat && !config.documentNoVat) {
-    const netAgorot = deriveNetAgorotFromGross(grossAgorot, paymentLink);
-    const netIls = Number(paymentLink.amount) || 0;
-    const vatIls = Number(paymentLink.vat_amount) || 0;
-    const expectedGrossAgorot = Math.round((netIls + vatIls) * 100);
-    const amountMode =
-      netIls > 0 &&
-      vatIls > 0 &&
-      Math.abs(expectedGrossAgorot - grossAgorot) <= 1
-        ? 'crm_net_gross'
-        : 'ils_derived_net_gross';
-
-    return {
-      invoiceUnitPrice: formatIlsAmount(agorotToIls(netAgorot)),
-      receiptAmount: grossAmount,
-      includeVat: true,
-      amountMode,
-    };
-  }
+  const includeVat = isIls && config.includeVat && !config.documentNoVat;
 
   return {
     invoiceUnitPrice: grossAmount,
     receiptAmount: grossAmount,
-    includeVat: false,
-    amountMode: 'gross_no_vat',
+    includeVat,
+    amountMode: includeVat ? 'gross_inclusive_vat' : 'gross_no_vat',
   };
 }
 
@@ -181,40 +138,6 @@ function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, conf
   };
 }
 
-function payperInvoiceFallbackAttempts(paymentLink, grossAgorot, config, primaryMode) {
-  if (grossAgorot == null) return [];
-
-  const attempts = [];
-  const push = (strategy, omitReceiptLines = false) => {
-    if (strategy.amountMode === primaryMode && !omitReceiptLines) return;
-    attempts.push({
-      lineAmounts: { ...strategy, pelecardTotalAgorot: grossAgorot },
-      omitReceiptLines,
-    });
-  };
-
-  const isIls = isIsraeliIlsPayment(paymentLink);
-
-  if (isIls && config.includeVat && !config.documentNoVat) {
-    push(buildPayperAmountStrategy(paymentLink, grossAgorot, config), true);
-  } else {
-    push(buildPayperAmountStrategy(paymentLink, grossAgorot, config, 'gross_no_vat'));
-  }
-
-  const seen = new Set();
-  return attempts.filter((attempt) => {
-    const key = `${attempt.lineAmounts.amountMode}:${attempt.omitReceiptLines}:${attempt.lineAmounts.invoiceUnitPrice}:${attempt.lineAmounts.receiptAmount}:${attempt.lineAmounts.includeVat}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function isPayperTotalMismatchError(data) {
-  const message = String(data?.ErrorMessage ?? data?.error ?? '').toLowerCase();
-  return message.includes('total') && message.includes('receipt');
-}
-
 function buildReceiptLines(paymentLink, callbackData, verifyPayload, paidAt, receiptAmount) {
   const amount =
     receiptAmount ?? formatIlsAmount(chargeAmountFromPayment(paymentLink));
@@ -230,6 +153,7 @@ function buildReceiptLines(paymentLink, callbackData, verifyPayload, paidAt, rec
       num_of_payments: extractNumOfPayments(callbackData, verifyPayload),
       amount,
       currency_symbol: 'ILS',
+      conversion_rate: null,
     },
   ];
 }
@@ -273,7 +197,6 @@ async function buildPayperInvoiceAttempt(
   callbackData,
   verifyPayload,
   lineAmountsOverride = null,
-  options = {},
 ) {
   const config = getPayperConfig(paymentLink);
   pelecardService.assertCredentials(config);
@@ -310,7 +233,6 @@ async function buildPayperInvoiceAttempt(
     lineAmountsOverride ??
     resolvePayperLineAmounts(paymentLink, callbackData, enrichedVerify, config);
   const description = buildInvoiceDescription(paymentLink);
-  const omitReceiptLines = Boolean(options.omitReceiptLines);
 
   const dataPayper = {
     customer_unique_id: customerUniqueId,
@@ -334,15 +256,13 @@ async function buildPayperInvoiceAttempt(
     ],
   };
 
-  if (!omitReceiptLines) {
-    dataPayper.receipt_lines = buildReceiptLines(
-      paymentLink,
-      callbackData,
-      enrichedVerify,
-      paymentLink.paid_at,
-      lineAmounts.receiptAmount,
-    );
-  }
+  dataPayper.receipt_lines = buildReceiptLines(
+    paymentLink,
+    callbackData,
+    enrichedVerify,
+    paymentLink.paid_at,
+    lineAmounts.receiptAmount,
+  );
 
   const payload = {
     terminalNumber: config.terminal,
@@ -362,7 +282,6 @@ async function buildPayperInvoiceAttempt(
     lineAmounts,
     callbackData,
     verifyPayload,
-    omitReceiptLines,
   };
 }
 
@@ -371,14 +290,12 @@ async function buildCreatePayperInvoicePayload(
   callbackData,
   verifyPayload,
   lineAmountsOverride = null,
-  options = {},
 ) {
   const attempt = await buildPayperInvoiceAttempt(
     paymentLink,
     callbackData,
     verifyPayload,
     lineAmountsOverride,
-    options,
   );
   return attempt.payload;
 }
@@ -537,41 +454,8 @@ async function createPayperInvoiceForPayment(
     }
 
     const attempt = await buildPayperInvoiceAttempt(paymentLink, callbackData, verifyPayload);
-    let { payload, lineAmounts, enrichedVerify, omitReceiptLines } = attempt;
-    let { ok, status: httpStatus, data, invoicePath } = await postCreatePayperInvoice(payload, config);
-
-    if ((!ok || !isPayperSuccess(data)) && isPayperTotalMismatchError(data)) {
-      const fallbacks = payperInvoiceFallbackAttempts(
-        paymentLink,
-        lineAmounts.pelecardTotalAgorot,
-        config,
-        lineAmounts.amountMode,
-      );
-      for (const fallback of fallbacks) {
-        console.info('[Payper] Retrying invoice with alternate amount strategy', {
-          paymentLinkId: paymentLink.id,
-          from: lineAmounts.amountMode,
-          to: fallback.lineAmounts.amountMode,
-          omitReceiptLines: fallback.omitReceiptLines,
-          invoiceUnitPrice: fallback.lineAmounts.invoiceUnitPrice,
-          receiptAmount: fallback.lineAmounts.receiptAmount,
-          includeVat: fallback.lineAmounts.includeVat,
-          pelecardTotalAgorot: fallback.lineAmounts.pelecardTotalAgorot,
-        });
-        const retryAttempt = await buildPayperInvoiceAttempt(
-          paymentLink,
-          callbackData,
-          enrichedVerify,
-          fallback.lineAmounts,
-          { omitReceiptLines: fallback.omitReceiptLines },
-        );
-        payload = retryAttempt.payload;
-        lineAmounts = retryAttempt.lineAmounts;
-        omitReceiptLines = retryAttempt.omitReceiptLines;
-        ({ ok, status: httpStatus, data, invoicePath } = await postCreatePayperInvoice(payload, config));
-        if (ok && isPayperSuccess(data)) break;
-      }
-    }
+    const { payload, lineAmounts, enrichedVerify } = attempt;
+    const { ok, status: httpStatus, data, invoicePath } = await postCreatePayperInvoice(payload, config);
 
     if (!ok || !isPayperSuccess(data)) {
       const message =
@@ -590,8 +474,14 @@ async function createPayperInvoiceForPayment(
         transactionUuid: extractTransactionUuid(callbackData, enrichedVerify, paymentLink),
         pelecardTotalAgorot: lineAmounts.pelecardTotalAgorot ?? null,
         amountMode: lineAmounts.amountMode ?? null,
-        omitReceiptLines,
         pelecardTotalDebug: summarizePelecardTotalDebug(callbackData, enrichedVerify),
+        requestPayload: {
+          trxRecordId: payload.trxRecordId,
+          typeDocument: payload.PayperParameters?.typeDocument,
+          incomeId: payload.PayperParameters?.DataPayper?.income_id,
+          invoiceLine: payload.PayperParameters?.DataPayper?.invoice_lines?.[0],
+          receiptLine: payload.PayperParameters?.DataPayper?.receipt_lines?.[0],
+        },
         numOfPayments: extractNumOfPayments(callbackData, enrichedVerify),
         invoiceUnitPrice:
           payload.PayperParameters?.DataPayper?.invoice_lines?.[0]?.price_per_unit ?? null,
@@ -663,7 +553,7 @@ async function reconcilePendingPayperInvoices(options = {}) {
     .select('*')
     .eq('status', 'paid')
     .eq('payment_method', 'pelecard')
-    .or('payper_invoice_status.is.null,payper_invoice_status.eq.failed,payper_invoice_status.eq.pending')
+    .or('payper_invoice_status.is.null,payper_invoice_status.eq.pending')
     .gte('paid_at', since)
     .order('paid_at', { ascending: false })
     .limit(limit);
