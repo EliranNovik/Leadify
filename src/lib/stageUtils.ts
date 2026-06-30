@@ -175,6 +175,7 @@ export const areStagesEquivalent = (stage1: string, stage2: string): boolean => 
   // Common stage name variations
   const stageVariations: { [key: string]: string[] } = {
     'created': ['created', 'new', 'initial'],
+    'precommunication': ['precommunication', 'pre_communication'],
     'schedulerassigned': ['schedulerassigned', 'scheduler_assigned', 'assigned'],
     'clientsignedagreement': ['clientsigned', 'clientsignedagreement', 'client_signed_agreement'],
     'paymentrequestsent': ['paymentrequestsent', 'payment_request_sent', 'paymentrequest'],
@@ -198,6 +199,66 @@ export const areStagesEquivalent = (stage1: string, stage2: string): boolean => 
   }
   
   return false;
+};
+
+/** Created (0) and Precommunication (11) — assign scheduler replaces stage action buttons. */
+export const isAssignSchedulerStage = (
+  stageName: string,
+  stageNumeric?: number | null,
+): boolean => {
+  if (areStagesEquivalent(stageName, 'created') || areStagesEquivalent(stageName, 'Precommunication')) {
+    return true;
+  }
+  if (stageNumeric === 0 || stageNumeric === 11) return true;
+  return false;
+};
+
+export const isPrecommunicationStage = (
+  stageName: string,
+  stageNumeric?: number | null,
+): boolean => {
+  if (areStagesEquivalent(stageName, 'Precommunication')) return true;
+  return stageNumeric === 11;
+};
+
+export function hasLeadSchedulerAssigned(
+  lead: {
+    id?: string | number;
+    scheduler?: string | number | null;
+    meeting_scheduler_id?: number | null;
+    lead_type?: string | null;
+  } | null | undefined,
+): boolean {
+  if (!lead) return false;
+
+  const isLegacy =
+    lead.lead_type === 'legacy' || String(lead.id ?? '').startsWith('legacy_');
+
+  if (isLegacy) {
+    const schedulerId = lead.meeting_scheduler_id;
+    return schedulerId != null && Number(schedulerId) > 0;
+  }
+
+  const scheduler = lead.scheduler;
+  if (scheduler == null) return false;
+  if (typeof scheduler === 'number') return Number.isFinite(scheduler) && scheduler > 0;
+  const trimmed = String(scheduler).trim();
+  if (!trimmed || trimmed === '---' || trimmed === '--') return false;
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) > 0;
+  return true;
+}
+
+/** Show assign-scheduler field (Created always; Precommunication only when scheduler missing). */
+export const shouldShowAssignSchedulerField = (
+  stageName: string,
+  lead: Parameters<typeof hasLeadSchedulerAssigned>[0],
+  stageNumeric?: number | null,
+): boolean => {
+  if (!isAssignSchedulerStage(stageName, stageNumeric)) return false;
+  if (isPrecommunicationStage(stageName, stageNumeric) && hasLeadSchedulerAssigned(lead)) {
+    return false;
+  }
+  return true;
 };
 
 /**

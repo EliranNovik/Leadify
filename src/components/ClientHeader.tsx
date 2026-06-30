@@ -43,7 +43,8 @@ import {
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
-import { getStageName, getStageColour, areStagesEquivalent } from '../lib/stageUtils';
+import { getStageName, getStageColour, areStagesEquivalent, shouldShowAssignSchedulerField } from '../lib/stageUtils';
+import { HEADER_ROLE_ASSIGN_WIDTH_CLASS } from './HeaderRoleAssignField';
 import { addToHighlights, removeFromHighlights } from '../lib/highlightsUtils';
 import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
 import CallOptionsModal from './CallOptionsModal';
@@ -181,11 +182,13 @@ const META_ICON_CATEGORY = 'h-6 w-6 shrink-0 text-amber-600';
 const META_ICON_TOPIC = 'h-6 w-6 shrink-0 text-emerald-600';
 const META_ICON_APPLICANTS = 'h-6 w-6 shrink-0 text-rose-600';
 
+const HEADER_ACTION_ICON = 'h-7 w-7 shrink-0';
+
 const HEADER_ACTION_BAR_OVAL =
-    'inline-flex min-w-0 flex-wrap items-center gap-2 rounded-full border border-base-200/55 bg-white px-3 py-2 shadow-md dark:border-base-300/45 dark:bg-base-100';
+    'inline-flex min-w-0 flex-wrap items-center gap-3 rounded-[20px] border border-base-200/50 bg-white px-5 py-3 shadow-sm dark:border-base-300/45 dark:bg-base-100';
 
 const HEADER_ACTION_BAR_BADGE_BTN =
-    'btn btn-circle pointer-events-auto relative min-h-11 min-w-11 rounded-full border-0 bg-transparent p-0 text-base-content/75 transition-colors duration-150';
+    'inline-flex pointer-events-auto relative shrink-0 items-center justify-center rounded-full border-0 bg-transparent p-0 h-7 w-7 min-h-0 min-w-0 text-base-content/75 transition-colors duration-150';
 
 const HEADER_ACTION_BAR_CALL_BTN =
     `${HEADER_ACTION_BAR_BADGE_BTN} hover:bg-gray-100 hover:text-gray-800 dark:hover:bg-gray-700/55 dark:hover:text-gray-100`;
@@ -308,6 +311,8 @@ interface ClientHeaderProps {
     getEmployeeDisplayName: (id: string | null | undefined) => string;
     allEmployees?: any[];
     dropdownsContent?: React.ReactNode;
+    /** Inline assign-scheduler field (Created / Precommunication) — replaces stage action buttons. */
+    assignSchedulerContent?: React.ReactNode;
     dropdownItems?: React.ReactNode;
     // Additional handlers for stage actions
     handlePaymentReceivedNewClient?: () => void;
@@ -386,6 +391,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     getEmployeeDisplayName,
     allEmployees = [],
     dropdownsContent,
+    assignSchedulerContent,
     dropdownItems,
     handlePaymentReceivedNewClient,
     handleScheduleMenuClick,
@@ -469,13 +475,43 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [handlerActiveRingNonce, setHandlerActiveRingNonce] = useState(0);
     const [assignedTeamPanelOpen, setAssignedTeamPanelOpen] = useState(false);
     const [headerFinancialDetailsOpen, setHeaderFinancialDetailsOpen] = useState(false);
+    const [headerActionsHoverOpen, setHeaderActionsHoverOpen] = useState(false);
+    const headerHoverLeaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const activeHandlerLeadRealtimeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const handleHeaderHoverEnter = useCallback(() => {
+        if (headerHoverLeaveTimerRef.current) {
+            clearTimeout(headerHoverLeaveTimerRef.current);
+            headerHoverLeaveTimerRef.current = null;
+        }
+        setHeaderActionsHoverOpen(true);
+    }, []);
+
+    const handleHeaderHoverLeave = useCallback(() => {
+        if (headerHoverLeaveTimerRef.current) {
+            clearTimeout(headerHoverLeaveTimerRef.current);
+        }
+        headerHoverLeaveTimerRef.current = setTimeout(() => {
+            setHeaderActionsHoverOpen(false);
+            headerHoverLeaveTimerRef.current = null;
+        }, 220);
+    }, []);
+
+    useEffect(
+        () => () => {
+            if (headerHoverLeaveTimerRef.current) {
+                clearTimeout(headerHoverLeaveTimerRef.current);
+            }
+        },
+        [],
+    );
 
     useEffect(() => {
         setAssignedTeamPanelOpen(false);
         setHeaderFinancialDetailsOpen(false);
         setMoreActionsSheetOpen(false);
         setInactiveNotesExpanded(false);
+        setHeaderActionsHoverOpen(false);
     }, [selectedClient?.id]);
     /** Latest row identity + active_handler_type for poll + realtime client-side match (avoids stale closures). */
     const leadHandlerSyncRef = useRef<{
@@ -912,6 +948,18 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             fetchLeadSubEffortRows: showPickerLogAndModal || closed200,
         };
     }, [selectedClient?.id, (selectedClient as any)?.stage, currentStageName, isStageNumeric, stageNumeric]);
+
+    const showAssignSchedulerInHeader = useMemo(() => {
+        if (!selectedClient) return false;
+        const inferred = Number((selectedClient as any)?.stage ?? NaN);
+        const numeric =
+            isStageNumeric && stageNumeric != null
+                ? stageNumeric
+                : Number.isFinite(inferred)
+                  ? inferred
+                  : undefined;
+        return shouldShowAssignSchedulerField(currentStageName, selectedClient, numeric);
+    }, [selectedClient, currentStageName, isStageNumeric, stageNumeric]);
 
     useEffect(() => {
         let cancelled = false;
@@ -2541,7 +2589,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             aria-label="More actions"
             onClick={() => setMoreActionsSheetOpen(true)}
         >
-            <EllipsisHorizontalIcon className="h-6 w-6" />
+            <EllipsisHorizontalIcon className={HEADER_ACTION_ICON} />
         </button>
     );
 
@@ -2556,7 +2604,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     title="View Timeline"
                     aria-label="View Timeline"
                 >
-                    <ClockIcon className="h-6 w-6" aria-hidden />
+                    <ClockIcon className={HEADER_ACTION_ICON} aria-hidden />
                 </button>
                 <button
                     type="button"
@@ -2565,7 +2613,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     title="View History"
                     aria-label="View History"
                 >
-                    <ArchiveBoxIcon className="h-6 w-6" aria-hidden />
+                    <ArchiveBoxIcon className={HEADER_ACTION_ICON} aria-hidden />
                 </button>
             </>
         ) : null;
@@ -2713,7 +2761,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             title={headerDocsLeadNumber ? 'Case documents on OneDrive' : 'Lead number required'}
             aria-label="Case documents"
         >
-            <DocumentArrowUpIcon className="h-6 w-6" aria-hidden />
+            <DocumentArrowUpIcon className={HEADER_ACTION_ICON} aria-hidden />
             {headerSupabaseDocumentsCount > 0 && (
                 <span
                     className="absolute -right-1 -top-1 flex h-4 min-w-[1rem] items-center justify-center rounded-full px-0.5 text-[10px] font-bold text-white"
@@ -2739,70 +2787,62 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
             <div className={`flex flex-wrap items-center gap-2 ${wrapperClassName}`.trim()}>
                 {hasContactActions ? (
                     <div className={HEADER_ACTION_BAR_OVAL}>
-                        <div className="flex flex-wrap items-center gap-2">
-                            {displayPhone ? (
-                                <button
-                                    type="button"
-                                    className={HEADER_ACTION_BAR_CALL_BTN}
-                                    title="Call"
-                                    aria-label="Call"
-                                    onClick={handleCallPrimaryPhone}
-                                >
-                                    <PhoneArrowUpRightIcon className="h-6 w-6" aria-hidden />
-                                </button>
-                            ) : null}
-                            {onOpenWhatsAppForContact && displayPhone ? (
-                                <button
-                                    type="button"
-                                    className={HEADER_ACTION_BAR_WHATSAPP_BTN}
-                                    title="WhatsApp"
-                                    aria-label="WhatsApp"
-                                    onClick={() => void handleHeaderWhatsAppClick()}
-                                >
-                                    <FaWhatsapp className="h-6 w-6" aria-hidden />
-                                </button>
-                            ) : null}
-                            {displayEmail ? (
-                                <button
-                                    type="button"
-                                    className={HEADER_ACTION_BAR_EMAIL_BTN}
-                                    title="Email"
-                                    aria-label="Email"
-                                    onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
-                                >
-                                    <EnvelopeIcon className="h-6 w-6" aria-hidden />
-                                </button>
-                            ) : null}
-                        </div>
+                        {displayPhone ? (
+                            <button
+                                type="button"
+                                className={HEADER_ACTION_BAR_CALL_BTN}
+                                title="Call"
+                                aria-label="Call"
+                                onClick={handleCallPrimaryPhone}
+                            >
+                                <PhoneArrowUpRightIcon className={HEADER_ACTION_ICON} aria-hidden />
+                            </button>
+                        ) : null}
+                        {onOpenWhatsAppForContact && displayPhone ? (
+                            <button
+                                type="button"
+                                className={HEADER_ACTION_BAR_WHATSAPP_BTN}
+                                title="WhatsApp"
+                                aria-label="WhatsApp"
+                                onClick={() => void handleHeaderWhatsAppClick()}
+                            >
+                                <FaWhatsapp className={HEADER_ACTION_ICON} aria-hidden />
+                            </button>
+                        ) : null}
+                        {displayEmail ? (
+                            <button
+                                type="button"
+                                className={HEADER_ACTION_BAR_EMAIL_BTN}
+                                title="Email"
+                                aria-label="Email"
+                                onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
+                            >
+                                <EnvelopeIcon className={HEADER_ACTION_ICON} aria-hidden />
+                            </button>
+                        ) : null}
                     </div>
                 ) : null}
 
                 {!hideHistoryAndTimeline ? (
                     <div className={HEADER_ACTION_BAR_OVAL}>
-                        <div className="flex flex-wrap items-center gap-2">
-                            {renderTimelineHistoryButtons(
-                                HEADER_ACTION_BAR_TIMELINE_BTN,
-                                HEADER_ACTION_BAR_HISTORY_BTN,
-                            )}
-                        </div>
+                        {renderTimelineHistoryButtons(
+                            HEADER_ACTION_BAR_TIMELINE_BTN,
+                            HEADER_ACTION_BAR_HISTORY_BTN,
+                        )}
                     </div>
                 ) : null}
 
                 <div className={HEADER_ACTION_BAR_OVAL}>
-                    <div className="flex flex-wrap items-center gap-2">
-                        {renderHeaderDocsButton()}
-                        {renderTagsFlagsButtons(
-                            HEADER_ACTION_BAR_TAGS_BTN,
-                            HEADER_ACTION_BAR_FLAGS_BTN,
-                            'h-6 w-6',
-                        )}
-                    </div>
+                    {renderHeaderDocsButton()}
+                    {renderTagsFlagsButtons(
+                        HEADER_ACTION_BAR_TAGS_BTN,
+                        HEADER_ACTION_BAR_FLAGS_BTN,
+                        HEADER_ACTION_ICON,
+                    )}
                 </div>
 
                 <div className={HEADER_ACTION_BAR_OVAL}>
-                    <div className="flex flex-wrap items-center gap-2">
-                        {renderMoreActionsTrigger(HEADER_ACTION_BAR_MORE_BTN)}
-                    </div>
+                    {renderMoreActionsTrigger(HEADER_ACTION_BAR_MORE_BTN)}
                 </div>
             </div>
         );
@@ -2819,9 +2859,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 <div
                     className={
                         connectToAppHeader
-                            ? 'group/header relative w-full'
-                            : `${CLIENT_HEADER_SHELL} group/header relative mt-5 md:mt-7`
+                            ? 'relative w-full'
+                            : `${CLIENT_HEADER_SHELL} relative mt-5 md:mt-7`
                     }
+                    onMouseEnter={handleHeaderHoverEnter}
+                    onMouseLeave={handleHeaderHoverLeave}
                 >
                     <div
                         className={
@@ -3773,11 +3815,19 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         {renderClientMetaBadges()}
                     </div>
 
-                    <div className="pointer-events-none absolute inset-x-0 top-full z-20 mt-2 hidden -translate-y-1 flex-wrap items-center gap-2 opacity-0 transition-all duration-200 before:pointer-events-none before:absolute before:inset-x-0 before:-top-2 before:h-2 before:content-[''] group-hover/header:pointer-events-auto group-hover/header:translate-y-0 group-hover/header:opacity-100 md:flex">
-                        <div className="pointer-events-auto shrink-0">
-                            {renderSegmentedHeaderActions()}
-                        </div>
-                                    <div className="pointer-events-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+                    <div
+                        className={`absolute inset-x-0 top-[calc(100%-10px)] z-30 hidden flex-col items-stretch gap-2 overflow-visible pt-3 pb-12 transition-[opacity,transform] duration-300 ease-out md:flex ${
+                            headerActionsHoverOpen
+                                ? 'pointer-events-auto translate-y-0 opacity-100'
+                                : 'pointer-events-none -translate-y-0.5 opacity-0'
+                        }`}
+                        aria-hidden={!headerActionsHoverOpen}
+                    >
+                        <div className="flex w-full flex-wrap items-center gap-2">
+                            <div className="pointer-events-auto shrink-0">
+                                {renderSegmentedHeaderActions()}
+                            </div>
+                            <div className="pointer-events-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
                                     {(() => {
                                         const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
                                         const isUnactivated = isLegacy
@@ -4133,8 +4183,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                                                     {/* Stage 60: no action buttons (handler assignment is required and auto-advances to "Handler Set") */}
 
+                                                    {/* Created / Precommunication — assign scheduler instead of stage buttons */}
+                                                    {showAssignSchedulerInHeader && assignSchedulerContent ? (
+                                                        <div className={`ml-auto shrink-0 ${HEADER_ROLE_ASSIGN_WIDTH_CLASS}`}>
+                                                            {assignSchedulerContent}
+                                                        </div>
+                                                    ) : null}
+
                                                     {/* General stages - Schedule Meeting and Communication Started */}
                                                     {selectedClient &&
+                                                        !showAssignSchedulerInHeader &&
                                                         !areStagesEquivalent(currentStageName, 'Handler Set') &&
                                                         !areStagesEquivalent(currentStageName, 'Handler Started') &&
                                                         !areStagesEquivalent(currentStageName, 'Application submitted') &&
@@ -4178,7 +4236,13 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         </>
                                         );
                                     })()}
-                                    </div>
+                            </div>
+                        </div>
+                        {dropdownsContent ? (
+                            <div className={`pointer-events-auto relative z-10 shrink-0 pt-1 ${HEADER_ROLE_ASSIGN_WIDTH_CLASS}`}>
+                                {dropdownsContent}
+                            </div>
+                        ) : null}
                     </div>
                 </div>
 
@@ -4649,9 +4713,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
                                 {/* Stage 60: no action buttons (handler assignment is required and auto-advances to "Handler Set") */}
 
+                                {/* Created / Precommunication — assign scheduler instead of stage buttons */}
+                                {showAssignSchedulerInHeader && assignSchedulerContent ? (
+                                    <div className={HEADER_ROLE_ASSIGN_WIDTH_CLASS}>{assignSchedulerContent}</div>
+                                ) : null}
+
                                 {/* General stages - Schedule Meeting and Communication Started */}
                                 {/* Only show for stages that haven't been handled by specific sections above */}
                                 {selectedClient &&
+                                    !showAssignSchedulerInHeader &&
                                     !areStagesEquivalent(currentStageName, 'Handler Set') &&
                                     !areStagesEquivalent(currentStageName, 'Handler Started') &&
                                     !areStagesEquivalent(currentStageName, 'Application submitted') &&
@@ -4694,15 +4764,6 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         );
                     })()}
                 </div>
-
-                {/* Assign scheduler / handler — centered (compact width) */}
-                {dropdownsContent && (
-                    <div className="w-full pt-2">
-                        <div className="w-full max-w-md">
-                            {dropdownsContent}
-                        </div>
-                    </div>
-                )}
 
                 {/* Mobile: assigned team */}
                 <div className="mt-7 pt-6 md:hidden w-full px-1 sm:px-2">
@@ -4907,6 +4968,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     }
                     desktopLayout="drawer-right"
                     zIndex={330}
+                    headerClassName="!border-b-0"
                     sheetClassName="md:max-w-[min(100%,22rem)] md:shadow-2xl"
                     contentClassName="!px-4 !pb-6 bg-base-200/25 dark:bg-base-300/10"
                     overlayClassName="backdrop-blur-[1px]"

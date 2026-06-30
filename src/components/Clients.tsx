@@ -13,7 +13,7 @@ import {
   type LeadSourceOption,
 } from '../lib/leadSourceId';
 import { buildLeadTagJunctionAuditFields } from '../lib/leadTagJunctionAudit';
-import { getStageName, fetchStageNames, areStagesEquivalent, normalizeStageName, getStageColour } from '../lib/stageUtils';
+import { getStageName, fetchStageNames, areStagesEquivalent, shouldShowAssignSchedulerField, normalizeStageName, getStageColour } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { fetchAllLeads, fetchLatestLead, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
 import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
@@ -131,6 +131,10 @@ import WheelTimePicker from './WheelTimePicker';
 import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
 import ClientHeader from './ClientHeader';
+import HeaderRoleAssignField, {
+  HeaderRoleAssignDropdownItem,
+  type AssignFieldEmployeeRef,
+} from './HeaderRoleAssignField';
 import MobileBottomSheet from './MobileBottomSheet';
 import {
   DESKTOP_CENTER_MODAL_PROPS,
@@ -8240,6 +8244,28 @@ const Clients: React.FC<ClientsProps> = ({
     return map;
   }, [handlerOptions]);
 
+  const resolveAssignFieldEmployee = useCallback(
+    (ref: { id?: string | null; name: string }): AssignFieldEmployeeRef => {
+      let emp: any;
+      if (ref.id) {
+        emp = allEmployees?.find((e: any) => String(e.id) === String(ref.id));
+      }
+      if (!emp && ref.name) {
+        const target = ref.name.trim().toLowerCase();
+        emp = allEmployees?.find(
+          (e: any) =>
+            typeof e.display_name === 'string' && e.display_name.trim().toLowerCase() === target,
+        );
+      }
+      return {
+        id: emp?.id ?? ref.id ?? null,
+        displayName: emp?.display_name?.trim() || ref.name,
+        photoUrl: emp?.photo_url || emp?.photo || null,
+      };
+    },
+    [allEmployees],
+  );
+
   // Filter success stage handler options when search term changes
   useEffect(() => {
     if (CLIENTS_DEBUG) console.log('🔍 Filtering handler options, search term:', successStageHandlerSearch);
@@ -12293,7 +12319,11 @@ const Clients: React.FC<ClientsProps> = ({
   // Before the return statement, add:
   let dropdownItems = null;
 
-  if (selectedClient && areStagesEquivalent(currentStageName, 'Created')) {
+  if (selectedClient && shouldShowAssignSchedulerField(
+    currentStageName,
+    selectedClient,
+    isStageNumeric ? stageNumeric : Number((selectedClient as any)?.stage),
+  )) {
     dropdownItems = (
       <li className="px-2 py-2 text-sm text-base-content/70">
         No action available
@@ -14728,6 +14758,62 @@ const Clients: React.FC<ClientsProps> = ({
           <ClientHeader
             connectToAppHeader
             selectedClient={selectedClient}
+            assignSchedulerContent={
+              selectedClient &&
+              shouldShowAssignSchedulerField(
+                currentStageName,
+                selectedClient,
+                isStageNumeric ? stageNumeric : Number((selectedClient as any)?.stage),
+              ) ? (
+                <HeaderRoleAssignField
+                  label="Assign scheduler"
+                  placeholder="—"
+                  value={schedulerSearchTerm}
+                  onChange={(value) => {
+                    setSchedulerSearchTerm(value);
+                    setShowSchedulerDropdown(true);
+                  }}
+                  onFocus={() => setShowSchedulerDropdown(true)}
+                  onConfirm={() => {
+                    const searchText = schedulerSearchTerm.trim();
+                    if (searchText) {
+                      updateScheduler(searchText);
+                    }
+                  }}
+                  confirmTitle="Assign scheduler"
+                  dropdownOpen={showSchedulerDropdown}
+                  dropdown={
+                    <>
+                      <HeaderRoleAssignDropdownItem
+                        label="———"
+                        showAvatar={false}
+                        onClick={() => {
+                          setSchedulerSearchTerm('');
+                          setShowSchedulerDropdown(false);
+                          updateScheduler('');
+                        }}
+                      />
+                      {filteredSchedulerOptions.length > 0 ? (
+                        filteredSchedulerOptions.map((option) => (
+                          <HeaderRoleAssignDropdownItem
+                            key={option}
+                            label={option}
+                            employee={resolveAssignFieldEmployee({ name: option })}
+                            onClick={() => {
+                              setSchedulerSearchTerm(option);
+                              setShowSchedulerDropdown(false);
+                              updateScheduler(option);
+                            }}
+                          />
+                        ))
+                      ) : (
+                        <div className="px-3.5 py-2.5 text-sm text-base-content/55">No matches found</div>
+                      )}
+                    </>
+                  }
+                />
+              ) : null
+            }
             flaggedConversationCount={headerFlaggedConversationCount}
             pendingProbabilityValues={pendingProbabilityAfterFlag}
             pendingProbabilitySaving={pendingProbabilitySaving}
@@ -14800,171 +14886,85 @@ const Clients: React.FC<ClientsProps> = ({
                     const isHandlerAssigned = !!handlerId || !!handlerLabel;
                     return isSuccess || (isClientSigned && !isHandlerAssigned);
                   })() && (
-                  <div className="flex flex-col items-start gap-1 w-full">
-                    <label className="block text-xs font-semibold text-gray-500 mb-1">Assign case handler</label>
-                    <div ref={successStageHandlerContainerRefDesktop} className="relative w-full flex items-center gap-1" style={{ overflow: 'visible', zIndex: 1 }}>
-                      <div className="relative w-full" style={{ overflow: 'visible', zIndex: 1 }}>
-                        <input
-                          type="text"
-                          className="input input-sm input-bordered w-full"
-                          placeholder="Not assigned"
-                          value={successStageHandlerSearch}
-                          onChange={e => {
-                            setSuccessStageHandlerSearch(e.target.value);
-                            setShowSuccessStageHandlerDropdown(true);
-                          }}
-                          onFocus={() => {
-                            setShowSuccessStageHandlerDropdown(true);
+                  <HeaderRoleAssignField
+                    label="Assign case handler"
+                    placeholder="Not assigned"
+                    value={successStageHandlerSearch}
+                    onChange={(value) => {
+                      setSuccessStageHandlerSearch(value);
+                      setShowSuccessStageHandlerDropdown(true);
+                    }}
+                    onFocus={() => {
+                      setShowSuccessStageHandlerDropdown(true);
+                      setFilteredSuccessStageHandlerOptions(handlerOptions);
+                    }}
+                    onConfirm={() => {
+                      const searchText = successStageHandlerSearch.trim();
+                      if (!searchText) return;
+
+                      const matchedEmployee = allEmployees.find(
+                        (emp) => emp.display_name.toLowerCase() === searchText.toLowerCase(),
+                      );
+
+                      let optionToAssign: HandlerOption;
+
+                      if (matchedEmployee) {
+                        optionToAssign = { id: matchedEmployee.id, label: matchedEmployee.display_name };
+                      } else {
+                        const matchedOption = handlerOptions.find(
+                          (opt) => opt.label.toLowerCase() === searchText.toLowerCase(),
+                        );
+                        if (matchedOption) {
+                          optionToAssign = matchedOption;
+                        } else {
+                          optionToAssign = { id: '', label: searchText };
+                        }
+                      }
+
+                      void assignSuccessStageHandler(optionToAssign);
+                    }}
+                    confirmDisabled={isUpdatingSuccessStageHandler}
+                    inputDisabled={isUpdatingSuccessStageHandler}
+                    confirmTitle="Assign handler"
+                    containerRef={successStageHandlerContainerRefDesktop}
+                    dropdownOpen={showSuccessStageHandlerDropdown}
+                    dropdown={
+                      <>
+                        <HeaderRoleAssignDropdownItem
+                          label="———"
+                          showAvatar={false}
+                          onClick={() => {
+                            setSuccessStageHandlerSearch('');
+                            setShowSuccessStageHandlerDropdown(false);
                             setFilteredSuccessStageHandlerOptions(handlerOptions);
+                            void assignSuccessStageHandler(null);
                           }}
-                          autoComplete="off"
                           disabled={isUpdatingSuccessStageHandler}
                         />
-                      </div>
-                      <button
-                        className="btn btn-sm btn-square btn-success text-white"
-                        onClick={() => {
-                          const searchText = successStageHandlerSearch.trim();
-                          if (!searchText) return;
-
-                          // 1. Try to find strict match in allEmployees (best for ID resolution)
-                          const matchedEmployee = allEmployees.find(emp =>
-                            emp.display_name.toLowerCase() === searchText.toLowerCase()
-                          );
-
-                          let optionToAssign: HandlerOption;
-
-                          if (matchedEmployee) {
-                            optionToAssign = { id: matchedEmployee.id, label: matchedEmployee.display_name };
-                          } else {
-                            // 2. Fallback: try to find in existing handlerOptions
-                            const matchedOption = handlerOptions.find(opt => opt.label.toLowerCase() === searchText.toLowerCase());
-                            if (matchedOption) {
-                              optionToAssign = matchedOption;
-                            } else {
-                              // 3. Last resort: custom text. Pass empty ID but valid label.
-                              // The assignSuccessStageHandler logic checks for label presence to trigger stage update.
-                              optionToAssign = { id: '', label: searchText };
-                            }
-                          }
-
-                          // Trigger assignment. This function handles stage update logic (to "Handler Set").
-                          void assignSuccessStageHandler(optionToAssign);
-                        }}
-                        disabled={isUpdatingSuccessStageHandler}
-                        title="Assign Handler"
-                      >
-                        <CheckIcon className="w-5 h-5" />
-                      </button>
-                      {showSuccessStageHandlerDropdown && (
-                        <div className="absolute top-full left-0 z-[100] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                          <button
-                            type="button"
-                            className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                            onClick={() => {
-                              setSuccessStageHandlerSearch('');
-                              setShowSuccessStageHandlerDropdown(false);
-                              setFilteredSuccessStageHandlerOptions(handlerOptions);
-                              void assignSuccessStageHandler(null);
-                            }}
-                            disabled={isUpdatingSuccessStageHandler}
-                          >
-                            ---------
-                          </button>
-                          {filteredSuccessStageHandlerOptions.length > 0 ? (
-                            filteredSuccessStageHandlerOptions.map(option => (
-                              <button
-                                type="button"
-                                key={option.id}
-                                className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
-                                onClick={() => {
-                                  setSuccessStageHandlerSearch(option.label);
-                                  setShowSuccessStageHandlerDropdown(false);
-                                  setFilteredSuccessStageHandlerOptions(handlerOptions);
-                                  void assignSuccessStageHandler(option);
-                                }}
-                                disabled={isUpdatingSuccessStageHandler}
-                              >
-                                {option.label}
-                              </button>
-                            ))
-                          ) : (
-                            <div className="px-4 py-3 text-sm text-base-content/60">
-                              No handlers found
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
-                  <div className="relative w-full" data-assign-dropdown="true">
-                    <label className="block text-xs font-medium text-gray-500 mb-1">Assign scheduler</label>
-                    <div className="flex items-center gap-1">
-                      <div className="relative w-full">
-                        <input
-                          type="text"
-                          className="input input-sm input-bordered w-full"
-                          placeholder="---"
-                          value={schedulerSearchTerm}
-                          onChange={e => {
-                            setSchedulerSearchTerm(e.target.value);
-                            setShowSchedulerDropdown(true);
-                          }}
-                          onFocus={() => setShowSchedulerDropdown(true)}
-                        />
-                      </div>
-                      <button
-                        className="btn btn-sm btn-square btn-success text-white"
-                        onClick={() => {
-                          const searchText = schedulerSearchTerm.trim();
-                          if (searchText) {
-                            updateScheduler(searchText);
-                          }
-                        }}
-                        title="Assign Scheduler"
-                      >
-                        <CheckIcon className="w-5 h-5" />
-                      </button>
-                    </div>
-                    {showSchedulerDropdown && (
-                      <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                        <button
-                          type="button"
-                          className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                          onClick={() => {
-                            setSchedulerSearchTerm('');
-                            setShowSchedulerDropdown(false);
-                            updateScheduler('');
-                          }}
-                        >
-                          ---------
-                        </button>
-                        {filteredSchedulerOptions.length > 0 ? (
-                          filteredSchedulerOptions.map(option => (
-                            <button
-                              type="button"
-                              key={option}
-                              className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                        {filteredSuccessStageHandlerOptions.length > 0 ? (
+                          filteredSuccessStageHandlerOptions.map((option) => (
+                            <HeaderRoleAssignDropdownItem
+                              key={option.id}
+                              label={option.label}
+                              employee={resolveAssignFieldEmployee({
+                                id: option.id,
+                                name: option.label,
+                              })}
                               onClick={() => {
-                                setSchedulerSearchTerm(option);
-                                setShowSchedulerDropdown(false);
-                                updateScheduler(option);
+                                setSuccessStageHandlerSearch(option.label);
+                                setShowSuccessStageHandlerDropdown(false);
+                                setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                void assignSuccessStageHandler(option);
                               }}
-                            >
-                              {option}
-                            </button>
+                              disabled={isUpdatingSuccessStageHandler}
+                            />
                           ))
                         ) : (
-                          <div className="px-4 py-3 text-sm text-base-content/60">
-                            No matches found
-                          </div>
+                          <div className="px-3.5 py-2.5 text-sm text-base-content/55">No handlers found</div>
                         )}
-                      </div>
-                    )}
-                  </div>
+                      </>
+                    }
+                  />
                 )}
               </>
             }
@@ -15196,10 +15196,10 @@ const Clients: React.FC<ClientsProps> = ({
                         disabled={isUpdatingSuccessStageHandler}
                       />
                       {showSuccessStageHandlerDropdown && (
-                        <div className="absolute top-full left-0 z-[100] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                          <button
-                            type="button"
-                            className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                        <div className="absolute top-full left-0 z-[100] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 py-1 shadow-2xl">
+                          <HeaderRoleAssignDropdownItem
+                            label="———"
+                            showAvatar={false}
                             onClick={() => {
                               setSuccessStageHandlerSearch('');
                               setShowSuccessStageHandlerDropdown(false);
@@ -15207,15 +15207,16 @@ const Clients: React.FC<ClientsProps> = ({
                               void assignSuccessStageHandler(null);
                             }}
                             disabled={isUpdatingSuccessStageHandler}
-                          >
-                            ---------
-                          </button>
+                          />
                           {filteredSuccessStageHandlerOptions.length > 0 ? (
-                            filteredSuccessStageHandlerOptions.map(option => (
-                              <button
-                                type="button"
+                            filteredSuccessStageHandlerOptions.map((option) => (
+                              <HeaderRoleAssignDropdownItem
                                 key={option.id}
-                                className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                                label={option.label}
+                                employee={resolveAssignFieldEmployee({
+                                  id: option.id,
+                                  name: option.label,
+                                })}
                                 onClick={() => {
                                   setSuccessStageHandlerSearch(option.label);
                                   setShowSuccessStageHandlerDropdown(false);
@@ -15223,12 +15224,10 @@ const Clients: React.FC<ClientsProps> = ({
                                   void assignSuccessStageHandler(option);
                                 }}
                                 disabled={isUpdatingSuccessStageHandler}
-                              >
-                                {option.label}
-                              </button>
+                              />
                             ))
                           ) : (
-                            <div className="px-4 py-3 text-sm text-base-content/60">
+                            <div className="px-3.5 py-2.5 text-sm text-base-content/55">
                               No handlers found
                             </div>
                           )}
@@ -15238,7 +15237,12 @@ const Clients: React.FC<ClientsProps> = ({
                   </div>
                 )}
 
-                {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
+                {selectedClient &&
+                  shouldShowAssignSchedulerField(
+                    currentStageName,
+                    selectedClient,
+                    isStageNumeric ? stageNumeric : Number((selectedClient as any)?.stage),
+                  ) && (
                   <div className="relative" data-assign-dropdown="true">
                     <label className="block text-sm font-medium text-primary mb-1">Assign scheduler</label>
                     <input
@@ -15253,35 +15257,31 @@ const Clients: React.FC<ClientsProps> = ({
                       onFocus={() => setShowSchedulerDropdown(true)}
                     />
                     {showSchedulerDropdown && (
-                      <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                        <button
-                          type="button"
-                          className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                      <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 py-1 shadow-2xl">
+                        <HeaderRoleAssignDropdownItem
+                          label="———"
+                          showAvatar={false}
                           onClick={() => {
                             setSchedulerSearchTerm('');
                             setShowSchedulerDropdown(false);
                             updateScheduler('');
                           }}
-                        >
-                          ---------
-                        </button>
+                        />
                         {filteredSchedulerOptions.length > 0 ? (
-                          filteredSchedulerOptions.map(option => (
-                            <button
-                              type="button"
+                          filteredSchedulerOptions.map((option) => (
+                            <HeaderRoleAssignDropdownItem
                               key={option}
-                              className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                              label={option}
+                              employee={resolveAssignFieldEmployee({ name: option })}
                               onClick={() => {
                                 setSchedulerSearchTerm(option);
                                 setShowSchedulerDropdown(false);
                                 updateScheduler(option);
                               }}
-                            >
-                              {option}
-                            </button>
+                            />
                           ))
                         ) : (
-                          <div className="px-4 py-3 text-sm text-base-content/60">
+                          <div className="px-3.5 py-2.5 text-sm text-base-content/55">
                             No matches found
                           </div>
                         )}

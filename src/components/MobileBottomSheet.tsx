@@ -30,6 +30,8 @@ export type MobileBottomSheetProps = {
   contentClassName?: string;
   overlayClassName?: string;
   footerClassName?: string;
+  /** Extra classes for the default header row (e.g. omit `border-b`). */
+  headerClassName?: string;
   /** Desktop: centered modal (default) or right-edge drawer */
   desktopLayout?: 'center' | 'drawer-right';
   /** When false, tapping the backdrop does nothing */
@@ -56,6 +58,7 @@ export default function MobileBottomSheet({
   contentClassName = '',
   overlayClassName = '',
   footerClassName = '',
+  headerClassName = '',
   desktopLayout = 'center',
   closeOnOverlayClick = true,
   onOverlayClick,
@@ -193,7 +196,7 @@ export default function MobileBottomSheet({
           {showHeader && (
             <div
               data-sheet-handle
-              className="flex shrink-0 items-start justify-between gap-3 border-b border-base-200/80 bg-base-100 px-4 py-3.5 md:px-6 md:py-4"
+              className={`flex shrink-0 items-start justify-between gap-3 border-b border-base-200/80 bg-base-100 px-4 py-3.5 md:px-6 md:py-4 ${headerClassName}`}
             >
               <div className="min-w-0 flex-1">
                 {title && (
