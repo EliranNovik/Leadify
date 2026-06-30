@@ -23,6 +23,7 @@ import {
   ChevronRightIcon,
 } from '@heroicons/react/24/outline';
 import { FolderIcon } from '@heroicons/react/24/solid';
+import { ClientTabPageHeader } from './ClientTabPageHeader';
 import { supabase } from '../../lib/supabase';
 import { useAuthContext } from '../../contexts/AuthContext';
 import {
@@ -38,7 +39,7 @@ import FlagTypeFlagButton from '../FlagTypeFlagButton';
 import DocumentModal from '../DocumentModal';
 import ExpertNotesModal from '../ExpertNotesModal';
 import { toast } from 'react-hot-toast';
-import { buildCaseDocumentStoragePath, CASE_DOCUMENTS_STORAGE_BUCKET } from '../../lib/caseDocumentsStorage';
+import { buildCaseDocumentStoragePath, CASE_DOCUMENTS_STORAGE_BUCKET, resolveCaseDocumentUploadContentType } from '../../lib/caseDocumentsStorage';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../../lib/leadOneDrivePaths';
 
 /** Same parsing as `DocumentModal` for `lead_sub_efforts.document_url` — used only for total count. */
@@ -2458,10 +2459,11 @@ ${combinedText}`;
         }
 
         const storagePath = buildCaseDocumentStoragePath(client.lead_number, null, file.name);
+        const contentType = resolveCaseDocumentUploadContentType(file);
         const { error: storageErr } = await supabase.storage
           .from(CASE_DOCUMENTS_STORAGE_BUCKET)
           .upload(storagePath, file, {
-            contentType: file.type?.trim() || undefined,
+            contentType,
             upsert: false,
           });
 
@@ -2471,7 +2473,7 @@ ${combinedText}`;
         if (storageErr) throw storageErr;
 
         const uploadedBy = await getCurrentUserName();
-        const mimeType = file.type?.trim() || 'application/octet-stream';
+        const mimeType = contentType;
 
         const { error: insErr } = await supabase.from('lead_case_documents').insert({
           lead_number: client.lead_number,
@@ -2597,17 +2599,13 @@ ${combinedText}`;
 
   return (
     <div className="p-3 sm:p-4 md:p-6">
-      {/* Header */}
       <div className="flex items-start justify-between gap-4 mb-6">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-base-200 flex items-center justify-center">
-            <AcademicCapIcon className="w-5 h-5 text-base-content/70" />
-          </div>
-          <div>
-            <h2 className="text-xl font-semibold text-base-content">Expert</h2>
-            <p className="text-sm text-base-content/60">Case evaluation, documents, and expert opinions</p>
-          </div>
-        </div>
+        <ClientTabPageHeader
+          className="mb-0 flex-1"
+          icon={AcademicCapIcon}
+          title="Expert"
+          subtitle="Case evaluation, documents, and expert opinions"
+        />
         <div className="flex items-center gap-2">
           <button
             type="button"

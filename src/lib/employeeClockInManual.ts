@@ -5,6 +5,7 @@ import {
   yearMonthFromDateKey,
   assertWorkingHoursMonthEditable,
 } from './employeeWorkingHoursSubmissions';
+import { insertClockInRevision } from './employeeClockInRevisions';
 
 export type ManualClockInPayload = {
   employeeId: number;
@@ -124,7 +125,11 @@ export async function updateClockInSession(update: ClockInSessionUpdate): Promis
   const { data: existing, error: fetchError } = await supabase
     .from('employee_clock_in')
     .select(
-      'employee_id, clock_in_time, clock_out_time, notes, manually, approved, declined, approved_by, approved_at, clock_in_location_id, clock_out_location_id',
+      `employee_id, clock_in_time, clock_out_time, notes, manually, approved, declined,
+       approved_by, approved_at, clock_in_location_id, clock_out_location_id,
+       location_latitude, location_longitude, location_address, location_city, location_country, location_source,
+       clock_out_location_latitude, clock_out_location_longitude,
+       clock_out_location_address, clock_out_location_city, clock_out_location_country, clock_out_location_source`,
     )
     .eq('id', update.id)
     .single();
@@ -166,6 +171,14 @@ export async function updateClockInSession(update: ClockInSessionUpdate): Promis
     && (existing.manually !== true || existing.approved === true);
 
   const preserveApproval = wasEffectivelyApproved && materialFieldsUnchanged;
+
+  if (!preserveApproval) {
+    await insertClockInRevision(
+      update.id,
+      existing,
+      existing.manually !== true ? 'automatic' : 'manual',
+    );
+  }
 
   const row: Record<string, unknown> = {
     clock_in_time: clockIn.toISOString(),

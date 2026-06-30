@@ -132,6 +132,13 @@ import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
 import ClientHeader from './ClientHeader';
 import MobileBottomSheet from './MobileBottomSheet';
+import {
+  DESKTOP_CENTER_MODAL_PROPS,
+  EDIT_FIELD_INPUT,
+  EDIT_FIELD_TEXTAREA,
+  EditFieldLabel,
+  ModalActionFooter,
+} from './EditFieldModal';
 import MeetingFormDrawerSheet, {
   MeetingFormDrawerActionButton,
   MeetingFormDrawerFooter,
@@ -14717,9 +14724,9 @@ const Clients: React.FC<ClientsProps> = ({
 
 
 
-          {/* Client header — boxed width (match tabs content) */}
-          <div className="w-full min-w-0 px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8">
+          {/* Client header — cards on grey page background */}
           <ClientHeader
+            connectToAppHeader
             selectedClient={selectedClient}
             flaggedConversationCount={headerFlaggedConversationCount}
             pendingProbabilityValues={pendingProbabilityAfterFlag}
@@ -14962,9 +14969,8 @@ const Clients: React.FC<ClientsProps> = ({
               </>
             }
           />
-          </div>
           {/* Client record shell — tabs and tab content */}
-          <div className="w-full min-w-0 px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8 mt-4 md:mt-5 lg:mt-6">
+          <div className="w-full min-w-0 px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8 mt-3 md:mt-4 lg:mt-5">
           {/* Tabs Navigation */}
 
           {/* Tabs Navigation - Desktop Only (Hidden on Mobile) - Fixed at bottom with glassy blur effect */}
@@ -15066,7 +15072,7 @@ const Clients: React.FC<ClientsProps> = ({
                       {(() => {
                         const activeTabData = tabs.find(tab => tab.id === activeTab);
                         const ActiveIcon = activeTabData?.icon || InformationCircleIcon;
-                        return <ActiveIcon className="w-6 h-6" style={{ animation: 'fadeInScale 0.5s ease-in-out 0.1s both' }} />;
+                        return <ActiveIcon className="w-7 h-7" style={{ animation: 'fadeInScale 0.5s ease-in-out 0.1s both' }} />;
                       })()}
                       {(() => {
                         const activeTabData = tabs.find(tab => tab.id === activeTab);
@@ -15113,7 +15119,7 @@ const Clients: React.FC<ClientsProps> = ({
                             }}
                           >
                             <div className="relative inline-flex items-center justify-center">
-                              <tab.icon className={`w-6 h-6 flex-shrink-0 ${activeTab === tab.id ? 'text-[#471CCA]' : 'text-gray-500'}`} />
+                              <tab.icon className={`w-7 h-7 flex-shrink-0 ${activeTab === tab.id ? 'text-[#471CCA]' : 'text-gray-500'}`} />
                               {tab.id === 'interactions' && tab.badge && (
                                 <div className={`absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${activeTab === tab.id
                                   ? 'bg-purple-200/90 text-[#471CCA] dark:bg-purple-900/50 dark:text-purple-200'
@@ -15124,7 +15130,7 @@ const Clients: React.FC<ClientsProps> = ({
                               )}
                             </div>
                             <div className="flex flex-col items-center gap-0.5">
-                              <span className={`saira-light text-xs ${activeTab === tab.id ? 'font-bold text-[#471CCA]' : 'font-bold text-gray-600 dark:text-gray-400'}`}>{tab.label}</span>
+                              <span className={`saira-light text-sm ${activeTab === tab.id ? 'font-bold text-[#471CCA]' : 'font-bold text-gray-600 dark:text-gray-400'}`}>{tab.label}</span>
                               {activeTab === tab.id && (
                                 <span className="h-1.5 w-1.5 rounded-full bg-[#471CCA]" aria-hidden />
                               )}
@@ -15312,7 +15318,7 @@ const Clients: React.FC<ClientsProps> = ({
                       onTouchStart={() => prefetchTabChunk(tab.id)}
                     >
                       <div className="relative inline-flex items-center justify-center">
-                        <tab.icon className={`w-5 h-5 mb-1 ${isActive ? 'text-[#471CCA]' : 'text-gray-500'}`} />
+                        <tab.icon className={`w-7 h-7 mb-1 ${isActive ? 'text-[#471CCA]' : 'text-gray-500'}`} />
                         {tab.id === 'interactions' && tab.badge && (
                           <div className={`absolute -top-1 -right-1 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center whitespace-nowrap ${isActive
                             ? 'bg-purple-200/90 text-[#471CCA]'
@@ -15323,7 +15329,7 @@ const Clients: React.FC<ClientsProps> = ({
                         )}
                       </div>
                       <div className="flex flex-col items-center gap-0.5 w-full">
-                        <span className={`text-xs truncate max-w-[80px] ${isActive ? 'font-bold text-[#471CCA]' : 'font-semibold text-gray-600'}`}>
+                        <span className={`text-sm truncate max-w-[80px] ${isActive ? 'font-bold text-[#471CCA]' : 'font-semibold text-gray-600'}`}>
                           {tab.label}
                         </span>
                         {isActive && (
@@ -16087,31 +16093,18 @@ const Clients: React.FC<ClientsProps> = ({
             onClose={handleCancelMeetingIrrelevant}
             title="Mark Lead as Irrelevant"
             zIndex={320}
-            sheetClassName="md:max-w-lg"
             closeOnOverlayClick={!isProcessingMeetingIrrelevant}
+            {...DESKTOP_CENTER_MODAL_PROPS}
             footer={
-              <div className="flex w-full gap-2">
-                <button
-                  type="button"
-                  className="btn btn-outline flex-1 max-md:min-h-12"
-                  onClick={handleCancelMeetingIrrelevant}
-                  disabled={isProcessingMeetingIrrelevant}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-error flex-1 max-md:min-h-12"
-                  onClick={handleConfirmMeetingIrrelevant}
-                  disabled={isProcessingMeetingIrrelevant || !meetingIrrelevantReason.trim()}
-                >
-                  {isProcessingMeetingIrrelevant ? (
-                    <span className="loading loading-spinner loading-sm" />
-                  ) : (
-                    'Confirm'
-                  )}
-                </button>
-              </div>
+              <ModalActionFooter
+                onCancel={handleCancelMeetingIrrelevant}
+                onConfirm={handleConfirmMeetingIrrelevant}
+                confirmLabel="Confirm"
+                confirmVariant="error"
+                loading={isProcessingMeetingIrrelevant}
+                disabled={!meetingIrrelevantReason.trim()}
+                cancelDisabled={isProcessingMeetingIrrelevant}
+              />
             }
           >
                 <div className="space-y-5">
@@ -16120,15 +16113,15 @@ const Clients: React.FC<ClientsProps> = ({
                   </p>
 
                   <div>
-                    <label className="block font-semibold mb-2 text-gray-900">Reason for this action</label>
+                    <EditFieldLabel>Reason for this action</EditFieldLabel>
                     <textarea
-                      className="textarea textarea-bordered w-full min-h-[120px]"
+                      className={`${EDIT_FIELD_TEXTAREA} min-h-[120px]`}
                       placeholder="Provide details about why this lead is irrelevant..."
                       value={meetingIrrelevantReason}
                       onChange={(e) => setMeetingIrrelevantReason(e.target.value)}
                       disabled={isProcessingMeetingIrrelevant}
                     />
-                    <p className="text-xs text-gray-500 mt-2">
+                    <p className="mt-2 text-xs text-base-content/50">
                       This reason will be saved to the lead history for future reference.
                     </p>
                   </div>
@@ -16406,34 +16399,17 @@ const Clients: React.FC<ClientsProps> = ({
             onClose={() => setShowDeleteModal(false)}
             title="Delete Lead"
             zIndex={320}
-            sheetClassName="md:max-w-md"
             closeOnOverlayClick={!isDeletingLead}
+            {...DESKTOP_CENTER_MODAL_PROPS}
             footer={
-              <div className="flex w-full gap-2">
-                <button
-                  type="button"
-                  className="btn btn-ghost flex-1 max-md:min-h-12"
-                  onClick={() => setShowDeleteModal(false)}
-                  disabled={isDeletingLead}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-error flex-1 max-md:min-h-12"
-                  onClick={handleDeleteLead}
-                  disabled={isDeletingLead}
-                >
-                  {isDeletingLead ? (
-                    <>
-                      <span className="loading loading-spinner loading-sm"></span>
-                      Deleting...
-                    </>
-                  ) : (
-                    'Yes, delete lead'
-                  )}
-                </button>
-              </div>
+              <ModalActionFooter
+                onCancel={() => setShowDeleteModal(false)}
+                onConfirm={handleDeleteLead}
+                confirmLabel={isDeletingLead ? 'Deleting...' : 'Yes, delete lead'}
+                confirmVariant="error"
+                loading={isDeletingLead}
+                cancelDisabled={isDeletingLead}
+              />
             }
           >
                 <div className="flex flex-col gap-4">
@@ -16461,11 +16437,11 @@ const Clients: React.FC<ClientsProps> = ({
             title="Send Price Offer"
             subtitle="How would you like to send the price offer?"
             zIndex={320}
-            sheetClassName="md:max-w-md"
+            {...DESKTOP_CENTER_MODAL_PROPS}
             footer={
               <button
                 type="button"
-                className="btn btn-ghost w-full max-md:min-h-12"
+                className="btn btn-outline w-full max-md:min-h-12 md:ml-auto md:w-auto md:min-w-[6.5rem]"
                 onClick={() => setShowPriceOfferChoiceModal(false)}
               >
                 Cancel
@@ -16500,28 +16476,21 @@ const Clients: React.FC<ClientsProps> = ({
             title="Manual Price Offer"
             mobileFullHeight
             zIndex={10000}
-            sheetClassName="md:max-w-2xl"
-            contentClassName="flex flex-col min-h-0"
+            {...DESKTOP_CENTER_MODAL_PROPS}
+            sheetClassName={`${DESKTOP_CENTER_MODAL_PROPS.sheetClassName} md:max-w-2xl`}
+            contentClassName="flex min-h-0 flex-col px-5 py-5 md:px-6 md:py-6"
             footer={
-              <div className="flex w-full gap-2">
-                <button
-                  type="button"
-                  className="btn btn-ghost flex-1 max-md:min-h-12"
-                  onClick={() => {
-                    setShowManualPriceOfferModal(false);
-                    setManualPriceOfferText('');
-                  }}
-                >
-                  Cancel
-                </button>
-                <button type="button" className="btn btn-primary flex-1 max-md:min-h-12" onClick={handleSaveManualPriceOffer}>
-                  Save
-                </button>
-              </div>
+              <ModalActionFooter
+                onCancel={() => {
+                  setShowManualPriceOfferModal(false);
+                  setManualPriceOfferText('');
+                }}
+                onConfirm={handleSaveManualPriceOffer}
+              />
             }
           >
                 <textarea
-                  className="textarea textarea-bordered w-full flex-1 min-h-[300px]"
+                  className={`${EDIT_FIELD_TEXTAREA} min-h-[300px] flex-1`}
                   placeholder="Enter price offer text..."
                   value={manualPriceOfferText}
                   onChange={(e) => setManualPriceOfferText(e.target.value)}
@@ -17119,20 +17088,14 @@ const Clients: React.FC<ClientsProps> = ({
             onClose={() => setShowActivationModal(false)}
             title="Activate Lead"
             zIndex={320}
-            sheetClassName="md:max-w-md"
+            {...DESKTOP_CENTER_MODAL_PROPS}
             footer={
-              <div className="flex w-full gap-2">
-                <button
-                  type="button"
-                  className="btn btn-outline flex-1 max-md:min-h-12"
-                  onClick={() => setShowActivationModal(false)}
-                >
-                  Cancel
-                </button>
-                <button type="button" className="btn btn-success flex-1 max-md:min-h-12" onClick={handleActivation}>
-                  Activate Lead
-                </button>
-              </div>
+              <ModalActionFooter
+                onCancel={() => setShowActivationModal(false)}
+                onConfirm={handleActivation}
+                confirmLabel="Activate Lead"
+                confirmVariant="success"
+              />
             }
           >
                 <div className="space-y-4">
@@ -17160,40 +17123,30 @@ const Clients: React.FC<ClientsProps> = ({
             }}
             title="Unactivate Lead"
             zIndex={320}
-            sheetClassName="md:max-w-md"
+            {...DESKTOP_CENTER_MODAL_PROPS}
             footer={
-              <div className="flex w-full gap-2">
-                <button
-                  type="button"
-                  className="btn btn-outline flex-1 max-md:min-h-12"
-                  onClick={() => {
-                    setShowUnactivationModal(false);
-                    setUnactivationReason('');
-                    setDeactivateNotesDescription('');
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-error flex-1 max-md:min-h-12"
-                  onClick={handleUnactivation}
-                  disabled={!unactivationReason.trim() || !deactivateNotesDescription.trim()}
-                >
-                  Unactivate Lead
-                </button>
-              </div>
+              <ModalActionFooter
+                onCancel={() => {
+                  setShowUnactivationModal(false);
+                  setUnactivationReason('');
+                  setDeactivateNotesDescription('');
+                }}
+                onConfirm={handleUnactivation}
+                confirmLabel="Unactivate Lead"
+                confirmVariant="error"
+                disabled={!unactivationReason.trim() || !deactivateNotesDescription.trim()}
+              />
             }
           >
                 <div className="space-y-4">
-                  <p className="text-gray-600">
+                  <p className="text-base-content/70">
                     Are you sure you want to unactivate <strong>{selectedClient?.name}</strong> (Lead #{selectedClient?.lead_number})?
                   </p>
 
                   <div>
-                    <label className="block font-semibold mb-2 text-gray-900">Reason for Unactivation</label>
+                    <EditFieldLabel>Reason for Unactivation</EditFieldLabel>
                     <select
-                      className="select select-bordered w-full mb-4"
+                      className="select select-bordered mb-4 w-full bg-base-100"
                       value={unactivationReason}
                       onChange={(e) => setUnactivationReason(e.target.value)}
                     >
@@ -17212,9 +17165,9 @@ const Clients: React.FC<ClientsProps> = ({
                       <option value="expired">expired</option>
                     </select>
 
-                    <label className="block font-semibold mb-2 text-gray-900">Description</label>
+                    <EditFieldLabel>Description</EditFieldLabel>
                     <textarea
-                      className="textarea textarea-bordered w-full min-h-[100px]"
+                      className={`${EDIT_FIELD_TEXTAREA} min-h-[100px]`}
                       placeholder="Enter description for deactivation..."
                       value={deactivateNotesDescription}
                       onChange={(e) => setDeactivateNotesDescription(e.target.value)}
@@ -17230,9 +17183,9 @@ const Clients: React.FC<ClientsProps> = ({
             title="Duplicate Contacts"
             mobileFullHeight
             zIndex={320}
-            contentClassName="!p-4 md:!p-8"
+            {...DESKTOP_CENTER_MODAL_PROPS}
             footer={
-              <button type="button" className="btn btn-outline w-full max-md:min-h-12" onClick={() => setIsDuplicateModalOpen(false)}>
+              <button type="button" className="btn btn-outline w-full max-md:min-h-12 md:ml-auto md:w-auto md:min-w-[6.5rem]" onClick={() => setIsDuplicateModalOpen(false)}>
                 Close
               </button>
             }
@@ -17754,21 +17707,20 @@ const Clients: React.FC<ClientsProps> = ({
             onClose={() => setShowCustomLocationModal(false)}
             title={customLocationMode === 'link' ? 'Custom Link' : 'Custom Address'}
             zIndex={320}
-            sheetClassName="md:max-w-md"
+            {...DESKTOP_CENTER_MODAL_PROPS}
             footer={
-              <div className="flex w-full gap-2">
-                <button type="button" className="btn btn-ghost flex-1 max-md:min-h-12" onClick={() => setShowCustomLocationModal(false)}>
-                  Cancel
-                </button>
-                <button type="button" className="btn btn-primary flex-1 max-md:min-h-12" onClick={handleSaveCustomLocationValue}>
-                  Save
-                </button>
-              </div>
+              <ModalActionFooter
+                onCancel={() => setShowCustomLocationModal(false)}
+                onConfirm={handleSaveCustomLocationValue}
+              />
             }
           >
+                <EditFieldLabel>
+                  {customLocationMode === 'link' ? 'Meeting link' : 'Address'}
+                </EditFieldLabel>
                 <input
                   type={customLocationMode === 'link' ? 'url' : 'text'}
-                  className="input input-bordered w-full"
+                  className={EDIT_FIELD_INPUT}
                   value={customLocationDraft}
                   onChange={(e) => setCustomLocationDraft(e.target.value)}
                   placeholder={customLocationMode === 'link' ? 'https://example.com/meeting' : 'Enter address'}

@@ -13,7 +13,7 @@ import {
 import toast from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
-import MobileBottomSheet from './MobileBottomSheet';
+import { resolveCaseDocumentUploadContentType } from '../lib/caseDocumentsStorage';
 
 type LeadSubEffortRow = any;
 
@@ -513,17 +513,20 @@ export function SubEffortsLogModal({
       const id = selectedRow.id;
       const leadKey = selectedRow?.new_lead_id || selectedRow?.legacy_lead_id || 'unknown-lead';
       const uploadedPaths: string[] = [];
+      const uploadedMimeTypes: string[] = [];
 
       for (const file of Array.from(files)) {
         const safeName = file.name.replace(/[^\w.\-()+\s]/g, '_');
         // Storage object path is *inside* the bucket (do not prefix bucket name).
         const path = `sub-efforts/${String(leadKey)}/${String(id)}/${Date.now()}_${safeName}`;
+        const contentType = resolveCaseDocumentUploadContentType(file);
         const { error } = await supabase.storage.from(SUB_EFFORTS_DOCS_BUCKET).upload(path, file, {
           upsert: false,
-          contentType: file.type || undefined,
+          contentType,
         });
         if (error) throw error;
         uploadedPaths.push(path);
+        uploadedMimeTypes.push(contentType);
       }
 
       // Merge into existing document_url (store paths; modal will sign them for display)
@@ -532,7 +535,7 @@ export function SubEffortsLogModal({
       const addedItems: DocItem[] = Array.from(files).map((file, idx) => ({
         path: uploadedPaths[idx],
         name: file.name,
-        mimeType: file.type || undefined,
+        mimeType: uploadedMimeTypes[idx],
       }));
       const mergedItems = [
         ...existingItems,

@@ -10,6 +10,7 @@ export type ClockInApprovalFields = {
   declined?: boolean;
   approved_by?: string | null;
   approved_at?: string | null;
+  decline_note?: string | null;
 };
 
 export type ManualClockInApprovalRecord = {
@@ -23,6 +24,7 @@ export type ManualClockInApprovalRecord = {
   declined: boolean;
   approved_by: string | null;
   approved_at: string | null;
+  decline_note: string | null;
   clock_in_location_id?: number | null;
   clock_out_location_id?: number | null;
   clock_in_place?: { name: string } | { name: string }[] | null;
@@ -37,6 +39,8 @@ export type ManualClockInApprovalRecord = {
   clock_out_location_address?: string | null;
   clock_out_location_city?: string | null;
   clock_out_location_country?: string | null;
+  location_source?: string | null;
+  clock_out_location_source?: string | null;
   employee_name?: string;
   employee_department?: string;
   employee_photo_url?: string | null;
@@ -48,13 +52,13 @@ export type ManualClockInApprovalRecord = {
 
 const MANUAL_APPROVAL_SELECT = `
   id, employee_id, clock_in_time, clock_out_time, notes, manually,
-  approved, declined, approved_by, approved_at,
+  approved, declined, approved_by, approved_at, decline_note,
   clock_in_location_id, clock_out_location_id,
   clock_in_place:clock_in_locations!clock_in_location_id ( name ),
   clock_out_place:clock_in_locations!clock_out_location_id ( name ),
-  location_latitude, location_longitude, location_address, location_city, location_country,
+  location_latitude, location_longitude, location_address, location_city, location_country, location_source,
   clock_out_location_latitude, clock_out_location_longitude,
-  clock_out_location_address, clock_out_location_city, clock_out_location_country
+  clock_out_location_address, clock_out_location_city, clock_out_location_country, clock_out_location_source
 `;
 
 export function isManualClockInRecord(record: ClockInApprovalFields): boolean {
@@ -481,9 +485,19 @@ export function countPendingApprovalBuckets(records: ManualClockInApprovalRecord
   return { wfh, clock };
 }
 
+export function formatDayDeclineNotes(
+  records: Array<{ declined?: boolean; decline_note?: string | null }>,
+): string | null {
+  const parts = records
+    .filter((record) => record.declined === true && record.decline_note?.trim())
+    .map((record) => record.decline_note!.trim());
+  return parts.length > 0 ? parts.join('; ') : null;
+}
+
 export async function declineClockInRecord(
   recordId: number,
   approverAuthUserId: string,
+  declineNote?: string | null,
 ): Promise<'removed' | 'declined'> {
   const { data: existing, error: fetchError } = await supabase
     .from('employee_clock_in')
@@ -502,6 +516,8 @@ export async function declineClockInRecord(
     return 'removed';
   }
 
+  const trimmedNote = declineNote?.trim() || null;
+
   const { error } = await supabase
     .from('employee_clock_in')
     .update({
@@ -509,6 +525,7 @@ export async function declineClockInRecord(
       declined: true,
       approved_by: approverAuthUserId,
       approved_at: new Date().toISOString(),
+      decline_note: trimmedNote,
     })
     .eq('id', recordId);
 

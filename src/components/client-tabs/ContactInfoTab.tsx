@@ -2,7 +2,7 @@ import React, { useState, useEffect, Fragment, useMemo, useRef, startTransition 
 import { usePersistedState } from '../../hooks/usePersistedState';
 import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import { ClientTabProps } from '../../types/client';
-import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, MinusIcon, DocumentTextIcon, XMarkIcon, PencilSquareIcon, CheckIcon, TrashIcon, FolderOpenIcon } from '@heroicons/react/24/outline';
+import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, MinusIcon, DocumentTextIcon, XMarkIcon, PencilSquareIcon, CheckIcon, TrashIcon, FolderOpenIcon, ClipboardDocumentIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import { createPortal } from 'react-dom';
 import SignaturePad from 'react-signature-canvas';
@@ -23,6 +23,7 @@ import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../../lib/leadOneDrivePaths';
 import { getFrontendBaseUrl } from '../../lib/api';
 import ContactProfileAvatar from '../ContactProfileAvatar';
 import { useContactProfileImageUrls } from '../../hooks/useContactProfileImageUrls';
+import { ClientTabPageHeader } from './ClientTabPageHeader';
 import ContactPoaSection from '../poa/ContactPoaSection';
 
 // Function to clean HTML content and make it readable
@@ -891,6 +892,32 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   const formatPhoneNumber = (countryCode: string, number: string) => {
     if (!number || number.trim() === '') return '';
     return `${countryCode}${number}`;
+  };
+
+  const copyContactField = (value: string | undefined | null, label: string) => {
+    const text = value?.trim();
+    if (!text || text === '---') return;
+    void navigator.clipboard.writeText(text).then(() => toast.success(`${label} copied`));
+  };
+
+  const renderContactCopyButton = (value: string | undefined | null, label: string) => {
+    const text = value?.trim();
+    if (!text || text === '---') return null;
+    return (
+      <button
+        type="button"
+        className="btn btn-ghost btn-xs btn-square min-h-8 min-w-8 shrink-0 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+        title={`Copy ${label.toLowerCase()}`}
+        aria-label={`Copy ${label.toLowerCase()}`}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          copyContactField(text, label);
+        }}
+      >
+        <ClipboardDocumentIcon className="h-4 w-4" />
+      </button>
+    );
   };
 
   // Stable main contact ID: same sort as display (main first, then by id) so contract placement never flickers
@@ -3613,17 +3640,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     <Fragment>
       <div className="w-full overflow-x-hidden overflow-y-auto">
         <div className="p-2 sm:p-4 md:p-6 max-w-full">
-          <div className="flex items-center gap-3 mb-6 flex-wrap">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
-                <UserIcon className="w-5 h-5 text-gray-600" />
-              </div>
-              <div>
-                <h2 className="text-xl font-semibold text-gray-900">Contact Information</h2>
-                <p className="text-sm text-gray-500">Manage client contacts and contracts</p>
-              </div>
-            </div>
-          </div>
+          <ClientTabPageHeader
+            className="mb-6"
+            icon={UserIcon}
+            title="Contact Information"
+            subtitle="Manage client contacts and contracts"
+          />
 
           <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 w-full pb-6">
             {contacts.map((contact, index) => {
@@ -3930,29 +3952,32 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               />
                             </div>
                           ) : contact.mobile && contact.mobile !== '---' ? (
-                            <button
-                              onClick={() => {
-                                // Show modal for US (+1), Australia (+61), UK (+44), and South Africa (+27) numbers
-                                const normalizedPhone = contact.mobile.replace(/[\s\-\(\)]/g, '');
-                                const isSupportedCountry =
-                                  normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10) || // US/Canada
-                                  normalizedPhone.startsWith('+61') || (normalizedPhone.startsWith('61') && normalizedPhone.length >= 10) || // Australia
-                                  normalizedPhone.startsWith('+44') || (normalizedPhone.startsWith('44') && normalizedPhone.length >= 10) || // UK
-                                  normalizedPhone.startsWith('+27') || (normalizedPhone.startsWith('27') && normalizedPhone.length >= 10); // South Africa
+                            <div className="flex items-center justify-end gap-1">
+                              <button
+                                onClick={() => {
+                                  // Show modal for US (+1), Australia (+61), UK (+44), and South Africa (+27) numbers
+                                  const normalizedPhone = contact.mobile.replace(/[\s\-\(\)]/g, '');
+                                  const isSupportedCountry =
+                                    normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10) || // US/Canada
+                                    normalizedPhone.startsWith('+61') || (normalizedPhone.startsWith('61') && normalizedPhone.length >= 10) || // Australia
+                                    normalizedPhone.startsWith('+44') || (normalizedPhone.startsWith('44') && normalizedPhone.length >= 10) || // UK
+                                    normalizedPhone.startsWith('+27') || (normalizedPhone.startsWith('27') && normalizedPhone.length >= 10); // South Africa
 
-                                if (isSupportedCountry) {
-                                  setCallPhoneNumber(contact.mobile);
-                                  setCallContactName(contact.name || '');
-                                  setIsCallModalOpen(true);
-                                } else {
-                                  // For other countries, call directly
-                                  window.open(`tel:${contact.mobile}`, '_self');
-                                }
-                              }}
-                              className="text-base text-gray-900 hover:text-purple-600 flex items-center justify-end gap-2 transition-colors cursor-pointer"
-                            >
-                              <span className="text-base font-medium">{contact.mobile}</span>
-                            </button>
+                                  if (isSupportedCountry) {
+                                    setCallPhoneNumber(contact.mobile);
+                                    setCallContactName(contact.name || '');
+                                    setIsCallModalOpen(true);
+                                  } else {
+                                    // For other countries, call directly
+                                    window.open(`tel:${contact.mobile}`, '_self');
+                                  }
+                                }}
+                                className="text-base text-gray-900 hover:text-purple-600 flex items-center justify-end gap-2 transition-colors cursor-pointer"
+                              >
+                                <span className="text-base font-medium">{contact.mobile}</span>
+                              </button>
+                              {renderContactCopyButton(contact.mobile, 'Mobile')}
+                            </div>
                           ) : (
                             <div className="text-base text-gray-900 flex items-center justify-end gap-2">
                               <span className="text-base font-medium">{contact.mobile}</span>
@@ -4097,29 +4122,32 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               />
                             </div>
                           ) : contact.phone && contact.phone !== '---' ? (
-                            <button
-                              onClick={() => {
-                                // Show modal for US (+1), Australia (+61), UK (+44), and South Africa (+27) numbers
-                                const normalizedPhone = contact.phone.replace(/[\s\-\(\)]/g, '');
-                                const isSupportedCountry =
-                                  normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10) || // US/Canada
-                                  normalizedPhone.startsWith('+61') || (normalizedPhone.startsWith('61') && normalizedPhone.length >= 10) || // Australia
-                                  normalizedPhone.startsWith('+44') || (normalizedPhone.startsWith('44') && normalizedPhone.length >= 10) || // UK
-                                  normalizedPhone.startsWith('+27') || (normalizedPhone.startsWith('27') && normalizedPhone.length >= 10); // South Africa
+                            <div className="flex items-center justify-end gap-1">
+                              <button
+                                onClick={() => {
+                                  // Show modal for US (+1), Australia (+61), UK (+44), and South Africa (+27) numbers
+                                  const normalizedPhone = contact.phone.replace(/[\s\-\(\)]/g, '');
+                                  const isSupportedCountry =
+                                    normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10) || // US/Canada
+                                    normalizedPhone.startsWith('+61') || (normalizedPhone.startsWith('61') && normalizedPhone.length >= 10) || // Australia
+                                    normalizedPhone.startsWith('+44') || (normalizedPhone.startsWith('44') && normalizedPhone.length >= 10) || // UK
+                                    normalizedPhone.startsWith('+27') || (normalizedPhone.startsWith('27') && normalizedPhone.length >= 10); // South Africa
 
-                                if (isSupportedCountry) {
-                                  setCallPhoneNumber(contact.phone);
-                                  setCallContactName(contact.name || '');
-                                  setIsCallModalOpen(true);
-                                } else {
-                                  // For other countries, call directly
-                                  window.open(`tel:${contact.phone}`, '_self');
-                                }
-                              }}
-                              className="text-base text-gray-900 hover:text-purple-600 flex items-center justify-end gap-2 transition-colors cursor-pointer"
-                            >
-                              <span className="text-base font-medium">{contact.phone}</span>
-                            </button>
+                                  if (isSupportedCountry) {
+                                    setCallPhoneNumber(contact.phone);
+                                    setCallContactName(contact.name || '');
+                                    setIsCallModalOpen(true);
+                                  } else {
+                                    // For other countries, call directly
+                                    window.open(`tel:${contact.phone}`, '_self');
+                                  }
+                                }}
+                                className="text-base text-gray-900 hover:text-purple-600 flex items-center justify-end gap-2 transition-colors cursor-pointer"
+                              >
+                                <span className="text-base font-medium">{contact.phone}</span>
+                              </button>
+                              {renderContactCopyButton(contact.phone, 'Phone')}
+                            </div>
                           ) : (
                             <div className="text-base text-gray-900 flex items-center justify-end gap-2">
                               <span className="text-base font-medium">{contact.phone}</span>
@@ -4149,9 +4177,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { ...c, email: e.target.value } : c))}
                             />
                           ) : contact.email && contact.email !== '---' ? (
-                            <a href={`mailto:${contact.email}`} className="text-base text-gray-900 hover:text-purple-600 flex items-center justify-end gap-2 transition-colors">
-                              <span className="text-base font-medium">{contact.email}</span>
-                            </a>
+                            <div className="flex items-center justify-end gap-1">
+                              <a href={`mailto:${contact.email}`} className="text-base text-gray-900 hover:text-purple-600 flex items-center justify-end gap-2 transition-colors">
+                                <span className="text-base font-medium">{contact.email}</span>
+                              </a>
+                              {renderContactCopyButton(contact.email, 'Email')}
+                            </div>
                           ) : (
                             <div className="text-base text-gray-900 flex items-center justify-end gap-2">
                               <span className="text-base font-medium">{contact.email}</span>

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ClientTabProps } from '../../types/client';
 import { InformationCircleIcon } from '@heroicons/react/24/outline';
+import { ClientTabPageHeader } from './ClientTabPageHeader';
 import { supabase } from '../../lib/supabase';
 
 // Helper function to decode HTML entities
@@ -289,16 +290,12 @@ const InfoTabViewOnly: React.FC<ClientTabProps> = ({ client }) => {
 
   return (
     <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
-          <InformationCircleIcon className="w-5 h-5 text-gray-600" />
-        </div>
-        <div>
-          <h2 className="text-xl font-semibold text-gray-900">Client Information</h2>
-          <p className="text-sm text-gray-500">View client details and case information</p>
-        </div>
-      </div>
+      <ClientTabPageHeader
+        className="mb-6"
+        icon={InformationCircleIcon}
+        title="Client Information"
+        subtitle="View client details and case information"
+      />
 
       {/* Main Info Grid */}
       <div className="space-y-12">

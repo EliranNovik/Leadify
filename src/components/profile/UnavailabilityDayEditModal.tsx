@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { DocumentArrowUpIcon, TrashIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { DocumentArrowUpIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import {
   documentNameFromUrl,
@@ -12,6 +12,7 @@ import {
 import { getHolidayWarningsForDates } from '../../lib/israeliJewishHolidays';
 import type { HolidayDateWarning } from '../../lib/israeliJewishHolidays';
 import HolidayEntryWarningModal from './HolidayEntryWarningModal';
+import ProfileBottomSheetModal from './ProfileBottomSheetModal';
 
 interface UnavailabilityDayEditModalProps {
   isOpen: boolean;
@@ -88,21 +89,15 @@ const UnavailabilityDayEditModal: React.FC<UnavailabilityDayEditModalProps> = ({
 
   return (
     <>
-    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-base-200">
-          <h3 className="text-lg font-semibold text-gray-900">Edit unavailability</h3>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm btn-circle"
-            onClick={onClose}
-            disabled={saving}
-          >
-            <XMarkIcon className="w-5 h-5" />
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
+      <ProfileBottomSheetModal
+        open={isOpen}
+        onClose={onClose}
+        title="Edit unavailability"
+        onSave={() => void handleSave()}
+        saving={saving}
+        mobileFullHeight
+      >
+        <div className="space-y-4">
           <label className="form-control w-full">
             <span className="label-text font-medium mb-1">Date</span>
             <input
@@ -199,32 +194,17 @@ const UnavailabilityDayEditModal: React.FC<UnavailabilityDayEditModalProps> = ({
             </div>
           </div>
         </div>
-
-        <div className="flex justify-end gap-2 px-5 py-4 border-t border-base-200">
-          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => void handleSave()}
-            disabled={saving}
-          >
-            {saving ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
-          </button>
-        </div>
-      </div>
-    </div>
-    <HolidayEntryWarningModal
-      isOpen={showHolidayWarning}
-      warnings={holidayWarnings}
-      onCancel={() => setShowHolidayWarning(false)}
-      onContinue={() => {
-        setShowHolidayWarning(false);
-        void performSave();
-      }}
-      continuing={saving}
-    />
+      </ProfileBottomSheetModal>
+      <HolidayEntryWarningModal
+        isOpen={showHolidayWarning}
+        warnings={holidayWarnings}
+        onCancel={() => setShowHolidayWarning(false)}
+        onContinue={() => {
+          setShowHolidayWarning(false);
+          void performSave();
+        }}
+        continuing={saving}
+      />
     </>
   );
 };

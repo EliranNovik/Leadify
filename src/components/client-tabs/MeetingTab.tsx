@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
+import { ClientTabPageHeader } from './ClientTabPageHeader';
 import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import {
   clearPendingMeetingRescheduleDrawer,
@@ -7062,20 +7063,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   return (
     <div className="px-1 sm:px-4 md:px-6 py-2 sm:py-4 md:py-6 space-y-10 sm:space-y-16">
-      {/* Header */}
-      <div className="flex items-center justify-between mb-14">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
-            <CalendarIcon className="w-5 h-5 text-gray-600" />
-          </div>
-          <div>
-            <h2 className="text-xl font-semibold text-gray-900">Meeting Management</h2>
-            <p className="text-sm text-gray-500">Schedule and track client meetings</p>
-          </div>
-        </div>
-        {/* Schedule/Reschedule Meeting button moved to ClientHeader (top-left stage row).
-            See window events 'meeting-tab:open-schedule-drawer' / 'meeting-tab:open-reschedule-drawer'. */}
-      </div>
+      <ClientTabPageHeader
+        className="mb-14"
+        icon={CalendarIcon}
+        title="Meeting Management"
+        subtitle="Schedule and track client meetings"
+      />
 
       <PortalMeetingRequestsPanel
         leadId={String(client?.id ?? '')}

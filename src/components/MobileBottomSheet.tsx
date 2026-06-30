@@ -29,6 +29,7 @@ export type MobileBottomSheetProps = {
   sheetClassName?: string;
   contentClassName?: string;
   overlayClassName?: string;
+  footerClassName?: string;
   /** Desktop: centered modal (default) or right-edge drawer */
   desktopLayout?: 'center' | 'drawer-right';
   /** When false, tapping the backdrop does nothing */
@@ -54,6 +55,7 @@ export default function MobileBottomSheet({
   sheetClassName = '',
   contentClassName = '',
   overlayClassName = '',
+  footerClassName = '',
   desktopLayout = 'center',
   closeOnOverlayClick = true,
   onOverlayClick,
@@ -144,7 +146,12 @@ export default function MobileBottomSheet({
     : 'max-md:items-end md:items-center md:justify-center md:p-4';
   const sheetLayoutClass = isDrawerRight
     ? 'md:ml-auto md:h-full md:max-h-full md:max-w-md md:w-full md:rounded-none md:border-l md:border-t-0'
-    : 'md:rounded-2xl md:border md:max-w-3xl md:max-h-[90vh]';
+    : 'md:rounded-2xl md:border md:border-base-200/80 md:max-w-3xl md:max-h-[90vh] md:transition-all md:duration-200 md:ease-out';
+  const desktopCenterMotion = !isDrawerRight && !isNarrowViewport()
+    ? entered
+      ? 'md:scale-100 md:opacity-100'
+      : 'md:scale-[0.97] md:opacity-0'
+    : '';
 
   return createPortal(
     <div
@@ -162,7 +169,7 @@ export default function MobileBottomSheet({
       />
       <div className={`fixed inset-0 flex pointer-events-none ${outerPositionClass}`}>
         <div
-          className={`pointer-events-auto flex w-full flex-col overflow-hidden bg-base-100 shadow-2xl border-base-200 max-md:rounded-t-3xl max-md:border-t ${mobileMaxH} ${sheetLayoutClass} ${sheetClassName}`}
+          className={`pointer-events-auto flex w-full flex-col overflow-hidden bg-base-100 shadow-2xl border-base-200 max-md:rounded-t-3xl max-md:border-t ${mobileMaxH} ${sheetLayoutClass} ${desktopCenterMotion} ${sheetClassName}`}
           style={{ ...sheetTransform, transition: sheetTransition }}
           onClick={(e) => e.stopPropagation()}
           role="dialog"
@@ -186,16 +193,16 @@ export default function MobileBottomSheet({
           {showHeader && (
             <div
               data-sheet-handle
-              className="flex shrink-0 items-start justify-between gap-3 border-b border-base-200 px-4 py-3 md:px-6 md:py-4"
+              className="flex shrink-0 items-start justify-between gap-3 border-b border-base-200/80 bg-base-100 px-4 py-3.5 md:px-6 md:py-4"
             >
               <div className="min-w-0 flex-1">
                 {title && (
-                  <h2 id={titleId} className="text-lg font-semibold text-base-content md:text-xl">
+                  <h2 id={titleId} className="text-lg font-semibold tracking-tight text-base-content md:text-xl">
                     {title}
                   </h2>
                 )}
                 {subtitle && (
-                  <p className="mt-0.5 text-sm text-base-content/60">{subtitle}</p>
+                  <p className="mt-1 text-sm text-base-content/55">{subtitle}</p>
                 )}
               </div>
               <div className="flex shrink-0 items-center gap-1">
@@ -222,7 +229,7 @@ export default function MobileBottomSheet({
 
           {footer && (
             <div
-              className="shrink-0 border-t border-base-200 bg-base-100"
+              className={`shrink-0 border-t border-base-200/80 bg-base-100/95 backdrop-blur-sm ${footerClassName}`}
               style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom, 0px))' }}
               data-sheet-no-drag
             >

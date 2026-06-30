@@ -5,6 +5,7 @@ import { UserGroupIcon, PencilSquareIcon, UserIcon, XMarkIcon, CalendarIcon, Use
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
 import { fetchStageActorInfo } from '../../lib/leadStageManager';
+import { ClientTabPageHeader } from './ClientTabPageHeader';
 
 /** Main sections + role card order in the Roles tab */
 const ROLE_SECTIONS: { title: string; roleIds: string[] }[] = [
@@ -925,26 +926,21 @@ const RolesTab: React.FC<ClientTabProps> = ({
   return (
     <div className="p-2 sm:p-4 md:p-6">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
-            <UserGroupIcon className="w-5 h-5 text-gray-600" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-xl font-semibold text-gray-900">Roles</h2>
-              {isRolesLocked && (
-                <LockClosedIcon className="w-5 h-5 text-gray-500" />
-              )}
-            </div>
-            <p className="text-sm text-gray-500">
-              {readOnly
-                ? 'Team roles and assignments'
-                : isRolesLocked
-                  ? 'Roles are locked and cannot be modified'
-                  : 'Manage team roles and assignments'}
-            </p>
-          </div>
-        </div>
+        <ClientTabPageHeader
+          className="mb-6"
+          icon={UserGroupIcon}
+          title="Roles"
+          subtitle={
+            readOnly
+              ? 'Team roles and assignments'
+              : isRolesLocked
+                ? 'Roles are locked and cannot be modified'
+                : 'Manage team roles and assignments'
+          }
+          titleExtra={
+            isRolesLocked ? <LockClosedIcon className="w-5 h-5 text-gray-500" /> : undefined
+          }
+        />
 
         {/* Action Buttons */}
         {!readOnly && (

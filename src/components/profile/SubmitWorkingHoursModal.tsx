@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { CheckIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import {
   expandUnavailabilitiesToDailyRows,
@@ -28,6 +27,7 @@ import {
   type EmployeeWorkingHoursSubmission,
 } from '../../lib/employeeWorkingHoursSubmissions';
 import YearWheelPicker from '../YearWheelPicker';
+import ProfileBottomSheetModal from './ProfileBottomSheetModal';
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -59,7 +59,7 @@ interface SubmitWorkingHoursModalProps {
 }
 
 const SUBMIT_MODAL_BTN_CLASS =
-  'inline-flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold border-0 shadow-sm transition-all duration-200 bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-700 hover:to-teal-700 hover:shadow-md active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none disabled:shadow-none';
+  'inline-flex items-center justify-center gap-2 rounded-full px-5 py-2.5 text-sm font-semibold border-0 shadow-sm transition-all duration-200 bg-gradient-to-r from-emerald-600 to-teal-600 text-white hover:from-emerald-700 hover:to-teal-700 hover:shadow-md active:scale-[0.98] disabled:opacity-40 disabled:pointer-events-none disabled:shadow-none flex-1 md:flex-none md:min-w-[12rem] max-md:min-h-12';
 
 const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
   isOpen,
@@ -170,118 +170,22 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
     }
   };
 
-  if (!isOpen || typeof document === 'undefined') return null;
+  if (!isOpen) return null;
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="submit-working-hours-title"
-      >
-        <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-base-200">
-          <h3 id="submit-working-hours-title" className="text-lg font-semibold text-gray-900">
-            Submit working hours
-          </h3>
+  return (
+    <ProfileBottomSheetModal
+      open={isOpen}
+      onClose={onClose}
+      title="Submit working hours"
+      closeOnOverlayClick={!submitting}
+      footer={
+        <div className="flex w-full flex-col-reverse gap-2 md:flex-row md:justify-end md:gap-3">
           <button
             type="button"
+            className="btn btn-outline flex-1 md:min-w-[6.5rem] md:flex-none max-md:min-h-12"
             onClick={onClose}
-            className="btn btn-ghost btn-sm btn-circle"
-            aria-label="Close"
+            disabled={submitting}
           >
-            <XMarkIcon className="w-5 h-5" />
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
-          <p className="text-sm text-gray-600">
-            Choose the month and year to submit. You can only submit once per month.
-          </p>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="form-control w-full">
-              <YearWheelPicker
-                label="Year"
-                value={submitYear}
-                onChange={setSubmitYear}
-                disabled={submitting}
-              />
-            </div>
-            <label className="form-control w-full">
-              <span className="label-text text-sm text-gray-600 mb-1.5 font-medium">Month</span>
-              <select
-                className="select select-bordered w-full"
-                value={submitMonth}
-                onChange={(e) => setSubmitMonth(Number(e.target.value))}
-                disabled={submitting}
-              >
-                {MONTH_NAMES.map((name, i) => (
-                  <option key={name} value={i + 1}>{name}</option>
-                ))}
-              </select>
-            </label>
-          </div>
-
-          {loadingPreview ? (
-            <div className="flex items-center justify-center py-6">
-              <span className="loading loading-spinner loading-md text-primary" />
-            </div>
-          ) : existingSubmission ? (
-            <div className="rounded-xl bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
-              <div className="flex items-center gap-2 font-medium">
-                <CheckIcon className="w-5 h-5 shrink-0" />
-                Already submitted
-              </div>
-              <p className="mt-1 text-green-700">
-                {monthLabel} {submitYear} was submitted on{' '}
-                {new Date(existingSubmission.submitted_at).toLocaleString('en-GB')}.
-              </p>
-            </div>
-          ) : (
-            <>
-              <div className="rounded-xl bg-base-200/60 px-4 py-3 text-sm space-y-1">
-                <p>
-                  <span className="text-gray-600">Period total:</span>{' '}
-                  <span className="font-semibold text-gray-900">{periodTotal}</span>
-                </p>
-                <p>
-                  <span className="text-gray-600">Unavailability days:</span>{' '}
-                  <span className="font-semibold text-gray-900">{unavailabilityDays}</span>
-                </p>
-                <p>
-                  <span className="text-gray-600">Missing days:</span>{' '}
-                  <span className={`font-semibold ${missingDays > 0 ? 'text-amber-700' : 'text-green-700'}`}>
-                    {missingDays}
-                  </span>
-                </p>
-              </div>
-              {missingDays > 0 && (
-                <div className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-900">
-                  <p className="font-medium">Note</p>
-                  <p className="mt-1 text-amber-800">
-                    This month has {missingDays} required day{missingDays === 1 ? '' : 's'} (workdays
-                    and holidays) without a clock-in or unavailability. You can still submit, but please
-                    review your entries first.
-                  </p>
-                </div>
-              )}
-              {submitBlockedByApproval && approvalBlockMessage && (
-                <div className="rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-900">
-                  <p className="font-medium">Cannot submit yet</p>
-                  <p className="mt-1 text-red-800">{approvalBlockMessage}</p>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-
-        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-base-200 bg-base-50/50">
-          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={submitting}>
             Cancel
           </button>
           <button
@@ -305,9 +209,90 @@ const SubmitWorkingHoursModal: React.FC<SubmitWorkingHoursModalProps> = ({
             Submit {monthLabel} {submitYear}
           </button>
         </div>
+      }
+    >
+      <div className="space-y-4">
+        <p className="text-sm text-gray-600">
+          Choose the month and year to submit. You can only submit once per month.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="form-control w-full">
+            <YearWheelPicker
+              label="Year"
+              value={submitYear}
+              onChange={setSubmitYear}
+              disabled={submitting}
+            />
+          </div>
+          <label className="form-control w-full">
+            <span className="label-text text-sm text-gray-600 mb-1.5 font-medium">Month</span>
+            <select
+              className="select select-bordered w-full"
+              value={submitMonth}
+              onChange={(e) => setSubmitMonth(Number(e.target.value))}
+              disabled={submitting}
+            >
+              {MONTH_NAMES.map((name, i) => (
+                <option key={name} value={i + 1}>{name}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {loadingPreview ? (
+          <div className="flex items-center justify-center py-6">
+            <span className="loading loading-spinner loading-md text-primary" />
+          </div>
+        ) : existingSubmission ? (
+          <div className="rounded-xl bg-green-50 border border-green-200 px-4 py-3 text-sm text-green-800">
+            <div className="flex items-center gap-2 font-medium">
+              <CheckIcon className="w-5 h-5 shrink-0" />
+              Already submitted
+            </div>
+            <p className="mt-1 text-green-700">
+              {monthLabel} {submitYear} was submitted on{' '}
+              {new Date(existingSubmission.submitted_at).toLocaleString('en-GB')}.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="rounded-xl bg-base-200/60 px-4 py-3 text-sm space-y-1">
+              <p>
+                <span className="text-gray-600">Period total:</span>{' '}
+                <span className="font-semibold text-gray-900">{periodTotal}</span>
+              </p>
+              <p>
+                <span className="text-gray-600">Unavailability days:</span>{' '}
+                <span className="font-semibold text-gray-900">{unavailabilityDays}</span>
+              </p>
+              <p>
+                <span className="text-gray-600">Missing days:</span>{' '}
+                <span className={`font-semibold ${missingDays > 0 ? 'text-amber-700' : 'text-green-700'}`}>
+                  {missingDays}
+                </span>
+              </p>
+            </div>
+            {missingDays > 0 && (
+              <div className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 text-sm text-amber-900">
+                <p className="font-medium">Note</p>
+                <p className="mt-1 text-amber-800">
+                  This month has {missingDays} required day{missingDays === 1 ? '' : 's'} (workdays
+                  and holidays) without a clock-in or unavailability. You can still submit, but please
+                  review your entries first.
+                </p>
+              </div>
+            )}
+            {submitBlockedByApproval && approvalBlockMessage && (
+              <div className="rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-900">
+                <p className="font-medium">Cannot submit yet</p>
+                <p className="mt-1 text-red-800">{approvalBlockMessage}</p>
+              </div>
+            )}
+          </>
+        )}
       </div>
-    </div>,
-    document.body,
+    </ProfileBottomSheetModal>
   );
 };
 

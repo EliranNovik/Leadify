@@ -10,9 +10,10 @@ type Props = {
   currencyInput?: CurrencyInput;
   subtotal?: number;
   vat?: number;
+  className?: string;
 };
 
-const ClientHeaderTotalInNis: React.FC<Props> = ({ clientId, leadType }) => {
+const ClientHeaderTotalInNis: React.FC<Props> = ({ clientId, leadType, className = '' }) => {
   const [display, setDisplay] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -50,7 +51,12 @@ const ClientHeaderTotalInNis: React.FC<Props> = ({ clientId, leadType }) => {
   if (loading || !display) return null;
 
   return (
-    <p className="text-3xl font-bold leading-none tracking-tight text-gray-500 tabular-nums dark:text-gray-400">
+    <p
+      className={
+        className.trim() ||
+        'text-3xl font-bold leading-none tracking-tight text-gray-500 tabular-nums dark:text-gray-400'
+      }
+    >
       {display}
     </p>
   );

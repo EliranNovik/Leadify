@@ -21,6 +21,7 @@ import { supabase } from '../../lib/supabase';
 import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
 import { toast } from 'react-hot-toast';
 import { useAuthContext } from '../../contexts/AuthContext';
+import { ClientTabPageHeader } from './ClientTabPageHeader';
 import {
   fetchPublicUserId,
   fetchLeadFieldFlagsForLead,
@@ -1650,18 +1651,11 @@ const InfoTab: React.FC<ClientTabProps> = ({
 
   return (
     <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-8">
-        <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
-          <InformationCircleIcon className="w-5 h-5 text-gray-600" />
-        </div>
-        <div className="flex-1">
-          <div className="flex items-center gap-3">
-            <h2 className="text-2xl font-bold">Client Information</h2>
-          </div>
-          <p className="text-sm text-gray-500">View and manage client details and case information</p>
-        </div>
-      </div>
+      <ClientTabPageHeader
+        icon={InformationCircleIcon}
+        title="Client Information"
+        subtitle="View and manage client details and case information"
+      />
 
       {/* Main Info Grid */}
       <div className="space-y-8">

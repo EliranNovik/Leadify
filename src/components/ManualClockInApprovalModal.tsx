@@ -12,7 +12,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { useAuthContext } from '../contexts/AuthContext';
-import { formatClockTime } from '../lib/employeeClockInFormat';
+import { formatClockDuration, formatClockTime } from '../lib/employeeClockInFormat';
 import { unavailabilityDateLabel } from '../lib/employeeUnavailabilities';
 import RMQMessagesPage from '../pages/RMQMessagesPage';
 import {
@@ -28,6 +28,24 @@ import {
   type ManualClockInApprovalRecord,
 } from '../lib/employeeClockInApproval';
 import { useManualClockInApprovalLiveRefresh } from '../hooks/useManualClockInApprovalLiveRefresh';
+import { isNarrowViewport } from '../lib/mobileCache';
+import {
+  buildEmployeeGroupApprovalSummary,
+  formatClockInApprovalMissingRequiredDetail,
+  getClockInApprovalMissingRequiredFields,
+  getClockInRevisionFieldChanges,
+} from '../lib/clockInApprovalInsights';
+import {
+  fetchLatestClockInRevisionsByRecordIds,
+  type ClockInRevisionSnapshot,
+} from '../lib/employeeClockInRevisions';
+import {
+  ApprovalChangedValue,
+  ApprovalNotesButton,
+  ClockInInsightTag,
+  ManualClockInApprovalRecordExtras,
+} from './ManualClockInApprovalRecordExtras';
+import DeclineClockInNoteModal from './profile/DeclineClockInNoteModal';
 
 interface ManualClockInApprovalModalProps {
   isOpen: boolean;
@@ -51,9 +69,6 @@ const MONTH_NAMES = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
-const PENDING_BADGE_CLASS =
-  'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium shrink-0 bg-amber-100/45 text-amber-800/55 border-0 shadow-none ring-0 outline-none';
-
 const WFH_PENDING_HEADER_BADGE_CLASS =
   'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold shrink-0 bg-orange-100 text-orange-800 border border-orange-200/80';
 
@@ -75,6 +90,10 @@ const CLOCK_PENDING_FILTER_BTN_ACTIVE_CLASS =
   'ring-2 ring-offset-1 opacity-90';
 
 type PendingApprovalFilter = 'all' | 'wfh' | 'clock';
+
+type DeclineTarget =
+  | { mode: 'single'; recordId: number }
+  | { mode: 'bulk'; recordIds: number[] };
 
 function matchesPendingTypeFilter(
   record: ManualClockInApprovalRecord,
@@ -142,8 +161,16 @@ function approvalClockOutTime(record: ManualClockInApprovalRecord): string {
   return record.clock_out_time ? formatClockTime(record.clock_out_time) : '—';
 }
 
-function approvalWorkplaceOut(record: ManualClockInApprovalRecord): string {
-  return record.clock_out_time ? manualClockInWorkplaceLabel(record, 'out') : '—';
+function approvalSessionDuration(record: ManualClockInApprovalRecord): string {
+  if (!record.clock_out_time) return '—';
+  return formatClockDuration(record.clock_in_time, record.clock_out_time);
+}
+
+function approvalPreviousSessionDuration(
+  revision: ClockInRevisionSnapshot | null,
+): string | null {
+  if (!revision?.clockOutTime) return null;
+  return formatClockDuration(revision.clockInTime, revision.clockOutTime);
 }
 
 const MANUAL_CLOCK_APPROVAL_TABLE_STYLES = `
@@ -198,6 +225,15 @@ const MANUAL_CLOCK_APPROVAL_TABLE_STYLES = `
     background: #e5e7eb !important;
   }
 
+  .manual-clock-approval-table-shell table tbody tr.manual-clock-approval-detail-row td {
+    border-top: none !important;
+    box-shadow: none !important;
+  }
+
+  .manual-clock-approval-table-shell table tbody tr.manual-clock-approval-detail-row:hover td {
+    background: #f8fafc !important;
+  }
+
   .manual-clock-approval-table-shell table thead,
   .manual-clock-approval-table-shell table thead tr,
   .manual-clock-approval-table-shell table thead th {
@@ -213,13 +249,54 @@ const MANUAL_CLOCK_APPROVAL_TABLE_STYLES = `
 `;
 
 function getInitials(name: string): string {
-  return name
-    .split(' ')
-    .filter(Boolean)
-    .map((part) => part[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2);
+  const trimmed = name.trim();
+  if (!trimmed) return '';
+  const parts = trimmed.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  }
+  return trimmed.slice(0, 2).toUpperCase();
+}
+
+function EmployeeAvatar({
+  name,
+  photoUrl,
+  size = 'md',
+}: {
+  name: string;
+  photoUrl?: string | null;
+  size?: 'sm' | 'md' | 'lg';
+}) {
+  const [imageFailed, setImageFailed] = useState(false);
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [photoUrl, name]);
+
+  const dim =
+    size === 'sm' ? 'w-8 h-8 text-[10px]' : size === 'lg' ? 'w-16 h-16 text-sm' : 'w-12 h-12 text-xs';
+  const initials = getInitials(name);
+
+  if (photoUrl && !imageFailed) {
+    return (
+      <img
+        src={photoUrl}
+        alt=""
+        className={`${dim} rounded-full object-cover shrink-0`}
+        onError={() => setImageFailed(true)}
+      />
+    );
+  }
+
+  return (
+    <span
+      className={`${dim} rounded-full bg-primary/10 text-primary font-semibold inline-flex items-center justify-center shrink-0 overflow-hidden leading-none`}
+      aria-hidden={Boolean(initials)}
+      title={name}
+    >
+      {initials || <UserIcon className="w-4 h-4" />}
+    </span>
+  );
 }
 
 function EmployeeClockStatusBadge({ clockInTime }: { clockInTime?: string | null }) {
@@ -236,36 +313,6 @@ function EmployeeClockStatusBadge({ clockInTime }: { clockInTime?: string | null
     </span>
   );
 }
-
-function EmployeeAvatar({
-  name,
-  photoUrl,
-  size = 'md',
-}: {
-  name: string;
-  photoUrl?: string | null;
-  size?: 'sm' | 'md' | 'lg';
-}) {
-  const dim =
-    size === 'sm' ? 'w-8 h-8 text-xs' : size === 'lg' ? 'w-16 h-16 text-lg' : 'w-12 h-12 text-base';
-  if (photoUrl) {
-    return (
-      <img
-        src={photoUrl}
-        alt={name}
-        className={`${dim} rounded-full object-cover ring-2 ring-base-200 shrink-0`}
-      />
-    );
-  }
-  return (
-    <span
-      className={`${dim} rounded-full bg-primary/10 text-primary font-semibold inline-flex items-center justify-center ring-2 ring-base-200 shrink-0`}
-    >
-      {getInitials(name) || <UserIcon className="w-4 h-4" />}
-    </span>
-  );
-}
-
 
 function EmployeeMessageButton({
   chatUserId,
@@ -306,6 +353,182 @@ function EmployeeEmailButton({ email }: { email: string | null }) {
   );
 }
 
+type GroupApprovalSummary = NonNullable<ReturnType<typeof buildEmployeeGroupApprovalSummary>>;
+
+function ApprovalDateCell({
+  record,
+  dateKey,
+}: {
+  record: ManualClockInApprovalRecord;
+  dateKey: string;
+}) {
+  const isHomeWfh = isHomeWfhApprovalRequest(record);
+  const missingRequired = isHomeWfh ? [] : getClockInApprovalMissingRequiredFields(record);
+
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        className={CLOCK_IN_DATE_BADGE_CLASS}
+        style={{ backgroundColor: approvalDateBadgeBg(record) }}
+      >
+        {unavailabilityDateLabel(dateKey)}
+      </span>
+      {missingRequired.length > 0 && (
+        <ClockInInsightTag
+          level="flag"
+          variant="pill"
+          title={formatClockInApprovalMissingRequiredDetail(missingRequired)}
+        />
+      )}
+    </div>
+  );
+}
+
+function EmployeeGroupApprovalTable({
+  group,
+  revisionsByRecordId,
+  actingId,
+  onApprove,
+  onDecline,
+}: {
+  group: EmployeeGroup;
+  revisionsByRecordId: Map<number, ClockInRevisionSnapshot>;
+  actingId: number | null;
+  onApprove: (recordId: number) => void;
+  onDecline: (recordId: number) => void;
+}) {
+  return (
+    <div
+      id={`manual-clock-approval-table-${group.employeeId}`}
+      className="manual-clock-approval-table-shell overflow-x-auto pb-1"
+    >
+      <table className="table manual-clock-approval-results-table w-full min-w-[36rem] text-sm">
+        <thead>
+          <tr>
+            <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
+              Date
+            </th>
+            <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
+              Clock in
+            </th>
+            <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
+              Clock out
+            </th>
+            <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
+              Total
+            </th>
+            <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
+              Workplace
+            </th>
+            <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
+              Notes
+            </th>
+            <th
+              className="w-24 px-5 py-3.5 text-right text-xs font-semibold uppercase tracking-wider text-base-content/40"
+              aria-label="Actions"
+            />
+          </tr>
+        </thead>
+        <tbody>
+          {group.records.map((record) => {
+            const status = getClockInApprovalStatus(record);
+            const dateKey = record.clock_in_time.split('T')[0];
+            const isActing = actingId === record.id;
+            const isDeclined = status === 'declined';
+            const isHomeWfh = isHomeWfhApprovalRequest(record);
+            const revision = revisionsByRecordId.get(record.id) ?? null;
+            const fieldChanges = getClockInRevisionFieldChanges(record, revision);
+
+            return (
+              <React.Fragment key={record.id}>
+                <tr className={isDeclined ? 'manual-clock-approval-row-declined' : undefined}>
+                  <td className="whitespace-nowrap px-5 py-4">
+                    <ApprovalDateCell record={record} dateKey={dateKey} />
+                  </td>
+                  {isHomeWfh ? (
+                    <td className="px-5 py-4" colSpan={5}>
+                      <HomeWfhApprovalSummaryBadge record={record} />
+                    </td>
+                  ) : (
+                    <>
+                      <td className="whitespace-nowrap px-5 py-4">
+                        <ApprovalChangedValue
+                          value={formatClockTime(record.clock_in_time)}
+                          previous={fieldChanges.clockIn?.previous}
+                        />
+                      </td>
+                      <td className="whitespace-nowrap px-5 py-4">
+                        <ApprovalChangedValue
+                          value={approvalClockOutTime(record)}
+                          previous={fieldChanges.clockOut?.previous}
+                        />
+                      </td>
+                      <td className="whitespace-nowrap px-5 py-4 tabular-nums">
+                        <ApprovalChangedValue
+                          value={approvalSessionDuration(record)}
+                          previous={
+                            fieldChanges.clockIn || fieldChanges.clockOut
+                              ? approvalPreviousSessionDuration(revision)
+                              : null
+                          }
+                        />
+                      </td>
+                      <td className="text-sm max-w-[140px] truncate px-5 py-4">
+                        <ApprovalChangedValue
+                          value={manualClockInWorkplaceLabel(record, 'in')}
+                          previous={fieldChanges.workplaceIn?.previous}
+                        />
+                      </td>
+                      <td className="text-sm max-w-[140px] px-5 py-4">
+                        <ApprovalNotesButton notes={record.notes} />
+                      </td>
+                    </>
+                  )}
+                  <td className="text-right whitespace-nowrap px-5 py-4">
+                    <div className="inline-flex items-center justify-end gap-1.5">
+                      <button
+                        type="button"
+                        title="Approve"
+                        aria-label="Approve entry"
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-emerald-200/80 bg-emerald-50 text-emerald-600 shadow-sm transition-all hover:scale-105 hover:border-emerald-300 hover:bg-emerald-100 hover:shadow disabled:opacity-40 disabled:hover:scale-100"
+                        disabled={isActing}
+                        onClick={() => onApprove(record.id)}
+                      >
+                        {isActing ? (
+                          <span className="loading loading-spinner loading-xs" />
+                        ) : (
+                          <CheckIcon className="h-4 w-4 stroke-[2.5]" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        title={isDeclined ? 'Already declined' : 'Decline'}
+                        aria-label="Decline entry"
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-base-200 bg-white text-base-content/45 shadow-sm transition-all hover:scale-105 hover:border-red-200 hover:bg-red-50 hover:text-red-600 hover:shadow disabled:opacity-40 disabled:hover:scale-100"
+                        disabled={isActing || isDeclined}
+                        onClick={() => onDecline(record.id)}
+                      >
+                        <XMarkIcon className="h-4 w-4 stroke-[2.5]" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                {!isHomeWfh && (
+                  <ManualClockInApprovalRecordExtras
+                    record={record}
+                    revision={revision}
+                    colSpan={7}
+                  />
+                )}
+              </React.Fragment>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
   isOpen,
   onClose,
@@ -323,6 +546,10 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | null>(null);
   const [employeePickerOpen, setEmployeePickerOpen] = useState(false);
   const [expandedEmployeeIds, setExpandedEmployeeIds] = useState<Set<number>>(() => new Set());
+  const [desktopSelectedEmployeeId, setDesktopSelectedEmployeeId] = useState<number | null>(null);
+  const [isMobileLayout, setIsMobileLayout] = useState(() =>
+    typeof window !== 'undefined' ? isNarrowViewport() : false,
+  );
   const [pendingTypeFilter, setPendingTypeFilter] = useState<PendingApprovalFilter>('all');
   const [bulkActionMode, setBulkActionMode] = useState<'approve' | 'decline' | null>(null);
   const [selectedRecordIds, setSelectedRecordIds] = useState<Set<number>>(() => new Set());
@@ -330,7 +557,20 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
   const [rmqOpen, setRmqOpen] = useState(false);
   const [rmqChatUserId, setRmqChatUserId] = useState<string | null>(null);
   const [activeClockIns, setActiveClockIns] = useState<Map<number, string>>(() => new Map());
+  const [revisionsByRecordId, setRevisionsByRecordId] = useState<
+    Map<number, ClockInRevisionSnapshot>
+  >(() => new Map());
+  const [declineTarget, setDeclineTarget] = useState<DeclineTarget | null>(null);
+  const [declineSaving, setDeclineSaving] = useState(false);
   const searchWrapRef = useRef<HTMLDivElement>(null);
+
+  const loadRevisionsForRecords = useCallback(async (rows: ManualClockInApprovalRecord[]) => {
+    const ids = rows
+      .filter((row) => !isHomeWfhApprovalRequest(row))
+      .map((row) => row.id);
+    const revisions = await fetchLatestClockInRevisionsByRecordIds(ids);
+    setRevisionsByRecordId(revisions);
+  }, []);
 
   const yearOptions = useMemo(() => {
     const y = now.getFullYear();
@@ -343,10 +583,11 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
         periodScope === 'all' ? 'all' : { year, month },
       );
       setRecords(rows);
+      await loadRevisionsForRecords(rows);
     } catch (err) {
       console.error('ManualClockInApprovalModal records:', err);
     }
-  }, [periodScope, year, month]);
+  }, [periodScope, year, month, loadRevisionsForRecords]);
 
   const loadRecords = useCallback(async () => {
     setLoadingRecords(true);
@@ -355,14 +596,16 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
         periodScope === 'all' ? 'all' : { year, month },
       );
       setRecords(rows);
+      await loadRevisionsForRecords(rows);
     } catch (err) {
       console.error('ManualClockInApprovalModal records:', err);
       toast.error('Failed to load manual clock-in entries');
       setRecords([]);
+      setRevisionsByRecordId(new Map());
     } finally {
       setLoadingRecords(false);
     }
-  }, [periodScope, year, month]);
+  }, [periodScope, year, month, loadRevisionsForRecords]);
 
   useManualClockInApprovalLiveRefresh({
     enabled: isOpen,
@@ -376,6 +619,7 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     setSelectedEmployeeId(null);
     setEmployeePickerOpen(false);
     setExpandedEmployeeIds(new Set());
+    setDesktopSelectedEmployeeId(null);
     setPendingTypeFilter('all');
     setPeriodScope('all');
     setBulkActionMode(null);
@@ -383,15 +627,26 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     setRmqOpen(false);
     setRmqChatUserId(null);
     setActiveClockIns(new Map());
+    setRevisionsByRecordId(new Map());
     void loadRecords();
   }, [isOpen, loadRecords]);
 
   useEffect(() => {
     setExpandedEmployeeIds(new Set());
+    setDesktopSelectedEmployeeId(null);
     setPendingTypeFilter('all');
     setBulkActionMode(null);
     setSelectedRecordIds(new Set());
   }, [year, month, periodScope]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const mq = window.matchMedia('(max-width: 767px)');
+    const update = () => setIsMobileLayout(mq.matches);
+    update();
+    mq.addEventListener('change', update);
+    return () => mq.removeEventListener('change', update);
+  }, [isOpen]);
 
   useEffect(() => {
     if (!employeePickerOpen) return;
@@ -465,6 +720,17 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     };
   }, [isOpen, employeeIdsForClockStatus]);
 
+  const groupApprovalSummaries = useMemo(() => {
+    const map = new Map<number, NonNullable<ReturnType<typeof buildEmployeeGroupApprovalSummary>>>();
+    for (const group of employeeGroups) {
+      const summary = buildEmployeeGroupApprovalSummary(group.records, (id) =>
+        revisionsByRecordId.get(id),
+      );
+      if (summary) map.set(group.employeeId, summary);
+    }
+    return map;
+  }, [employeeGroups, revisionsByRecordId]);
+
   const employeePickerOptions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return employeeGroups.filter((group) => {
@@ -493,6 +759,24 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     () => applyPendingTypeFilterToGroups(baseVisibleGroups, pendingTypeFilter),
     [baseVisibleGroups, pendingTypeFilter],
   );
+
+  const desktopSelectedGroup = useMemo(
+    () => visibleGroups.find((group) => group.employeeId === desktopSelectedEmployeeId) ?? null,
+    [visibleGroups, desktopSelectedEmployeeId],
+  );
+
+  useEffect(() => {
+    if (visibleGroups.length === 0) {
+      setDesktopSelectedEmployeeId(null);
+      return;
+    }
+    setDesktopSelectedEmployeeId((prev) => {
+      if (prev != null && visibleGroups.some((group) => group.employeeId === prev)) {
+        return prev;
+      }
+      return visibleGroups[0]?.employeeId ?? null;
+    });
+  }, [visibleGroups]);
 
   const { wfh: pendingWfhCount, clock: pendingClockCount } = useMemo(
     () => countPendingApprovalBuckets(actionableRecords),
@@ -525,6 +809,7 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
 
   const enterBulkMode = (mode: 'approve' | 'decline') => {
     setExpandedEmployeeIds(new Set());
+    setDesktopSelectedEmployeeId(null);
     setSelectedRecordIds(new Set());
     setBulkActionMode(mode);
   };
@@ -571,11 +856,11 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     }
   };
 
-  const handleDecline = async (recordId: number) => {
+  const handleDecline = async (recordId: number, declineNote: string | null = null) => {
     if (!user?.id) return;
     setActingId(recordId);
     try {
-      const result = await declineClockInRecord(recordId, user.id);
+      const result = await declineClockInRecord(recordId, user.id, declineNote);
       toast.success(result === 'removed' ? 'Home access request removed' : 'Entry declined');
       setRecords((prev) => prev.filter((r) => r.id !== recordId));
       onUpdated?.();
@@ -585,6 +870,85 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     } finally {
       setActingId(null);
     }
+  };
+
+  const requestDecline = (recordId: number) => {
+    setDeclineTarget({ mode: 'single', recordId });
+  };
+
+  const declineModalEntryLabel = useMemo(() => {
+    if (!declineTarget || declineTarget.mode !== 'single') return undefined;
+    const record = records.find((row) => row.id === declineTarget.recordId);
+    if (!record) return undefined;
+    const dateKey = record.clock_in_time.split('T')[0];
+    const name = record.employee_name || `Employee #${record.employee_id}`;
+    return `${name} · ${unavailabilityDateLabel(dateKey)}`;
+  }, [declineTarget, records]);
+
+  const handleDeclineModalConfirm = async (declineNote: string | null) => {
+    if (!user?.id || !declineTarget) return;
+
+    if (declineTarget.mode === 'single') {
+      setDeclineSaving(true);
+      try {
+        await handleDecline(declineTarget.recordId, declineNote);
+        setDeclineTarget(null);
+      } finally {
+        setDeclineSaving(false);
+      }
+      return;
+    }
+
+    setDeclineSaving(true);
+    setBulkProcessing(true);
+    const ids = declineTarget.recordIds;
+    let declinedCount = 0;
+    let failedCount = 0;
+
+    for (const recordId of ids) {
+      try {
+        const result = await declineClockInRecord(recordId, user.id, declineNote);
+        declinedCount += 1;
+        if (result === 'removed') {
+          setRecords((prev) => prev.filter((r) => r.id !== recordId));
+        }
+      } catch (err) {
+        console.error('Bulk decline clock-in:', err);
+        failedCount += 1;
+      }
+    }
+
+    setSelectedRecordIds(new Set());
+    setBulkActionMode(null);
+    setDeclineTarget(null);
+    onUpdated?.();
+
+    if (failedCount === 0) {
+      toast.success(
+        `Declined ${declinedCount} entr${declinedCount === 1 ? 'y' : 'ies'}.`,
+      );
+      const hasRegularDeclines = ids.some((id) => {
+        const record = records.find((r) => r.id === id);
+        return record && !isHomeWfhApprovalRequest(record);
+      });
+      if (hasRegularDeclines) {
+        await loadRecords();
+      }
+    } else if (declinedCount > 0) {
+      toast.error(`Declined ${declinedCount}, failed ${failedCount}.`);
+      await loadRecords();
+    } else {
+      toast.error('Failed to decline selected entries.');
+      await loadRecords();
+    }
+
+    setBulkProcessing(false);
+    setDeclineSaving(false);
+  };
+
+  const handleBulkDecline = () => {
+    if (selectedRecordIds.size === 0) return;
+    setDeclineTarget({ mode: 'bulk', recordIds: [...selectedRecordIds] });
   };
 
   const handleBulkApprove = async () => {
@@ -624,57 +988,12 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
     setBulkProcessing(false);
   };
 
-  const handleBulkDecline = async () => {
-    if (!user?.id || selectedRecordIds.size === 0) return;
-    setBulkProcessing(true);
-    const ids = [...selectedRecordIds];
-    let declinedCount = 0;
-    let failedCount = 0;
-
-    for (const recordId of ids) {
-      try {
-        const result = await declineClockInRecord(recordId, user.id);
-        declinedCount += 1;
-        if (result === 'removed') {
-          setRecords((prev) => prev.filter((r) => r.id !== recordId));
-        }
-      } catch (err) {
-        console.error('Bulk decline clock-in:', err);
-        failedCount += 1;
-      }
-    }
-
-    setSelectedRecordIds(new Set());
-    setBulkActionMode(null);
-    onUpdated?.();
-
-    if (failedCount === 0) {
-      toast.success(
-        `Declined ${declinedCount} entr${declinedCount === 1 ? 'y' : 'ies'}.`,
-      );
-      const hasRegularDeclines = ids.some((id) => {
-        const record = records.find((r) => r.id === id);
-        return record && !isHomeWfhApprovalRequest(record);
-      });
-      if (hasRegularDeclines) {
-        await loadRecords();
-      }
-    } else if (declinedCount > 0) {
-      toast.error(`Declined ${declinedCount}, failed ${failedCount}.`);
-      await loadRecords();
-    } else {
-      toast.error('Failed to decline selected entries.');
-      await loadRecords();
-    }
-
-    setBulkProcessing(false);
-  };
-
   const selectEmployee = (group: EmployeeGroup) => {
     setSelectedEmployeeId(group.employeeId);
     setSearchQuery(group.employeeName);
     setEmployeePickerOpen(false);
     setExpandedEmployeeIds(new Set([group.employeeId]));
+    setDesktopSelectedEmployeeId(group.employeeId);
   };
 
   const clearEmployeeFilter = () => {
@@ -700,11 +1019,13 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
 
     if (nextFilter === 'all') {
       setExpandedEmployeeIds(new Set());
+    setDesktopSelectedEmployeeId(null);
       return;
     }
 
     const matchingGroups = applyPendingTypeFilterToGroups(baseVisibleGroups, nextFilter);
     setExpandedEmployeeIds(new Set(matchingGroups.map((group) => group.employeeId)));
+    setDesktopSelectedEmployeeId(matchingGroups[0]?.employeeId ?? null);
   };
 
   const openEmployeeChat = (group: EmployeeGroup) => {
@@ -795,9 +1116,10 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                           <div className="text-xs text-base-content/55 truncate">
                             {group.department}
                             {group.pendingCount > 0 && (
-                              <span className={PENDING_BADGE_CLASS}>
-                                {group.pendingCount} pending
-                              </span>
+                              <>
+                                <span className="text-base-content/35"> · </span>
+                                <span>{group.pendingCount} pending</span>
+                              </>
                             )}
                           </div>
                         </div>
@@ -947,7 +1269,7 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                     type="button"
                     className={BULK_DECLINE_CONFIRM_CLASS}
                     disabled={selectedRecordIds.size === 0 || bulkProcessing}
-                    onClick={() => void handleBulkDecline()}
+                    onClick={handleBulkDecline}
                   >
                     {bulkProcessing ? (
                       <span className="loading loading-spinner loading-xs" />
@@ -964,14 +1286,14 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto px-5 py-4 space-y-5 min-h-0 bg-[#ececec]">
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden bg-[#ececec]">
           {loadingRecords ? (
             <div className="flex justify-center py-16">
               <span className="loading loading-spinner loading-lg text-primary" />
             </div>
           ) : bulkActionMode ? (
             pendingSelectableRecords.length === 0 ? (
-              <div className="text-center py-16 text-base-content/50">
+              <div className="text-center py-16 text-base-content/50 px-5">
                 {bulkActionMode === 'approve'
                   ? 'No pending entries to approve.'
                   : 'No pending entries to decline.'}
@@ -1006,10 +1328,10 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                         Clock out
                       </th>
                       <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
-                        Workplace in
+                        Total
                       </th>
                       <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
-                        Workplace out
+                        Workplace
                       </th>
                       <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
                         Notes
@@ -1021,9 +1343,11 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                       const dateKey = record.clock_in_time.split('T')[0];
                       const isSelected = selectedRecordIds.has(record.id);
                       const isHomeWfh = isHomeWfhApprovalRequest(record);
+                      const revision = revisionsByRecordId.get(record.id) ?? null;
+                      const fieldChanges = getClockInRevisionFieldChanges(record, revision);
                       return (
+                        <React.Fragment key={record.id}>
                         <tr
-                          key={record.id}
                           className="cursor-pointer"
                           onClick={() => toggleRecordSelected(record.id)}
                         >
@@ -1040,12 +1364,7 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                             {record.employee_name}
                           </td>
                           <td className="whitespace-nowrap px-5 py-4">
-                            <span
-                              className={CLOCK_IN_DATE_BADGE_CLASS}
-                              style={{ backgroundColor: approvalDateBadgeBg(record) }}
-                            >
-                              {unavailabilityDateLabel(dateKey)}
-                            </span>
+                            <ApprovalDateCell record={record} dateKey={dateKey} />
                           </td>
                           {isHomeWfh ? (
                             <td className="px-5 py-4" colSpan={5}>
@@ -1054,23 +1373,47 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                           ) : (
                             <>
                               <td className="whitespace-nowrap px-5 py-4">
-                                {formatClockTime(record.clock_in_time)}
+                                <ApprovalChangedValue
+                                  value={formatClockTime(record.clock_in_time)}
+                                  previous={fieldChanges.clockIn?.previous}
+                                />
                               </td>
                               <td className="whitespace-nowrap px-5 py-4">
-                                {approvalClockOutTime(record)}
+                                <ApprovalChangedValue
+                                  value={approvalClockOutTime(record)}
+                                  previous={fieldChanges.clockOut?.previous}
+                                />
                               </td>
-                              <td className="text-sm max-w-[120px] truncate px-5 py-4">
-                                {manualClockInWorkplaceLabel(record, 'in')}
+                              <td className="whitespace-nowrap px-5 py-4 tabular-nums">
+                                <ApprovalChangedValue
+                                  value={approvalSessionDuration(record)}
+                                  previous={
+                                    fieldChanges.clockIn || fieldChanges.clockOut
+                                      ? approvalPreviousSessionDuration(revision)
+                                      : null
+                                  }
+                                />
                               </td>
-                              <td className="text-sm max-w-[120px] truncate px-5 py-4">
-                                {approvalWorkplaceOut(record)}
+                              <td className="text-sm max-w-[140px] truncate px-5 py-4">
+                                <ApprovalChangedValue
+                                  value={manualClockInWorkplaceLabel(record, 'in')}
+                                  previous={fieldChanges.workplaceIn?.previous}
+                                />
                               </td>
-                              <td className="text-sm max-w-[140px] truncate text-base-content/70 px-5 py-4">
-                                {record.notes?.trim() || '—'}
+                              <td className="text-sm max-w-[140px] px-5 py-4">
+                                <ApprovalNotesButton notes={record.notes} />
                               </td>
                             </>
                           )}
                         </tr>
+                        {!isHomeWfh && (
+                          <ManualClockInApprovalRecordExtras
+                            record={record}
+                            revision={revision}
+                            colSpan={8}
+                          />
+                        )}
+                        </React.Fragment>
                       );
                     })}
                   </tbody>
@@ -1089,11 +1432,12 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                       : 'No pending manual clock-in entries for this period.'
                     : 'No employees match your search.'}
             </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-5">
+          ) : isMobileLayout ? (
+            <div className="flex-1 overflow-auto px-5 py-4 space-y-4 min-h-0">
             {visibleGroups.map((group) => {
               const isExpanded = expandedEmployeeIds.has(group.employeeId);
               const activeClockInTime = activeClockIns.get(group.employeeId) ?? null;
+              const groupSummary = groupApprovalSummaries.get(group.employeeId) ?? null;
               const hasWfhPending = group.records.some(
                 (r) => isHomeWfhApprovalRequest(r) && getClockInApprovalStatus(r) === 'pending',
               );
@@ -1121,12 +1465,25 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                     />
                     <div className="min-w-0 flex-1 flex flex-col gap-2">
                       {/* Name row */}
-                      <div className="flex items-center justify-between gap-2">
-                        <h3 className="font-semibold text-base leading-snug min-w-0 truncate">
-                          {group.employeeName}
-                          <span className="font-medium text-base-content/50">{` - `}</span>
-                          <span className="font-medium text-base-content/70">{group.department}</span>
-                        </h3>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <h3 className="font-semibold text-base leading-snug">
+                            <span>{group.employeeName}</span>
+                            <span className="font-medium text-base-content/50">{` - `}</span>
+                            <span className="font-medium text-base-content/70">{group.department}</span>
+                            {groupSummary && (
+                              <>
+                                <span className="font-medium text-base-content/30">{` · `}</span>
+                                <ClockInInsightTag
+                                  level={groupSummary.level}
+                                  title={groupSummary.explanation || undefined}
+                                  variant="pill"
+                                  className="align-middle"
+                                />
+                              </>
+                            )}
+                          </h3>
+                        </div>
                         <div className="flex items-center gap-1.5 shrink-0">
                           <EmployeeEmailButton email={group.email} />
                           <EmployeeMessageButton
@@ -1150,11 +1507,11 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                           </span>
                         )}
                         {group.pendingCount > 0 ? (
-                          <span className="inline-flex items-center rounded-full px-2.5 py-0.5 md:px-3 md:py-1 text-xs md:text-sm font-medium shrink-0 bg-amber-100/60 text-amber-800/70 whitespace-nowrap">
+                          <span className="text-xs md:text-sm text-base-content/55 whitespace-nowrap">
                             {group.pendingCount} pending
                           </span>
                         ) : (
-                          <span className="inline-flex items-center rounded-full px-2.5 py-0.5 md:px-3 md:py-1 text-xs md:text-sm font-medium shrink-0 bg-base-200/50 text-base-content/40">
+                          <span className="text-xs md:text-sm text-base-content/40 whitespace-nowrap">
                             No pending
                           </span>
                         )}
@@ -1164,119 +1521,78 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
                 </div>
 
                 {isExpanded && (
-                <div
-                  id={`manual-clock-approval-table-${group.employeeId}`}
-                  className="manual-clock-approval-table-shell overflow-x-auto pb-1"
-                >
-                  <table className="table manual-clock-approval-results-table w-full min-w-[36rem] text-sm">
-                    <thead>
-                      <tr>
-                        <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
-                          Date
-                        </th>
-                        <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
-                          Clock in
-                        </th>
-                        <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
-                          Clock out
-                        </th>
-                        <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
-                          Workplace in
-                        </th>
-                        <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
-                          Workplace out
-                        </th>
-                        <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40">
-                          Notes
-                        </th>
-                        <th
-                          className="w-24 px-5 py-3.5 text-right text-xs font-semibold uppercase tracking-wider text-base-content/40"
-                          aria-label="Actions"
-                        />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {group.records.map((record) => {
-                        const status = getClockInApprovalStatus(record);
-                        const dateKey = record.clock_in_time.split('T')[0];
-                        const isActing = actingId === record.id;
-                        const isDeclined = status === 'declined';
-                        const isHomeWfh = isHomeWfhApprovalRequest(record);
-
-                        return (
-                          <tr
-                            key={record.id}
-                            className={isDeclined ? 'manual-clock-approval-row-declined' : undefined}
-                          >
-                            <td className="whitespace-nowrap px-5 py-4">
-                              <span
-                                className={CLOCK_IN_DATE_BADGE_CLASS}
-                                style={{ backgroundColor: approvalDateBadgeBg(record) }}
-                              >
-                                {unavailabilityDateLabel(dateKey)}
-                              </span>
-                            </td>
-                            {isHomeWfh ? (
-                              <td className="px-5 py-4" colSpan={5}>
-                                <HomeWfhApprovalSummaryBadge record={record} />
-                              </td>
-                            ) : (
-                              <>
-                                <td className="whitespace-nowrap px-5 py-4">
-                                  {formatClockTime(record.clock_in_time)}
-                                </td>
-                                <td className="whitespace-nowrap px-5 py-4">
-                                  {approvalClockOutTime(record)}
-                                </td>
-                                <td className="text-sm max-w-[120px] truncate px-5 py-4">
-                                  {manualClockInWorkplaceLabel(record, 'in')}
-                                </td>
-                                <td className="text-sm max-w-[120px] truncate px-5 py-4">
-                                  {approvalWorkplaceOut(record)}
-                                </td>
-                                <td className="text-sm max-w-[140px] truncate text-base-content/70 px-5 py-4">
-                                  {record.notes?.trim() || '—'}
-                                </td>
-                              </>
-                            )}
-                            <td className="text-right whitespace-nowrap px-5 py-4">
-                              <div className="inline-flex items-center justify-end gap-1.5">
-                                <button
-                                  type="button"
-                                  title="Approve"
-                                  aria-label="Approve entry"
-                                  className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-emerald-200/80 bg-emerald-50 text-emerald-600 shadow-sm transition-all hover:scale-105 hover:border-emerald-300 hover:bg-emerald-100 hover:shadow disabled:opacity-40 disabled:hover:scale-100"
-                                  disabled={isActing}
-                                  onClick={() => void handleApprove(record.id)}
-                                >
-                                  {isActing ? (
-                                    <span className="loading loading-spinner loading-xs" />
-                                  ) : (
-                                    <CheckIcon className="h-4 w-4 stroke-[2.5]" />
-                                  )}
-                                </button>
-                                <button
-                                  type="button"
-                                  title={isDeclined ? 'Already declined' : 'Decline'}
-                                  aria-label="Decline entry"
-                                  className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-base-200 bg-white text-base-content/45 shadow-sm transition-all hover:scale-105 hover:border-red-200 hover:bg-red-50 hover:text-red-600 hover:shadow disabled:opacity-40 disabled:hover:scale-100"
-                                  disabled={isActing || isDeclined}
-                                  onClick={() => void handleDecline(record.id)}
-                                >
-                                  <XMarkIcon className="h-4 w-4 stroke-[2.5]" />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                  <EmployeeGroupApprovalTable
+                    group={group}
+                    revisionsByRecordId={revisionsByRecordId}
+                    actingId={actingId}
+                    onApprove={(id) => void handleApprove(id)}
+                    onDecline={requestDecline}
+                  />
                 )}
               </section>
             );
             })}
+            </div>
+          ) : (
+            <div className="flex flex-1 min-h-0 w-full">
+              <aside className="w-60 lg:w-64 shrink-0 overflow-y-auto border-r border-base-300/50 px-2 py-4 space-y-1">
+                {visibleGroups.map((group) => {
+                  const isSelected = desktopSelectedEmployeeId === group.employeeId;
+                  const groupSummary = groupApprovalSummaries.get(group.employeeId) ?? null;
+                  return (
+                    <button
+                      key={group.employeeId}
+                      type="button"
+                      className={`w-full flex items-center gap-3 rounded-2xl px-3 py-3 text-left transition-colors ${
+                        isSelected ? 'bg-white shadow-sm' : 'hover:bg-white/70'
+                      }`}
+                      aria-current={isSelected ? 'true' : undefined}
+                      onClick={() => setDesktopSelectedEmployeeId(group.employeeId)}
+                    >
+                      <EmployeeAvatar
+                        name={group.employeeName}
+                        photoUrl={group.photoUrl}
+                        size="md"
+                      />
+                      <div className="min-w-0 flex-1 flex flex-col gap-1.5">
+                        <span className="font-medium text-sm leading-snug truncate">
+                          {group.employeeName}
+                        </span>
+                        {groupSummary && (
+                          <ClockInInsightTag
+                            level={groupSummary.level}
+                            title={groupSummary.explanation || undefined}
+                            variant="pill"
+                            className="w-fit"
+                          />
+                        )}
+                      </div>
+                      {group.pendingCount > 0 && (
+                        <div className="shrink-0 flex items-center justify-center min-w-[2rem] h-8 rounded-xl bg-base-content/[0.06] px-2">
+                          <span className="text-base font-bold tabular-nums leading-none text-base-content/80">
+                            {group.pendingCount}
+                          </span>
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </aside>
+              <main className="flex-1 min-w-0 overflow-y-auto px-5 py-4">
+                {desktopSelectedGroup ? (
+                  <EmployeeGroupApprovalTable
+                    group={desktopSelectedGroup}
+                    revisionsByRecordId={revisionsByRecordId}
+                    actingId={actingId}
+                    onApprove={(id) => void handleApprove(id)}
+                    onDecline={requestDecline}
+                  />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-base-content/50">
+                    Select an employee
+                  </div>
+                )}
+              </main>
             </div>
           )}
         </div>
@@ -1290,6 +1606,19 @@ const ManualClockInApprovalModal: React.FC<ManualClockInApprovalModalProps> = ({
             setRmqOpen(false);
             setRmqChatUserId(null);
           }}
+        />
+
+        <DeclineClockInNoteModal
+          open={declineTarget != null}
+          onClose={() => {
+            if (!declineSaving) setDeclineTarget(null);
+          }}
+          onConfirm={(note) => void handleDeclineModalConfirm(note)}
+          saving={declineSaving}
+          entryLabel={declineModalEntryLabel}
+          entryCount={
+            declineTarget?.mode === 'bulk' ? declineTarget.recordIds.length : 1
+          }
         />
     </div>,
     document.body,

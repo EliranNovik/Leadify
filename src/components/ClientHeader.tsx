@@ -38,6 +38,7 @@ import {
     XMarkIcon,
     RectangleStackIcon,
     LockClosedIcon,
+    ChevronRightIcon,
     DocumentArrowUpIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
@@ -81,6 +82,12 @@ import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
 import ClientHeaderTotalInNis from './ClientHeaderTotalInNis';
 import EditLeadDrawer from './EditLeadDrawer';
 import MobileBottomSheet from './MobileBottomSheet';
+import EditFieldModal, {
+    EDIT_FIELD_DROPDOWN,
+    EDIT_FIELD_DROPDOWN_ITEM,
+    EDIT_FIELD_INPUT,
+    EditFieldLabel,
+} from './EditFieldModal';
 import ClientPortalAdminCard from './portal/ClientPortalAdminCard';
 
 // Lightweight in-memory caches to avoid refetching static dropdown data on mobile.
@@ -144,25 +151,130 @@ const normalizeTagsValue = (value: unknown): string[] => {
         .filter(Boolean);
 };
 
-/** Neutral meta chips (language, source, applicants, category, topic) — primary stage colour stays on stage badge only */
-const META_CHIP =
-    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-1 rounded-full px-2 py-1 text-xs font-medium text-gray-700 bg-base-200/80 dark:bg-gray-700/90 dark:text-gray-200';
+/** External Firms report — shared header / panel styling */
+const CLIENT_HEADER_CARD = 'rounded-[18px] bg-white shadow-sm px-4 py-3.5 sm:px-5 sm:py-4';
+const CLIENT_HEADER_SHELL = `${CLIENT_HEADER_CARD} w-full`;
+/** Clears fixed app Header (clients-detail-scroll sets main padding-top: 0). */
+const CLIENT_HEADER_APP_INSET =
+    'pt-[calc(env(safe-area-inset-top,0px)+2.75rem+0.5rem+1rem)] md:pt-[calc(3rem+1.25rem)]';
 
-/** Larger chips for the four primary meta items: language, source, category, topic */
-const META_CHIP_TOP =
-    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1.5 text-sm font-medium text-gray-700 bg-base-200/80 dark:bg-gray-700/90 dark:text-gray-200';
+const CLIENT_HEADER_SECTION_LABEL =
+    'text-[11px] font-semibold uppercase tracking-widest text-base-content/40';
 
-/** Black pill buttons for stage workflow actions (Client signed / declined stay green / red). */
+const TEAM_ROLE_LABEL =
+    'text-[11px] font-semibold uppercase tracking-widest text-gray-500 dark:text-base-content/45';
+const CLIENT_HEADER_INNER_PANEL = CLIENT_HEADER_CARD;
+
+/** Individual white pills for language, source, category, topic (below header box). */
+const META_BADGE_WHITE =
+    'inline-flex max-w-full min-w-0 shrink-0 items-center gap-2 rounded-[18px] bg-white px-3.5 py-2.5 text-sm font-medium text-base-content/85 shadow-sm border border-base-200/50 dark:border-base-300/45 dark:bg-base-100';
+
+const META_BADGE_WHITE_BTN =
+    `${META_BADGE_WHITE} border-0 font-sans transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 cursor-pointer hover:shadow-md`;
+
+const CLIENT_HEADER_LEAD_NUMBER =
+    'mt-0 block text-sm font-medium tabular-nums text-gray-500 dark:text-base-content/45';
+
+const META_ICON_LANGUAGE = 'h-6 w-6 shrink-0 text-sky-600';
+const META_ICON_SOURCE = 'h-6 w-6 shrink-0 text-violet-600';
+const META_ICON_CATEGORY = 'h-6 w-6 shrink-0 text-amber-600';
+const META_ICON_TOPIC = 'h-6 w-6 shrink-0 text-emerald-600';
+const META_ICON_APPLICANTS = 'h-6 w-6 shrink-0 text-rose-600';
+
+const HEADER_ACTION_BAR_OVAL =
+    'inline-flex min-w-0 flex-wrap items-center gap-2 rounded-full border border-base-200/55 bg-white px-3 py-2 shadow-md dark:border-base-300/45 dark:bg-base-100';
+
+const HEADER_ACTION_BAR_BADGE_BTN =
+    'btn btn-circle pointer-events-auto relative min-h-11 min-w-11 rounded-full border-0 bg-transparent p-0 text-base-content/75 transition-colors duration-150';
+
+const HEADER_ACTION_BAR_CALL_BTN =
+    `${HEADER_ACTION_BAR_BADGE_BTN} hover:bg-gray-100 hover:text-gray-800 dark:hover:bg-gray-700/55 dark:hover:text-gray-100`;
+
+const HEADER_ACTION_BAR_WHATSAPP_BTN =
+    `${HEADER_ACTION_BAR_BADGE_BTN} text-emerald-700 hover:bg-emerald-50 hover:text-emerald-800 dark:text-emerald-300 dark:hover:bg-emerald-900/35`;
+
+const HEADER_ACTION_BAR_EMAIL_BTN =
+    `${HEADER_ACTION_BAR_BADGE_BTN} text-sky-700 hover:bg-sky-50 hover:text-sky-800 dark:text-sky-300 dark:hover:bg-sky-900/35`;
+
+const HEADER_ACTION_BAR_DOCS_BTN =
+    `${HEADER_ACTION_BAR_BADGE_BTN} hover:bg-indigo-50 hover:text-indigo-700 dark:hover:bg-indigo-900/30 dark:hover:text-indigo-200`;
+
+const HEADER_ACTION_BAR_TIMELINE_BTN =
+    `${HEADER_ACTION_BAR_BADGE_BTN} hover:bg-cyan-50 hover:text-cyan-800 dark:hover:bg-cyan-900/30 dark:hover:text-cyan-200`;
+
+const HEADER_ACTION_BAR_HISTORY_BTN =
+    `${HEADER_ACTION_BAR_BADGE_BTN} hover:bg-slate-100 hover:text-slate-800 dark:hover:bg-slate-700/55 dark:hover:text-slate-100`;
+
+const HEADER_ACTION_BAR_MORE_BTN =
+    `${HEADER_ACTION_BAR_BADGE_BTN} hover:bg-violet-50 hover:text-violet-800 dark:hover:bg-violet-900/30 dark:hover:text-violet-200`;
+
+const HEADER_ACTION_BAR_BTN = HEADER_ACTION_BAR_BADGE_BTN;
+
+const HEADER_TAGS_BTN_CLASS =
+    'btn btn-circle btn-ghost relative shrink-0 border border-purple-200/80 bg-purple-50 text-purple-700 hover:border-purple-300 hover:bg-purple-100 min-h-[2.5rem] min-w-[2.5rem] p-0 dark:border-purple-800/50 dark:bg-purple-900/30 dark:text-purple-200 dark:hover:bg-purple-900/45 md:min-h-[2.75rem] md:min-w-[2.75rem]';
+
+const HEADER_FLAGS_BTN_CLASS =
+    'btn btn-circle btn-ghost relative shrink-0 border border-amber-200/80 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100 min-h-[2.5rem] min-w-[2.5rem] p-0 disabled:pointer-events-none disabled:opacity-40 dark:border-amber-800/50 dark:bg-amber-900/30 dark:text-amber-300 dark:hover:bg-amber-900/45 md:min-h-[2.75rem] md:min-w-[2.75rem]';
+
+const HEADER_ACTION_BAR_TAGS_BTN =
+    `${HEADER_ACTION_BAR_BADGE_BTN} text-purple-700 hover:bg-purple-50 hover:text-purple-800 dark:text-purple-300 dark:hover:bg-purple-900/30`;
+
+const HEADER_ACTION_BAR_FLAGS_BTN =
+    `${HEADER_ACTION_BAR_BADGE_BTN} disabled:pointer-events-none disabled:opacity-40 text-amber-700 hover:bg-amber-50 hover:text-amber-800 dark:text-amber-300 dark:hover:bg-amber-900/30`;
+
+const MORE_ACTIONS_SECTION_LABEL =
+    'px-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-base-content/40';
+
+const MORE_ACTIONS_SHEET_ITEM =
+    'group flex w-full items-center gap-3 rounded-2xl border border-base-200/55 bg-white px-3.5 py-3 text-left text-[15px] font-medium leading-snug text-base-content/90 shadow-sm transition-all hover:border-base-300/70 hover:shadow-md active:scale-[0.995] dark:border-base-300/40 dark:bg-base-100';
+
+const MORE_ACTIONS_ICON_BOX =
+    'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl transition-colors';
+
+const MORE_ACTIONS_ICON_TONE_DEFAULT =
+    'bg-base-200/70 text-base-content/70 group-hover:bg-base-200 dark:group-hover:bg-base-300/50';
+
+const MORE_ACTIONS_ICON_TONE_SUCCESS =
+    'bg-emerald-50 text-emerald-700 group-hover:bg-emerald-100 dark:bg-emerald-900/25 dark:text-emerald-300';
+
+const MORE_ACTIONS_ICON_TONE_DANGER =
+    'bg-red-50 text-red-600 group-hover:bg-red-100 dark:bg-red-900/25 dark:text-red-400';
+
+const MORE_ACTIONS_ICON_TONE_WARNING =
+    'bg-amber-50 text-amber-800 group-hover:bg-amber-100 dark:bg-amber-900/25 dark:text-amber-300';
+
+const MORE_ACTIONS_ICON_TONE_PRIMARY =
+    'bg-indigo-50 text-indigo-700 group-hover:bg-indigo-100 dark:bg-indigo-900/25 dark:text-indigo-300';
+
+const MORE_ACTIONS_ICON_TONE_PURPLE =
+    'bg-purple-50 text-purple-700 group-hover:bg-purple-100 dark:bg-purple-900/25 dark:text-purple-300';
+
+const MORE_ACTIONS_DROPDOWN_LIST =
+    'flex flex-col gap-2 [&_li]:list-none [&_li>a]:group [&_li>a]:flex [&_li>a]:w-full [&_li>a]:items-center [&_li>a]:gap-3 [&_li>a]:rounded-2xl [&_li>a]:border [&_li>a]:border-base-200/55 [&_li>a]:bg-white [&_li>a]:px-3.5 [&_li>a]:py-3 [&_li>a]:text-left [&_li>a]:text-[15px] [&_li>a]:font-medium [&_li>a]:leading-snug [&_li>a]:text-base-content/90 [&_li>a]:shadow-sm [&_li>a]:transition-all [&_li>a]:hover:border-base-300/70 [&_li>a]:hover:shadow-md [&_li>a>svg]:box-content [&_li>a>svg]:h-5 [&_li>a>svg]:w-5 [&_li>a>svg]:shrink-0 [&_li>a>svg]:rounded-xl [&_li>a>svg]:bg-base-200/70 [&_li>a>svg]:p-2.5 [&_li>a>svg]:text-base-content/70 [&_li:not(:has(a))]:rounded-2xl [&_li:not(:has(a))]:border [&_li:not(:has(a))]:border-dashed [&_li:not(:has(a))]:border-base-200/70 [&_li:not(:has(a))]:bg-white/80 [&_li:not(:has(a))]:px-3.5 [&_li:not(:has(a))]:py-3 [&_li:not(:has(a))]:text-sm [&_li:not(:has(a))]:text-base-content/55';
+
+const TEAM_CARD_VISIBLE_COLLAPSED = 2;
+
+const TEAM_PANEL_MORE_BTN =
+    'w-full rounded-lg border-0 bg-base-200/80 px-3 py-2 text-center text-sm font-semibold text-base-content/60 transition-colors hover:bg-base-200 hover:text-base-content/80';
+
+/** Stage workflow actions — unified size on desktop hover bar and mobile. */
+const STAGE_ACTION_BTN_BASE =
+    'btn btn-md min-h-11 rounded-full px-5 gap-2 text-sm font-semibold whitespace-nowrap border-0 shadow-sm';
+
 const STAGE_ACTION_BTN_CLASS =
-    'btn btn-md rounded-full px-4 shadow-lg gap-2 text-base font-semibold border-0 transition-all hover:scale-105 bg-gray-900 text-white hover:bg-gray-800 dark:bg-gray-950 dark:hover:bg-gray-900';
-const STAGE_ACTION_BTN_CLASS_COMPACT =
-    'btn rounded-full px-5 gap-2 font-semibold border-0 bg-gray-900 text-white hover:bg-gray-800 dark:bg-gray-950 dark:hover:bg-gray-900';
+    `${STAGE_ACTION_BTN_BASE} bg-gray-900 text-white hover:bg-gray-800 dark:bg-gray-950 dark:hover:bg-gray-900`;
+
+const STAGE_ACTION_BTN_CLASS_COMPACT = STAGE_ACTION_BTN_CLASS;
+
 const CLIENT_SIGNED_STAGE_BTN_CLASS =
-    'btn btn-success btn-md text-white rounded-full px-4 shadow-lg shadow-green-100 hover:shadow-green-200 gap-2 text-base transition-all hover:scale-105';
+    `${STAGE_ACTION_BTN_BASE} btn-success text-white hover:brightness-95`;
+
 const CLIENT_DECLINED_STAGE_BTN_CLASS =
-    'btn btn-error btn-md text-white rounded-full px-4 shadow-lg gap-2 text-base transition-all hover:scale-105';
-const CLIENT_SIGNED_STAGE_BTN_COMPACT = 'btn btn-success rounded-full px-5 gap-2 text-white';
-const CLIENT_DECLINED_STAGE_BTN_COMPACT = 'btn btn-error rounded-full px-5 gap-2 text-white';
+    `${STAGE_ACTION_BTN_BASE} btn-error text-white hover:brightness-95`;
+
+const CLIENT_SIGNED_STAGE_BTN_COMPACT = CLIENT_SIGNED_STAGE_BTN_CLASS;
+
+const CLIENT_DECLINED_STAGE_BTN_COMPACT = CLIENT_DECLINED_STAGE_BTN_CLASS;
 
 interface ClientHeaderProps {
     selectedClient: any;
@@ -241,6 +353,8 @@ interface ClientHeaderProps {
     pendingProbabilityValues?: ProbabilitySlidersValues | null;
     pendingProbabilitySaving?: boolean;
     onDismissPendingProbability?: () => void;
+    /** Flush layout on client detail page: no outer white band, aligned page padding. */
+    connectToAppHeader?: boolean;
 }
 
 const ClientHeader: React.FC<ClientHeaderProps> = ({
@@ -301,6 +415,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     pendingProbabilityValues = null,
     pendingProbabilitySaving = false,
     onDismissPendingProbability,
+    connectToAppHeader = false,
 }) => {
     const navigate = useNavigate();
     const [subEfforts, setSubEfforts] = useState<Array<{ id: number; name: string }>>([]);
@@ -312,6 +427,10 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [subEffortsModalRowId, setSubEffortsModalRowId] = useState<string | number | null>(null);
     const [editLeadDrawerOpen, setEditLeadDrawerOpen] = useState(false);
     const [clientPortalModalOpen, setClientPortalModalOpen] = useState(false);
+    const [moreActionsSheetOpen, setMoreActionsSheetOpen] = useState(false);
+    const [inactiveNotesExpanded, setInactiveNotesExpanded] = useState(false);
+
+    const closeMoreActionsSheet = useCallback(() => setMoreActionsSheetOpen(false), []);
 
     const setEditLeadDrawerOpenState = useCallback(
         (open: boolean) => {
@@ -348,7 +467,16 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const selectedClientRef = useRef(selectedClient);
     /** Bumped after a successful active-handler toggle so avatar ring flash replays. */
     const [handlerActiveRingNonce, setHandlerActiveRingNonce] = useState(0);
+    const [assignedTeamPanelOpen, setAssignedTeamPanelOpen] = useState(false);
+    const [headerFinancialDetailsOpen, setHeaderFinancialDetailsOpen] = useState(false);
     const activeHandlerLeadRealtimeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    useEffect(() => {
+        setAssignedTeamPanelOpen(false);
+        setHeaderFinancialDetailsOpen(false);
+        setMoreActionsSheetOpen(false);
+        setInactiveNotesExpanded(false);
+    }, [selectedClient?.id]);
     /** Latest row identity + active_handler_type for poll + realtime client-side match (avoids stale closures). */
     const leadHandlerSyncRef = useRef<{
         clientId: string | number;
@@ -2170,184 +2298,278 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     const applicantsCount =
         (selectedClient as any)?.no_of_applicants || selectedClient?.number_of_applicants_meeting || null;
-    const blurDropdown = () => (document.activeElement as HTMLElement | null)?.blur();
 
-    const moreActionsMenuUlClass =
-        'dropdown-content z-[250] menu p-2 shadow-2xl bg-base-100 rounded-box w-72 mb-2 border border-base-200 mt-2';
-
-    const moreActionsMenuItems = (
+    const renderClientMetaBadges = () => (
         <>
-            {!hideHistoryAndTimeline && (
-                <>
-                    <li>
-                        <a
-                            onClick={() => {
-                                handleTimelineClick();
-                                blurDropdown();
-                            }}
-                        >
-                            <ClockIcon className="h-4 w-4" /> Timeline
-                        </a>
-                    </li>
-                    <li>
-                        <a
-                            onClick={() => {
-                                handleHistoryClick();
-                                blurDropdown();
-                            }}
-                        >
-                            <ArchiveBoxIcon className="h-4 w-4" /> History
-                        </a>
-                    </li>
-                    <div className="divider my-1" />
-                </>
-            )}
-            {duplicateContacts && duplicateContacts.length > 0 && !hideActionsDropdown && (
-                <>
-                    <li>
-                        <a
-                            className="text-amber-800"
-                            onClick={() => {
-                                setIsDuplicateModalOpen(true);
-                                blurDropdown();
-                            }}
-                        >
-                            <DocumentDuplicateIcon className="h-4 w-4" />
-                            Duplicate contacts ({duplicateContacts.length})
-                        </a>
-                    </li>
-                    <div className="divider my-1" />
-                </>
-            )}
-            {!hideActionsDropdown && (
-                <>
-                    {dropdownItems && (
-                        <>
-                            {dropdownItems}
-                            <div className="divider my-1" />
-                        </>
-                    )}
-                    {(() => {
-                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                        const isUnactivated = isLegacy ? selectedClient?.status === 10 : selectedClient?.status === 'inactive';
-                        return isUnactivated ? (
-                            <li>
-                                <a className="font-medium text-green-600" onClick={() => { handleActivation(); blurDropdown(); }}>
-                                    <CheckCircleIcon className="h-4 w-4" /> Activate Case
-                                </a>
-                            </li>
-                        ) : (
-                            <li>
-                                <a className="font-medium text-red-600" onClick={() => { setShowUnactivationModal(true); blurDropdown(); }}>
-                                    <NoSymbolIcon className="h-4 w-4" /> Deactivate / Spam
-                                </a>
-                            </li>
-                        );
-                    })()}
-                    <li>
-                        <a
-                            onClick={async () => {
-                                if (!selectedClient?.id) return;
-                                const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                const leadId = isLegacyLead
-                                    ? typeof selectedClient.id === 'string'
-                                        ? parseInt(selectedClient.id.replace('legacy_', ''), 10)
-                                        : selectedClient.id
-                                    : selectedClient.id;
-                                const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-                                if (isInHighlightsState) {
-                                    await removeFromHighlights(leadId, isLegacyLead);
-                                } else {
-                                    await addToHighlights(leadId, leadNumber, isLegacyLead);
-                                }
-                                blurDropdown();
-                            }}
-                        >
-                            {isInHighlightsState ? (
-                                <>
-                                    <StarIcon className="h-4 w-4 fill-current text-purple-600" /> Remove from Highlights
-                                </>
-                            ) : (
-                                <>
-                                    <StarIcon className="h-4 w-4" /> Add to Highlights
-                                </>
-                            )}
-                        </a>
-                    </li>
-                    <div className="divider my-1" />
-                    <li>
-                        <a
-                            onClick={() => {
-                                handleOpenEditLeadDrawer();
-                                blurDropdown();
-                            }}
-                        >
-                            <PencilSquareIcon className="h-4 w-4" /> Edit Details
-                        </a>
-                    </li>
-                    <li>
-                        <a
-                            onClick={() => {
-                                setClientPortalModalOpen(true);
-                                blurDropdown();
-                            }}
-                        >
-                            <LinkIcon className="h-4 w-4" /> Client portal
-                        </a>
-                    </li>
-                    <li>
-                        <a
-                            onClick={() => {
-                                setShowSubLeadDrawer(true);
-                                blurDropdown();
-                            }}
-                        >
-                            <Squares2X2Icon className="h-4 w-4" /> Create Sub-Lead
-                        </a>
-                    </li>
-                    {onCombineLeads && (
-                        <li>
-                            <a
-                                onClick={() => {
-                                    onCombineLeads();
-                                    blurDropdown();
-                                }}
-                            >
-                                <LinkIcon className="h-4 w-4" /> Combine leads
-                            </a>
-                        </li>
-                    )}
-                    {isSuperuser && (
-                        <>
-                            <div className="divider my-1" />
-                            <li>
-                                <a
-                                    className="text-red-600 hover:bg-red-50"
-                                    onClick={() => {
-                                        setShowDeleteModal(true);
-                                        blurDropdown();
-                                    }}
-                                >
-                                    <TrashIcon className="h-4 w-4" /> Delete Lead
-                                </a>
-                            </li>
-                        </>
-                    )}
-                </>
-            )}
+            <button
+                type="button"
+                className={`${META_BADGE_WHITE_BTN} ${disableCategoryModal ? 'cursor-default hover:shadow-sm' : ''}`}
+                onClick={disableCategoryModal ? undefined : () => openMetaModal('language')}
+            >
+                <GlobeAltIcon className={META_ICON_LANGUAGE} aria-hidden />
+                <span className="truncate">{displayLanguageChip}</span>
+            </button>
+            <span className={META_BADGE_WHITE}>
+                <LinkIcon className={META_ICON_SOURCE} aria-hidden />
+                <span className="min-w-0 max-w-[12rem] truncate sm:max-w-[14rem] lg:max-w-[16rem]">
+                    {displaySourceChip}
+                </span>
+            </span>
+            {applicantsCount != null && Number(applicantsCount) > 0 ? (
+                <span className={META_BADGE_WHITE} title="Applicants">
+                    <UserIcon className={META_ICON_APPLICANTS} aria-hidden />
+                    {applicantsCount}
+                </span>
+            ) : null}
+            <button
+                type="button"
+                className={`${META_BADGE_WHITE_BTN} ${disableCategoryModal ? 'cursor-default hover:shadow-sm' : ''}`}
+                onClick={disableCategoryModal ? undefined : () => openMetaModal('category')}
+            >
+                <RectangleStackIcon className={META_ICON_CATEGORY} aria-hidden />
+                <span className="min-w-0 max-w-[12rem] truncate sm:max-w-[14rem] lg:max-w-[16rem]">{displayCategory}</span>
+            </button>
+            <button
+                type="button"
+                className={`${META_BADGE_WHITE_BTN} ${disableCategoryModal ? 'cursor-default hover:shadow-sm' : ''}`}
+                onClick={disableCategoryModal ? undefined : () => openMetaModal('topic')}
+            >
+                <DocumentTextIcon className={META_ICON_TOPIC} aria-hidden />
+                <span className="min-w-0 max-w-[12rem] truncate sm:max-w-[14rem] lg:max-w-[16rem]">{displayTopicChip}</span>
+            </button>
         </>
     );
 
-    const renderMoreActionsDropdown = (triggerClassName: string) => (
-        <div className="dropdown dropdown-end">
-            <label tabIndex={0} className={triggerClassName} aria-label="More actions">
-                <EllipsisHorizontalIcon className="h-6 w-6" />
-            </label>
-            <ul tabIndex={0} className={moreActionsMenuUlClass}>
-                {moreActionsMenuItems}
-            </ul>
+    const renderMoreActionRow = ({
+        icon: Icon,
+        label,
+        onClick,
+        iconTone = 'default',
+        className = '',
+    }: {
+        icon: React.ComponentType<{ className?: string }>;
+        label: React.ReactNode;
+        onClick: () => void;
+        iconTone?: 'default' | 'success' | 'danger' | 'warning' | 'primary' | 'purple';
+        className?: string;
+    }) => {
+        const iconToneClass =
+            iconTone === 'success'
+                ? MORE_ACTIONS_ICON_TONE_SUCCESS
+                : iconTone === 'danger'
+                  ? MORE_ACTIONS_ICON_TONE_DANGER
+                  : iconTone === 'warning'
+                    ? MORE_ACTIONS_ICON_TONE_WARNING
+                    : iconTone === 'primary'
+                      ? MORE_ACTIONS_ICON_TONE_PRIMARY
+                      : iconTone === 'purple'
+                        ? MORE_ACTIONS_ICON_TONE_PURPLE
+                        : MORE_ACTIONS_ICON_TONE_DEFAULT;
+
+        return (
+            <button type="button" className={`${MORE_ACTIONS_SHEET_ITEM} ${className}`.trim()} onClick={onClick}>
+                <span className={`${MORE_ACTIONS_ICON_BOX} ${iconToneClass}`}>
+                    <Icon className="h-5 w-5" aria-hidden />
+                </span>
+                <span className="min-w-0 flex-1">{label}</span>
+                <ChevronRightIcon
+                    className="h-4 w-4 shrink-0 text-base-content/25 transition-all group-hover:translate-x-0.5 group-hover:text-base-content/45"
+                    aria-hidden
+                />
+            </button>
+        );
+    };
+
+    const renderMoreActionSection = (title: string, children: React.ReactNode) => {
+        if (!children) return null;
+        return (
+            <section className="flex flex-col gap-2">
+                <p className={MORE_ACTIONS_SECTION_LABEL}>{title}</p>
+                <div className="flex flex-col gap-2">{children}</div>
+            </section>
+        );
+    };
+
+    const moreActionsMenuItems = (
+        <div className="flex flex-col gap-5">
+            {duplicateContacts && duplicateContacts.length > 0 && !hideActionsDropdown
+                ? renderMoreActionSection(
+                      'Attention',
+                      renderMoreActionRow({
+                          icon: DocumentDuplicateIcon,
+                          label: `Duplicate contacts (${duplicateContacts.length})`,
+                          iconTone: 'warning',
+                          onClick: () => {
+                              setIsDuplicateModalOpen(true);
+                              closeMoreActionsSheet();
+                          },
+                      }),
+                  )
+                : null}
+
+            {!hideActionsDropdown && dropdownItems
+                ? renderMoreActionSection('Workflow', <div className={MORE_ACTIONS_DROPDOWN_LIST}>{dropdownItems}</div>)
+                : null}
+
+            {!hideActionsDropdown ? (
+                <>
+                    {renderMoreActionSection(
+                        'Lead',
+                        <>
+                            {renderMoreActionRow({
+                                icon: isInHighlightsState ? StarIcon : StarIcon,
+                                label: isInHighlightsState ? 'Remove from Highlights' : 'Add to Highlights',
+                                iconTone: 'purple',
+                                className: isInHighlightsState ? 'text-purple-700 dark:text-purple-300' : '',
+                                onClick: async () => {
+                                    if (!selectedClient?.id) return;
+                                    const isLegacyLead =
+                                        selectedClient.lead_type === 'legacy' ||
+                                        selectedClient.id?.toString().startsWith('legacy_');
+                                    const leadId = isLegacyLead
+                                        ? typeof selectedClient.id === 'string'
+                                            ? parseInt(selectedClient.id.replace('legacy_', ''), 10)
+                                            : selectedClient.id
+                                        : selectedClient.id;
+                                    const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+                                    if (isInHighlightsState) {
+                                        await removeFromHighlights(leadId, isLegacyLead);
+                                    } else {
+                                        await addToHighlights(leadId, leadNumber, isLegacyLead);
+                                    }
+                                    closeMoreActionsSheet();
+                                },
+                            })}
+                            {renderMoreActionRow({
+                                icon: PencilSquareIcon,
+                                label: 'Edit Details',
+                                iconTone: 'primary',
+                                onClick: () => {
+                                    closeMoreActionsSheet();
+                                    handleOpenEditLeadDrawer();
+                                },
+                            })}
+                            {renderMoreActionRow({
+                                icon: LinkIcon,
+                                label: 'Client portal',
+                                iconTone: 'default',
+                                onClick: () => {
+                                    setClientPortalModalOpen(true);
+                                    closeMoreActionsSheet();
+                                },
+                            })}
+                            {renderMoreActionRow({
+                                icon: Squares2X2Icon,
+                                label: 'Create Sub-Lead',
+                                iconTone: 'default',
+                                onClick: () => {
+                                    setShowSubLeadDrawer(true);
+                                    closeMoreActionsSheet();
+                                },
+                            })}
+                            {onCombineLeads
+                                ? renderMoreActionRow({
+                                      icon: LinkIcon,
+                                      label: 'Combine leads',
+                                      iconTone: 'default',
+                                      onClick: () => {
+                                          onCombineLeads();
+                                          closeMoreActionsSheet();
+                                      },
+                                  })
+                                : null}
+                        </>,
+                    )}
+
+                    {renderMoreActionSection(
+                        'Status',
+                        (() => {
+                            const isLegacy =
+                                selectedClient?.lead_type === 'legacy' ||
+                                selectedClient?.id?.toString().startsWith('legacy_');
+                            const isUnactivated = isLegacy
+                                ? selectedClient?.status === 10
+                                : selectedClient?.status === 'inactive';
+                            return isUnactivated
+                                ? renderMoreActionRow({
+                                      icon: CheckCircleIcon,
+                                      label: 'Activate Case',
+                                      iconTone: 'success',
+                                      className: 'text-emerald-700 dark:text-emerald-300',
+                                      onClick: () => {
+                                          handleActivation();
+                                          closeMoreActionsSheet();
+                                      },
+                                  })
+                                : renderMoreActionRow({
+                                      icon: NoSymbolIcon,
+                                      label: 'Deactivate / Spam',
+                                      iconTone: 'danger',
+                                      className: 'text-red-600 dark:text-red-400',
+                                      onClick: () => {
+                                          setShowUnactivationModal(true);
+                                          closeMoreActionsSheet();
+                                      },
+                                  });
+                        })(),
+                    )}
+
+                    {isSuperuser
+                        ? renderMoreActionSection(
+                              'Danger zone',
+                              renderMoreActionRow({
+                                  icon: TrashIcon,
+                                  label: 'Delete Lead',
+                                  iconTone: 'danger',
+                                  className: 'text-red-600 dark:text-red-400',
+                                  onClick: () => {
+                                      setShowDeleteModal(true);
+                                      closeMoreActionsSheet();
+                                  },
+                              }),
+                          )
+                        : null}
+                </>
+            ) : null}
         </div>
     );
+
+    const renderMoreActionsTrigger = (triggerClassName: string) => (
+        <button
+            type="button"
+            className={triggerClassName}
+            aria-label="More actions"
+            onClick={() => setMoreActionsSheetOpen(true)}
+        >
+            <EllipsisHorizontalIcon className="h-6 w-6" />
+        </button>
+    );
+
+    const renderTimelineHistoryButtons = (timelineBtnClass: string, historyBtnClass?: string) => {
+        const historyClass = historyBtnClass ?? timelineBtnClass;
+        return !hideHistoryAndTimeline ? (
+            <>
+                <button
+                    type="button"
+                    onClick={handleTimelineClick}
+                    className={timelineBtnClass}
+                    title="View Timeline"
+                    aria-label="View Timeline"
+                >
+                    <ClockIcon className="h-6 w-6" aria-hidden />
+                </button>
+                <button
+                    type="button"
+                    onClick={handleHistoryClick}
+                    className={historyClass}
+                    title="View History"
+                    aria-label="View History"
+                >
+                    <ArchiveBoxIcon className="h-6 w-6" aria-hidden />
+                </button>
+            </>
+        ) : null;
+    };
 
     const renderCompactHistoryIconRow = () => {
         const dup = duplicateContacts && duplicateContacts.length > 0;
@@ -2387,7 +2609,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         <button
                             type="button"
                             onClick={() => setTagsModalOpen(true)}
-                            className="btn btn-ghost btn-sm relative h-auto min-h-0 p-1.5 text-purple-700 hover:bg-purple-50 dark:text-purple-200 dark:hover:bg-purple-900/30"
+                            className={HEADER_TAGS_BTN_CLASS}
                             title="Tags"
                             aria-label="Tags"
                         >
@@ -2402,7 +2624,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             type="button"
                             onClick={openFlaggedConversationsModal}
                             disabled={!publicUserId}
-                            className="btn btn-ghost btn-sm relative h-auto min-h-0 p-1.5 text-amber-700 hover:bg-amber-50 disabled:pointer-events-none disabled:opacity-40 dark:text-amber-300 dark:hover:bg-amber-900/30"
+                            className={HEADER_FLAGS_BTN_CLASS}
                             title={publicUserId ? 'Flagged items on this lead' : 'Sign in to use flags'}
                             aria-label="Flagged items"
                         >
@@ -2443,17 +2665,21 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         );
     };
 
-    const stageAdjacentTagsFlags =
+    const renderTagsFlagsButtons = (
+        tagsBtnClass: string,
+        flagsBtnClass: string,
+        iconClass = 'h-5 w-5',
+    ) =>
         !hideHistoryAndTimeline ? (
-            <div className="flex shrink-0 items-center gap-1">
+            <>
                 <button
                     type="button"
                     onClick={() => setTagsModalOpen(true)}
-                    className="btn btn-ghost btn-sm relative h-auto min-h-0 p-2 text-purple-700 hover:bg-purple-50 dark:text-purple-200 dark:hover:bg-purple-900/30 md:p-1.5"
+                    className={tagsBtnClass}
                     title="Tags"
                     aria-label="Tags"
                 >
-                    <TagIcon className="h-6 w-6 md:h-7 md:w-7" />
+                    <TagIcon className={iconClass} />
                     {tagsCount > 0 && (
                         <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-purple-600 px-0.5 text-[10px] font-bold text-white">
                             {tagsCount > 99 ? '99+' : tagsCount}
@@ -2464,81 +2690,200 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     type="button"
                     onClick={openFlaggedConversationsModal}
                     disabled={!publicUserId}
-                    className="btn btn-ghost btn-sm relative h-auto min-h-0 p-2 text-amber-700 hover:bg-amber-50 disabled:pointer-events-none disabled:opacity-40 dark:text-amber-300 dark:hover:bg-amber-900/30 md:p-1.5"
+                    className={flagsBtnClass}
                     title={publicUserId ? 'Flagged items on this lead' : 'Sign in to use flags'}
                     aria-label="Flagged items"
                 >
-                    <FlagIcon className="h-6 w-6 md:h-7 md:w-7" />
+                    <FlagIcon className={iconClass} />
                     {totalFlagBadge > 0 && (
                         <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-0.5 text-[10px] font-bold text-white">
                             {totalFlagBadge > 99 ? '99+' : totalFlagBadge}
                         </span>
                     )}
                 </button>
-            </div>
+            </>
         ) : null;
 
+    const renderHeaderDocsButton = () => (
+        <button
+            type="button"
+            onClick={openHeaderDocumentsModal}
+            disabled={!headerDocsLeadNumber}
+            className={`${HEADER_ACTION_BAR_DOCS_BTN} disabled:pointer-events-none disabled:opacity-40`}
+            title={headerDocsLeadNumber ? 'Case documents on OneDrive' : 'Lead number required'}
+            aria-label="Case documents"
+        >
+            <DocumentArrowUpIcon className="h-6 w-6" aria-hidden />
+            {headerSupabaseDocumentsCount > 0 && (
+                <span
+                    className="absolute -right-1 -top-1 flex h-4 min-w-[1rem] items-center justify-center rounded-full px-0.5 text-[10px] font-bold text-white"
+                    style={{ backgroundColor: '#3a3a3a' }}
+                >
+                    {headerSupabaseDocumentsCount > 99 ? '99+' : headerSupabaseDocumentsCount}
+                </span>
+            )}
+        </button>
+    );
+
+    const renderSegmentedHeaderActions = (wrapperClassName = '') => {
+        if (hideActionsDropdown) {
+            return renderCompactHistoryIconRow();
+        }
+
+        const hasContactActions =
+            Boolean(displayPhone) ||
+            Boolean(displayEmail) ||
+            (Boolean(onOpenWhatsAppForContact) && Boolean(displayPhone));
+
+        return (
+            <div className={`flex flex-wrap items-center gap-2 ${wrapperClassName}`.trim()}>
+                {hasContactActions ? (
+                    <div className={HEADER_ACTION_BAR_OVAL}>
+                        <div className="flex flex-wrap items-center gap-2">
+                            {displayPhone ? (
+                                <button
+                                    type="button"
+                                    className={HEADER_ACTION_BAR_CALL_BTN}
+                                    title="Call"
+                                    aria-label="Call"
+                                    onClick={handleCallPrimaryPhone}
+                                >
+                                    <PhoneArrowUpRightIcon className="h-6 w-6" aria-hidden />
+                                </button>
+                            ) : null}
+                            {onOpenWhatsAppForContact && displayPhone ? (
+                                <button
+                                    type="button"
+                                    className={HEADER_ACTION_BAR_WHATSAPP_BTN}
+                                    title="WhatsApp"
+                                    aria-label="WhatsApp"
+                                    onClick={() => void handleHeaderWhatsAppClick()}
+                                >
+                                    <FaWhatsapp className="h-6 w-6" aria-hidden />
+                                </button>
+                            ) : null}
+                            {displayEmail ? (
+                                <button
+                                    type="button"
+                                    className={HEADER_ACTION_BAR_EMAIL_BTN}
+                                    title="Email"
+                                    aria-label="Email"
+                                    onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
+                                >
+                                    <EnvelopeIcon className="h-6 w-6" aria-hidden />
+                                </button>
+                            ) : null}
+                        </div>
+                    </div>
+                ) : null}
+
+                {!hideHistoryAndTimeline ? (
+                    <div className={HEADER_ACTION_BAR_OVAL}>
+                        <div className="flex flex-wrap items-center gap-2">
+                            {renderTimelineHistoryButtons(
+                                HEADER_ACTION_BAR_TIMELINE_BTN,
+                                HEADER_ACTION_BAR_HISTORY_BTN,
+                            )}
+                        </div>
+                    </div>
+                ) : null}
+
+                <div className={HEADER_ACTION_BAR_OVAL}>
+                    <div className="flex flex-wrap items-center gap-2">
+                        {renderHeaderDocsButton()}
+                        {renderTagsFlagsButtons(
+                            HEADER_ACTION_BAR_TAGS_BTN,
+                            HEADER_ACTION_BAR_FLAGS_BTN,
+                            'h-6 w-6',
+                        )}
+                    </div>
+                </div>
+
+                <div className={HEADER_ACTION_BAR_OVAL}>
+                    <div className="flex flex-wrap items-center gap-2">
+                        {renderMoreActionsTrigger(HEADER_ACTION_BAR_MORE_BTN)}
+                    </div>
+                </div>
+            </div>
+        );
+    };
+
     return (
-        <div className="w-full min-w-0">
-                {/* Header card — rounded (boxed by Clients.tsx container). */}
-                <div className="mb-0 mt-5 flex w-full flex-col gap-5 rounded-2xl border border-base-200/80 bg-white px-4 py-4 shadow-sm dark:border-base-300/55 dark:bg-base-100 dark:shadow-none sm:px-5 sm:py-5 md:mb-0 md:mt-7 md:gap-4 md:px-6 md:py-5">
+        <div
+            className={
+                connectToAppHeader
+                    ? `w-full min-w-0 px-3 sm:px-4 md:px-5 lg:px-6 xl:px-8 ${CLIENT_HEADER_APP_INSET}`
+                    : 'w-full min-w-0 space-y-4'
+            }
+        >
+                <div
+                    className={
+                        connectToAppHeader
+                            ? 'group/header relative w-full'
+                            : `${CLIENT_HEADER_SHELL} group/header relative mt-5 md:mt-7`
+                    }
+                >
+                    <div
+                        className={
+                            connectToAppHeader
+                                ? 'flex w-full flex-col gap-4 md:gap-3'
+                                : 'flex w-full flex-col gap-5 px-4 py-4 sm:px-5 sm:pb-5 md:gap-4'
+                        }
+                    >
                     {/* Mobile: SaaS header — identity, contact card, stage + chips */}
                     <div className="flex w-full flex-col gap-5 md:hidden">
-                        <header className="relative z-0 flex w-full min-w-0 flex-col gap-0">
-                            <div className="flex w-full min-w-0 items-start justify-between gap-3">
+                        <header className="relative z-0 flex w-full min-w-0 flex-col gap-2">
+                            <div className="flex w-full min-w-0 items-start gap-3">
                                 <div className="min-w-0 flex-1 pr-1 text-left">
-                                    <div className="flex items-center gap-2">
-                                        <div className="flex shrink-0 items-center justify-start">{renderStageBadge('mobile')}</div>
-                                    </div>
-                                </div>
-                                <div className="flex shrink-0 items-start self-start pt-0.5">{stageAdjacentTagsFlags}</div>
-                            </div>
-                            <div className="mt-3 flex w-full min-w-0 items-center justify-between gap-3">
-                                <div className="min-w-0 flex-1 text-left">
                                     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-                                        <h1 className="min-w-0 text-2xl font-semibold leading-[1.2] tracking-tight text-gray-900 dark:text-white">
-                                            {selectedClient.name || 'Unnamed Lead'}
-                                        </h1>
-                                        <p className="font-mono text-sm font-semibold tabular-nums text-slate-500">
-                                            {renderLeadNumber()}
-                                        </p>
-                                        {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
-                                            <button
-                                                onClick={() => {
-                                                    if (isSubLead && masterLeadNumber) navigate(`/clients/${masterLeadNumber}/master`);
-                                                    else if (isMasterLead && selectedClient) {
-                                                        const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                                        const identifier = isLegacyLead
-                                                            ? selectedClient.id.toString().replace('legacy_', '')
-                                                            : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
-                                                        navigate(`/clients/${encodeURIComponent(identifier)}/master`);
-                                                    }
-                                                }}
-                                                className="btn btn-square btn-sm btn-ghost relative -my-1 shrink-0 border-0 text-gray-700 hover:bg-base-200 hover:text-gray-900"
-                                                title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
-                                                aria-label={isSubLead ? 'View master dashboard' : 'View master dashboard'}
-                                            >
-                                                <Squares2X2Icon className="h-6 w-6" />
-                                                <span
-                                                    className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
-                                                    style={{ backgroundColor: '#3a3a3a' }}
-                                                >
-                                                    {(subLeadsCount || 0) + 1}
-                                                </span>
-                                            </button>
-                                        ) : null}
+                                        <div className="min-w-0">
+                                            <div className="flex min-w-0 items-center gap-1.5">
+                                                <h1 className="min-w-0 text-2xl font-bold leading-tight tracking-tight text-base-content/95">
+                                                    {selectedClient.name || 'Unnamed Lead'}
+                                                </h1>
+                                                {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
+                                                    <button
+                                                        onClick={() => {
+                                                            if (isSubLead && masterLeadNumber) navigate(`/clients/${masterLeadNumber}/master`);
+                                                            else if (isMasterLead && selectedClient) {
+                                                                const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                                                const identifier = isLegacyLead
+                                                                    ? selectedClient.id.toString().replace('legacy_', '')
+                                                                    : (selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '');
+                                                                navigate(`/clients/${encodeURIComponent(identifier)}/master`);
+                                                            }
+                                                        }}
+                                                        className="btn btn-square btn-sm btn-ghost relative -my-1 shrink-0 border-0 text-base-content/70 hover:bg-base-200 hover:text-base-content"
+                                                        title={isSubLead ? `View master` : `View ${subLeadsCount} sub-leads`}
+                                                        aria-label={isSubLead ? 'View master dashboard' : 'View master dashboard'}
+                                                    >
+                                                        <Squares2X2Icon className="h-6 w-6" />
+                                                        <span
+                                                            className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
+                                                            style={{ backgroundColor: '#3a3a3a' }}
+                                                        >
+                                                            {(subLeadsCount || 0) + 1}
+                                                        </span>
+                                                    </button>
+                                                ) : null}
+                                            </div>
+                                            <p className={CLIENT_HEADER_LEAD_NUMBER}>
+                                                {renderLeadNumber()}
+                                            </p>
+                                        </div>
+                                        <div className="flex shrink-0 items-center">{renderStageBadge('mobile')}</div>
                                     </div>
                                 </div>
                             </div>
                         </header>
 
-                        <div className="rounded-2xl border border-base-200/90 bg-base-100 px-4 py-5 shadow-sm dark:border-base-300/55 dark:bg-base-200/20 dark:shadow-none">
+                        <div className="rounded-[18px] bg-white px-4 py-5 shadow-sm sm:px-5">
                             <div className="flex flex-col gap-4">
-                                <div className="flex min-w-0 items-center gap-3">
+                                <div className="flex min-w-0 items-start gap-3">
                                     {displayEmail ? (
                                         <button
                                             type="button"
-                                            className="btn btn-ghost btn-sm h-auto min-h-0 shrink-0 p-2 text-gray-500 hover:bg-base-200 hover:text-gray-900 dark:text-gray-400"
+                                            className="btn btn-ghost btn-sm h-auto min-h-0 shrink-0 p-2 text-base-content/45 hover:bg-base-200 hover:text-base-content"
                                             title="Copy email"
                                             aria-label="Copy email"
                                             onClick={() => {
@@ -2548,18 +2893,21 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             <ClipboardDocumentIcon className="h-5 w-5" />
                                         </button>
                                     ) : null}
-                                    <p
-                                        className="min-w-0 flex-1 text-[15px] font-medium leading-snug text-gray-900 dark:text-gray-100"
-                                        title={displayEmail || ''}
-                                    >
-                                        {displayEmail || '—'}
-                                    </p>
+                                    <div className="min-w-0 flex-1">
+                                        <p className={CLIENT_HEADER_SECTION_LABEL}>Email</p>
+                                        <p
+                                            className="mt-0.5 min-w-0 text-[15px] font-medium leading-snug text-base-content/85"
+                                            title={displayEmail || ''}
+                                        >
+                                            {displayEmail || '—'}
+                                        </p>
+                                    </div>
                                 </div>
-                                <div className="flex min-w-0 items-center gap-3">
+                                <div className="flex min-w-0 items-start gap-3">
                                     {displayPhone ? (
                                         <button
                                             type="button"
-                                            className="btn btn-ghost btn-sm h-auto min-h-0 shrink-0 p-2 text-gray-500 hover:bg-base-200 hover:text-gray-900 dark:text-gray-400"
+                                            className="btn btn-ghost btn-sm h-auto min-h-0 shrink-0 p-2 text-base-content/45 hover:bg-base-200 hover:text-base-content"
                                             title="Copy phone number"
                                             aria-label="Copy phone number"
                                             onClick={() => {
@@ -2569,141 +2917,26 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             <ClipboardDocumentIcon className="h-5 w-5" />
                                         </button>
                                     ) : null}
-                                    <p
-                                        className="min-w-0 flex-1 text-[15px] font-medium leading-snug text-gray-900 dark:text-gray-100"
-                                        title={displayPhone ? formatPhoneNumberDisplay(displayPhone) : ''}
-                                    >
-                                        {displayPhone ? formatPhoneNumberDisplay(displayPhone) : '—'}
-                                    </p>
-                                </div>
-                                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-base-200/80 pt-4 dark:border-base-300/45">
-                                    <div className="flex flex-wrap items-center gap-3">
-                                        {displayPhone ? (
-                                            <button
-                                                type="button"
-                                                className="btn btn-square min-h-[3rem] min-w-[3rem] rounded-full border-0 bg-gray-100 p-0 text-gray-700 hover:bg-gray-200 dark:bg-gray-700/40 dark:text-gray-100 dark:hover:bg-gray-700/60"
-                                                title="Call"
-                                                aria-label="Call"
-                                                onClick={handleCallPrimaryPhone}
-                                            >
-                                                <PhoneArrowUpRightIcon className="h-6 w-6" aria-hidden />
-                                            </button>
-                                        ) : null}
-                                        {onOpenWhatsAppForContact && displayPhone ? (
-                                            <button
-                                                type="button"
-                                                className="btn btn-square min-h-[3rem] min-w-[3rem] rounded-full border-0 bg-emerald-50 p-0 text-emerald-800 hover:bg-emerald-100 dark:bg-emerald-900/30 dark:text-emerald-200 dark:hover:bg-emerald-900/45"
-                                                title="WhatsApp"
-                                                aria-label="WhatsApp"
-                                                onClick={() => void handleHeaderWhatsAppClick()}
-                                            >
-                                                <FaWhatsapp className="h-6 w-6" aria-hidden />
-                                            </button>
-                                        ) : null}
-                                        {displayEmail ? (
-                                            <button
-                                                type="button"
-                                                className="btn btn-square min-h-[3rem] min-w-[3rem] rounded-full border-0 bg-sky-50 p-0 text-sky-800 hover:bg-sky-100 dark:bg-sky-900/25 dark:text-sky-200 dark:hover:bg-sky-900/40"
-                                                title="Email"
-                                                aria-label="Email"
-                                                onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
-                                            >
-                                                <EnvelopeIcon className="h-6 w-6" aria-hidden />
-                                            </button>
-                                        ) : null}
-                                    </div>
-                                    <div className="flex shrink-0 items-center gap-2">
-                                        {!hideActionsDropdown && (
-                                            <>
-                                                <button
-                                                    type="button"
-                                                    onClick={openHeaderDocumentsModal}
-                                                    disabled={!headerDocsLeadNumber}
-                                                    className="btn btn-square relative rounded-full border-2 border-base-300 btn-ghost min-h-[3.25rem] min-w-[3.25rem] disabled:pointer-events-none disabled:opacity-40"
-                                                    title={
-                                                        headerDocsLeadNumber
-                                                            ? 'Case documents on OneDrive'
-                                                            : 'Lead number required'
-                                                    }
-                                                    aria-label="Case documents"
-                                                >
-                                                    <DocumentArrowUpIcon className="h-6 w-6" aria-hidden />
-                                                    {headerSupabaseDocumentsCount > 0 && (
-                                                        <span
-                                                            className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-[11px] font-bold text-white"
-                                                            style={{ backgroundColor: '#3a3a3a' }}
-                                                        >
-                                                            {headerSupabaseDocumentsCount > 99 ? '99+' : headerSupabaseDocumentsCount}
-                                                        </span>
-                                                    )}
-                                                </button>
-                                                {renderMoreActionsDropdown(
-                                                    'btn btn-square rounded-full border-2 border-base-300 btn-ghost min-h-[3.25rem] min-w-[3.25rem]'
-                                                )}
-                                            </>
-                                        )}
-                                        {hideActionsDropdown ? renderCompactHistoryIconRow() : null}
+                                    <div className="min-w-0 flex-1">
+                                        <p className={CLIENT_HEADER_SECTION_LABEL}>Phone</p>
+                                        <p
+                                            className="mt-0.5 min-w-0 text-[15px] font-medium leading-snug text-base-content/85"
+                                            title={displayPhone ? formatPhoneNumberDisplay(displayPhone) : ''}
+                                        >
+                                            {displayPhone ? formatPhoneNumberDisplay(displayPhone) : '—'}
+                                        </p>
                                     </div>
                                 </div>
+                                {renderSegmentedHeaderActions('mt-1')}
                             </div>
                         </div>
 
-                        <div className="relative z-0 flex flex-col gap-4 pt-1">
-                            <div className="flex flex-wrap justify-center gap-2.5 px-0.5">
-                                <button
-                                    type="button"
-                                    className={`${META_CHIP_TOP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
-                                        disableCategoryModal
-                                            ? 'cursor-default'
-                                            : 'cursor-pointer hover:bg-gray-200/90 dark:hover:bg-gray-600'
-                                    }`}
-                                    onClick={disableCategoryModal ? undefined : () => openMetaModal('language')}
-                                >
-                                    <GlobeAltIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
-                                    <span className="truncate">{displayLanguageChip}</span>
-                                </button>
-                                <span className={META_CHIP_TOP}>
-                                    <LinkIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
-                                    <span className="min-w-0 max-w-[14rem] truncate">
-                                        {displaySourceChip}
-                                    </span>
-                                </span>
-                                {applicantsCount != null && Number(applicantsCount) > 0 && (
-                                    <span className={META_CHIP} title="Applicants">
-                                        <UserIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-                                        {applicantsCount}
-                                    </span>
-                                )}
-                                <button
-                                    type="button"
-                                    className={`${META_CHIP_TOP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
-                                        disableCategoryModal
-                                            ? 'cursor-default'
-                                            : 'cursor-pointer hover:bg-gray-200/90 dark:hover:bg-gray-600'
-                                    }`}
-                                    onClick={disableCategoryModal ? undefined : () => openMetaModal('category')}
-                                >
-                                    <RectangleStackIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
-                                    <span className="min-w-0 max-w-[14rem] truncate">{displayCategory}</span>
-                                </button>
-                                <button
-                                    type="button"
-                                    className={`${META_CHIP_TOP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
-                                        disableCategoryModal
-                                            ? 'cursor-default'
-                                            : 'cursor-pointer hover:bg-gray-200/90 dark:hover:bg-gray-600'
-                                    }`}
-                                    onClick={disableCategoryModal ? undefined : () => openMetaModal('topic')}
-                                >
-                                    <DocumentTextIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
-                                    <span className="min-w-0 max-w-[14rem] truncate">{displayTopicChip}</span>
-                                </button>
-                            </div>
-
+                        <div className="flex w-full flex-wrap items-center gap-2">
+                            {renderClientMetaBadges()}
                         </div>
 
                         {!hideTotalValueBadge && (
-                            <div className="w-full border-t border-gray-100 pb-8 pt-4 dark:border-gray-800">
+                            <div className="w-full border-t border-base-200/70 pb-8 pt-4 dark:border-base-300/40">
                             {(() => {
                             const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
                             let currency = '';
@@ -2814,14 +3047,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             return (
                                 <div className="group relative cursor-pointer text-right" onClick={() => setIsBalanceModalOpen(true)}>
                                     <div className="space-y-2">
-                                        <p className="text-[10px] font-semibold uppercase tracking-wide text-base-content/40">Total</p>
-                                        <div className="flex items-end justify-end gap-2">
-                                            <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white inline-flex items-center gap-2">
+                                        <p className={CLIENT_HEADER_SECTION_LABEL}>Total</p>
+                                        <div className="flex flex-col items-end">
+                                            <p className="inline-flex items-center gap-2 text-3xl font-bold leading-none tracking-tight text-base-content/95">
                                                 <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
-                                                {hasPaymentPlan === true && <LockClosedIcon className="h-4 w-4 text-gray-500 dark:text-gray-300" title="Locked by payment plan" />}
+                                                {hasPaymentPlan === true && <LockClosedIcon className="h-4 w-4 text-base-content/45" title="Locked by payment plan" />}
                                             </p>
                                             {shouldShowVAT && vatAmount > 0 && (
-                                                <p className="pb-0.5 text-sm text-gray-600 dark:text-gray-400">
+                                                <p className="mt-0.5 text-sm text-base-content/55">
                                                     +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
                                                 </p>
                                             )}
@@ -2857,10 +3090,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                             </p>
                                         )}
                                         {(unpaidGross > 0 || unpaidExpenseAmount > 0) && (
-                                            <div className="mt-2 rounded-lg bg-gray-50 px-2.5 py-2 text-right dark:bg-base-200/25">
-                                                <p className="text-[10px] font-semibold uppercase tracking-wide text-base-content/35">
-                                                    Outstanding
-                                                </p>
+                                            <div className={`mt-2 ${CLIENT_HEADER_INNER_PANEL} text-right`}>
+                                                <p className={CLIENT_HEADER_SECTION_LABEL}>Outstanding</p>
                                                 {unpaidOutstandingPair !== null && unpaidGross > 0 && (
                                                     <div className="flex items-end justify-end gap-2">
                                                         <p className="text-xl font-bold leading-none text-base-content/55">
@@ -2895,192 +3126,61 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         )}
                     </div>
 
-                    {/* Desktop: SaaS three-zone header */}
-                    <div className="hidden md:grid md:grid-cols-[minmax(0,1.05fr)_minmax(0,1.5fr)_minmax(0,1fr)] md:items-start md:gap-6 lg:gap-8">
-                        <div className="flex min-w-0 flex-col gap-1.5 justify-self-start text-left">
-                            <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
-                                <span className="text-sm font-medium tabular-nums text-gray-500 dark:text-gray-400">
-                                    {renderLeadNumber()}
-                                </span>
-                                <h1 className="min-w-0 text-[1.375rem] font-semibold leading-snug tracking-tight text-gray-900 dark:text-white">
-                                    {selectedClient.name || 'Unnamed Lead'}
-                                </h1>
-                                {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
-                                    <button
-                                        onClick={() => {
-                                            if (isSubLead && masterLeadNumber) {
-                                                navigate(`/clients/${masterLeadNumber}/master`);
-                                            } else if (isMasterLead && selectedClient) {
-                                                const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                                let identifier: string;
-                                                if (isLegacyLead) {
-                                                    identifier = selectedClient.id.toString().replace('legacy_', '');
-                                                } else {
-                                                    identifier = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '';
-                                                }
-                                                navigate(`/clients/${encodeURIComponent(identifier)}/master`);
-                                            }
-                                        }}
-                                        className="btn btn-square btn-sm btn-ghost relative shrink-0 border-0 text-gray-700 hover:bg-base-200 hover:text-gray-900"
-                                        title={
-                                            isSubLead
-                                                ? `View master dashboard (${(subLeadsCount || 0) + 1} total leads)`
-                                                : `View all ${subLeadsCount || 0} sub-lead${subLeadsCount !== 1 ? 's' : ''} and master lead (${(subLeadsCount || 0) + 1} total)`
-                                        }
-                                    >
-                                        <Squares2X2Icon className="w-6 h-6" />
-                                        <span
-                                            className="absolute -top-1 -right-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
-                                            style={{ backgroundColor: '#3a3a3a' }}
-                                        >
-                                            {(subLeadsCount || 0) + 1}
+                    {/* Desktop: left profile card + total + team */}
+                    <div className="relative hidden md:block md:w-full">
+                    <div className="flex w-full items-start gap-3">
+                    <div className={`${CLIENT_HEADER_CARD} flex min-w-0 flex-1 flex-col gap-2.5`}>
+                        <div className="flex min-w-0 items-start justify-between gap-4">
+                            <div className="min-w-0 flex-1 text-left">
+                                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+                                    <div className="min-w-0">
+                                        <div className="flex min-w-0 items-center gap-1.5">
+                                            <h1 className="min-w-0 text-lg font-bold leading-tight tracking-tight text-base-content/95 sm:text-xl">
+                                                {selectedClient.name || 'Unnamed Lead'}
+                                            </h1>
+                                            {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
+                                                <button
+                                                    onClick={() => {
+                                                        if (isSubLead && masterLeadNumber) {
+                                                            navigate(`/clients/${masterLeadNumber}/master`);
+                                                        } else if (isMasterLead && selectedClient) {
+                                                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                                            let identifier: string;
+                                                            if (isLegacyLead) {
+                                                                identifier = selectedClient.id.toString().replace('legacy_', '');
+                                                            } else {
+                                                                identifier = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id?.toString() || '';
+                                                            }
+                                                            navigate(`/clients/${encodeURIComponent(identifier)}/master`);
+                                                        }
+                                                    }}
+                                                    className="btn btn-square btn-sm btn-ghost relative shrink-0 border-0 text-base-content/70 hover:bg-base-200 hover:text-base-content"
+                                                    title={
+                                                        isSubLead
+                                                            ? `View master dashboard (${(subLeadsCount || 0) + 1} total leads)`
+                                                            : `View all ${subLeadsCount || 0} sub-lead${subLeadsCount !== 1 ? 's' : ''} and master lead (${(subLeadsCount || 0) + 1} total)`
+                                                    }
+                                                >
+                                                    <Squares2X2Icon className="w-6 h-6" />
+                                                    <span
+                                                        className="absolute -top-1 -right-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-xs font-bold text-white"
+                                                        style={{ backgroundColor: '#3a3a3a' }}
+                                                    >
+                                                        {(subLeadsCount || 0) + 1}
+                                                    </span>
+                                                </button>
+                                            ) : null}
+                                        </div>
+                                        <span className={CLIENT_HEADER_LEAD_NUMBER}>
+                                            {renderLeadNumber()}
                                         </span>
-                                    </button>
-                                ) : null}
-                            </div>
-                            <div className="mt-3 flex w-full min-w-0 flex-col gap-3">
-                                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                                    {displayEmail ? (
-                                        <button
-                                            type="button"
-                                            className="btn btn-ghost btn-sm h-auto min-h-0 shrink-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
-                                            title="Copy email"
-                                            aria-label="Copy email"
-                                            onClick={() => {
-                                                void navigator.clipboard.writeText(displayEmail).then(() => toast.success('Email copied'));
-                                            }}
-                                        >
-                                            <ClipboardDocumentIcon className="h-5 w-5" />
-                                        </button>
-                                    ) : null}
-                                    <p
-                                        className="min-w-0 flex-1 truncate text-sm font-medium leading-normal text-gray-900 dark:text-gray-100"
-                                        title={displayEmail || ''}
-                                    >
-                                        {displayEmail || '—'}
-                                    </p>
-                                </div>
-                                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                                    {displayPhone ? (
-                                        <button
-                                            type="button"
-                                            className="btn btn-ghost btn-sm h-auto min-h-0 shrink-0 p-1.5 text-gray-600 hover:bg-base-200 hover:text-gray-900"
-                                            title="Copy phone number"
-                                            aria-label="Copy phone number"
-                                            onClick={() => {
-                                                void navigator.clipboard.writeText(displayPhone).then(() => toast.success('Phone copied'));
-                                            }}
-                                        >
-                                            <ClipboardDocumentIcon className="h-5 w-5" />
-                                        </button>
-                                    ) : null}
-                                    <p
-                                        className="min-w-0 flex-1 truncate text-sm font-medium leading-normal text-gray-900 dark:text-gray-100"
-                                        title={displayPhone ? formatPhoneNumberDisplay(displayPhone) : ''}
-                                    >
-                                        {displayPhone ? formatPhoneNumberDisplay(displayPhone) : '—'}
-                                    </p>
-                                </div>
-                                <div className="flex min-w-0 flex-wrap items-center gap-3">
-                                    {displayPhone ? (
-                                        <button
-                                            type="button"
-                                            className="btn btn-square min-h-11 min-w-11 rounded-full border-0 bg-gray-100 p-0 text-gray-700 hover:bg-gray-200 dark:bg-gray-700/40 dark:text-gray-100 dark:hover:bg-gray-700/60"
-                                            title="Call"
-                                            aria-label="Call"
-                                            onClick={handleCallPrimaryPhone}
-                                        >
-                                            <PhoneArrowUpRightIcon className="h-5 w-5" aria-hidden />
-                                        </button>
-                                    ) : null}
-                                    {onOpenWhatsAppForContact && displayPhone ? (
-                                        <button
-                                            type="button"
-                                            className="btn btn-square min-h-11 min-w-11 rounded-full border-0 bg-emerald-50 p-0 text-emerald-800 hover:bg-emerald-100 dark:bg-emerald-900/30 dark:text-emerald-200 dark:hover:bg-emerald-900/45"
-                                            title="WhatsApp"
-                                            aria-label="WhatsApp"
-                                            onClick={() => void handleHeaderWhatsAppClick()}
-                                        >
-                                            <FaWhatsapp className="h-5 w-5" aria-hidden />
-                                        </button>
-                                    ) : null}
-                                    {displayEmail ? (
-                                        <button
-                                            type="button"
-                                            className="btn btn-square min-h-11 min-w-11 rounded-full border-0 bg-sky-50 p-0 text-sky-800 hover:bg-sky-100 dark:bg-sky-900/25 dark:text-sky-200 dark:hover:bg-sky-900/40"
-                                            title="Email"
-                                            aria-label="Email"
-                                            onClick={() => window.open(`mailto:${displayEmail}`, '_blank')}
-                                        >
-                                            <EnvelopeIcon className="h-5 w-5" aria-hidden />
-                                        </button>
-                                    ) : null}
+                                    </div>
+                                    <div className="flex shrink-0 items-center">{renderStageBadge('desktop')}</div>
                                 </div>
                             </div>
-                        </div>
-                        {/* CENTER — stage + meta chips (language, source, applicants, category, topic) */}
-                        <div className="flex min-h-0 min-w-0 flex-col items-stretch gap-3 px-2 pt-0.5">
-                            <div className="flex w-full flex-wrap items-center justify-start gap-2">
-                                <div className="flex shrink-0">{renderStageBadge('desktop')}</div>
-                                {stageAdjacentTagsFlags}
-                            </div>
-                            <div className="flex w-full min-w-0 flex-wrap items-center justify-start gap-2.5">
-                                <button
-                                    type="button"
-                                    className={`${META_CHIP_TOP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
-                                        disableCategoryModal
-                                            ? 'cursor-default'
-                                            : 'cursor-pointer hover:bg-gray-200/90 dark:hover:bg-gray-600'
-                                    }`}
-                                    onClick={disableCategoryModal ? undefined : () => openMetaModal('language')}
-                                >
-                                    <GlobeAltIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
-                                    <span className="truncate">{displayLanguageChip}</span>
-                                </button>
-                                <span className={META_CHIP_TOP}>
-                                    <LinkIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
-                                    <span className="min-w-0 max-w-[12rem] truncate lg:max-w-[16rem]">
-                                        {displaySourceChip}
-                                    </span>
-                                </span>
-                                {applicantsCount != null && Number(applicantsCount) > 0 && (
-                                    <span className={META_CHIP} title="Applicants">
-                                        <UserIcon className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden />
-                                        {applicantsCount}
-                                    </span>
-                                )}
-                                <button
-                                    type="button"
-                                    className={`${META_CHIP_TOP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
-                                        disableCategoryModal
-                                            ? 'cursor-default'
-                                            : 'cursor-pointer hover:bg-gray-200/90 dark:hover:bg-gray-600'
-                                    }`}
-                                    onClick={disableCategoryModal ? undefined : () => openMetaModal('category')}
-                                >
-                                    <RectangleStackIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
-                                    <span className="min-w-0 max-w-[12rem] truncate lg:max-w-[16rem]">{displayCategory}</span>
-                                </button>
-                                <button
-                                    type="button"
-                                    className={`${META_CHIP_TOP} border-0 font-sans focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400/50 ${
-                                        disableCategoryModal
-                                            ? 'cursor-default'
-                                            : 'cursor-pointer hover:bg-gray-200/90 dark:hover:bg-gray-600'
-                                    }`}
-                                    onClick={disableCategoryModal ? undefined : () => openMetaModal('topic')}
-                                >
-                                    <DocumentTextIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
-                                    <span className="min-w-0 max-w-[12rem] truncate lg:max-w-[16rem]">{displayTopicChip}</span>
-                                </button>
-                            </div>
-
-                        </div>
-
-                        {/* RIGHT — total value + more actions */}
-                        <div className="flex min-w-0 flex-col items-end gap-3 justify-self-end self-start">
+                            {!hideTotalValueBadge ? (
+                                <div className="w-fit max-w-[min(100%,14rem)] shrink-0 text-right sm:max-w-xs">
                             {(() => {
-                                if (hideTotalValueBadge) return null;
                                 const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
 
                                 let currency = '';
@@ -3204,607 +3304,121 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                         : 0;
                                 const unpaidExpenseAmountDesktop = pickUnpaidExpenseForCurrency(unpaidExpenseByCurrency, currency);
 
+                                const hasExpandableFinancialDetails =
+                                    (subcontractorFee > 0 && netAfterSubcontractor !== null) ||
+                                    (paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0) ||
+                                    potentialAmount > 0 ||
+                                    potentialApplicantsMeeting > 0 ||
+                                    unpaidGrossDesktop > 0 ||
+                                    unpaidExpenseAmountDesktop > 0;
+
                                 return (
-                                    <div
-                                        className="group relative w-full max-w-xs cursor-pointer text-right"
-                                        onClick={() => setIsBalanceModalOpen(true)}
-                                    >
-                                        <div className="space-y-1.5">
-                                            <p className="text-[10px] font-semibold uppercase tracking-wide text-base-content/40">Total</p>
-                                            <div className="flex items-end justify-end gap-2">
-                                                <p className="text-3xl font-bold leading-none tracking-tight text-gray-900 dark:text-white inline-flex items-center gap-2">
+                                    <>
+                                        <button
+                                            type="button"
+                                            className="w-full text-right"
+                                            onClick={() => setIsBalanceModalOpen(true)}
+                                        >
+                                            <p className={CLIENT_HEADER_SECTION_LABEL}>Total</p>
+                                            <div className="flex flex-col items-end">
+                                                <p className="inline-flex items-center gap-2 text-2xl font-bold leading-none tracking-tight text-base-content/95 sm:text-3xl">
                                                     <span>{currency}{Number(mainAmount.toFixed(2)).toLocaleString()}</span>
-                                                    {hasPaymentPlan === true && <LockClosedIcon className="h-4 w-4 text-gray-500 dark:text-gray-300" title="Locked by payment plan" />}
+                                                    {hasPaymentPlan === true && (
+                                                        <LockClosedIcon className="h-4 w-4 text-base-content/45" title="Locked by payment plan" />
+                                                    )}
                                                 </p>
                                                 {shouldShowVAT && vatAmount > 0 && (
-                                                    <p className="pb-1 text-sm text-gray-600 dark:text-gray-400">
+                                                    <p className="mt-0.5 text-sm text-base-content/55">
                                                         +{vatAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} VAT
                                                     </p>
                                                 )}
                                             </div>
-                                            <ClientHeaderTotalInNis
-                                                clientId={selectedClient?.id}
-                                                leadType={selectedClient?.lead_type}
-                                                currencyInput={(selectedClient as any)?.currency_id ?? 1}
-                                                subtotal={mainAmount}
-                                                vat={shouldShowVAT && vatAmount > 0 ? vatAmount : 0}
-                                            />
-                                            {subcontractorFee > 0 && netAfterSubcontractor !== null && (
-                                                <p className="text-[11px] text-base-content/50">
-                                                    Net {currency}
-                                                    {Number(netAfterSubcontractor.toFixed(2)).toLocaleString()}
-                                                </p>
-                                            )}
-                                            {paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0 && (
-                                                <p className="text-[11px] text-base-content/50">
-                                                    Exp. {currency}
-                                                    {Number(paymentPlanExpenseNoVatTotal.toFixed(2)).toLocaleString()}
-                                                </p>
-                                            )}
-                                            {potentialAmount > 0 && (
-                                                <p className="text-[11px] font-medium text-base-content/55">
-                                                    Pot. {currency}
-                                                    {Number(potentialAmount.toFixed(2)).toLocaleString()}
-                                                </p>
-                                            )}
-                                            {potentialApplicantsMeeting > 0 && (
-                                                <p className="text-[11px] text-base-content/45" title="Potential applicants">
-                                                    Pot. appl. {Math.trunc(potentialApplicantsMeeting).toLocaleString()}
-                                                </p>
-                                            )}
-                                            {(unpaidGrossDesktop > 0 || unpaidExpenseAmountDesktop > 0) && (
-                                                <div className="mt-2 rounded-lg bg-gray-50 px-2.5 py-2 text-right dark:bg-base-200/25">
-                                                    <p className="text-[10px] font-semibold uppercase tracking-wide text-base-content/35">
-                                                        Outstanding
+                                        </button>
+                                        {hasExpandableFinancialDetails ? (
+                                            <button
+                                                type="button"
+                                                className="btn btn-ghost btn-xs mt-0.5 h-7 min-h-7 gap-1 font-medium text-base-content/55"
+                                                onClick={() => setHeaderFinancialDetailsOpen((open) => !open)}
+                                                aria-expanded={headerFinancialDetailsOpen}
+                                            >
+                                                {headerFinancialDetailsOpen ? 'Less' : 'More'}
+                                                <ChevronDownIcon
+                                                    className={`h-3.5 w-3.5 transition-transform duration-200 ${headerFinancialDetailsOpen ? 'rotate-180' : ''}`}
+                                                />
+                                            </button>
+                                        ) : null}
+                                        {headerFinancialDetailsOpen && hasExpandableFinancialDetails ? (
+                                            <div className="mt-1.5 space-y-1 border-t border-base-200/70 pt-2 text-right">
+                                                <ClientHeaderTotalInNis
+                                                    clientId={selectedClient?.id}
+                                                    leadType={selectedClient?.lead_type}
+                                                    currencyInput={(selectedClient as any)?.currency_id ?? 1}
+                                                    subtotal={mainAmount}
+                                                    vat={shouldShowVAT && vatAmount > 0 ? vatAmount : 0}
+                                                />
+                                                {subcontractorFee > 0 && netAfterSubcontractor !== null && (
+                                                    <p className="text-[11px] text-base-content/50">
+                                                        Net {currency}
+                                                        {Number(netAfterSubcontractor.toFixed(2)).toLocaleString()}
                                                     </p>
-                                                    {unpaidOutstandingPairDesktop !== null && unpaidGrossDesktop > 0 && (
-                                                        <div className="flex items-end justify-end gap-2">
-                                                            <p className="text-2xl font-bold leading-none text-base-content/55">
-                                                                {currency}
-                                                                {Number(unpaidOutstandingPairDesktop.base.toFixed(2)).toLocaleString()}
-                                                            </p>
-                                                            {unpaidOutstandingPairDesktop.vat > 0 && (
-                                                                <p className="pb-1 text-sm text-base-content/40">
-                                                                    +
-                                                                    {unpaidOutstandingPairDesktop.vat.toLocaleString(undefined, {
-                                                                        minimumFractionDigits: 0,
-                                                                        maximumFractionDigits: 2,
-                                                                    })}{' '}
-                                                                    VAT
+                                                )}
+                                                {paymentPlanExpenseNoVatTotal != null && paymentPlanExpenseNoVatTotal > 0 && (
+                                                    <p className="text-[11px] text-base-content/50">
+                                                        Exp. {currency}
+                                                        {Number(paymentPlanExpenseNoVatTotal.toFixed(2)).toLocaleString()}
+                                                    </p>
+                                                )}
+                                                {potentialAmount > 0 && (
+                                                    <p className="text-[11px] font-medium text-base-content/55">
+                                                        Pot. {currency}
+                                                        {Number(potentialAmount.toFixed(2)).toLocaleString()}
+                                                    </p>
+                                                )}
+                                                {potentialApplicantsMeeting > 0 && (
+                                                    <p className="text-[11px] text-base-content/45" title="Potential applicants">
+                                                        Pot. appl. {Math.trunc(potentialApplicantsMeeting).toLocaleString()}
+                                                    </p>
+                                                )}
+                                                {(unpaidGrossDesktop > 0 || unpaidExpenseAmountDesktop > 0) && (
+                                                    <div className="mt-1 rounded-lg bg-base-200/35 px-2.5 py-2 text-right">
+                                                        <p className={CLIENT_HEADER_SECTION_LABEL}>Outstanding</p>
+                                                        {unpaidOutstandingPairDesktop !== null && unpaidGrossDesktop > 0 && (
+                                                            <div className="flex items-end justify-end gap-2">
+                                                                <p className="text-xl font-bold leading-none text-base-content/55">
+                                                                    {currency}
+                                                                    {Number(unpaidOutstandingPairDesktop.base.toFixed(2)).toLocaleString()}
                                                                 </p>
-                                                            )}
-                                                        </div>
-                                                    )}
-                                                    {unpaidExpenseAmountDesktop > 0 && (
-                                                        <p className="text-[11px] text-base-content/45">
-                                                            + {currency}
-                                                            {Number(unpaidExpenseAmountDesktop.toFixed(2)).toLocaleString()} expenses (no VAT)
-                                                        </p>
-                                                    )}
-                                                </div>
-                                            )}
-                                        </div>
-                                    </div>
+                                                                {unpaidOutstandingPairDesktop.vat > 0 && (
+                                                                    <p className="pb-1 text-sm text-base-content/40">
+                                                                        +
+                                                                        {unpaidOutstandingPairDesktop.vat.toLocaleString(undefined, {
+                                                                            minimumFractionDigits: 0,
+                                                                            maximumFractionDigits: 2,
+                                                                        })}{' '}
+                                                                        VAT
+                                                                    </p>
+                                                                )}
+                                                            </div>
+                                                        )}
+                                                        {unpaidExpenseAmountDesktop > 0 && (
+                                                            <p className="text-[11px] text-base-content/45">
+                                                                + {currency}
+                                                                {Number(unpaidExpenseAmountDesktop.toFixed(2)).toLocaleString()} expenses (no VAT)
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ) : null}
+                                    </>
                                 );
                             })()}
-                            <div className="flex w-full max-w-xs flex-wrap items-center justify-end gap-2 pt-3">
-                                {!hideActionsDropdown && (
-                                    <>
-                                        <button
-                                            type="button"
-                                            onClick={openHeaderDocumentsModal}
-                                            disabled={!headerDocsLeadNumber}
-                                            className="btn btn-sm btn-square relative rounded-full border border-base-300 btn-ghost min-h-10 min-w-10 disabled:pointer-events-none disabled:opacity-40"
-                                            title={
-                                                headerDocsLeadNumber
-                                                    ? 'Case documents on OneDrive'
-                                                    : 'Lead number required'
-                                            }
-                                            aria-label="Case documents"
-                                        >
-                                            <DocumentArrowUpIcon className="h-6 w-6" aria-hidden />
-                                            {headerSupabaseDocumentsCount > 0 && (
-                                                <span
-                                                    className="absolute -right-1 -top-1 flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1 text-[11px] font-bold text-white"
-                                                    style={{ backgroundColor: '#3a3a3a' }}
-                                                >
-                                                    {headerSupabaseDocumentsCount > 99 ? '99+' : headerSupabaseDocumentsCount}
-                                                </span>
-                                            )}
-                                        </button>
-                                        {renderMoreActionsDropdown(
-                                            'btn btn-sm btn-square rounded-full border border-base-300 btn-ghost min-h-10 min-w-10'
-                                        )}
-                                    </>
-                                )}
-                                {hideActionsDropdown ? renderCompactHistoryIconRow() : null}
-                            </div>
+                                </div>
+                            ) : null}
                         </div>
                     </div>
 
-                </div>
-
-                {/* Case inactive — single-line bar under the header white box */}
-                {(() => {
-                    const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                    const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
-                    if (!isUnactivated) return null;
-
-                    // Get unactivation reason
-                    let unactivationReason = selectedClient?.unactivation_reason;
-                    if (isLegacy && !unactivationReason) {
-                        const reasonId = (selectedClient as any)?.reason_id;
-                        if (reasonId) {
-                            const reasonFromId = getUnactivationReasonFromId(reasonId);
-                            if (reasonFromId) {
-                                unactivationReason = reasonFromId;
-                            }
-                        }
-                    }
-
-                    return (
-                        <div className="mt-2 flex w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-red-300 bg-red-100 px-4 py-2 text-red-800 dark:border-red-900/50 dark:bg-red-900/20 dark:text-red-200">
-                            <span className="inline-flex items-center gap-1.5 whitespace-nowrap font-semibold">
-                                <NoSymbolIcon className="h-4 w-4" />
-                                Case inactive
-                                {unactivationReason && (
-                                    <span className="font-normal">({unactivationReason})</span>
-                                )}
-                            </span>
-                            {(selectedClient as any)?.deactivate_notes && (
-                                <span className="min-w-0 truncate text-sm font-normal text-red-900/80 dark:text-red-200/80">
-                                    {(selectedClient as any).deactivate_notes}
-                                </span>
-                            )}
-                            {(selectedClient?.unactivated_by || selectedClient?.unactivated_at) && (
-                                <span className="ml-auto whitespace-nowrap text-xs font-normal text-red-900/70 dark:text-red-200/70">
-                                    by {selectedClient.unactivated_by || '---'}
-                                    {selectedClient.unactivated_by && selectedClient.unactivated_at && ' / '}
-                                    {selectedClient.unactivated_at && (
-                                        <>at {new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
-                                            year: 'numeric',
-                                            month: 'short',
-                                            day: 'numeric',
-                                            hour: '2-digit',
-                                            minute: '2-digit'
-                                        })}</>
-                                    )}
-                                </span>
-                            )}
-                        </div>
-                    );
-                })()}
-
-                {/* Stage Logic Buttons - Mobile: Below timeline/history/stage badge row (btn-md + text-base for tap targets) */}
-                <div className="flex md:hidden items-center gap-4 flex-wrap mt-7">
-                    {/* Check if case is unactivated - show message instead of buttons */}
-                    {(() => {
-                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                        const isUnactivated = isLegacy
-                            ? (selectedClient?.status === 10)
-                            : (selectedClient?.status === 'inactive');
-
-                        if (isUnactivated) {
-                            return (
-                                <div className="px-4 py-2 text-sm text-gray-600">
-                                    Please activate lead in actions first to see the stage buttons.
-                                </div>
-                            );
-                        }
-                        return null;
-                    })()}
-
-                    {/* Stage buttons - only show if case is activated */}
-                    {(() => {
-                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                        const isUnactivated = isLegacy
-                            ? (selectedClient?.status === 10)
-                            : (selectedClient?.status === 'inactive');
-
-                        if (isUnactivated) {
-                            return null; // Don't show any stage buttons if unactivated
-                        }
-
-                        // Closed state: sub-efforts sidebar handles stage 200 log; otherwise show "No action available"
-                        if (selectedClient && (areStagesEquivalent(currentStageName, 'Case Closed') || (isStageNumeric && stageNumeric === 200))) {
-                            if ((isStageNumeric && stageNumeric === 200) || Number((selectedClient as any)?.stage) === 200) {
-                                return null;
-                            }
-                            return (
-                                <div className="px-4 py-2 text-sm text-gray-600">
-                                    No action available
-                                </div>
-                            );
-                        }
-
-                        return (
-                            <>
-                                {/* Stage 105: no action buttons (advances via payments plan) */}
-                                {(areStagesEquivalent(currentStageName, 'Handler Set') ||
-                                    (isStageNumeric && stageNumeric === 105)) && shouldShowHandlerPaymentBanner(hasPaymentPlan, nextDuePayment) ? (
-                                    <div className="w-full flex justify-center">
-                                        {isMissingPaymentPlanBanner(hasPaymentPlan) ? (
-                                            <div className="w-full max-w-xl rounded-2xl border border-red-200/70 bg-red-50 px-4 py-3 text-red-900 shadow-sm">
-                                                <div className="flex items-center justify-between gap-3">
-                                                    <div className="flex items-center gap-2 text-sm font-semibold">
-                                                        <ExclamationTriangleIcon className="h-5 w-5" />
-                                                        Missing payment plan
-                                                    </div>
-                                                    <div className="text-xs text-red-800/80 whitespace-nowrap">
-                                                        Finances → payment plan
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        ) : (
-                                            <div className="w-full max-w-xl rounded-2xl border border-amber-200/70 bg-amber-50 px-4 py-3 text-amber-900 shadow-sm">
-                                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
-                                                    <div className="text-sm font-semibold">Next payment due</div>
-                                                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
-                                                        <div className="text-sm tabular-nums text-right whitespace-nowrap">
-                                                        {(() => {
-                                                        const isLegacy = !!(nextDuePayment as any)?.isLegacy;
-                                                        const base = Number((nextDuePayment as any)?.value ?? 0);
-                                                        const vat = Number(
-                                                            isLegacy
-                                                                ? (nextDuePayment as any)?.vat_value ?? 0
-                                                                : (nextDuePayment as any)?.value_vat ?? 0
-                                                        );
-                                                        const gross =
-                                                            (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
-                                                        const currency =
-                                                            (nextDuePayment as any)?.currency ??
-                                                            (nextDuePayment as any)?.accounting_currencies?.iso_code ??
-                                                            (nextDuePayment as any)?.accounting_currencies?.name ??
-                                                            '';
-                                                        const dateRaw =
-                                                            (nextDuePayment as any)?.due_date ?? (nextDuePayment as any)?.date ?? null;
-                                                        const dateLabel = dateRaw ? new Date(dateRaw).toLocaleDateString() : '—';
-                                                        const amountLabel = Number.isFinite(gross)
-                                                            ? gross.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
-                                                            : '0';
-                                                        return (
-                                                            <span>
-                                                                <span className="font-semibold">
-                                                                    {currency ? `${currency} ` : ''}
-                                                                    {amountLabel}
-                                                                </span>
-                                                                {' · '}
-                                                                <span className="opacity-80">{dateLabel}</span>
-                                                            </span>
-                                                        );
-                                                    })()}
-                                                        </div>
-                                                        {(() => {
-                                                            const isLegacy = !!(nextDuePayment as any)?.isLegacy;
-                                                            const ready =
-                                                                (nextDuePayment as any)?.ready_to_pay === true ||
-                                                                ((isLegacy && !!(nextDuePayment as any)?.due_date) ? true : false);
-                                                            if (!ready) return null;
-                                                            const by =
-                                                                (nextDuePayment as any)?.ready_to_pay_by_display_name ??
-                                                                (nextDuePayment as any)?.tenants_employee?.display_name ??
-                                                                (nextDuePayment as any)?.updated_by ??
-                                                                (nextDuePayment as any)?.paid_by ??
-                                                                '—';
-                                                            return (
-                                                                <div className="flex items-center justify-end gap-2 whitespace-nowrap">
-                                                                    <span className="btn btn-success btn-sm pointer-events-none gap-1.5 text-white rounded-full px-3">
-                                                                        <CheckCircleIcon className="h-4 w-4" />
-                                                                        Sent to finance
-                                                                    </span>
-                                                                    <span className="text-xs text-amber-800/80 whitespace-nowrap">
-                                                                        by <span className="font-semibold">{String(by)}</span>
-                                                                    </span>
-                                                                </div>
-                                                            );
-                                                        })()}
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                ) : null}
-
-                                {/* Stages 60 / 70 / 100 / 105 / 110 / 150: sub-efforts; finalize only on 110 & 150 */}
-                                {subEffortsStageFlags.showPickerLogAndModal && (
-                                    <>
-                                        <div className="flex items-center justify-end gap-3 flex-wrap">
-                                            {(onMeetingScheduleClick || onMeetingRescheduleClick) && (
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        if (hasScheduledMeetings && onMeetingRescheduleClick) {
-                                                            onMeetingRescheduleClick();
-                                                        } else if (onMeetingScheduleClick) {
-                                                            onMeetingScheduleClick();
-                                                        }
-                                                    }}
-                                                    className={STAGE_ACTION_BTN_CLASS}
-                                                >
-                                                    {hasScheduledMeetings ? (
-                                                        <ArrowPathIcon className="w-4 h-4" />
-                                                    ) : (
-                                                        <CalendarDaysIcon className="w-4 h-4" />
-                                                    )}
-                                                    {hasScheduledMeetings ? 'Reschedule Meeting' : 'Schedule Meeting'}
-                                                </button>
-                                            )}
-                                            {subEffortsStageFlags.showFinalizeCaseWithSubEfforts && (
-                                                <button
-                                                    onClick={() => updateLeadStage(200)}
-                                                    className={STAGE_ACTION_BTN_CLASS}
-                                                >
-                                                    <CheckCircleIcon className="w-4 h-4" />
-                                                    Finalize Case
-                                                </button>
-                                            )}
-                                            <div className="dropdown dropdown-end">
-                                                <button
-                                                    type="button"
-                                                    className={STAGE_ACTION_BTN_CLASS}
-                                                    disabled={isLoadingSubEfforts || isSavingSubEffort}
-                                                >
-                                                    <DocumentCheckIcon className="w-4 h-4" />
-                                                    Sub efforts
-                                                    <ChevronDownIcon className="w-4 h-4" />
-                                                </button>
-                                                <ul tabIndex={0} className="dropdown-content z-[330] menu p-2 shadow bg-base-100 rounded-box w-72">
-                                                    {(() => {
-                                                        const usedActive = new Set(
-                                                            (leadSubEfforts || [])
-                                                                .filter((r: any) => (r as any)?.active !== false)
-                                                                .map((r: any) => Number((r as any)?.sub_effort_id ?? (r as any)?.sub_efforts?.id))
-                                                                .filter((n: any) => Number.isFinite(n))
-                                                        );
-                                                        const allOpts = (subEfforts.length > 0 ? subEfforts : [
-                                                            { id: 1, name: 'Aplication submitted' },
-                                                            { id: 2, name: 'Communication with client' },
-                                                        ]);
-                                                        const remaining = allOpts.filter(opt => !usedActive.has(Number(opt.id)));
-                                                        if (remaining.length === 0) {
-                                                            return (
-                                                                <li>
-                                                                    <span className="px-3 py-2 text-sm text-gray-500">
-                                                                        No more sub efforts
-                                                                    </span>
-                                                                </li>
-                                                            );
-                                                        }
-                                                        return remaining.map(opt => (
-                                                            <li key={opt.id}>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => {
-                                                                        void handleSelectSubEffort(opt);
-                                                                    }}
-                                                                    className="text-sm"
-                                                                >
-                                                                    {opt.name}
-                                                                </button>
-                                                            </li>
-                                                        ));
-                                                    })()}
-                                                </ul>
-                                            </div>
-                                        </div>
-                                    </>
-                                )}
-
-                                {/* Payment request sent Stage */}
-                                {areStagesEquivalent(currentStageName, 'payment_request_sent') && handlePaymentReceivedNewClient && (
-                                    <button
-                                        onClick={handlePaymentReceivedNewClient}
-                                        className={STAGE_ACTION_BTN_CLASS}
-                                    >
-                                        <CheckCircleIcon className="w-4 h-4" />
-                                        Payment Received - new Client !!!
-                                    </button>
-                                )}
-
-                                {/* Another meeting Stage - Check this first to avoid duplicates */}
-                                {areStagesEquivalent(currentStageName, 'another_meeting') && (
-                                    <>
-                                        {setShowRescheduleDrawer && (
-                                            <button
-                                                onClick={() => setShowRescheduleDrawer(true)}
-                                                className={STAGE_ACTION_BTN_CLASS}
-                                            >
-                                                <ArrowPathIcon className="w-4 h-4" />
-                                                Meeting ReScheduling
-                                            </button>
-                                        )}
-                                        {handleStageUpdate && (
-                                            <button
-                                                onClick={() => handleStageUpdate('Meeting Ended')}
-                                                className={STAGE_ACTION_BTN_CLASS}
-                                            >
-                                                <CheckCircleIcon className="w-4 h-4" />
-                                                Meeting Ended
-                                            </button>
-                                        )}
-                                    </>
-                                )}
-
-                                {/* Meeting scheduled / Meeting rescheduling Stages - Exclude another_meeting to avoid duplicates */}
-                                {!areStagesEquivalent(currentStageName, 'another_meeting') &&
-                                    (areStagesEquivalent(currentStageName, 'meeting_scheduled') ||
-                                        areStagesEquivalent(currentStageName, 'Meeting rescheduling') ||
-                                        (isStageNumeric && (stageNumeric === 55 || stageNumeric === 21))) && (
-                                        <>
-                                            {/* Schedule Meeting button - only for stage 55, not for "Meeting scheduled" or "Meeting rescheduled" */}
-                                            {!areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
-                                                !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
-                                                handleScheduleMenuClick &&
-                                                scheduleMenuLabel && (
-                                                    <button
-                                                        onClick={handleScheduleMenuClick}
-                                                        className={STAGE_ACTION_BTN_CLASS}
-                                                    >
-                                                        <CalendarDaysIcon className="w-4 h-4" />
-                                                        {scheduleMenuLabel}
-                                                    </button>
-                                                )}
-                                            {setShowRescheduleDrawer && (
-                                                <button
-                                                    onClick={() => setShowRescheduleDrawer(true)}
-                                                    className={STAGE_ACTION_BTN_CLASS}
-                                                >
-                                                    <ArrowPathIcon className="w-4 h-4" />
-                                                    Meeting ReScheduling
-                                                </button>
-                                            )}
-                                            {/* Meeting Ended - only show for stage 21 if there are upcoming meetings, and exclude another_meeting */}
-                                            {handleStageUpdate &&
-                                                !areStagesEquivalent(currentStageName, 'another_meeting') &&
-                                                (!(areStagesEquivalent(currentStageName, 'Meeting rescheduling') || (isStageNumeric && stageNumeric === 21)) || hasScheduledMeetings) && (
-                                                    <button
-                                                        onClick={() => handleStageUpdate('Meeting Ended')}
-                                                        className={STAGE_ACTION_BTN_CLASS}
-                                                    >
-                                                        <CheckCircleIcon className="w-4 h-4" />
-                                                        Meeting Ended
-                                                    </button>
-                                                )}
-                                        </>
-                                    )}
-
-                                {/* Waiting for meeting summary Stage */}
-                                {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && openSendOfferModal && (
-                                    <button
-                                        onClick={openSendOfferModal}
-                                        className={STAGE_ACTION_BTN_CLASS}
-                                    >
-                                        <DocumentCheckIcon className="w-4 h-4" />
-                                        Send Price Offer
-                                    </button>
-                                )}
-
-                                {/* Communication Started Stage */}
-                                {areStagesEquivalent(currentStageName, 'Communication started') && (
-                                    <>
-                                        {handleScheduleMenuClick && scheduleMenuLabel && (
-                                            <button
-                                                onClick={handleScheduleMenuClick}
-                                                className={STAGE_ACTION_BTN_CLASS}
-                                            >
-                                                <CalendarDaysIcon className="w-4 h-4" />
-                                                {scheduleMenuLabel}
-                                            </button>
-                                        )}
-                                        {handleStageUpdate && (
-                                            <button
-                                                onClick={() => handleStageUpdate('Communication Started')}
-                                                className={STAGE_ACTION_BTN_CLASS}
-                                            >
-                                                <ChatBubbleLeftRightIcon className="w-4 h-4" />
-                                                {isStageNumeric && stageNumeric === 15 ? 'Scheduling Notes' : 'Communication Started'}
-                                            </button>
-                                        )}
-                                    </>
-                                )}
-
-                                {/* Meeting summary + Agreement sent Stage */}
-                                {areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') && (
-                                    <>
-                                        {handleScheduleMenuClick && scheduleMenuLabel && (
-                                            <button
-                                                onClick={handleScheduleMenuClick}
-                                                className={STAGE_ACTION_BTN_CLASS}
-                                            >
-                                                <CalendarDaysIcon className="w-4 h-4" />
-                                                {scheduleMenuLabel}
-                                            </button>
-                                        )}
-                                        {handleOpenSignedDrawer && (
-                                            <button
-                                                onClick={handleOpenSignedDrawer}
-                                                className={CLIENT_SIGNED_STAGE_BTN_CLASS}
-                                            >
-                                                <HandThumbUpIcon className="w-4 h-4" />
-                                                Client signed
-                                            </button>
-                                        )}
-                                        {handleOpenDeclinedDrawer && (
-                                            <button
-                                                onClick={handleOpenDeclinedDrawer}
-                                                className={CLIENT_DECLINED_STAGE_BTN_CLASS}
-                                            >
-                                                <HandThumbDownIcon className="w-4 h-4" />
-                                                Client declined
-                                            </button>
-                                        )}
-                                        {openSendOfferModal && (
-                                            <button
-                                                onClick={openSendOfferModal}
-                                                className={STAGE_ACTION_BTN_CLASS}
-                                            >
-                                                <PencilSquareIcon className="w-4 h-4" />
-                                                Revised price offer
-                                            </button>
-                                        )}
-                                    </>
-                                )}
-
-                                {/* Stage 60: no action buttons (handler assignment is required and auto-advances to "Handler Set") */}
-
-                                {/* General stages - Schedule Meeting and Communication Started */}
-                                {/* Only show for stages that haven't been handled by specific sections above */}
-                                {selectedClient &&
-                                    !areStagesEquivalent(currentStageName, 'Handler Set') &&
-                                    !areStagesEquivalent(currentStageName, 'Handler Started') &&
-                                    !areStagesEquivalent(currentStageName, 'Application submitted') &&
-                                    !areStagesEquivalent(currentStageName, 'payment_request_sent') &&
-                                    !areStagesEquivalent(currentStageName, 'another_meeting') &&
-                                    !areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
-                                    !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
-                                    !areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') &&
-                                    !areStagesEquivalent(currentStageName, 'Communication started') &&
-                                    !areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') &&
-                                    !areStagesEquivalent(currentStageName, 'Success') &&
-                                    !areStagesEquivalent(currentStageName, 'handler_assigned') &&
-                                    !areStagesEquivalent(currentStageName, 'client_signed') &&
-                                    !areStagesEquivalent(currentStageName, 'client signed agreement') &&
-                                    !areStagesEquivalent(currentStageName, 'Client signed agreement') &&
-                                    !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
-                                    !(isStageNumeric && (stageNumeric === 21 || stageNumeric === 55)) && (
-                                        <>
-                                            {handleScheduleMenuClick && scheduleMenuLabel && (
-                                                <button
-                                                    onClick={handleScheduleMenuClick}
-                                                    className={STAGE_ACTION_BTN_CLASS}
-                                                >
-                                                    <CalendarDaysIcon className="w-4 h-4" />
-                                                    {scheduleMenuLabel}
-                                                </button>
-                                            )}
-                                            {handleStageUpdate && (
-                                                <button
-                                                    onClick={() => handleStageUpdate('Communication Started')}
-                                                    className={STAGE_ACTION_BTN_CLASS}
-                                                >
-                                                    <ChatBubbleLeftRightIcon className="w-4 h-4" />
-                                                    Communication Started
-                                                </button>
-                                            )}
-                                        </>
-                                    )}
-                            </>
-                        );
-                    })()}
-                </div>
-
-                {/* Assign scheduler / handler — centered (compact width) */}
-                {dropdownsContent && (
-                    <div className="w-full pt-2">
-                        <div className="w-full max-w-md">
-                            {dropdownsContent}
-                        </div>
-                    </div>
-                )}
-
-                {/* Workflow Actions Bar - Roles and Quick Actions */}
-                <div className="mt-7 pt-6 md:mt-0 md:pt-6 w-full px-1 sm:px-2 md:px-3 lg:px-4">
-                    <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-4">Assigned Team</p>
+                    <div className="w-fit shrink-0 self-start">
                     {(() => {
                         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
 
@@ -3957,161 +3571,226 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                             roleGroups.get(key)!.roles.push('Scheduler');
                         }
 
-                        return (
-                            <div className="flex flex-wrap items-center justify-between w-full gap-6">
-                                {/* Assigned Team — all roles grouped in one white rounded card (sub-roles on the left, handler/retainer + toggle on the right).
-                                    Keep a single horizontal row at every width (scroll if tight) so it never reflows between
-                                    horizontal and vertical layouts as the page width changes. */}
-                                <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-x-6 gap-y-4 overflow-x-auto rounded-2xl border border-base-200/80 bg-white px-5 py-4 shadow-sm dark:border-base-300/55 dark:bg-base-100">
-                                    {/* Group 1: non-handler roles (Scheduler / Closer / Expert / …) */}
-                                    <div className="flex shrink-0 items-center gap-6 flex-nowrap">
-                                        {Array.from(roleGroups.values()).map((group, index) => (
-                                            <div key={index} className="flex shrink-0 items-center gap-2">
-                                                <EmployeeAvatar employeeId={group.id} size="md" />
-                                                <div className="flex flex-col">
-                                                    <span className="whitespace-nowrap text-[10px] text-gray-400 uppercase tracking-wide font-medium">
-                                                      {group.roles.join(', ')}
-                                                    </span>
-                                                    <span className="whitespace-nowrap text-sm font-medium text-gray-700">{formatRoleDisplay(group.display)}</span>
-                                                </div>
+                        type TeamEntry = {
+                            key: string;
+                            id: number | null;
+                            rolesLabel: string;
+                            display: string;
+                            kind: 'group' | 'handler' | 'retention';
+                        };
+
+                        const teamEntries: TeamEntry[] = [];
+                        Array.from(roleGroups.values()).forEach((group, index) => {
+                            teamEntries.push({
+                                key: `g-${index}`,
+                                id: group.id != null ? Number(group.id) : null,
+                                rolesLabel: group.roles.join(', '),
+                                display: group.display,
+                                kind: 'group',
+                            });
+                        });
+                        if (hasHandlerRole) {
+                            teamEntries.push({
+                                key: 'handler',
+                                id: handlerId,
+                                rolesLabel: 'Handler',
+                                display: handlerDisplay,
+                                kind: 'handler',
+                            });
+                        }
+                        if (hasRetentionRole) {
+                            teamEntries.push({
+                                key: 'r-handler',
+                                id: retentionHandlerId,
+                                rolesLabel: 'R-Handler',
+                                display: retentionHandlerDisplay,
+                                kind: 'retention',
+                            });
+                        }
+
+                        const hiddenTeamCount = Math.max(0, teamEntries.length - TEAM_CARD_VISIBLE_COLLAPSED);
+                        const visibleTeamEntries = assignedTeamPanelOpen
+                            ? teamEntries
+                            : teamEntries.slice(0, TEAM_CARD_VISIBLE_COLLAPSED);
+
+                        const renderTeamMemberContent = (
+                            entry: TeamEntry,
+                            options?: { showHandlerRing?: boolean; handlerActive?: boolean },
+                        ) => (
+                            <div className="flex shrink-0 items-center gap-2">
+                                {entry.kind === 'handler' || entry.kind === 'retention' ? (
+                                    <div
+                                        className={`relative shrink-0 overflow-visible rounded-full p-0.5 transition-[box-shadow,opacity,ring-color] duration-500 ease-out ${
+                                            options?.showHandlerRing && options?.handlerActive
+                                                ? 'opacity-100 ring-2 ring-emerald-500 shadow-[0_0_14px_rgba(16,185,129,0.32)]'
+                                                : 'opacity-80 ring-2 ring-transparent'
+                                        }`}
+                                    >
+                                        {options?.showHandlerRing && options?.handlerActive ? (
+                                            <span
+                                                key={handlerActiveRingNonce}
+                                                className="pointer-events-none absolute inset-[-4px] z-0 rounded-full animate-handler-active-ring-flash"
+                                                aria-hidden
+                                            />
+                                        ) : null}
+                                        <div className="relative z-[1]">
+                                            <EmployeeAvatar employeeId={entry.id} size="md" />
+                                        </div>
+                                        {options?.showHandlerRing && options?.handlerActive ? (
+                                            <div className="absolute -top-0.5 -right-0.5 z-[2] rounded-full bg-emerald-500 p-0.5 ring-2 ring-white">
+                                                <CheckCircleIcon className="h-3 w-3 text-white" />
                                             </div>
-                                        ))}
+                                        ) : null}
                                     </div>
+                                ) : (
+                                    <EmployeeAvatar employeeId={entry.id} size="md" />
+                                )}
+                                <div className="flex min-w-0 flex-col">
+                                    <span className={`whitespace-nowrap ${TEAM_ROLE_LABEL}`}>
+                                        {entry.rolesLabel}
+                                    </span>
+                                    <span className="whitespace-nowrap text-sm font-semibold text-base-content/85">
+                                        {formatRoleDisplay(entry.display)}
+                                    </span>
+                                </div>
+                            </div>
+                        );
 
-                                    {/* Group 2: Handler + Retainer Handler + active-role segmented toggle */}
-                                    {(hasHandlerRole || hasRetentionRole) && (
-                                        <div className="flex shrink-0 flex-nowrap items-end justify-start gap-4 sm:gap-6">
-                                        {hasHandlerRole && (
-                                            <div className="flex shrink-0 items-center gap-2">
-                                                <div
-                                                    className={`relative shrink-0 overflow-visible rounded-full p-0.5 transition-[box-shadow,opacity,ring-color] duration-500 ease-out ${
-                                                        activeHandlerTypeForLead === 2
-                                                            ? 'opacity-100 ring-2 ring-emerald-500 shadow-[0_0_14px_rgba(16,185,129,0.32)]'
-                                                            : 'opacity-80 ring-2 ring-transparent'
-                                                    }`}
+                        const renderTeamMemberCard = (
+                            entry: TeamEntry,
+                            options?: { showHandlerRing?: boolean; handlerActive?: boolean },
+                        ) => (
+                            <div
+                                key={entry.key}
+                                className={`${CLIENT_HEADER_CARD} flex w-full min-w-[10.5rem] max-w-[18rem] shrink-0 flex-col justify-center`}
+                            >
+                                {renderTeamMemberContent(entry, options)}
+                            </div>
+                        );
+
+                        const teamMemberCardOptions = (entry: TeamEntry) => ({
+                            showHandlerRing: entry.kind !== 'group',
+                            handlerActive:
+                                entry.kind === 'handler'
+                                    ? activeHandlerTypeForLead === 2
+                                    : entry.kind === 'retention'
+                                      ? activeHandlerTypeForLead === 1
+                                      : false,
+                        });
+
+                        return (
+                            <div className="flex w-fit max-w-[18rem] shrink-0 flex-col items-stretch gap-2">
+                                {teamEntries.length === 0 ? (
+                                    <div
+                                        className={`${CLIENT_HEADER_CARD} flex w-full min-w-[10.5rem] flex-col justify-center`}
+                                    >
+                                        <span className="text-sm text-base-content/45">No team assigned</span>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="flex w-full flex-col gap-2">
+                                            {visibleTeamEntries.map((entry) =>
+                                                renderTeamMemberCard(entry, teamMemberCardOptions(entry)),
+                                            )}
+                                            {!assignedTeamPanelOpen && hiddenTeamCount > 0 ? (
+                                                <button
+                                                    type="button"
+                                                    className={TEAM_PANEL_MORE_BTN}
+                                                    onClick={() => setAssignedTeamPanelOpen(true)}
+                                                    aria-expanded={false}
                                                 >
-                                                    {activeHandlerTypeForLead === 2 && (
-                                                        <span
-                                                            key={handlerActiveRingNonce}
-                                                            className="pointer-events-none absolute inset-[-4px] z-0 rounded-full animate-handler-active-ring-flash"
-                                                            aria-hidden
-                                                        />
-                                                    )}
-                                                    <div className="relative z-[1]">
-                                                        <EmployeeAvatar employeeId={handlerId} size="md" />
-                                                    </div>
-                                                    {activeHandlerTypeForLead === 2 && (
-                                                        <div className="absolute -top-0.5 -right-0.5 z-[2] bg-emerald-500 rounded-full p-0.5 ring-2 ring-white transition-transform duration-300 ease-out">
-                                                            <CheckCircleIcon className="w-3 h-3 text-white" />
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                <div className="flex flex-col">
-                                                    <span className="whitespace-nowrap text-[10px] text-gray-400 uppercase tracking-wide font-medium">
-                                                        Handler
-                                                    </span>
-                                                    <span className="whitespace-nowrap text-sm font-medium text-gray-700">
-                                                        {formatRoleDisplay(handlerDisplay)}
-                                                    </span>
-                                                </div>
-                                            </div>
-                                        )}
-
-                                        {showDualHandlerToggle && (
-                                            <div className="relative flex shrink-0 items-center">
-                                                <div className="inline-flex h-11 min-w-[8.25rem] items-stretch gap-0.5 rounded-full border border-base-300/50 bg-base-200/90 p-1 shadow-inner">
+                                                    +{hiddenTeamCount} more
+                                                </button>
+                                            ) : null}
+                                        </div>
+                                        {assignedTeamPanelOpen && showDualHandlerToggle ? (
+                                            <div
+                                                className={`${CLIENT_HEADER_CARD} flex w-fit shrink-0 items-center justify-center`}
+                                            >
+                                                <div className="inline-flex h-10 min-w-[8.25rem] items-stretch gap-0.5 rounded-full border border-base-300/50 bg-base-200/90 p-1 shadow-inner">
                                                     <button
                                                         type="button"
                                                         aria-label="Case handler active on this file"
                                                         onClick={() => void updateActiveHandlerType(2)}
                                                         title="Case handler drives this file (Active Cases)"
-                                                        className={`relative flex h-9 min-w-[3.25rem] flex-1 shrink-0 items-center justify-center rounded-full transition-all duration-300 ease-out ${
+                                                        className={`relative flex h-8 min-w-[3.25rem] flex-1 shrink-0 items-center justify-center rounded-full transition-all duration-300 ease-out ${
                                                             activeHandlerTypeForLead === 2
                                                                 ? 'bg-emerald-50 shadow-sm ring-1 ring-emerald-200 dark:bg-emerald-900/30 dark:ring-emerald-900/40'
                                                                 : 'bg-transparent hover:bg-base-100/70'
                                                         }`}
                                                     >
                                                         <UserIcon
-                                                            className={`h-4 w-4 shrink-0 transition-colors duration-300 ${
+                                                            className={`h-4 w-4 shrink-0 ${
                                                                 activeHandlerTypeForLead === 2
                                                                     ? 'text-emerald-800 dark:text-emerald-100'
-                                                                    : 'text-gray-500'
+                                                                    : 'text-base-content/45'
                                                             }`}
                                                             aria-hidden
                                                         />
-                                                        <span className="sr-only">Case handler</span>
                                                     </button>
                                                     <button
                                                         type="button"
                                                         aria-label="Retention handler active on this file"
                                                         onClick={() => void updateActiveHandlerType(1)}
                                                         title="Retention handler active (Non-Active Cases)"
-                                                        className={`relative flex h-9 min-w-[3.25rem] flex-1 shrink-0 items-center justify-center rounded-full transition-all duration-300 ease-out ${
+                                                        className={`relative flex h-8 min-w-[3.25rem] flex-1 shrink-0 items-center justify-center rounded-full transition-all duration-300 ease-out ${
                                                             activeHandlerTypeForLead === 1
                                                                 ? 'bg-sky-50 shadow-sm ring-1 ring-sky-200 dark:bg-sky-900/25 dark:ring-sky-900/40'
                                                                 : 'bg-transparent hover:bg-base-100/70'
                                                         }`}
                                                     >
                                                         <RectangleStackIcon
-                                                            className={`h-4 w-4 shrink-0 transition-colors duration-300 ${
+                                                            className={`h-4 w-4 shrink-0 ${
                                                                 activeHandlerTypeForLead === 1
                                                                     ? 'text-sky-800 dark:text-sky-100'
-                                                                    : 'text-gray-500'
+                                                                    : 'text-base-content/45'
                                                             }`}
                                                             aria-hidden
                                                         />
-                                                        <span className="sr-only">Retention handler</span>
                                                     </button>
                                                 </div>
                                             </div>
-                                        )}
+                                        ) : null}
+                                        {assignedTeamPanelOpen && hiddenTeamCount > 0 ? (
+                                            <button
+                                                type="button"
+                                                className={TEAM_PANEL_MORE_BTN}
+                                                onClick={() => setAssignedTeamPanelOpen(false)}
+                                                aria-expanded
+                                            >
+                                                Show less
+                                            </button>
+                                        ) : null}
+                                    </>
+                                )}
+                            </div>
+                        );
+                    })()}
+                    </div>
+                    </div>
 
-                                        {hasRetentionRole && (
-                                            <div className="flex shrink-0 items-center gap-2">
-                                                <div
-                                                    className={`relative shrink-0 overflow-visible rounded-full p-0.5 transition-[box-shadow,opacity,ring-color] duration-500 ease-out ${
-                                                        activeHandlerTypeForLead === 1
-                                                            ? 'opacity-100 ring-2 ring-emerald-500 shadow-[0_0_14px_rgba(16,185,129,0.32)]'
-                                                            : 'opacity-80 ring-2 ring-transparent'
-                                                    }`}
-                                                >
-                                                    {activeHandlerTypeForLead === 1 && (
-                                                        <span
-                                                            key={handlerActiveRingNonce}
-                                                            className="pointer-events-none absolute inset-[-4px] z-0 rounded-full animate-handler-active-ring-flash"
-                                                            aria-hidden
-                                                        />
-                                                    )}
-                                                    <div className="relative z-[1]">
-                                                        <EmployeeAvatar employeeId={retentionHandlerId} size="md" />
-                                                    </div>
-                                                    {activeHandlerTypeForLead === 1 && (
-                                                        <div className="absolute -top-0.5 -right-0.5 z-[2] bg-emerald-500 rounded-full p-0.5 ring-2 ring-white transition-transform duration-300 ease-out">
-                                                            <CheckCircleIcon className="w-3 h-3 text-white" />
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                <div className="flex flex-col">
-                                                    <span className="whitespace-nowrap text-[10px] text-gray-400 uppercase tracking-wide font-medium">
-                                                        R-Handler
-                                                    </span>
-                                                    <span className="whitespace-nowrap text-sm font-medium text-gray-700">
-                                                        {formatRoleDisplay(retentionHandlerDisplay)}
-                                                    </span>
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                    )}
-                                </div>
+                    <div className="mt-2.5 flex w-full min-w-0 flex-wrap items-center gap-2">
+                        {renderClientMetaBadges()}
+                    </div>
 
-                                {/* Group 3: Quick Action Buttons (Right) */}
-                                <div className="hidden md:flex items-center gap-3 flex-wrap justify-end min-w-[200px]">
-                                    {isUnactivated ? (
+                    <div className="pointer-events-none absolute inset-x-0 top-full z-20 mt-2 hidden -translate-y-1 flex-wrap items-center gap-2 opacity-0 transition-all duration-200 before:pointer-events-none before:absolute before:inset-x-0 before:-top-2 before:h-2 before:content-[''] group-hover/header:pointer-events-auto group-hover/header:translate-y-0 group-hover/header:opacity-100 md:flex">
+                        <div className="pointer-events-auto shrink-0">
+                            {renderSegmentedHeaderActions()}
+                        </div>
+                                    <div className="pointer-events-auto flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
+                                    {(() => {
+                                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                                        const isUnactivated = isLegacy
+                                            ? selectedClient?.status === 10
+                                            : selectedClient?.status === 'inactive';
+                                        if (isUnactivated) {
+                                            return (
                                         <div className="px-4 py-2 text-sm text-gray-600">
                                             Please activate lead in actions first to see the stage buttons.
                                         </div>
-                                    ) : (
+                                            );
+                                        }
+                                        return (
                                         <>
                                             {/* Closed state check */}
                                             {selectedClient && (areStagesEquivalent(currentStageName, 'Case Closed') || (isStageNumeric && stageNumeric === 200)) ? (
@@ -4251,7 +3930,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                     >
                                                                         <DocumentCheckIcon className="w-5 h-5" />
                                                                         Sub efforts
-                                                                        <ChevronDownIcon className="w-4 h-4" />
+                                                                        <ChevronDownIcon className="w-5 h-5" />
                                                                     </button>
                                                                     <ul tabIndex={0} className="dropdown-content z-[330] menu p-2 shadow bg-base-100 rounded-box w-72">
                                                                         {(() => {
@@ -4497,16 +4176,754 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                 </>
                                             )}
                                         </>
+                                        );
+                                    })()}
+                                    </div>
+                    </div>
+                </div>
+
+                {/* Case inactive — centred banner under the header white box */}
+                {(() => {
+                    const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                    const isUnactivated = isLegacy ? (selectedClient?.status === 10) : (selectedClient?.status === 'inactive');
+                    if (!isUnactivated) return null;
+
+                    // Get unactivation reason
+                    let unactivationReason = selectedClient?.unactivation_reason;
+                    if (isLegacy && !unactivationReason) {
+                        const reasonId = (selectedClient as any)?.reason_id;
+                        if (reasonId) {
+                            const reasonFromId = getUnactivationReasonFromId(reasonId);
+                            if (reasonFromId) {
+                                unactivationReason = reasonFromId;
+                            }
+                        }
+                    }
+
+                    const deactivateNotes = String((selectedClient as any)?.deactivate_notes ?? '').trim();
+                    const notesNeedToggle = deactivateNotes.length > 72 || deactivateNotes.includes('\n');
+                    const notesIsRtl = /[\u0590-\u05FF]/.test(deactivateNotes);
+                    const unactivatedBy = selectedClient?.unactivated_by;
+                    const unactivatedEmployee = unactivatedBy ? getEmployeeById(unactivatedBy) : null;
+
+                    return (
+                        <div className="mt-2 w-full rounded-[18px] bg-red-50 px-4 py-3 text-red-800 shadow-sm dark:bg-red-900/20 dark:text-red-200">
+                            <div className="flex flex-col items-center gap-2 text-center">
+                                <span className="inline-flex items-center justify-center gap-2 text-lg font-semibold md:text-xl">
+                                    <NoSymbolIcon className="h-6 w-6 shrink-0 md:h-7 md:w-7" aria-hidden />
+                                    Case inactive
+                                    {unactivationReason && (
+                                        <span className="text-base font-normal md:text-lg">({unactivationReason})</span>
                                     )}
+                                </span>
+
+                                {deactivateNotes && (
+                                    <div className="w-full max-w-3xl">
+                                        <p
+                                            dir={notesIsRtl ? 'rtl' : 'ltr'}
+                                            className={`text-sm font-normal leading-relaxed text-red-900/80 dark:text-red-200/80 ${
+                                                notesIsRtl ? 'text-right' : 'text-center'
+                                            } ${!inactiveNotesExpanded && notesNeedToggle ? 'line-clamp-2' : ''}`}
+                                        >
+                                            {deactivateNotes}
+                                        </p>
+                                        {notesNeedToggle && (
+                                            <div className={`mt-2 flex ${notesIsRtl ? 'justify-end' : 'justify-center'}`}>
+                                                <button
+                                                    type="button"
+                                                    className="inline-flex items-center rounded-full bg-red-600/12 px-3.5 py-1 text-xs font-semibold text-red-800/85 transition-colors hover:bg-red-600/18 dark:bg-red-400/12 dark:text-red-200/90 dark:hover:bg-red-400/18"
+                                                    onClick={() => setInactiveNotesExpanded((expanded) => !expanded)}
+                                                >
+                                                    {inactiveNotesExpanded ? 'Show less' : 'Show more'}
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {(unactivatedBy || selectedClient?.unactivated_at) && (
+                                    <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-sm font-normal text-red-900/70 dark:text-red-200/70">
+                                        {unactivatedBy && (
+                                            <span className="inline-flex items-center gap-2">
+                                                <span>by</span>
+                                                {unactivatedEmployee ? (
+                                                    <EmployeeAvatar employeeId={unactivatedEmployee.id} size="sm" />
+                                                ) : (
+                                                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-red-200/80 text-xs font-semibold text-red-800 dark:bg-red-800/50 dark:text-red-100">
+                                                        {getEmployeeInitials(unactivatedBy)}
+                                                    </div>
+                                                )}
+                                                <span className="font-medium text-red-900/85 dark:text-red-100/90">
+                                                    {unactivatedBy}
+                                                </span>
+                                            </span>
+                                        )}
+                                        {selectedClient?.unactivated_at && (
+                                            <span>
+                                                at{' '}
+                                                {new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
+                                                    year: 'numeric',
+                                                    month: 'short',
+                                                    day: 'numeric',
+                                                    hour: '2-digit',
+                                                    minute: '2-digit',
+                                                })}
+                                            </span>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    );
+                })()}
+
+                {/* Stage Logic Buttons - Mobile: Below timeline/history/stage badge row (btn-md + text-base for tap targets) */}
+                <div className="mt-7 flex w-full flex-wrap items-center gap-4 md:hidden">
+                    {/* Check if case is unactivated - show message instead of buttons */}
+                    {(() => {
+                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                        const isUnactivated = isLegacy
+                            ? (selectedClient?.status === 10)
+                            : (selectedClient?.status === 'inactive');
+
+                        if (isUnactivated) {
+                            return (
+                                <div className="px-4 py-2 text-sm text-gray-600">
+                                    Please activate lead in actions first to see the stage buttons.
                                 </div>
+                            );
+                        }
+                        return null;
+                    })()}
+
+                    {/* Stage buttons - only show if case is activated */}
+                    {(() => {
+                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                        const isUnactivated = isLegacy
+                            ? (selectedClient?.status === 10)
+                            : (selectedClient?.status === 'inactive');
+
+                        if (isUnactivated) {
+                            return null; // Don't show any stage buttons if unactivated
+                        }
+
+                        // Closed state: sub-efforts sidebar handles stage 200 log; otherwise show "No action available"
+                        if (selectedClient && (areStagesEquivalent(currentStageName, 'Case Closed') || (isStageNumeric && stageNumeric === 200))) {
+                            if ((isStageNumeric && stageNumeric === 200) || Number((selectedClient as any)?.stage) === 200) {
+                                return null;
+                            }
+                            return (
+                                <div className="px-4 py-2 text-sm text-gray-600">
+                                    No action available
+                                </div>
+                            );
+                        }
+
+                        return (
+                            <>
+                                {/* Stage 105: no action buttons (advances via payments plan) */}
+                                {(areStagesEquivalent(currentStageName, 'Handler Set') ||
+                                    (isStageNumeric && stageNumeric === 105)) && shouldShowHandlerPaymentBanner(hasPaymentPlan, nextDuePayment) ? (
+                                    <div className="w-full flex justify-center">
+                                        {isMissingPaymentPlanBanner(hasPaymentPlan) ? (
+                                            <div className="w-full max-w-xl rounded-2xl border border-red-200/70 bg-red-50 px-4 py-3 text-red-900 shadow-sm">
+                                                <div className="flex items-center justify-between gap-3">
+                                                    <div className="flex items-center gap-2 text-sm font-semibold">
+                                                        <ExclamationTriangleIcon className="h-5 w-5" />
+                                                        Missing payment plan
+                                                    </div>
+                                                    <div className="text-xs text-red-800/80 whitespace-nowrap">
+                                                        Finances → payment plan
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="w-full max-w-xl rounded-2xl border border-amber-200/70 bg-amber-50 px-4 py-3 text-amber-900 shadow-sm">
+                                                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
+                                                    <div className="text-sm font-semibold">Next payment due</div>
+                                                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 sm:gap-3">
+                                                        <div className="text-sm tabular-nums text-right whitespace-nowrap">
+                                                        {(() => {
+                                                        const isLegacy = !!(nextDuePayment as any)?.isLegacy;
+                                                        const base = Number((nextDuePayment as any)?.value ?? 0);
+                                                        const vat = Number(
+                                                            isLegacy
+                                                                ? (nextDuePayment as any)?.vat_value ?? 0
+                                                                : (nextDuePayment as any)?.value_vat ?? 0
+                                                        );
+                                                        const gross =
+                                                            (Number.isFinite(base) ? base : 0) + (Number.isFinite(vat) ? vat : 0);
+                                                        const currency =
+                                                            (nextDuePayment as any)?.currency ??
+                                                            (nextDuePayment as any)?.accounting_currencies?.iso_code ??
+                                                            (nextDuePayment as any)?.accounting_currencies?.name ??
+                                                            '';
+                                                        const dateRaw =
+                                                            (nextDuePayment as any)?.due_date ?? (nextDuePayment as any)?.date ?? null;
+                                                        const dateLabel = dateRaw ? new Date(dateRaw).toLocaleDateString() : '—';
+                                                        const amountLabel = Number.isFinite(gross)
+                                                            ? gross.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                                                            : '0';
+                                                        return (
+                                                            <span>
+                                                                <span className="font-semibold">
+                                                                    {currency ? `${currency} ` : ''}
+                                                                    {amountLabel}
+                                                                </span>
+                                                                {' · '}
+                                                                <span className="opacity-80">{dateLabel}</span>
+                                                            </span>
+                                                        );
+                                                    })()}
+                                                        </div>
+                                                        {(() => {
+                                                            const isLegacy = !!(nextDuePayment as any)?.isLegacy;
+                                                            const ready =
+                                                                (nextDuePayment as any)?.ready_to_pay === true ||
+                                                                ((isLegacy && !!(nextDuePayment as any)?.due_date) ? true : false);
+                                                            if (!ready) return null;
+                                                            const by =
+                                                                (nextDuePayment as any)?.ready_to_pay_by_display_name ??
+                                                                (nextDuePayment as any)?.tenants_employee?.display_name ??
+                                                                (nextDuePayment as any)?.updated_by ??
+                                                                (nextDuePayment as any)?.paid_by ??
+                                                                '—';
+                                                            return (
+                                                                <div className="flex items-center justify-end gap-2 whitespace-nowrap">
+                                                                    <span className="btn btn-success btn-sm pointer-events-none gap-1.5 text-white rounded-full px-3">
+                                                                        <CheckCircleIcon className="h-4 w-4" />
+                                                                        Sent to finance
+                                                                    </span>
+                                                                    <span className="text-xs text-amber-800/80 whitespace-nowrap">
+                                                                        by <span className="font-semibold">{String(by)}</span>
+                                                                    </span>
+                                                                </div>
+                                                            );
+                                                        })()}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+                                ) : null}
+
+                                {/* Stages 60 / 70 / 100 / 105 / 110 / 150: sub-efforts; finalize only on 110 & 150 */}
+                                {subEffortsStageFlags.showPickerLogAndModal && (
+                                    <>
+                                        <div className="flex items-center justify-end gap-3 flex-wrap">
+                                            {(onMeetingScheduleClick || onMeetingRescheduleClick) && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        if (hasScheduledMeetings && onMeetingRescheduleClick) {
+                                                            onMeetingRescheduleClick();
+                                                        } else if (onMeetingScheduleClick) {
+                                                            onMeetingScheduleClick();
+                                                        }
+                                                    }}
+                                                    className={STAGE_ACTION_BTN_CLASS}
+                                                >
+                                                    {hasScheduledMeetings ? (
+                                                        <ArrowPathIcon className="w-5 h-5" />
+                                                    ) : (
+                                                        <CalendarDaysIcon className="w-5 h-5" />
+                                                    )}
+                                                    {hasScheduledMeetings ? 'Reschedule Meeting' : 'Schedule Meeting'}
+                                                </button>
+                                            )}
+                                            {subEffortsStageFlags.showFinalizeCaseWithSubEfforts && (
+                                                <button
+                                                    onClick={() => updateLeadStage(200)}
+                                                    className={STAGE_ACTION_BTN_CLASS}
+                                                >
+                                                    <CheckCircleIcon className="w-5 h-5" />
+                                                    Finalize Case
+                                                </button>
+                                            )}
+                                            <div className="dropdown dropdown-end">
+                                                <button
+                                                    type="button"
+                                                    className={STAGE_ACTION_BTN_CLASS}
+                                                    disabled={isLoadingSubEfforts || isSavingSubEffort}
+                                                >
+                                                    <DocumentCheckIcon className="w-5 h-5" />
+                                                    Sub efforts
+                                                    <ChevronDownIcon className="w-5 h-5" />
+                                                </button>
+                                                <ul tabIndex={0} className="dropdown-content z-[330] menu p-2 shadow bg-base-100 rounded-box w-72">
+                                                    {(() => {
+                                                        const usedActive = new Set(
+                                                            (leadSubEfforts || [])
+                                                                .filter((r: any) => (r as any)?.active !== false)
+                                                                .map((r: any) => Number((r as any)?.sub_effort_id ?? (r as any)?.sub_efforts?.id))
+                                                                .filter((n: any) => Number.isFinite(n))
+                                                        );
+                                                        const allOpts = (subEfforts.length > 0 ? subEfforts : [
+                                                            { id: 1, name: 'Aplication submitted' },
+                                                            { id: 2, name: 'Communication with client' },
+                                                        ]);
+                                                        const remaining = allOpts.filter(opt => !usedActive.has(Number(opt.id)));
+                                                        if (remaining.length === 0) {
+                                                            return (
+                                                                <li>
+                                                                    <span className="px-3 py-2 text-sm text-gray-500">
+                                                                        No more sub efforts
+                                                                    </span>
+                                                                </li>
+                                                            );
+                                                        }
+                                                        return remaining.map(opt => (
+                                                            <li key={opt.id}>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        void handleSelectSubEffort(opt);
+                                                                    }}
+                                                                    className="text-sm"
+                                                                >
+                                                                    {opt.name}
+                                                                </button>
+                                                            </li>
+                                                        ));
+                                                    })()}
+                                                </ul>
+                                            </div>
+                                        </div>
+                                    </>
+                                )}
+
+                                {/* Payment request sent Stage */}
+                                {areStagesEquivalent(currentStageName, 'payment_request_sent') && handlePaymentReceivedNewClient && (
+                                    <button
+                                        onClick={handlePaymentReceivedNewClient}
+                                        className={STAGE_ACTION_BTN_CLASS}
+                                    >
+                                        <CheckCircleIcon className="w-5 h-5" />
+                                        Payment Received - new Client !!!
+                                    </button>
+                                )}
+
+                                {/* Another meeting Stage - Check this first to avoid duplicates */}
+                                {areStagesEquivalent(currentStageName, 'another_meeting') && (
+                                    <>
+                                        {setShowRescheduleDrawer && (
+                                            <button
+                                                onClick={() => setShowRescheduleDrawer(true)}
+                                                className={STAGE_ACTION_BTN_CLASS}
+                                            >
+                                                <ArrowPathIcon className="w-5 h-5" />
+                                                Meeting ReScheduling
+                                            </button>
+                                        )}
+                                        {handleStageUpdate && (
+                                            <button
+                                                onClick={() => handleStageUpdate('Meeting Ended')}
+                                                className={STAGE_ACTION_BTN_CLASS}
+                                            >
+                                                <CheckCircleIcon className="w-5 h-5" />
+                                                Meeting Ended
+                                            </button>
+                                        )}
+                                    </>
+                                )}
+
+                                {/* Meeting scheduled / Meeting rescheduling Stages - Exclude another_meeting to avoid duplicates */}
+                                {!areStagesEquivalent(currentStageName, 'another_meeting') &&
+                                    (areStagesEquivalent(currentStageName, 'meeting_scheduled') ||
+                                        areStagesEquivalent(currentStageName, 'Meeting rescheduling') ||
+                                        (isStageNumeric && (stageNumeric === 55 || stageNumeric === 21))) && (
+                                        <>
+                                            {/* Schedule Meeting button - only for stage 55, not for "Meeting scheduled" or "Meeting rescheduled" */}
+                                            {!areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
+                                                !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
+                                                handleScheduleMenuClick &&
+                                                scheduleMenuLabel && (
+                                                    <button
+                                                        onClick={handleScheduleMenuClick}
+                                                        className={STAGE_ACTION_BTN_CLASS}
+                                                    >
+                                                        <CalendarDaysIcon className="w-5 h-5" />
+                                                        {scheduleMenuLabel}
+                                                    </button>
+                                                )}
+                                            {setShowRescheduleDrawer && (
+                                                <button
+                                                    onClick={() => setShowRescheduleDrawer(true)}
+                                                    className={STAGE_ACTION_BTN_CLASS}
+                                                >
+                                                    <ArrowPathIcon className="w-5 h-5" />
+                                                    Meeting ReScheduling
+                                                </button>
+                                            )}
+                                            {/* Meeting Ended - only show for stage 21 if there are upcoming meetings, and exclude another_meeting */}
+                                            {handleStageUpdate &&
+                                                !areStagesEquivalent(currentStageName, 'another_meeting') &&
+                                                (!(areStagesEquivalent(currentStageName, 'Meeting rescheduling') || (isStageNumeric && stageNumeric === 21)) || hasScheduledMeetings) && (
+                                                    <button
+                                                        onClick={() => handleStageUpdate('Meeting Ended')}
+                                                        className={STAGE_ACTION_BTN_CLASS}
+                                                    >
+                                                        <CheckCircleIcon className="w-5 h-5" />
+                                                        Meeting Ended
+                                                    </button>
+                                                )}
+                                        </>
+                                    )}
+
+                                {/* Waiting for meeting summary Stage */}
+                                {areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') && openSendOfferModal && (
+                                    <button
+                                        onClick={openSendOfferModal}
+                                        className={STAGE_ACTION_BTN_CLASS}
+                                    >
+                                        <DocumentCheckIcon className="w-5 h-5" />
+                                        Send Price Offer
+                                    </button>
+                                )}
+
+                                {/* Communication Started Stage */}
+                                {areStagesEquivalent(currentStageName, 'Communication started') && (
+                                    <>
+                                        {handleScheduleMenuClick && scheduleMenuLabel && (
+                                            <button
+                                                onClick={handleScheduleMenuClick}
+                                                className={STAGE_ACTION_BTN_CLASS}
+                                            >
+                                                <CalendarDaysIcon className="w-5 h-5" />
+                                                {scheduleMenuLabel}
+                                            </button>
+                                        )}
+                                        {handleStageUpdate && (
+                                            <button
+                                                onClick={() => handleStageUpdate('Communication Started')}
+                                                className={STAGE_ACTION_BTN_CLASS}
+                                            >
+                                                <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                                                {isStageNumeric && stageNumeric === 15 ? 'Scheduling Notes' : 'Communication Started'}
+                                            </button>
+                                        )}
+                                    </>
+                                )}
+
+                                {/* Meeting summary + Agreement sent Stage */}
+                                {areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') && (
+                                    <>
+                                        {handleScheduleMenuClick && scheduleMenuLabel && (
+                                            <button
+                                                onClick={handleScheduleMenuClick}
+                                                className={STAGE_ACTION_BTN_CLASS}
+                                            >
+                                                <CalendarDaysIcon className="w-5 h-5" />
+                                                {scheduleMenuLabel}
+                                            </button>
+                                        )}
+                                        {handleOpenSignedDrawer && (
+                                            <button
+                                                onClick={handleOpenSignedDrawer}
+                                                className={CLIENT_SIGNED_STAGE_BTN_CLASS}
+                                            >
+                                                <HandThumbUpIcon className="w-5 h-5" />
+                                                Client signed
+                                            </button>
+                                        )}
+                                        {handleOpenDeclinedDrawer && (
+                                            <button
+                                                onClick={handleOpenDeclinedDrawer}
+                                                className={CLIENT_DECLINED_STAGE_BTN_CLASS}
+                                            >
+                                                <HandThumbDownIcon className="w-5 h-5" />
+                                                Client declined
+                                            </button>
+                                        )}
+                                        {openSendOfferModal && (
+                                            <button
+                                                onClick={openSendOfferModal}
+                                                className={STAGE_ACTION_BTN_CLASS}
+                                            >
+                                                <PencilSquareIcon className="w-5 h-5" />
+                                                Revised price offer
+                                            </button>
+                                        )}
+                                    </>
+                                )}
+
+                                {/* Stage 60: no action buttons (handler assignment is required and auto-advances to "Handler Set") */}
+
+                                {/* General stages - Schedule Meeting and Communication Started */}
+                                {/* Only show for stages that haven't been handled by specific sections above */}
+                                {selectedClient &&
+                                    !areStagesEquivalent(currentStageName, 'Handler Set') &&
+                                    !areStagesEquivalent(currentStageName, 'Handler Started') &&
+                                    !areStagesEquivalent(currentStageName, 'Application submitted') &&
+                                    !areStagesEquivalent(currentStageName, 'payment_request_sent') &&
+                                    !areStagesEquivalent(currentStageName, 'another_meeting') &&
+                                    !areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
+                                    !areStagesEquivalent(currentStageName, 'Meeting rescheduling') &&
+                                    !areStagesEquivalent(currentStageName, 'waiting_for_mtng_sum') &&
+                                    !areStagesEquivalent(currentStageName, 'Communication started') &&
+                                    !areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent') &&
+                                    !areStagesEquivalent(currentStageName, 'Success') &&
+                                    !areStagesEquivalent(currentStageName, 'handler_assigned') &&
+                                    !areStagesEquivalent(currentStageName, 'client_signed') &&
+                                    !areStagesEquivalent(currentStageName, 'client signed agreement') &&
+                                    !areStagesEquivalent(currentStageName, 'Client signed agreement') &&
+                                    !((isStageNumeric && stageNumeric === 105) || Number((selectedClient as any)?.stage) === 105) &&
+                                    !(isStageNumeric && (stageNumeric === 21 || stageNumeric === 55)) && (
+                                        <>
+                                            {handleScheduleMenuClick && scheduleMenuLabel && (
+                                                <button
+                                                    onClick={handleScheduleMenuClick}
+                                                    className={STAGE_ACTION_BTN_CLASS}
+                                                >
+                                                    <CalendarDaysIcon className="w-5 h-5" />
+                                                    {scheduleMenuLabel}
+                                                </button>
+                                            )}
+                                            {handleStageUpdate && (
+                                                <button
+                                                    onClick={() => handleStageUpdate('Communication Started')}
+                                                    className={STAGE_ACTION_BTN_CLASS}
+                                                >
+                                                    <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                                                    Communication Started
+                                                </button>
+                                            )}
+                                        </>
+                                    )}
+                            </>
+                        );
+                    })()}
+                </div>
+
+                {/* Assign scheduler / handler — centered (compact width) */}
+                {dropdownsContent && (
+                    <div className="w-full pt-2">
+                        <div className="w-full max-w-md">
+                            {dropdownsContent}
+                        </div>
+                    </div>
+                )}
+
+                {/* Mobile: assigned team */}
+                <div className="mt-7 pt-6 md:hidden w-full px-1 sm:px-2">
+                    {(() => {
+                        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+
+                        const getCloserDisplay = (): string => {
+                            if (isLegacyLead) {
+                              const fromJoin = (selectedClient as any).closer;
+                              if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---') return String(fromJoin).trim();
+                              return getEmployeeDisplayNameFromId((selectedClient as any).closer_id);
+                            }
+                            const closer = selectedClient.closer;
+                            if (!closer || closer === '---' || closer === '--') return '---';
+                            if (/^\d+$/.test(String(closer).trim())) return getEmployeeDisplayNameFromId(Number(closer));
+                            const employee = allEmployees.find((emp: any) => emp.display_name && emp.display_name.trim() === String(closer).trim());
+                            return employee ? employee.display_name : closer;
+                        };
+
+                        const getExpertDisplay = (): string => {
+                            if (isLegacyLead) {
+                              const fromJoin = (selectedClient as any).expert;
+                              if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---') return String(fromJoin).trim();
+                              return getEmployeeDisplayNameFromId((selectedClient as any).expert_id);
+                            }
+                            return getEmployeeDisplayNameFromId((selectedClient as any).expert) || '---';
+                        };
+
+                        const getHandlerDisplay = (): string => {
+                            if (isLegacyLead) {
+                                const fromJoin = (selectedClient as any).handler;
+                                if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---' && String(fromJoin).toLowerCase() !== 'not assigned') return String(fromJoin).trim();
+                                const handlerId = (selectedClient as any).case_handler_id;
+                                if (handlerId) return getEmployeeDisplayNameFromId(handlerId) || '---';
+                                return '---';
+                            }
+                            if ((selectedClient as any).case_handler_id) {
+                                const handlerId = (selectedClient as any).case_handler_id;
+                                return getEmployeeDisplayNameFromId(handlerId) || '---';
+                            }
+                            const handlerValue = (selectedClient as any).handler;
+                            if (!handlerValue || handlerValue === '---' || handlerValue === '--') return '---';
+                            if (typeof handlerValue === 'number' || (typeof handlerValue === 'string' && !isNaN(Number(handlerValue)) && handlerValue.toString().trim() !== '')) {
+                                return getEmployeeDisplayNameFromId(handlerValue) || '---';
+                            }
+                            return handlerValue || '---';
+                        };
+
+                        const getSchedulerDisplay = (): string => {
+                            if (isLegacyLead) {
+                              const fromJoin = (selectedClient as any).scheduler;
+                              if (fromJoin && String(fromJoin).trim() && String(fromJoin).trim() !== '---') return String(fromJoin).trim();
+                              return getEmployeeDisplayNameFromId((selectedClient as any).meeting_scheduler_id);
+                            }
+                            return selectedClient.scheduler || '---';
+                        };
+
+                        const resolveNumericEmployeeId = (value: unknown): number | null => {
+                            if (value == null || value === '' || value === '---' || value === '--') return null;
+                            if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+                            const s = String(value).trim();
+                            if (!s) return null;
+                            if (/^\d+$/.test(s)) {
+                                const n = Number(s);
+                                return Number.isFinite(n) && n > 0 ? n : null;
+                            }
+                            const emp = allEmployees.find((e: any) =>
+                                e?.display_name && e.display_name.trim().toLowerCase() === s.toLowerCase()
+                            );
+                            if (emp?.id == null) return null;
+                            const n = typeof emp.id === 'bigint' ? Number(emp.id) : Number(emp.id);
+                            return Number.isFinite(n) && n > 0 ? n : null;
+                        };
+
+                        const closerId = (() => {
+                            if (isLegacyLead) return (selectedClient as any).closer_id ? Number((selectedClient as any).closer_id) : null;
+                            return resolveNumericEmployeeId(selectedClient.closer);
+                        })();
+                        const expertId = (() => {
+                            if (isLegacyLead) return (selectedClient as any).expert_id ? Number((selectedClient as any).expert_id) : null;
+                            const expertId = (selectedClient as any).expert;
+                            return expertId ? Number(expertId) : null;
+                        })();
+                        const handlerId = (() => {
+                            const ch = (selectedClient as any).case_handler_id;
+                            if (ch != null && String(ch).trim() !== '') {
+                                const n = Number(ch);
+                                return Number.isFinite(n) && n > 0 ? n : null;
+                            }
+                            if (isLegacyLead) return null;
+                            return resolveNumericEmployeeId((selectedClient as any).handler);
+                        })();
+                        const schedulerId = (() => {
+                            if (isLegacyLead) return (selectedClient as any).meeting_scheduler_id ? Number((selectedClient as any).meeting_scheduler_id) : null;
+                            return resolveNumericEmployeeId(selectedClient.scheduler);
+                        })();
+                        const retentionHandlerId = (selectedClient as any).retainer_handler_id ? Number((selectedClient as any).retainer_handler_id) : null;
+
+                        const closerDisplay = getCloserDisplay();
+                        const expertDisplay = getExpertDisplay();
+                        const handlerDisplay = getHandlerDisplay();
+                        const schedulerDisplay = getSchedulerDisplay();
+                        const retentionHandlerDisplay = getEmployeeDisplayNameFromId(retentionHandlerId);
+
+                        const isRoleEmpty = (id: any, display: string) => {
+                            const displayLower = display ? display.toLowerCase().trim() : '';
+                            const isNotAssigned = displayLower.includes('not_assigned') || displayLower.includes('not assigned') || displayLower === 'not assigned' || displayLower === 'unassigned';
+                            if (!id && (!display || display === '---' || display === '--' || isNotAssigned)) return true;
+                            if (id && isNotAssigned) return true;
+                            return false;
+                        };
+
+                        const isUnactivated = isLegacyLead
+                            ? (selectedClient?.status === 10)
+                            : (selectedClient?.status === 'inactive');
+
+                        const activeHandlerTypeForLead = Number((selectedClient as any).active_handler_type) === 1 ? 1 : 2;
+                        const hasHandlerRole = !isRoleEmpty(handlerId, handlerDisplay);
+                        const hasRetentionRole = !isRoleEmpty(retentionHandlerId, retentionHandlerDisplay);
+                        const showDualHandlerToggle = hasHandlerRole && hasRetentionRole && !isUnactivated;
+
+                        const roleGroups = new Map<string, { id: string | number | null; roles: string[]; display: string }>();
+                        if (!isRoleEmpty(closerId, closerDisplay)) {
+                            const key = closerId ? closerId.toString() : closerDisplay;
+                            if (!roleGroups.has(key)) roleGroups.set(key, { id: closerId, roles: [], display: closerDisplay });
+                            roleGroups.get(key)!.roles.push('Closer');
+                        }
+                        if (!isRoleEmpty(expertId, expertDisplay)) {
+                            const key = expertId ? expertId.toString() : expertDisplay;
+                            if (!roleGroups.has(key)) roleGroups.set(key, { id: expertId, roles: [], display: expertDisplay });
+                            roleGroups.get(key)!.roles.push('Expert');
+                        }
+                        if (!isRoleEmpty(schedulerId, schedulerDisplay)) {
+                            const key = schedulerId ? schedulerId.toString() : schedulerDisplay;
+                            if (!roleGroups.has(key)) roleGroups.set(key, { id: schedulerId, roles: [], display: schedulerDisplay });
+                            roleGroups.get(key)!.roles.push('Scheduler');
+                        }
+
+                        return (
+                            <div className="flex w-full flex-col gap-2">
+                                {Array.from(roleGroups.values()).map((group, index) => (
+                                    <div
+                                        key={index}
+                                        className={`${CLIENT_HEADER_CARD} flex w-full flex-col justify-center`}
+                                    >
+                                        <div className="flex shrink-0 items-center gap-2">
+                                            <EmployeeAvatar employeeId={group.id} size="md" />
+                                            <div className="flex flex-col">
+                                                <span className={`whitespace-nowrap ${TEAM_ROLE_LABEL}`}>
+                                                    {group.roles.join(', ')}
+                                                </span>
+                                                <span className="whitespace-nowrap text-sm font-semibold text-base-content/85">
+                                                    {formatRoleDisplay(group.display)}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                                {hasHandlerRole ? (
+                                    <div className={`${CLIENT_HEADER_CARD} flex w-full flex-col justify-center`}>
+                                        <div className="flex shrink-0 items-center gap-2">
+                                            <EmployeeAvatar employeeId={handlerId} size="md" />
+                                            <div className="flex flex-col">
+                                                <span className={`whitespace-nowrap ${TEAM_ROLE_LABEL}`}>Handler</span>
+                                                <span className="whitespace-nowrap text-sm font-semibold text-base-content/85">
+                                                    {formatRoleDisplay(handlerDisplay)}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : null}
+                                {hasRetentionRole ? (
+                                    <div className={`${CLIENT_HEADER_CARD} flex w-full flex-col justify-center`}>
+                                        <div className="flex shrink-0 items-center gap-2">
+                                            <EmployeeAvatar employeeId={retentionHandlerId} size="md" />
+                                            <div className="flex flex-col">
+                                                <span className={`whitespace-nowrap ${TEAM_ROLE_LABEL}`}>R-Handler</span>
+                                                <span className="whitespace-nowrap text-sm font-semibold text-base-content/85">
+                                                    {formatRoleDisplay(retentionHandlerDisplay)}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : null}
                             </div>
                         );
                     })()}
                 </div>
 
+                    </div>
+                </div>
 
                 {/* Category Edit Modal */}
                 <MobileBottomSheet
+                    open={moreActionsSheetOpen}
+                    onClose={closeMoreActionsSheet}
+                    title="Actions"
+                    subtitle={
+                        selectedClient?.name
+                            ? `${selectedClient.name}${selectedClient?.lead_number ? ` · #${selectedClient.lead_number}` : ''}`
+                            : undefined
+                    }
+                    desktopLayout="drawer-right"
+                    zIndex={330}
+                    sheetClassName="md:max-w-[min(100%,22rem)] md:shadow-2xl"
+                    contentClassName="!px-4 !pb-6 bg-base-200/25 dark:bg-base-300/10"
+                    overlayClassName="backdrop-blur-[1px]"
+                >
+                    <div
+                        onClick={(e) => {
+                            const target = e.target as HTMLElement;
+                            if (target.closest('button, a, [role="button"]')) {
+                                closeMoreActionsSheet();
+                            }
+                        }}
+                    >
+                        {moreActionsMenuItems}
+                    </div>
+                </MobileBottomSheet>
+
+                <EditFieldModal
                     open={showCategoryModal}
                     onClose={() => {
                         setShowCategoryModal(false);
@@ -4514,76 +4931,54 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         setCategoryInputValue('');
                     }}
                     title="Edit Category"
-                    zIndex={330}
-                    sheetClassName="md:max-w-md"
-                    footer={
-                        <div className="flex w-full gap-2">
-                            <button
-                                type="button"
-                                className="btn btn-ghost flex-1 max-md:min-h-12"
-                                onClick={() => {
-                                    setShowCategoryModal(false);
-                                    setShowCategoryDropdown(false);
-                                    setCategoryInputValue('');
-                                }}
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                type="button"
-                                className="btn btn-primary flex-1 max-md:min-h-12"
-                                onClick={async () => {
-                                    await handleSaveCategory();
-                                    setShowCategoryModal(false);
-                                    setShowCategoryDropdown(false);
-                                    setCategoryInputValue('');
-                                }}
-                            >
-                                Save
-                            </button>
-                        </div>
-                    }
+                    subtitle={selectedClient?.name}
+                    onSave={async () => {
+                        await handleSaveCategory();
+                        setShowCategoryModal(false);
+                        setShowCategoryDropdown(false);
+                        setCategoryInputValue('');
+                    }}
                 >
-                            <div>
-                                <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Category</label>
-                                <input
-                                    autoFocus
-                                    type="text"
-                                    className="input input-bordered w-full"
-                                    placeholder="Search categories..."
-                                    value={categoryInputValue}
-                                    onChange={e => {
-                                        const v = e.target.value;
-                                        setCategoryInputValue(v);
-                                        setShowCategoryDropdown(v.trim().length > 0);
-                                    }}
-                                    onFocus={() => setShowCategoryDropdown(categoryInputValue.trim().length > 0)}
-                                />
-                                {showCategoryDropdown && filteredCategories.length > 0 && (
-                                    <div className="mt-2 max-h-60 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 shadow-lg">
-                                        {filteredCategories.slice(0, 20).map((cat: any) => {
-                                            const displayName = cat.misc_maincategory?.name
-                                                ? `${cat.name} (${cat.misc_maincategory.name})`
-                                                : cat.name;
-                                            return (
-                                                <div
-                                                    key={cat.id}
-                                                    className="px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer text-sm"
-                                                    onClick={() => {
-                                                        setCategoryInputValue(displayName);
-                                                        setShowCategoryDropdown(false);
-                                                    }}
-                                                >
-                                                    {displayName}
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                )}
+                    <div>
+                        <EditFieldLabel>Category</EditFieldLabel>
+                        <input
+                            autoFocus
+                            type="text"
+                            className={EDIT_FIELD_INPUT}
+                            placeholder="Search categories..."
+                            value={categoryInputValue}
+                            onChange={(e) => {
+                                const v = e.target.value;
+                                setCategoryInputValue(v);
+                                setShowCategoryDropdown(v.trim().length > 0);
+                            }}
+                            onFocus={() => setShowCategoryDropdown(categoryInputValue.trim().length > 0)}
+                        />
+                        {showCategoryDropdown && filteredCategories.length > 0 && (
+                            <div className={EDIT_FIELD_DROPDOWN}>
+                                {filteredCategories.slice(0, 20).map((cat: any) => {
+                                    const displayName = cat.misc_maincategory?.name
+                                        ? `${cat.name} (${cat.misc_maincategory.name})`
+                                        : cat.name;
+                                    return (
+                                        <div
+                                            key={cat.id}
+                                            className={EDIT_FIELD_DROPDOWN_ITEM}
+                                            onClick={() => {
+                                                setCategoryInputValue(displayName);
+                                                setShowCategoryDropdown(false);
+                                            }}
+                                        >
+                                            {displayName}
+                                        </div>
+                                    );
+                                })}
                             </div>
-                </MobileBottomSheet>
+                        )}
+                    </div>
+                </EditFieldModal>
 
-                <MobileBottomSheet
+                <EditFieldModal
                     open={showLanguageModal}
                     onClose={() => {
                         setShowLanguageModal(false);
@@ -4591,116 +4986,67 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         setLanguageInputValue('');
                     }}
                     title="Edit Language"
-                    zIndex={330}
-                    sheetClassName="md:max-w-md"
-                    footer={
-                        <div className="flex w-full gap-2">
-                            <button
-                                type="button"
-                                className="btn btn-ghost flex-1 max-md:min-h-12"
-                                disabled={savingLanguage}
-                                onClick={() => {
-                                    setShowLanguageModal(false);
-                                    setShowLanguageDropdown(false);
-                                    setLanguageInputValue('');
-                                }}
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                type="button"
-                                className="btn btn-primary flex-1 max-md:min-h-12"
-                                disabled={savingLanguage}
-                                onClick={() => void handleSaveLanguage()}
-                            >
-                                {savingLanguage ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
-                            </button>
-                        </div>
-                    }
+                    subtitle={selectedClient?.name}
+                    saving={savingLanguage}
+                    onSave={() => void handleSaveLanguage()}
                 >
-                            <div>
-                                <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
-                                    Language
-                                </label>
-                                <input
-                                    autoFocus
-                                    type="text"
-                                    className="input input-bordered w-full"
-                                    placeholder="Search languages..."
-                                    value={languageInputValue}
-                                    onChange={(e) => {
-                                        const v = e.target.value;
-                                        setLanguageInputValue(v);
-                                        setShowLanguageDropdown(v.trim().length > 0);
-                                    }}
-                                    onFocus={() => setShowLanguageDropdown(languageInputValue.trim().length > 0)}
-                                />
-                                {showLanguageDropdown && filteredLanguages.length > 0 && (
-                                    <div className="mt-2 max-h-60 overflow-y-auto border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 shadow-lg">
-                                        {filteredLanguages.slice(0, 20).map((lang) => (
-                                            <div
-                                                key={String(lang.id)}
-                                                className="px-4 py-2 hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer text-sm"
-                                                onClick={() => {
-                                                    setLanguageInputValue(lang.name);
-                                                    setShowLanguageDropdown(false);
-                                                }}
-                                            >
-                                                {lang.name}
-                                            </div>
-                                        ))}
+                    <div>
+                        <EditFieldLabel>Language</EditFieldLabel>
+                        <input
+                            autoFocus
+                            type="text"
+                            className={EDIT_FIELD_INPUT}
+                            placeholder="Search languages..."
+                            value={languageInputValue}
+                            onChange={(e) => {
+                                const v = e.target.value;
+                                setLanguageInputValue(v);
+                                setShowLanguageDropdown(v.trim().length > 0);
+                            }}
+                            onFocus={() => setShowLanguageDropdown(languageInputValue.trim().length > 0)}
+                        />
+                        {showLanguageDropdown && filteredLanguages.length > 0 && (
+                            <div className={EDIT_FIELD_DROPDOWN}>
+                                {filteredLanguages.slice(0, 20).map((lang) => (
+                                    <div
+                                        key={String(lang.id)}
+                                        className={EDIT_FIELD_DROPDOWN_ITEM}
+                                        onClick={() => {
+                                            setLanguageInputValue(lang.name);
+                                            setShowLanguageDropdown(false);
+                                        }}
+                                    >
+                                        {lang.name}
                                     </div>
-                                )}
+                                ))}
                             </div>
-                </MobileBottomSheet>
+                        )}
+                    </div>
+                </EditFieldModal>
 
-                <MobileBottomSheet
+                <EditFieldModal
                     open={showTopicModal}
                     onClose={() => {
                         setShowTopicModal(false);
                         setTopicInputValue('');
                     }}
                     title="Edit Topic"
-                    zIndex={330}
-                    sheetClassName="md:max-w-md"
-                    footer={
-                        <div className="flex w-full gap-2">
-                            <button
-                                type="button"
-                                className="btn btn-ghost flex-1 max-md:min-h-12"
-                                disabled={savingTopic}
-                                onClick={() => {
-                                    setShowTopicModal(false);
-                                    setTopicInputValue('');
-                                }}
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                type="button"
-                                className="btn btn-primary flex-1 max-md:min-h-12"
-                                disabled={savingTopic}
-                                onClick={() => void handleSaveTopic()}
-                            >
-                                {savingTopic ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
-                            </button>
-                        </div>
-                    }
+                    subtitle={selectedClient?.name}
+                    saving={savingTopic}
+                    onSave={() => void handleSaveTopic()}
                 >
-                            <div>
-                                <label className="block text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">
-                                    Topic
-                                </label>
-                                <input
-                                    autoFocus
-                                    type="text"
-                                    className="input input-bordered w-full"
-                                    placeholder="Topic (optional)"
-                                    value={topicInputValue}
-                                    onChange={(e) => setTopicInputValue(e.target.value)}
-                                />
-                            </div>
-                </MobileBottomSheet>
+                    <div>
+                        <EditFieldLabel>Topic</EditFieldLabel>
+                        <input
+                            autoFocus
+                            type="text"
+                            className={EDIT_FIELD_INPUT}
+                            placeholder="Topic (optional)"
+                            value={topicInputValue}
+                            onChange={(e) => setTopicInputValue(e.target.value)}
+                        />
+                    </div>
+                </EditFieldModal>
 
                 {/* Call Options Modal */}
                 <CallOptionsModal

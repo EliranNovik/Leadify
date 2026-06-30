@@ -1,6 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { XMarkIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import {
   clockInSessionToFormValues,
@@ -10,6 +8,8 @@ import {
 import { formatClockTime } from '../../lib/employeeClockInFormat';
 import { unavailabilityDateLabel } from '../../lib/employeeUnavailabilities';
 import type { ClockInDaySession } from './ClockInDayEditModal';
+import ProfileBottomSheetModal from './ProfileBottomSheetModal';
+import { ModalActionFooter } from '../EditFieldModal';
 
 interface ClockInDayNotesModalProps {
   isOpen: boolean;
@@ -36,8 +36,6 @@ const ClockInDayNotesModal: React.FC<ClockInDayNotesModalProps> = ({
     setFormRows(sessions.map((s) => clockInSessionToFormValues(s)));
   }, [isOpen, sessions]);
 
-  if (!isOpen || typeof window === 'undefined') return null;
-
   const updateNotes = (id: number, notes: string) => {
     setFormRows((prev) =>
       prev.map((row) => (row.id === id ? { ...row, notes } : row)),
@@ -61,75 +59,67 @@ const ClockInDayNotesModal: React.FC<ClockInDayNotesModalProps> = ({
     }
   };
 
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-base-200">
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900">Notes</h3>
-            <p className="text-sm text-gray-500 mt-0.5">{unavailabilityDateLabel(dateKey)}</p>
-          </div>
-          <button type="button" className="btn btn-ghost btn-sm btn-circle" onClick={onClose}>
-            <XMarkIcon className="w-5 h-5" />
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
-          {formRows.map((row, index) => {
-            const session = sessions.find((s) => s.id === row.id);
-            const clockInLabel = session ? formatClockTime(session.clock_in_time) : '';
-            const clockOutLabel = session?.clock_out_time
-              ? formatClockTime(session.clock_out_time)
-              : 'Active';
-
-            return (
-              <label key={row.id} className="form-control w-full">
-                <span className="label-text font-medium mb-1.5">
-                  {formRows.length > 1
-                    ? `Session ${index + 1} (${clockInLabel} – ${clockOutLabel})`
-                    : 'Note'}
-                </span>
-                {readOnly ? (
-                  <div className="rounded-xl border border-base-200 bg-base-50 px-4 py-3 text-base text-gray-700 whitespace-pre-wrap min-h-[4.5rem]">
-                    {row.notes?.trim() || '—'}
-                  </div>
-                ) : (
-                  <textarea
-                    className="textarea textarea-bordered w-full min-h-[6rem] text-base"
-                    value={row.notes ?? ''}
-                    onChange={(e) => updateNotes(row.id, e.target.value)}
-                    placeholder="Add a note…"
-                  />
-                )}
-              </label>
-            );
-          })}
-        </div>
-
-        <div className="flex justify-end gap-2 px-5 py-4 border-t border-base-200">
-          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>
-            {readOnly ? 'Close' : 'Cancel'}
-          </button>
-          {!readOnly && (
+  return (
+    <ProfileBottomSheetModal
+      open={isOpen}
+      onClose={onClose}
+      title="Notes"
+      subtitle={unavailabilityDateLabel(dateKey)}
+      footer={
+        readOnly ? (
+          <div className="flex w-full">
             <button
               type="button"
-              className="btn btn-primary"
-              onClick={() => void handleSave()}
-              disabled={saving || formRows.length === 0}
+              className="btn btn-primary flex-1 max-md:min-h-12"
+              onClick={onClose}
             >
-              {saving ? 'Saving…' : 'Save notes'}
+              Close
             </button>
-          )}
-        </div>
+          </div>
+        ) : (
+          <ModalActionFooter
+            onCancel={onClose}
+            onConfirm={() => void handleSave()}
+            saving={saving}
+            disabled={formRows.length === 0}
+            cancelLabel="Cancel"
+            confirmLabel="Save notes"
+          />
+        )
+      }
+    >
+      <div className="space-y-4">
+        {formRows.map((row, index) => {
+          const session = sessions.find((s) => s.id === row.id);
+          const clockInLabel = session ? formatClockTime(session.clock_in_time) : '';
+          const clockOutLabel = session?.clock_out_time
+            ? formatClockTime(session.clock_out_time)
+            : 'Active';
+
+          return (
+            <label key={row.id} className="form-control w-full">
+              <span className="label-text font-medium mb-1.5">
+                {formRows.length > 1
+                  ? `Session ${index + 1} (${clockInLabel} – ${clockOutLabel})`
+                  : 'Note'}
+              </span>
+              {readOnly ? (
+                <div className="rounded-xl border border-base-200 bg-base-50 px-4 py-3 text-base text-gray-700 whitespace-pre-wrap min-h-[4.5rem]">
+                  {row.notes?.trim() || '—'}
+                </div>
+              ) : (
+                <textarea
+                  className="textarea textarea-bordered w-full min-h-[6rem] text-base"
+                  value={row.notes ?? ''}
+                  onChange={(e) => updateNotes(row.id, e.target.value)}
+                  placeholder="Add a note…"
+                />
+              )}
+            </label>
+          );
+        })}
       </div>
-    </div>,
-    document.body,
+    </ProfileBottomSheetModal>
   );
 };
 

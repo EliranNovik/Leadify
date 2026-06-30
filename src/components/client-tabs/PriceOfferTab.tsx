@@ -3,6 +3,7 @@ import { ClientTabProps } from '../../types/client';
 import { CurrencyDollarIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useRealtimeRefresh';
+import { ClientTabPageHeader } from './ClientTabPageHeader';
 
 interface PriceOfferHistoryEntry {
   id: string;
@@ -367,15 +368,12 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
 
   return (
     <div className="p-2 sm:p-4 md:p-8">
-      <div className="flex items-center gap-3 mb-6">
-        <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center">
-          <CurrencyDollarIcon className="w-5 h-5 text-gray-600" />
-        </div>
-        <div>
-          <h2 className="text-xl font-semibold text-gray-900">Price Offer</h2>
-          <p className="text-sm text-gray-500">Manage pricing and proposals</p>
-        </div>
-      </div>
+      <ClientTabPageHeader
+        className="mb-6"
+        icon={CurrencyDollarIcon}
+        title="Price Offer"
+        subtitle="Manage pricing and proposals"
+      />
       <div className="text-lg mb-4 text-base-content/80 flex flex-col gap-1">
         <span>
           <span className="font-semibold">Closer:</span> {displayCloser}

@@ -191,6 +191,11 @@ const AppContentInner: React.FC = () => {
   const [rmqInitialScrollToMessageId, setRmqInitialScrollToMessageId] = useState<number | undefined>();
   const [selectedClient, setSelectedClient] = useState<any>(null);
 
+  const isClientDetailPage = useMemo(
+    () => isClientsPage && !!selectedClient,
+    [isClientsPage, selectedClient],
+  );
+
   // Clear selectedClient when navigating away from Clients page to prevent flash of stale client data
   useEffect(() => {
     if (!isClientsRoute && selectedClient) {
@@ -956,7 +961,7 @@ const AppContentInner: React.FC = () => {
                     isCalendarPage
                       ? 'max-md:overflow-x-hidden max-md:overflow-y-auto md:overflow-hidden md:flex md:flex-col'
                       : 'overflow-y-auto overflow-x-hidden md:overflow-x-auto'
-                  } pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14 ${showBottomNav ? 'main-with-bottom-nav-padding' : ''} ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : ''}`}
+                  } ${isClientDetailPage ? 'clients-detail-scroll scrollbar-hide' : `pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14 ${isClientsPage ? 'scrollbar-hide' : ''}`} ${showBottomNav ? 'main-with-bottom-nav-padding' : ''} ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : ''}`}
                 >
                   <Routes>
                     <Route path="/" element={<HomeEntryPage />} />

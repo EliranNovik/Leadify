@@ -1,6 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { XMarkIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { fetchActiveClockInLocations, type ClockInLocationOption } from '../../lib/clockInLocations';
 import {
@@ -13,6 +11,7 @@ import { getHolidayWarningsForDates } from '../../lib/israeliJewishHolidays';
 import type { HolidayDateWarning } from '../../lib/israeliJewishHolidays';
 import HolidayEntryWarningModal from './HolidayEntryWarningModal';
 import HolidayDateNote from './HolidayDateNote';
+import ProfileBottomSheetModal from './ProfileBottomSheetModal';
 
 export type ClockInDaySession = {
   id: number;
@@ -53,8 +52,6 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
     void fetchActiveClockInLocations().then(setWorkplaces);
   }, [isOpen, sessions]);
 
-  if (!isOpen || typeof window === 'undefined') return null;
-
   const updateRow = (id: number, patch: Partial<SessionFormRow>) => {
     setFormRows((prev) =>
       prev.map((row) => (row.id === id ? { ...row, ...patch } : row)),
@@ -66,7 +63,15 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
 
     setSaving(true);
     try {
-      await updateClockInSessions(formRows);
+      const rowsToSave = formRows.map((row) => {
+        const locationId = row.clockInLocationId ?? row.clockOutLocationId ?? null;
+        return {
+          ...row,
+          clockInLocationId: locationId,
+          clockOutLocationId: locationId,
+        };
+      });
+      await updateClockInSessions(rowsToSave);
       toast.success('Clock-in entries updated');
       onSaved();
       onClose();
@@ -95,23 +100,16 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
 
   return (
     <>
-    {createPortal(
-    <div
-      className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
+      <ProfileBottomSheetModal
+        open={isOpen}
+        onClose={onClose}
+        title="Edit clock-in / out"
+        onSave={() => void handleSave()}
+        saving={saving}
+        saveDisabled={formRows.length === 0}
+        mobileFullHeight
       >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-base-200">
-          <h3 className="text-lg font-semibold text-gray-900">Edit clock-in / out</h3>
-          <button type="button" className="btn btn-ghost btn-sm btn-circle" onClick={onClose}>
-            <XMarkIcon className="w-5 h-5" />
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
+        <div className="space-y-4">
           <label className="form-control w-full">
             <span className="label-text font-medium mb-1">Date</span>
             <input
@@ -164,44 +162,26 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
                 </div>
 
                 {workplaces.length > 0 && (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <label className="form-control w-full">
-                      <span className="label-text font-medium mb-1">Workplace (in)</span>
-                      <select
-                        className="select select-bordered w-full"
-                        value={row.clockInLocationId ?? ''}
-                        onChange={(e) =>
-                          updateRow(row.id, {
-                            clockInLocationId: e.target.value ? Number(e.target.value) : null,
-                          })
-                        }
-                        disabled={saving}
-                      >
-                        <option value="">—</option>
-                        {workplaces.map((wp) => (
-                          <option key={wp.id} value={wp.id}>{wp.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="form-control w-full">
-                      <span className="label-text font-medium mb-1">Workplace (out)</span>
-                      <select
-                        className="select select-bordered w-full"
-                        value={row.clockOutLocationId ?? ''}
-                        onChange={(e) =>
-                          updateRow(row.id, {
-                            clockOutLocationId: e.target.value ? Number(e.target.value) : null,
-                          })
-                        }
-                        disabled={saving}
-                      >
-                        <option value="">—</option>
-                        {workplaces.map((wp) => (
-                          <option key={wp.id} value={wp.id}>{wp.name}</option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
+                  <label className="form-control w-full">
+                    <span className="label-text font-medium mb-1">Workplace</span>
+                    <select
+                      className="select select-bordered w-full"
+                      value={row.clockInLocationId ?? row.clockOutLocationId ?? ''}
+                      onChange={(e) => {
+                        const id = e.target.value ? Number(e.target.value) : null;
+                        updateRow(row.id, {
+                          clockInLocationId: id,
+                          clockOutLocationId: id,
+                        });
+                      }}
+                      disabled={saving}
+                    >
+                      <option value="">—</option>
+                      {workplaces.map((wp) => (
+                        <option key={wp.id} value={wp.id}>{wp.name}</option>
+                      ))}
+                    </select>
+                  </label>
                 )}
 
                 <label className="form-control w-full">
@@ -217,34 +197,17 @@ const ClockInDayEditModal: React.FC<ClockInDayEditModalProps> = ({
             ))}
           </div>
         </div>
-
-        <div className="flex justify-end gap-2 px-5 py-4 border-t border-base-200">
-          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => void handleSave()}
-            disabled={saving || formRows.length === 0}
-          >
-            {saving ? <span className="loading loading-spinner loading-sm" /> : 'Save'}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body,
-    )}
-    <HolidayEntryWarningModal
-      isOpen={showHolidayWarning}
-      warnings={holidayWarnings}
-      onCancel={() => setShowHolidayWarning(false)}
-      onContinue={() => {
-        setShowHolidayWarning(false);
-        void performSave();
-      }}
-      continuing={saving}
-    />
+      </ProfileBottomSheetModal>
+      <HolidayEntryWarningModal
+        isOpen={showHolidayWarning}
+        warnings={holidayWarnings}
+        onCancel={() => setShowHolidayWarning(false)}
+        onContinue={() => {
+          setShowHolidayWarning(false);
+          void performSave();
+        }}
+        continuing={saving}
+      />
     </>
   );
 };

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { BanknotesIcon, PencilIcon, TrashIcon, XMarkIcon, Squares2X2Icon, Bars3Icon, CurrencyDollarIcon, UserIcon, MinusIcon, CheckIcon, LinkIcon, ClipboardDocumentIcon, ArrowUturnLeftIcon, ExclamationTriangleIcon, PaperAirplaneIcon, ChevronDownIcon, ClockIcon, EllipsisVerticalIcon } from '@heroicons/react/24/outline';
+import { ClientTabPageHeader } from './ClientTabPageHeader';
 import {
   fetchContactPaymentHistory,
   insertPaymentLinkRecord,
@@ -5152,6 +5153,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   if (!financePlan) {
     return (
       <>
+        <div className="p-2 sm:p-4 md:p-6">
+          <ClientTabPageHeader
+            icon={BanknotesIcon}
+            title="Finances"
+            subtitle="Payment plans and collections"
+          />
+        </div>
         <div className="flex flex-col items-center justify-center h-64 text-center">
           <BanknotesIcon className="w-16 h-16 text-primary mb-4" />
           <div className="text-2xl font-bold text-gray-800 mb-2">No finance plan created yet.</div>
@@ -5703,11 +5711,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     'rounded-lg border-0 bg-gray-50 px-3.5 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100';
 
   const existingProformaBtnClass =
-    'rounded-lg border-0 bg-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-300';
+    'rounded-lg border-0 bg-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-800 transition-colors hover:bg-purple-700 hover:text-white';
 
   const getExistingProformaBtnClass = (paid?: boolean) =>
     paid
-      ? 'rounded-lg border-0 bg-emerald-700 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-800'
+      ? 'rounded-lg border-0 bg-purple-50 px-3 py-1.5 text-xs font-semibold text-purple-700 transition-colors hover:bg-purple-700 hover:text-white'
       : existingProformaBtnClass;
 
   const legacyPaymentHasProforma = (paymentPlanId: string | number): boolean =>
@@ -6444,6 +6452,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   return (
     <>
       <div className="overflow-x-auto w-full p-2 sm:p-4 md:p-6">
+        <ClientTabPageHeader
+          icon={BanknotesIcon}
+          title="Finances"
+          subtitle="Payment plans and collections"
+        />
         {/* Contract Information Section */}
         {/* COMMENTED OUT - Contract Information Section
         {contracts.length > 0 ? (
@@ -6887,7 +6900,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         </td>
                                         <td className="px-4 py-4 align-middle whitespace-nowrap">
                                           {isPaid ? (
-                                            <span className="text-sm font-semibold text-emerald-800">
+                                            <span className="text-sm font-semibold text-slate-900">
                                               {formatDateDDMMYYYY(p.dueDate) || '—'}
                                             </span>
                                           ) : (
@@ -6911,10 +6924,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           {(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                         </td>
                                         <td className="px-4 py-4 align-middle whitespace-nowrap text-slate-600">
-                                          {isPaid && p.paid_at ? (
-                                            <PaidPaymentDateBadge date={p.paid_at} />
+                                          {p.paid_at ? (
+                                            isPaid ? (
+                                              <PaidPaymentDateBadge date={p.paid_at} />
+                                            ) : (
+                                              formatDateDDMMYYYY(p.paid_at)
+                                            )
                                           ) : (
-                                            p.paid_at ? formatDateDDMMYYYY(p.paid_at) : '---'
+                                            '---'
                                           )}
                                         </td>
                                         <td className="px-4 py-4 align-middle whitespace-nowrap font-medium text-slate-700">
@@ -7383,10 +7400,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   return (
                                     <div
                                       key={p.id || idx}
-                                      className={`finance-payment-row flex min-h-[420px] flex-col gap-0 rounded-2xl border border-l-4 border-slate-200 p-6 text-emerald-900 shadow-sm transition-all duration-200 hover:shadow-md ${
-                                        isPaid
-                                          ? 'finance-payment-row-paid bg-emerald-50/30 hover:bg-emerald-50/45'
-                                          : 'bg-white'
+                                      className={`finance-payment-row flex min-h-[420px] flex-col gap-0 rounded-2xl border border-l-4 border-slate-200 bg-white p-6 shadow-sm transition-all duration-200 hover:shadow-md ${
+                                        isPaid ? 'finance-payment-row-paid' : ''
                                       } ${rowSelectable ? 'cursor-pointer' : ''} ${
                                         selected ? 'ring-2 ring-primary/50' : ''
                                       }`}
@@ -7429,7 +7444,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">DUE DATE</span>
                                             {isPaid ? (
-                                            <span className="text-sm font-semibold text-emerald-800">
+                                            <span className="text-sm font-semibold text-slate-900">
                                               {formatDateDDMMYYYY(p.dueDate) || '—'}
                                             </span>
                                           ) : (
@@ -7463,11 +7478,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           </div>
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">PAYMENT DATE</span>
-                                            <span className="text-sm font-bold text-gray-900">
-                                              {isPaid && p.paid_at ? (
-                                                <PaidPaymentDateBadge date={p.paid_at} />
+                                            <span className="text-sm text-gray-900">
+                                              {p.paid_at ? (
+                                                isPaid ? (
+                                                  <PaidPaymentDateBadge date={p.paid_at} />
+                                                ) : (
+                                                  formatDateDDMMYYYY(p.paid_at)
+                                                )
                                               ) : (
-                                                p.paid_at ? formatDateDDMMYYYY(p.paid_at) : '---'
+                                                '---'
                                               )}
                                             </span>
                                           </div>
@@ -8834,7 +8853,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 <td className="px-3 py-2 text-slate-700">{p.order || '—'}</td>
                                 <td className="px-3 py-2 font-medium text-slate-900">{p.client || '—'}</td>
                                 <td className="px-3 py-2 text-slate-700">{formatDateDDMMYYYY(p.dueDate) || '—'}</td>
-                                <td className="px-3 py-2 text-slate-700">{formatDateDDMMYYYY(p.paid_at) || '—'}</td>
+                                <td className="px-3 py-2">
+                                  <PaidPaymentDateBadge date={p.paid_at} />
+                                </td>
                                 <td className="px-3 py-2 text-right tabular-nums text-slate-900">
                                   {sym}{baseAmt.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                                 </td>
@@ -8935,12 +8956,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
 
         .finances-payments-table-shell table.finances-payments-table tbody tr.finance-payment-row-paid td {
-          background: #f7fdf9 !important;
-          color: #065f46 !important;
+          background: #ffffff !important;
         }
 
         .finances-payments-table-shell table.finances-payments-table tbody tr.finance-payment-row-paid:hover td {
-          background: #f0fdf4 !important;
+          background: #ffffff !important;
         }
 
         .finances-payments-table-shell table.finances-payments-table tbody tr.finance-payment-row-new td {
@@ -8962,21 +8982,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           background-image: none !important;
           border: none !important;
           box-shadow: none !important;
-        }
-
-        .finance-payment-row-paid :is(
-          .text-slate-900,
-          .text-slate-700,
-          .text-slate-600,
-          .text-slate-500,
-          .text-slate-400,
-          .text-gray-900,
-          .text-gray-700,
-          .text-gray-600,
-          .text-gray-500,
-          .text-gray-400
-        ) {
-          color: #065f46 !important;
         }
 
         .finance-payment-row-paid .text-white {

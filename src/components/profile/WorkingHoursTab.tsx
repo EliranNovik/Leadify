@@ -59,6 +59,8 @@ import BulkManualClockInModal from './BulkManualClockInModal';
 import ClockInDayEditModal from './ClockInDayEditModal';
 import ClockInDayNotesModal from './ClockInDayNotesModal';
 import SubmitWorkingHoursModal from './SubmitWorkingHoursModal';
+import WorkingHoursMobileList from './WorkingHoursMobileList';
+import ProfileBottomSheetModal from './ProfileBottomSheetModal';
 import YearWheelPicker from '../YearWheelPicker';
 import { buildWorkingHoursMonthCoverage, type WorkingHoursDayCoverage } from '../../lib/workingHoursMonthCoverage';
 import {
@@ -75,6 +77,7 @@ import {
   getClockInApprovalStatus,
   getDayClockInApprovalStatus,
   clockInApprovalWatermarkLabel,
+  formatDayDeclineNotes,
   isManualClockInRecord,
   normalizeClockInApprovalFields,
 } from '../../lib/employeeClockInApproval';
@@ -90,6 +93,7 @@ type ClockInRow = {
   clock_in_place?: { name: string } | { name: string }[] | null;
   clock_out_place?: { name: string } | { name: string }[] | null;
   notes: string | null;
+  decline_note: string | null;
   manually: boolean;
   approved: boolean;
   declined: boolean;
@@ -105,7 +109,7 @@ const MONTH_NAMES = [
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
-const MERGED_COL_SPAN = 9;
+const MERGED_COL_SPAN = 8;
 const WH_PLACEHOLDER_HINT_COL_SPAN = MERGED_COL_SPAN - 2;
 
 type WorkingHoursWeekRowMeta = {
@@ -188,15 +192,13 @@ function WorkingHoursWeekBetweenRow({
   const accent = getWeekAccentColor(weekNum);
   return (
     <tr className="wh-week-between-row">
-      {Array.from({ length: columnCount }, (_, index) => (
-        <td
-          key={`week-${weekNum}-col-${index}`}
-          className={index === 0 ? 'wh-week-between-cell' : 'wh-week-between-spacer'}
-          style={index === 0 ? ({ '--wh-week-accent': accent } as React.CSSProperties) : undefined}
-        >
-          {index === 0 ? <span className="wh-week-between-label">Week {weekNum}</span> : null}
-        </td>
-      ))}
+      <td
+        colSpan={columnCount}
+        className="wh-week-between-cell"
+        style={{ '--wh-week-accent': accent } as React.CSSProperties}
+      >
+        <span className="wh-week-between-label">Week {weekNum}</span>
+      </td>
     </tr>
   );
 }
@@ -801,7 +803,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
     try {
       const { start, end } = dateRangeToIsoBounds(range.from, range.to);
       const clockSelectWithApproval = `id, employee_id, clock_in_time, clock_out_time, is_active, manually,
-             approved, declined,
+             approved, declined, decline_note,
              clock_in_location_id, clock_out_location_id,
              clock_in_place:clock_in_locations!clock_in_location_id ( name ),
              clock_out_place:clock_in_locations!clock_out_location_id ( name ),
@@ -822,7 +824,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
 
       if (clockResult.error) {
         const msg = clockResult.error.message?.toLowerCase() ?? '';
-        if (msg.includes('approved') || msg.includes('declined')) {
+        if (msg.includes('approved') || msg.includes('declined') || msg.includes('decline_note')) {
           clockResult = await supabase
             .from('employee_clock_in')
             .select(clockSelectLegacy)
@@ -1507,7 +1509,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
         {bulkSelectMode && (
           <div className="rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 mb-3 flex flex-wrap items-center justify-between gap-3">
             <p className="text-sm text-gray-800">
-              <span className="font-semibold">Select days in the table</span>
+              <span className="font-semibold">Select days</span>
               <span className="text-base-content/55">
                 {' '}
                 — {bulkSelectedDateKeys.size} selected
@@ -1541,8 +1543,44 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
             </div>
           </div>
         )}
-        <div className="w-full overflow-x-auto py-2 pb-4">
-          <table className="table my-profile-hours-table w-full min-w-[56rem] table-fixed">
+        <WorkingHoursMobileList
+          rows={filteredMergedDayRows}
+          weekMeta={weekRowMeta}
+          loading={loading}
+          hasActiveRowFilters={hasActiveRowFilters}
+          bulkSelectMode={bulkSelectMode}
+          bulkSelectedDateKeys={bulkSelectedDateKeys}
+          isMonthSubmitted={isMonthSubmitted}
+          loadingActions={loading}
+          deletingRowKey={deletingRowKey}
+          deletingClockInDay={deletingClockInDay}
+          recordsByDay={recordsByDay}
+          getWeekAccentColor={getWeekAccentColor}
+          isRowLocked={isRowLockedForSubmission}
+          onToggleBulkSelect={toggleBulkDateSelection}
+          onPlaceholderAddUnavailability={handlePlaceholderAddUnavailability}
+          onPlaceholderAddClockIn={handlePlaceholderAddClockIn}
+          onEditNotes={setEditingNotesDay}
+          onEditUnavailability={(unavail) => {
+            if (isRowLockedForSubmission(unavail.date)) {
+              toast.error(monthLockedMessage);
+              return;
+            }
+            setEditingRow(unavail);
+          }}
+          onDeleteUnavailability={(unavail) => void handleDeleteUnavailability(unavail)}
+          onEditClockIn={(dateKey) => {
+            if (isRowLockedForSubmission(dateKey)) {
+              toast.error(monthLockedMessage);
+              return;
+            }
+            setEditingClockInDay(dateKey);
+          }}
+          onDeleteClockIn={(dateKey) => void handleDeleteClockInDay(dateKey)}
+          onViewDocument={setSelectedDocument}
+        />
+        <div className="hidden md:block w-full overflow-x-auto rounded-[18px] bg-[#ececec] px-1 py-2 pb-4">
+          <table className="table my-profile-hours-table w-full min-w-[52rem] table-fixed">
             <thead>
               <tr>
                 {bulkSelectMode && (
@@ -1553,8 +1591,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                 <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]">Clock in</th>
                 <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]">Clock out</th>
                 <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]">Total duration</th>
-                <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]">Workplace (in)</th>
-                <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]">Workplace (out)</th>
+                <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]">Workplace</th>
                 <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]">Notes</th>
                 <th className="px-5 py-3.5 text-left text-xs font-semibold uppercase tracking-wider text-base-content/40 bg-[#ececec]">Document</th>
               </tr>
@@ -1607,7 +1644,11 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                       <tr
                         key={row.dateKey}
                         id={`wh-row-${row.dateKey}`}
-                        className={`${rowClass}${isBulkSelected ? ' wh-bulk-selected' : ''}`}
+                        className={[
+                          rowClass,
+                          placeholderInteractive && !bulkSelectMode ? 'wh-placeholder-interactive' : '',
+                          isBulkSelected ? 'wh-bulk-selected' : '',
+                        ].filter(Boolean).join(' ')}
                         onClick={
                           isBulkSelectable
                             ? () => toggleBulkDateSelection(row.dateKey)
@@ -1636,29 +1677,32 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                             <WorkingHoursDateLabel dateKey={row.dateKey} muted />
                           </div>
                         </td>
-                        <td colSpan={WH_PLACEHOLDER_HINT_COL_SPAN} className={`${WH_DATA_CELL} text-base-content/40 italic`}>
+                        <td
+                          colSpan={WH_PLACEHOLDER_HINT_COL_SPAN}
+                          className={`${WH_DATA_CELL} wh-placeholder-hint italic`}
+                        >
                           {hintText}
                         </td>
-                        <td className="px-2 py-3 whitespace-nowrap align-middle min-w-[10.5rem]">
+                        <td className="relative px-2 py-3 whitespace-nowrap align-middle min-w-[10.5rem] lg:min-w-[6rem]">
                           {placeholderInteractive && !bulkSelectMode ? (
-                            <div className="flex flex-wrap items-center justify-end gap-1.5">
+                            <div className="wh-placeholder-row-actions flex flex-row flex-nowrap items-center justify-end gap-1.5 lg:absolute lg:right-2 lg:top-1/2 lg:z-10 lg:-translate-y-1/2">
                               <button
                                 type="button"
-                                className="btn btn-xs btn-outline btn-primary gap-1 whitespace-nowrap"
+                                className="btn btn-xs btn-outline btn-primary gap-1 shrink-0 whitespace-nowrap"
                                 onClick={() => handlePlaceholderAddUnavailability(row.dateKey)}
                                 title="Add unavailability"
                               >
                                 <CalendarDaysIcon className="w-3.5 h-3.5 shrink-0" />
-                                <span className="hidden md:inline">Add unavailability</span>
+                                <span className="hidden lg:inline">Add unavailability</span>
                               </button>
                               <button
                                 type="button"
-                                className="btn btn-xs btn-outline btn-primary gap-1 whitespace-nowrap"
+                                className="btn btn-xs btn-outline btn-primary gap-1 shrink-0 whitespace-nowrap"
                                 onClick={() => handlePlaceholderAddClockIn(row.dateKey)}
                                 title="Add manual clock-in and clock-out"
                               >
                                 <PlusIcon className="w-3.5 h-3.5 shrink-0" />
-                                <span className="hidden md:inline">Add clock-in</span>
+                                <span className="hidden lg:inline">Add clock-in</span>
                               </button>
                             </div>
                           ) : (
@@ -1674,12 +1718,13 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                   const approvalStatus = getDayClockInApprovalStatus(dayRecords, {
                     hasManualClockSummary: row.clock?.hasManual === true,
                   });
+                  const declineNotes = formatDayDeclineNotes(dayRecords);
                   return [
                     weekBetweenRow,
                     <tr
                       key={row.dateKey}
                       id={`wh-row-${row.dateKey}`}
-                      className={clockInApprovalRowClass(approvalStatus)}
+                      className={`wh-data-row ${clockInApprovalRowClass(approvalStatus)}`}
                     >
                       {bulkSelectMode && <td className="w-10 min-w-[2.5rem] px-2" aria-hidden />}
                       <td
@@ -1693,6 +1738,14 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                               hasManual={row.clock.hasManual}
                               approvalStatus={approvalStatus}
                             />
+                          )}
+                          {declineNotes && (
+                            <p
+                              className="text-xs font-medium leading-snug text-red-700 max-w-[14rem]"
+                              title={declineNotes}
+                            >
+                              {declineNotes}
+                            </p>
                           )}
                         </div>
                       </td>
@@ -1735,11 +1788,8 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
                           <span className="text-gray-400">—</span>
                         )}
                       </td>
-                      <td className={`max-w-[140px] ${WH_DATA_CELL}`}>
+                      <td className={`max-w-[160px] ${WH_DATA_CELL}`}>
                         {hasClock ? row.clock!.workplacesIn : <span className="text-gray-400">—</span>}
-                      </td>
-                      <td className={`max-w-[140px] ${WH_DATA_CELL}`}>
-                        {hasClock ? row.clock!.workplacesOut : <span className="text-gray-400">—</span>}
                       </td>
                       <td className={`max-w-[180px] ${WH_DATA_CELL}`}>
                         {dayHasSavedNotes(dayRecords) ? (
@@ -1849,26 +1899,26 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
 
         .my-profile-hours-shell table.my-profile-hours-table tbody td {
           border: none !important;
-          background: #ffffff !important;
           box-shadow: none !important;
           vertical-align: middle;
           padding: 1rem 1.1rem !important;
         }
 
-        .my-profile-hours-shell table.my-profile-hours-table tbody td.wh-data-date-cell {
-          border-top-left-radius: 18px !important;
-          border-bottom-left-radius: 18px !important;
-          vertical-align: top !important;
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-data-row td {
+          background: #ffffff !important;
         }
 
-        .my-profile-hours-shell table.my-profile-hours-table tbody td:last-child {
-          border-top-right-radius: 18px !important;
-          border-bottom-right-radius: 18px !important;
-          overflow: visible !important;
-        }
-
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr:hover td {
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-data-row:hover td {
           background: #f1f5f9 !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-week-between-row td,
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-week-between-row:hover td {
+          background: transparent !important;
+          box-shadow: none !important;
+          padding: 0.5rem 0.85rem 0.2rem !important;
+          border: none !important;
+          border-radius: 0 !important;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.approval-row-declined td {
@@ -1879,59 +1929,71 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
           background: #fecaca !important;
         }
 
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder td {
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder td,
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder:hover td,
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder.wh-placeholder-interactive:hover td {
           background: #f3f4f6 !important;
           box-shadow: none !important;
         }
 
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder td.wh-data-date-cell {
-          border-top-left-radius: 18px !important;
-          border-bottom-left-radius: 18px !important;
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder td.wh-placeholder-hint {
+          color: #6b7280 !important;
         }
 
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder td:last-child {
-          border-top-right-radius: 18px !important;
-          border-bottom-right-radius: 18px !important;
-        }
-
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder-interactive {
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder.wh-placeholder-interactive {
           cursor: pointer;
         }
 
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder-interactive:hover td {
-          background: #e8eaed !important;
-        }
-
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder td {
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder td,
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder:hover td,
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder.wh-placeholder-interactive:hover td {
           background: #f5f3ff !important;
           box-shadow: none !important;
         }
 
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder td.wh-data-date-cell {
-          border-top-left-radius: 18px !important;
-          border-bottom-left-radius: 18px !important;
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder td.wh-placeholder-hint {
+          color: #6b7280 !important;
         }
 
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder td:last-child {
-          border-top-right-radius: 18px !important;
-          border-bottom-right-radius: 18px !important;
-        }
-
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder-interactive {
+        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder.wh-placeholder-interactive {
           cursor: pointer;
         }
 
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder-interactive:hover td {
-          background: #ede9fe !important;
+        @media (min-width: 1024px) {
+          .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder.wh-placeholder-interactive .wh-placeholder-row-actions,
+          .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder.wh-placeholder-interactive .wh-placeholder-row-actions {
+            opacity: 0;
+            visibility: hidden;
+            pointer-events: none;
+            transition: opacity 0.15s ease, visibility 0.15s ease;
+          }
+
+          .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder.wh-placeholder-interactive:hover .wh-placeholder-row-actions,
+          .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-missing-placeholder.wh-placeholder-interactive:focus-within .wh-placeholder-row-actions,
+          .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder.wh-placeholder-interactive:hover .wh-placeholder-row-actions,
+          .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-holiday-placeholder.wh-placeholder-interactive:focus-within .wh-placeholder-row-actions {
+            opacity: 1;
+            visibility: visible;
+            pointer-events: auto;
+          }
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody td.wh-data-date-cell {
+          border-top-left-radius: 18px !important;
+          border-bottom-left-radius: 18px !important;
+          vertical-align: top !important;
+          position: relative;
+          padding-left: 1.1rem !important;
+        }
+
+        .my-profile-hours-shell table.my-profile-hours-table tbody td:last-child {
+          border-top-right-radius: 18px !important;
+          border-bottom-right-radius: 18px !important;
+          overflow: visible !important;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-bulk-selected td {
           box-shadow: inset 0 0 0 2px rgba(59, 130, 246, 0.45) !important;
-        }
-
-        .my-profile-hours-shell table.my-profile-hours-table tbody td.wh-data-date-cell {
-          position: relative;
-          padding-left: 1.1rem !important;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody td.wh-data-date-cell.wh-date-week-accent::before {
@@ -1943,21 +2005,6 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
           width: 3px;
           border-radius: 999px;
           background: var(--wh-week-accent, #94a3b8);
-        }
-
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-week-between-row td {
-          background: transparent !important;
-          box-shadow: none !important;
-          padding: 0.35rem 0.75rem 0.15rem !important;
-          border: none !important;
-        }
-
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-week-between-row td.wh-week-between-spacer {
-          padding: 0.15rem 0 !important;
-        }
-
-        .my-profile-hours-shell table.my-profile-hours-table tbody tr.wh-week-between-row + tr td.wh-data-date-cell {
-          border-top-left-radius: 18px !important;
         }
 
         .my-profile-hours-shell table.my-profile-hours-table tbody .wh-week-between-label {
@@ -1979,62 +2026,43 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
         }
       `}</style>
 
-      {calendarModalOpen && typeof window !== 'undefined' && createPortal(
-        <div
-          className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/50 p-4"
-          onClick={() => setCalendarModalOpen(false)}
-        >
-          <div
-            className="bg-white rounded-2xl shadow-xl w-full max-w-2xl flex flex-col overflow-hidden max-h-[92vh]"
-            onClick={(e) => e.stopPropagation()}
+      <ProfileBottomSheetModal
+        open={calendarModalOpen}
+        onClose={() => setCalendarModalOpen(false)}
+        title="My Availability"
+        subtitle={<MissingDaysBadge count={calendarMissingDays} loading={loading} />}
+        hideFooter
+        mobileFullHeight
+        sheetClassName="md:max-w-2xl"
+        headerRight={
+          <button
+            type="button"
+            onClick={() => {
+              if (isMonthSubmitted) {
+                toast.error(monthLockedMessage);
+                return;
+              }
+              calendarRef.current?.openAddRangeModal();
+            }}
+            className="btn btn-xs btn-primary gap-1"
+            disabled={isMonthSubmitted}
+            title={isMonthSubmitted ? monthLockedMessage : 'Add unavailability range'}
           >
-            <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 border-b border-base-200 shrink-0">
-              <div className="flex flex-wrap items-center gap-2 min-w-0">
-                <h3 className="text-base font-semibold text-gray-900">My Availability</h3>
-                <MissingDaysBadge count={calendarMissingDays} loading={loading} />
-              </div>
-              <div className="flex items-center gap-1 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isMonthSubmitted) {
-                      toast.error(monthLockedMessage);
-                      return;
-                    }
-                    calendarRef.current?.openAddRangeModal();
-                  }}
-                  className="btn btn-xs btn-primary gap-1"
-                  disabled={isMonthSubmitted}
-                  title={isMonthSubmitted ? monthLockedMessage : 'Add unavailability range'}
-                >
-                  <PlusIcon className="w-3.5 h-3.5" />
-                  Add range
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCalendarModalOpen(false)}
-                  className="btn btn-xs btn-ghost btn-circle"
-                  title="Close calendar"
-                >
-                  <XMarkIcon className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-            <div className="p-5 overflow-y-auto min-h-0">
-              <CompactAvailabilityCalendar
-                key={`cal-${year}-${month}`}
-                ref={calendarRef}
-                employeeId={employeeId}
-                initialYear={year}
-                initialMonth={month}
-                onMonthChange={handleCalendarMonthChange}
-                onAvailabilityChange={() => void fetchRecords()}
-              />
-            </div>
-          </div>
-        </div>,
-        document.body,
-      )}
+            <PlusIcon className="w-3.5 h-3.5" />
+            Add range
+          </button>
+        }
+      >
+        <CompactAvailabilityCalendar
+          key={`cal-${year}-${month}`}
+          ref={calendarRef}
+          employeeId={employeeId}
+          initialYear={year}
+          initialMonth={month}
+          onMonthChange={handleCalendarMonthChange}
+          onAvailabilityChange={() => void fetchRecords()}
+        />
+      </ProfileBottomSheetModal>
 
       <ClockInDayNotesModal
         isOpen={!!editingNotesDay}

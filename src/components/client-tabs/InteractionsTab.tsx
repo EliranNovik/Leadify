@@ -36,6 +36,7 @@ import { useRealtimeRefresh, type RealtimeChangePayload } from '../../hooks/useR
 import { toast } from 'react-hot-toast';
 import { createPortal } from 'react-dom';
 import AISummaryPanel from './AISummaryPanel';
+import { ClientTabPageHeader } from './ClientTabPageHeader';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -7162,6 +7163,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               </div>
             )}
             {/* Header with Action Buttons */}
+            <ClientTabPageHeader
+              className="mb-6 md:mb-8"
+              icon={ChatBubbleLeftRightIcon}
+              title="Interactions"
+              subtitle="Emails, calls, WhatsApp, and manual contact history"
+            />
             <div className="w-full flex flex-col sm:flex-row items-stretch sm:items-center gap-4 mb-8 md:mb-12">
               {/* Mobile: Contact Client Dropdown */}
               <div className="dropdown lg:hidden">

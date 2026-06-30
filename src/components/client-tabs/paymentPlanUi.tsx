@@ -221,7 +221,7 @@ export function DueDateBadge({
   );
 }
 
-/** Dark green pill for payment date on paid rows. */
+/** Payment date on paid rows — plain text, no pill. */
 export function PaidPaymentDateBadge({
   date,
   className = '',
@@ -234,9 +234,7 @@ export function PaidPaymentDateBadge({
     return <span className={`text-sm text-slate-400 ${className}`.trim()}>—</span>;
   }
   return (
-    <span
-      className={`inline-flex items-center rounded-full bg-emerald-700 px-2.5 py-1 text-sm font-semibold text-white ${className}`.trim()}
-    >
+    <span className={`text-sm font-bold text-emerald-700 ${className}`.trim()}>
       {formatted}
     </span>
   );

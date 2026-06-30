@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { PlusIcon, TrashIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { PlusIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import {
   fetchActiveClockInLocations,
@@ -14,6 +13,7 @@ import { getHolidayWarningsForDates } from '../../lib/israeliJewishHolidays';
 import type { HolidayDateWarning } from '../../lib/israeliJewishHolidays';
 import HolidayEntryWarningModal from './HolidayEntryWarningModal';
 import HolidayDateNote from './HolidayDateNote';
+import ProfileBottomSheetModal from './ProfileBottomSheetModal';
 
 interface ManualClockInModalProps {
   isOpen: boolean;
@@ -52,8 +52,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
   const [notes, setNotes] = useState('');
   const [workplaces, setWorkplaces] = useState<ClockInLocationOption[]>([]);
   const [worksFromHome, setWorksFromHome] = useState(false);
-  const [clockInLocationId, setClockInLocationId] = useState<number | ''>('');
-  const [clockOutLocationId, setClockOutLocationId] = useState<number | ''>('');
+  const [workplaceLocationId, setWorkplaceLocationId] = useState<number | ''>('');
   const [saving, setSaving] = useState(false);
   const [holidayWarnings, setHolidayWarnings] = useState<HolidayDateWarning[]>([]);
   const [showHolidayWarning, setShowHolidayWarning] = useState(false);
@@ -65,8 +64,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
     setClockInTime('09:00');
     setClockOutTime('17:00');
     setNotes('');
-    setClockInLocationId('');
-    setClockOutLocationId('');
+    setWorkplaceLocationId('');
     void Promise.all([fetchActiveClockInLocations(), fetchEmployeeWorksFromHome(employeeId)]).then(
       ([locations, wfh]) => {
         setWorkplaces(locations);
@@ -75,24 +73,19 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
     );
   }, [isOpen, employeeId, initialDateKey]);
 
-  const selectedIn = useMemo(
-    () => workplaces.find((wp) => wp.id === (clockInLocationId === '' ? null : clockInLocationId)) ?? null,
-    [workplaces, clockInLocationId],
-  );
-  const selectedOut = useMemo(
-    () => workplaces.find((wp) => wp.id === (clockOutLocationId === '' ? null : clockOutLocationId)) ?? null,
-    [workplaces, clockOutLocationId],
+  const selectedWorkplace = useMemo(
+    () => workplaces.find((wp) => wp.id === (workplaceLocationId === '' ? null : workplaceLocationId)) ?? null,
+    [workplaces, workplaceLocationId],
   );
   const homeNeedsApproval =
-    (selectedIn != null && isHomeClockInLocation(selectedIn) && !worksFromHome)
-    || (selectedOut != null && isHomeClockInLocation(selectedOut) && !worksFromHome);
+    selectedWorkplace != null && isHomeClockInLocation(selectedWorkplace) && !worksFromHome;
 
   const datesToSave = useMemo(() => {
     const filled = dateRows.map((row) => row.value).filter(Boolean);
     return sortDates(filled);
   }, [dateRows]);
 
-  if (!isOpen || typeof window === 'undefined') return null;
+  if (!isOpen) return null;
 
   const addDateRow = () => {
     setDateRows((prev) => [...prev, newDateRow(toDateInputValue(new Date()))]);
@@ -116,6 +109,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
         : '';
       const mergedNotes = [notes?.trim(), wfhNote].filter(Boolean).join('\n');
 
+      const locationId = workplaceLocationId === '' ? null : workplaceLocationId;
       const count = await insertManualClockInRecords({
         employeeId,
         userId,
@@ -123,8 +117,8 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
         clockInTime,
         clockOutTime,
         notes: mergedNotes,
-        clockInLocationId: clockInLocationId === '' ? null : clockInLocationId,
-        clockOutLocationId: clockOutLocationId === '' ? null : clockOutLocationId,
+        clockInLocationId: locationId,
+        clockOutLocationId: locationId,
       });
       toast.success(
         count === 1
@@ -176,23 +170,17 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
 
   return (
     <>
-      {createPortal(
-    <div
-      className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[90vh] overflow-y-auto"
-        onClick={(e) => e.stopPropagation()}
+      <ProfileBottomSheetModal
+        open={isOpen}
+        onClose={onClose}
+        title="Add clock-in / out"
+        onSave={() => void handleSave()}
+        saving={saving}
+        saveDisabled={datesToSave.length === 0 || hasDuplicateDates}
+        saveLabel={`Save${datesToSave.length > 1 ? ` (${datesToSave.length})` : ''}`}
+        mobileFullHeight
       >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-base-200">
-          <h3 className="text-lg font-semibold text-gray-900">Add clock-in / out</h3>
-          <button type="button" className="btn btn-ghost btn-sm btn-circle" onClick={onClose}>
-            <XMarkIcon className="w-5 h-5" />
-          </button>
-        </div>
-
-        <div className="p-5 space-y-4">
+        <div className="space-y-4">
           <div className="space-y-2">
             <span className="label-text font-medium">Dates</span>
             <div className="space-y-2">
@@ -261,40 +249,22 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
           </div>
 
           {workplaces.length > 0 && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <label className="form-control w-full">
-                <span className="label-text font-medium mb-1">Workplace (in)</span>
-                <select
-                  className="select select-bordered w-full"
-                  value={clockInLocationId}
-                  onChange={(e) =>
-                    setClockInLocationId(e.target.value ? Number(e.target.value) : '')
-                  }
-                  disabled={saving}
-                >
-                  <option value="">—</option>
-                  {workplaces.map((wp) => (
-                    <option key={wp.id} value={wp.id}>{wp.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="form-control w-full">
-                <span className="label-text font-medium mb-1">Workplace (out)</span>
-                <select
-                  className="select select-bordered w-full"
-                  value={clockOutLocationId}
-                  onChange={(e) =>
-                    setClockOutLocationId(e.target.value ? Number(e.target.value) : '')
-                  }
-                  disabled={saving}
-                >
-                  <option value="">—</option>
-                  {workplaces.map((wp) => (
-                    <option key={wp.id} value={wp.id}>{wp.name}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
+            <label className="form-control w-full">
+              <span className="label-text font-medium mb-1">Workplace</span>
+              <select
+                className="select select-bordered w-full"
+                value={workplaceLocationId}
+                onChange={(e) =>
+                  setWorkplaceLocationId(e.target.value ? Number(e.target.value) : '')
+                }
+                disabled={saving}
+              >
+                <option value="">—</option>
+                {workplaces.map((wp) => (
+                  <option key={wp.id} value={wp.id}>{wp.name}</option>
+                ))}
+              </select>
+            </label>
           )}
 
           {homeNeedsApproval && (
@@ -314,28 +284,7 @@ const ManualClockInModal: React.FC<ManualClockInModalProps> = ({
             />
           </label>
         </div>
-
-        <div className="flex justify-end gap-2 px-5 py-4 border-t border-base-200">
-          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => void handleSave()}
-            disabled={saving || datesToSave.length === 0 || hasDuplicateDates}
-          >
-            {saving ? (
-              <span className="loading loading-spinner loading-sm" />
-            ) : (
-              `Save${datesToSave.length > 1 ? ` (${datesToSave.length})` : ''}`
-            )}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body,
-      )}
+      </ProfileBottomSheetModal>
       <HolidayEntryWarningModal
         isOpen={showHolidayWarning}
         warnings={holidayWarnings}

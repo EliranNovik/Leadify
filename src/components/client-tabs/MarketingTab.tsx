@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { ClientTabProps } from '../../types/client';
 import { MegaphoneIcon, PencilSquareIcon, CheckIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
+import { ClientTabPageHeader } from './ClientTabPageHeader';
 
 interface PotentialMetric {
   label: string;
@@ -99,16 +100,12 @@ const MarketingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   return (
     <div className="p-2 sm:p-4 md:p-6 space-y-8">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <div className="w-9 h-9 rounded-xl bg-base-200 flex items-center justify-center">
-          <MegaphoneIcon className="w-5 h-5 text-base-content/70" />
-        </div>
-        <div>
-          <h2 className="text-xl font-semibold text-base-content">Marketing</h2>
-          <p className="text-sm text-base-content/60">Client potential and source tracking</p>
-        </div>
-      </div>
+      <ClientTabPageHeader
+        className="mb-0"
+        icon={MegaphoneIcon}
+        title="Marketing"
+        subtitle="Client potential and source tracking"
+      />
 
       {/* Potential Section */}
       <section className="space-y-4">

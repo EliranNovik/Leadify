@@ -333,6 +333,23 @@ html,
   display: none;
 }
 
+/* Clients page: hide main scroll track while keeping scroll behavior */
+.app-main-scroll.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.app-main-scroll.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+/* Client detail: ClientHeader provides top inset (see CLIENT_HEADER_APP_INSET). */
+.app-main-scroll.clients-detail-scroll {
+  padding-top: 0 !important;
+}
+
 /* Subtle shadow for active tab on mobile */
 @media (max-width: 768px) {
   .tab-mobile-active {

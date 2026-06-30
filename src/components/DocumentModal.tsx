@@ -23,6 +23,7 @@ import {
   CASE_DOCUMENTS_SIGNED_URL_SECONDS,
   buildCaseDocumentStoragePath,
   buildStaffMeetingDocumentStoragePath,
+  resolveCaseDocumentUploadContentType,
 } from '../lib/caseDocumentsStorage';
 import { isSequenceOfEventsSlug } from '../lib/staffMeetingDocuments';
 import { initialsFromUploaderName, resolveUploaderDisplayByKey } from '../lib/uploaderDisplay';
@@ -1860,11 +1861,12 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       try {
         if (isStaffMeetingDocs && staffMeetingId != null) {
           const storagePath = buildStaffMeetingDocumentStoragePath(staffMeetingId, file.name);
+          const contentType = resolveCaseDocumentUploadContentType(file);
 
           const { error: storageErr } = await supabase.storage
             .from(CASE_DOCUMENTS_STORAGE_BUCKET)
             .upload(storagePath, file, {
-              contentType: file.type?.trim() || undefined,
+              contentType,
               upsert: false,
             });
 
@@ -1873,7 +1875,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
           if (storageErr) throw storageErr;
 
           const uploadedBy = await getCurrentUserName();
-          const mimeType = file.type?.trim() || 'application/octet-stream';
+          const mimeType = contentType;
 
           const { error: insErr } = await supabase.from('staff_meeting_documents').insert({
             meeting_id: staffMeetingId,
@@ -1895,11 +1897,12 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         }
 
         const storagePath = buildCaseDocumentStoragePath(leadNumber, subKey ?? undefined, file.name);
+        const contentType = resolveCaseDocumentUploadContentType(file);
 
         const { error: storageErr } = await supabase.storage
           .from(CASE_DOCUMENTS_STORAGE_BUCKET)
           .upload(storagePath, file, {
-            contentType: file.type?.trim() || undefined,
+            contentType,
             upsert: false,
           });
 
@@ -1908,7 +1911,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
         if (storageErr) throw storageErr;
 
         const uploadedBy = await getCurrentUserName();
-        const mimeType = file.type?.trim() || 'application/octet-stream';
+        const mimeType = contentType;
 
         const { data: insertedRow, error: insErr } = await supabase
           .from('lead_case_documents')
