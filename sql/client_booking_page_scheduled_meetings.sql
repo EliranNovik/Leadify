@@ -117,6 +117,7 @@ BEGIN
           ),
           'status', COALESCE(NULLIF(TRIM(m.status), ''), 'scheduled'),
           'booked_via_client_link', COALESCE(m.scheduler, '') = 'Client booking',
+          'client_booking_timezone', NULLIF(TRIM(m.client_booking_timezone), ''),
           'created_at', m.created_at
         )
         ORDER BY m.meeting_date ASC NULLS LAST, m.meeting_time ASC NULLS LAST
@@ -149,6 +150,7 @@ BEGIN
           ),
           'status', COALESCE(NULLIF(TRIM(m.status), ''), 'scheduled'),
           'booked_via_client_link', COALESCE(m.scheduler, '') = 'Client booking',
+          'client_booking_timezone', NULLIF(TRIM(m.client_booking_timezone), ''),
           'created_at', m.created_at
         ) AS row_data,
         m.meeting_date AS sort_date,

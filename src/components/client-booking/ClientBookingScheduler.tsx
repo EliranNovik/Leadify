@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import { DateTime } from 'luxon';
 import {
   CalendarDaysIcon,
   ChevronLeftIcon,
@@ -21,6 +22,18 @@ import {
   type PublicBookingMeeting,
 } from '../../lib/clientBookingApi';
 import {
+  BUSINESS_TZ,
+  detectClientTimezone,
+  formatBookingTimeWithZone,
+  formatMeetingForClientDisplay,
+  formatTimezoneBadge,
+  formatTimezoneLabel,
+  getStoredClientTimezone,
+  isClientBookingDateBlocked,
+  persistClientTimezone,
+  resolveCategoryAvailabilityForLead,
+} from '../../lib/bookingTimezone';
+import {
   getPortalTabHeaderCoverImage,
   PortalCard,
   PortalLoading,
@@ -35,20 +48,15 @@ const MONTH_NAMES = [
 ];
 
 export function formatBookingDisplayDate(dateStr: string): string {
-  const d = new Date(`${dateStr}T12:00:00`);
-  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  const d = DateTime.fromISO(`${dateStr}T12:00:00`);
+  if (!d.isValid) return dateStr;
+  return d.toLocaleString({ weekday: 'long', month: 'long', day: 'numeric' });
 }
 
 export function formatBookingShortDate(dateStr: string): string {
-  const d = new Date(`${dateStr}T12:00:00`);
-  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
-}
-
-export function formatBookingTime12h(time: string): string {
-  const [h, m] = time.split(':').map(Number);
-  const period = h >= 12 ? 'pm' : 'am';
-  const hour12 = h % 12 || 12;
-  return m ? `${hour12}:${String(m).padStart(2, '0')}${period}` : `${hour12}${period}`;
+  const d = DateTime.fromISO(`${dateStr}T12:00:00`);
+  if (!d.isValid) return dateStr;
+  return d.toLocaleString({ weekday: 'short', month: 'short', day: 'numeric' });
 }
 
 function toDateKey(year: number, month: number, day: number): string {
@@ -60,7 +68,13 @@ export function portalMeetingsUrl(leadRef?: string | null): string | null {
   return `/portal/${encodeURIComponent(leadRef.trim())}/case?tab=meetings`;
 }
 
-export function ScheduledMeetingsSection({ meetings }: { meetings: PublicBookingMeeting[] }) {
+export function ScheduledMeetingsSection({
+  meetings,
+  clientTimezone,
+}: {
+  meetings: PublicBookingMeeting[];
+  clientTimezone: string;
+}) {
   return (
     <section className="space-y-4">
       <PortalSectionLabel>Your scheduled meetings</PortalSectionLabel>
@@ -73,7 +87,14 @@ export function ScheduledMeetingsSection({ meetings }: { meetings: PublicBooking
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {meetings.map((m) => {
-            const time = m.meeting_time?.substring(0, 5) || '';
+            const tz = m.client_booking_timezone || clientTimezone;
+            const jerusalemTime = m.meeting_time?.substring(0, 5) || '';
+            const display = m.meeting_date
+              ? formatMeetingForClientDisplay(m.meeting_date, jerusalemTime, tz)
+              : null;
+            const displayDate = display?.clientDate || m.meeting_date || '';
+            const timeWithZone = display?.clientTimeWithZone
+              || (jerusalemTime ? formatBookingTimeWithZone(jerusalemTime, tz, displayDate) : '');
             const isTeams = (m.meeting_location || '').toLowerCase() === 'teams';
             return (
               <PortalCard key={m.id} className="flex flex-col">
@@ -82,9 +103,14 @@ export function ScheduledMeetingsSection({ meetings }: { meetings: PublicBooking
                     <p className="font-semibold text-gray-900">{m.meeting_subject || 'Meeting'}</p>
                     <p className="mt-2 flex items-center gap-2 text-sm text-gray-600">
                       <CalendarDaysIcon className="h-4 w-4 shrink-0 text-gray-400" />
-                      {formatBookingShortDate(m.meeting_date)}
-                      {time ? ` · ${formatBookingTime12h(time)}` : ''}
+                      {displayDate ? formatBookingShortDate(displayDate) : ''}
+                      {timeWithZone ? ` · ${timeWithZone}` : ''}
                     </p>
+                    {display?.israelTimeWithZone && tz !== BUSINESS_TZ ? (
+                      <p className="mt-1 text-xs text-base-content/45">
+                        Israel office: {display.israelTimeWithZone}
+                      </p>
+                    ) : null}
                     {m.meeting_location ? (
                       <p className="mt-1 flex items-center gap-2 text-sm text-gray-600">
                         {isTeams ? (
@@ -138,6 +164,7 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
   onLeadRefLoaded,
 }) => {
   const embedded = variant === 'embedded';
+  const [clientTimezone, setClientTimezone] = useState(() => getStoredClientTimezone());
   const [config, setConfig] = useState<PublicBookingConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -154,10 +181,17 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
   const [confirmedMeeting, setConfirmedMeeting] = useState<{
     date: string;
     time: string;
+    timeWithZone: string;
+    israelTimeWithZone?: string;
     location: string;
   } | null>(null);
   const [scheduledMeetings, setScheduledMeetings] = useState<PublicBookingMeeting[]>([]);
   const [bookingOpen, setBookingOpen] = useState(embedded);
+
+  useEffect(() => {
+    const tz = persistClientTimezone(detectClientTimezone());
+    setClientTimezone(tz);
+  }, []);
 
   const loadScheduledMeetings = useCallback(async () => {
     if (!bookingToken) return;
@@ -195,7 +229,7 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
     async (date: string) => {
       setSlotsLoading(true);
       try {
-        const result = await fetchPublicBookingSlots(bookingToken, date);
+        const result = await fetchPublicBookingSlots(bookingToken, date, clientTimezone);
         setSlots(result.slots);
       } catch (e) {
         toast.error(e instanceof Error ? e.message : 'Could not load times');
@@ -204,15 +238,44 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
         setSlotsLoading(false);
       }
     },
-    [bookingToken],
+    [bookingToken, clientTimezone],
   );
 
   useEffect(() => {
-    if (selectedDate) void loadSlots(selectedDate);
+    if (selectedDate) {
+      setSelectedTime(null);
+      void loadSlots(selectedDate);
+    }
   }, [selectedDate, loadSlots]);
 
+  useEffect(() => {
+    if (slotsLoading || !selectedDate) return;
+    if (slots.length === 0) {
+      setSelectedTime(null);
+      return;
+    }
+    setSelectedTime((prev) => {
+      const normalized = prev?.substring(0, 5);
+      if (normalized && slots.includes(normalized)) return prev;
+      return slots[0];
+    });
+  }, [selectedDate, slots, slotsLoading]);
+
+  const effectiveAvailability = useMemo(() => {
+    if (!config) return null;
+    return resolveCategoryAvailabilityForLead(
+      config.settings,
+      config.lead.main_category_id ?? null,
+    );
+  }, [config]);
+
+  const unavailableDates = useMemo(
+    () => config?.settings.unavailable_dates || [],
+    [config?.settings.unavailable_dates],
+  );
+
   const calendarDays = useMemo(() => {
-    if (!config) return [];
+    if (!config || !effectiveAvailability) return [];
     const year = viewMonth.getFullYear();
     const month = viewMonth.getMonth();
     const firstDay = new Date(year, month, 1).getDay();
@@ -221,6 +284,7 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
     today.setHours(0, 0, 0, 0);
     const maxDate = new Date();
     maxDate.setDate(maxDate.getDate() + (config.settings.max_days_ahead || 60));
+    const allowedDays = effectiveAvailability.days_of_week || [];
 
     const cells: Array<{
       date: string | null;
@@ -239,18 +303,19 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
       const cellDate = new Date(year, month, day);
       const dow = cellDate.getDay();
       const inRange = cellDate >= today && cellDate <= maxDate;
-      const allowedDay = config.settings.days_of_week?.includes(dow);
+      const allowedDay = allowedDays.includes(dow);
+      const blockedDate = isClientBookingDateBlocked(dateKey, unavailableDates, clientTimezone);
       cells.push({
         date: dateKey,
         day,
-        isSelectable: inRange && allowedDay,
+        isSelectable: inRange && allowedDay && !blockedDate,
         isToday: cellDate.getTime() === today.getTime(),
         isSelected: selectedDate === dateKey,
       });
     }
 
     return cells;
-  }, [config, viewMonth, selectedDate]);
+  }, [config, viewMonth, selectedDate, effectiveAvailability, unavailableDates, clientTimezone]);
 
   const contactsWithReach = useMemo(() => {
     if (!config?.contacts) return [];
@@ -284,10 +349,21 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
         contact_id: selectedContact.id,
         meeting_location: selectedLocation,
         notes: notes.trim() || undefined,
+        client_timezone: clientTimezone,
       });
+      const jerusalemTime = result.meeting.time?.substring(0, 5) || selectedTime.substring(0, 5);
+      const display = formatMeetingForClientDisplay(
+        result.meeting.date,
+        jerusalemTime,
+        clientTimezone,
+      );
       setConfirmedMeeting({
-        date: result.meeting.date,
-        time: result.meeting.time,
+        date: display?.clientDate || selectedDate,
+        time: display?.clientTime || selectedTime.substring(0, 5),
+        timeWithZone:
+          display?.clientTimeWithZone
+          || formatBookingTimeWithZone(selectedTime, clientTimezone, selectedDate || undefined),
+        israelTimeWithZone: display?.israelTimeWithZone,
         location: result.meeting.location,
       });
       setScheduledMeetings(result.scheduled_meetings ?? []);
@@ -342,6 +418,28 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
   const leadRef = lead.lead_ref || lead.lead_number;
   const portalUrl = portalMeetingsUrl(leadRef);
 
+  const timezoneBanner = (
+    <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-primary/15 bg-primary/5 px-4 py-3 text-sm text-base-content/70">
+      <span className="inline-flex shrink-0 items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+        {formatTimezoneBadge(clientTimezone)}
+      </span>
+      <span>Times shown in your local time ({formatTimezoneLabel(clientTimezone)}).</span>
+      {config.lead.main_category_name ? (
+        <span className="w-full text-xs text-base-content/50">
+          Availability for {config.lead.main_category_name}
+          {effectiveAvailability
+            ? ` · ${effectiveAvailability.business_hours_start}–${effectiveAvailability.business_hours_end} Israel time`
+            : ''}
+        </span>
+      ) : null}
+      {clientTimezone !== BUSINESS_TZ ? (
+        <span className="w-full text-xs text-base-content/50">
+          Our office schedules in Israel ({formatTimezoneBadge(BUSINESS_TZ)}).
+        </span>
+      ) : null}
+    </div>
+  );
+
   const confirmationCard = confirmedMeeting ? (
     <PortalCard className={embedded ? undefined : 'max-w-xl'}>
       <div className="flex items-center gap-3">
@@ -356,7 +454,12 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
       <dl className="mt-5 grid gap-2 text-sm text-gray-700 sm:grid-cols-2">
         <div>
           <dt className="text-base-content/45">Time</dt>
-          <dd className="font-medium">{formatBookingTime12h(confirmedMeeting.time.substring(0, 5))}</dd>
+          <dd className="font-medium">{confirmedMeeting.timeWithZone}</dd>
+          {confirmedMeeting.israelTimeWithZone && clientTimezone !== BUSINESS_TZ ? (
+            <dd className="mt-1 text-xs text-base-content/45">
+              Israel office: {confirmedMeeting.israelTimeWithZone}
+            </dd>
+          ) : null}
         </div>
         <div>
           <dt className="text-base-content/45">Duration</dt>
@@ -383,6 +486,7 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
   const bookingFlow = (
     <section className="space-y-4">
       <PortalSectionLabel>{embedded ? 'Schedule a meeting' : 'Book a new meeting'}</PortalSectionLabel>
+      {timezoneBanner}
 
       {step === 'done' && confirmationCard ? (
         confirmationCard
@@ -407,7 +511,8 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
           </button>
           <h3 className="text-lg font-bold text-gray-900">Confirm your details</h3>
           <p className="mt-1 text-sm text-base-content/55">
-            {formatBookingDisplayDate(selectedDate!)} at {formatBookingTime12h(selectedTime!)}
+            {formatBookingDisplayDate(selectedDate!)} at{' '}
+            {formatBookingTimeWithZone(selectedTime!, clientTimezone, selectedDate || undefined)}
           </p>
 
           <div className="mt-6">
@@ -567,9 +672,18 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
                     onChange={setSelectedTime}
                     loading={slotsLoading}
                     dayUnavailable={!slotsLoading && slots.length === 0}
-                    minHour={9}
-                    maxHour={20}
+                    allowedTimes={slots}
                   />
+                  {!slotsLoading && slots.length > 0 && clientTimezone !== BUSINESS_TZ ? (
+                    <p className="text-center text-xs text-base-content/45">
+                      Only times within our Israel office hours are available in your timezone.
+                    </p>
+                  ) : null}
+                  {selectedTime ? (
+                    <p className="text-center text-sm font-medium text-gray-700">
+                      Selected: {formatBookingTimeWithZone(selectedTime, clientTimezone, selectedDate)}
+                    </p>
+                  ) : null}
                   {!slotsLoading && selectedTime && slots.length > 0 ? (
                     <button
                       type="button"
@@ -604,7 +718,9 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
         headerCoverImage={getPortalTabHeaderCoverImage('meetings')}
       >
         {confirmationCard}
-        {!hideScheduledMeetings ? <ScheduledMeetingsSection meetings={scheduledMeetings} /> : null}
+        {!hideScheduledMeetings ? (
+          <ScheduledMeetingsSection meetings={scheduledMeetings} clientTimezone={clientTimezone} />
+        ) : null}
       </PortalTabFrame>
     );
   }
@@ -619,7 +735,9 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
       }
       headerCoverImage={getPortalTabHeaderCoverImage('meetings')}
     >
-      {!hideScheduledMeetings ? <ScheduledMeetingsSection meetings={scheduledMeetings} /> : null}
+      {!hideScheduledMeetings ? (
+        <ScheduledMeetingsSection meetings={scheduledMeetings} clientTimezone={clientTimezone} />
+      ) : null}
       {bookingFlow}
     </PortalTabFrame>
   );

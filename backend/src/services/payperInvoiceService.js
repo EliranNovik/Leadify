@@ -978,6 +978,15 @@ async function createPayperInvoiceForPayment(
     }
 
     if (automatic && !isAutomatedInvoiceEnabled()) {
+      if (paymentLink?.id && paymentLink.payper_invoice_status !== 'skipped') {
+        await persistPayperInvoiceResult(
+          paymentLink.id,
+          {},
+          { reason: 'automated_invoice_disabled' },
+          'skipped',
+          paymentLink,
+        );
+      }
       return { skipped: true, reason: 'automated_invoice_disabled' };
     }
 

@@ -7,8 +7,8 @@ export type BookingTimeWheelProps = {
   loading?: boolean;
   disabled?: boolean;
   dayUnavailable?: boolean;
-  minHour?: number;
-  maxHour?: number;
+  /** Available slot times in the client's local timezone (from the booking API). */
+  allowedTimes?: string[];
 };
 
 const BookingTimeWheel: React.FC<BookingTimeWheelProps> = ({
@@ -17,8 +17,7 @@ const BookingTimeWheel: React.FC<BookingTimeWheelProps> = ({
   loading = false,
   disabled = false,
   dayUnavailable = false,
-  minHour = 9,
-  maxHour = 20,
+  allowedTimes,
 }) => (
   <WheelTimePicker
     value={value || ''}
@@ -27,8 +26,7 @@ const BookingTimeWheel: React.FC<BookingTimeWheelProps> = ({
     disabled={disabled}
     unavailable={dayUnavailable}
     emptyMessage="No times available this day."
-    minHour={minHour}
-    maxHour={maxHour}
+    allowedTimes={allowedTimes}
   />
 );
 

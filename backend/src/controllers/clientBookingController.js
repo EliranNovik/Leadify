@@ -19,10 +19,11 @@ const clientBookingController = {
     try {
       const token = String(req.body?.token || '').trim();
       const date = String(req.body?.date || '').trim();
+      const clientTimezone = String(req.body?.client_timezone || '').trim() || undefined;
       if (!token || !date) {
         return res.status(400).json({ success: false, error: 'token and date are required' });
       }
-      const data = await clientBookingService.getAvailableSlots(token, date);
+      const data = await clientBookingService.getAvailableSlots(token, date, clientTimezone);
       res.status(200).json({ success: true, data });
     } catch (error) {
       console.error('client-booking slots error:', error);
@@ -42,6 +43,7 @@ const clientBookingController = {
         contact_id: req.body?.contact_id,
         meeting_location: req.body?.meeting_location,
         notes: req.body?.notes,
+        client_timezone: req.body?.client_timezone,
       });
       res.status(200).json({ success: true, data: result });
     } catch (error) {

@@ -170,9 +170,12 @@ async function getPaymentStatus(req, res) {
     }
 
     if (
+      payperInvoiceService.isAutomatedInvoiceEnabled() &&
       payment.status === 'paid' &&
       payment.payper_invoice_status !== 'success' &&
-      payment.payper_invoice_status !== 'failed'
+      payment.payper_invoice_status !== 'failed' &&
+      payment.payper_invoice_status !== 'skipped' &&
+      payment.payper_invoice_status !== 'skipped_no_email'
     ) {
       payment = (await reconciliation.tryCreatePayperInvoiceForPaidLink(payment)) || payment;
     }

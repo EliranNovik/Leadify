@@ -147,7 +147,8 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
       const invoiceDone =
         Boolean(data.payper_invoice_link) ||
         data.payper_invoice_status === 'failed' ||
-        data.payper_invoice_status === 'skipped';
+        data.payper_invoice_status === 'skipped' ||
+        data.payper_invoice_status === 'skipped_no_email';
       if ((data.confirmation_email_sent && invoiceDone) || attempts >= maxAttempts) {
         window.clearInterval(timer);
       }

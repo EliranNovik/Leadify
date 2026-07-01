@@ -52,6 +52,14 @@ export type BookingContact = {
   is_main?: boolean;
 };
 
+export type CategoryAvailabilityRule = {
+  id?: string;
+  main_category_ids: number[];
+  business_hours_start: string;
+  business_hours_end: string;
+  days_of_week: number[];
+};
+
 export type PublicBookingConfig = {
   settings: {
     title: string;
@@ -66,12 +74,16 @@ export type PublicBookingConfig = {
     days_of_week: number[];
     send_email: boolean;
     send_whatsapp: boolean;
+    category_availability_rules?: CategoryAvailabilityRule[];
+    unavailable_dates?: string[];
   };
   lead: {
     lead_number: string;
     lead_ref?: string;
     display_name: string;
     category?: string | null;
+    main_category_id?: number | null;
+    main_category_name?: string | null;
     language_id?: number | null;
     is_legacy: boolean;
   };
@@ -105,6 +117,8 @@ export type LeadBookingSettings = {
   send_whatsapp: boolean;
   send_calendar_invite: boolean;
   timezone: string;
+  category_availability_rules?: CategoryAvailabilityRule[];
+  unavailable_dates?: string[];
 };
 
 export async function fetchPublicBookingConfig(token: string): Promise<PublicBookingConfig> {
@@ -121,14 +135,19 @@ export async function fetchPublicBookingConfig(token: string): Promise<PublicBoo
 export async function fetchPublicBookingSlots(
   token: string,
   date: string,
-): Promise<{ slots: string[]; timezone: string }> {
+  clientTimezone?: string,
+): Promise<{ slots: string[]; timezone: string; business_timezone?: string }> {
   const response = await fetch(buildUrl('/api/client-booking/slots'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token, date }),
+    body: JSON.stringify({ token, date, client_timezone: clientTimezone }),
   });
   const payload = await parseJson(response);
-  return (payload?.data as { slots: string[]; timezone: string }) || { slots: [], timezone: 'Asia/Jerusalem' };
+  return (payload?.data as { slots: string[]; timezone: string; business_timezone?: string }) || {
+    slots: [],
+    timezone: 'Asia/Jerusalem',
+    business_timezone: 'Asia/Jerusalem',
+  };
 }
 
 export type PublicBookingMeeting = {
@@ -140,6 +159,7 @@ export type PublicBookingMeeting = {
   join_url?: string | null;
   status?: string;
   booked_via_client_link?: boolean;
+  client_booking_timezone?: string | null;
 };
 
 export async function fetchPublicBookingMeetings(token: string): Promise<PublicBookingMeeting[]> {
@@ -160,6 +180,7 @@ export async function bookPublicMeeting(
     contact_id: number;
     meeting_location: ClientBookingLocation;
     notes?: string;
+    client_timezone?: string;
   },
 ) {
   const response = await fetch(buildUrl('/api/client-booking/book'), {

@@ -7,6 +7,17 @@ const {
   buildBookingWhatsAppTemplateParameters,
   fillWhatsAppTemplateContent,
 } = require('./bookingWhatsAppParams');
+const {
+  BUSINESS_TZ,
+  isValidIanaTimezone,
+  jerusalemDateTimeFromWall,
+  clientLocalToJerusalem,
+  jerusalemToClientLocal,
+  formatDualBookingTime,
+  addDaysToDateKey,
+  normalizeTime,
+} = require('../lib/bookingTimezone');
+const { DateTime } = require('luxon');
 
 /** Delegated scopes for shared-calendar Teams booking (not app-only). */
 const BOOKING_GRAPH_SCOPES = [
@@ -32,10 +43,70 @@ const INVITATION_TEMPLATE_IDS = {
 
 const CLIENT_BOOKING_LOCATIONS = ['Teams', 'Ramat Gan Office'];
 
-/** Fixed booking window — not configurable per lead. */
-const BOOKING_HOURS_START = '09:00';
-const BOOKING_HOURS_END = '21:00';
-const BOOKING_LAST_START = '20:59';
+function normalizeTimeHHmm(value) {
+  const raw = String(value || '').trim().substring(0, 5);
+  const match = raw.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return '';
+  return `${String(Number(match[1])).padStart(2, '0')}:${match[2]}`;
+}
+
+function resolveCategoryAvailability(settings) {
+  const mainCategoryId = settings.main_category_id != null ? Number(settings.main_category_id) : null;
+  const rules = Array.isArray(settings.category_availability_rules)
+    ? settings.category_availability_rules
+    : [];
+
+  if (mainCategoryId != null && Number.isFinite(mainCategoryId)) {
+    for (const rule of rules) {
+      const ids = Array.isArray(rule?.main_category_ids)
+        ? rule.main_category_ids.map((id) => Number(id)).filter((id) => Number.isFinite(id))
+        : [];
+      if (!ids.includes(mainCategoryId)) continue;
+
+      const businessHoursStart = normalizeTimeHHmm(rule.business_hours_start)
+        || normalizeTimeHHmm(settings.business_hours_start)
+        || '09:00';
+      const businessHoursEnd = normalizeTimeHHmm(rule.business_hours_end)
+        || normalizeTimeHHmm(settings.business_hours_end)
+        || '21:00';
+      const daysOfWeek = Array.isArray(rule.days_of_week) && rule.days_of_week.length > 0
+        ? rule.days_of_week.map((d) => Number(d)).filter((d) => Number.isFinite(d))
+        : settings.days_of_week;
+
+      return {
+        ...settings,
+        business_hours_start: businessHoursStart,
+        business_hours_end: businessHoursEnd,
+        days_of_week: daysOfWeek,
+      };
+    }
+  }
+
+  return {
+    ...settings,
+    business_hours_start: normalizeTimeHHmm(settings.business_hours_start) || '09:00',
+    business_hours_end: normalizeTimeHHmm(settings.business_hours_end) || '21:00',
+  };
+}
+
+function resolveBookingWindow(settings) {
+  const start = normalizeTimeHHmm(settings.business_hours_start) || '09:00';
+  const end = normalizeTimeHHmm(settings.business_hours_end) || '21:00';
+  const startMin = parseTimeToMinutes(start);
+  const endMin = parseTimeToMinutes(end);
+  // business_hours_end is the last allowed meeting *start* time (not when the slot must end).
+  const lastStartMin = Math.max(startMin, endMin);
+  return {
+    start,
+    end,
+    lastStart: minutesToTime(lastStartMin),
+  };
+}
+
+function isJerusalemDateUnavailable(settings, jerusalemDateStr) {
+  const blocked = Array.isArray(settings.unavailable_dates) ? settings.unavailable_dates : [];
+  return blocked.includes(jerusalemDateStr);
+}
 
 function resolveClientBookingLocation(value) {
   const location = String(value || '').trim();
@@ -248,7 +319,15 @@ async function getBookingContext(token) {
   });
   if (error) throw error;
   if (!data?.ok) throw new Error(data?.error || 'Invalid booking link');
-  return data.settings;
+
+  const merged = {
+    ...data.settings,
+    main_category_id: data.main_category_id ?? null,
+    category_availability_rules: data.category_availability_rules || [],
+    unavailable_dates: Array.isArray(data.unavailable_dates) ? data.unavailable_dates : [],
+  };
+
+  return resolveCategoryAvailability(merged);
 }
 
 async function getPublicConfig(token) {
@@ -279,24 +358,68 @@ function slotOverlaps(startMin, duration, buffer, busyRanges) {
   return false;
 }
 
-function isBookingTimeAvailable(settings, dateStr, timeStr, busyRanges, now = new Date()) {
+function isBookingTimeAvailable(settings, dateStr, timeStr, busyRanges) {
   const normalized = String(timeStr || '').substring(0, 5);
   if (!/^\d{2}:\d{2}$/.test(normalized)) return false;
 
+  if (isJerusalemDateUnavailable(settings, dateStr)) return false;
+
+  const window = resolveBookingWindow(settings);
   const t = parseTimeToMinutes(normalized);
-  const startMin = parseTimeToMinutes(BOOKING_HOURS_START);
-  const lastStartMin = parseTimeToMinutes(BOOKING_LAST_START);
+  const startMin = parseTimeToMinutes(window.start);
+  const lastStartMin = parseTimeToMinutes(window.lastStart);
   const duration = settings.duration_minutes || 30;
   const buffer = settings.buffer_minutes || 0;
-  const minNoticeMs = (settings.min_notice_hours || 24) * 60 * 60 * 1000;
+  const minNoticeHours = settings.min_notice_hours || 24;
 
   if (t < startMin || t > lastStartMin) return false;
   if (slotOverlaps(t, duration, buffer, busyRanges)) return false;
 
-  const slotDateTime = new Date(`${dateStr}T${minutesToTime(t)}:00`);
-  if (slotDateTime.getTime() < now.getTime() + minNoticeMs) return false;
+  const slotDt = jerusalemDateTimeFromWall(dateStr, normalized);
+  if (!slotDt) return false;
+  const minNotice = DateTime.now().setZone(BUSINESS_TZ).plus({ hours: minNoticeHours });
+  if (slotDt < minNotice) return false;
 
   return true;
+}
+
+function getJerusalemJsDayOfWeek(dateStr) {
+  const dt = DateTime.fromISO(`${dateStr}T12:00:00`, { zone: BUSINESS_TZ });
+  if (!dt.isValid) return 0;
+  return dt.weekday === 7 ? 0 : dt.weekday;
+}
+
+async function generateJerusalemSlotsForDate(settings, jerusalemDateStr) {
+  if (isJerusalemDateUnavailable(settings, jerusalemDateStr)) return [];
+
+  const jsDow = getJerusalemJsDayOfWeek(jerusalemDateStr);
+  if (!settings.days_of_week?.includes(jsDow)) return [];
+
+  const maxDays = settings.max_days_ahead || 60;
+  const maxDate = DateTime.now().setZone(BUSINESS_TZ).plus({ days: maxDays }).endOf('day');
+  const selected = DateTime.fromISO(`${jerusalemDateStr}T00:00:00`, { zone: BUSINESS_TZ });
+  if (!selected.isValid || selected > maxDate) return [];
+
+  const busyRanges = await fetchBusyRanges(settings, jerusalemDateStr);
+  const window = resolveBookingWindow(settings);
+  const startMin = parseTimeToMinutes(window.start);
+  const lastStartMin = parseTimeToMinutes(window.lastStart);
+  const duration = settings.duration_minutes || 30;
+  const buffer = settings.buffer_minutes || 0;
+  const minNoticeHours = settings.min_notice_hours || 24;
+  const slots = [];
+
+  for (let t = startMin; t <= lastStartMin; t += 1) {
+    if (slotOverlaps(t, duration, buffer, busyRanges)) continue;
+    const timeStr = minutesToTime(t);
+    const slotDt = jerusalemDateTimeFromWall(jerusalemDateStr, timeStr);
+    if (!slotDt) continue;
+    const minNotice = DateTime.now().setZone(BUSINESS_TZ).plus({ hours: minNoticeHours });
+    if (slotDt < minNotice) continue;
+    slots.push({ date: jerusalemDateStr, time: timeStr });
+  }
+
+  return slots;
 }
 
 async function fetchBusyRanges(settings, dateStr) {
@@ -357,43 +480,47 @@ async function fetchBusyRanges(settings, dateStr) {
   return ranges;
 }
 
-async function getAvailableSlots(token, dateStr) {
+async function getAvailableSlots(token, dateStr, clientTimezone) {
   const settings = await getBookingContext(token);
-  const tz = settings.timezone || 'Asia/Jerusalem';
-  const date = new Date(`${dateStr}T12:00:00`);
-  const dayOfWeek = date.getDay();
+  const businessTz = settings.timezone || BUSINESS_TZ;
+  const clientTz = isValidIanaTimezone(clientTimezone) ? clientTimezone : businessTz;
 
-  if (!settings.days_of_week?.includes(dayOfWeek)) {
-    return { slots: [], timezone: tz };
+  if (!dateStr) {
+    return { slots: [], timezone: clientTz, business_timezone: BUSINESS_TZ };
   }
 
-  const now = new Date();
-  const minNoticeMs = (settings.min_notice_hours || 24) * 60 * 60 * 1000;
-  const maxDate = new Date();
-  maxDate.setDate(maxDate.getDate() + (settings.max_days_ahead || 60));
-  const selectedDate = new Date(`${dateStr}T00:00:00`);
-
-  if (selectedDate > maxDate) return { slots: [], timezone: tz };
-
-  const startMin = parseTimeToMinutes(BOOKING_HOURS_START);
-  const lastStartMin = parseTimeToMinutes(BOOKING_LAST_START);
-  const interval = 1;
-  const duration = settings.duration_minutes || 30;
-  const buffer = settings.buffer_minutes || 0;
-
-  const busyRanges = await fetchBusyRanges(settings, dateStr);
-  const slots = [];
-
-  for (let t = startMin; t <= lastStartMin; t += interval) {
-    if (slotOverlaps(t, duration, buffer, busyRanges)) continue;
-
-    const slotDateTime = new Date(`${dateStr}T${minutesToTime(t)}:00`);
-    if (slotDateTime.getTime() < now.getTime() + minNoticeMs) continue;
-
-    slots.push(minutesToTime(t));
+  if (clientTz === BUSINESS_TZ || clientTz === businessTz) {
+    const jerusalemSlots = await generateJerusalemSlotsForDate(settings, dateStr);
+    return {
+      slots: jerusalemSlots.map((s) => s.time),
+      timezone: BUSINESS_TZ,
+      business_timezone: BUSINESS_TZ,
+    };
   }
 
-  return { slots, timezone: tz };
+  const clientDate = dateStr;
+  const jerusalemDates = [
+    addDaysToDateKey(clientDate, -1),
+    clientDate,
+    addDaysToDateKey(clientDate, 1),
+  ];
+
+  const clientSlotSet = new Set();
+  for (const jDate of jerusalemDates) {
+    const jerusalemSlots = await generateJerusalemSlotsForDate(settings, jDate);
+    for (const slot of jerusalemSlots) {
+      const local = jerusalemToClientLocal(slot.date, slot.time, clientTz);
+      if (!local || local.date !== clientDate) continue;
+      clientSlotSet.add(local.time);
+    }
+  }
+
+  const slots = Array.from(clientSlotSet).sort();
+  return {
+    slots,
+    timezone: clientTz,
+    business_timezone: BUSINESS_TZ,
+  };
 }
 
 async function createSharedCalendarEvent(accessToken, params) {
@@ -538,6 +665,12 @@ async function sendBookingNotifications({
   const [year, month, day] = meeting.meeting_date.split('-');
   const formattedDate = `${day}/${month}/${year}`;
   const formattedTime = meeting.meeting_time?.substring(0, 5) || '';
+  const clientTz = meeting.client_booking_timezone || BUSINESS_TZ;
+  const dualTimeDisplay = formatDualBookingTime(
+    meeting.meeting_date,
+    formattedTime,
+    clientTz,
+  );
   const endTime = minutesToTime(
     parseTimeToMinutes(formattedTime) + (durationMinutes || settings.duration_minutes || 30),
   );
@@ -564,12 +697,12 @@ async function sendBookingNotifications({
         ? fillSimpleTemplate(stripTemplateJson(template.content), {
             client_name: contact.name || 'Valued Client',
             meeting_date: formattedDate,
-            meeting_time: formattedTime,
+            meeting_time: dualTimeDisplay || formattedTime,
             meeting_location: locationName,
             meeting_link: teamsUrl || '',
           })
         : `<p>Dear ${contact.name || 'Valued Client'},</p>
-           <p>Your meeting is confirmed for ${formattedDate} at ${formattedTime}.</p>
+           <p>Your meeting is confirmed for ${formattedDate} at ${dualTimeDisplay || formattedTime}.</p>
            <p>Location: ${locationName}</p>
            ${teamsUrl ? `<p><a href="${teamsUrl}">Join meeting</a></p>` : ''}`;
 
@@ -638,7 +771,7 @@ async function sendBookingNotifications({
 
       const templateParameters = await buildBookingWhatsAppTemplateParameters(template, {
         formattedDate,
-        formattedTime,
+        formattedTime: dualTimeDisplay || formattedTime,
         locationName,
         teamsUrl: teamsUrl || meeting.teams_meeting_url || '',
         hostEmployeeId: settings.host_employee_id,
@@ -671,17 +804,37 @@ async function sendBookingNotifications({
 
 async function bookMeeting(token, payload) {
   const settings = await getBookingContext(token);
-  const { date, time, contact_id: contactId, notes, meeting_location: meetingLocationRaw } = payload;
+  const {
+    date,
+    time,
+    contact_id: contactId,
+    notes,
+    meeting_location: meetingLocationRaw,
+    client_timezone: clientTimezone,
+  } = payload;
 
   if (!date || !time || !contactId) {
     throw new Error('Date, time, and contact are required');
   }
 
   const locationName = resolveClientBookingLocation(meetingLocationRaw);
+  const clientTz = isValidIanaTimezone(clientTimezone) ? clientTimezone : BUSINESS_TZ;
 
-  const normalizedTime = time.substring(0, 5);
-  const busyRanges = await fetchBusyRanges(settings, date);
-  if (!isBookingTimeAvailable(settings, date, normalizedTime, busyRanges)) {
+  let jerusalemDate = date;
+  let jerusalemTime = normalizeTime(time);
+  if (!jerusalemTime) {
+    throw new Error('Invalid time');
+  }
+
+  if (clientTz !== BUSINESS_TZ) {
+    const converted = clientLocalToJerusalem(date, time, clientTz);
+    if (!converted) throw new Error('Invalid date or time');
+    jerusalemDate = converted.date;
+    jerusalemTime = converted.time;
+  }
+
+  const busyRanges = await fetchBusyRanges(settings, jerusalemDate);
+  if (!isBookingTimeAvailable(settings, jerusalemDate, jerusalemTime, busyRanges)) {
     throw new Error('Selected time is no longer available');
   }
 
@@ -710,11 +863,11 @@ async function bookMeeting(token, payload) {
   const graphToken = graphAuth.accessToken;
 
   const meetingSubject = `[#${leadNumber}] ${displayName} - ${category} - Meeting (Client booked)`;
-  const startIso = `${date}T${normalizedTime}:00`;
+  const startIso = `${jerusalemDate}T${jerusalemTime}:00`;
   const durationMinutes = settings.duration_minutes || 30;
-  const endMinutes = parseTimeToMinutes(normalizedTime) + durationMinutes;
+  const endMinutes = parseTimeToMinutes(jerusalemTime) + durationMinutes;
   const endTime = minutesToTime(endMinutes);
-  const endIso = `${date}T${endTime}:00`;
+  const endIso = `${jerusalemDate}T${endTime}:00`;
   const calendarType = settings.calendar_type === 'active_client' ? 'active_client' : 'potential_client';
 
   try {
@@ -750,8 +903,8 @@ async function bookMeeting(token, payload) {
   }
 
   const meetingRow = {
-    meeting_date: date,
-    meeting_time: `${normalizedTime}:00`,
+    meeting_date: jerusalemDate,
+    meeting_time: `${jerusalemTime}:00`,
     meeting_location: locationName,
     meeting_manager: settings.meeting_manager || '',
     meeting_subject: meetingSubject,
@@ -763,6 +916,10 @@ async function bookMeeting(token, payload) {
     calendar_type: settings.calendar_type === 'active_client' ? 'active_client' : 'potential_client',
     status: 'scheduled',
   };
+
+  if (isValidIanaTimezone(clientTimezone)) {
+    meetingRow.client_booking_timezone = clientTimezone;
+  }
 
   if (isLegacy) {
     meetingRow.legacy_lead_id = Number(settings.legacy_lead_id);

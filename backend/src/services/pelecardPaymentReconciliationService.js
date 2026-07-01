@@ -10,7 +10,10 @@ const { rateFromPelecardRawResponse } = require('../lib/paymentLinkExchangeRate'
 const { chargeAmountFromPayment } = require('./paymentChargeAmountService');
 const { sendPaymentConfirmationEmail } = require('./paymentConfirmationEmailService');
 const { extractPelecardCustomerId } = require('../lib/pelecardTransactionFields');
-const { createPayperInvoiceForPayment } = require('./payperInvoiceService');
+const {
+  createPayperInvoiceForPayment,
+  isAutomatedInvoiceEnabled,
+} = require('./payperInvoiceService');
 
 const DB_RETRY_ATTEMPTS = Number(process.env.PELECARD_DB_RETRY_ATTEMPTS || '3');
 const DB_RETRY_DELAY_MS = Number(process.env.PELECARD_DB_RETRY_DELAY_MS || '300');
@@ -307,7 +310,9 @@ async function persistPaymentSuccess(payment, secureToken, callbackData, verifyR
           payment.payper_invoice_status === 'skipped_no_email' ||
           payment.payper_invoice_status === 'skipped'
             ? payment.payper_invoice_status
-            : 'pending',
+            : isAutomatedInvoiceEnabled()
+              ? 'pending'
+              : 'skipped',
         pelecard_confirmation_key:
           callbackData.ConfirmationKey ||
           callbackData.confirmationKey ||
@@ -385,11 +390,14 @@ async function persistPaymentSuccess(payment, secureToken, callbackData, verifyR
           },
         };
 
-        const invoiceResult = await createPayperInvoiceForPayment(paidPayment, {
-          callbackData,
-          verifyPayload,
-          automatic: true,
-        });
+        let invoiceResult = { skipped: true, reason: 'automated_invoice_disabled' };
+        if (isAutomatedInvoiceEnabled()) {
+          invoiceResult = await createPayperInvoiceForPayment(paidPayment, {
+            callbackData,
+            verifyPayload,
+            automatic: true,
+          });
+        }
 
         const fresh = await fetchPaymentByToken(secureToken);
         await sendPaymentConfirmationEmail(fresh || paidPayment, {
@@ -508,8 +516,11 @@ async function tryReconcilePaymentLink(payment) {
 
   if (full.status === 'paid') {
     await reconcilePaidLinkPlan(full);
-    const withInvoice = await tryCreatePayperInvoiceForPaidLink(full);
-    return fetchPaymentByToken(withInvoice?.secure_token || full.secure_token);
+    if (isAutomatedInvoiceEnabled()) {
+      const withInvoice = await tryCreatePayperInvoiceForPaidLink(full);
+      return fetchPaymentByToken(withInvoice?.secure_token || full.secure_token);
+    }
+    return full;
   }
 
   const transactionId = getStoredTransactionId(full);
@@ -624,8 +635,12 @@ async function reconcileStalePaymentLinks(options = {}) {
 
 async function tryCreatePayperInvoiceForPaidLink(payment) {
   if (!payment || payment.status !== 'paid') return payment;
+  if (!isAutomatedInvoiceEnabled()) return payment;
   if (payment.payper_invoice_status === 'success' && payment.payper_invoice_link) return payment;
   if (payment.payper_invoice_status === 'failed') return payment;
+  if (payment.payper_invoice_status === 'skipped' || payment.payper_invoice_status === 'skipped_no_email') {
+    return payment;
+  }
 
   const { ensurePaymentLinkPlanContact } = require('../lib/ensurePaymentLinkPlanContact');
   payment = await ensurePaymentLinkPlanContact(payment);

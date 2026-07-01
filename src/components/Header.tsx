@@ -4050,21 +4050,31 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 </div>
                 {/* Employee profile at bottom */}
                 <div className="flex-shrink-0 px-4 py-4 pb-6 border-t border-base-300 flex items-center gap-3">
-                  {resolvedHeaderPhotoUrl ? (
-                    <span
-                      className="w-12 h-12 min-w-[3rem] min-h-[3rem] flex-shrink-0 rounded-full bg-base-300 block bg-no-repeat bg-center"
-                      style={{
-                        backgroundImage: `url(${resolvedHeaderPhotoUrl})`,
-                        backgroundSize: 'cover',
-                      }}
-                    />
-                  ) : (
-                    <span className="w-12 h-12 min-w-[3rem] min-h-[3rem] flex-shrink-0 rounded-full bg-base-300 flex items-center justify-center text-base-content/80 font-semibold text-sm">
-                      {(authUserInitials || authUserFullName || userFullName)
-                        ? (authUserInitials || (authUserFullName || userFullName || '').trim().split(/\s+/).map(n => n[0]).join('').toUpperCase().slice(0, 2))
-                        : 'U'}
-                    </span>
-                  )}
+                  <button
+                    type="button"
+                    className="flex-shrink-0 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 hover:opacity-90 transition-opacity"
+                    aria-label="View profile"
+                    onClick={() => {
+                      setShowQuickActionsDropdown(false);
+                      navigate('/my-profile');
+                    }}
+                  >
+                    {resolvedHeaderPhotoUrl ? (
+                      <span
+                        className="w-12 h-12 min-w-[3rem] min-h-[3rem] flex-shrink-0 rounded-full bg-base-300 block bg-no-repeat bg-center"
+                        style={{
+                          backgroundImage: `url(${resolvedHeaderPhotoUrl})`,
+                          backgroundSize: 'cover',
+                        }}
+                      />
+                    ) : (
+                      <span className="w-12 h-12 min-w-[3rem] min-h-[3rem] flex-shrink-0 rounded-full bg-base-300 flex items-center justify-center text-base-content/80 font-semibold text-sm">
+                        {(authUserInitials || authUserFullName || userFullName)
+                          ? (authUserInitials || (authUserFullName || userFullName || '').trim().split(/\s+/).map(n => n[0]).join('').toUpperCase().slice(0, 2))
+                          : 'U'}
+                      </span>
+                    )}
+                  </button>
                   <div className="flex flex-col min-w-0 flex-1">
                     <div className="flex items-center gap-2 w-full min-w-0">
                       <span className="font-medium text-sm text-base-content truncate min-w-0 flex-1">

@@ -34,6 +34,8 @@ export type MobileBottomSheetProps = {
   headerClassName?: string;
   /** Desktop: centered modal (default) or right-edge drawer */
   desktopLayout?: 'center' | 'drawer-right';
+  /** Desktop: nearly full viewport (assign staff, large tables) */
+  desktopFullScreen?: boolean;
   /** When false, tapping the backdrop does nothing */
   closeOnOverlayClick?: boolean;
   onOverlayClick?: () => void;
@@ -60,6 +62,7 @@ export default function MobileBottomSheet({
   footerClassName = '',
   headerClassName = '',
   desktopLayout = 'center',
+  desktopFullScreen = false,
   closeOnOverlayClick = true,
   onOverlayClick,
   scrollLock = 'always',
@@ -144,12 +147,16 @@ export default function MobileBottomSheet({
   const showHeader = !hideDefaultHeader && (title || subtitle || headerRight);
 
   const isDrawerRight = desktopLayout === 'drawer-right';
-  const outerPositionClass = isDrawerRight
-    ? 'max-md:items-end md:items-stretch md:justify-end'
-    : 'max-md:items-end md:items-center md:justify-center md:p-4';
-  const sheetLayoutClass = isDrawerRight
-    ? 'md:ml-auto md:h-full md:max-h-full md:max-w-md md:w-full md:rounded-none md:border-l md:border-t-0'
-    : 'md:rounded-2xl md:border md:border-base-200/80 md:max-w-3xl md:max-h-[90vh] md:transition-all md:duration-200 md:ease-out';
+  const outerPositionClass = desktopFullScreen
+    ? 'max-md:items-end md:items-stretch md:justify-stretch md:p-0'
+    : isDrawerRight
+      ? 'max-md:items-end md:items-stretch md:justify-end'
+      : 'max-md:items-end md:items-center md:justify-center md:p-4';
+  const sheetLayoutClass = desktopFullScreen
+    ? 'md:rounded-none md:border-0 md:max-w-none md:w-full md:h-full md:max-h-full'
+    : isDrawerRight
+      ? 'md:ml-auto md:h-full md:max-h-full md:max-w-md md:w-full md:rounded-none md:border-l md:border-t-0'
+      : 'md:rounded-2xl md:border md:border-base-200/80 md:max-w-3xl md:max-h-[90vh] md:transition-all md:duration-200 md:ease-out';
   const desktopCenterMotion = !isDrawerRight && !isNarrowViewport()
     ? entered
       ? 'md:scale-100 md:opacity-100'

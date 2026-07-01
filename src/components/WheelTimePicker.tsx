@@ -3,9 +3,10 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 const ITEM_HEIGHT = 44;
 const WHEEL_HEIGHT = 220;
 const WHEEL_PAD = (WHEEL_HEIGHT - ITEM_HEIGHT) / 2;
-const SNAP_DURATION_MS = 220;
-const SETTLE_DELAY_MS = 280;
-const POINTER_SETTLE_DELAY_MS = 0;
+const SNAP_DURATION_MS = 320;
+const SETTLE_DELAY_MS = 420;
+const SNAP_LOCK_MS = 80;
+const SNAP_THRESHOLD_PX = 1.5;
 
 function normalizeTime(time: string): string {
   const parts = time.trim().split(':');
@@ -30,6 +31,10 @@ function pad2(n: number): string {
 
 function clampIndex(index: number, max: number): number {
   return Math.max(0, Math.min(max, index));
+}
+
+function easeOutQuart(t: number): number {
+  return 1 - (1 - t) ** 4;
 }
 
 function easeOutCubic(t: number): number {
@@ -58,11 +63,13 @@ function animateScrollTop(
     return Promise.resolve();
   }
 
+  const ease = Math.abs(delta) <= ITEM_HEIGHT * 0.6 ? easeOutQuart : easeOutCubic;
+
   return new Promise((resolve) => {
     const startTime = performance.now();
     const tick = (now: number) => {
       const progress = Math.min(1, (now - startTime) / duration);
-      const nextTop = startTop + delta * easeOutCubic(progress);
+      const nextTop = startTop + delta * ease(progress);
       el.scrollTop = nextTop;
       onFrame?.(nextTop);
       if (progress < 1) {
@@ -94,6 +101,35 @@ function getItemVisualStyle(index: number, scrollTop: number) {
   };
 }
 
+function parseAllowedTimes(times: string[] | undefined): string[] {
+  if (!times?.length) return [];
+  return [...new Set(times.map(normalizeTime).filter((t) => t))].sort();
+}
+
+function hoursFromAllowedTimes(allowed: string[]): number[] {
+  const set = new Set<number>();
+  for (const t of allowed) {
+    set.add(Number(t.split(':')[0]));
+  }
+  return Array.from(set).sort((a, b) => a - b);
+}
+
+function minutesFromAllowedTimes(allowed: string[], hour: number): number[] {
+  const set = new Set<number>();
+  for (const t of allowed) {
+    const [h, m] = t.split(':').map(Number);
+    if (h === hour) set.add(m);
+  }
+  return Array.from(set).sort((a, b) => a - b);
+}
+
+function nearestMinute(minute: number, options: number[]): number {
+  if (options.length === 0) return minute;
+  return options.reduce((prev, curr) =>
+    Math.abs(curr - minute) < Math.abs(prev - minute) ? curr : prev,
+  );
+}
+
 export type WheelTimePickerProps = {
   value: string;
   onChange: (time: string) => void;
@@ -106,6 +142,8 @@ export type WheelTimePickerProps = {
   minHour?: number;
   maxHour?: number;
   minuteStep?: number;
+  /** When set, only these HH:mm values can be selected (e.g. server slots in client local time). */
+  allowedTimes?: string[];
   className?: string;
 };
 
@@ -130,6 +168,7 @@ function WheelColumn({
   const isUserScroll = useRef(false);
   const isAnimating = useRef(false);
   const isSnapping = useRef(false);
+  const isPointerDown = useRef(false);
   const rafRef = useRef<number | null>(null);
   const settleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const snapLockUntil = useRef(0);
@@ -163,19 +202,21 @@ function WheelColumn({
         reportFrame(top);
       }
       isAnimating.current = false;
-      snapLockUntil.current = Date.now() + 120;
+      snapLockUntil.current = Date.now() + SNAP_LOCK_MS;
     },
     [items, reportFrame, scrollRef],
   );
 
   const snapToNearest = useCallback(async () => {
     const el = scrollRef.current;
-    if (!el || isAnimating.current || isSnapping.current) return;
+    if (!el || isAnimating.current || isSnapping.current || isPointerDown.current) return;
     if (Date.now() < snapLockUntil.current) return;
 
     const idx = getSnapIndex(el.scrollTop, items.length - 1);
     const top = getSnapTop(idx);
-    if (Math.abs(el.scrollTop - top) < 0.5) {
+    const offset = Math.abs(el.scrollTop - top);
+
+    if (offset < SNAP_THRESHOLD_PX) {
       reportFrame(top);
       onSettled();
       return;
@@ -183,10 +224,14 @@ function WheelColumn({
 
     isSnapping.current = true;
     isAnimating.current = true;
-    await animateScrollTop(el, top, reportFrame);
+    const duration = Math.min(
+      SNAP_DURATION_MS,
+      Math.max(180, Math.round((offset / ITEM_HEIGHT) * SNAP_DURATION_MS)),
+    );
+    await animateScrollTop(el, top, reportFrame, duration);
     isAnimating.current = false;
     isSnapping.current = false;
-    snapLockUntil.current = Date.now() + 120;
+    snapLockUntil.current = Date.now() + SNAP_LOCK_MS;
     onSettled();
   }, [items, onSettled, reportFrame, scrollRef]);
 
@@ -195,6 +240,7 @@ function WheelColumn({
       if (settleTimer.current) clearTimeout(settleTimer.current);
       settleTimer.current = setTimeout(() => {
         settleTimer.current = null;
+        if (isPointerDown.current) return;
         void snapToNearest().finally(() => {
           isUserScroll.current = false;
         });
@@ -204,12 +250,12 @@ function WheelColumn({
   );
 
   const finishScrollInteraction = useCallback(() => {
+    if (isPointerDown.current) return;
     if (settleTimer.current) clearTimeout(settleTimer.current);
     settleTimer.current = null;
-    void snapToNearest().finally(() => {
-      isUserScroll.current = false;
-    });
-  }, [snapToNearest]);
+    // Let native scroll-snap / momentum finish before a gentle correction.
+    scheduleSettle(60);
+  }, [scheduleSettle]);
 
   useEffect(() => {
     if (isUserScroll.current || isAnimating.current) return;
@@ -229,7 +275,9 @@ function WheelColumn({
       onActiveChange(readCenteredValue(el, items));
     });
 
-    scheduleSettle();
+    if (!isPointerDown.current) {
+      scheduleSettle();
+    }
   }, [items, onActiveChange, scheduleSettle, scrollRef]);
 
   const handleItemSelect = useCallback(
@@ -251,9 +299,17 @@ function WheelColumn({
     const el = scrollRef.current;
     if (!el) return;
 
+    const onPointerDown = () => {
+      isPointerDown.current = true;
+      if (settleTimer.current) {
+        clearTimeout(settleTimer.current);
+        settleTimer.current = null;
+      }
+    };
+
     const onPointerUp = () => {
-      if (isAnimating.current || isSnapping.current) return;
-      scheduleSettle(POINTER_SETTLE_DELAY_MS);
+      isPointerDown.current = false;
+      scheduleSettle();
     };
 
     const onScrollEnd = () => {
@@ -262,15 +318,15 @@ function WheelColumn({
     };
 
     el.addEventListener('scrollend', onScrollEnd);
-    el.addEventListener('touchend', onPointerUp, { passive: true });
-    el.addEventListener('mouseup', onPointerUp);
+    el.addEventListener('pointerdown', onPointerDown);
     el.addEventListener('pointerup', onPointerUp);
+    el.addEventListener('pointercancel', onPointerUp);
 
     return () => {
       el.removeEventListener('scrollend', onScrollEnd);
-      el.removeEventListener('touchend', onPointerUp);
-      el.removeEventListener('mouseup', onPointerUp);
+      el.removeEventListener('pointerdown', onPointerDown);
       el.removeEventListener('pointerup', onPointerUp);
+      el.removeEventListener('pointercancel', onPointerUp);
       if (settleTimer.current) clearTimeout(settleTimer.current);
       if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
     };
@@ -310,7 +366,7 @@ function WheelColumn({
                 key={item}
                 role="option"
                 aria-selected={isCentered}
-                className={`mx-1 flex h-11 w-[calc(100%-0.5rem)] shrink-0 cursor-pointer items-center justify-center rounded-lg text-lg font-semibold tabular-nums will-change-transform ${
+                className={`wheel-time-picker-item mx-1 flex h-11 w-[calc(100%-0.5rem)] shrink-0 cursor-pointer items-center justify-center rounded-lg text-lg font-semibold tabular-nums will-change-transform ${
                   isCentered ? 'text-primary' : 'text-gray-500'
                 }`}
                 style={{
@@ -342,6 +398,7 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
   minHour = 8,
   maxHour = 23,
   minuteStep = 1,
+  allowedTimes,
   className = '',
 }) => {
   const hourScrollRef = useRef<HTMLDivElement>(null);
@@ -351,42 +408,62 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
   const changeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastEmitted = useRef<string | null>(null);
 
-  const hours = useMemo(() => {
-    const list: number[] = [];
-    for (let h = minHour; h <= maxHour; h += 1) list.push(h);
-    return list;
-  }, [minHour, maxHour]);
+  const normalizedAllowedTimes = useMemo(() => parseAllowedTimes(allowedTimes), [allowedTimes]);
+  const usingAllowedTimes = normalizedAllowedTimes.length > 0;
 
-  const minutes = useMemo(() => {
+  const defaultMinutes = useMemo(() => {
     const step = Math.max(1, Math.min(30, minuteStep));
     const list: number[] = [];
     for (let m = 0; m < 60; m += step) list.push(m);
     return list;
   }, [minuteStep]);
 
+  const hours = useMemo(() => {
+    if (usingAllowedTimes) return hoursFromAllowedTimes(normalizedAllowedTimes);
+    const list: number[] = [];
+    for (let h = minHour; h <= maxHour; h += 1) list.push(h);
+    return list;
+  }, [minHour, maxHour, normalizedAllowedTimes, usingAllowedTimes]);
+
+  const getMinutesForHour = useCallback(
+    (hour: number) => {
+      if (usingAllowedTimes) return minutesFromAllowedTimes(normalizedAllowedTimes, hour);
+      return defaultMinutes;
+    },
+    [defaultMinutes, normalizedAllowedTimes, usingAllowedTimes],
+  );
+
   const normalizedValue = normalizeTime(value);
   const parsedHour = normalizedValue ? Number(normalizedValue.split(':')[0]) : null;
   const parsedMinute = normalizedValue ? Number(normalizedValue.split(':')[1]) : null;
 
   const snapMinuteToStep = useCallback(
-    (minute: number) => {
-      if (minutes.includes(minute)) return minute;
+    (minute: number, hour: number) => {
+      const options = getMinutesForHour(hour);
+      if (options.includes(minute)) return minute;
+      if (usingAllowedTimes) return nearestMinute(minute, options);
       const step = Math.max(1, minuteStep);
       const snapped = Math.round(minute / step) * step;
-      return Math.min(59, Math.max(0, snapped));
+      const clamped = Math.min(59, Math.max(0, snapped));
+      if (options.includes(clamped)) return clamped;
+      return nearestMinute(clamped, options);
     },
-    [minuteStep, minutes],
+    [getMinutesForHour, minuteStep, usingAllowedTimes],
   );
 
   const selectedHour =
     parsedHour != null && hours.includes(parsedHour) ? parsedHour : hours[0] ?? minHour;
   const selectedMinute =
-    parsedMinute != null ? snapMinuteToStep(parsedMinute) : minutes[0] ?? 0;
+    parsedMinute != null ? snapMinuteToStep(parsedMinute, selectedHour) : getMinutesForHour(selectedHour)[0] ?? 0;
 
   const [liveHour, setLiveHour] = useState(selectedHour);
   const [liveMinute, setLiveMinute] = useState(selectedMinute);
   const [hourDraft, setHourDraft] = useState<string | null>(null);
   const [minuteDraft, setMinuteDraft] = useState<string | null>(null);
+
+  const activeMinutes = useMemo(() => getMinutesForHour(liveHour), [getMinutesForHour, liveHour]);
+  const inputMinHour = hours[0] ?? minHour;
+  const inputMaxHour = hours[hours.length - 1] ?? maxHour;
 
   useEffect(() => {
     setLiveHour(selectedHour);
@@ -395,35 +472,61 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
     setMinuteDraft(null);
   }, [selectedHour, selectedMinute]);
 
+  useEffect(() => {
+    if (!usingAllowedTimes || activeMinutes.length === 0) return;
+    if (!activeMinutes.includes(liveMinute)) {
+      setLiveMinute(activeMinutes[0]);
+    }
+  }, [activeMinutes, liveMinute, usingAllowedTimes]);
+
   const clampHour = useCallback(
     (hour: number) => {
       if (!Number.isFinite(hour)) return selectedHour;
       if (hours.includes(hour)) return hour;
-      const clamped = Math.max(minHour, Math.min(maxHour, Math.round(hour)));
+      const clamped = Math.max(inputMinHour, Math.min(inputMaxHour, Math.round(hour)));
       if (hours.includes(clamped)) return clamped;
       return hours.reduce((prev, curr) =>
         Math.abs(curr - hour) < Math.abs(prev - hour) ? curr : prev,
       );
     },
-    [hours, maxHour, minHour, selectedHour],
+    [hours, inputMaxHour, inputMinHour, selectedHour],
   );
 
   const clampMinute = useCallback(
-    (minute: number) => {
+    (minute: number, hour = liveHour) => {
       if (!Number.isFinite(minute)) return selectedMinute;
-      const snapped = snapMinuteToStep(minute);
-      if (minutes.includes(snapped)) return snapped;
-      return minutes.reduce((prev, curr) =>
-        Math.abs(curr - snapped) < Math.abs(prev - snapped) ? curr : prev,
-      );
+      const snapped = snapMinuteToStep(minute, hour);
+      const options = getMinutesForHour(hour);
+      if (options.includes(snapped)) return snapped;
+      return nearestMinute(snapped, options);
     },
-    [minutes, selectedMinute, snapMinuteToStep],
+    [getMinutesForHour, liveHour, selectedMinute, snapMinuteToStep],
+  );
+
+  const resolveAllowedTime = useCallback(
+    (hour: number, minute: number) => {
+      const nextHour = clampHour(hour);
+      const nextMinute = clampMinute(minute, nextHour);
+      const next = `${pad2(nextHour)}:${pad2(nextMinute)}`;
+      if (!usingAllowedTimes || normalizedAllowedTimes.includes(next)) {
+        return { hour: nextHour, minute: nextMinute };
+      }
+
+      const mins = getMinutesForHour(nextHour);
+      if (mins.length > 0) {
+        return { hour: nextHour, minute: nearestMinute(nextMinute, mins) };
+      }
+
+      const fallback = normalizedAllowedTimes[0];
+      const [h, m] = fallback.split(':').map(Number);
+      return { hour: h, minute: m };
+    },
+    [clampHour, clampMinute, getMinutesForHour, normalizedAllowedTimes, usingAllowedTimes],
   );
 
   const applyTime = useCallback(
     (hour: number, minute: number) => {
-      const nextHour = clampHour(hour);
-      const nextMinute = clampMinute(minute);
+      const { hour: nextHour, minute: nextMinute } = resolveAllowedTime(hour, minute);
       const next = `${pad2(nextHour)}:${pad2(nextMinute)}`;
       setLiveHour(nextHour);
       setLiveMinute(nextMinute);
@@ -432,7 +535,18 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
       lastEmitted.current = next;
       if (next !== normalizeTime(value)) onChange(next);
     },
-    [clampHour, clampMinute, onChange, value],
+    [onChange, resolveAllowedTime, value],
+  );
+
+  const handleHourActiveChange = useCallback(
+    (hour: number) => {
+      setLiveHour(hour);
+      if (usingAllowedTimes) {
+        const validMins = getMinutesForHour(hour);
+        setLiveMinute((prev) => (validMins.includes(prev) ? prev : validMins[0] ?? 0));
+      }
+    },
+    [getMinutesForHour, usingAllowedTimes],
   );
 
   const commitHourInput = useCallback(() => {
@@ -478,12 +592,12 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
 
       if (!next) return;
 
-      if (isHourEntryComplete(next, minHour, maxHour)) {
+      if (isHourEntryComplete(next, inputMinHour, inputMaxHour)) {
         applyTime(Number(next), liveMinute);
         focusMinuteInput();
       }
     },
-    [applyTime, focusMinuteInput, liveMinute, maxHour, minHour],
+    [applyTime, focusMinuteInput, inputMaxHour, inputMinHour, liveMinute],
   );
 
   const handleMinuteInputChange = useCallback(
@@ -501,14 +615,16 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
 
   const emitChange = useCallback(() => {
     const hour = readCenteredValue(hourScrollRef.current, hours);
-    const minute = readCenteredValue(minuteScrollRef.current, minutes);
+    const minuteOptions = getMinutesForHour(hour);
+    const minute = readCenteredValue(minuteScrollRef.current, minuteOptions);
     const next = `${pad2(hour)}:${pad2(minute)}`;
+    if (usingAllowedTimes && !normalizedAllowedTimes.includes(next)) return;
     if (next === lastEmitted.current) return;
     lastEmitted.current = next;
     setLiveHour(hour);
     setLiveMinute(minute);
     if (next !== normalizeTime(value)) onChange(next);
-  }, [hours, minutes, onChange, value]);
+  }, [getMinutesForHour, hours, normalizedAllowedTimes, onChange, usingAllowedTimes, value]);
 
   const handleSettled = useCallback(() => {
     if (changeTimer.current) clearTimeout(changeTimer.current);
@@ -528,8 +644,29 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
 
   useEffect(() => {
     if (loading || unavailable || disabled || hours.length === 0) return;
-    if (!normalizeTime(value)) onChange(`${pad2(hours[0])}:${pad2(minutes[0] ?? 0)}`);
-  }, [loading, unavailable, disabled, hours, minutes, value, onChange]);
+    const current = normalizeTime(value);
+    if (!current) {
+      if (usingAllowedTimes) {
+        onChange(normalizedAllowedTimes[0]);
+      } else {
+        onChange(`${pad2(hours[0])}:${pad2(getMinutesForHour(hours[0])[0] ?? 0)}`);
+      }
+      return;
+    }
+    if (usingAllowedTimes && !normalizedAllowedTimes.includes(current)) {
+      onChange(normalizedAllowedTimes[0]);
+    }
+  }, [
+    disabled,
+    getMinutesForHour,
+    hours,
+    loading,
+    normalizedAllowedTimes,
+    onChange,
+    unavailable,
+    usingAllowedTimes,
+    value,
+  ]);
 
   if (loading) {
     return (
@@ -542,7 +679,7 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
     );
   }
 
-  if (unavailable || hours.length === 0) {
+  if (unavailable || hours.length === 0 || (usingAllowedTimes && activeMinutes.length === 0)) {
     return (
       <div className={className}>
         {label ? <label className={labelClassName}>{label}</label> : null}
@@ -614,7 +751,7 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
               items={hours}
               selected={liveHour}
               scrollRef={hourScrollRef}
-              onActiveChange={setLiveHour}
+              onActiveChange={handleHourActiveChange}
               onSettled={handleSettled}
             />
             <div
@@ -625,7 +762,7 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
             </div>
             <WheelColumn
               label="Min"
-              items={minutes}
+              items={activeMinutes}
               selected={liveMinute}
               scrollRef={minuteScrollRef}
               onActiveChange={setLiveMinute}
@@ -638,11 +775,16 @@ const WheelTimePicker: React.FC<WheelTimePickerProps> = ({
       <style>{`
         .wheel-time-picker-scroll {
           -webkit-overflow-scrolling: touch;
+          scroll-snap-type: y proximity;
           scrollbar-width: none;
           -ms-overflow-style: none;
         }
         .wheel-time-picker-scroll::-webkit-scrollbar {
           display: none;
+        }
+        .wheel-time-picker-item {
+          scroll-snap-align: center;
+          scroll-snap-stop: normal;
         }
       `}</style>
     </div>

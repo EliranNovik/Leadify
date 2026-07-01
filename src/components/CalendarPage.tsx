@@ -726,7 +726,10 @@ const CalendarPage: React.FC = () => {
   const [assignStaffLoading, setAssignStaffLoading] = useState(false);
   const [availableStaff, setAvailableStaff] = useState<string[]>([]);
   const [modalSelectedDate, setModalSelectedDate] = useState<string>('');
-  const [selectedStaffFilter, setSelectedStaffFilter] = useState<string>('');
+  const [selectedStaffFilters, setSelectedStaffFilters] = useState<string[]>([]);
+  const [staffFilterSearch, setStaffFilterSearch] = useState('');
+  const [staffFilterDropdownOpen, setStaffFilterDropdownOpen] = useState(false);
+  const staffFilterRef = useRef<HTMLDivElement>(null);
   const [allLanguages, setAllLanguages] = useState<Array<{ id: number; name: string }>>([]);
 
   // Guest Selection Modal State
@@ -1276,6 +1279,41 @@ const CalendarPage: React.FC = () => {
     }
 
     return null;
+  };
+
+  /** New leads: primary role column (manager/helper) wins over mirrored *_id column — matches RolesTab. */
+  const resolveNewLeadRoleDisplay = (
+    primary: string | number | null | undefined,
+    idFallback: string | number | null | undefined
+  ): string => {
+    const raw =
+      primary != null && primary !== '' && primary !== '--' && primary !== '---'
+        ? primary
+        : idFallback;
+    if (raw == null || raw === '' || raw === '--' || raw === '---') return '--';
+    if (typeof raw === 'number' || (typeof raw === 'string' && !isNaN(Number(raw)) && String(raw).trim() !== '')) {
+      return getEmployeeDisplayName(raw) || '--';
+    }
+    return String(raw);
+  };
+
+  const resolveEmployeeIdFromDisplayName = async (displayName: string): Promise<number | null> => {
+    if (!displayName || displayName.trim() === '') return null;
+    const employee = getEmployeeById(displayName.trim());
+    if (employee) return employee.id;
+    const { data: employeeData, error: empError } = await supabase
+      .from('tenants_employee')
+      .select('id')
+      .ilike('display_name', displayName.trim())
+      .maybeSingle();
+    if (!empError && employeeData) return employeeData.id;
+    throw new Error(`Employee not found for display name: ${displayName}`);
+  };
+
+  const resolveCanonicalEmployeeDisplayName = (input: string): string => {
+    if (!input || !input.trim()) return '';
+    const employee = getEmployeeById(input.trim());
+    return employee?.display_name?.trim() || input.trim();
   };
 
   // Helper function to get employee initials
@@ -2988,19 +3026,14 @@ const CalendarPage: React.FC = () => {
                   ...meeting.lead,
                   ...fullLeadData, // Merge full data to ensure manual_id is included
                   lead_type: 'new',
-                  // Store original IDs for employee lookup (for avatars)
-                  manager_id: meeting.lead.meeting_manager_id || meeting.lead.manager,
-                  helper_id: meeting.lead.meeting_lawyer_id || meeting.lead.helper,
+                  // Store original IDs for employee lookup (for avatars) — manager/helper columns match RolesTab
+                  manager_id: meeting.lead.manager ?? meeting.lead.meeting_manager_id,
+                  helper_id: meeting.lead.helper ?? meeting.lead.meeting_lawyer_id,
                   scheduler_id: meeting.lead.scheduler,
                   expert_id: meeting.lead.expert,
                   handler_id: meeting.lead.case_handler_id,
-                  // Convert IDs to display names for display
-                  manager: meeting.lead.meeting_manager_id
-                    ? getEmployeeDisplayName(meeting.lead.meeting_manager_id)
-                    : (meeting.lead.manager || '--'),
-                  helper: meeting.lead.meeting_lawyer_id
-                    ? getEmployeeDisplayName(meeting.lead.meeting_lawyer_id)
-                    : (meeting.lead.helper || '--'),
+                  manager: resolveNewLeadRoleDisplay(meeting.lead.manager, meeting.lead.meeting_manager_id),
+                  helper: resolveNewLeadRoleDisplay(meeting.lead.helper, meeting.lead.meeting_lawyer_id),
                   scheduler: meeting.lead.scheduler
                     ? (typeof meeting.lead.scheduler === 'number' || (typeof meeting.lead.scheduler === 'string' && !isNaN(Number(meeting.lead.scheduler))))
                       ? getEmployeeDisplayName(meeting.lead.scheduler)
@@ -4191,7 +4224,7 @@ const CalendarPage: React.FC = () => {
         const { data: leadsData, error: leadsError } = await supabase
           .from('leads')
           .select(`
-            id, name, lead_number, stage, manager, helper, scheduler, category, category_id, balance, balance_currency, 
+            id, name, lead_number, stage, manager, helper, meeting_manager_id, meeting_lawyer_id, scheduler, category, category_id, balance, balance_currency, 
             expert, probability, phone, email, language, language_id, number_of_applicants_meeting, eligibility_status,
             currency_id,
             accounting_currencies!leads_currency_id_fkey (
@@ -4482,20 +4515,8 @@ const CalendarPage: React.FC = () => {
             const lead = leadsMap[meeting.client_id];
             const language = lead.language || 'N/A';
 
-            // Convert manager, helper, scheduler, expert IDs to display names if they're numeric
-            let manager = lead.manager || '--';
-            if (manager && manager !== '--') {
-              if (typeof manager === 'number' || (typeof manager === 'string' && !isNaN(Number(manager)))) {
-                manager = getEmployeeDisplayName(manager) || '--';
-              }
-            }
-
-            let helper = lead.helper || '--';
-            if (helper && helper !== '--') {
-              if (typeof helper === 'number' || (typeof helper === 'string' && !isNaN(Number(helper)))) {
-                helper = getEmployeeDisplayName(helper) || '--';
-              }
-            }
+            const manager = resolveNewLeadRoleDisplay(lead.manager, lead.meeting_manager_id);
+            const helper = resolveNewLeadRoleDisplay(lead.helper, lead.meeting_lawyer_id);
 
             let scheduler = lead.scheduler || '--';
             if (scheduler && scheduler !== '--') {
@@ -4514,10 +4535,12 @@ const CalendarPage: React.FC = () => {
             leadData = {
               ...lead,
               lead_type: 'new',
-              manager: manager,
-              helper: helper,
-              scheduler: scheduler,
-              expert: expert,
+              manager,
+              helper,
+              manager_id: lead.manager ?? lead.meeting_manager_id ?? null,
+              helper_id: lead.helper ?? lead.meeting_lawyer_id ?? null,
+              scheduler,
+              expert,
               language: language
             };
           } else if (meeting.legacy_lead_id && legacyLeadsMap[String(meeting.legacy_lead_id)]) {
@@ -4539,15 +4562,15 @@ const CalendarPage: React.FC = () => {
             };
           }
 
-          // Convert meeting_manager and helper on the meeting object itself from IDs to display names
-          let meetingManager = meeting.meeting_manager || '--';
+          // Meeting row fields first; fall back to lead role (RolesTab / leads.manager)
+          let meetingManager = meeting.meeting_manager || leadData?.manager || '--';
           if (meetingManager && meetingManager !== '--') {
             if (typeof meetingManager === 'number' || (typeof meetingManager === 'string' && !isNaN(Number(meetingManager)))) {
               meetingManager = getEmployeeDisplayName(meetingManager) || '--';
             }
           }
 
-          let meetingHelper = meeting.helper || '--';
+          let meetingHelper = meeting.helper || leadData?.helper || '--';
           if (meetingHelper && meetingHelper !== '--') {
             if (typeof meetingHelper === 'number' || (typeof meetingHelper === 'string' && !isNaN(Number(meetingHelper)))) {
               meetingHelper = getEmployeeDisplayName(meetingHelper) || '--';
@@ -5191,12 +5214,14 @@ const CalendarPage: React.FC = () => {
 
       // Determine if this is a legacy meeting stored in leads_lead (not in meetings table)
       const isLegacyMeetingInLeadsLead = typeof meetingId === 'string' && meetingId.startsWith('legacy_') && !meeting.client_id && meeting.legacy_lead_id;
+      const canonicalValue = resolveCanonicalEmployeeDisplayName(value);
+      const employeeId = await resolveEmployeeIdFromDisplayName(canonicalValue);
 
       // Only update meetings table if the meeting exists in the meetings table (not legacy-only in leads_lead)
       if (!isLegacyMeetingInLeadsLead && typeof meetingId === 'number') {
         const { error: meetingError } = await supabase
           .from('meetings')
-          .update({ [field]: value })
+          .update({ [field]: canonicalValue })
           .eq('id', meetingId);
 
         if (meetingError) throw meetingError;
@@ -5220,29 +5245,6 @@ const CalendarPage: React.FC = () => {
         }
 
         // Get employee ID from display name (required for legacy leads)
-        // If value is empty string, set to null to clear the assignment
-        let employeeId: number | null = null;
-        if (value && value.trim() !== '') {
-          const employee = allEmployees.find(emp => emp.display_name === value);
-          if (employee) {
-            employeeId = employee.id;
-          } else {
-            // Try to find employee in database if not in allEmployees
-            const { data: employeeData, error: empError } = await supabase
-              .from('tenants_employee')
-              .select('id')
-              .eq('display_name', value)
-              .maybeSingle();
-
-            if (!empError && employeeData) {
-              employeeId = employeeData.id;
-            } else {
-              throw new Error(`Employee not found for display name: ${value}`);
-            }
-          }
-        }
-        // If value is empty, employeeId remains null which will clear the assignment
-
         const updateField = field === 'meeting_manager' ? 'meeting_manager_id' : 'meeting_lawyer_id';
 
         const { error: leadError } = await supabase
@@ -5252,13 +5254,16 @@ const CalendarPage: React.FC = () => {
 
         if (leadError) throw leadError;
       } else if (meeting.lead?.lead_type === 'new') {
-        // For new leads, update leads table
         const leadId = meeting.client_id;
-        const updateField = field === 'meeting_manager' ? 'manager' : 'helper';
+
+        const updatePayload =
+          field === 'meeting_manager'
+            ? { manager: employeeId, meeting_manager_id: employeeId }
+            : { helper: employeeId, meeting_lawyer_id: employeeId };
 
         const { error: leadError } = await supabase
           .from('leads')
-          .update({ [updateField]: value })
+          .update(updatePayload)
           .eq('id', leadId);
 
         if (leadError) throw leadError;
@@ -5270,15 +5275,23 @@ const CalendarPage: React.FC = () => {
           m.id === meetingId
             ? {
               ...m,
-              [field]: value,
+              [field]: canonicalValue,
               lead: {
                 ...m.lead,
-                [field === 'meeting_manager' ? 'manager' : 'helper']: value
+                ...(field === 'meeting_manager'
+                  ? { manager: canonicalValue, manager_id: employeeId, meeting_manager_id: employeeId }
+                  : { helper: canonicalValue, helper_id: employeeId, meeting_lawyer_id: employeeId }),
               }
             }
             : m
         )
       );
+
+      updateMeetingDropdownState(meetingId, {
+        ...(field === 'meeting_manager'
+          ? { managerSearch: '', showManagerDropdown: false }
+          : { helperSearch: '', showHelperDropdown: false }),
+      });
 
       toast.success(`${field === 'meeting_manager' ? 'Manager' : 'Helper'} assigned successfully`);
     } catch (error) {
@@ -5353,7 +5366,7 @@ const CalendarPage: React.FC = () => {
   // Helper function to filter meetings by date and staff (for assign staff modal)
   const getFilteredMeetings = () => {
     console.log('🔍🔍🔍 [getFilteredMeetings] ⭐⭐ FUNCTION CALLED ⭐⭐');
-    console.log('🔍 [getFilteredMeetings] selectedStaffFilter:', selectedStaffFilter);
+    console.log('🔍 [getFilteredMeetings] selectedStaffFilters:', selectedStaffFilters);
     console.log('🔍 [getFilteredMeetings] modalSelectedDate:', modalSelectedDate);
     console.log('🔍 [getFilteredMeetings] assignStaffMeetings count:', assignStaffMeetings.length);
     console.log('🔍 [getFilteredMeetings] isAssignStaffModalOpen:', isAssignStaffModalOpen);
@@ -5361,55 +5374,21 @@ const CalendarPage: React.FC = () => {
     let filtered = assignStaffMeetings.filter(m => m.meeting_date === modalSelectedDate);
     console.log('🔍 [getFilteredMeetings] After date filter:', filtered.length, 'meetings');
 
-    if (selectedStaffFilter) {
+    if (selectedStaffFilters.length > 0) {
       const beforeCount = filtered.length;
-      console.log('🔍 [getFilteredMeetings] ⭐ FILTER IS ACTIVE - Filtering by staff:', selectedStaffFilter, 'Total meetings before filter:', beforeCount);
+      const filterKeys = selectedStaffFilters.map((f) => f.trim().toLowerCase());
 
-      filtered = filtered.filter((m, index) => {
+      filtered = filtered.filter((m) => {
         const lead = m.lead || {};
-
-        // Debug: Log raw scheduler values
-        const rawSchedulerLead = lead.scheduler;
-        const rawSchedulerMeeting = m.scheduler;
-        const rawSchedulerIdLead = lead.scheduler_id;
-        const rawSchedulerIdMeeting = (m as any).scheduler_id;
-
-        console.log(`🔍 [getFilteredMeetings] Meeting ${index} (ID: ${m.id}):`, {
-          leadType: lead.lead_type,
-          rawSchedulerLead,
-          rawSchedulerMeeting,
-          rawSchedulerIdLead,
-          rawSchedulerIdMeeting,
-          leadSchedulerType: typeof rawSchedulerLead,
-          meetingSchedulerType: typeof rawSchedulerMeeting,
-          fullLead: lead,
-          fullMeeting: m
-        });
-
-        // Normalize all employee values to display names for consistent comparison
         const normalizedManager = normalizeEmployeeValue(lead.manager || m.meeting_manager);
         const normalizedHelper = normalizeEmployeeValue(lead.helper || m.helper);
         const normalizedScheduler = normalizeEmployeeValue(lead.scheduler || m.scheduler || lead.scheduler_id || (m as any).scheduler_id);
         const normalizedExpert = normalizeEmployeeValue(lead.expert || m.expert);
+        const roleNames = [normalizedManager, normalizedHelper, normalizedScheduler, normalizedExpert]
+          .filter(Boolean)
+          .map((name) => String(name).trim().toLowerCase());
 
-        console.log(`🔍 [getFilteredMeetings] Meeting ${index} normalized values:`, {
-          normalizedManager,
-          normalizedHelper,
-          normalizedScheduler,
-          normalizedExpert,
-          selectedStaffFilter
-        });
-
-        const matches = (
-          normalizedManager === selectedStaffFilter ||
-          normalizedHelper === selectedStaffFilter ||
-          normalizedScheduler === selectedStaffFilter ||
-          normalizedExpert === selectedStaffFilter
-        );
-
-        console.log(`🔍 [getFilteredMeetings] Meeting ${index} match result:`, matches);
-
-        return matches;
+        return filterKeys.some((filterKey) => roleNames.includes(filterKey));
       });
 
       console.log('🔍 [getFilteredMeetings] ⭐ FILTER COMPLETE - Filtered meetings count:', filtered.length, 'out of', beforeCount);
@@ -5447,8 +5426,22 @@ const CalendarPage: React.FC = () => {
   useEffect(() => {
     if (!isAssignStaffModalOpen) {
       setDropdownStates({});
+      setSelectedStaffFilters([]);
+      setStaffFilterSearch('');
+      setStaffFilterDropdownOpen(false);
     }
   }, [isAssignStaffModalOpen]);
+
+  useEffect(() => {
+    if (!staffFilterDropdownOpen) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (staffFilterRef.current && !staffFilterRef.current.contains(event.target as Node)) {
+        setStaffFilterDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [staffFilterDropdownOpen]);
 
   // Refresh employee availability when modal date changes
   useEffect(() => {
@@ -7961,8 +7954,9 @@ const CalendarPage: React.FC = () => {
         onClose={() => setIsAssignStaffModalOpen(false)}
         hideDefaultHeader
         mobileFullHeight
+        desktopFullScreen
         zIndex={50}
-        sheetClassName="bg-white md:max-w-6xl"
+        sheetClassName="bg-white"
         contentClassName="!overflow-hidden flex flex-col min-h-0 p-0"
       >
           <div className="h-full min-h-0 flex flex-col">
@@ -8172,9 +8166,85 @@ const CalendarPage: React.FC = () => {
               )}
 
               {/* Filters */}
-              <div className="mt-4 flex flex-col md:flex-row gap-4">
+              <div className="mt-4 flex flex-col md:flex-row md:flex-wrap md:items-end gap-4">
+                {/* Staff Filter — first, multi-select */}
+                <div className="flex-1 min-w-[280px] md:min-w-[320px]" ref={staffFilterRef}>
+                  <label className="text-sm font-semibold block mb-1.5">Filter by Staff</label>
+                  {selectedStaffFilters.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mb-2">
+                      {selectedStaffFilters.map((name) => (
+                        <span key={name} className="badge badge-primary gap-1 pr-1">
+                          {name}
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-xs btn-circle min-h-0 h-5 w-5"
+                            aria-label={`Remove ${name}`}
+                            onClick={() => setSelectedStaffFilters((prev) => prev.filter((n) => n !== name))}
+                          >
+                            <XMarkIcon className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                      <button
+                        type="button"
+                        className="text-xs text-gray-500 hover:text-gray-700 underline"
+                        onClick={() => setSelectedStaffFilters([])}
+                      >
+                        Clear all
+                      </button>
+                    </div>
+                  )}
+                  <div className="relative">
+                    <input
+                      type="text"
+                      className="input input-bordered w-full bg-white text-gray-800 pr-10"
+                      placeholder={selectedStaffFilters.length === 0 ? 'Search staff…' : 'Add more staff…'}
+                      value={staffFilterSearch}
+                      onChange={(e) => {
+                        setStaffFilterSearch(e.target.value);
+                        setStaffFilterDropdownOpen(true);
+                      }}
+                      onFocus={() => setStaffFilterDropdownOpen(true)}
+                    />
+                    <ChevronDownIcon
+                      className={`absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none transition-transform ${staffFilterDropdownOpen ? 'rotate-180' : ''}`}
+                    />
+                    {staffFilterDropdownOpen && (
+                      <div className="absolute z-50 mt-1 w-full max-h-56 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg">
+                        {availableStaff
+                          .filter((staff) => {
+                            const term = staffFilterSearch.trim().toLowerCase();
+                            if (term && !staff.toLowerCase().includes(term)) return false;
+                            return !selectedStaffFilters.includes(staff);
+                          })
+                          .map((staff) => (
+                            <button
+                              key={staff}
+                              type="button"
+                              className="w-full px-4 py-2.5 text-left text-sm hover:bg-gray-100 border-b border-gray-100 last:border-0"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                setSelectedStaffFilters((prev) => [...prev, staff]);
+                                setStaffFilterSearch('');
+                              }}
+                            >
+                              {staff}
+                            </button>
+                          ))}
+                        {availableStaff.filter((staff) => {
+                          const term = staffFilterSearch.trim().toLowerCase();
+                          if (term && !staff.toLowerCase().includes(term)) return false;
+                          return !selectedStaffFilters.includes(staff);
+                        }).length === 0 && (
+                          <div className="px-4 py-3 text-sm text-gray-500">No staff found</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 {/* Date Selector */}
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 shrink-0">
                   <label className="text-sm font-semibold">Date:</label>
                   <div className="flex items-center gap-2">
                     <button
@@ -8212,25 +8282,6 @@ const CalendarPage: React.FC = () => {
                       <ChevronRightIcon className="w-4 h-4" />
                     </button>
                   </div>
-                </div>
-
-                {/* Staff Filter */}
-                <div className="flex items-center gap-2">
-                  <label className="text-sm font-semibold">Filter by Staff:</label>
-                  <select
-                    value={selectedStaffFilter}
-                    onChange={(e) => {
-                      const newValue = e.target.value;
-                      console.log('🔍 [Staff Filter Dropdown] Changed to:', newValue);
-                      setSelectedStaffFilter(newValue);
-                    }}
-                    className="select bg-white text-gray-800 border-0 focus:outline-none w-48"
-                  >
-                    <option value="">All Staff</option>
-                    {availableStaff.map((staff, index) => (
-                      <option key={`${staff}-${index}`} value={staff}>{staff}</option>
-                    ))}
-                  </select>
                 </div>
               </div>
             </div>
@@ -8624,14 +8675,18 @@ const CalendarPage: React.FC = () => {
                                         {(() => {
                                           const state = getMeetingDropdownState(meeting.id);
                                           const hasManager = meeting.meeting_manager && meeting.meeting_manager !== '--' && meeting.meeting_manager.trim() !== '';
+                                          const assignedManager = hasManager ? meeting.meeting_manager : '';
+                                          const managerInputValue = state.showManagerDropdown
+                                            ? state.managerSearch
+                                            : (state.managerSearch || assignedManager);
                                           return (
                                             <>
                                               <div className="flex items-center gap-2">
                                                 <input
                                                   type="text"
-                                                  placeholder={meeting.meeting_manager || "Select manager..."}
+                                                  placeholder="Select manager..."
                                                   className={`input input-md input-bordered w-full pr-8 cursor-pointer staff-dropdown-input ${!hasManager ? 'border-red-500 bg-red-50' : ''}`}
-                                                  value={state.managerSearch}
+                                                  value={managerInputValue}
                                                   onChange={(e) => updateMeetingDropdownState(meeting.id, { managerSearch: e.target.value })}
                                                   onFocus={(e) => {
                                                     updateMeetingDropdownState(meeting.id, { showManagerDropdown: true, managerSearch: '' });
@@ -8657,14 +8712,19 @@ const CalendarPage: React.FC = () => {
                                       <div className="relative">
                                         {(() => {
                                           const state = getMeetingDropdownState(meeting.id);
+                                          const hasHelper = meeting.helper && meeting.helper !== '--' && meeting.helper.trim() !== '';
+                                          const assignedHelper = hasHelper ? meeting.helper : '';
+                                          const helperInputValue = state.showHelperDropdown
+                                            ? state.helperSearch
+                                            : (state.helperSearch || assignedHelper);
                                           return (
                                             <>
                                               <div className="flex items-center gap-2">
                                                 <input
                                                   type="text"
-                                                  placeholder={meeting.helper || "Select helper..."}
+                                                  placeholder="Select helper..."
                                                   className="input input-md input-bordered w-full pr-8 cursor-pointer staff-dropdown-input"
-                                                  value={state.helperSearch}
+                                                  value={helperInputValue}
                                                   onChange={(e) => updateMeetingDropdownState(meeting.id, { helperSearch: e.target.value })}
                                                   onFocus={(e) => {
                                                     updateMeetingDropdownState(meeting.id, { showHelperDropdown: true, helperSearch: '' });
