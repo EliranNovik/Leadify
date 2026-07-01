@@ -128,7 +128,7 @@ const PortalPublicShell: React.FC<Props> = ({
 
   if (splitHero) {
     return (
-      <div className="login-page fixed inset-0 z-0 flex overflow-hidden bg-white">
+      <div className="portal-brand login-page fixed inset-0 z-0 flex overflow-hidden bg-white">
         {/* Left: sign-in panel */}
         <div className={LEFT_PANEL_CLASS}>
           <div className="relative flex flex-1 flex-col items-center justify-center px-6 py-8 pt-[calc(4.5rem+env(safe-area-inset-top,0px))] md:px-10 lg:px-12 lg:py-8 lg:pt-0">
@@ -171,7 +171,7 @@ const PortalPublicShell: React.FC<Props> = ({
   }
 
   return (
-    <div className="login-page fixed inset-0 z-0 flex flex-col overflow-y-auto overflow-x-hidden">
+    <div className="portal-brand login-page fixed inset-0 z-0 flex flex-col overflow-y-auto overflow-x-hidden">
       <LoginHeroBackground />
       <div className="absolute left-0 right-0 top-0 z-20 flex items-start justify-between gap-4 px-4 py-4 pt-[calc(1rem+env(safe-area-inset-top,0px))] md:px-8 md:py-6">
         {logo}

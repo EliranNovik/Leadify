@@ -1,7 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import PublicPageContactButtons from '../components/public/PublicPageContactButtons';
 import ClientBookingScheduler, { portalMeetingsUrl } from '../components/client-booking/ClientBookingScheduler';
+import PortalFooter from './portal/components/PortalFooter';
 import { PortalCard, PortalLoading, PORTAL_SHELL_CLASS } from './portal/components/portalTheme';
 
 function BookingShell({
@@ -12,7 +13,6 @@ function BookingShell({
   children: React.ReactNode;
 }) {
   const portalUrl = portalMeetingsUrl(leadRef);
-  const year = new Date().getFullYear();
 
   return (
     <div className={`${PORTAL_SHELL_CLASS} flex min-h-[100dvh] flex-col`}>
@@ -40,9 +40,7 @@ function BookingShell({
         <div className="mx-auto w-full max-w-6xl">{children}</div>
       </main>
 
-      <footer className="shrink-0 border-t border-gray-200/80 bg-white/60 px-4 py-4 text-center text-xs text-base-content/40 md:text-sm">
-        © RMQ 2.0 {year}
-      </footer>
+      <PortalFooter />
 
       <PublicPageContactButtons />
     </div>

@@ -1,7 +1,25 @@
 import React, { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react';
 import { ChevronRightIcon } from '@heroicons/react/24/outline';
 
-export const PORTAL_SHELL_CLASS = 'portal-page-shell min-h-[100dvh] bg-[#ececec]';
+export const PORTAL_SHELL_CLASS =
+  'portal-brand portal-page-shell min-h-[100dvh] bg-gradient-to-b from-[#f7f7fb] to-[#f1f2f6]';
+
+/** Client portal accent — matches footer blue-950 palette */
+export const PORTAL_BRAND_BLUE = '#1e3a8a';
+export const PORTAL_BRAND_BLUE_DARK = '#172554';
+export const PORTAL_BRAND_BLUE_BRIGHT = '#1e40af';
+export const PORTAL_ACTIVE_NAV_CLASS = 'bg-blue-100 font-semibold text-blue-900';
+
+/** Client portal design tokens */
+export const PORTAL_PAGE_BG = 'bg-gradient-to-b from-[#f7f7fb] to-[#f1f2f6]';
+export const PORTAL_NAV_SURFACE_CLASS =
+  'rounded-full border border-white/35 bg-white/[0.86] shadow-[0_12px_40px_rgba(0,0,0,0.12)] backdrop-blur-[18px]';
+export const PORTAL_DASHBOARD_CONTAINER =
+  'mx-auto w-full max-w-[1360px] px-4 md:px-9';
+export const PORTAL_TEAM_CARD_CLASS =
+  'rounded-3xl border border-[rgba(20,20,30,0.06)] bg-white/[0.92] shadow-[0_18px_45px_rgba(15,23,42,0.06)]';
+export const PORTAL_NEXT_STEP_CARD_CLASS =
+  'relative overflow-hidden rounded-[22px] border border-white/70 bg-white shadow-[0_22px_50px_rgba(0,0,0,0.18)]';
 
 /** Charcoal gradient — client portal about panel & matching surfaces */
 export const PORTAL_LOGIN_PANEL_BG_CLASS =
@@ -43,7 +61,7 @@ const COVER_PHOTO_IDS = [
 
 /** One fixed image per dashboard stat card — excludes hero banner photo */
 const STAT_CARD_COVER_PHOTO_IDS = [
-  '1600880292203-757bb62b4baf',
+  '1522071820081-009f0129c71c',
   '1454165804606-c3d57bc86b40',
   '1497366216548-37526070297c',
   '1517245386807-bb43f82c33c4',
@@ -155,7 +173,7 @@ export function isPaymentOverdue(dueDate: string | null | undefined): boolean {
 
 export function PortalOverdueBadge() {
   return (
-    <span className="text-xs font-semibold text-red-600 md:text-sm">
+    <span className="inline-flex rounded-full bg-red-50 px-2.5 py-0.5 text-xs font-semibold text-red-700 md:text-sm">
       Overdue
     </span>
   );
@@ -169,6 +187,56 @@ export function PortalPaidBadge() {
   );
 }
 
+function formatPortalBadgeDate(d: string | null | undefined): string | null {
+  if (!d) return null;
+  try {
+    return new Date(d).toLocaleDateString();
+  } catch {
+    return d;
+  }
+}
+
+export function PortalDueDateBadge({
+  date,
+  overdue = false,
+}: {
+  date: string | null | undefined;
+  overdue?: boolean;
+}) {
+  const formatted = formatPortalBadgeDate(date);
+  if (!formatted) return null;
+  const tone = overdue ? 'bg-red-50 text-red-700' : 'bg-amber-50 text-amber-800';
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold md:text-sm ${tone}`}
+    >
+      <span className="font-medium opacity-75">Due</span>
+      <span>{formatted}</span>
+    </span>
+  );
+}
+
+export function PortalPaidDateBadge({ date }: { date: string | null | undefined }) {
+  const formatted = formatPortalBadgeDate(date);
+  if (!formatted) return null;
+  return (
+    <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 md:text-sm">
+      <span className="font-medium opacity-75">Paid</span>
+      <span>{formatted}</span>
+    </span>
+  );
+}
+
+export function PortalOriginallyDueText({ date }: { date: string | null | undefined }) {
+  const formatted = formatPortalBadgeDate(date);
+  if (!formatted) return null;
+  return (
+    <p className="mt-2 text-xs text-gray-400 md:text-sm">
+      Originally due {formatted}
+    </p>
+  );
+}
+
 /** Frosted glass surface — stat cards */
 export const PORTAL_GLASS_PANEL_CLASS =
   'rounded-[16px] bg-white/28 shadow-[0_8px_32px_rgba(15,23,42,0.08)] backdrop-blur-xl backdrop-saturate-150';
@@ -177,9 +245,9 @@ export const PORTAL_GLASS_PANEL_CLASS =
 export const PORTAL_HERO_GLASS_PANEL_CLASS =
   'rounded-[20px] bg-white/14 shadow-[0_16px_48px_rgba(15,23,42,0.1)] backdrop-blur-2xl backdrop-saturate-150';
 
-/** Purple oval CTA on dashboard stat-card photo backgrounds */
+/** CTA on dashboard summary cards (photo backgrounds) */
 export const PORTAL_STAT_ACTION_BTN_CLASS =
-  'inline-flex min-h-9 items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-semibold tracking-wide text-primary-content shadow-[0_4px_14px_rgba(0,0,0,0.28)] transition-all hover:-translate-y-0.5 hover:brightness-110 hover:shadow-[0_6px_18px_rgba(0,0,0,0.38)] active:translate-y-0 active:scale-[0.98]';
+  'inline-flex min-h-9 items-center gap-2 rounded-full bg-white/95 px-4 py-2 text-sm font-semibold tracking-wide text-blue-900 shadow-sm transition-all hover:-translate-y-0.5 hover:bg-white hover:shadow-md active:translate-y-0 active:scale-[0.98]';
 
 export function PortalLoading({ className = 'py-16' }: { className?: string }) {
   return (
@@ -212,9 +280,10 @@ export function PortalSectionLabel({ children }: { children: ReactNode }) {
 }
 
 export function getPortalTabHeaderCoverImage(
-  tabId: 'stages' | 'finance' | 'documents' | 'contacts' | 'meetings',
+  tabId: 'summary' | 'stages' | 'finance' | 'documents' | 'contacts' | 'meetings',
 ): string {
   const suffixByTab = {
+    summary: 'stat-case-status',
     stages: 'stat-case-status',
     finance: 'stat-next-payment',
     documents: 'stat-next-meeting',
@@ -222,6 +291,50 @@ export function getPortalTabHeaderCoverImage(
     meetings: 'stat-meeting-requests',
   } as const;
   return getStatCardCoverImage(`portal-tab::${suffixByTab[tabId]}`);
+}
+
+const PORTAL_TAB_HEADER_BOX_CLASS =
+  'relative -mx-2 -mt-6 overflow-hidden md:-mx-10 md:-mt-8 lg:mx-auto lg:-mt-6 lg:max-w-4xl lg:rounded-[20px] lg:shadow-[0_8px_32px_rgba(15,23,42,0.1)] xl:max-w-5xl';
+
+export function PortalTabHeaderCover({
+  coverImage,
+  children,
+  tall = false,
+}: {
+  coverImage: string;
+  children: ReactNode;
+  tall?: boolean;
+}) {
+  const coverFallbackUrl = unsplashCoverUrl(STAT_CARD_COVER_PHOTO_IDS[0]);
+  const [imgBroken, setImgBroken] = useState(false);
+
+  useEffect(() => {
+    setImgBroken(false);
+  }, [coverImage]);
+
+  const sizeClass = tall
+    ? 'min-h-[11.5rem] md:min-h-[13.5rem] lg:min-h-[14.5rem]'
+    : 'h-40 md:h-48 lg:h-52';
+
+  return (
+    <div className={`${PORTAL_TAB_HEADER_BOX_CLASS} ${sizeClass}`}>
+      <img
+        src={imgBroken ? coverFallbackUrl : coverImage}
+        alt=""
+        className="absolute inset-0 h-full w-full object-cover"
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={() => setImgBroken(true)}
+      />
+      <div
+        className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/75 via-black/45 to-black/20"
+        aria-hidden
+      />
+      <div className="relative z-10 flex h-full min-h-[inherit] flex-col justify-end px-4 pb-5 md:px-10 md:pb-7">
+        {children}
+      </div>
+    </div>
+  );
 }
 
 export function PortalTabFrame({
@@ -236,36 +349,15 @@ export function PortalTabFrame({
   headerCoverImage?: string;
   children: ReactNode;
 }) {
-  const coverFallbackUrl = unsplashCoverUrl(STAT_CARD_COVER_PHOTO_IDS[0]);
-  const [imgBroken, setImgBroken] = useState(false);
-
-  useEffect(() => {
-    setImgBroken(false);
-  }, [headerCoverImage]);
-
   return (
     <div className="space-y-8">
       {headerCoverImage ? (
-        <div className="relative -mx-2 -mt-6 h-40 overflow-hidden md:-mx-10 md:-mt-8 md:h-48 lg:mx-auto lg:-mt-6 lg:h-52 lg:max-w-4xl lg:rounded-[20px] lg:shadow-[0_8px_32px_rgba(15,23,42,0.1)] xl:max-w-5xl">
-          <img
-            src={imgBroken ? coverFallbackUrl : headerCoverImage}
-            alt=""
-            className="absolute inset-0 h-full w-full object-cover"
-            loading="lazy"
-            referrerPolicy="no-referrer"
-            onError={() => setImgBroken(true)}
-          />
-          <div
-            className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/75 via-black/45 to-black/20"
-            aria-hidden
-          />
-          <div className="relative z-10 flex h-full flex-col justify-end px-4 pb-6 md:px-10 md:pb-8">
-            <h2 className="text-2xl font-bold tracking-tight text-white md:text-3xl">{title}</h2>
-            {subtitle ? (
-              <p className="mt-2 max-w-2xl text-sm text-white/85 md:text-base">{subtitle}</p>
-            ) : null}
-          </div>
-        </div>
+        <PortalTabHeaderCover coverImage={headerCoverImage}>
+          <h2 className="text-2xl font-bold tracking-tight text-white md:text-3xl">{title}</h2>
+          {subtitle ? (
+            <p className="mt-2 max-w-2xl text-sm text-white/85 md:text-base">{subtitle}</p>
+          ) : null}
+        </PortalTabHeaderCover>
       ) : (
         <div>
           <h2 className="text-xl font-bold tracking-tight text-base-content/95">{title}</h2>
@@ -384,11 +476,11 @@ export function ProfileCover({
 
 const STAT_CARD_THEMES = {
   primary: {
-    bg: 'bg-[#f4ecff]',
-    border: 'border-[#eadbff]',
-    title: 'text-[#342b56]',
-    subtitle: 'text-[#6d6791]',
-    icon: 'text-[#8a63d2]',
+    bg: 'bg-blue-50',
+    border: 'border-blue-100',
+    title: 'text-blue-950',
+    subtitle: 'text-blue-800/70',
+    icon: 'text-blue-800',
   },
   sky: {
     bg: 'bg-[#eaf0ff]',
@@ -423,6 +515,7 @@ export function PortalStatCard({
   badge,
   onClick,
   coverKey,
+  showChevron = true,
 }: {
   label: string;
   value: string;
@@ -432,8 +525,9 @@ export function PortalStatCard({
   action?: ReactNode;
   badge?: ReactNode;
   onClick?: () => void;
-  /** Stable key — picks a faint background photo for the card. */
+  /** Stable key — picks a background photo for the card. */
   coverKey?: string;
+  showChevron?: boolean;
 }) {
   const theme = STAT_CARD_THEMES[accent];
   const coverImageUrl = useMemo(
@@ -441,66 +535,88 @@ export function PortalStatCard({
     [coverKey],
   );
   const [imgBroken, setImgBroken] = useState(false);
+  const hasPhoto = Boolean(coverImageUrl && !imgBroken);
 
-  const cardClassName = `group relative flex h-full min-h-[11.5rem] w-full flex-col overflow-hidden rounded-[18px] border p-4 text-left shadow-sm transition-all duration-300 hover:shadow-md lg:min-h-[14rem] lg:p-5 ${theme.bg} ${theme.border} ${
+  const cardClassName = `group relative flex h-full w-full flex-col overflow-hidden rounded-[20px] text-left transition-all duration-300 ${
+    hasPhoto
+      ? 'border-0 bg-white shadow-[0_8px_28px_rgba(15,23,42,0.1)] hover:shadow-[0_12px_36px_rgba(15,23,42,0.14)]'
+      : `min-h-[145px] border p-4 lg:min-h-[145px] lg:p-4 ${theme.border} ${theme.bg} shadow-sm hover:shadow-md`
+  } ${
     onClick
-      ? 'cursor-pointer hover:scale-[1.01] focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40'
+      ? 'cursor-pointer hover:scale-[1.005] focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-900/30'
       : ''
   }`;
 
-  const content = (
+  const labelClass = `text-[10px] font-bold uppercase tracking-[0.12em] lg:text-xs ${theme.subtitle}`;
+  const titleClass = `text-base font-semibold leading-snug tracking-tight lg:text-lg ${theme.title}`;
+  const hintClass = `mt-1 line-clamp-2 text-xs leading-relaxed lg:text-sm ${theme.subtitle}`;
+  const iconClass = `h-7 w-7 shrink-0 lg:h-8 lg:w-8 ${theme.icon}`;
+  const chevronWrapClass =
+    'flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#f6f5fa]';
+  const chevronClass = `h-3.5 w-3.5 stroke-[2.5] ${theme.icon}`;
+
+  const details = (options?: { chevronFirst?: boolean }) => (
+    <div className="flex min-h-[2.75rem] flex-1 items-start gap-3.5">
+      <Icon className={iconClass} aria-hidden />
+      <div className="min-w-0 flex-1 text-left">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <p className={titleClass}>{value}</p>
+          {badge ? <span className="inline-flex shrink-0">{badge}</span> : null}
+        </div>
+        <p className={hintClass}>{hint || '\u00A0'}</p>
+      </div>
+      {options?.chevronFirst && showChevron && onClick ? (
+        <span className={chevronWrapClass} aria-hidden>
+          <ChevronRightIcon className={chevronClass} />
+        </span>
+      ) : null}
+    </div>
+  );
+
+  const actionBlock = action ? (
+    <div
+      className="mt-3 flex items-end"
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      <div>{action}</div>
+    </div>
+  ) : null;
+
+  const content = hasPhoto ? (
     <>
-      {coverImageUrl && !imgBroken ? (
+      <div className="relative h-36 w-full shrink-0 overflow-hidden bg-[#f1f2f6]">
         <img
-          src={coverImageUrl}
+          src={coverImageUrl!}
           alt=""
-          className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-[0.12]"
+          className="h-full w-full object-cover"
           loading="lazy"
           referrerPolicy="no-referrer"
           onError={() => setImgBroken(true)}
         />
-      ) : null}
-      <div
-        className="pointer-events-none absolute -right-10 -top-10 h-28 w-28 rounded-full bg-white/40 blur-2xl"
-        aria-hidden
-      />
-      <div className="relative z-10 flex h-full flex-col">
-        <div className="mb-2.5 flex items-start justify-between gap-2 lg:mb-3">
-          <span
-            className={`text-[10px] font-bold uppercase tracking-wide lg:text-sm ${theme.subtitle}`}
-          >
-            {label}
-          </span>
-          {onClick ? (
-            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-white bg-white/70 shadow-sm lg:h-9 lg:w-9">
-              <ChevronRightIcon className={`h-3.5 w-3.5 stroke-[2.5] lg:h-5 lg:w-5 ${theme.icon}`} />
-            </span>
-          ) : null}
-        </div>
-
-        <div className="flex min-h-[3rem] flex-1 items-start gap-2.5 lg:min-h-[3.75rem] lg:gap-4">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white bg-white/70 shadow-sm lg:h-16 lg:w-16 lg:rounded-2xl">
-            <Icon className={`h-5 w-5 lg:h-8 lg:w-8 ${theme.icon}`} aria-hidden />
-          </div>
-          <div className="min-w-0 flex-1 text-left">
-            <div className="flex flex-wrap items-center gap-1.5 lg:gap-2">
-              <p className={`text-lg font-bold tracking-tight lg:text-3xl ${theme.title}`}>{value}</p>
-              {badge ? <span className="inline-flex shrink-0">{badge}</span> : null}
-            </div>
-            <p className={`mt-0.5 line-clamp-2 text-xs leading-relaxed lg:mt-1 lg:text-base ${theme.subtitle}`}>
-              {hint || '\u00A0'}
-            </p>
-          </div>
-        </div>
-
-        <div
-          className="relative z-10 mt-3 flex min-h-[2.25rem] items-end"
-          onClick={(e) => e.stopPropagation()}
-          onKeyDown={(e) => e.stopPropagation()}
+        <span
+          className={`absolute left-3 top-3 rounded-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.12em] shadow-sm backdrop-blur-sm lg:text-xs ${theme.bg} ${theme.subtitle}`}
         >
-          {action ? <div>{action}</div> : null}
-        </div>
+          {label}
+        </span>
       </div>
+      <div className="flex h-full flex-col p-4 pt-3">
+        {details({ chevronFirst: true })}
+        {actionBlock}
+      </div>
+    </>
+  ) : (
+    <>
+      <div className="mb-3 flex items-start justify-between gap-2">
+        <span className={labelClass}>{label}</span>
+        {showChevron && onClick ? (
+          <span className={chevronWrapClass} aria-hidden>
+            <ChevronRightIcon className={chevronClass} />
+          </span>
+        ) : null}
+      </div>
+      {details()}
+      {actionBlock}
     </>
   );
 

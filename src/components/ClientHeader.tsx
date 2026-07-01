@@ -213,6 +213,12 @@ const HEADER_ACTION_BAR_MORE_BTN =
 
 const HEADER_ACTION_BAR_BTN = HEADER_ACTION_BAR_BADGE_BTN;
 
+const CONTACT_MODAL_LINK =
+    'inline-flex items-center gap-1 text-sm font-medium text-base-content/65 transition-colors hover:text-primary';
+
+const CONTACT_MODAL_LINK_WHATSAPP =
+    'inline-flex items-center gap-1 text-sm font-medium text-emerald-600 transition-colors hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300';
+
 const HEADER_TAGS_BTN_CLASS =
     'btn btn-circle btn-ghost relative shrink-0 border border-purple-200/80 bg-purple-50 text-purple-700 hover:border-purple-300 hover:bg-purple-100 min-h-[2.5rem] min-w-[2.5rem] p-0 dark:border-purple-800/50 dark:bg-purple-900/30 dark:text-purple-200 dark:hover:bg-purple-900/45 md:min-h-[2.75rem] md:min-w-[2.75rem]';
 
@@ -1614,6 +1620,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     const [isCallModalOpen, setIsCallModalOpen] = useState(false);
     const [callPhoneNumber, setCallPhoneNumber] = useState('');
     const [callContactName, setCallContactName] = useState('');
+    const [contactDetailsModalOpen, setContactDetailsModalOpen] = useState(false);
 
     // Persisted contact info state (ported from ClientInformationBox)
     const [legacyContactInfo, setLegacyContactInfo] = useState<{ email: string | null, phone: string | null }>({
@@ -1643,6 +1650,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         setLanguageInputValue('');
         setShowTopicModal(false);
         setTopicInputValue('');
+        setContactDetailsModalOpen(false);
         setActiveRoleReveal(null);
         setActiveRoleRevealEntered(false);
         if (activeRoleRevealTimerRef.current) {
@@ -1999,61 +2007,115 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
     const displayEmail = legacyContactInfo.email || selectedClient?.email;
     const displayPhone = legacyContactInfo.phone || selectedClient?.phone;
+    const displayMobile = selectedClient?.mobile;
+
+    const copyContactValue = useCallback(async (value: string, label: string) => {
+        const trimmed = value?.trim();
+        if (!trimmed) return;
+        try {
+            await navigator.clipboard.writeText(trimmed);
+            toast.success(`${label} copied`);
+        } catch {
+            toast.error(`Could not copy ${label.toLowerCase()}`);
+        }
+    }, []);
+
+    const openCallModal = useCallback(
+        (phone: string) => {
+            const trimmed = phone?.trim();
+            if (!trimmed || trimmed === '---') {
+                toast.error('No phone number');
+                return;
+            }
+            setCallPhoneNumber(trimmed);
+            setCallContactName(selectedClient?.name || '');
+            setIsCallModalOpen(true);
+            setContactDetailsModalOpen(false);
+        },
+        [selectedClient?.name],
+    );
 
     /** Always opens Call Options modal (direct / OneCom) — same as previous phone-tap behavior for supported regions, now for all numbers */
     const handleCallPrimaryPhone = useCallback(() => {
         if (!displayPhone) return;
-        setCallPhoneNumber(displayPhone);
-        setCallContactName(selectedClient?.name || '');
-        setIsCallModalOpen(true);
-    }, [displayPhone, selectedClient?.name]);
+        openCallModal(displayPhone);
+    }, [displayPhone, openCallModal]);
+
+    const openWhatsAppForNumber = useCallback(
+        async (phone: string) => {
+            const trimmed = phone?.trim();
+            if (!trimmed || trimmed === '---') {
+                toast.error('No phone number');
+                return;
+            }
+            if (!onOpenWhatsAppForContact) {
+                const digits = trimmed.replace(/\D/g, '');
+                if (!digits) {
+                    toast.error('Invalid phone number');
+                    return;
+                }
+                window.open(`https://wa.me/${digits}`, '_blank');
+                setContactDetailsModalOpen(false);
+                return;
+            }
+            const isLegacyLead =
+                selectedClient?.lead_type === 'legacy' || String(selectedClient?.id || '').startsWith('legacy_');
+            const leadId = isLegacyLead
+                ? String(selectedClient.id).replace(/^legacy_/, '')
+                : selectedClient.id;
+
+            try {
+                const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+                const norm = (s: string) => s.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+                const target = norm(trimmed);
+                const matched: ContactInfo | undefined =
+                    contacts.find(
+                        (c) => norm(c.phone || '') === target || norm(c.mobile || '') === target,
+                    ) ||
+                    contacts.find((c) => c.isMain) ||
+                    contacts[0];
+
+                if (matched) {
+                    onOpenWhatsAppForContact({
+                        contact: matched,
+                        leadId,
+                        leadType: isLegacyLead ? 'legacy' : 'new',
+                        lead_number: selectedClient?.lead_number,
+                    });
+                } else {
+                    onOpenWhatsAppForContact({
+                        leadOnly: true,
+                        leadId,
+                        leadType: isLegacyLead ? 'legacy' : 'new',
+                        name: selectedClient?.name || '',
+                        phone: trimmed,
+                        email: displayEmail ?? null,
+                        lead_number: selectedClient?.lead_number,
+                    });
+                }
+                setContactDetailsModalOpen(false);
+            } catch (e) {
+                console.error(e);
+                toast.error('Could not open WhatsApp');
+            }
+        },
+        [onOpenWhatsAppForContact, displayEmail, selectedClient],
+    );
 
     const handleHeaderWhatsAppClick = useCallback(async () => {
-        if (!onOpenWhatsAppForContact) return;
-        if (!displayPhone || displayPhone === '---') {
-            toast.error('No phone number');
+        if (!displayPhone) return;
+        await openWhatsAppForNumber(displayPhone);
+    }, [displayPhone, openWhatsAppForNumber]);
+
+    const openEmailClient = useCallback((email: string) => {
+        const trimmed = email?.trim();
+        if (!trimmed) {
+            toast.error('No email address');
             return;
         }
-        const isLegacyLead =
-            selectedClient?.lead_type === 'legacy' || String(selectedClient?.id || '').startsWith('legacy_');
-        const leadId = isLegacyLead
-            ? String(selectedClient.id).replace(/^legacy_/, '')
-            : selectedClient.id;
-
-        try {
-            const contacts = await fetchLeadContacts(leadId, isLegacyLead);
-            const norm = (s: string) => s.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
-            const target = norm(displayPhone);
-            const matched: ContactInfo | undefined =
-                contacts.find(
-                    (c) => norm(c.phone || '') === target || norm(c.mobile || '') === target
-                ) ||
-                contacts.find((c) => c.isMain) ||
-                contacts[0];
-
-            if (matched) {
-                onOpenWhatsAppForContact({
-                    contact: matched,
-                    leadId,
-                    leadType: isLegacyLead ? 'legacy' : 'new',
-                    lead_number: selectedClient?.lead_number,
-                });
-            } else {
-                onOpenWhatsAppForContact({
-                    leadOnly: true,
-                    leadId,
-                    leadType: isLegacyLead ? 'legacy' : 'new',
-                    name: selectedClient?.name || '',
-                    phone: displayPhone.trim(),
-                    email: displayEmail ?? null,
-                    lead_number: selectedClient?.lead_number,
-                });
-            }
-        } catch (e) {
-            console.error(e);
-            toast.error('Could not open WhatsApp');
-        }
-    }, [onOpenWhatsAppForContact, displayPhone, displayEmail, selectedClient]);
+        window.open(`mailto:${trimmed}`, '_blank');
+        setContactDetailsModalOpen(false);
+    }, []);
 
     // Helper function to get category display name with main category
     const getCategoryDisplayName = (categoryId: number | string | null | undefined, fallbackCategory?: string): string => {
@@ -2848,6 +2910,80 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         );
     };
 
+    const renderClickableClientName = (titleClassName: string) => (
+        <button
+            type="button"
+            onClick={() => setContactDetailsModalOpen(true)}
+            className={`min-w-0 text-left transition-colors hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 rounded-sm ${titleClassName}`}
+            title="View contact details"
+        >
+            {selectedClient.name || 'Unnamed Lead'}
+        </button>
+    );
+
+    const renderContactDetailField = (
+        label: 'Mobile' | 'Email' | 'Phone',
+        rawValue: string | null | undefined,
+    ) => {
+        const trimmed = rawValue?.trim();
+        const display =
+            label === 'Email'
+                ? trimmed || '—'
+                : trimmed
+                  ? formatPhoneNumberDisplay(trimmed)
+                  : '—';
+        const canCallOrWhatsApp = Boolean(trimmed && trimmed !== '---');
+
+        return (
+            <div>
+                <p className="text-sm text-base-content/50">{label}</p>
+                <p className="mt-0.5 text-base text-base-content">{display}</p>
+                {trimmed ? (
+                    <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+                        {label !== 'Email' && canCallOrWhatsApp ? (
+                            <>
+                                <button
+                                    type="button"
+                                    className={CONTACT_MODAL_LINK}
+                                    onClick={() => openCallModal(trimmed)}
+                                >
+                                    <PhoneArrowUpRightIcon className="h-4 w-4" aria-hidden />
+                                    Call
+                                </button>
+                                <button
+                                    type="button"
+                                    className={CONTACT_MODAL_LINK_WHATSAPP}
+                                    onClick={() => void openWhatsAppForNumber(trimmed)}
+                                >
+                                    <FaWhatsapp className="h-4 w-4" aria-hidden />
+                                    WhatsApp
+                                </button>
+                            </>
+                        ) : null}
+                        {label === 'Email' && trimmed ? (
+                            <button
+                                type="button"
+                                className={CONTACT_MODAL_LINK}
+                                onClick={() => openEmailClient(trimmed)}
+                            >
+                                <EnvelopeIcon className="h-4 w-4" aria-hidden />
+                                Email
+                            </button>
+                        ) : null}
+                        <button
+                            type="button"
+                            className={CONTACT_MODAL_LINK}
+                            onClick={() => void copyContactValue(trimmed, label)}
+                        >
+                            <ClipboardDocumentIcon className="h-4 w-4" aria-hidden />
+                            Copy
+                        </button>
+                    </div>
+                ) : null}
+            </div>
+        );
+    };
+
     return (
         <div
             className={
@@ -2880,9 +3016,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                                         <div className="min-w-0">
                                             <div className="flex min-w-0 items-center gap-1.5">
-                                                <h1 className="min-w-0 text-2xl font-bold leading-tight tracking-tight text-base-content/95">
-                                                    {selectedClient.name || 'Unnamed Lead'}
-                                                </h1>
+                                            <h1 className="min-w-0 text-2xl font-bold leading-tight tracking-tight text-base-content/95">
+                                                {renderClickableClientName('w-full font-bold')}
+                                            </h1>
                                                 {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
                                                     <button
                                                         onClick={() => {
@@ -3178,7 +3314,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                     <div className="min-w-0">
                                         <div className="flex min-w-0 items-center gap-1.5">
                                             <h1 className="min-w-0 text-lg font-bold leading-tight tracking-tight text-base-content/95 sm:text-xl">
-                                                {selectedClient.name || 'Unnamed Lead'}
+                                                {renderClickableClientName('w-full font-bold sm:text-xl')}
                                             </h1>
                                             {(isSubLead && masterLeadNumber) || (isMasterLead && (subLeadsCount || 0) > 0) ? (
                                                 <button
@@ -4982,6 +5118,23 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         }}
                     >
                         {moreActionsMenuItems}
+                    </div>
+                </MobileBottomSheet>
+
+                <MobileBottomSheet
+                    open={contactDetailsModalOpen}
+                    onClose={() => setContactDetailsModalOpen(false)}
+                    title={selectedClient?.name || 'Contact details'}
+                    subtitle={selectedClient?.lead_number ? `#${selectedClient.lead_number}` : undefined}
+                    zIndex={320}
+                    sheetClassName="md:max-w-sm md:!border-0 max-md:!border-t-0"
+                    headerClassName="!border-0"
+                    contentClassName="!px-5 !pb-6"
+                >
+                    <div className="flex flex-col gap-5">
+                        {renderContactDetailField('Mobile', displayMobile)}
+                        {renderContactDetailField('Email', displayEmail)}
+                        {renderContactDetailField('Phone', displayPhone)}
                     </div>
                 </MobileBottomSheet>
 

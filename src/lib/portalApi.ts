@@ -50,6 +50,9 @@ export type PortalPaymentRow = {
   public_token: string | null;
   is_legacy: boolean;
   proforma_id: number | null;
+  payper_invoice_link?: string | null;
+  payper_invoice_number?: string | null;
+  has_proforma?: boolean;
   order?: string | number | null;
 };
 
@@ -166,10 +169,11 @@ export async function portalGetCaseSummary() {
     retainer_handler_photo_url?: string | null;
     retainer_handler_contact?: PortalTeamContact | null;
     retainer_handler_department?: string | null;
-    meeting_manager_name: string | null;
-    meeting_manager_photo_url?: string | null;
-    meeting_manager_contact?: PortalTeamContact | null;
-    meeting_manager_department?: string | null;
+    department_manager_name: string | null;
+    department_manager_photo_url?: string | null;
+    department_manager_contact?: PortalTeamContact | null;
+    department_manager_department?: string | null;
+    main_category_name?: string | null;
     category: string | null;
   } | null;
 }
@@ -475,6 +479,8 @@ export type PortalMeetingRow = {
   meeting_date: string | null;
   meeting_time: string | null;
   meeting_location: string | null;
+  is_physical_meeting?: boolean;
+  meeting_address?: string | null;
   meeting_subject: string | null;
   join_url: string | null;
   status: string;

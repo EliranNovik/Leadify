@@ -6,7 +6,7 @@ ALTER TABLE public.meeting_booking_global_settings
   ADD COLUMN IF NOT EXISTS unavailable_dates DATE[] NOT NULL DEFAULT ARRAY[]::DATE[];
 
 COMMENT ON COLUMN public.meeting_booking_global_settings.category_availability_rules IS
-  'Array of {main_category_ids, business_hours_start, business_hours_end, days_of_week} — first matching rule wins; fallback is global columns.';
+  'Array of {main_category_ids, business_hours_start, business_hours_end, days_of_week, max_meetings_per_hour?} — first matching rule wins; fallback is global columns. max_meetings_per_hour limits combined bookings for those categories per clock hour per day.';
 COMMENT ON COLUMN public.meeting_booking_global_settings.unavailable_dates IS
   'Jerusalem calendar dates when booking is closed (holidays, office closure).';
 

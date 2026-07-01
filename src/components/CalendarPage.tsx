@@ -350,6 +350,47 @@ function getCalendarResumeStaleMs(): number {
 
 // Department mapping is now loaded dynamically from database
 
+const MEETING_PARTICIPANT_PREVIEW_COUNT = 1;
+
+type MeetingParticipantEntry = {
+  key: string;
+  label: string;
+  employeeId: string | number | null | undefined;
+};
+
+function getMeetingParticipantEntries(meeting: any, lead: any): MeetingParticipantEntry[] {
+  const entries: MeetingParticipantEntry[] = [];
+  if (meeting.calendar_type === 'staff') return entries;
+
+  if (meeting.calendar_type === 'active_client') {
+    entries.push({
+      key: 'handler',
+      label: 'Handler',
+      employeeId: lead.handler_id || lead.handler || meeting.handler,
+    });
+  } else {
+    entries.push({
+      key: 'manager',
+      label: 'Manager',
+      employeeId: lead.manager_id || lead.manager || meeting.meeting_manager_id || meeting.meeting_manager,
+    });
+    const helperId = lead.helper_id || lead.helper || meeting.helper;
+    if (helperId && helperId !== '--' && helperId !== 'N/A' && helperId !== 'Not_assigned' && helperId !== '---') {
+      entries.push({ key: 'helper', label: 'Helper', employeeId: helperId });
+    }
+  }
+
+  if (meeting.calendar_type === 'active_client' || meeting.calendar_type === 'potential_client') {
+    if (meeting.extern1 && meeting.extern1 !== '--' && meeting.extern1 !== '') {
+      entries.push({ key: 'extern1', label: 'Guest 1', employeeId: meeting.extern1 });
+    }
+    if (meeting.extern2 && meeting.extern2 !== '--' && meeting.extern2 !== '') {
+      entries.push({ key: 'extern2', label: 'Guest 2', employeeId: meeting.extern2 });
+    }
+  }
+
+  return entries;
+}
 
 const CalendarPage: React.FC = () => {
   // Persist meetings state so they're preserved when navigating back
@@ -389,6 +430,7 @@ const CalendarPage: React.FC = () => {
   const [isBackgroundLoading, setIsBackgroundLoading] = useState(false);
   const [isLegacyLoading, setIsLegacyLoading] = useState(false);
   const [expandedMeetingId, setExpandedMeetingId] = useState<number | null>(null);
+  const [expandedMeetingBoxIds, setExpandedMeetingBoxIds] = useState<Set<string | number>>(() => new Set());
   const [expandedMeetingData, setExpandedMeetingData] = useState<{
     [meetingId: number]: {
       loading: boolean;
@@ -718,6 +760,27 @@ const CalendarPage: React.FC = () => {
     } else {
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
+  };
+
+  const isMeetingBoxExpanded = (meetingId: string | number) => expandedMeetingBoxIds.has(meetingId);
+
+  const toggleMeetingBoxExpanded = (meetingId: string | number, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setExpandedMeetingBoxIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(meetingId)) {
+        next.delete(meetingId);
+        if (expandedMeetingId != null && String(expandedMeetingId) === String(meetingId)) {
+          setExpandedMeetingId(null);
+        }
+      } else {
+        next.add(meetingId);
+        if (typeof meetingId === 'number') {
+          setExpandedMeetingId(meetingId);
+        }
+      }
+      return next;
+    });
   };
 
   // Assign Staff Modal State
@@ -6260,7 +6323,11 @@ const CalendarPage: React.FC = () => {
   // Desktop table row component (for department tables)
   const renderMeetingRow = (meeting: any) => {
     const lead = meeting.lead || {};
-    const isExpanded = expandedMeetingId === meeting.id;
+    const isBoxExpanded = isMeetingBoxExpanded(meeting.id);
+    const participantEntries = getMeetingParticipantEntries(meeting, lead);
+    const previewParticipants = participantEntries.slice(0, MEETING_PARTICIPANT_PREVIEW_COUNT);
+    const extraParticipants = participantEntries.slice(MEETING_PARTICIPANT_PREVIEW_COUNT);
+    const hasCollapsibleBoxContent = meeting.calendar_type !== 'staff';
     const expandedData = expandedMeetingData[meeting.id] || {};
     const probability = lead.probability ?? meeting.probability;
     // Convert probability to number if it's a string
@@ -6436,78 +6503,42 @@ const CalendarPage: React.FC = () => {
             {meeting.calendar_type === 'staff' ? (
               <div className="max-w-xs">
                 <div className="text-xs font-medium text-gray-700">Attendees:</div>
-                <div className="text-xs font-semibold text-gray-800 break-words">
+                <div className={`text-xs font-semibold text-gray-800 ${isBoxExpanded ? 'break-words' : 'line-clamp-2'}`}>
                   {meeting.meeting_manager || 'No attendees'}
                 </div>
+                {(meeting.meeting_manager || '').length > 48 ? (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs mt-1 h-6 min-h-0 px-1 text-primary"
+                    onClick={(e) => toggleMeetingBoxExpanded(meeting.id, e)}
+                  >
+                    {isBoxExpanded ? 'Less' : 'More'}
+                  </button>
+                ) : null}
               </div>
             ) : (
               <div className="flex flex-col gap-2 py-1">
-                {/* Handler - only show for active_client meetings */}
-                {meeting.calendar_type === 'active_client' && (
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-gray-500 flex-shrink-0" style={{ writingMode: 'vertical-rl' }}>Handler</span>
+                {(isBoxExpanded ? participantEntries : previewParticipants).map((entry) => (
+                  <div key={entry.key} className="flex items-center gap-2">
+                    <span className="text-xs text-gray-500 flex-shrink-0" style={{ writingMode: 'vertical-rl' }}>
+                      {entry.label}
+                    </span>
                     <div className="hidden md:flex flex-col items-center gap-0.5 w-14 flex-shrink-0">
-                      {renderEmployeeAvatar(lead.handler_id || lead.handler, 'lg', false)}
-                      <span className="text-xs text-center leading-tight">{getEmployeeDisplayName(lead.handler || meeting.handler)}</span>
+                      {renderEmployeeAvatar(entry.employeeId, 'lg', false)}
+                      <span className="text-xs text-center leading-tight">{getEmployeeDisplayName(entry.employeeId)}</span>
                     </div>
-                    <span className="md:hidden text-xs">{getEmployeeDisplayName(lead.handler || meeting.handler)}</span>
+                    <span className="md:hidden text-xs">{getEmployeeDisplayName(entry.employeeId)}</span>
                   </div>
-                )}
-                {/* Manager, Helper - show for potential_client and other non-active_client meetings */}
-                {meeting.calendar_type !== 'active_client' && meeting.calendar_type !== 'staff' && (
-                  <>
-                    {/* Manager */}
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-gray-500 flex-shrink-0" style={{ writingMode: 'vertical-rl' }}>Manager</span>
-                      <div className="hidden md:flex flex-col items-center gap-0.5 w-14 flex-shrink-0">
-                        {renderEmployeeAvatar(lead.manager_id || lead.manager || meeting.meeting_manager_id || meeting.meeting_manager, 'lg', false)}
-                        <span className="text-xs text-center leading-tight">{getEmployeeDisplayName(lead.manager || meeting.meeting_manager)}</span>
-                      </div>
-                      <span className="md:hidden text-xs">{getEmployeeDisplayName(lead.manager || meeting.meeting_manager)}</span>
-                    </div>
-                    {/* Helper - only show if helper exists and is not "--" */}
-                    {(() => {
-                      const helperId = lead.helper_id || lead.helper || meeting.helper;
-                      return helperId && helperId !== '--' && helperId !== 'N/A' && helperId !== 'Not_assigned' && helperId !== '---';
-                    })() && (
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-gray-500 flex-shrink-0" style={{ writingMode: 'vertical-rl' }}>Helper</span>
-                          <div className="hidden md:flex flex-col items-center gap-0.5 w-14 flex-shrink-0">
-                            {renderEmployeeAvatar(lead.helper_id || lead.helper || meeting.helper, 'lg', false)}
-                            <span className="text-xs text-center leading-tight">{getEmployeeDisplayName(lead.helper || meeting.helper)}</span>
-                          </div>
-                          <span className="md:hidden text-xs">{getEmployeeDisplayName(lead.helper || meeting.helper)}</span>
-                        </div>
-                      )}
-                  </>
-                )}
-                {/* Guest 1 and Guest 2 - show for active_client and potential_client meetings */}
-                {(meeting.calendar_type === 'active_client' || meeting.calendar_type === 'potential_client') && (
-                  <>
-                    {/* Guest 1 */}
-                    {meeting.extern1 && meeting.extern1 !== '--' && meeting.extern1 !== '' && (
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-gray-500 flex-shrink-0" style={{ writingMode: 'vertical-rl' }}>Guest 1</span>
-                        <div className="hidden md:flex flex-col items-center gap-0.5 w-14 flex-shrink-0">
-                          {renderEmployeeAvatar(meeting.extern1, 'lg', false)}
-                          <span className="text-xs text-center leading-tight">{getEmployeeDisplayName(meeting.extern1)}</span>
-                        </div>
-                        <span className="md:hidden text-xs">{getEmployeeDisplayName(meeting.extern1)}</span>
-                      </div>
-                    )}
-                    {/* Guest 2 */}
-                    {meeting.extern2 && meeting.extern2 !== '--' && meeting.extern2 !== '' && (
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-gray-500 flex-shrink-0" style={{ writingMode: 'vertical-rl' }}>Guest 2</span>
-                        <div className="hidden md:flex flex-col items-center gap-0.5 w-14 flex-shrink-0">
-                          {renderEmployeeAvatar(meeting.extern2, 'lg', false)}
-                          <span className="text-xs text-center leading-tight">{getEmployeeDisplayName(meeting.extern2)}</span>
-                        </div>
-                        <span className="md:hidden text-xs">{getEmployeeDisplayName(meeting.extern2)}</span>
-                      </div>
-                    )}
-                  </>
-                )}
+                ))}
+                {hasCollapsibleBoxContent && participantEntries.length > MEETING_PARTICIPANT_PREVIEW_COUNT ? (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs h-6 min-h-0 self-start px-1 text-primary"
+                    onClick={(e) => toggleMeetingBoxExpanded(meeting.id, e)}
+                  >
+                    {isBoxExpanded ? 'Less' : 'More'}
+                  </button>
+                ) : null}
               </div>
             )}
           </td>
@@ -6628,17 +6659,14 @@ const CalendarPage: React.FC = () => {
                   <PlusIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                 </button>
               )}
-              {meeting.calendar_type !== 'staff' && (
+              {meeting.calendar_type !== 'staff' && hasCollapsibleBoxContent && (
                 <button
                   className="btn btn-ghost btn-circle btn-xs sm:btn-sm text-primary"
-                  title={isExpanded ? 'Hide Details' : 'Show More'}
-                  aria-label={isExpanded ? 'Hide Details' : 'Show More'}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
-                  }}
+                  title={isBoxExpanded ? 'Less' : 'More'}
+                  aria-label={isBoxExpanded ? 'Less' : 'More'}
+                  onClick={(e) => toggleMeetingBoxExpanded(meeting.id, e)}
                 >
-                  <ChevronDownIcon className={`w-4 h-4 sm:w-5 sm:h-5 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                  <ChevronDownIcon className={`w-4 h-4 sm:w-5 sm:h-5 transition-transform ${isBoxExpanded ? 'rotate-180' : ''}`} />
                 </button>
               )}
             </div>
@@ -6647,7 +6675,7 @@ const CalendarPage: React.FC = () => {
 
         {/* Expanded Details Row (staff uses participants modal, not inline expand) */}
         {
-          isExpanded && meeting.calendar_type !== 'staff' && (
+          isBoxExpanded && meeting.calendar_type !== 'staff' && (
             <tr className="calendar-page-meeting-row calendar-page-meeting-row--expanded-block">
               <td colSpan={10} className="p-0">
                 <div className="bg-base-100/50 p-4 border-t border-base-200/80">
@@ -6930,6 +6958,21 @@ const CalendarPage: React.FC = () => {
               max-width: 100%;
               overscroll-behavior-x: none;
             }
+            .calendar-page-chrome-scroll {
+              margin-top: 0 !important;
+              padding-top: 0 !important;
+            }
+            .calendar-page-meetings-wrap {
+              margin-top: 0 !important;
+              padding-top: 0 !important;
+            }
+            .calendar-page-meetings-wrap table.calendar-page-meetings-table {
+              margin-top: 0 !important;
+            }
+            .calendar-page-meetings-wrap table > thead > tr.calendar-page-meetings-head-row > th {
+              padding-top: 0.5rem !important;
+              padding-bottom: 0.25rem !important;
+            }
             .calendar-page-mobile-root .calendar-meetings-cards-track {
               width: 100%;
               max-width: 100%;
@@ -6968,7 +7011,7 @@ const CalendarPage: React.FC = () => {
         </div>
       </MobileBottomSheet>
       {/* Fixed top: filters + date navigation (desktop) */}
-      <div className="calendar-page-chrome-top z-30 w-full flex-shrink-0 bg-gray-100 md:sticky md:top-0 md:flex md:flex-col md:gap-2">
+      <div className="calendar-page-chrome-top z-30 w-full flex-shrink-0 bg-gray-100 max-md:sticky max-md:top-0 max-md:z-40 md:sticky md:top-0 md:flex md:flex-col md:gap-2">
       {/* Filters - desktop only; on mobile moved to modal. The toggle button lives
           in the date-navigation row next to the clock icon (see below). */}
       <div className="mb-6 w-full hidden md:block md:mb-0">
@@ -7210,8 +7253,8 @@ const CalendarPage: React.FC = () => {
       </div>
 
 
-      {/* Date navigation: centered on mobile, sticky above meeting cards */}
-      <div className="max-md:sticky max-md:top-0 max-md:z-40 max-md:flex max-md:w-full max-md:justify-center max-md:px-4 max-md:mb-2 md:contents">
+      {/* Date navigation: centered on mobile, sits flush above meeting list */}
+      <div className="max-md:flex max-md:w-full max-md:justify-center max-md:px-4 max-md:pb-0 md:contents">
       <div
         className="calendar-date-bar-mobile flex items-center justify-between gap-2 md:gap-4 md:mb-0 rounded-full bg-white/90 dark:bg-base-300/90 backdrop-blur-xl border border-gray-200/80 dark:border-base-content/10 shadow-xl px-4 py-3 md:px-6 md:py-3.5 md:rounded-xl md:bg-white md:backdrop-blur-none md:border md:border-base-200 md:shadow-sm md:static w-full max-md:max-w-lg md:max-w-none md:mx-0"
       >
@@ -7557,18 +7600,18 @@ const CalendarPage: React.FC = () => {
       {/* Scrollable meetings table / cards */}
       <div
         ref={meetingsScrollRef}
-        className="calendar-page-chrome-scroll min-h-0 w-full flex-1 max-md:overflow-visible md:overflow-y-auto md:overflow-x-auto"
+        className="calendar-page-chrome-scroll hide-scrollbar min-h-0 w-full flex-1 max-md:overflow-visible md:overflow-y-auto md:overflow-x-auto"
       >
       <div
         className={
           viewMode === 'cards'
             ? 'max-md:mt-0 md:mt-0 calendar-page-meetings-wrap max-md:overflow-visible max-md:px-0 md:bg-base-200/60 md:rounded-xl md:px-2 md:pt-0 md:pb-3 sm:md:px-3'
-            : 'max-md:mt-0 md:mt-0 max-md:mx-4 bg-base-200/60 rounded-xl calendar-page-meetings-wrap px-2 pt-0 pb-3 sm:px-3'
+            : 'max-md:mt-0 md:mt-0 max-md:mx-4 max-md:rounded-t-xl bg-base-200/60 rounded-xl calendar-page-meetings-wrap hide-scrollbar px-2 pt-0 pb-3 sm:px-3'
         }
       >
         {/* Desktop Table - Show when viewMode is 'list' */}
         {viewMode === 'list' && (
-          <table className="calendar-page-meetings-table table w-full -mt-3 text-sm sm:text-base md:text-lg">
+          <table className="calendar-page-meetings-table table w-full md:-mt-3 text-sm sm:text-base md:text-lg">
             <thead className="calendar-page-meetings-thead md:sticky md:top-0 md:z-20">
               <tr className="bg-gray-100 text-sm sm:text-base calendar-page-meetings-head-row md:shadow-sm">
                 <th className="text-gray-500">Type</th>
@@ -7661,14 +7704,6 @@ const CalendarPage: React.FC = () => {
                       </div>
                     ))}
                   </div>
-                  {/* Scroll indicator */}
-                  {filteredMeetings.length > 1 && (
-                    <div className="flex justify-center mt-2 gap-1 px-4">
-                      <div className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded-full">
-                        Swipe to see more cards ({filteredMeetings.length} total)
-                      </div>
-                    </div>
-                  )}
                 </div>
 
                 {/* Desktop: Grid Layout */}

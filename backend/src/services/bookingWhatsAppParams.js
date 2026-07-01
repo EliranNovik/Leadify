@@ -226,5 +226,6 @@ async function buildBookingWhatsAppTemplateParameters(template, ctx) {
 module.exports = {
   buildBookingWhatsAppTemplateParameters,
   fillWhatsAppTemplateContent,
+  resolveBookingLocationDisplay,
   DEFAULT_REMINDER_PARAM_MAPPING,
 };

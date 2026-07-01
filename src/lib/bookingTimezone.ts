@@ -212,6 +212,7 @@ export function resolveCategoryAvailabilityForLead(
       business_hours_start: string;
       business_hours_end: string;
       days_of_week: number[];
+      max_meetings_per_hour?: number | null;
     }>;
   },
   mainCategoryId?: number | null,

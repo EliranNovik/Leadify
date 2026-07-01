@@ -15,6 +15,7 @@ const {
   resolveRecipientPhone,
   resolveContactIdNumber,
 } = require('../lib/paymentLinkContact');
+const { isExpenseNoVatPaymentLink, enrichPaymentPlanOrderForPayper } = require('../lib/paymentPlanOrder');
 const {
   extractPelecardCustomerId,
   extractCardLastFour,
@@ -129,6 +130,7 @@ function isIsraeliIlsPayment(paymentLink) {
 
 /** Only apply include_vat when the payment plan actually has VAT (vat_amount > 0). */
 function paymentHasIsraeliVat(paymentLink) {
+  if (isExpenseNoVatPaymentLink(paymentLink)) return false;
   if (!isIsraeliIlsPayment(paymentLink)) return false;
   return (Number(paymentLink.vat_amount) || 0) > 0;
 }
@@ -139,6 +141,7 @@ function paymentHasIsraeliVat(paymentLink) {
  * No-VAT CRM payments only use document_no_vat true + include_vat false as a late fallback.
  */
 function resolveDocumentNoVat(paymentLink, config) {
+  if (isExpenseNoVatPaymentLink(paymentLink)) return true;
   if (config.documentNoVat) return true;
   return !paymentHasIsraeliVat(paymentLink);
 }
@@ -267,12 +270,25 @@ function estimateInvoiceTotalAgorot(unitPriceStr, lineAmounts, vatRate) {
  * Primary = Pelecard working sample shape (document_no_vat false, include_vat true, gross/gross).
  * document_no_vat true caused 599 on income 599 even when local totals matched.
  */
+function buildExpenseNoVatLineAmounts(grossAgorot, grossAmount) {
+  return buildLineAmounts(grossAgorot, grossAmount, {
+    documentNoVat: true,
+    includeVat: false,
+    useCatalogIdNull: true,
+    vatLineMode: 'expense_no_vat_order',
+  });
+}
+
 function resolvePayperLineAmounts(paymentLink, callbackData, verifyPayload, config) {
   const grossAgorot = resolveChargedAgorot(paymentLink, callbackData, verifyPayload);
   const grossAmount =
     grossAgorot != null
       ? formatIlsFromAgorot(grossAgorot)
       : formatIlsAmount(chargeAmountFromPayment(paymentLink));
+
+  if (isExpenseNoVatPaymentLink(paymentLink)) {
+    return buildExpenseNoVatLineAmounts(grossAgorot, grossAmount);
+  }
 
   if (!isIsraeliIlsPayment(paymentLink)) {
     return buildLineAmounts(grossAgorot, grossAmount, {
@@ -374,6 +390,10 @@ async function runPayperAttempts(
 
 function buildFallbackLineAmounts(paymentLink, grossAgorot, primary) {
   if (grossAgorot == null) return [];
+
+  if (isExpenseNoVatPaymentLink(paymentLink)) {
+    return [];
+  }
 
   const grossAmount = formatIlsFromAgorot(grossAgorot);
   const hasVat = paymentHasIsraeliVat(paymentLink);
@@ -1016,6 +1036,7 @@ async function createPayperInvoiceForPayment(
     }
 
     paymentLink = await ensurePaymentLinkPlanContact(paymentLink);
+    paymentLink = await enrichPaymentPlanOrderForPayper(paymentLink);
 
     const config = getPayperConfig(paymentLink);
     if (config.profile === 'sandbox' && config.incomeId === PAYPER_SAMPLE_INCOME_ID) {

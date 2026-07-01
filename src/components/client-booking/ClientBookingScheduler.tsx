@@ -10,6 +10,7 @@ import {
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import BookingTimeWheel from './BookingTimeWheel';
+import { BookingMeetingCardActions } from './BookingMeetingCardActions';
 import {
   bookPublicMeeting,
   CLIENT_BOOKING_LOCATION_OPTIONS,
@@ -26,7 +27,6 @@ import {
   detectClientTimezone,
   formatBookingTimeWithZone,
   formatMeetingForClientDisplay,
-  formatTimezoneBadge,
   formatTimezoneLabel,
   getStoredClientTimezone,
   isClientBookingDateBlocked,
@@ -40,6 +40,7 @@ import {
   PortalSectionLabel,
   PortalTabFrame,
 } from '../../pages/portal/components/portalTheme';
+import PortalMeetingLocationLines from '../../pages/portal/components/PortalMeetingLocationLines';
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTH_NAMES = [
@@ -71,9 +72,11 @@ export function portalMeetingsUrl(leadRef?: string | null): string | null {
 export function ScheduledMeetingsSection({
   meetings,
   clientTimezone,
+  durationMinutes = 30,
 }: {
   meetings: PublicBookingMeeting[];
   clientTimezone: string;
+  durationMinutes?: number;
 }) {
   return (
     <section className="space-y-4">
@@ -95,48 +98,58 @@ export function ScheduledMeetingsSection({
             const displayDate = display?.clientDate || m.meeting_date || '';
             const timeWithZone = display?.clientTimeWithZone
               || (jerusalemTime ? formatBookingTimeWithZone(jerusalemTime, tz, displayDate) : '');
-            const isTeams = (m.meeting_location || '').toLowerCase() === 'teams';
+            const cardTitle = m.meeting_subject || 'Meeting';
             return (
-              <PortalCard key={m.id} className="flex flex-col">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <p className="font-semibold text-gray-900">{m.meeting_subject || 'Meeting'}</p>
-                    <p className="mt-2 flex items-center gap-2 text-sm text-gray-600">
-                      <CalendarDaysIcon className="h-4 w-4 shrink-0 text-gray-400" />
-                      {displayDate ? formatBookingShortDate(displayDate) : ''}
-                      {timeWithZone ? ` · ${timeWithZone}` : ''}
-                    </p>
-                    {display?.israelTimeWithZone && tz !== BUSINESS_TZ ? (
-                      <p className="mt-1 text-xs text-base-content/45">
-                        Israel office: {display.israelTimeWithZone}
+              <PortalCard key={m.id} className="flex h-full flex-col">
+                <div className="flex min-h-0 flex-1 flex-col">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-gray-900">{cardTitle}</p>
+                      <p className="mt-2 flex items-center gap-2 text-sm text-gray-600">
+                        <CalendarDaysIcon className="h-4 w-4 shrink-0 text-gray-400" />
+                        {displayDate ? formatBookingShortDate(displayDate) : ''}
+                        {timeWithZone ? ` · ${timeWithZone}` : ''}
                       </p>
-                    ) : null}
-                    {m.meeting_location ? (
-                      <p className="mt-1 flex items-center gap-2 text-sm text-gray-600">
-                        {isTeams ? (
-                          <VideoCameraIcon className="h-4 w-4 shrink-0 text-gray-400" />
-                        ) : (
-                          <MapPinIcon className="h-4 w-4 shrink-0 text-gray-400" />
-                        )}
-                        {m.meeting_location}
-                      </p>
-                    ) : null}
+                      {display?.israelTimeWithZone && tz !== BUSINESS_TZ ? (
+                        <p className="mt-1 text-xs text-base-content/45">
+                          Israel office: {display.israelTimeWithZone}
+                        </p>
+                      ) : null}
+                      {m.meeting_location ? (
+                        <PortalMeetingLocationLines
+                          location={m.meeting_location}
+                          isPhysicalMeeting={m.is_physical_meeting}
+                          meetingAddress={m.meeting_address}
+                          className="mt-1 space-y-1"
+                          locationClassName="flex items-center gap-2 text-sm text-gray-600"
+                          addressClassName="pl-6 text-sm leading-snug text-gray-500 whitespace-pre-wrap"
+                        />
+                      ) : null}
+                    </div>
+                    <span className="inline-flex shrink-0 rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
+                      Scheduled
+                    </span>
                   </div>
-                  <span className="inline-flex shrink-0 rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
-                    Scheduled
-                  </span>
+                  {m.join_url ? (
+                    <a
+                      href={m.join_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn btn-primary btn-sm mt-4 w-full gap-1.5 rounded-lg"
+                    >
+                      <VideoCameraIcon className="h-4 w-4" />
+                      Join meeting
+                    </a>
+                  ) : null}
+                  <BookingMeetingCardActions
+                    title={cardTitle}
+                    meetingDate={m.meeting_date}
+                    meetingTime={m.meeting_time}
+                    meetingLocation={m.meeting_location}
+                    joinUrl={m.join_url}
+                    durationMinutes={durationMinutes}
+                  />
                 </div>
-                {m.join_url ? (
-                  <a
-                    href={m.join_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="btn btn-primary btn-sm mt-4 gap-1.5 self-start rounded-full"
-                  >
-                    <VideoCameraIcon className="h-4 w-4" />
-                    Join meeting
-                  </a>
-                ) : null}
               </PortalCard>
             );
           })}
@@ -149,6 +162,8 @@ export function ScheduledMeetingsSection({
 export type ClientBookingSchedulerProps = {
   bookingToken: string;
   variant?: 'public' | 'embedded';
+  /** When true, uses the public booking layout inside the client portal tab */
+  inClientPortal?: boolean;
   defaultContactId?: number | null;
   hideScheduledMeetings?: boolean;
   onBooked?: () => void;
@@ -158,12 +173,14 @@ export type ClientBookingSchedulerProps = {
 const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
   bookingToken,
   variant = 'public',
+  inClientPortal = false,
   defaultContactId = null,
   hideScheduledMeetings = false,
   onBooked,
   onLeadRefLoaded,
 }) => {
   const embedded = variant === 'embedded';
+  const usePublicExperience = variant === 'public';
   const [clientTimezone, setClientTimezone] = useState(() => getStoredClientTimezone());
   const [config, setConfig] = useState<PublicBookingConfig | null>(null);
   const [loading, setLoading] = useState(true);
@@ -186,7 +203,7 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
     location: string;
   } | null>(null);
   const [scheduledMeetings, setScheduledMeetings] = useState<PublicBookingMeeting[]>([]);
-  const [bookingOpen, setBookingOpen] = useState(embedded);
+  const [bookingOpen, setBookingOpen] = useState(variant === 'embedded');
 
   useEffect(() => {
     const tz = persistClientTimezone(detectClientTimezone());
@@ -385,7 +402,7 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
 
   const resetBooking = () => {
     setStep('datetime');
-    setBookingOpen(embedded);
+    setBookingOpen(variant === 'embedded');
     setSelectedDate(null);
     setSelectedTime(null);
     setSelectedLocation('Teams');
@@ -419,23 +436,12 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
   const portalUrl = portalMeetingsUrl(leadRef);
 
   const timezoneBanner = (
-    <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-primary/15 bg-primary/5 px-4 py-3 text-sm text-base-content/70">
-      <span className="inline-flex shrink-0 items-center rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
-        {formatTimezoneBadge(clientTimezone)}
-      </span>
-      <span>Times shown in your local time ({formatTimezoneLabel(clientTimezone)}).</span>
-      {config.lead.main_category_name ? (
-        <span className="w-full text-xs text-base-content/50">
-          Availability for {config.lead.main_category_name}
-          {effectiveAvailability
-            ? ` · ${effectiveAvailability.business_hours_start}–${effectiveAvailability.business_hours_end} Israel time`
-            : ''}
-        </span>
-      ) : null}
+    <div className="space-y-1 text-sm text-base-content/60">
+      <p>Times shown in your local time ({formatTimezoneLabel(clientTimezone)}).</p>
       {clientTimezone !== BUSINESS_TZ ? (
-        <span className="w-full text-xs text-base-content/50">
-          Our office schedules in Israel ({formatTimezoneBadge(BUSINESS_TZ)}).
-        </span>
+        <p className="text-xs text-base-content/50">
+          Our office schedules in Israel ({formatTimezoneLabel(BUSINESS_TZ)}).
+        </p>
       ) : null}
     </div>
   );
@@ -471,7 +477,7 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
         </div>
       </dl>
       <div className="mt-6 flex flex-col gap-2 sm:flex-row">
-        {!embedded && portalUrl ? (
+        {!embedded && !inClientPortal && portalUrl ? (
           <Link to={portalUrl} className="btn btn-primary flex-1 rounded-full">
             View in client portal
           </Link>
@@ -484,16 +490,16 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
   ) : null;
 
   const bookingFlow = (
-    <section className="space-y-4">
+    <section className={`space-y-4 ${!bookingOpen && step === 'datetime' && usePublicExperience ? 'pb-4' : ''}`}>
       <PortalSectionLabel>{embedded ? 'Schedule a meeting' : 'Book a new meeting'}</PortalSectionLabel>
       {timezoneBanner}
 
       {step === 'done' && confirmationCard ? (
         confirmationCard
-      ) : !bookingOpen && step === 'datetime' && !embedded ? (
+      ) : !bookingOpen && step === 'datetime' && usePublicExperience ? (
         <button
           type="button"
-          className="btn btn-primary btn-lg gap-2 rounded-full px-8"
+          className="btn btn-primary btn-lg mb-10 gap-2 rounded-full px-8"
           onClick={() => setBookingOpen(true)}
         >
           <CalendarDaysIcon className="h-5 w-5" />
@@ -719,7 +725,11 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
       >
         {confirmationCard}
         {!hideScheduledMeetings ? (
-          <ScheduledMeetingsSection meetings={scheduledMeetings} clientTimezone={clientTimezone} />
+          <ScheduledMeetingsSection
+            meetings={scheduledMeetings}
+            clientTimezone={clientTimezone}
+            durationMinutes={settings.duration_minutes}
+          />
         ) : null}
       </PortalTabFrame>
     );
@@ -736,7 +746,11 @@ const ClientBookingScheduler: React.FC<ClientBookingSchedulerProps> = ({
       headerCoverImage={getPortalTabHeaderCoverImage('meetings')}
     >
       {!hideScheduledMeetings ? (
-        <ScheduledMeetingsSection meetings={scheduledMeetings} clientTimezone={clientTimezone} />
+        <ScheduledMeetingsSection
+          meetings={scheduledMeetings}
+          clientTimezone={clientTimezone}
+          durationMinutes={settings.duration_minutes}
+        />
       ) : null}
       {bookingFlow}
     </PortalTabFrame>

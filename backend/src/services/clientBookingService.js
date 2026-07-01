@@ -6,7 +6,18 @@ const whatsappController = require('../controllers/whatsappController');
 const {
   buildBookingWhatsAppTemplateParameters,
   fillWhatsAppTemplateContent,
+  resolveBookingLocationDisplay,
 } = require('./bookingWhatsAppParams');
+const {
+  generateICSFromDateTime,
+  buildIcsEmailAttachment,
+  stripHtmlForIcs,
+} = require('../lib/icsGenerator');
+const {
+  parseEmailTemplateContent,
+  formatPlainEmailHtml,
+  fillEmailTemplateParams,
+} = require('../lib/emailTemplateContent');
 const {
   BUSINESS_TZ,
   isValidIanaTimezone,
@@ -50,11 +61,34 @@ function normalizeTimeHHmm(value) {
   return `${String(Number(match[1])).padStart(2, '0')}:${match[2]}`;
 }
 
+function normalizeMaxMeetingsPerHour(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 1) return null;
+  return Math.floor(n);
+}
+
+function meetingClockHourKey(meetingTime) {
+  const raw = String(meetingTime || '').trim();
+  const hh = raw.substring(0, 2);
+  return /^\d{2}$/.test(hh) ? hh : null;
+}
+
+function slotClockHourKey(timeStr) {
+  return meetingClockHourKey(`${normalizeTimeHHmm(timeStr)}:00`);
+}
+
 function resolveCategoryAvailability(settings) {
   const mainCategoryId = settings.main_category_id != null ? Number(settings.main_category_id) : null;
   const rules = Array.isArray(settings.category_availability_rules)
     ? settings.category_availability_rules
     : [];
+
+  const base = {
+    ...settings,
+    business_hours_start: normalizeTimeHHmm(settings.business_hours_start) || '09:00',
+    business_hours_end: normalizeTimeHHmm(settings.business_hours_end) || '21:00',
+    active_category_rule: null,
+  };
 
   if (mainCategoryId != null && Number.isFinite(mainCategoryId)) {
     for (const rule of rules) {
@@ -78,15 +112,114 @@ function resolveCategoryAvailability(settings) {
         business_hours_start: businessHoursStart,
         business_hours_end: businessHoursEnd,
         days_of_week: daysOfWeek,
+        active_category_rule: {
+          main_category_ids: ids,
+          max_meetings_per_hour: normalizeMaxMeetingsPerHour(rule.max_meetings_per_hour),
+        },
       };
     }
   }
 
-  return {
-    ...settings,
-    business_hours_start: normalizeTimeHHmm(settings.business_hours_start) || '09:00',
-    business_hours_end: normalizeTimeHHmm(settings.business_hours_end) || '21:00',
-  };
+  return base;
+}
+
+async function buildMainCategoryLookupForMeetings(meetings) {
+  const lookup = new Map();
+  const newLeadIds = [...new Set((meetings || []).map((m) => m.client_id).filter(Boolean))];
+  const legacyIds = [
+    ...new Set((meetings || []).map((m) => m.legacy_lead_id).filter((id) => id != null && Number.isFinite(Number(id)))),
+  ];
+
+  if (newLeadIds.length > 0) {
+    const { data: leads } = await supabase.from('leads').select('id, category_id').in('id', newLeadIds);
+    const categoryIds = [...new Set((leads || []).map((l) => l.category_id).filter(Boolean))];
+    let parentByCategoryId = new Map();
+    if (categoryIds.length > 0) {
+      const { data: categories } = await supabase
+        .from('misc_category')
+        .select('id, parent_id')
+        .in('id', categoryIds);
+      parentByCategoryId = new Map((categories || []).map((c) => [c.id, c.parent_id]));
+    }
+    for (const lead of leads || []) {
+      const mainId = lead.category_id != null ? parentByCategoryId.get(lead.category_id) : null;
+      lookup.set(`new:${lead.id}`, mainId != null ? Number(mainId) : null);
+    }
+  }
+
+  if (legacyIds.length > 0) {
+    const { data: leads } = await supabase.from('leads_lead').select('id, category_id').in('id', legacyIds);
+    const categoryIds = [...new Set((leads || []).map((l) => l.category_id).filter(Boolean))];
+    let parentByCategoryId = new Map();
+    if (categoryIds.length > 0) {
+      const { data: categories } = await supabase
+        .from('misc_category')
+        .select('id, parent_id')
+        .in('id', categoryIds);
+      parentByCategoryId = new Map((categories || []).map((c) => [c.id, c.parent_id]));
+    }
+    for (const lead of leads || []) {
+      const mainId = lead.category_id != null ? parentByCategoryId.get(lead.category_id) : null;
+      lookup.set(`legacy:${lead.id}`, mainId != null ? Number(mainId) : null);
+    }
+  }
+
+  return lookup;
+}
+
+async function fetchCategoryHourlyMeetingCounts(dateStr, mainCategoryIds) {
+  const allowed = new Set(
+    (mainCategoryIds || []).map((id) => Number(id)).filter((id) => Number.isFinite(id)),
+  );
+  if (allowed.size === 0) return {};
+
+  const { data: meetings } = await supabase
+    .from('meetings')
+    .select('meeting_time, client_id, legacy_lead_id')
+    .eq('meeting_date', dateStr)
+    .or('status.is.null,status.neq.canceled');
+
+  if (!meetings?.length) return {};
+
+  const lookup = await buildMainCategoryLookupForMeetings(meetings);
+  const counts = {};
+
+  for (const meeting of meetings) {
+    const leadKey =
+      meeting.legacy_lead_id != null
+        ? `legacy:${meeting.legacy_lead_id}`
+        : meeting.client_id
+          ? `new:${meeting.client_id}`
+          : null;
+    if (!leadKey) continue;
+
+    const mainCategoryId = lookup.get(leadKey);
+    if (!allowed.has(Number(mainCategoryId))) continue;
+
+    const hour = meetingClockHourKey(meeting.meeting_time);
+    if (!hour) continue;
+    counts[hour] = (counts[hour] || 0) + 1;
+  }
+
+  return counts;
+}
+
+function isCategoryHourCapReached(maxPerHour, hourCounts, timeStr) {
+  const max = normalizeMaxMeetingsPerHour(maxPerHour);
+  if (max == null) return false;
+  const hour = slotClockHourKey(timeStr);
+  if (!hour) return false;
+  return (hourCounts[hour] || 0) >= max;
+}
+
+async function assertCategoryHourlyCapacity(settings, dateStr, timeStr) {
+  const rule = settings.active_category_rule;
+  if (!rule?.max_meetings_per_hour || !rule.main_category_ids?.length) return;
+
+  const counts = await fetchCategoryHourlyMeetingCounts(dateStr, rule.main_category_ids);
+  if (isCategoryHourCapReached(rule.max_meetings_per_hour, counts, timeStr)) {
+    throw new Error('This time slot is no longer available for your service category');
+  }
 }
 
 function resolveBookingWindow(settings) {
@@ -409,9 +542,24 @@ async function generateJerusalemSlotsForDate(settings, jerusalemDateStr) {
   const minNoticeHours = settings.min_notice_hours || 24;
   const slots = [];
 
+  const rule = settings.active_category_rule;
+  let categoryHourCounts = null;
+  if (rule?.max_meetings_per_hour && rule.main_category_ids?.length) {
+    categoryHourCounts = await fetchCategoryHourlyMeetingCounts(
+      jerusalemDateStr,
+      rule.main_category_ids,
+    );
+  }
+
   for (let t = startMin; t <= lastStartMin; t += 1) {
     if (slotOverlaps(t, duration, buffer, busyRanges)) continue;
     const timeStr = minutesToTime(t);
+    if (
+      categoryHourCounts &&
+      isCategoryHourCapReached(rule.max_meetings_per_hour, categoryHourCounts, timeStr)
+    ) {
+      continue;
+    }
     const slotDt = jerusalemDateTimeFromWall(jerusalemDateStr, timeStr);
     if (!slotDt) continue;
     const minNotice = DateTime.now().setZone(BUSINESS_TZ).plus({ hours: minNoticeHours });
@@ -585,10 +733,64 @@ async function createSharedCalendarEvent(accessToken, params) {
   };
 }
 
-async function sendGraphEmail(accessToken, { to, subject, html, fromMailbox }) {
+async function addAttendeeToSharedCalendarEvent(accessToken, calendarType, eventId, params) {
+  if (!eventId) {
+    throw new Error('Calendar event id is required to send an Outlook invite');
+  }
+
+  const calendarEmail = calendarMailbox(calendarType);
+  const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}/calendar/events/${encodeURIComponent(eventId)}`;
+
+  const patch = {
+    attendees: [
+      {
+        emailAddress: {
+          address: params.attendeeEmail,
+          name: params.attendeeName || params.attendeeEmail,
+        },
+        type: 'required',
+      },
+    ],
+  };
+
+  if (params.description) {
+    patch.body = { contentType: 'HTML', content: params.description };
+  }
+
+  if (params.location) {
+    patch.location = { displayName: params.location };
+  }
+
+  const response = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(patch),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error?.error?.message || 'Failed to send Outlook calendar invite');
+  }
+
+  return response.json().catch(() => ({}));
+}
+
+async function sendGraphEmail(accessToken, { to, subject, html, fromMailbox, attachments = [] }) {
   const sendUrl = fromMailbox
     ? `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(fromMailbox)}/sendMail`
     : 'https://graph.microsoft.com/v1.0/me/sendMail';
+
+  const graphAttachments = attachments
+    .filter((item) => item && item.contentBytes)
+    .map((item) => ({
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: item.name || 'attachment',
+      contentType: item.contentType || 'application/octet-stream',
+      contentBytes: item.contentBytes,
+    }));
 
   const response = await fetch(sendUrl, {
     method: 'POST',
@@ -601,6 +803,7 @@ async function sendGraphEmail(accessToken, { to, subject, html, fromMailbox }) {
         subject,
         body: { contentType: 'HTML', content: html },
         toRecipients: [{ emailAddress: { address: to } }],
+        ...(graphAttachments.length ? { attachments: graphAttachments } : {}),
       },
       saveToSentItems: true,
     }),
@@ -612,26 +815,34 @@ async function sendGraphEmail(accessToken, { to, subject, html, fromMailbox }) {
   }
 }
 
-function stripTemplateJson(raw) {
-  if (!raw) return '';
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed?.ops) {
-      return parsed.ops.map((op) => op.insert || '').join('');
-    }
-  } catch {
-    /* plain html/text */
-  }
-  return String(raw);
-}
+async function buildBookingEmailTemplateVars({
+  contact,
+  formattedDate,
+  formattedTimeIsrael,
+  dualTimeDisplay,
+  locationName,
+  teamsUrl,
+  preferEnglish,
+}) {
+  const locationDisplay = await resolveBookingLocationDisplay(locationName, preferEnglish);
+  const name = contact?.name || 'Valued Client';
+  const timeIsrael = formattedTimeIsrael || '';
+  const link = String(teamsUrl || '').trim();
 
-function fillSimpleTemplate(content, vars) {
-  let out = content;
-  Object.entries(vars).forEach(([key, value]) => {
-    out = out.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'gi'), value || '');
-    out = out.replace(new RegExp(`\\{${key}\\}`, 'gi'), value || '');
-  });
-  return out.replace(/\n/g, '<br>');
+  return {
+    name,
+    client_name: name,
+    contact_name: name,
+    date: formattedDate,
+    meeting_date: formattedDate,
+    time: timeIsrael,
+    meeting_time: dualTimeDisplay || timeIsrael,
+    location: locationName || '',
+    meeting_location: locationDisplay || locationName || '',
+    address: locationDisplay || '',
+    link,
+    meeting_link: link,
+  };
 }
 
 async function resolveLanguageIsHebrew(languageId) {
@@ -653,6 +864,8 @@ async function sendBookingNotifications({
   teamsUrl,
   graphAuth,
   durationMinutes,
+  calendarEventId,
+  calendarType,
 }) {
   const warnings = [];
   const graphToken = graphAuth?.accessToken;
@@ -674,10 +887,11 @@ async function sendBookingNotifications({
   const endTime = minutesToTime(
     parseTimeToMinutes(formattedTime) + (durationMinutes || settings.duration_minutes || 30),
   );
-  const calendarType = settings.calendar_type === 'active_client' ? 'active_client' : 'potential_client';
+  const resolvedCalendarType =
+    calendarType || (settings.calendar_type === 'active_client' ? 'active_client' : 'potential_client');
   const fromMailbox =
     process.env.BOOKING_FROM_MAILBOX ||
-    calendarMailbox(calendarType);
+    calendarMailbox(resolvedCalendarType);
 
   if (settings.send_email && contact.email) {
     try {
@@ -693,48 +907,99 @@ async function sendBookingNotifications({
 
       const subject =
         template?.name || `Meeting with Decker, Pex, Levi Lawoffice - ${formattedDate}`;
+
+      const templateVars = await buildBookingEmailTemplateVars({
+        contact,
+        formattedDate,
+        formattedTimeIsrael: formattedTime,
+        dualTimeDisplay,
+        locationName,
+        teamsUrl,
+        preferEnglish: !isHebrew,
+      });
+
       const html = template?.content
-        ? fillSimpleTemplate(stripTemplateJson(template.content), {
-            client_name: contact.name || 'Valued Client',
-            meeting_date: formattedDate,
-            meeting_time: dualTimeDisplay || formattedTime,
-            meeting_location: locationName,
-            meeting_link: teamsUrl || '',
-          })
+        ? formatPlainEmailHtml(
+            fillEmailTemplateParams(parseEmailTemplateContent(template.content), templateVars),
+          )
         : `<p>Dear ${contact.name || 'Valued Client'},</p>
            <p>Your meeting is confirmed for ${formattedDate} at ${dualTimeDisplay || formattedTime}.</p>
            <p>Location: ${locationName}</p>
            ${teamsUrl ? `<p><a href="${teamsUrl}">Join meeting</a></p>` : ''}`;
 
-      if (settings.send_calendar_invite && isMicrosoftEmail(contact.email)) {
-        await createSharedCalendarEvent(graphToken, {
-          calendarType,
-          subject: 'Meeting with Decker, Pex, Levi Lawoffice',
-          startDateTime: `${meeting.meeting_date}T${formattedTime}:00`,
-          endDateTime: `${meeting.meeting_date}T${endTime}:00`,
-          location: locationName,
-          description: html,
-          attendeeEmail: contact.email,
-          attendeeName: contact.name,
-          sendCalendarInvite: true,
-          timeZone: settings.timezone,
-          isTeams: isTeamsLocation(locationName),
-        });
-      } else if (mailboxUserId) {
-        const recipient = String(contact.email || '').trim();
-        if (!recipient) throw new Error('No email address on contact');
-        await graphMailboxSyncService.sendEmail(mailboxUserId, {
-          to: [recipient],
-          subject,
-          bodyHtml: html,
-        });
+      const recipient = String(contact.email || '').trim();
+      if (!recipient) throw new Error('No email address on contact');
+
+      const sendCalendarInvite = settings.send_calendar_invite !== false;
+      const useOutlookInvite = sendCalendarInvite && isMicrosoftEmail(recipient);
+      const calendarSubject = 'Meeting with Decker, Pex, Levi Lawoffice';
+      const calendarLocationDisplay = isTeamsLocation(locationName)
+        ? 'Microsoft Teams Meeting'
+        : templateVars.meeting_location || locationName;
+
+      if (useOutlookInvite) {
+        if (calendarEventId) {
+          await addAttendeeToSharedCalendarEvent(graphToken, resolvedCalendarType, calendarEventId, {
+            attendeeEmail: recipient,
+            attendeeName: contact.name,
+            description: html,
+            location: calendarLocationDisplay,
+          });
+        } else {
+          await createSharedCalendarEvent(graphToken, {
+            calendarType: resolvedCalendarType,
+            subject: calendarSubject,
+            startDateTime: `${meeting.meeting_date}T${formattedTime}:00`,
+            endDateTime: `${meeting.meeting_date}T${endTime}:00`,
+            location: calendarLocationDisplay,
+            description: html,
+            attendeeEmail: recipient,
+            attendeeName: contact.name,
+            sendCalendarInvite: true,
+            timeZone: settings.timezone || BUSINESS_TZ,
+            isTeams: isTeamsLocation(locationName),
+          });
+        }
       } else {
-        await sendGraphEmail(graphToken, {
-          to: contact.email,
-          subject,
-          html,
-          fromMailbox,
-        });
+        const attachments = [];
+        if (sendCalendarInvite) {
+          try {
+            const icsContent = generateICSFromDateTime({
+              subject: calendarSubject,
+              date: meeting.meeting_date,
+              time: formattedTime,
+              durationMinutes: durationMinutes || settings.duration_minutes || 30,
+              location: calendarLocationDisplay,
+              description: stripHtmlForIcs(html),
+              organizerEmail: fromMailbox,
+              attendeeEmail: recipient,
+              attendeeName: contact.name,
+              teamsJoinUrl: teamsUrl || '',
+              timeZone: settings.timezone || BUSINESS_TZ,
+            });
+            attachments.push(buildIcsEmailAttachment(icsContent));
+          } catch (icsErr) {
+            console.error('Booking ICS generation failed:', icsErr);
+            warnings.push(`Calendar invite file: ${icsErr.message}`);
+          }
+        }
+
+        if (mailboxUserId) {
+          await graphMailboxSyncService.sendEmail(mailboxUserId, {
+            to: [recipient],
+            subject,
+            bodyHtml: html,
+            attachments,
+          });
+        } else {
+          await sendGraphEmail(graphToken, {
+            to: recipient,
+            subject,
+            html,
+            fromMailbox,
+            attachments,
+          });
+        }
       }
     } catch (err) {
       console.error('Booking email failed:', err);
@@ -834,6 +1099,7 @@ async function bookMeeting(token, payload) {
   }
 
   const busyRanges = await fetchBusyRanges(settings, jerusalemDate);
+  await assertCategoryHourlyCapacity(settings, jerusalemDate, jerusalemTime);
   if (!isBookingTimeAvailable(settings, jerusalemDate, jerusalemTime, busyRanges)) {
     throw new Error('Selected time is no longer available');
   }
@@ -944,6 +1210,8 @@ async function bookMeeting(token, payload) {
       teamsUrl: teamsMeetingUrl,
       graphAuth,
       durationMinutes,
+      calendarEventId,
+      calendarType,
     });
     notificationWarnings.push(...notifyWarnings);
   } catch (notifyErr) {

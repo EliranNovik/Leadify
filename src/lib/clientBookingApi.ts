@@ -58,6 +58,8 @@ export type CategoryAvailabilityRule = {
   business_hours_start: string;
   business_hours_end: string;
   days_of_week: number[];
+  /** Combined cap for selected categories per clock hour per day; null = unlimited */
+  max_meetings_per_hour?: number | null;
 };
 
 export type PublicBookingConfig = {
@@ -155,6 +157,8 @@ export type PublicBookingMeeting = {
   meeting_date: string;
   meeting_time?: string | null;
   meeting_location?: string | null;
+  is_physical_meeting?: boolean;
+  meeting_address?: string | null;
   meeting_subject?: string | null;
   join_url?: string | null;
   status?: string;

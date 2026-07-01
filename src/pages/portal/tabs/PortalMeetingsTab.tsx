@@ -2,19 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   CalendarDaysIcon,
   ChevronDownIcon,
-  ClipboardDocumentIcon,
-  MapPinIcon,
-  ShareIcon,
   VideoCameraIcon,
 } from '@heroicons/react/24/outline';
-import toast from 'react-hot-toast';
 import ClientBookingScheduler from '../../../components/client-booking/ClientBookingScheduler';
-import {
-  buildGoogleCalendarUrl,
-  copyTextToClipboard,
-  meetingShareText,
-  shareMeetingLink,
-} from '../../../lib/meetingCalendarShare';
+import { BookingMeetingCardActions } from '../../../components/client-booking/BookingMeetingCardActions';
 import { portalGetBookingAccess, type PortalMeetingRow } from '../../../lib/portalApi';
 import {
   getPortalTabHeaderCoverImage,
@@ -23,6 +14,7 @@ import {
   PortalSectionLabel,
   PortalTabFrame,
 } from '../components/portalTheme';
+import PortalMeetingLocationLines from '../components/PortalMeetingLocationLines';
 
 function formatDate(d: string | null | undefined): string {
   if (!d) return '—';
@@ -72,11 +64,6 @@ function formatMeetingTitle(date: string | null | undefined, time: string | null
   }
 }
 
-function meetingLocationIcon(location: string | null | undefined) {
-  const isTeams = (location || '').toLowerCase() === 'teams';
-  return isTeams ? VideoCameraIcon : MapPinIcon;
-}
-
 function meetingSortKey(m: PortalMeetingRow): number {
   const date = m.meeting_date ? new Date(m.meeting_date).getTime() : 0;
   const time = m.meeting_time ? formatTime(m.meeting_time) : '00:00';
@@ -109,77 +96,15 @@ function MeetingStatusBadge({ status }: { status: string }) {
   return <ColoredBadge className="bg-primary/15 text-primary">Scheduled</ColoredBadge>;
 }
 
-const MEETING_ACTION_BTN_CLASS =
-  'btn btn-ghost btn-xs h-9 min-h-0 flex-1 gap-1.5 rounded-full border border-gray-200/90 bg-gray-50/80 px-2.5 text-xs font-medium text-base-content/70 hover:border-gray-300 hover:bg-white hover:text-base-content';
-
 function MeetingCardActions({ meeting, title }: { meeting: PortalMeetingRow; title: string }) {
-  const joinUrl = meeting.join_url?.trim() || '';
-  const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
-  const googleCalendarUrl =
-    meeting.meeting_date && meeting.meeting_time
-      ? buildGoogleCalendarUrl({
-          title,
-          date: meeting.meeting_date,
-          time: meeting.meeting_time,
-          location: meeting.meeting_location,
-          joinUrl: joinUrl || null,
-        })
-      : null;
-
-  const handleCopyLink = async () => {
-    if (!joinUrl) {
-      toast.error('No meeting link available');
-      return;
-    }
-    const ok = await copyTextToClipboard(joinUrl);
-    if (ok) toast.success('Meeting link copied');
-    else toast.error('Could not copy link');
-  };
-
-  const handleShare = async () => {
-    if (!joinUrl) {
-      toast.error('No meeting link available');
-      return;
-    }
-    const result = await shareMeetingLink({
-      title,
-      url: joinUrl,
-      text: meetingShareText(title, meeting.meeting_date, meeting.meeting_time),
-    });
-    if (result === 'copied') toast.success('Meeting link copied');
-    else if (result === 'failed') toast.error('Could not share meeting link');
-  };
-
-  if (!joinUrl && !googleCalendarUrl) return null;
-
   return (
-    <div className="mt-3 flex flex-wrap gap-2">
-      {joinUrl ? (
-        <>
-          <button type="button" className={MEETING_ACTION_BTN_CLASS} onClick={() => void handleCopyLink()}>
-            <ClipboardDocumentIcon className="h-3.5 w-3.5 shrink-0" />
-            Copy link
-          </button>
-          {canShare ? (
-            <button type="button" className={MEETING_ACTION_BTN_CLASS} onClick={() => void handleShare()}>
-              <ShareIcon className="h-3.5 w-3.5 shrink-0" />
-              Share
-            </button>
-          ) : null}
-        </>
-      ) : null}
-      {googleCalendarUrl ? (
-        <a
-          href={googleCalendarUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={MEETING_ACTION_BTN_CLASS}
-        >
-          <CalendarDaysIcon className="h-3.5 w-3.5 shrink-0" />
-          Google Calendar
-        </a>
-      ) : null}
-    </div>
+    <BookingMeetingCardActions
+      title={title}
+      meetingDate={meeting.meeting_date}
+      meetingTime={meeting.meeting_time}
+      meetingLocation={meeting.meeting_location}
+      joinUrl={meeting.join_url}
+    />
   );
 }
 
@@ -191,7 +116,6 @@ function PortalMeetingCard({
   muted?: boolean;
 }) {
   const title = formatMeetingTitle(meeting.meeting_date, meeting.meeting_time);
-  const LocationIcon = meetingLocationIcon(meeting.meeting_location);
   const isTeams = (meeting.meeting_location || '').toLowerCase() === 'teams';
 
   return (
@@ -214,12 +138,11 @@ function PortalMeetingCard({
               <h3 className="text-base font-bold leading-snug tracking-tight text-gray-900 md:text-[1.05rem]">
                 {title}
               </h3>
-              {meeting.meeting_location ? (
-                <p className="mt-2 flex items-center gap-1.5 text-sm text-base-content/55">
-                  <LocationIcon className="h-4 w-4 shrink-0 opacity-70" aria-hidden />
-                  <span className="truncate">{meeting.meeting_location}</span>
-                </p>
-              ) : null}
+              <PortalMeetingLocationLines
+                location={meeting.meeting_location}
+                isPhysicalMeeting={meeting.is_physical_meeting}
+                meetingAddress={meeting.meeting_address}
+              />
             </div>
           </div>
           <MeetingStatusBadge status={meeting.status || 'scheduled'} />
@@ -230,7 +153,7 @@ function PortalMeetingCard({
             href={meeting.join_url}
             target="_blank"
             rel="noopener noreferrer"
-            className={`btn btn-sm mt-5 w-full gap-2 rounded-full border-0 font-semibold shadow-sm ${
+            className={`btn btn-sm mt-5 w-full gap-2 rounded-lg border-0 font-semibold shadow-sm ${
               isTeams ? 'btn-primary' : 'btn-outline'
             }`}
           >
@@ -307,6 +230,55 @@ const PortalMeetingsTab: React.FC<Props> = ({
     <PortalMeetingCard key={String(m.id)} meeting={m} muted={muted} />
   );
 
+  const pastMeetingsSection =
+    past.length > 0 ? (
+      <section className="mt-10 space-y-5">
+        <PortalCard padding="p-0" className="overflow-hidden">
+          <details className="group">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-4 md:px-6 [&::-webkit-details-marker]:hidden">
+              <PortalSectionLabel>Past</PortalSectionLabel>
+              <span className="flex items-center gap-2 text-sm font-medium text-base-content/45">
+                {past.length}
+                <ChevronDownIcon className="h-5 w-5 transition-transform group-open:rotate-180" />
+              </span>
+            </summary>
+            <div className="border-t border-gray-100 px-4 pb-4 pt-2 md:px-6 md:pb-6">
+              <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
+                {past.map((m) => renderMeetingCard(m, true))}
+              </div>
+            </div>
+          </details>
+        </PortalCard>
+      </section>
+    ) : null;
+
+  if (bookingAccessLoading) {
+    return (
+      <PortalTabFrame
+        title="Meetings"
+        subtitle="Schedule appointments and view your upcoming meetings."
+        headerCoverImage={getPortalTabHeaderCoverImage('meetings')}
+      >
+        <PortalLoading className="py-16" />
+      </PortalTabFrame>
+    );
+  }
+
+  if (bookingToken) {
+    return (
+      <>
+        <ClientBookingScheduler
+          bookingToken={bookingToken}
+          variant="public"
+          inClientPortal
+          defaultContactId={sessionContactId}
+          onBooked={onMeetingsChange}
+        />
+        {pastMeetingsSection}
+      </>
+    );
+  }
+
   return (
     <PortalTabFrame
       title="Meetings"
@@ -318,7 +290,8 @@ const PortalMeetingsTab: React.FC<Props> = ({
         {upcoming.length === 0 ? (
           <PortalCard>
             <p className="text-sm text-base-content/45">
-              No upcoming meetings scheduled. Use the scheduler below to book an appointment.
+              No upcoming meetings scheduled.
+              {bookingAccessError ? ` ${bookingAccessError}` : ''}
             </p>
           </PortalCard>
         ) : (
@@ -328,44 +301,15 @@ const PortalMeetingsTab: React.FC<Props> = ({
         )}
       </section>
 
-      <section className="space-y-5">
-        {bookingAccessLoading ? (
-          <PortalLoading className="py-10" />
-        ) : bookingToken ? (
-          <ClientBookingScheduler
-            bookingToken={bookingToken}
-            variant="embedded"
-            defaultContactId={sessionContactId}
-            hideScheduledMeetings
-            onBooked={onMeetingsChange}
-          />
-        ) : (
+      {bookingAccessError ? (
+        <section className="space-y-5">
           <PortalCard>
             <p className="text-sm text-base-content/55">{bookingAccessError}</p>
           </PortalCard>
-        )}
-      </section>
-
-      {past.length > 0 && (
-        <section className="space-y-5">
-          <PortalCard padding="p-0" className="overflow-hidden">
-            <details className="group">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-4 md:px-6 [&::-webkit-details-marker]:hidden">
-                <PortalSectionLabel>Past</PortalSectionLabel>
-                <span className="flex items-center gap-2 text-sm font-medium text-base-content/45">
-                  {past.length}
-                  <ChevronDownIcon className="h-5 w-5 transition-transform group-open:rotate-180" />
-                </span>
-              </summary>
-              <div className="border-t border-gray-100 px-4 pb-4 pt-2 md:px-6 md:pb-6">
-                <div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3">
-                  {past.map((m) => renderMeetingCard(m, true))}
-                </div>
-              </div>
-            </details>
-          </PortalCard>
         </section>
-      )}
+      ) : null}
+
+      {pastMeetingsSection}
     </PortalTabFrame>
   );
 };

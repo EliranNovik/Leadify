@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   PencilSquareIcon,
   CheckIcon,
@@ -10,9 +10,6 @@ import {
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import {
-  portalGetContacts,
-  portalGetContactPoas,
-  portalGetContactContracts,
   portalUpdateContact,
   type PortalContactPoaRow,
   type PortalContactContractRow,
@@ -33,7 +30,7 @@ import {
   PortalTabFrame,
 } from '../components/portalTheme';
 import PortalContactAvatar from '../components/PortalContactAvatar';
-import { usePortalContactProfileUrls } from '../hooks/usePortalContactProfileUrls';
+import { usePortalTabData } from '../context/PortalTabDataContext';
 
 type ContactRow = {
   id: number;
@@ -69,74 +66,24 @@ const FIELD_LABELS: Record<'email' | 'phone' | 'mobile' | 'address' | 'id_passpo
 const CONTACT_FIELDS = ['email', 'phone', 'mobile', 'address', 'id_passport'] as const;
 
 const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh }) => {
-  const [contacts, setContacts] = useState<ContactRow[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data, initialLoading, refresh } = usePortalTabData();
+  const contacts = (data?.contacts?.contacts ?? []) as ContactRow[];
+  const poasByContact = data?.poasByContact ?? {};
+  const contractsByContact = data?.contractsByContact ?? {};
+  const profileUrls = data?.contactProfileSignedUrls ?? {};
+  const loading = initialLoading && !data;
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draft, setDraft] = useState<Partial<ContactRow>>({});
   const [saving, setSaving] = useState(false);
-  const [poasByContact, setPoasByContact] = useState<Record<number, PortalContactPoaRow[]>>({});
-  const [contractsByContact, setContractsByContact] = useState<
-    Record<number, PortalContactContractRow[]>
-  >({});
   const [expandedPoas, setExpandedPoas] = useState<Record<number, boolean>>({});
 
-  const profileUrls = usePortalContactProfileUrls(contacts.map((c) => c.portal_profile_image_path));
-
-  const load = useCallback(async () => {
-    setLoading(true);
+  const reloadContacts = useCallback(async () => {
     try {
-      const data = await portalGetContacts();
-      setContacts((data?.contacts ?? []) as ContactRow[]);
+      await refresh('contacts');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Failed to load contacts');
-    } finally {
-      setLoading(false);
     }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  // Load each contact's POAs + contracts (keyed by contact id so they render on
-  // the right card).
-  useEffect(() => {
-    if (contacts.length === 0) {
-      setPoasByContact({});
-      setContractsByContact({});
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      const [poaEntries, contractEntries] = await Promise.all([
-        Promise.all(
-          contacts.map(async (c) => {
-            try {
-              return [c.id, await portalGetContactPoas(c.id)] as const;
-            } catch {
-              return [c.id, [] as PortalContactPoaRow[]] as const;
-            }
-          }),
-        ),
-        Promise.all(
-          contacts.map(async (c) => {
-            try {
-              return [c.id, await portalGetContactContracts(c.id)] as const;
-            } catch {
-              return [c.id, [] as PortalContactContractRow[]] as const;
-            }
-          }),
-        ),
-      ]);
-      if (!cancelled) {
-        setPoasByContact(Object.fromEntries(poaEntries));
-        setContractsByContact(Object.fromEntries(contractEntries));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [contacts]);
+  }, [refresh]);
 
   const startEdit = (c: ContactRow) => {
     setEditingId(c.id);
@@ -164,7 +111,7 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
       if (!result.ok) throw new Error(result.error || 'Update failed');
       toast.success('Contact updated');
       setEditingId(null);
-      await load();
+      await reloadContacts();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Update failed');
     } finally {
@@ -172,15 +119,11 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
     }
   };
 
-  const handleProfileUpdated = (contactId: number, storagePath: string) => {
-    setContacts((prev) =>
-      prev.map((c) =>
-        c.id === contactId ? { ...c, portal_profile_image_path: storagePath } : c,
-      ),
-    );
+  const handleProfileUpdated = async (contactId: number, _storagePath: string) => {
     if (sessionContactId === contactId) {
       onSessionRefresh?.();
     }
+    await reloadContacts();
   };
 
   if (loading) return <PortalLoading />;
@@ -198,7 +141,7 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
             ? profileUrls[c.portal_profile_image_path]
             : undefined;
           return (
-            <PortalCard key={c.id} padding="p-0" className="overflow-hidden">
+            <PortalCard key={c.id} padding="p-0" className="overflow-hidden bg-white shadow-[0_2px_14px_rgba(15,23,42,0.05)] border border-gray-100/90">
               <div className="flex items-start justify-between gap-3 px-4 pb-4 pt-4 md:px-5 md:pb-5 md:pt-5">
                 <div className="flex items-center gap-3 min-w-0">
                   <PortalContactAvatar
@@ -241,7 +184,7 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
                 )}
               </div>
 
-              <div className="border-t border-gray-200/50 bg-[#fafafa] px-4 py-4 md:px-5 md:py-5">
+              <div className="border-t border-gray-200/50 bg-white px-4 py-4 md:px-5 md:py-5">
                 <div className="grid grid-cols-2 gap-x-4 gap-y-5 text-sm">
                   {CONTACT_FIELDS.map((field) => (
                     <div key={field} className="min-w-0">
@@ -274,7 +217,7 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
                           <span
                             className={`badge badge-sm border-none ${
                               contract.status === 'signed'
-                                ? 'bg-violet-50 text-violet-600'
+                                ? 'bg-blue-50 text-blue-700'
                                 : 'bg-gray-100 text-gray-500'
                             }`}
                           >
@@ -313,7 +256,7 @@ const PortalContactsTab: React.FC<Props> = ({ sessionContactId, onSessionRefresh
                           <span
                             className={`badge badge-sm border-none ${
                               poa.status === 'signed'
-                                ? 'bg-violet-50 text-violet-600'
+                                ? 'bg-blue-50 text-blue-700'
                                 : 'bg-gray-100 text-gray-500'
                             }`}
                           >

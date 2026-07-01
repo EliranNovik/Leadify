@@ -682,6 +682,36 @@ html.dark .table tbody tr:hover {
   padding-bottom: 0.5rem !important;
 }
 
+@media (max-width: 767px) {
+  .calendar-page-chrome-top {
+    -webkit-backface-visibility: hidden;
+    backface-visibility: hidden;
+    transform: translateZ(0);
+  }
+
+  .calendar-page-chrome-scroll,
+  .calendar-page-meetings-wrap {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .calendar-page-chrome-scroll::-webkit-scrollbar,
+  .calendar-page-meetings-wrap::-webkit-scrollbar {
+    display: none;
+  }
+
+  .calendar-page-meetings-wrap table.calendar-page-meetings-table,
+  .calendar-page-meetings-wrap table.table {
+    border-spacing: 0 10px !important;
+  }
+
+  .calendar-page-meetings-wrap table > thead > tr.calendar-page-meetings-head-row > th {
+    padding-top: 0.5rem !important;
+    padding-bottom: 0.25rem !important;
+    background-color: #f3f4f6 !important;
+  }
+}
+
 @media (min-width: 768px) {
   .calendar-page-meetings-wrap table > thead.calendar-page-meetings-thead {
     position: sticky;
@@ -1938,6 +1968,160 @@ html.dark.theme-dark2 .hover\:bg-gray-100:hover {
 
 html.dark.theme-dark2 .hover\:bg-base-200:hover {
   background-color: #27272a !important;
+}
+
+/* Client portal — remap DaisyUI primary purple to footer blue (blue-900 / blue-950) */
+.portal-brand {
+  --portal-brand: 30 58 138;
+  --portal-brand-dark: 23 37 84;
+}
+
+.portal-brand .text-primary {
+  color: rgb(var(--portal-brand)) !important;
+}
+
+.portal-brand .bg-primary {
+  background-color: rgb(var(--portal-brand)) !important;
+}
+
+.portal-brand .border-primary {
+  border-color: rgb(var(--portal-brand)) !important;
+}
+
+.portal-brand .btn-primary {
+  background-color: rgb(var(--portal-brand)) !important;
+  border-color: rgb(var(--portal-brand)) !important;
+  color: #fff !important;
+}
+
+.portal-brand .btn-primary:hover {
+  background-color: rgb(var(--portal-brand-dark)) !important;
+  border-color: rgb(var(--portal-brand-dark)) !important;
+}
+
+.portal-brand .btn-outline.btn-primary {
+  color: rgb(var(--portal-brand)) !important;
+  border-color: rgb(var(--portal-brand)) !important;
+  background-color: transparent !important;
+}
+
+.portal-brand .btn-outline.btn-primary:hover {
+  background-color: rgb(var(--portal-brand) / 0.08) !important;
+}
+
+.portal-brand .toggle-primary:checked {
+  background-color: rgb(var(--portal-brand)) !important;
+  border-color: rgb(var(--portal-brand)) !important;
+}
+
+.portal-brand .bg-primary\/8 {
+  background-color: rgb(var(--portal-brand) / 0.08) !important;
+}
+
+.portal-brand .bg-primary\/10 {
+  background-color: rgb(var(--portal-brand) / 0.1) !important;
+}
+
+.portal-brand .bg-primary\/15 {
+  background-color: rgb(var(--portal-brand) / 0.15) !important;
+}
+
+.portal-brand .bg-primary\/\[0\.04\] {
+  background-color: rgb(var(--portal-brand) / 0.04) !important;
+}
+
+.portal-brand .from-primary\/\[0\.06\] {
+  --tw-gradient-from: rgb(var(--portal-brand) / 0.06) var(--tw-gradient-from-position) !important;
+  --tw-gradient-to: rgb(var(--portal-brand) / 0) var(--tw-gradient-to-position) !important;
+  --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important;
+}
+
+.portal-brand .border-primary\/10 {
+  border-color: rgb(var(--portal-brand) / 0.1) !important;
+}
+
+.portal-brand .border-primary\/15 {
+  border-color: rgb(var(--portal-brand) / 0.15) !important;
+}
+
+.portal-brand .text-primary\/80 {
+  color: rgb(var(--portal-brand) / 0.8) !important;
+}
+
+.portal-brand .text-primary-content {
+  color: #fff !important;
+}
+
+.portal-brand .ring-primary\/15 {
+  --tw-ring-color: rgb(var(--portal-brand) / 0.15) !important;
+}
+
+.portal-brand .ring-primary\/20 {
+  --tw-ring-color: rgb(var(--portal-brand) / 0.2) !important;
+}
+
+.portal-brand .focus\:border-primary:focus {
+  border-color: rgb(var(--portal-brand)) !important;
+}
+
+.portal-brand .focus\:ring-primary\/15:focus {
+  --tw-ring-color: rgb(var(--portal-brand) / 0.15) !important;
+}
+
+.portal-brand .focus-within\:border-primary:focus-within {
+  border-color: rgb(var(--portal-brand)) !important;
+}
+
+.portal-brand .focus-within\:ring-primary\/20:focus-within {
+  --tw-ring-color: rgb(var(--portal-brand) / 0.2) !important;
+}
+
+.portal-brand .hover\:text-primary\/80:hover {
+  color: rgb(var(--portal-brand) / 0.8) !important;
+}
+
+.portal-brand .loading.text-primary,
+.portal-brand .loading.loading-spinner.text-primary {
+  color: rgb(var(--portal-brand)) !important;
+}
+
+/* Client portal — tab crossfade transition */
+.portal-tab-transition-shell {
+  width: 100%;
+}
+
+.portal-tab-transition-fade-out {
+  animation: portal-tab-fade-out 180ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.portal-tab-transition-fade-in {
+  animation: portal-tab-fade-in 180ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes portal-tab-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes portal-tab-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .portal-tab-transition-fade-out,
+  .portal-tab-transition-fade-in {
+    animation: none !important;
+    opacity: 1 !important;
+  }
 }
 
 /* --- Print styles for ProformaViewPage --- */

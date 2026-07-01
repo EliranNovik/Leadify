@@ -1,24 +1,13 @@
-import React, { useEffect, useState } from 'react';
-import { portalGetSubEfforts } from '../../../lib/portalApi';
+import React from 'react';
 import PortalSubEffortsTimeline from './PortalSubEffortsTimeline';
 import { getPortalTabHeaderCoverImage, PortalLoading, PortalTabFrame } from '../components/portalTheme';
+import { usePortalTabData } from '../context/PortalTabDataContext';
 
 const PortalStagesTab: React.FC = () => {
-  const [rows, setRows] = useState<Array<Record<string, unknown>>>([]);
-  const [loading, setLoading] = useState(true);
+  const { data, initialLoading } = usePortalTabData();
+  const rows = (data?.subEfforts ?? []) as Parameters<typeof PortalSubEffortsTimeline>[0]['rows'];
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        const data = await portalGetSubEfforts();
-        setRows(data?.rows ?? []);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
-
-  if (loading) return <PortalLoading />;
+  if (initialLoading && !data) return <PortalLoading />;
 
   return (
     <PortalTabFrame
@@ -26,7 +15,7 @@ const PortalStagesTab: React.FC = () => {
       subtitle="Follow your case progress and view documents for each stage."
       headerCoverImage={getPortalTabHeaderCoverImage('stages')}
     >
-      <PortalSubEffortsTimeline rows={rows as Parameters<typeof PortalSubEffortsTimeline>[0]['rows']} />
+      <PortalSubEffortsTimeline rows={rows} />
     </PortalTabFrame>
   );
 };

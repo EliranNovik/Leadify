@@ -14,8 +14,6 @@ import {
 } from '../../../components/DocumentModal';
 import { DocumentFileGlyph, inferDocumentFileKind } from '../../../lib/documentFileGlyphs';
 import {
-  portalGetDocumentSignedUrls,
-  portalGetDocuments,
   portalUploadDocument,
   type PortalDocumentClassification,
   type PortalDocumentRow,
@@ -26,6 +24,7 @@ import {
   PortalLoading,
   PortalTabFrame,
 } from '../components/portalTheme';
+import { usePortalTabData } from '../context/PortalTabDataContext';
 
 type UploadedFile = {
   name: string;
@@ -217,11 +216,12 @@ function PortalDocumentPreview({
 }
 
 const PortalDocumentsTab: React.FC = () => {
-  const [classifications, setClassifications] = useState<PortalDocumentClassification[]>([]);
-  const [documents, setDocuments] = useState<PortalDocumentRow[]>([]);
-  const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
+  const { data, initialLoading, refresh } = usePortalTabData();
+  const classifications = data?.documents?.classifications ?? [];
+  const documents = data?.documents?.documents ?? [];
+  const signedUrls = data?.documentSignedUrls ?? {};
   const [activeTabKey, setActiveTabKey] = useState<PortalDocumentTabKey>('sequence');
-  const [loading, setLoading] = useState(true);
+  const loading = initialLoading && !data;
   const [isUploading, setIsUploading] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -229,35 +229,19 @@ const PortalDocumentsTab: React.FC = () => {
   const [previewInitialIndex, setPreviewInitialIndex] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(async (opts?: { selectSequenceCategory?: boolean }) => {
-    setLoading(true);
-    try {
-      const data = await portalGetDocuments();
-      const cats = data?.classifications ?? [];
-      const docs = data?.documents ?? [];
-      setClassifications(cats);
-      setDocuments(docs);
+  const reloadDocuments = useCallback(
+    async (opts?: { selectSequenceCategory?: boolean }) => {
       if (opts?.selectSequenceCategory) {
         setActiveTabKey('sequence');
       }
-
-      const paths = docs.map((d) => d.storage_path).filter(Boolean) as string[];
-      if (paths.length) {
-        const urls = await portalGetDocumentSignedUrls(paths);
-        setSignedUrls(urls);
-      } else {
-        setSignedUrls({});
+      try {
+        await refresh('documents');
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : 'Failed to load documents');
       }
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Failed to load documents');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+    },
+    [refresh],
+  );
 
   const documentTabs = useMemo(() => resolvePortalDocumentTabs(classifications), [classifications]);
 
@@ -336,7 +320,7 @@ const PortalDocumentsTab: React.FC = () => {
             f.name === file.name ? { ...f, status: 'success', progress: 100 } : f,
           ),
         );
-        await load({ selectSequenceCategory: true });
+        await reloadDocuments({ selectSequenceCategory: true });
       } catch (err) {
         stopProgressSimulation(file.name);
         const errorMessage = err instanceof Error ? err.message : 'Upload failed';
@@ -436,7 +420,7 @@ const PortalDocumentsTab: React.FC = () => {
         className={`rounded-lg border-2 border-dashed p-6 text-center transition-colors duration-200 sm:p-8 ${
           isUploading
             ? 'border-primary bg-gray-50'
-            : 'border-gray-300 bg-gray-50 hover:border-primary hover:bg-purple-50'
+            : 'border-gray-300 bg-gray-50 hover:border-primary hover:bg-blue-50'
         }`}
         onDragOver={(e) => {
           e.preventDefault();
@@ -485,7 +469,7 @@ const PortalDocumentsTab: React.FC = () => {
                         {
                           '--value': file.progress || 0,
                           '--size': '2.5rem',
-                          color: '#3b28c7',
+                          color: '#1e3a8a',
                         } as React.CSSProperties
                       }
                     >
@@ -536,7 +520,7 @@ const PortalDocumentsTab: React.FC = () => {
               <span
                 className={
                   active
-                    ? 'inline-flex min-w-[22px] items-center justify-center rounded-full bg-white px-2 py-0.5 text-xs font-semibold tabular-nums text-[#3b28c7]'
+                    ? 'inline-flex min-w-[22px] items-center justify-center rounded-full bg-white px-2 py-0.5 text-xs font-semibold tabular-nums text-blue-900'
                     : 'text-xs font-semibold tabular-nums text-base-content/70'
                 }
               >

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import PortalLayout from './PortalLayout';
 import { usePortalSession } from './usePortalSession';
@@ -8,11 +8,12 @@ import PortalFinanceTab from './tabs/PortalFinanceTab';
 import PortalDocumentsTab from './tabs/PortalDocumentsTab';
 import PortalContactsTab from './tabs/PortalContactsTab';
 import PortalMeetingsTab from './tabs/PortalMeetingsTab';
-import { portalGetFinances, portalGetMeetings } from '../../lib/portalApi';
+import PortalTabPageTurn from './components/PortalTabPageTurn';
+import { PortalTabDataProvider, usePortalTabData } from './context/PortalTabDataContext';
 import { PortalLoading } from './components/portalTheme';
-import { usePortalContactProfileUrls } from './hooks/usePortalContactProfileUrls';
+import type { PortalTabId } from './portalTabTypes';
 
-export type PortalTabId = 'summary' | 'stages' | 'finance' | 'documents' | 'contacts' | 'meetings';
+export type { PortalTabId } from './portalTabTypes';
 
 const TABS: { id: PortalTabId; label: string }[] = [
   { id: 'summary', label: 'Dashboard' },
@@ -23,66 +24,97 @@ const TABS: { id: PortalTabId; label: string }[] = [
   { id: 'meetings', label: 'Meetings' },
 ];
 
-const PortalCasePage: React.FC = () => {
-  const [searchParams] = useSearchParams();
-  const { loading, valid, leadSummary, contact, logout, refresh } = usePortalSession(true);
-  const [activeTab, setActiveTab] = useState<PortalTabId>('summary');
-  const [financeData, setFinanceData] = useState<Awaited<ReturnType<typeof portalGetFinances>>>(null);
-  const [meetingsData, setMeetingsData] = useState<Awaited<ReturnType<typeof portalGetMeetings>>>(null);
-  const [dashboardKey, setDashboardKey] = useState(0);
+const TAB_ORDER = TABS.map((tab) => tab.id);
 
-  const profileUrls = usePortalContactProfileUrls([contact?.portal_profile_image_path]);
+const PortalCaseContent: React.FC<{
+  contact: ReturnType<typeof usePortalSession>['contact'];
+  refreshSession: () => Promise<void>;
+  logout: () => Promise<void>;
+  leadSummary: ReturnType<typeof usePortalSession>['leadSummary'];
+}> = ({ contact, refreshSession, logout, leadSummary }) => {
+  const [searchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState<PortalTabId>('summary');
+  const { data, initialLoading, refresh } = usePortalTabData();
   const contactProfileImageUrl = contact?.portal_profile_image_path
-    ? profileUrls[contact.portal_profile_image_path]
+    ? data?.contactProfileSignedUrls?.[contact.portal_profile_image_path] ?? null
     : null;
 
-  const loadMeetings = useCallback(async () => {
-    try {
-      const data = await portalGetMeetings();
-      setMeetingsData(data);
-    } catch (err) {
-      console.error('portal_get_meetings', err);
-      setMeetingsData({ meetings: [], requests: [] });
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    if (
+      tab === 'meetings'
+      || tab === 'summary'
+      || tab === 'stages'
+      || tab === 'finance'
+      || tab === 'documents'
+      || tab === 'contacts'
+    ) {
+      setActiveTab(tab as PortalTabId);
     }
-  }, []);
+  }, [searchParams]);
 
   const goToMeetingsTab = useCallback(() => {
     setActiveTab('meetings');
   }, []);
 
-  useEffect(() => {
-    const tab = searchParams.get('tab');
-    if (tab === 'meetings' || tab === 'summary' || tab === 'stages' || tab === 'finance' || tab === 'documents' || tab === 'contacts') {
-      setActiveTab(tab as PortalTabId);
-    }
-  }, [searchParams]);
+  const renderTab = useCallback(
+    (tab: PortalTabId) => {
+      if (initialLoading && !data) {
+        return <PortalLoading />;
+      }
 
-  useEffect(() => {
-    if (activeTab !== 'finance') return;
-    setFinanceData(null);
-    void portalGetFinances()
-      .then(setFinanceData)
-      .catch((err) => {
-        console.error('portal_get_finances', err);
-        setFinanceData({ payments: [], proformas: [], is_legacy: false });
-      });
-  }, [activeTab]);
+      switch (tab) {
+        case 'summary':
+          return (
+            <PortalDashboardTab
+              sessionContact={contact}
+              onNavigate={setActiveTab}
+              onRequestMeeting={goToMeetingsTab}
+              onSessionRefresh={() => void refreshSession()}
+            />
+          );
+        case 'stages':
+          return <PortalStagesTab />;
+        case 'finance':
+          return data?.finances ? (
+            <PortalFinanceTab
+              payments={data.finances.payments ?? []}
+              proformas={data.finances.proformas ?? []}
+              isLegacy={data.finances.is_legacy}
+            />
+          ) : (
+            <PortalLoading />
+          );
+        case 'documents':
+          return <PortalDocumentsTab />;
+        case 'contacts':
+          return (
+            <PortalContactsTab
+              onSessionRefresh={() => void refreshSession()}
+              sessionContactId={contact?.id}
+            />
+          );
+        case 'meetings':
+          return data?.meetings ? (
+            <PortalMeetingsTab
+              meetings={data.meetings.meetings ?? []}
+              sessionContactId={contact?.id ?? null}
+              onMeetingsChange={() => void refresh('meetings')}
+            />
+          ) : (
+            <PortalLoading />
+          );
+        default:
+          return null;
+      }
+    },
+    [contact, data, goToMeetingsTab, initialLoading, refresh, refreshSession],
+  );
 
-  useEffect(() => {
-    if (activeTab !== 'meetings') return;
-    setMeetingsData(null);
-    void loadMeetings();
-  }, [activeTab, loadMeetings]);
-
-  if (loading) {
-    return (
-      <div className="min-h-[100dvh] flex items-center justify-center bg-[#ececec]">
-        <PortalLoading />
-      </div>
-    );
-  }
-
-  if (!valid) return null;
+  const tabTurn = useMemo(
+    () => <PortalTabPageTurn activeTab={activeTab} tabOrder={TAB_ORDER} renderTab={renderTab} />,
+    [activeTab, renderTab],
+  );
 
   return (
     <PortalLayout
@@ -95,40 +127,33 @@ const PortalCasePage: React.FC = () => {
       activeNavTab={activeTab}
       onNavTabChange={(tabId) => setActiveTab(tabId as PortalTabId)}
     >
-      {activeTab === 'summary' && (
-        <PortalDashboardTab
-          key={dashboardKey}
-          sessionContact={contact}
-          onNavigate={setActiveTab}
-          onRequestMeeting={goToMeetingsTab}
-          onSessionRefresh={() => void refresh()}
-        />
-      )}
-      {activeTab === 'stages' && <PortalStagesTab />}
-      {activeTab === 'finance' && financeData && (
-        <PortalFinanceTab
-          payments={financeData.payments ?? []}
-          proformas={financeData.proformas ?? []}
-          isLegacy={financeData.is_legacy}
-        />
-      )}
-      {activeTab === 'finance' && !financeData && <PortalLoading />}
-      {activeTab === 'documents' && <PortalDocumentsTab />}
-      {activeTab === 'contacts' && (
-        <PortalContactsTab onSessionRefresh={() => void refresh()} sessionContactId={contact?.id} />
-      )}
-      {activeTab === 'meetings' && meetingsData && (
-        <PortalMeetingsTab
-          meetings={meetingsData.meetings ?? []}
-          sessionContactId={contact?.id ?? null}
-          onMeetingsChange={() => {
-            void loadMeetings();
-            setDashboardKey((k) => k + 1);
-          }}
-        />
-      )}
-      {activeTab === 'meetings' && !meetingsData && <PortalLoading />}
+      {tabTurn}
     </PortalLayout>
+  );
+};
+
+const PortalCasePage: React.FC = () => {
+  const { loading, valid, leadSummary, contact, logout, refresh, leadRef } = usePortalSession(true);
+
+  if (loading) {
+    return (
+      <div className="min-h-[100dvh] flex items-center justify-center bg-gradient-to-b from-[#f7f7fb] to-[#f1f2f6]">
+        <PortalLoading />
+      </div>
+    );
+  }
+
+  if (!valid) return null;
+
+  return (
+    <PortalTabDataProvider leadRef={leadRef} leadSummary={leadSummary}>
+      <PortalCaseContent
+        contact={contact}
+        refreshSession={refresh}
+        logout={logout}
+        leadSummary={leadSummary}
+      />
+    </PortalTabDataProvider>
   );
 };
 

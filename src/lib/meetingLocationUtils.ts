@@ -68,6 +68,61 @@ export function isPhysicalMeetingLocation(
   return false;
 }
 
+/** Client-booking location labels → office address when catalog has no match. */
+export const CLIENT_BOOKING_LOCATION_ADDRESSES: Readonly<Record<string, string>> = {
+  'ramat gan office': 'Menachem Begin Rd. 11, Ramat Gan, Israel',
+};
+
+export function isTeamsMeetingLocationName(location?: string | null): boolean {
+  return (location?.trim().toLowerCase() ?? '') === 'teams';
+}
+
+export function resolveKnownClientBookingAddress(location?: string | null): string | null {
+  const label = location?.trim();
+  if (!label || isTeamsMeetingLocationName(label)) return null;
+
+  const key = label.toLowerCase();
+  const exact = CLIENT_BOOKING_LOCATION_ADDRESSES[key];
+  if (exact) return exact;
+
+  if (key.includes('ramat gan')) {
+    return CLIENT_BOOKING_LOCATION_ADDRESSES['ramat gan office'] ?? null;
+  }
+
+  return null;
+}
+
+/** Portal / public booking cards — physical flag + address with catalog and known-location fallbacks. */
+export function resolvePortalMeetingLocationDisplay(
+  location?: string | null,
+  options?: {
+    isPhysicalMeeting?: boolean;
+    meetingAddress?: string | null;
+    manualAddress?: string | null;
+  },
+): { location: string; isPhysicalMeeting: boolean; meetingAddress: string | null } {
+  const label = location?.trim() ?? '';
+  if (!label) {
+    return { location: '', isPhysicalMeeting: false, meetingAddress: null };
+  }
+
+  const isTeams = isTeamsMeetingLocationName(label);
+  const manual = options?.manualAddress?.trim();
+  const apiAddress = options?.meetingAddress?.trim();
+  const meetingAddress = apiAddress || manual || resolveKnownClientBookingAddress(label);
+
+  let isPhysicalMeeting = options?.isPhysicalMeeting === true;
+  if (!isTeams && (isPhysicalMeeting || meetingAddress)) {
+    isPhysicalMeeting = true;
+  }
+
+  if (isTeams) {
+    return { location: label, isPhysicalMeeting: false, meetingAddress: null };
+  }
+
+  return { location: label, isPhysicalMeeting, meetingAddress: meetingAddress || null };
+}
+
 /** Whether calendar/email should include an online join link for this location. */
 export function shouldIncludeMeetingJoinLink(
   loc: MeetingLocationPhysicalFlag | null | undefined,

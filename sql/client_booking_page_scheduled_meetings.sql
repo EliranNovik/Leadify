@@ -1,6 +1,65 @@
 -- Scheduled meetings on public booking page + portal lead ref in config.
 -- Run in Supabase SQL editor.
 
+CREATE OR REPLACE FUNCTION public._portal_known_booking_address(p_meeting_location TEXT)
+RETURNS TEXT
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT CASE lower(trim(COALESCE(p_meeting_location, '')))
+    WHEN 'ramat gan office' THEN 'Menachem Begin Rd. 11, Ramat Gan, Israel'
+    ELSE NULL
+  END;
+$$;
+
+CREATE OR REPLACE FUNCTION public._portal_is_physical_meeting(
+  p_meeting_location TEXT,
+  p_manual_address TEXT DEFAULT NULL
+)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT
+    COALESCE(
+      (
+        SELECT COALESCE(tml.is_physical_location, false)
+        FROM public.tenants_meetinglocation tml
+        WHERE lower(trim(tml.name)) = lower(trim(COALESCE(p_meeting_location, '')))
+        ORDER BY tml.id
+        LIMIT 1
+      ),
+      false
+    )
+    OR NULLIF(trim(COALESCE(p_manual_address, '')), '') IS NOT NULL
+    OR public._portal_known_booking_address(p_meeting_location) IS NOT NULL;
+$$;
+
+CREATE OR REPLACE FUNCTION public._portal_meeting_address(
+  p_meeting_location TEXT,
+  p_manual_address TEXT DEFAULT NULL
+)
+RETURNS TEXT
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT CASE
+    WHEN public._portal_is_physical_meeting(p_meeting_location, p_manual_address) THEN
+      NULLIF(trim(COALESCE(
+        NULLIF(trim(COALESCE(p_manual_address, '')), ''),
+        (
+          SELECT NULLIF(trim(COALESCE(tml.address, '')), '')
+          FROM public.tenants_meetinglocation tml
+          WHERE lower(trim(tml.name)) = lower(trim(COALESCE(p_meeting_location, '')))
+          ORDER BY tml.id
+          LIMIT 1
+        ),
+        public._portal_known_booking_address(p_meeting_location)
+      )), '')
+    ELSE NULL
+  END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.get_public_booking_config(p_token UUID)
 RETURNS JSONB
 LANGUAGE plpgsql
@@ -110,6 +169,8 @@ BEGIN
           'meeting_date', m.meeting_date,
           'meeting_time', m.meeting_time::TEXT,
           'meeting_location', NULLIF(TRIM(m.meeting_location), ''),
+          'is_physical_meeting', public._portal_is_physical_meeting(m.meeting_location, m.manual_address),
+          'meeting_address', public._portal_meeting_address(m.meeting_location, m.manual_address),
           'meeting_subject', NULLIF(TRIM(m.meeting_subject), ''),
           'join_url', NULLIF(
             COALESCE(NULLIF(TRIM(m.custom_link), ''), NULLIF(TRIM(m.teams_meeting_url), '')),
@@ -143,6 +204,8 @@ BEGIN
           'meeting_date', m.meeting_date,
           'meeting_time', m.meeting_time::TEXT,
           'meeting_location', NULLIF(TRIM(m.meeting_location), ''),
+          'is_physical_meeting', public._portal_is_physical_meeting(m.meeting_location, m.manual_address),
+          'meeting_address', public._portal_meeting_address(m.meeting_location, m.manual_address),
           'meeting_subject', NULLIF(TRIM(m.meeting_subject), ''),
           'join_url', NULLIF(
             COALESCE(NULLIF(TRIM(m.custom_link), ''), NULLIF(TRIM(m.teams_meeting_url), '')),

@@ -120,9 +120,26 @@ function stripRemainingBraces(text) {
     .trim();
 }
 
+function normalizeTemplateBraces(text) {
+  return String(text ?? '').replace(/\uFF5B/g, '{').replace(/\uFF5D/g, '}');
+}
+
+/** Replace {name}, {{date}}, etc. in misc_emailtemplate bodies (booking, CRM). */
+function fillEmailTemplateParams(content, vars) {
+  let out = normalizeTemplateBraces(content);
+  Object.entries(vars || {}).forEach(([key, value]) => {
+    const safe = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const v = value != null ? String(value) : '';
+    out = out.replace(new RegExp(`\\{\\{\\s*${safe}\\s*\\}\\}`, 'gi'), v);
+    out = out.replace(new RegExp(`\\{\\s*${safe}\\s*\\}`, 'gi'), v);
+  });
+  return out;
+}
+
 module.exports = {
   parseEmailTemplateContent,
   escapeHtml,
   formatPlainEmailHtml,
   stripRemainingBraces,
+  fillEmailTemplateParams,
 };

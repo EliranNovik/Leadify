@@ -92,6 +92,26 @@ export async function fetchEmployeeProfileByDisplayName(
   return mapEmployeeRow(data as Record<string, unknown>, email);
 }
 
+/** Resolve employee by display or official name (portal team cards use official_name). */
+export async function fetchEmployeeProfileByName(name: string): Promise<EmployeeProfile | null> {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+
+  const byDisplay = await fetchEmployeeProfileByDisplayName(trimmed);
+  if (byDisplay) return byDisplay;
+
+  const { data, error } = await supabase
+    .from('tenants_employee')
+    .select(EMPLOYEE_SELECT)
+    .eq('official_name', trimmed)
+    .maybeSingle();
+
+  if (error || !data) return null;
+
+  const email = await enrichWithEmail(data.id);
+  return mapEmployeeRow(data as Record<string, unknown>, email);
+}
+
 /** Resolve issuer for public proforma — prefers employee id, falls back to display name. */
 /** True when the string looks like a dialable phone number (has at least one digit). */
 function isUsablePhone(value: string): boolean {

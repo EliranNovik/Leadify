@@ -26,10 +26,10 @@ type Props = {
 type IconMeta = { icon: React.ComponentType<{ className?: string }>; chip: string };
 
 const TYPE_META: Record<string, IconMeta> = {
-  poa_new: { icon: DocumentTextIcon, chip: 'bg-indigo-50 text-indigo-600' },
-  poa_signed: { icon: CheckCircleIcon, chip: 'bg-violet-50 text-violet-600' },
+  poa_new: { icon: DocumentTextIcon, chip: 'bg-blue-50 text-blue-700' },
+  poa_signed: { icon: CheckCircleIcon, chip: 'bg-blue-50 text-blue-700' },
   contract_new: { icon: DocumentDuplicateIcon, chip: 'bg-sky-50 text-sky-600' },
-  contract_signed: { icon: CheckCircleIcon, chip: 'bg-violet-50 text-violet-600' },
+  contract_signed: { icon: CheckCircleIcon, chip: 'bg-blue-50 text-blue-700' },
   contact_new: { icon: UserPlusIcon, chip: 'bg-emerald-50 text-emerald-600' },
   meeting_new: { icon: CalendarDaysIcon, chip: 'bg-amber-50 text-amber-600' },
   document_new: { icon: ArrowUpTrayIcon, chip: 'bg-teal-50 text-teal-600' },

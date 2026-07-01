@@ -59,47 +59,47 @@ const BookingUnavailableCalendar: React.FC<BookingUnavailableCalendarProps> = ({
   return (
     <div
       className={`rounded-xl border border-gray-200 bg-white shadow-sm ${
-        compact ? 'inline-block w-[17.5rem] max-w-full p-3' : 'bg-gray-50/60 p-4'
+        compact ? 'inline-block w-[22rem] max-w-full p-4' : 'bg-gray-50/60 p-4'
       } ${className}`}
     >
-      <div className={`flex items-center justify-between ${compact ? 'mb-2' : 'mb-3'}`}>
+      <div className={`flex items-center justify-between ${compact ? 'mb-3' : 'mb-3'}`}>
         <button
           type="button"
-          className="btn btn-ghost btn-xs btn-circle"
+          className={`btn btn-ghost btn-circle ${compact ? 'btn-sm' : 'btn-xs'}`}
           onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
           aria-label="Previous month"
         >
-          <ChevronLeftIcon className="h-3.5 w-3.5" />
+          <ChevronLeftIcon className={compact ? 'h-4 w-4' : 'h-3.5 w-3.5'} />
         </button>
-        <span className={`font-semibold text-gray-800 ${compact ? 'text-xs' : 'text-sm'}`}>
+        <span className={`font-semibold text-gray-800 ${compact ? 'text-sm' : 'text-sm'}`}>
           {monthLabel}
         </span>
         <button
           type="button"
-          className="btn btn-ghost btn-xs btn-circle"
+          className={`btn btn-ghost btn-circle ${compact ? 'btn-sm' : 'btn-xs'}`}
           onClick={() => setViewMonth((m) => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
           aria-label="Next month"
         >
-          <ChevronRightIcon className="h-3.5 w-3.5" />
+          <ChevronRightIcon className={compact ? 'h-4 w-4' : 'h-3.5 w-3.5'} />
         </button>
       </div>
 
       <div
         className={`grid grid-cols-7 text-center font-semibold uppercase tracking-wide text-base-content/40 ${
-          compact ? 'gap-0.5 text-[9px]' : 'gap-1 text-[10px]'
+          compact ? 'gap-1 text-[10px]' : 'gap-1 text-[10px]'
         }`}
       >
         {dayLabels.map((d, i) => (
-          <div key={`${d}-${i}`} className={compact ? 'py-0.5' : 'py-1'}>
+          <div key={`${d}-${i}`} className={compact ? 'py-1' : 'py-1'}>
             {d}
           </div>
         ))}
       </div>
 
-      <div className={`grid grid-cols-7 ${compact ? 'mt-0.5 gap-0.5' : 'mt-1 gap-1'}`}>
+      <div className={`grid grid-cols-7 ${compact ? 'mt-1 gap-1' : 'mt-1 gap-1'}`}>
         {cells.map((cell, idx) => {
           if (!cell.date || cell.day == null) {
-            return <div key={`empty-${idx}`} className={compact ? 'h-7' : ''} />;
+            return <div key={`empty-${idx}`} className={compact ? 'h-9' : ''} />;
           }
           const isBlocked = selectedSet.has(cell.date);
           return (
@@ -108,7 +108,7 @@ const BookingUnavailableCalendar: React.FC<BookingUnavailableCalendarProps> = ({
               type="button"
               onClick={() => toggleDate(cell.date!)}
               className={`flex items-center justify-center rounded-md font-medium transition-colors ${
-                compact ? 'h-7 w-7 text-[11px]' : 'aspect-square rounded-lg text-xs'
+                compact ? 'h-9 w-9 text-xs' : 'aspect-square rounded-lg text-xs'
               } ${
                 isBlocked
                   ? 'bg-error/15 text-error ring-1 ring-error/30'
@@ -124,15 +124,17 @@ const BookingUnavailableCalendar: React.FC<BookingUnavailableCalendarProps> = ({
 
       {selectedDates.length > 0 ? (
         <div
-          className={`mt-2 flex flex-wrap gap-1 ${
-            compact ? 'max-h-20 overflow-y-auto' : 'mt-3 gap-1.5'
+          className={`mt-3 flex flex-wrap gap-1.5 ${
+            compact ? 'max-h-24 overflow-y-auto' : 'mt-3 gap-1.5'
           }`}
         >
           {selectedDates.map((date) => (
             <button
               key={date}
               type="button"
-              className="badge badge-xs gap-0.5 border-error/20 bg-error/10 text-error"
+              className={`badge gap-0.5 border-error/20 bg-error/10 text-error ${
+                compact ? 'badge-sm' : 'badge-xs'
+              }`}
               onClick={() => toggleDate(date)}
             >
               {date}
@@ -141,7 +143,7 @@ const BookingUnavailableCalendar: React.FC<BookingUnavailableCalendarProps> = ({
           ))}
         </div>
       ) : (
-        <p className={`text-base-content/45 ${compact ? 'mt-2 text-[10px]' : 'mt-3 text-xs'}`}>
+        <p className={`text-base-content/45 ${compact ? 'mt-3 text-xs' : 'mt-3 text-xs'}`}>
           Click dates to block booking.
         </p>
       )}

@@ -27,7 +27,7 @@ function AboutFeatureSlide({ item, glass = false }: { item: FeatureItem; glass?:
   if (glass) {
     return (
       <div className="flex w-full items-start gap-4">
-        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary text-white shadow-[0_2px_10px_rgba(59,40,199,0.4)]">
+        <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary text-white shadow-[0_2px_10px_rgba(30,58,138,0.4)]">
           <Icon className="h-6 w-6" aria-hidden />
         </span>
         <div className="min-w-0 flex-1">
@@ -44,7 +44,7 @@ function AboutFeatureSlide({ item, glass = false }: { item: FeatureItem; glass?:
 
   return (
     <div className="flex min-w-full shrink-0 snap-start snap-always flex-col gap-4 px-1">
-      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary text-white shadow-[0_2px_8px_rgba(59,40,199,0.35)]">
+      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary text-white shadow-[0_2px_8px_rgba(30,58,138,0.35)]">
         <Icon className="h-6 w-6" aria-hidden />
       </span>
       <div className="min-w-0">
@@ -290,7 +290,7 @@ function AboutFeatureList({
         const Icon = item.icon;
         return (
           <li key={item.title} className="flex gap-3.5">
-            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary text-white shadow-[0_2px_8px_rgba(59,40,199,0.35)]">
+            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary text-white shadow-[0_2px_8px_rgba(30,58,138,0.35)]">
               <Icon className="h-5 w-5" aria-hidden />
             </span>
             <div className="min-w-0 flex-1">

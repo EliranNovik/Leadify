@@ -38,7 +38,7 @@ export const msalConfig = {
             break;
         }
       },
-      logLevel: 3,
+      logLevel: import.meta.env.DEV ? 1 : 0,
     }
   }
 };
