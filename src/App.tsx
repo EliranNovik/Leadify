@@ -76,6 +76,7 @@ import {
   LazyMyProfilePage,
   LazyNewCasesPage,
   LazyNewHandlerCasesPage,
+  LazyOrganizationPage,
   LazyOutlookCalendarPage,
   LazyPaymentPage,
   LazyPaymentSuccessPage,
@@ -1020,6 +1021,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/access-logs" element={<RouteSuspense><LazyExternalUserAccessLogsPage /></RouteSuspense>} />
                     <Route path="/external-settings" element={<RouteSuspense><LazyExternalUserSettingsPage /></RouteSuspense>} />
                     <Route path="/sales/signed" element={<RouteSuspense><LazySignedSalesReportPage /></RouteSuspense>} />
+                    <Route path="/organization" element={<RouteSuspense><LazyOrganizationPage /></RouteSuspense>} />
                     <Route path="/settings" element={<RouteSuspense><LazySettingsPage /></RouteSuspense>} />
                     <Route path="/tools/boi-exchange-rates" element={<RouteSuspense><LazyBoiExchangeRatesTestPage /></RouteSuspense>} />
                     <Route path="/test-meeting-summary" element={<RouteSuspense><LazyMeetingSummaryTestPage /></RouteSuspense>} />

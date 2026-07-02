@@ -1,10 +1,22 @@
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+
+const rootDir = path.dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig({
   plugins: [react()],
   define: {
     global: 'globalThis',
+  },
+  resolve: {
+    alias: {
+      url: path.resolve(rootDir, 'src/lib/nodeUrlShim.ts'),
+      'node:url': path.resolve(rootDir, 'src/lib/nodeUrlShim.ts'),
+      path: path.resolve(rootDir, 'src/lib/nodePathShim.ts'),
+      'node:path': path.resolve(rootDir, 'src/lib/nodePathShim.ts'),
+    },
   },
   build: {
     rollupOptions: {
@@ -24,7 +36,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 1600,
   },
   optimizeDeps: {
-    include: ['plyr'],
+    include: ['plyr', 'sanitize-html'],
   },
   server: {
     allowedHosts: [

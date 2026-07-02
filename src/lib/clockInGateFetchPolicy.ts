@@ -8,6 +8,9 @@ const ALLOWED_REST_PREFIXES = [
   '/rest/v1/employee_clock_in',
   '/rest/v1/users',
   '/rest/v1/tenants_employee',
+  '/rest/v1/tenant_departement',
+  '/rest/v1/employee_field_assignments',
+  '/rest/v1/employee_unavailability_reasons',
   '/rest/v1/clock_in_locations',
   '/rest/v1/rpc/',
   // RMQ messaging (available from clock-in gate before clock-in)

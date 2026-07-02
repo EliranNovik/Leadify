@@ -23,6 +23,8 @@ const CARD_TILT_KEYFRAMES = `
 const CARD_FACE_SHADOW =
   '0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.1), 0 10px 30px -5px rgba(0, 0, 0, 0.3), 0 0 60px -15px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1)';
 
+const TEL_AVIV_OFFICE_ADDRESS = 'Menachem Begin Rd. 11, Ramat Gan, Israel';
+
 type Props = {
   employee: EmployeeProfile;
   open: boolean;
@@ -176,10 +178,9 @@ const EmployeeBusinessCardModal: React.FC<Props> = ({ employee, open, onClose })
               </div>
 
               <div className="absolute bottom-3 left-0 right-0 z-10 px-3 md:bottom-6 md:px-0">
-                <div className="flex flex-col items-center justify-center gap-2 text-xs text-white/90 drop-shadow-md md:flex-row md:gap-6 md:text-sm">
-                  <span className="text-center">Yad Harutzim 10, Jerusalem, Israel</span>
-                  <span className="hidden text-white/60 md:inline">•</span>
-                  <span className="text-center">Menachem Begin Rd. 150, Tel Aviv, Israel</span>
+                <div className="flex flex-col items-center justify-center text-xs text-white/90 drop-shadow-md md:text-sm">
+                  <span className="text-center font-medium">Tel Aviv Office</span>
+                  <span className="text-center">{TEL_AVIV_OFFICE_ADDRESS}</span>
                 </div>
               </div>
             </div>
@@ -208,30 +209,13 @@ const EmployeeBusinessCardModal: React.FC<Props> = ({ employee, open, onClose })
               </div>
 
               <div className="relative z-10 flex min-h-[400px] items-center justify-center px-4 py-8 md:min-h-[630px] md:px-16 md:py-12">
-                <div className="w-full max-w-5xl text-center text-white">
-                  <div className="flex flex-col items-center justify-center gap-8 md:flex-row md:gap-16">
-                    <div className="flex-1">
-                      <h2 className="mb-4 text-2xl font-bold drop-shadow-2xl md:mb-6 md:text-3xl">
-                        Tel Aviv Office
-                      </h2>
-                      <div className="space-y-2 text-base text-white/95 drop-shadow-lg md:text-lg">
-                        <p className="font-semibold">WE Tower TLV</p>
-                        <p>150 Begin Rd., 8th floor</p>
-                        <p>Tel Aviv 6492105, Israel</p>
-                      </div>
-                    </div>
-
-                    <div className="flex-1">
-                      <h2 className="mb-4 text-2xl font-bold drop-shadow-2xl md:mb-6 md:text-3xl">
-                        Jerusalem Office
-                      </h2>
-                      <div className="space-y-2 text-base text-white/95 drop-shadow-lg md:text-lg">
-                        <p className="font-semibold">Yad Harutzim st 10</p>
-                        <p>5th floor Jerusalem</p>
-                        <p>Jerusalem 9342148, Israel</p>
-                      </div>
-                    </div>
-                  </div>
+                <div className="w-full max-w-3xl text-center text-white">
+                  <h2 className="mb-4 text-2xl font-bold drop-shadow-2xl md:mb-6 md:text-3xl">
+                    Tel Aviv Office
+                  </h2>
+                  <p className="text-base text-white/95 drop-shadow-lg md:text-lg">
+                    {TEL_AVIV_OFFICE_ADDRESS}
+                  </p>
                 </div>
               </div>
 

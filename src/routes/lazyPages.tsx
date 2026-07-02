@@ -81,6 +81,7 @@ export const LazyEmployeePerformancePage = lazy(() => import('../pages/EmployeeP
 export const LazyCallsLedgerPage = lazy(() => import('../pages/CallsLedgerPage'));
 export const LazySchedulerToolPage = lazy(() => import('../pages/SchedulerToolPage'));
 export const LazySignedSalesReportPage = lazy(() => import('../pages/SignedSalesReportPage'));
+export const LazyOrganizationPage = lazy(() => import('../pages/OrganizationPage'));
 export const LazyMyProfilePage = lazy(() => import('../pages/MyProfilePage'));
 export const LazyPublicProfilePage = lazy(() => import('../pages/PublicProfilePage'));
 export const LazyBusinessCardPage = lazy(() => import('../pages/BusinessCardPage'));

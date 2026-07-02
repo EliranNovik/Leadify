@@ -3573,6 +3573,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                       className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
                       onClick={() => {
                         setShowProfileDropdown(false);
+                        navigate('/organization');
+                      }}
+                    >
+                      <BuildingOffice2Icon className="h-6 w-6 shrink-0 text-base-content/60" />
+                      <span className="flex flex-1 items-center justify-between gap-3 min-w-0">
+                        <span className="text-base font-medium">Organization</span>
+                        <span className="badge badge-primary badge-sm shrink-0 uppercase tracking-wide">
+                          New
+                        </span>
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="flex w-full items-center gap-4 border-b border-base-200 px-5 py-4 text-left transition-colors hover:bg-base-200/50 active:bg-base-200/70"
+                      onClick={() => {
+                        setShowProfileDropdown(false);
                         navigate('/my-profile');
                       }}
                     >
@@ -3767,6 +3784,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   className="absolute left-0 top-full mt-2 w-52 py-1 rounded-xl shadow-xl border border-base-300 bg-base-100 z-50"
                   role="menu"
                 >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-left text-sm hover:bg-base-200 transition-colors"
+                    onClick={() => {
+                      setShowProfileDropdown(false);
+                      navigate('/organization');
+                    }}
+                  >
+                    <BuildingOffice2Icon className="w-5 h-5 text-base-content/70" />
+                    <span className="flex flex-1 items-center justify-between gap-2 min-w-0">
+                      <span>Organization</span>
+                      <span className="badge badge-primary badge-sm shrink-0 uppercase tracking-wide">
+                        New
+                      </span>
+                    </span>
+                  </button>
                   <button
                     type="button"
                     role="menuitem"

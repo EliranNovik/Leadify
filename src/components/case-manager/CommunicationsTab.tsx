@@ -37,7 +37,7 @@ import AISummaryPanel from '../client-tabs/AISummaryPanel';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import { useLocation, useNavigate } from 'react-router-dom';
-import sanitizeHtml from 'sanitize-html';
+import sanitizeHtml from '../../lib/sanitizeHtml';
 import { buildApiUrl } from '../../lib/api';
 import { fetchLegacyInteractions } from '../../lib/legacyInteractionsApi';
 import { appendEmailSignature } from '../../lib/emailSignature';

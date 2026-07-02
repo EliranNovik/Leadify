@@ -74,6 +74,38 @@ export async function fetchEmployeeProfileById(employeeId: number): Promise<Empl
   return mapEmployeeRow(data as Record<string, unknown>, email);
 }
 
+function mapPublicBusinessCardRow(row: Record<string, unknown>): EmployeeProfile {
+  return {
+    id: Number(row.id),
+    display_name: String(row.display_name ?? ''),
+    photo_url: (row.photo_url as string) || null,
+    chat_background_image_url: (row.chat_background_image_url as string) || null,
+    mobile: String(row.mobile ?? ''),
+    phone: String(row.phone ?? ''),
+    phone_ext: String(row.phone_ext ?? ''),
+    email: (row.email as string) || null,
+    department_name: String(row.department_name ?? 'General'),
+    bonuses_role: String(row.bonuses_role ?? 'Employee'),
+    official_name: String(row.official_name || row.display_name || ''),
+    linkedin_url: (row.linkedin_url as string) || null,
+  };
+}
+
+/** Public business card page — uses RPC when available (anon/mobile share links). */
+export async function fetchPublicBusinessCardById(employeeId: number): Promise<EmployeeProfile | null> {
+  if (!Number.isFinite(employeeId) || employeeId <= 0) return null;
+
+  const { data, error } = await supabase.rpc('get_public_business_card', {
+    p_employee_id: employeeId,
+  });
+
+  if (!error && data && typeof data === 'object' && (data as Record<string, unknown>).id != null) {
+    return mapPublicBusinessCardRow(data as Record<string, unknown>);
+  }
+
+  return fetchEmployeeProfileById(employeeId);
+}
+
 export async function fetchEmployeeProfileByDisplayName(
   displayName: string,
 ): Promise<EmployeeProfile | null> {

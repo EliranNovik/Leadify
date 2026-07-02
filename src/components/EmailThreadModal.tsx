@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 import { XMarkIcon, MagnifyingGlassIcon, PaperAirplaneIcon, PaperClipIcon, ChevronDownIcon, PlusIcon, DocumentTextIcon, UserIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { appendEmailSignature } from '../lib/emailSignature';
-import sanitizeHtml from 'sanitize-html';
+import sanitizeHtml from '../lib/sanitizeHtml';
 import { createPortal } from 'react-dom';
 import {
   getMailboxStatus,

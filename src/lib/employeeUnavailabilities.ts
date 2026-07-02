@@ -128,6 +128,26 @@ export function unavailabilityDateRangeLabel(
   return `${start} – ${formatUnavailabilityDate(endDate)}`;
 }
 
+function getTodayIsoLocal(): string {
+  const date = new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+/** Vacation badge / compact period text with Today / Today and tomorrow when applicable. */
+export function vacationPeriodLabel(startDate: string, endDate: string | null): string {
+  const end = endDate ?? startDate;
+  const today = getTodayIsoLocal();
+  const tomorrow = addDaysIso(today, 1);
+
+  if (startDate === today && end === today) {
+    return 'Today';
+  }
+  if (startDate === today && end === tomorrow) {
+    return 'Today and tomorrow';
+  }
+  return unavailabilityDateRangeLabel(startDate, endDate);
+}
+
 function addDaysIso(iso: string, days: number): string {
   const [y, m, d] = iso.split('-').map(Number);
   const dt = new Date(y, m - 1, d);

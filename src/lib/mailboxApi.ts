@@ -1,9 +1,6 @@
-const BACKEND_URL = (import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001').replace(/\/+$/, '');
+import { buildBackendApiUrl, buildBackendApiUrlObject } from './backendApiBase';
 
-const buildUrl = (path: string) => {
-  if (!path) return BACKEND_URL;
-  return `${BACKEND_URL}${path.startsWith('/') ? path : `/${path}`}`;
-};
+const buildUrl = (path: string) => buildBackendApiUrl(path);
 
 const parseJsonResponse = async (response: Response) => {
   let payload: any = null;
@@ -42,7 +39,7 @@ const parseJsonResponse = async (response: Response) => {
 
 export const getMailboxStatus = async (userId: string) => {
   if (!userId) throw new Error('userId is required');
-  const url = new URL(buildUrl('/api/auth/status'));
+  const url = buildBackendApiUrlObject('/api/auth/status');
   url.searchParams.set('userId', userId);
   const response = await fetch(url.toString());
   const payload = await parseJsonResponse(response);
@@ -51,7 +48,7 @@ export const getMailboxStatus = async (userId: string) => {
 
 export const getMailboxLoginUrl = async (userId: string, redirectTo?: string) => {
   if (!userId) throw new Error('userId is required');
-  const url = new URL(buildUrl('/api/auth/login'));
+  const url = buildBackendApiUrlObject('/api/auth/login');
   url.searchParams.set('userId', userId);
   if (redirectTo) {
     url.searchParams.set('redirectTo', redirectTo);
@@ -151,7 +148,7 @@ export type EmailBodyFromBackend = {
 
 export const fetchEmailBodyFromBackend = async (userId: string, emailId: string): Promise<EmailBodyFromBackend> => {
   if (!userId || !emailId) throw new Error('userId and emailId are required');
-  const url = new URL(buildUrl(`/api/emails/${encodeURIComponent(emailId)}/body`));
+  const url = buildBackendApiUrlObject(`/api/emails/${encodeURIComponent(emailId)}/body`);
   url.searchParams.set('userId', userId);
   const response = await fetch(url.toString());
   const data = await parseJsonResponse(response);
@@ -162,7 +159,9 @@ export const fetchEmailBodyFromBackend = async (userId: string, emailId: string)
 
 export const buildAttachmentDownloadUrl = (userId: string, emailId: string, attachmentId: string) => {
   if (!userId || !emailId || !attachmentId) return '';
-  const url = new URL(buildUrl(`/api/emails/${encodeURIComponent(emailId)}/attachments/${encodeURIComponent(attachmentId)}`));
+  const url = buildBackendApiUrlObject(
+    `/api/emails/${encodeURIComponent(emailId)}/attachments/${encodeURIComponent(attachmentId)}`,
+  );
   url.searchParams.set('userId', userId);
   return url.toString();
 };

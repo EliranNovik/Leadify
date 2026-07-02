@@ -1,3 +1,4 @@
+import { buildBackendApiUrl } from './backendApiBase';
 import { supabase } from './supabase';
 
 export interface PushNotificationPayload {
@@ -24,9 +25,7 @@ export async function sendPushNotification(
   payload: PushNotificationPayload
 ): Promise<boolean> {
   try {
-    // Get backend URL from environment
-    const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
-    const apiUrl = `${backendUrl}/api/push/send`;
+    const apiUrl = buildBackendApiUrl('/api/push/send');
 
     // Call backend endpoint to send push notification
     // The backend will fetch the user's subscriptions and send to all devices

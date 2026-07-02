@@ -4,7 +4,7 @@ import { XMarkIcon, PaperAirplaneIcon, PaperClipIcon, MagnifyingGlassIcon, Chevr
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { appendEmailSignature } from '../lib/emailSignature';
-import sanitizeHtml from 'sanitize-html';
+import sanitizeHtml from '../lib/sanitizeHtml';
 import {
   getMailboxStatus,
   triggerMailboxSync,

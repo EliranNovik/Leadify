@@ -24,7 +24,7 @@ import { loginRequest } from '../msalConfig';
 import { toast } from 'react-hot-toast';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
-import sanitizeHtml from 'sanitize-html';
+import sanitizeHtml from '../lib/sanitizeHtml';
 import { buildApiUrl } from '../lib/api';
 import { fetchLeadActionPanelData } from '../lib/leadActionCounts';
 import CalendarLeadRecentInteractions from './calendar/CalendarLeadRecentInteractions';

@@ -1,5 +1,5 @@
 import React from 'react';
-import sanitizeHtml from 'sanitize-html';
+import sanitizeHtml from '../../lib/sanitizeHtml';
 import { interactionsDevLog } from '../../lib/interactions/devLog';
 
 const extractHtmlBody = (html: string) => {

@@ -94,7 +94,6 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
           return;
         }
 
-        setClockInGateBlocksDataAccess(true);
         const isClockedIn = await fetchIsEmployeeClockedIn(profile.employeeId);
         const nextStatus = resolveClockInGateStatus(profile, isClockedIn);
         setStatus(nextStatus);
