@@ -1463,18 +1463,50 @@ function resolvePartnerContact(contacts, { contactId, contactEmail }) {
   throw new Error('No contacts with email or phone on file for this lead');
 }
 
-async function updateLeadToMeetingScheduled(leadInfo, schedulerName) {
+const PARTNER_WEBHOOK_SCHEDULER_EMPLOYEE_ID = Number(
+  process.env.PARTNER_WEBHOOK_SCHEDULER_EMPLOYEE_ID || 177,
+);
+
+async function resolvePartnerSchedulerEmployee() {
+  const employeeId = PARTNER_WEBHOOK_SCHEDULER_EMPLOYEE_ID;
+  if (!Number.isFinite(employeeId) || employeeId < 1) {
+    throw new Error('PARTNER_WEBHOOK_SCHEDULER_EMPLOYEE_ID must be a positive integer');
+  }
+
+  const { data, error } = await supabase
+    .from('tenants_employee')
+    .select('id, display_name')
+    .eq('id', employeeId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data?.id) {
+    throw new Error(`Partner webhook scheduler employee ${employeeId} not found`);
+  }
+
+  return data;
+}
+
+function buildPartnerMeetingBrief(notes, partnerName) {
+  const parts = [];
+  if (partnerName) parts.push(`Partner source: ${partnerName}`);
+  if (notes) parts.push(String(notes).trim());
+  if (parts.length === 0) return 'Scheduled via partner webhook';
+  return parts.join('\n\n');
+}
+
+async function updateLeadToMeetingScheduled(leadInfo, schedulerEmployee) {
   const now = new Date().toISOString();
   const stageId = 20;
-  const scheduler = schedulerName || 'Partner webhook';
+  const stageChangedBy = schedulerEmployee.display_name || `Employee ${schedulerEmployee.id}`;
 
   if (leadInfo.is_legacy) {
     const { error } = await supabase
       .from('leads_lead')
       .update({
         stage: stageId,
-        scheduler,
-        stage_changed_by: scheduler,
+        meeting_scheduler_id: schedulerEmployee.id,
+        stage_changed_by: stageChangedBy,
         stage_changed_at: now,
       })
       .eq('id', leadInfo.legacy_lead_id);
@@ -1486,7 +1518,7 @@ async function updateLeadToMeetingScheduled(leadInfo, schedulerName) {
       cdate: now,
       udate: now,
       lead_id: leadInfo.legacy_lead_id,
-      creator_id: null,
+      creator_id: schedulerEmployee.id,
     });
     return;
   }
@@ -1495,8 +1527,8 @@ async function updateLeadToMeetingScheduled(leadInfo, schedulerName) {
     .from('leads')
     .update({
       stage: stageId,
-      scheduler,
-      stage_changed_by: scheduler,
+      scheduler: String(schedulerEmployee.id),
+      stage_changed_by: stageChangedBy,
       stage_changed_at: now,
     })
     .eq('id', leadInfo.new_lead_id);
@@ -1508,7 +1540,7 @@ async function updateLeadToMeetingScheduled(leadInfo, schedulerName) {
     cdate: now,
     udate: now,
     newlead_id: leadInfo.new_lead_id,
-    creator_id: null,
+    creator_id: schedulerEmployee.id,
   });
 }
 
@@ -1537,6 +1569,7 @@ async function createPartnerMeeting(payload) {
   }
 
   const leadInfo = await resolveLeadByRef(resolvedLeadRef);
+  const schedulerEmployee = await resolvePartnerSchedulerEmployee();
   const { settings, isLegacy, newLeadId, legacyLeadId } = await loadPartnerBookingSettings(leadInfo);
 
   let clientTimezone = isValidIanaTimezone(clientTimezoneRaw) ? clientTimezoneRaw : null;
@@ -1578,7 +1611,7 @@ async function createPartnerMeeting(payload) {
   const leadNumberDisplay = leadInfo.lead_number || resolvedLeadRef;
   const displayName = leadInfo.display_name || contact.name || 'Client';
   const category = settings.category || 'Meeting';
-  const schedulerLabel = partnerName ? `Partner webhook: ${partnerName}` : 'Partner webhook';
+  const meetingBrief = buildPartnerMeetingBrief(notes, partnerName);
 
   let teamsMeetingUrl = '';
   let calendarEventId = null;
@@ -1639,11 +1672,11 @@ async function createPartnerMeeting(payload) {
     meeting_location: locationName,
     meeting_manager: settings.meeting_manager || '',
     meeting_subject: meetingSubject,
-    meeting_brief: notes || 'Scheduled via partner webhook',
+    meeting_brief: meetingBrief,
     teams_meeting_url: teamsMeetingUrl,
     helper: '---',
     expert: '---',
-    scheduler: schedulerLabel,
+    scheduler: String(schedulerEmployee.id),
     calendar_type: calendarType,
     status: 'scheduled',
     client_booking_timezone: clientTimezone,
@@ -1664,7 +1697,7 @@ async function createPartnerMeeting(payload) {
   if (insertError) throw insertError;
 
   try {
-    await updateLeadToMeetingScheduled(leadInfo, schedulerLabel);
+    await updateLeadToMeetingScheduled(leadInfo, schedulerEmployee);
   } catch (stageErr) {
     console.error('Partner meeting stage update failed:', stageErr);
     notificationWarnings.push(`Lead stage: ${stageErr.message}`);

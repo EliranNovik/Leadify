@@ -73,7 +73,7 @@ Alternatively to `country`, you may send `client_timezone` (IANA name, e.g. `Ame
 | `contact_email` | string | — | Pick contact by email when `contact_id` is omitted |
 | `meeting_location` | string | global booking default | `Teams` or `Ramat Gan Office` |
 | `notes` | string | — | Stored in `meetings.meeting_brief` |
-| `partner_name` | string | — | Shown in `meetings.scheduler` as `Partner webhook: {name}` |
+| `partner_name` | string | — | Recorded in `meetings.meeting_brief` as `Partner source: {name}` |
 | `skip_availability_check` | boolean | `false` | Skip slot/capacity validation |
 | `send_notifications` | boolean | `true` | Email / WhatsApp / calendar invite to client |
 
@@ -161,6 +161,7 @@ If a country has multiple timezones and the default mapping is wrong, send `clie
 2. **Microsoft Teams / shared calendar event** (when `BOOKING_MAILBOX_USER_ID` or meeting manager mailbox is connected)
 3. **Client notifications** (email, WhatsApp, calendar invite — per global booking settings)
 4. **Lead stage → 20** (`Meeting scheduled`) with history in `leads_leadstage`
+5. **Scheduler role → employee `177`** on the lead and meeting (override via `PARTNER_WEBHOOK_SCHEDULER_EMPLOYEE_ID`)
 
 Booking configuration (duration, manager, host, notification flags, business hours) comes from:
 
@@ -182,6 +183,23 @@ Booking configuration (duration, manager, host, notification flags, business hou
 | `backend/src/controllers/partnerMeetingWebhookController.js` | Auth + request parsing |
 | `backend/src/services/clientBookingService.js` | `createPartnerMeeting()` — core logic |
 | `src/components/client-booking/ClientBookingScheduler.tsx` | Client-facing equivalent UI |
+
+## Scheduler assignment
+
+Every partner webhook meeting assigns **employee ID `177`** as the scheduler (configurable via env):
+
+```env
+PARTNER_WEBHOOK_SCHEDULER_EMPLOYEE_ID=177
+```
+
+| Record | Field updated |
+|--------|----------------|
+| New lead (`leads`) | `scheduler` = `177` |
+| Legacy lead (`leads_lead`) | `meeting_scheduler_id` = `177` |
+| Meeting (`meetings`) | `scheduler` = `177` (resolved to display name in UI) |
+| Stage history (`leads_leadstage`) | `creator_id` = `177` |
+
+`partner_name` (if sent) is stored in **`meetings.meeting_brief`** as `Partner source: {name}`, not in the scheduler field.
 
 ## Deployment checklist
 
