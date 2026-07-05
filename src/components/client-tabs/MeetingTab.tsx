@@ -453,6 +453,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [showAuthRedirectOption, setShowAuthRedirectOption] = useState(false);
   const authRedirectParamsRef = useRef<{ request: any; account: any } | null>(null);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [externalFirmName, setExternalFirmName] = useState<string | null>(null);
   const [meetingParticipantsById, setMeetingParticipantsById] = useState<
     Record<number, { loading: boolean; participants: MeetingParticipantRow[] }>
   >({});
@@ -1468,6 +1469,51 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       custom_address: '',
     });
   }, [showScheduleDrawer, selectableMeetingLocations]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadExternalFirmName = async () => {
+      if (!client?.id) {
+        if (!cancelled) setExternalFirmName(null);
+        return;
+      }
+
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      const table = isLegacyLead ? 'leads_lead' : 'leads';
+      const recordId = isLegacyLead
+        ? client.id.toString().replace(/^legacy_/, '')
+        : client.id;
+      const { data } = await supabase
+        .from(table)
+        .select('external_firm_id')
+        .eq('id', recordId)
+        .maybeSingle();
+
+      const firmId =
+        data?.external_firm_id
+        ?? (client as { external_firm_id?: string | null }).external_firm_id
+        ?? null;
+
+      if (!firmId) {
+        if (!cancelled) setExternalFirmName(null);
+        return;
+      }
+
+      const { data: firm } = await supabase
+        .from('firms')
+        .select('name')
+        .eq('id', String(firmId))
+        .maybeSingle();
+
+      if (!cancelled) setExternalFirmName(firm?.name ?? null);
+    };
+
+    void loadExternalFirmName();
+    return () => {
+      cancelled = true;
+    };
+  }, [client?.id, client?.lead_type, meetings.length]);
 
   // Load firm_contacts + internal_meeting_types when schedule/reschedule drawers open
   // or when editing an IM (staff) meeting inline.
@@ -6824,6 +6870,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   </div>
                 </div>
                 )}
+                {!isActiveMeeting && externalFirmName && meeting.meeting_subject?.includes('Partner booked') ? (
+                <div className="space-y-2 sm:space-y-2">
+                  <label className={meetingFieldLabelClass}>External firm</label>
+                  <span className="text-sm sm:text-base text-gray-900">{externalFirmName}</span>
+                </div>
+                ) : null}
                 {!isActiveMeeting && (
                 <div className="space-y-2 sm:space-y-2">
                   <label className={meetingFieldLabelClass}>Helper</label>

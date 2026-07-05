@@ -4,9 +4,9 @@ External partners can schedule CRM meetings for existing client leads by calling
 
 ## Endpoint
 
-| Method | URL |
-|--------|-----|
-| `POST` | `{BACKEND_BASE_URL}/api/hook/partner/meeting` |
+| Method | URL                                                  |
+| ------ | ---------------------------------------------------- |
+| `POST` | `{BACKEND_BASE_URL}/api/hook/partner/meeting`        |
 | `GET`  | `{BACKEND_BASE_URL}/api/hook/partner/meeting/health` |
 
 Example production base URL: `https://leadify-crm-backend.onrender.com`
@@ -41,41 +41,41 @@ Missing or wrong password → `401 Unauthorized`.
 
 ## Required payload fields
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `password` | string | Webhook secret (or use header — see above) |
-| `lead_ref` | string | Lead identifier: `L12345`, manual id, numeric legacy id, or new-lead UUID |
-| `date` | string | Meeting date in the **client's local timezone**, format `YYYY-MM-DD` |
-| `time` | string | Meeting time in the **client's local timezone**, format `HH:MM` (24-hour) |
-| `country` | string | ISO 3166-1 alpha-2 country code (e.g. `US`, `DE`, `IL`) — used to resolve `client_booking_timezone` from `misc_country.timezone` |
+| Field              | Type          | Description                                                                                                                      |
+| ------------------ | ------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `password`         | string        | Webhook secret (or use header — see above)                                                                                       |
+| `lead_ref`         | string        | Lead identifier: `L12345`, manual id, numeric legacy id, or new-lead UUID                                                        |
+| `date`             | string        | Meeting date in the **client's local timezone**, format `YYYY-MM-DD`                                                             |
+| `time`             | string        | Meeting time in the **client's local timezone**, format `HH:MM` (24-hour)                                                        |
+| `country`          | string        | ISO 3166-1 alpha-2 country code (e.g. `US`, `DE`, `IL`) — used to resolve `client_booking_timezone` from `misc_country.timezone` |
+| `external_firm_id` | string (UUID) | Your firm’s `id` from the `public.firms` table                                                                                   |
 
 Alternatively to `country`, you may send `client_timezone` (IANA name, e.g. `America/New_York`) when the country mapping is insufficient.
 
 ### Aliases accepted
 
-| Primary | Also accepted |
-|---------|----------------|
-| `lead_ref` | `lead_number` |
-| `date` | `meeting_date` |
-| `time` | `meeting_time` |
-| `country` | `ISO` |
-| `client_timezone` | `timezone` |
-| `contact_email` | `email` |
-| `meeting_location` | `location` |
-| `notes` | `brief`, `meeting_brief` |
-| `partner_name` | `source` |
+| Primary            | Also accepted            |
+| ------------------ | ------------------------ |
+| `lead_ref`         | `lead_number`            |
+| `date`             | `meeting_date`           |
+| `time`             | `meeting_time`           |
+| `country`          | `ISO`                    |
+| `client_timezone`  | `timezone`               |
+| `contact_email`    | `email`                  |
+| `meeting_location` | `location`               |
+| `notes`            | `brief`, `meeting_brief` |
+| `external_firm_id` | `firm_id`                |
 
 ## Optional fields
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `contact_id` | number | main / only contact | CRM contact that receives confirmation |
-| `contact_email` | string | — | Pick contact by email when `contact_id` is omitted |
-| `meeting_location` | string | global booking default | `Teams` or `Ramat Gan Office` |
-| `notes` | string | — | Stored in `meetings.meeting_brief` |
-| `partner_name` | string | — | Recorded in `meetings.meeting_brief` as `Partner source: {name}` |
-| `skip_availability_check` | boolean | `false` | Skip slot/capacity validation |
-| `send_notifications` | boolean | `true` | Email / WhatsApp / calendar invite to client |
+| Field                     | Type    | Default                | Description                                        |
+| ------------------------- | ------- | ---------------------- | -------------------------------------------------- |
+| `contact_id`              | number  | main / only contact    | CRM contact that receives confirmation             |
+| `contact_email`           | string  | —                      | Pick contact by email when `contact_id` is omitted |
+| `meeting_location`        | string  | global booking default | `Teams` or `Ramat Gan Office`                      |
+| `notes`                   | string  | —                      | Stored in `meetings.meeting_brief`                 |
+| `skip_availability_check` | boolean | `false`                | Skip slot/capacity validation                      |
+| `send_notifications`      | boolean | `true`                 | Email / WhatsApp / calendar invite to client       |
 
 ## Example request
 
@@ -92,8 +92,8 @@ curl -X POST "https://leadify-crm-backend.onrender.com/api/hook/partner/meeting"
     "country": "US",
     "contact_email": "client@example.com",
     "meeting_location": "Teams",
-    "notes": "Referred by Acme Immigration",
-    "partner_name": "Acme Immigration"
+    "external_firm_id": "12860de9-5306-41b2-9494-dfdc774e0000",
+    "notes": "Referred client for initial consultation"
   }'
 ```
 
@@ -118,7 +118,13 @@ curl -X POST "https://leadify-crm-backend.onrender.com/api/hook/partner/meeting"
     "lead": {
       "lead_ref": "L1042",
       "display_name": "John Doe",
-      "is_legacy": false
+      "is_legacy": false,
+      "external_firm_id": "12860de9-5306-41b2-9494-dfdc774e0000",
+      "external_firm_name": "Ardan Marketing"
+    },
+    "external_firm": {
+      "id": "12860de9-5306-41b2-9494-dfdc774e0000",
+      "name": "Ardan Marketing"
     },
     "warnings": []
   }
@@ -131,11 +137,11 @@ curl -X POST "https://leadify-crm-backend.onrender.com/api/hook/partner/meeting"
 
 ## Error responses
 
-| HTTP | Typical cause |
-|------|----------------|
-| `401` | Wrong or missing password |
+| HTTP  | Typical cause                                                                             |
+| ----- | ----------------------------------------------------------------------------------------- |
+| `401` | Wrong or missing password                                                                 |
 | `400` | Missing required field, lead not found, invalid time, slot unavailable, ambiguous contact |
-| `500` | Database or unexpected server error |
+| `500` | Database or unexpected server error                                                       |
 
 Example:
 
@@ -177,12 +183,24 @@ Booking configuration (duration, manager, host, notification flags, business hou
 
 ## Related code
 
-| File | Role |
-|------|------|
-| `backend/src/routes/webhookRoutes.js` | Route registration |
-| `backend/src/controllers/partnerMeetingWebhookController.js` | Auth + request parsing |
-| `backend/src/services/clientBookingService.js` | `createPartnerMeeting()` — core logic |
-| `src/components/client-booking/ClientBookingScheduler.tsx` | Client-facing equivalent UI |
+| File                                                         | Role                                  |
+| ------------------------------------------------------------ | ------------------------------------- |
+| `backend/src/routes/webhookRoutes.js`                        | Route registration                    |
+| `backend/src/controllers/partnerMeetingWebhookController.js` | Auth + request parsing                |
+| `backend/src/services/clientBookingService.js`               | `createPartnerMeeting()` — core logic |
+| `src/components/client-booking/ClientBookingScheduler.tsx`   | Client-facing equivalent UI           |
+
+## External firm identification
+
+Partners must send their **`external_firm_id`** — the UUID from `public.firms.id` (same value shown in Supabase Table Editor).
+
+The webhook:
+
+1. Validates the UUID exists in `public.firms` (and is active)
+2. Sets `leads.external_firm_id` or `leads_lead.external_firm_id` on the lead
+3. Returns `external_firm.id` and `external_firm.name` in the response
+
+In the CRM **Meeting tab**, partner-booked meetings show **External firm** with the firm name (joined from `firms` via the lead’s `external_firm_id`).
 
 ## Scheduler assignment
 
@@ -192,19 +210,11 @@ Every partner webhook meeting assigns **employee ID `177`** as the scheduler (co
 PARTNER_WEBHOOK_SCHEDULER_EMPLOYEE_ID=177
 ```
 
-| Record | Field updated |
-|--------|----------------|
-| New lead (`leads`) | `scheduler` = `177` |
-| Legacy lead (`leads_lead`) | `meeting_scheduler_id` = `177` |
-| Meeting (`meetings`) | `scheduler` = `177` (resolved to display name in UI) |
-| Stage history (`leads_leadstage`) | `creator_id` = `177` |
+| Record                            | Field updated                                        |
+| --------------------------------- | ---------------------------------------------------- |
+| New lead (`leads`)                | `scheduler` = `177`                                  |
+| Legacy lead (`leads_lead`)        | `meeting_scheduler_id` = `177`                       |
+| Meeting (`meetings`)              | `scheduler` = `177` (resolved to display name in UI) |
+| Stage history (`leads_leadstage`) | `creator_id` = `177`                                 |
 
-`partner_name` (if sent) is stored in **`meetings.meeting_brief`** as `Partner source: {name}`, not in the scheduler field.
-
-## Deployment checklist
-
-1. Deploy backend with the new route.
-2. Set `PARTNER_MEETING_WEBHOOK_SECRET` in backend env (optional but recommended).
-3. Ensure `BOOKING_MAILBOX_USER_ID` is set for Teams calendar + email.
-4. Confirm global booking settings in CRM admin (`MeetingBookingManager`).
-5. Share endpoint URL + password only with trusted partners over HTTPS.
+`external_firm_id` is stored on the lead and linked to `public.firms` for display in the Meeting tab.

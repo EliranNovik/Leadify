@@ -62,7 +62,7 @@ const partnerMeetingWebhookController = {
         contact_email: body?.contact_email || body?.email,
         meeting_location: body?.meeting_location || body?.location,
         notes: body?.notes || body?.brief || body?.meeting_brief,
-        partner_name: body?.partner_name || body?.source,
+        external_firm_id: body?.external_firm_id || body?.firm_id,
         skip_availability_check: body?.skip_availability_check === true
           || body?.skip_availability_check === 'true',
         send_notifications: body?.send_notifications !== false

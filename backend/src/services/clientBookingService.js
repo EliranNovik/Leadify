@@ -1487,15 +1487,36 @@ async function resolvePartnerSchedulerEmployee() {
   return data;
 }
 
-function buildPartnerMeetingBrief(notes, partnerName) {
-  const parts = [];
-  if (partnerName) parts.push(`Partner source: ${partnerName}`);
-  if (notes) parts.push(String(notes).trim());
-  if (parts.length === 0) return 'Scheduled via partner webhook';
-  return parts.join('\n\n');
+function buildPartnerMeetingBrief(notes) {
+  const trimmed = notes ? String(notes).trim() : '';
+  return trimmed || 'Scheduled via partner webhook';
 }
 
-async function updateLeadToMeetingScheduled(leadInfo, schedulerEmployee) {
+async function resolveExternalFirm(firmIdRaw) {
+  const firmId = String(firmIdRaw || '').trim();
+  if (!firmId) throw new Error('external_firm_id is required (UUID from firms.id)');
+
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidPattern.test(firmId)) {
+    throw new Error('external_firm_id must be a valid UUID from public.firms.id');
+  }
+
+  const { data, error } = await supabase
+    .from('firms')
+    .select('id, name, is_active')
+    .eq('id', firmId)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data?.id) throw new Error(`External firm not found for id: ${firmId}`);
+  if (data.is_active === false) {
+    throw new Error(`External firm is inactive: ${data.name || firmId}`);
+  }
+
+  return data;
+}
+
+async function updateLeadToMeetingScheduled(leadInfo, schedulerEmployee, externalFirmId) {
   const now = new Date().toISOString();
   const stageId = 20;
   const stageChangedBy = schedulerEmployee.display_name || `Employee ${schedulerEmployee.id}`;
@@ -1506,6 +1527,7 @@ async function updateLeadToMeetingScheduled(leadInfo, schedulerEmployee) {
       .update({
         stage: stageId,
         meeting_scheduler_id: schedulerEmployee.id,
+        external_firm_id: externalFirmId,
         stage_changed_by: stageChangedBy,
         stage_changed_at: now,
       })
@@ -1528,6 +1550,7 @@ async function updateLeadToMeetingScheduled(leadInfo, schedulerEmployee) {
     .update({
       stage: stageId,
       scheduler: String(schedulerEmployee.id),
+      external_firm_id: externalFirmId,
       stage_changed_by: stageChangedBy,
       stage_changed_at: now,
     })
@@ -1556,7 +1579,7 @@ async function createPartnerMeeting(payload) {
     contact_email: contactEmail,
     meeting_location: meetingLocationRaw,
     notes,
-    partner_name: partnerName,
+    external_firm_id: externalFirmIdRaw,
     skip_availability_check: skipAvailabilityCheck,
     send_notifications: sendNotifications = true,
   } = payload;
@@ -1569,6 +1592,7 @@ async function createPartnerMeeting(payload) {
   }
 
   const leadInfo = await resolveLeadByRef(resolvedLeadRef);
+  const externalFirm = await resolveExternalFirm(externalFirmIdRaw);
   const schedulerEmployee = await resolvePartnerSchedulerEmployee();
   const { settings, isLegacy, newLeadId, legacyLeadId } = await loadPartnerBookingSettings(leadInfo);
 
@@ -1611,7 +1635,7 @@ async function createPartnerMeeting(payload) {
   const leadNumberDisplay = leadInfo.lead_number || resolvedLeadRef;
   const displayName = leadInfo.display_name || contact.name || 'Client';
   const category = settings.category || 'Meeting';
-  const meetingBrief = buildPartnerMeetingBrief(notes, partnerName);
+  const meetingBrief = buildPartnerMeetingBrief(notes);
 
   let teamsMeetingUrl = '';
   let calendarEventId = null;
@@ -1697,7 +1721,7 @@ async function createPartnerMeeting(payload) {
   if (insertError) throw insertError;
 
   try {
-    await updateLeadToMeetingScheduled(leadInfo, schedulerEmployee);
+    await updateLeadToMeetingScheduled(leadInfo, schedulerEmployee, externalFirm.id);
   } catch (stageErr) {
     console.error('Partner meeting stage update failed:', stageErr);
     notificationWarnings.push(`Lead stage: ${stageErr.message}`);
@@ -1745,6 +1769,12 @@ async function createPartnerMeeting(payload) {
       lead_ref: leadNumberDisplay,
       display_name: displayName,
       is_legacy: isLegacy,
+      external_firm_id: externalFirm.id,
+      external_firm_name: externalFirm.name,
+    },
+    external_firm: {
+      id: externalFirm.id,
+      name: externalFirm.name,
     },
     warnings: notificationWarnings.length > 0 ? notificationWarnings : undefined,
   };
