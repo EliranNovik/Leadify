@@ -1,11 +1,16 @@
 const express = require('express');
 const webhookController = require('../controllers/webhookController');
 const graphEmailController = require('../controllers/graphEmailController');
+const partnerMeetingWebhookController = require('../controllers/partnerMeetingWebhookController');
 require('dotenv').config();
 const router = express.Router();
 
 // Webhook endpoint to receive form data and create new leads
 router.post('/hook/catch', webhookController.catchFormData);
+
+// External partner webhook — schedule a meeting for an existing lead
+router.get('/hook/partner/meeting/health', partnerMeetingWebhookController.health);
+router.post('/hook/partner/meeting', partnerMeetingWebhookController.createMeeting);
 
 // Facebook lead webhook (verification + payload)
 router.get('/hook/facebook', (req, res, next) => {

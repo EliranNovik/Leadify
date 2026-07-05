@@ -1234,9 +1234,493 @@ async function bookMeeting(token, payload) {
   };
 }
 
+function mergeLeadSettingsWithGlobal(leadRow, globalRow) {
+  const defaults = {
+    duration_minutes: 30,
+    meeting_location: 'Teams',
+    calendar_type: 'potential_client',
+    buffer_minutes: 0,
+    min_notice_hours: 24,
+    max_days_ahead: 60,
+    slot_interval_minutes: 30,
+    business_hours_start: '09:00',
+    business_hours_end: '21:00',
+    days_of_week: [0, 1, 2, 3, 4],
+    send_email: true,
+    send_whatsapp: true,
+    send_calendar_invite: true,
+    timezone: BUSINESS_TZ,
+  };
+
+  const global = globalRow || defaults;
+  const lead = leadRow || {};
+
+  return {
+    ...lead,
+    new_lead_id: lead.new_lead_id ?? null,
+    legacy_lead_id: lead.legacy_lead_id ?? null,
+    title: global.title || defaults.title || 'Schedule a meeting',
+    description: global.description ?? null,
+    duration_minutes: global.duration_minutes ?? defaults.duration_minutes,
+    meeting_location: global.meeting_location || defaults.meeting_location,
+    meeting_location_id: global.meeting_location_id ?? null,
+    host_employee_id: global.host_employee_id ?? null,
+    meeting_manager: global.meeting_manager || '',
+    calendar_type: global.calendar_type || defaults.calendar_type,
+    buffer_minutes: global.buffer_minutes ?? defaults.buffer_minutes,
+    min_notice_hours: global.min_notice_hours ?? defaults.min_notice_hours,
+    max_days_ahead: global.max_days_ahead ?? defaults.max_days_ahead,
+    slot_interval_minutes: global.slot_interval_minutes ?? defaults.slot_interval_minutes,
+    business_hours_start: global.business_hours_start || defaults.business_hours_start,
+    business_hours_end: global.business_hours_end || defaults.business_hours_end,
+    days_of_week: global.days_of_week || defaults.days_of_week,
+    send_email: global.send_email ?? defaults.send_email,
+    send_whatsapp: global.send_whatsapp ?? defaults.send_whatsapp,
+    send_calendar_invite: global.send_calendar_invite ?? defaults.send_calendar_invite,
+    timezone: global.timezone || defaults.timezone,
+  };
+}
+
+async function resolveLeadByRef(leadRef) {
+  const ref = String(leadRef || '').trim();
+  if (!ref) throw new Error('lead_ref is required');
+
+  const { data, error } = await supabase.rpc('_portal_resolve_lead_ref', { p_lead_ref: ref });
+  if (error) throw error;
+  if (!data) throw new Error(`Lead not found for reference: ${ref}`);
+  return data;
+}
+
+async function lookupTimezoneFromCountry(countryIsoCode) {
+  const iso = String(countryIsoCode || '').trim().toUpperCase();
+  if (!iso || iso.length !== 2) return null;
+
+  const { data, error } = await supabase
+    .from('misc_country')
+    .select('timezone, iso_code, name')
+    .eq('iso_code', iso)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data?.timezone) return null;
+  return isValidIanaTimezone(data.timezone) ? data.timezone : null;
+}
+
+async function loadPartnerBookingSettings(leadInfo) {
+  const isLegacy = Boolean(leadInfo.is_legacy);
+  const newLeadId = leadInfo.new_lead_id || null;
+  const legacyLeadId = leadInfo.legacy_lead_id || null;
+
+  let leadQuery = supabase.from('lead_meeting_booking_settings').select('*');
+  if (isLegacy) {
+    leadQuery = leadQuery.eq('legacy_lead_id', legacyLeadId);
+  } else {
+    leadQuery = leadQuery.eq('new_lead_id', newLeadId);
+  }
+
+  const [{ data: leadRow }, { data: globalRow }] = await Promise.all([
+    leadQuery.maybeSingle(),
+    supabase.from('meeting_booking_global_settings').select('*').eq('id', 1).maybeSingle(),
+  ]);
+
+  const merged = mergeLeadSettingsWithGlobal(
+    {
+      ...(leadRow || {}),
+      new_lead_id: newLeadId,
+      legacy_lead_id: legacyLeadId,
+    },
+    globalRow,
+  );
+
+  let mainCategoryId = null;
+  let categoryName = 'Meeting';
+  if (isLegacy) {
+    const { data: leadData } = await supabase
+      .from('leads_lead')
+      .select('category_id, language_id')
+      .eq('id', legacyLeadId)
+      .maybeSingle();
+    merged.language_id = leadData?.language_id ?? null;
+    if (leadData?.category_id) {
+      const { data: cat } = await supabase
+        .from('misc_category')
+        .select('name, parent_id')
+        .eq('id', leadData.category_id)
+        .maybeSingle();
+      categoryName = cat?.name || categoryName;
+      mainCategoryId = cat?.parent_id ?? null;
+    }
+  } else {
+    const { data: leadData } = await supabase
+      .from('leads')
+      .select('category_id, language_id')
+      .eq('id', newLeadId)
+      .maybeSingle();
+    merged.language_id = leadData?.language_id ?? null;
+    if (leadData?.category_id) {
+      const { data: cat } = await supabase
+        .from('misc_category')
+        .select('name, parent_id')
+        .eq('id', leadData.category_id)
+        .maybeSingle();
+      categoryName = cat?.name || categoryName;
+      mainCategoryId = cat?.parent_id ?? null;
+    }
+  }
+
+  const unavailableDates = Array.isArray(globalRow?.unavailable_dates)
+    ? globalRow.unavailable_dates.map((d) => String(d).substring(0, 10))
+    : [];
+
+  const settings = resolveCategoryAvailability({
+    ...merged,
+    main_category_id: mainCategoryId,
+    category_availability_rules: globalRow?.category_availability_rules || [],
+    unavailable_dates: unavailableDates,
+  });
+
+  return { settings: { ...settings, category: categoryName }, isLegacy, newLeadId, legacyLeadId };
+}
+
+async function fetchLeadContactsForPartner(isLegacy, newLeadId, legacyLeadId) {
+  if (isLegacy) {
+    const { data: rows } = await supabase
+      .from('lead_leadcontact')
+      .select('contact_id, main, leads_contact(id, name, email, mobile, phone)')
+      .eq('lead_id', legacyLeadId);
+
+    return (rows || [])
+      .map((row) => ({
+        id: row.leads_contact?.id,
+        name: row.leads_contact?.name,
+        email: row.leads_contact?.email,
+        mobile: row.leads_contact?.mobile,
+        phone: row.leads_contact?.phone,
+        is_main: String(row.main) === 'true' || row.main === true || row.main === 1,
+      }))
+      .filter((c) => c.id);
+  }
+
+  const { data: linked } = await supabase
+    .from('lead_leadcontact')
+    .select('contact_id, main, leads_contact(id, name, email, mobile, phone)')
+    .eq('newlead_id', newLeadId);
+
+  const linkedIds = new Set((linked || []).map((r) => String(r.contact_id)));
+  const contacts = (linked || []).map((row) => ({
+    id: row.leads_contact?.id,
+    name: row.leads_contact?.name,
+    email: row.leads_contact?.email,
+    mobile: row.leads_contact?.mobile,
+    phone: row.leads_contact?.phone,
+    is_main: String(row.main) === 'true' || row.main === true || row.main === 1,
+  })).filter((c) => c.id);
+
+  const { data: direct } = await supabase
+    .from('leads_contact')
+    .select('id, name, email, mobile, phone')
+    .eq('newlead_id', newLeadId);
+
+  for (const row of direct || []) {
+    if (linkedIds.has(String(row.id))) continue;
+    contacts.push({
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      mobile: row.mobile,
+      phone: row.phone,
+      is_main: false,
+    });
+  }
+
+  return contacts;
+}
+
+function resolvePartnerContact(contacts, { contactId, contactEmail }) {
+  if (contactId != null && contactId !== '') {
+    const match = contacts.find((c) => Number(c.id) === Number(contactId));
+    if (!match) throw new Error('contact_id not found for this lead');
+    if (!match.email && !match.mobile && !match.phone) {
+      throw new Error('Selected contact has no email or phone');
+    }
+    return match;
+  }
+
+  if (contactEmail) {
+    const normalized = String(contactEmail).trim().toLowerCase();
+    const match = contacts.find((c) => String(c.email || '').trim().toLowerCase() === normalized);
+    if (!match) throw new Error('contact_email not found for this lead');
+    return match;
+  }
+
+  const reachable = contacts.filter((c) => c.email || c.mobile || c.phone);
+  const main = reachable.find((c) => c.is_main);
+  if (main) return main;
+  if (reachable.length === 1) return reachable[0];
+  if (reachable.length > 1) {
+    throw new Error('Multiple contacts found — provide contact_id or contact_email');
+  }
+  throw new Error('No contacts with email or phone on file for this lead');
+}
+
+async function updateLeadToMeetingScheduled(leadInfo, schedulerName) {
+  const now = new Date().toISOString();
+  const stageId = 20;
+  const scheduler = schedulerName || 'Partner webhook';
+
+  if (leadInfo.is_legacy) {
+    const { error } = await supabase
+      .from('leads_lead')
+      .update({
+        stage: stageId,
+        scheduler,
+        stage_changed_by: scheduler,
+        stage_changed_at: now,
+      })
+      .eq('id', leadInfo.legacy_lead_id);
+    if (error) throw error;
+
+    await supabase.from('leads_leadstage').insert({
+      stage: stageId,
+      date: now,
+      cdate: now,
+      udate: now,
+      lead_id: leadInfo.legacy_lead_id,
+      creator_id: null,
+    });
+    return;
+  }
+
+  const { error } = await supabase
+    .from('leads')
+    .update({
+      stage: stageId,
+      scheduler,
+      stage_changed_by: scheduler,
+      stage_changed_at: now,
+    })
+    .eq('id', leadInfo.new_lead_id);
+  if (error) throw error;
+
+  await supabase.from('leads_leadstage').insert({
+    stage: stageId,
+    date: now,
+    cdate: now,
+    udate: now,
+    newlead_id: leadInfo.new_lead_id,
+    creator_id: null,
+  });
+}
+
+async function createPartnerMeeting(payload) {
+  const {
+    lead_ref: leadRef,
+    lead_number: leadNumber,
+    date,
+    time,
+    country,
+    client_timezone: clientTimezoneRaw,
+    contact_id: contactId,
+    contact_email: contactEmail,
+    meeting_location: meetingLocationRaw,
+    notes,
+    partner_name: partnerName,
+    skip_availability_check: skipAvailabilityCheck,
+    send_notifications: sendNotifications = true,
+  } = payload;
+
+  const resolvedLeadRef = String(leadRef || leadNumber || '').trim();
+  if (!resolvedLeadRef) throw new Error('lead_ref (or lead_number) is required');
+  if (!date || !time) throw new Error('date and time are required');
+  if (!country && !clientTimezoneRaw) {
+    throw new Error('country (ISO code) or client_timezone is required for timezone conversion');
+  }
+
+  const leadInfo = await resolveLeadByRef(resolvedLeadRef);
+  const { settings, isLegacy, newLeadId, legacyLeadId } = await loadPartnerBookingSettings(leadInfo);
+
+  let clientTimezone = isValidIanaTimezone(clientTimezoneRaw) ? clientTimezoneRaw : null;
+  if (!clientTimezone && country) {
+    clientTimezone = await lookupTimezoneFromCountry(country);
+  }
+  if (!clientTimezone) {
+    throw new Error(
+      `Could not resolve timezone from country "${country}". Provide client_timezone (IANA, e.g. America/New_York).`,
+    );
+  }
+
+  let jerusalemDate = date;
+  let jerusalemTime = normalizeTime(time);
+  if (!jerusalemTime) throw new Error('Invalid time format — use HH:MM (24-hour)');
+
+  if (clientTimezone !== BUSINESS_TZ) {
+    const converted = clientLocalToJerusalem(date, time, clientTimezone);
+    if (!converted) throw new Error('Invalid date or time for the provided timezone');
+    jerusalemDate = converted.date;
+    jerusalemTime = converted.time;
+  }
+
+  if (!skipAvailabilityCheck) {
+    const busyRanges = await fetchBusyRanges(settings, jerusalemDate);
+    await assertCategoryHourlyCapacity(settings, jerusalemDate, jerusalemTime);
+    if (!isBookingTimeAvailable(settings, jerusalemDate, jerusalemTime, busyRanges)) {
+      throw new Error('Selected time is not available');
+    }
+  }
+
+  const contacts = await fetchLeadContactsForPartner(isLegacy, newLeadId, legacyLeadId);
+  const contact = resolvePartnerContact(contacts, { contactId, contactEmail });
+
+  const locationName = meetingLocationRaw
+    ? resolveClientBookingLocation(meetingLocationRaw)
+    : resolveClientBookingLocation(settings.meeting_location || 'Teams');
+
+  const leadNumberDisplay = leadInfo.lead_number || resolvedLeadRef;
+  const displayName = leadInfo.display_name || contact.name || 'Client';
+  const category = settings.category || 'Meeting';
+  const schedulerLabel = partnerName ? `Partner webhook: ${partnerName}` : 'Partner webhook';
+
+  let teamsMeetingUrl = '';
+  let calendarEventId = null;
+  const notificationWarnings = [];
+  let graphAuth;
+  try {
+    graphAuth = await getGraphAccessToken(settings.host_employee_id);
+  } catch (authErr) {
+    console.error('Graph auth failed for partner meeting webhook:', authErr.message);
+    notificationWarnings.push(`Microsoft Graph: ${authErr.message}`);
+    graphAuth = { accessToken: null, userId: null, authMode: null };
+  }
+
+  const graphToken = graphAuth.accessToken;
+  const meetingSubject = `[#${leadNumberDisplay}] ${displayName} - ${category} - Meeting (Partner booked)`;
+  const startIso = `${jerusalemDate}T${jerusalemTime}:00`;
+  const durationMinutes = settings.duration_minutes || 30;
+  const endMinutes = parseTimeToMinutes(jerusalemTime) + durationMinutes;
+  const endTime = minutesToTime(endMinutes);
+  const endIso = `${jerusalemDate}T${endTime}:00`;
+  const calendarType = settings.calendar_type === 'active_client' ? 'active_client' : 'potential_client';
+
+  try {
+    if (!graphToken) {
+      throw new Error(
+        'No connected mailbox for calendar sync. Set BOOKING_MAILBOX_USER_ID or connect the meeting manager mailbox.',
+      );
+    }
+    const calendarResult = await createSharedCalendarEvent(graphToken, {
+      calendarType,
+      subject: meetingSubject,
+      startDateTime: startIso,
+      endDateTime: endIso,
+      location: locationName,
+      description: notes
+        ? `<p>${notes}</p><p>Booked via partner webhook</p>`
+        : '<p>Booked via partner webhook</p>',
+      timeZone: settings.timezone,
+      isTeams: isTeamsLocation(locationName),
+      sendCalendarInvite: false,
+    });
+    calendarEventId = calendarResult.id;
+    teamsMeetingUrl = isTeamsLocation(locationName) ? calendarResult.joinUrl || '' : '';
+    if (isTeamsLocation(locationName) && !teamsMeetingUrl && calendarEventId) {
+      teamsMeetingUrl = await fetchEventJoinUrl(graphToken, calendarType, calendarEventId);
+    }
+  } catch (err) {
+    console.error('Calendar sync failed for partner meeting webhook:', err.message);
+    const hint = isRaopAppOnlyError(err.message)
+      ? ' Your tenant blocks app-only Graph access — connect a staff mailbox (BOOKING_MAILBOX_USER_ID).'
+      : '';
+    notificationWarnings.push(`Teams calendar: ${err.message}${hint}`);
+  }
+
+  const meetingRow = {
+    meeting_date: jerusalemDate,
+    meeting_time: `${jerusalemTime}:00`,
+    meeting_location: locationName,
+    meeting_manager: settings.meeting_manager || '',
+    meeting_subject: meetingSubject,
+    meeting_brief: notes || 'Scheduled via partner webhook',
+    teams_meeting_url: teamsMeetingUrl,
+    helper: '---',
+    expert: '---',
+    scheduler: schedulerLabel,
+    calendar_type: calendarType,
+    status: 'scheduled',
+    client_booking_timezone: clientTimezone,
+  };
+
+  if (isLegacy) {
+    meetingRow.legacy_lead_id = Number(legacyLeadId);
+  } else {
+    meetingRow.client_id = newLeadId;
+  }
+
+  const { data: inserted, error: insertError } = await supabase
+    .from('meetings')
+    .insert([meetingRow])
+    .select('*')
+    .single();
+
+  if (insertError) throw insertError;
+
+  try {
+    await updateLeadToMeetingScheduled(leadInfo, schedulerLabel);
+  } catch (stageErr) {
+    console.error('Partner meeting stage update failed:', stageErr);
+    notificationWarnings.push(`Lead stage: ${stageErr.message}`);
+  }
+
+  if (sendNotifications !== false) {
+    try {
+      const notifyWarnings = await sendBookingNotifications({
+        settings,
+        lead: {
+          lead_number: leadNumberDisplay,
+          display_name: displayName,
+          is_legacy: isLegacy,
+          language_id: settings.language_id,
+        },
+        contact,
+        meeting: inserted,
+        teamsUrl: teamsMeetingUrl,
+        graphAuth,
+        durationMinutes,
+        calendarEventId,
+        calendarType,
+      });
+      notificationWarnings.push(...notifyWarnings);
+    } catch (notifyErr) {
+      console.error('Partner meeting notifications failed:', notifyErr);
+      notificationWarnings.push(notifyErr.message);
+    }
+  }
+
+  return {
+    ok: true,
+    meeting: {
+      id: inserted.id,
+      date: inserted.meeting_date,
+      time: inserted.meeting_time,
+      location: inserted.meeting_location,
+      teams_meeting_url: teamsMeetingUrl,
+      subject: inserted.meeting_subject,
+      client_timezone: clientTimezone,
+      israel_date: jerusalemDate,
+      israel_time: `${jerusalemTime}:00`,
+    },
+    lead: {
+      lead_ref: leadNumberDisplay,
+      display_name: displayName,
+      is_legacy: isLegacy,
+    },
+    warnings: notificationWarnings.length > 0 ? notificationWarnings : undefined,
+  };
+}
+
 module.exports = {
   getPublicConfig,
   getAvailableSlots,
   getScheduledMeetings,
   bookMeeting,
+  createPartnerMeeting,
 };
