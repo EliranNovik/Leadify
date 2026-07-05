@@ -241,10 +241,44 @@ function isJerusalemDateUnavailable(settings, jerusalemDateStr) {
   return blocked.includes(jerusalemDateStr);
 }
 
+function normalizeClientBookingLocationInput(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  const lower = raw.toLowerCase().replace(/_/g, ' ').replace(/-/g, ' ').replace(/\s+/g, ' ').trim();
+
+  if (
+    lower === 'teams'
+    || lower === 'microsoft teams'
+    || lower === 'online'
+    || lower === 'video'
+    || lower === 'virtual'
+  ) {
+    return 'Teams';
+  }
+
+  if (
+    lower === 'ramat gan office'
+    || lower === 'ramat gan'
+    || lower.includes('ramat gan')
+  ) {
+    return 'Ramat Gan Office';
+  }
+
+  for (const loc of CLIENT_BOOKING_LOCATIONS) {
+    if (loc.toLowerCase() === lower) return loc;
+  }
+
+  return raw;
+}
+
 function resolveClientBookingLocation(value) {
-  const location = String(value || '').trim();
+  const location = normalizeClientBookingLocationInput(value);
   if (!CLIENT_BOOKING_LOCATIONS.includes(location)) {
-    throw new Error('Please select Teams or Ramat Gan Office');
+    throw new Error(
+      'meeting_location must be "Teams" or "Ramat Gan Office" '
+      + '(accepted aliases: teams, microsoft teams, ramat gan, ramat gan office)',
+    );
   }
   return location;
 }

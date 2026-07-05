@@ -77,9 +77,77 @@ Alternatively to `country`, you may send `client_timezone` (IANA name, e.g. `Ame
 | `skip_availability_check` | boolean | `false`                | Skip slot/capacity validation                      |
 | `send_notifications`      | boolean | `true`                 | Email / WhatsApp / calendar invite to client       |
 
+## Meeting location
+
+Same options as the client booking page (`ClientBookingScheduler`):
+
+| Value (recommended) | Description |
+| ------------------- | ----------- |
+| `Teams` | Online Microsoft Teams meeting — a join link is created when Graph calendar sync is configured |
+| `Ramat Gan Office` | In-person meeting at the Ramat Gan office — no Teams link; client gets the office invitation email/WhatsApp template |
+
+Send in JSON as **`meeting_location`** (alias: **`location`**).
+
+If omitted, the global booking default is used (usually `Teams`).
+
+### Accepted values and aliases
+
+| Stored value | You can send |
+| ------------ | ------------ |
+| `Teams` | `Teams`, `teams`, `Microsoft Teams`, `online`, `video`, `virtual` |
+| `Ramat Gan Office` | `Ramat Gan Office`, `Ramat Gan`, `ramat gan office`, `ramat gan` |
+
+Values are case-insensitive. Underscores and hyphens are treated as spaces (`ramat_gan` → Ramat Gan Office).
+
+Invalid location → `400`:
+
+```json
+{
+  "success": false,
+  "error": "meeting_location must be \"Teams\" or \"Ramat Gan Office\" (accepted aliases: teams, microsoft teams, ramat gan, ramat gan office)"
+}
+```
+
+### Teams example
+
+```bash
+curl -X POST "https://leadify-crm-backend.onrender.com/api/hook/partner/meeting" \
+  -H "Content-Type: application/json" \
+  -H "x-partner-webhook-secret: 2KrVDK18qRr1YV8" \
+  -d '{
+    "lead_ref": "L1042",
+    "date": "2026-07-10",
+    "time": "14:30",
+    "country": "US",
+    "contact_email": "client@example.com",
+    "meeting_location": "Teams",
+    "external_firm_id": "12860de9-5306-41b2-9494-dfdc774e70a3"
+  }'
+```
+
+### Ramat Gan Office example
+
+```bash
+curl -X POST "https://leadify-crm-backend.onrender.com/api/hook/partner/meeting" \
+  -H "Content-Type: application/json" \
+  -H "x-partner-webhook-secret: 2KrVDK18qRr1YV8" \
+  -d '{
+    "lead_ref": "L1042",
+    "date": "2026-07-11",
+    "time": "11:00",
+    "country": "IL",
+    "contact_email": "client@example.com",
+    "meeting_location": "Ramat Gan Office",
+    "external_firm_id": "12860de9-5306-41b2-9494-dfdc774e70a3",
+    "notes": "Client prefers in-person consultation"
+  }'
+```
+
+For Ramat Gan, the response `meeting.location` is `"Ramat Gan Office"` and `teams_meeting_url` is typically empty.
+
 ## Example request
 
-Partner in New York books a meeting for lead `L1042` on 10 July 2026 at 2:30 PM local time:
+Partner in New York books a **Teams** meeting for lead `L1042`:
 
 ```bash
 curl -X POST "https://leadify-crm-backend.onrender.com/api/hook/partner/meeting" \
@@ -163,9 +231,9 @@ If a country has multiple timezones and the default mapping is wrong, send `clie
 
 ## What the webhook creates (same as staff booking)
 
-1. **`meetings` row** linked to the lead (`client_id` or `legacy_lead_id`)
-2. **Microsoft Teams / shared calendar event** (when `BOOKING_MAILBOX_USER_ID` or meeting manager mailbox is connected)
-3. **Client notifications** (email, WhatsApp, calendar invite — per global booking settings)
+1. **`meetings` row** linked to the lead (`client_id` or `legacy_lead_id`) with `meeting_location` = `Teams` or `Ramat Gan Office`
+2. **Microsoft calendar event** — Teams link for `Teams`; office location for `Ramat Gan Office` (when Graph mailbox is connected)
+3. **Client notifications** (email, WhatsApp, calendar invite — template varies by location, same as client booking)
 4. **Lead stage → 20** (`Meeting scheduled`) with history in `leads_leadstage`
 5. **Scheduler role → employee `177`** on the lead and meeting (override via `PARTNER_WEBHOOK_SCHEDULER_EMPLOYEE_ID`)
 
