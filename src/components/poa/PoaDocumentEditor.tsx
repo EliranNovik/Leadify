@@ -266,7 +266,9 @@ const PoaDocumentEditor: React.FC = () => {
   const skipHistoryRef = useRef(false);
   const historyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const skipEditorSyncRef = useRef(false);
+  const pendingEditorHydrationRef = useRef(true);
   const lastMeetingSummariesRef = useRef('');
+  const meetingSummariesPromiseRef = useRef<Promise<string> | null>(null);
   const updateFormRef = useRef<(updater: (prev: FormState) => FormState, opts?: { debounce?: boolean }) => void>(
     () => undefined,
   );
@@ -384,6 +386,7 @@ const PoaDocumentEditor: React.FC = () => {
       },
     },
     onUpdate: ({ editor: ed, transaction }) => {
+      if (pendingEditorHydrationRef.current) return;
       if (!transaction.getMeta('poaAiHighlight')) {
         clearAiHighlightsFromPoaEditor(ed);
       }
@@ -425,6 +428,8 @@ const PoaDocumentEditor: React.FC = () => {
     }
     setLoading(true);
     setError(null);
+    pendingEditorHydrationRef.current = true;
+    skipEditorSyncRef.current = false;
     try {
       const result = await fetchPoaForEdit(token);
       setData(result);
@@ -442,32 +447,55 @@ const PoaDocumentEditor: React.FC = () => {
     void reload();
   }, [reload]);
 
+  const ensureMeetingSummaries = useCallback(async (): Promise<string> => {
+    if (lastMeetingSummariesRef.current) return lastMeetingSummariesRef.current;
+    if (!data || data.read_only) return '';
+
+    if (!meetingSummariesPromiseRef.current) {
+      meetingSummariesPromiseRef.current = (async () => {
+        try {
+          const summaries = await fetchLeadMeetingSummaries(leadRefFromPoaData(data));
+          const formatted = formatMeetingSummariesForAi(summaries);
+          lastMeetingSummariesRef.current = formatted;
+          return formatted;
+        } catch {
+          return '';
+        } finally {
+          meetingSummariesPromiseRef.current = null;
+        }
+      })();
+    }
+
+    return meetingSummariesPromiseRef.current;
+  }, [data]);
+
   useEffect(() => {
     if (!data || data.read_only) return;
-    void (async () => {
-      try {
-        const summaries = await fetchLeadMeetingSummaries(leadRefFromPoaData(data));
-        lastMeetingSummariesRef.current = formatMeetingSummariesForAi(summaries);
-      } catch {
-        // AI chat still works without summaries
-      }
-    })();
-  }, [data]);
+    void ensureMeetingSummaries();
+  }, [data, data?.read_only, ensureMeetingSummaries]);
 
   useEffect(() => {
     if (!editor) return;
     editor.setEditable(!(data?.read_only ?? false));
   }, [editor, data?.read_only]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!editor || form == null) return;
-    if (skipEditorSyncRef.current) {
+
+    const currentMarkup = poaHtmlToMarkup(editor.getHTML());
+    if (currentMarkup === form.body) {
+      pendingEditorHydrationRef.current = false;
+      return;
+    }
+
+    if (skipEditorSyncRef.current && !pendingEditorHydrationRef.current) {
       skipEditorSyncRef.current = false;
       return;
     }
-    const currentMarkup = poaHtmlToMarkup(editor.getHTML());
-    if (currentMarkup === form.body) return;
+    skipEditorSyncRef.current = false;
+
     editor.commands.setContent(poaMarkupToHtml(form.body), { emitUpdate: false });
+    pendingEditorHydrationRef.current = false;
   }, [editor, form?.body]);
 
   useLayoutEffect(() => {
@@ -550,13 +578,14 @@ const PoaDocumentEditor: React.FC = () => {
       updateForm((p) => ({ ...p, body: afterBody }));
       if (editor && !editor.isDestroyed) {
         editor.commands.setContent(poaMarkupToHtml(afterBody), { emitUpdate: false });
-        requestAnimationFrame(() => {
+        const applyHighlights = () => {
           if (editor.isDestroyed) return;
           applyAiHighlightsToPoaEditor(
             editor,
             extractAiBodyHighlights(beforeBody, afterBody, patch),
           );
-        });
+        };
+        requestAnimationFrame(applyHighlights);
       }
     },
     [editor, updateForm],
@@ -569,15 +598,11 @@ const PoaDocumentEditor: React.FC = () => {
     setImprovingPoa(true);
     setAiReviewNotes(null);
     setAiReviewChatMessages([]);
-    setAiThinkingText(null);
+    setAiThinkingText('Loading meeting context…');
     setShowAiReviewPanel(true);
+
     try {
-      const leadRef = leadRefFromPoaData(data);
-      if (!lastMeetingSummariesRef.current) {
-        const summaries = await fetchLeadMeetingSummaries(leadRef);
-        lastMeetingSummariesRef.current = formatMeetingSummariesForAi(summaries);
-      }
-      const meetingSummaries = lastMeetingSummariesRef.current;
+      const meetingSummaries = await ensureMeetingSummaries();
       if (!meetingSummaries) {
         toast(
           currentPoaText
@@ -586,6 +611,10 @@ const PoaDocumentEditor: React.FC = () => {
           { icon: 'ℹ️' },
         );
       }
+
+      setAiThinkingText(
+        currentPoaText ? 'Reviewing your POA and meeting summaries…' : 'Drafting your POA…',
+      );
 
       const result = await improvePoaWithMeetingSummaries(
         {
@@ -602,15 +631,24 @@ const PoaDocumentEditor: React.FC = () => {
 
       const beforeBody = form.body;
       const afterBody = applyPoaAiEditResult(beforeBody, result);
+      const quickSummary =
+        result.changeSummary?.trim() || 'POA updated based on meeting summaries.';
+
       applyPoaBodyFromAi(beforeBody, afterBody, result);
-      setAiReviewNotes(
-        formatAiChangeReviewContent(poaBodyToAiText(beforeBody), poaBodyToAiText(afterBody), {
-          summary: result.changeSummary,
-          patch: result,
-        }),
-      );
-      setShowAiReviewPanel(true);
+      setAiReviewNotes(quickSummary);
       setAiRemarksInput('');
+      setImprovingPoa(false);
+      setAiThinkingText(null);
+
+      window.setTimeout(() => {
+        setAiReviewNotes(
+          formatAiChangeReviewContent(poaBodyToAiText(beforeBody), poaBodyToAiText(afterBody), {
+            summary: result.changeSummary,
+            patch: result,
+          }),
+        );
+      }, 0);
+
       toast.success(
         currentPoaText
           ? 'POA improved with AI — review and request changes in the panel'
@@ -630,6 +668,7 @@ const PoaDocumentEditor: React.FC = () => {
     improvingPoa,
     aiChatLoading,
     applyPoaBodyFromAi,
+    ensureMeetingSummaries,
   ]);
 
   const handleApplyAiRemarks = useCallback(async () => {
@@ -646,12 +685,13 @@ const PoaDocumentEditor: React.FC = () => {
 
     const currentPoaText = poaBodyToAiText(form.body);
     setAiChatLoading(true);
-    setAiThinkingText(null);
+    setAiThinkingText('Reviewing your request…');
     try {
+      const meetingSummaries = await ensureMeetingSummaries();
       let result = await sendPoaAiChatMessage(
         {
           currentPoaText,
-          meetingSummaries: lastMeetingSummariesRef.current,
+          meetingSummaries,
           clientName: data.contact.name,
           documentName: data.document.name,
           documentDescription: data.document.description,
@@ -671,7 +711,7 @@ const PoaDocumentEditor: React.FC = () => {
         result = await sendPoaAiChatMessage(
           {
             currentPoaText,
-            meetingSummaries: lastMeetingSummariesRef.current,
+            meetingSummaries,
             clientName: data.contact.name,
             documentName: data.document.name,
             documentDescription: data.document.description,
@@ -723,20 +763,14 @@ const PoaDocumentEditor: React.FC = () => {
     aiRemarksInput,
     aiReviewChatMessages,
     applyPoaBodyFromAi,
+    ensureMeetingSummaries,
   ]);
 
   const handleOpenAiReviewPanel = useCallback(async () => {
     if (!data || readOnly || showPreview) return;
     setShowAiReviewPanel(true);
-    if (!lastMeetingSummariesRef.current) {
-      try {
-        const summaries = await fetchLeadMeetingSummaries(leadRefFromPoaData(data));
-        lastMeetingSummariesRef.current = formatMeetingSummariesForAi(summaries);
-      } catch {
-        // Chat can still work without meeting summaries
-      }
-    }
-  }, [data, readOnly, showPreview]);
+    void ensureMeetingSummaries();
+  }, [data, readOnly, showPreview, ensureMeetingSummaries]);
 
   const addCatalogField = useCallback(
     (catalogKey: string) => {
@@ -1467,34 +1501,6 @@ const PoaDocumentEditor: React.FC = () => {
           </div>
         </>
       )}
-
-      {improvingPoa ? (
-        <div
-          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/35 backdrop-blur-[2px]"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="ai-poa-cooking-title"
-          aria-busy="true"
-        >
-          <div className="relative mx-4 flex w-full max-w-sm flex-col items-center overflow-hidden rounded-3xl border border-gray-200 bg-white px-8 py-10 text-center shadow-2xl">
-            <div className="ai-cooking-loader relative mb-6 flex items-center justify-center">
-              <div className="ai-cooking-ring-outer" aria-hidden="true" />
-              <div className="ai-cooking-ring-inner" aria-hidden="true" />
-              <div className="ai-cooking-glow" aria-hidden="true" />
-              <SparklesIconSolid className="ai-cooking-sparkle relative z-10 h-9 w-9 text-violet-600 drop-shadow-sm" />
-            </div>
-            <p id="ai-poa-cooking-title" className="bg-gradient-to-r from-fuchsia-600 via-violet-600 to-indigo-600 bg-clip-text text-lg font-bold text-transparent">
-              AI is cooking
-            </p>
-            <p className="mt-2 whitespace-pre-wrap text-sm text-gray-600">
-              {aiThinkingText?.trim() ||
-                (form?.body?.trim()
-                  ? 'Improving your POA with meeting summaries…'
-                  : 'Drafting your POA with meeting summaries…')}
-            </p>
-          </div>
-        </div>
-      ) : null}
 
       <ContractAiReviewPanel
         isOpen={aiReviewOpen}

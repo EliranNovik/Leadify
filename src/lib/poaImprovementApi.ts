@@ -352,6 +352,8 @@ async function invokePoaAi(
   input: ImprovePoaInput,
   onThinking?: (text: string) => void,
 ): Promise<PoaAiChatResult> {
+  onThinking?.('Connecting to AI…');
+
   if (onThinking) {
     try {
       const data = await consumePoaAiReviewSse<Record<string, unknown>>(input, onThinking);

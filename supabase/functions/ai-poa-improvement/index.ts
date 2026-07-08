@@ -279,6 +279,9 @@ function buildPoaResult(
   return { intent: 'action', improvedPoaText, changeSummary };
 }
 
+const INITIAL_IMPROVE_REMARKS =
+  'Improve this POA using the meeting summaries. Integrate missing details into the correct sections. Prefer editKind insert_after with precise find anchors when adding localized content; use editKind full only when broad restructuring is required.';
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -323,17 +326,21 @@ serve(async (req) => {
     );
 
     const poaText = typeof currentPoaText === 'string' ? currentPoaText : '';
-    const isChat = typeof userRemarks === 'string' && userRemarks.trim().length > 0;
+    const rawUserRemarks = typeof userRemarks === 'string' ? userRemarks.trim() : '';
+    const isUserChat = rawUserRemarks.length > 0;
+    const usePatchFriendlyImprove = !isUserChat && poaText.trim().length > 0;
+    const effectiveRemarks = usePatchFriendlyImprove ? INITIAL_IMPROVE_REMARKS : rawUserRemarks;
+    const isChat = isUserChat || usePatchFriendlyImprove;
     const fastEdit =
-      isChat &&
-      (preferFastEdit === true || isLikelySmallEdit(userRemarks, poaText));
+      isUserChat &&
+      (preferFastEdit === true || isLikelySmallEdit(effectiveRemarks, poaText));
 
     const prompt = isChat
       ? buildChatPrompt(
           contextLines,
           poaText,
           summariesBlock,
-          userRemarks,
+          effectiveRemarks,
           Array.isArray(chatHistory) ? chatHistory : undefined,
           fastEdit,
         )
@@ -345,7 +352,13 @@ serve(async (req) => {
         ? 'POA edit assistant. JSON only. Staff wants document changes — default to intent action with improvedPoaText or a patch. Only use question for pure explanations with no edits.'
         : 'Draft/improve POA. JSON only. Put "thinking" first. Integrate all content in correct sections — never dump new clauses at the end unless appropriate.';
 
-    const maxTokens = fastEdit ? 900 : isChat ? 3800 : 3200;
+    const maxTokens = fastEdit
+      ? 900
+      : usePatchFriendlyImprove
+        ? 2200
+        : isChat
+          ? 3800
+          : 3200;
 
     const openaiBody = {
       model: 'gpt-4o-mini',
@@ -367,7 +380,7 @@ serve(async (req) => {
       }
       return buildPoaResult(parsed, isChat, {
         fastEdit,
-        userMessage: isChat ? userRemarks : undefined,
+        userMessage: isUserChat ? rawUserRemarks : undefined,
       });
     };
 
