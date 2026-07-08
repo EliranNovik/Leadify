@@ -60,7 +60,7 @@ export const PoaField: React.FC<FieldProps> = ({
           value={value}
           placeholder={placeholder}
           onChange={(e) => ctrl.setValue(id, e.target.value)}
-          className={`w-full resize-none rounded-md border bg-white px-2.5 py-1.5 text-[15px] text-gray-900 outline-none focus:ring-2 focus:ring-indigo-300 ${
+          className={`w-full resize-none rounded-md border bg-white px-2.5 py-1.5 text-[15px] text-gray-900 outline-none focus:ring-2 focus:ring-blue-300 ${
             isInvalid ? 'border-red-400 ring-1 ring-red-300' : 'border-gray-300'
           }`}
         />
@@ -71,7 +71,7 @@ export const PoaField: React.FC<FieldProps> = ({
           value={value}
           placeholder={placeholder}
           onChange={(e) => ctrl.setValue(id, e.target.value)}
-          className={`w-full rounded-md border bg-white px-2.5 py-1.5 text-[15px] text-gray-900 outline-none focus:ring-2 focus:ring-indigo-300 ${
+          className={`w-full rounded-md border bg-white px-2.5 py-1.5 text-[15px] text-gray-900 outline-none focus:ring-2 focus:ring-blue-300 ${
             isInvalid ? 'border-red-400 ring-1 ring-red-300' : 'border-gray-300'
           }`}
         />
@@ -121,7 +121,7 @@ export const PoaInlineField: React.FC<InlineFieldProps> = ({
       value={value}
       placeholder={placeholder}
       onChange={(e) => ctrl.setValue(id, e.target.value)}
-      className={`inline-block border-0 border-b bg-transparent px-1 text-[15px] text-gray-900 outline-none focus:border-indigo-500 ${widthClass} ${
+      className={`inline-block border-0 border-b bg-transparent px-1 text-[15px] text-gray-900 outline-none focus:border-blue-700 ${widthClass} ${
         isInvalid ? 'border-red-400' : 'border-gray-400'
       }`}
     />

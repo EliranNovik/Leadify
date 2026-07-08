@@ -100,6 +100,97 @@ export function extractPoaBodyKeys(body: string): string[] {
   return keys;
 }
 
+/** One placed field token in the document body (duplicate keys get unique instance ids). */
+export interface PoaBodyFieldInstance {
+  segmentIndex: number;
+  key: string;
+  instanceId: string;
+}
+
+/**
+ * When the same {{key}} appears multiple times in the body, each occurrence
+ * needs its own value id so inputs don't share state.
+ */
+export function listPoaBodyFieldInstances(body: string): PoaBodyFieldInstance[] {
+  const segments = parsePoaBody(body);
+  const keyCounts = new Map<string, number>();
+  for (const seg of segments) {
+    if (seg.kind === 'field') {
+      keyCounts.set(seg.key, (keyCounts.get(seg.key) || 0) + 1);
+    }
+  }
+
+  const seen = new Map<string, number>();
+  const out: PoaBodyFieldInstance[] = [];
+  segments.forEach((seg, segmentIndex) => {
+    if (seg.kind !== 'field') return;
+    const occurrence = seen.get(seg.key) ?? 0;
+    seen.set(seg.key, occurrence + 1);
+    const total = keyCounts.get(seg.key) || 1;
+    const instanceId = total <= 1 ? seg.key : `${seg.key}__${occurrence}`;
+    out.push({ segmentIndex, key: seg.key, instanceId });
+  });
+  return out;
+}
+
+/** Map segment index -> value id for quick lookup while rendering. */
+export function poaFieldInstanceIdBySegment(body: string): Map<number, string> {
+  const map = new Map<number, string>();
+  for (const inst of listPoaBodyFieldInstances(body)) {
+    map.set(inst.segmentIndex, inst.instanceId);
+  }
+  return map;
+}
+
+/** Pick a unique field key when inserting another catalog field of the same type. */
+export function allocatePoaFieldKey(
+  baseKey: string,
+  fields: PoaTemplateField[],
+  body: string,
+): string {
+  const used = new Set<string>();
+  for (const f of fields) used.add(f.key);
+  for (const k of extractPoaBodyKeys(body)) used.add(k);
+  if (!used.has(baseKey)) return baseKey;
+  let n = 2;
+  while (used.has(`${baseKey}_${n}`)) n += 1;
+  return `${baseKey}_${n}`;
+}
+
+export function resolvePoaTemplateField(key: string, fields: PoaTemplateField[]): PoaTemplateField {
+  return (
+    fields.find((f) => f.key === key) || {
+      key,
+      label: key,
+      type: 'text',
+      required: false,
+      prefill: '',
+    }
+  );
+}
+
+/** All fillable instances: body placements (incl. duplicate keys) + orphan field defs. */
+export function listPoaFillableInstances(
+  body: string,
+  fields: PoaTemplateField[],
+): { instanceId: string; field: PoaTemplateField }[] {
+  const placedKeys = new Set<string>();
+  const instances: { instanceId: string; field: PoaTemplateField }[] = [];
+
+  for (const { key, instanceId } of listPoaBodyFieldInstances(body)) {
+    placedKeys.add(key);
+    instances.push({ instanceId, field: resolvePoaTemplateField(key, fields) });
+  }
+
+  for (const f of fields) {
+    if (!placedKeys.has(f.key)) {
+      instances.push({ instanceId: f.key, field: f });
+    }
+  }
+
+  return instances;
+}
+
 /** Map a contact record to prefill values for a template's fields. */
 export function buildTemplatePrefill(
   fields: PoaTemplateField[],

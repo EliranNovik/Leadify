@@ -22,6 +22,7 @@ import {
   aiTextToTiptapDoc,
   tiptapJsonToAiText,
 } from '../lib/contractImprovementApi';
+import { formatAiChangeReviewContent } from '../lib/aiChangeReview';
 import { getPricePerApplicant } from '../lib/contractPricing';
 import SignaturePad from 'react-signature-canvas';
 import { v4 as uuidv4 } from 'uuid';
@@ -1574,6 +1575,7 @@ const ContractPage: React.FC = () => {
   const [editing, setEditing] = useState(false);
   const [improvingContract, setImprovingContract] = useState(false);
   const [aiChatLoading, setAiChatLoading] = useState(false);
+  const [aiThinkingText, setAiThinkingText] = useState<string | null>(null);
   const [aiReviewNotes, setAiReviewNotes] = useState<string | null>(null);
   const [aiReviewChatMessages, setAiReviewChatMessages] = useState<ContractAiReviewMessage[]>([]);
   const [showAiReviewPanel, setShowAiReviewPanel] = useState(false);
@@ -2894,6 +2896,10 @@ const ContractPage: React.FC = () => {
     setImprovingContract(true);
     setAiReviewNotes(null);
     setAiReviewChatMessages([]);
+    setAiThinkingText(null);
+    if (editing) {
+      setShowAiReviewPanel(true);
+    }
     try {
       const summaries = await fetchLeadMeetingSummaries(client);
       const meetingSummaries = formatMeetingSummariesForAi(summaries);
@@ -2902,26 +2908,38 @@ const ContractPage: React.FC = () => {
         toast('No meeting summaries found — improving contract from current text only', { icon: 'ℹ️' });
       }
 
-      const { improvedContractText, changeSummary } = await improveContractWithMeetingSummaries({
-        leadId: client.id,
-        clientName: client.name,
-        leadNumber: renderLeadNumber(),
-        currentContractText,
-        meetingSummaries,
-      });
+      const { improvedContractText, changeSummary } = await improveContractWithMeetingSummaries(
+        {
+          leadId: client.id,
+          clientName: client.name,
+          leadNumber: renderLeadNumber(),
+          currentContractText,
+          meetingSummaries,
+        },
+        setAiThinkingText,
+      );
 
       const improvedDoc = aiTextToTiptapDoc(improvedContractText, originalContent);
 
       if (editing) {
         editor.commands.setContent(improvedDoc);
-        setAiReviewNotes(changeSummary);
+        setAiReviewNotes(
+          formatAiChangeReviewContent(currentContractText, improvedContractText, {
+            summary: changeSummary,
+          }),
+        );
         setShowAiReviewPanel(true);
         setAiRemarksInput('');
         editor.setEditable(true);
         suppressEditorSyncRef.current = true;
         lastContentHashRef.current = `ai-${Date.now()}`;
       } else {
-        aiContentPendingRef.current = { doc: improvedDoc, notes: changeSummary };
+        aiContentPendingRef.current = {
+          doc: improvedDoc,
+          notes: formatAiChangeReviewContent(currentContractText, improvedContractText, {
+            summary: changeSummary,
+          }),
+        };
         setEditing(true);
       }
 
@@ -2930,6 +2948,7 @@ const ContractPage: React.FC = () => {
       toast.error(err instanceof Error ? err.message : 'AI contract improvement failed');
     } finally {
       setImprovingContract(false);
+      setAiThinkingText(null);
     }
   };
 
@@ -2953,16 +2972,20 @@ const ContractPage: React.FC = () => {
     }
 
     setAiChatLoading(true);
+    setAiThinkingText(null);
     try {
-      const result = await sendContractAiChatMessage({
-        leadId: client.id,
-        clientName: client.name,
-        leadNumber: renderLeadNumber(),
-        currentContractText,
-        meetingSummaries: lastMeetingSummariesRef.current,
-        userRemarks: remarks,
-        chatHistory: [...aiReviewChatMessages, userMessage],
-      });
+      const result = await sendContractAiChatMessage(
+        {
+          leadId: client.id,
+          clientName: client.name,
+          leadNumber: renderLeadNumber(),
+          currentContractText,
+          meetingSummaries: lastMeetingSummariesRef.current,
+          userRemarks: remarks,
+          chatHistory: [...aiReviewChatMessages, userMessage],
+        },
+        setAiThinkingText,
+      );
 
       if (result.intent === 'question') {
         setAiReviewChatMessages((prev) => [
@@ -2974,7 +2997,13 @@ const ContractPage: React.FC = () => {
         editor.commands.setContent(improvedDoc);
         setAiReviewChatMessages((prev) => [
           ...prev,
-          { role: 'assistant', content: result.changeSummary, kind: 'change' },
+          {
+            role: 'assistant',
+            content: formatAiChangeReviewContent(currentContractText, result.improvedContractText, {
+              summary: result.changeSummary,
+            }),
+            kind: 'change',
+          },
         ]);
         suppressEditorSyncRef.current = true;
         lastContentHashRef.current = `ai-${Date.now()}`;
@@ -2984,6 +3013,7 @@ const ContractPage: React.FC = () => {
       toast.error(err instanceof Error ? err.message : 'Failed to send message');
     } finally {
       setAiChatLoading(false);
+      setAiThinkingText(null);
     }
   };
 
@@ -6242,8 +6272,8 @@ const ContractPage: React.FC = () => {
             <p id="ai-contract-cooking-title" className="bg-gradient-to-r from-fuchsia-600 via-violet-600 to-indigo-600 bg-clip-text text-lg font-bold text-transparent">
               AI is cooking
             </p>
-            <p className="mt-2 text-sm text-gray-600">
-              Improving your contract with meeting summaries…
+            <p className="mt-2 whitespace-pre-wrap text-sm text-gray-600">
+              {aiThinkingText?.trim() || 'Improving your contract with meeting summaries…'}
             </p>
           </div>
         </div>
@@ -6260,7 +6290,8 @@ const ContractPage: React.FC = () => {
         remarks={aiRemarksInput}
         onRemarksChange={setAiRemarksInput}
         onApplyRemarks={() => void handleApplyAiRemarks()}
-        isApplying={aiChatLoading}
+        isApplying={aiChatLoading || improvingContract}
+        thinkingText={aiThinkingText}
       />
 
       {showCallContactModal && (

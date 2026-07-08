@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronLeftIcon, DocumentCheckIcon } from '@heroicons/react/24/outline';
 import MobileBottomSheet from './MobileBottomSheet';
@@ -8,6 +8,8 @@ type SubEffortsLogSidebarProps = {
   rows: any[];
   onRowClick: (rowId: string | number) => void;
   onViewAll: () => void;
+  /** Hide the fixed side tab (e.g. while the full-page sub-efforts modal is open). */
+  hideSideTab?: boolean;
 };
 
 function SubEffortsLogList({
@@ -68,8 +70,15 @@ export function SubEffortsLogSidebar({
   rows,
   onRowClick,
   onViewAll,
+  hideSideTab = false,
 }: SubEffortsLogSidebarProps) {
   const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (hideSideTab) setOpen(false);
+  }, [hideSideTab]);
+
+  if (hideSideTab) return null;
 
   const count = rows.length;
 

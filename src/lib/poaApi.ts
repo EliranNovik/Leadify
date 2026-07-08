@@ -198,3 +198,64 @@ export async function deletePoa(id: string): Promise<void> {
   if (error) throw new Error(error.message);
   if (!data || data.ok === false) throw new Error((data && data.error) || 'Failed to delete POA');
 }
+
+export interface PoaEditData {
+  poa: {
+    id: string;
+    secure_token: string;
+    status: PoaStatus;
+    template_id: string;
+    field_data: Record<string, string>;
+    created_at: string;
+    signed_at: string | null;
+  };
+  document: {
+    name: string;
+    description: string | null;
+    body: string;
+    fields: import('./poaTemplateFields').PoaTemplateField[];
+    direction: string;
+    font_family: string;
+    font_size: string;
+    language: string;
+  };
+  contact: PoaPublicData['contact'];
+  lead: {
+    new_lead_id: string | null;
+    legacy_lead_id: number | null;
+  };
+  read_only: boolean;
+}
+
+/** Staff editor — load a template-based POA instance with effective body/fields. */
+export async function fetchPoaForEdit(token: string): Promise<PoaEditData> {
+  const { data, error } = await supabase.rpc('poa_get_for_edit', { p_token: token });
+  if (error) throw new Error(error.message);
+  if (!data || data.ok === false) {
+    throw new Error((data && data.error) || 'POA not found');
+  }
+  return data as PoaEditData;
+}
+
+/** Staff editor — save per-instance document content (not allowed after signing). */
+export async function updatePoaDocument(params: {
+  token: string;
+  body: string;
+  fields: import('./poaTemplateFields').PoaTemplateField[];
+  direction?: string;
+  fontFamily?: string | null;
+  fontSize?: string | null;
+}): Promise<void> {
+  const { data, error } = await supabase.rpc('poa_update_document', {
+    p_token: params.token,
+    p_body: params.body,
+    p_fields: params.fields,
+    p_direction: params.direction ?? 'ltr',
+    p_font_family: params.fontFamily ?? null,
+    p_font_size: params.fontSize ?? null,
+  });
+  if (error) throw new Error(error.message);
+  if (!data || data.ok === false) {
+    throw new Error((data && data.error) || 'Failed to save POA');
+  }
+}

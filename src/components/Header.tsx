@@ -42,6 +42,7 @@ import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { FaRobot } from 'react-icons/fa';
 import { FaWhatsapp } from 'react-icons/fa';
+import AdminChangeUserModal from './AdminChangeUserModal';
 import EmployeeModal from './EmployeeModal';
 import RMQMessagesPage from '../pages/RMQMessagesPage';
 import HighlightsPanel from './HighlightsPanel';
@@ -55,6 +56,11 @@ import { EXTERNAL_USER_HEADER_PADDING } from '../lib/externalUserLayout';
 import { useExternalUser, shouldDeferInternalChrome } from '../hooks/useExternalUser';
 import { useSignOutWithClockOut } from '../hooks/useSignOutWithClockOut';
 import { useAuthContext } from '../contexts/AuthContext';
+import { useAdminProfileBypass } from '../hooks/useAdminProfileBypass';
+import { useOptionalClockInGate } from '../hooks/useClockInGate';
+import { ADMIN_PROFILE_BYPASS_CHANGED_EVENT } from '../lib/adminClockInBypass';
+import { clearAdminImpersonationGrant } from '../lib/adminImpersonationGrant';
+import { clearClockInGateCache } from '../lib/clockInGateCache';
 import { getMobileAwareCacheTtlMs } from '../lib/mobileCache';
 import { runMailboxCatchUpSync } from '../lib/mailboxApi';
 
@@ -189,6 +195,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     supabaseSessionReady,
     isSuperUser,
   } = useAuthContext();
+  const { bypass: adminProfileBypass, clearBypass: clearAdminBypass } = useAdminProfileBypass();
+  const clockInGate = useOptionalClockInGate();
+  const showAdminBypassBadge = Boolean(adminProfileBypass && clockInGate?.adminBypassActive);
   const { requestSignOut, signOutModal } = useSignOutWithClockOut();
   const [isMsalLoading, setIsMsalLoading] = useState(false);
   const [userAccount, setUserAccount] = useState<any>(null);
@@ -237,7 +246,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [externalUserProfile, setExternalUserProfile] = useState<{ photo_url?: string | null } | null>(null);
   /** Prefer live employee row; fall back to auth display cache so avatar matches name on first paint after refresh */
   const resolvedHeaderPhotoUrl =
-    [externalUserProfile?.photo_url, currentUserEmployee?.photo_url, currentUserEmployee?.photo, authProfilePhotoUrl].find(
+    [adminProfileBypass?.targetPhotoUrl, externalUserProfile?.photo_url, currentUserEmployee?.photo_url, currentUserEmployee?.photo, authProfilePhotoUrl].find(
       (u) => typeof u === 'string' && u.trim() !== ''
     )?.trim() ?? null;
   const [isEmployeeModalOpen, setIsEmployeeModalOpen] = useState(false);
@@ -272,6 +281,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [pendingClockInApprovalCount, setPendingClockInApprovalCount] = useState(0);
   const [newLeadsCount, setNewLeadsCount] = useState<number>(0);
   const [showProfileDropdown, setShowProfileDropdown] = useState(false);
+  const [isAdminChangeUserOpen, setIsAdminChangeUserOpen] = useState(false);
   const profileDropdownRef = useRef<HTMLDivElement>(null);
   const profileButtonRefMobile = useRef<HTMLButtonElement>(null);
   const profileDropdownRefDesktop = useRef<HTMLDivElement>(null);
@@ -1390,6 +1400,149 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     };
     fetchUserData();
   }, [authContextUser?.id, sessionRefreshNonce]);
+
+  useEffect(() => {
+    if (!authContextUser?.id) return;
+
+    const applyBypassProfile = async () => {
+      if (!adminProfileBypass?.targetEmployeeId) return;
+
+      const { data: empData, error } = await supabase
+        .from('tenants_employee')
+        .select(`
+          id,
+          display_name,
+          official_name,
+          bonuses_role,
+          department_id,
+          user_id,
+          photo_url,
+          photo,
+          phone,
+          mobile,
+          phone_ext,
+          tenant_departement!department_id(
+            id,
+            name
+          )
+        `)
+        .eq('id', adminProfileBypass.targetEmployeeId)
+        .maybeSingle();
+
+      if (error || !empData) return;
+
+      setUserFullName(adminProfileBypass.targetDisplayName);
+      setCurrentUserEmployee({
+        ...empData,
+        department: (empData as any).tenant_departement?.name || 'General',
+        email: currentUser?.email,
+        is_active: true,
+        performance_metrics: {
+          total_meetings: 0,
+          completed_meetings: 0,
+          total_revenue: 0,
+          average_rating: 0,
+          last_activity: 'No activity',
+        },
+      });
+    };
+
+    const invalidateAndRefetch = () => {
+      if (!authContextUser?.id) return;
+      try {
+        sessionStorage.removeItem(`header_userData_${authContextUser.id}`);
+        sessionStorage.removeItem(`header_userData_${authContextUser.id}_timestamp`);
+      } catch {
+        // ignore
+      }
+      void fetchUserDataFromBypassEvent();
+    };
+
+    const fetchUserDataFromBypassEvent = async () => {
+      if (adminProfileBypass?.targetEmployeeId) {
+        await applyBypassProfile();
+        return;
+      }
+
+      const cacheKey = `header_userData_${authContextUser.id}`;
+      const cacheTimestampKey = `header_userData_${authContextUser.id}_timestamp`;
+      try {
+        sessionStorage.removeItem(cacheKey);
+        sessionStorage.removeItem(cacheTimestampKey);
+      } catch {
+        // ignore
+      }
+
+      const user = authContextUser;
+      const { data: userData } = await supabase
+        .from('users')
+        .select(`
+          id,
+          full_name,
+          email,
+          employee_id,
+          is_superuser,
+          extern,
+          tenants_employee!employee_id(
+            id,
+            display_name,
+            official_name,
+            bonuses_role,
+            department_id,
+            user_id,
+            photo_url,
+            photo,
+            phone,
+            mobile,
+            phone_ext,
+            tenant_departement!department_id(
+              id,
+              name
+            )
+          )
+        `)
+        .eq('auth_id', user.id)
+        .maybeSingle();
+
+      if (!userData) return;
+
+      setCurrentUser(userData);
+      if (userData.tenants_employee) {
+        const empData = userData.tenants_employee;
+        const fullName =
+          (empData as any).official_name ||
+          (empData as any).display_name ||
+          userData.full_name ||
+          user.email ||
+          '';
+        setUserFullName(fullName);
+        setCurrentUserEmployee({
+          ...empData,
+          department: (empData as any).tenant_departement?.name || 'General',
+          email: userData.email,
+          is_active: true,
+          performance_metrics: {
+            total_meetings: 0,
+            completed_meetings: 0,
+            total_revenue: 0,
+            average_rating: 0,
+            last_activity: 'No activity',
+          },
+        });
+      }
+    };
+
+    void fetchUserDataFromBypassEvent();
+
+    const onBypassChanged = () => invalidateAndRefetch();
+    window.addEventListener(ADMIN_PROFILE_BYPASS_CHANGED_EVENT, onBypassChanged);
+    return () => window.removeEventListener(ADMIN_PROFILE_BYPASS_CHANGED_EVENT, onBypassChanged);
+  }, [
+    adminProfileBypass?.targetEmployeeId,
+    adminProfileBypass?.targetDisplayName,
+    authContextUser?.id,
+    currentUser?.email,
+  ]);
 
   // Fetch RMQ messages for notifications
   const fetchRmqMessages = async () => {
@@ -2834,6 +2987,43 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     void requestSignOut();
   };
 
+  const handleExitAdminBypass = async () => {
+    clearAdminBypass();
+    clearAdminImpersonationGrant();
+    clearClockInGateCache();
+    await supabase.auth.signOut().catch(() => {});
+    navigate('/login', { replace: true });
+  };
+
+  const handleAdminWorkerSwitched = () => {
+    setIsAdminChangeUserOpen(false);
+    window.location.assign('/');
+  };
+
+  const renderAdminBypassControls = (className = '') => {
+    if (!showAdminBypassBadge || !adminProfileBypass) return null;
+
+    return (
+      <div className={`flex items-center gap-2 rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-medium text-amber-900 md:text-xs ${className}`}>
+        <button
+          type="button"
+          className="whitespace-nowrap hover:underline"
+          onClick={() => setIsAdminChangeUserOpen(true)}
+        >
+          Change user
+        </button>
+        <span className="text-amber-700/70" aria-hidden>·</span>
+        <button
+          type="button"
+          className="whitespace-nowrap hover:underline"
+          onClick={() => void handleExitAdminBypass()}
+        >
+          Log out
+        </button>
+      </div>
+    );
+  };
+
   const handleMicrosoftSignOut = async () => {
     if (!instance) return;
 
@@ -3711,6 +3901,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             )}
           </div>
 
+          {renderAdminBypassControls('md:hidden ml-1 shrink-0')}
+
           {/* Desktop: hamburger flush left, RMQ logo next to it */}
           <div className="hidden md:flex items-center h-10 pl-0 md:pl-1">
             <button
@@ -4131,6 +4323,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             </>,
             document.body
           )}
+            {renderAdminBypassControls('hidden md:flex ml-2 shrink-0')}
         </div>
 
         {/* Search bar — centered; desktop: always visible; mobile: hidden until opened (icon next to bell) */}
@@ -5069,6 +5262,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         </div>
       </div>
       {signOutModal}
+      {adminProfileBypass ? (
+        <AdminChangeUserModal
+          isOpen={isAdminChangeUserOpen}
+          adminAuthUserId={adminProfileBypass.adminAuthUserId}
+          currentUserId={adminProfileBypass.targetUserId}
+          onClose={() => setIsAdminChangeUserOpen(false)}
+          onSwitched={handleAdminWorkerSwitched}
+        />
+      ) : null}
 
       {/* Sign Out Confirmation Modal */}
       {showSignOutModal && (

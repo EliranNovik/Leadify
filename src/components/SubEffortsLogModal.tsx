@@ -1,19 +1,26 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
+  ArrowDownTrayIcon,
   ArrowPathIcon,
   ArrowUpTrayIcon,
+  ChevronDownIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  DocumentIcon,
   EyeIcon,
   PlusIcon,
   LockClosedIcon,
   PencilSquareIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
+import { CheckCircleIcon as CheckCircleSolidIcon } from '@heroicons/react/24/solid';
 import toast from 'react-hot-toast';
+import MobileBottomSheet from './MobileBottomSheet';
 import { supabase } from '../lib/supabase';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../lib/leadOneDrivePaths';
 import { resolveCaseDocumentUploadContentType } from '../lib/caseDocumentsStorage';
+import { fetchStageActorInfo } from '../lib/leadStageManager';
+import { DocumentPreviewModal, type DocumentPreviewItem } from './DocumentModal';
 
 type LeadSubEffortRow = any;
 
@@ -28,10 +35,26 @@ type CaseDocPick = {
   signedUrl?: string;
 };
 
+type ResolvedDoc = {
+  raw: string;
+  url: string;
+  name: string;
+  mimeType?: string;
+  isImage: boolean;
+  isPdf: boolean;
+  path?: string;
+};
+
 function formatDateTime(value: any): string {
   if (!value) return '—';
   try {
-    return new Date(value).toLocaleString();
+    return new Date(value).toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   } catch {
     return String(value);
   }
@@ -153,207 +176,314 @@ function guessPathList(documentUrl: any): string[] {
     .filter(Boolean);
 }
 
+function formatFileTypeLabel(mimeType?: string, name?: string): string {
+  const mime = String(mimeType || '').toLowerCase();
+  if (mime.includes('pdf')) return 'PDF document';
+  if (mime.startsWith('image/')) {
+    const sub = mime.split('/')[1]?.toUpperCase();
+    return sub ? `${sub} image` : 'Image';
+  }
+  const ext = (name?.split('.').pop() || '').toLowerCase();
+  if (ext === 'pdf') return 'PDF document';
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) return `${ext.toUpperCase()} image`;
+  if (ext === 'docx' || ext === 'doc') return 'Word document';
+  if (ext) return ext.toUpperCase();
+  return 'Document';
+}
+
 function containsHebrew(text: string): boolean {
-  // Hebrew block: \u0590-\u05FF
   return /[\u0590-\u05FF]/.test(text);
 }
 
-function VisibilityPill({ internal }: { internal: boolean }) {
-  const isInternal = internal === true;
-  const Icon = isInternal ? LockClosedIcon : EyeIcon;
-  const label = isInternal ? 'Internal' : 'Viewable by client';
-  const cls = isInternal
-    ? 'bg-amber-50 text-amber-900 border-amber-200'
-    : 'bg-sky-50 text-sky-900 border-sky-200';
-  return (
-    <div className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold ${cls}`}>
-      <Icon className="w-4 h-4" />
-      <span>{label}</span>
-    </div>
-  );
+function getEmployeePhoto(employee?: any): string | null {
+  if (!employee) return null;
+  return (employee.photo_url as string | null | undefined) ?? (employee.photo as string | null | undefined) ?? null;
 }
 
-function EmployeeChip({
-  label,
+function employeeDisplayName(row: any): string {
+  return String(row?.tenants_employee?.display_name ?? row?.created_by ?? '—');
+}
+
+function updaterDisplayName(row: any): string {
+  const updated = String(row?.updated_by ?? '').trim();
+  return updated || employeeDisplayName(row);
+}
+
+function resolveUpdaterPhoto(row: any): string | null {
+  const emp = row?.tenants_employee;
+  const updater = String(row?.updated_by ?? '').trim().toLowerCase();
+  const creator = employeeDisplayName(row).trim().toLowerCase();
+  if (updater && creator && updater === creator) {
+    return getEmployeePhoto(emp);
+  }
+  return null;
+}
+
+function EmployeeAvatar({
   name,
-  employee,
-  timestamp,
+  photoUrl,
+  size = 'sm',
 }: {
-  label: string;
   name: string;
-  employee?: any;
-  timestamp?: any;
+  photoUrl?: string | null;
+  size?: 'xs' | 'sm' | 'md';
 }) {
-  const displayName = (employee?.display_name || name || '—') as string;
-  const photoUrl = (employee?.photo_url as string | null | undefined) ?? null;
-  const photo = (employee?.photo as string | null | undefined) ?? null;
-  const src = photoUrl || photo || null;
-  const initials = displayName
+  const initials = name
     .split(' ')
     .filter(Boolean)
     .slice(0, 2)
-    .map((s: string) => s[0]?.toUpperCase())
+    .map((s) => s[0]?.toUpperCase())
     .join('');
+  const dim = size === 'xs' ? 'h-7 w-7' : size === 'sm' ? 'h-9 w-9' : 'h-10 w-10';
+  const text = size === 'xs' ? 'text-[10px]' : size === 'sm' ? 'text-[11px]' : 'text-xs';
 
   return (
-    <div className="flex items-center gap-2 min-w-0">
-      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500 whitespace-nowrap">
-        {label}
+    <div className="avatar shrink-0">
+      <div className={`${dim} flex items-center justify-center overflow-hidden rounded-full bg-gray-200`}>
+        {photoUrl ? (
+          <img src={photoUrl} alt={name} className="h-full w-full object-cover" />
+        ) : (
+          <span className={`${text} font-semibold text-gray-600`}>{initials || '—'}</span>
+        )}
       </div>
-      <div className="flex items-center gap-2 min-w-0">
-        <div className="avatar">
-          <div className="w-7 h-7 rounded-full bg-base-200 overflow-hidden flex items-center justify-center">
-            {src ? (
-              <img src={src} alt={displayName} className="w-full h-full object-cover" />
-            ) : (
-              <span className="text-[11px] font-semibold text-gray-600">{initials || '—'}</span>
-            )}
-          </div>
-        </div>
-        <div className="min-w-0">
-          <div className="text-sm font-medium truncate">{displayName}</div>
-          {timestamp ? (
-            <div className="text-xs opacity-70 truncate">{formatDateTime(timestamp)}</div>
+    </div>
+  );
+}
+
+function VisibilityPill({ internal, size = 'md' }: { internal: boolean; size?: 'compact' | 'sm' | 'md' | 'lg' }) {
+  const isInternal = internal === true;
+  const Icon = isInternal ? LockClosedIcon : EyeIcon;
+  const label = isInternal ? 'Internal' : size === 'compact' ? 'Client' : 'Visible to client';
+  const cls = isInternal
+    ? 'bg-amber-50/90 text-amber-800'
+    : 'bg-blue-50/90 text-blue-800';
+  const sizeCls =
+    size === 'compact'
+      ? 'w-fit max-w-full px-2.5 py-1 text-xs gap-1.5 rounded-md font-medium'
+      : size === 'sm'
+        ? 'px-2 py-0.5 text-[11px] gap-1 rounded-full font-semibold'
+        : size === 'lg'
+          ? 'px-3.5 py-2 text-sm gap-2 rounded-full font-semibold'
+          : 'px-2.5 py-1 text-xs gap-1.5 rounded-full font-semibold';
+  const outlineCls = size === 'compact' || size === 'lg' ? '' : 'ring-1 ring-inset ring-slate-200/60';
+  const iconCls =
+    size === 'lg'
+      ? 'w-5 h-5'
+      : size === 'compact'
+        ? 'w-4 h-4'
+        : size === 'sm'
+          ? 'w-3 h-3'
+          : 'w-3.5 h-3.5';
+  return (
+    <span className={`inline-flex shrink-0 items-center ${outlineCls} ${sizeCls} ${cls}`}>
+      <Icon className={iconCls} />
+      <span className="truncate">{label}</span>
+    </span>
+  );
+}
+
+type SubEffortProgress = 'completed' | 'in_progress' | 'pending';
+
+function getSubEffortProgress(row: any, isSelected: boolean): SubEffortProgress {
+  if (row?.active === false) return 'completed';
+  if (isSelected) return 'in_progress';
+  return 'pending';
+}
+
+function ProgressBadge({ progress, compact = false }: { progress: SubEffortProgress; compact?: boolean }) {
+  const base = compact
+    ? 'inline-flex w-fit shrink-0 items-center rounded-md px-2.5 py-1 text-xs font-medium leading-tight'
+    : 'inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset';
+  if (progress === 'completed') {
+    return (
+      <span className={`${base} bg-emerald-50 text-emerald-700${compact ? '' : ' ring-emerald-200/70'}`}>
+        {compact ? 'Done' : 'Complete'}
+      </span>
+    );
+  }
+  if (progress === 'in_progress') {
+    return (
+      <span className={`${base} bg-blue-50 text-blue-700${compact ? '' : ' ring-blue-200/70'}`}>
+        {compact ? 'Active' : 'In progress'}
+      </span>
+    );
+  }
+  return (
+    <span className={`${base} bg-slate-100 text-slate-500${compact ? '' : ' ring-slate-200/80'}`}>
+      Pending
+    </span>
+  );
+}
+
+function sortTimelineRows(rows: LeadSubEffortRow[]): LeadSubEffortRow[] {
+  return [...(rows ?? [])].sort((a, b) => {
+    const ao = Number((a as any)?.sort_order);
+    const bo = Number((b as any)?.sort_order);
+    const aSort = Number.isFinite(ao) ? ao : Number.MAX_SAFE_INTEGER;
+    const bSort = Number.isFinite(bo) ? bo : Number.MAX_SAFE_INTEGER;
+    if (aSort !== bSort) return aSort - bSort;
+    return new Date((a as any)?.created_at ?? 0).getTime() - new Date((b as any)?.created_at ?? 0).getTime();
+  });
+}
+
+const TIMELINE_HOLD_MS = 220;
+
+function TimelineStepButton({
+  rowId,
+  row,
+  isSelected,
+  isLast,
+  isDragOver,
+  isDragging,
+  isHolding,
+  onSelect,
+  onPointerDown,
+  onPointerUp,
+  onPointerCancel,
+}: {
+  rowId: string;
+  row: any;
+  isSelected: boolean;
+  isLast: boolean;
+  isDragOver?: boolean;
+  isDragging?: boolean;
+  isHolding?: boolean;
+  onSelect: () => void;
+  onPointerDown: (e: React.PointerEvent) => void;
+  onPointerUp: (e: React.PointerEvent) => void;
+  onPointerCancel: (e: React.PointerEvent) => void;
+}) {
+  const name = row?.sub_efforts?.name ?? '—';
+  const who = row?.tenants_employee?.display_name ?? row?.created_by ?? '—';
+  const when = formatDateTime(row?.created_at);
+  const progress = getSubEffortProgress(row, isSelected);
+  const isPending = progress === 'pending' && !isSelected;
+
+  return (
+    <div
+      data-timeline-row-id={rowId}
+      className={[
+        isLast ? '' : 'pb-1',
+        isDragging ? 'opacity-60' : '',
+        isDragOver ? 'rounded-2xl ring-2 ring-primary/30' : '',
+      ].join(' ')}
+    >
+      <div className="relative flex gap-3">
+        <div className="flex flex-col items-center pt-1">
+          <ProgressIcon progress={progress} />
+          {!isLast ? (
+            <div className="mt-2 w-px flex-1 min-h-[20px] bg-gradient-to-b from-slate-200 to-transparent" aria-hidden />
           ) : null}
         </div>
+        <div
+          role="button"
+          tabIndex={0}
+          onPointerDown={onPointerDown}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerCancel}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              onSelect();
+            }
+          }}
+          className={[
+            'group mb-1 flex-1 rounded-2xl text-left transition-all duration-200 select-none touch-none',
+            isDragging ? 'cursor-grabbing scale-[0.98] shadow-md' : 'cursor-pointer',
+            isHolding ? 'ring-2 ring-primary/25' : '',
+            isSelected
+              ? "relative border border-blue-100 bg-blue-50/70 px-3 py-2.5 shadow-sm before:content-[''] before:absolute before:left-0 before:top-2.5 before:bottom-2.5 before:w-1 before:rounded-full before:bg-blue-600"
+              : isPending
+                ? 'px-3 py-2.5 opacity-80 hover:bg-gray-50/80'
+                : 'px-3 py-2.5 hover:bg-gray-50/80',
+          ].join(' ')}
+        >
+          <div className="min-w-0">
+            <div className="flex items-start justify-between gap-2">
+              <div
+                className={[
+                  'font-semibold leading-snug text-gray-900 truncate',
+                  isSelected ? 'text-[15px]' : isPending ? 'text-[14px] text-gray-600' : 'text-[15px]',
+                ].join(' ')}
+              >
+                {name}
+              </div>
+              <ChevronRightIcon
+                className="h-4 w-4 shrink-0 text-gray-300 transition group-hover:text-gray-400 md:hidden"
+                aria-hidden
+              />
+            </div>
+            <div className="mt-1.5 flex items-center gap-1.5 text-[12px] text-gray-500 truncate">
+              {!isSelected ? (
+                <EmployeeAvatar
+                  name={String(who)}
+                  photoUrl={getEmployeePhoto(row?.tenants_employee)}
+                  size="sm"
+                />
+              ) : null}
+              <span className="truncate">
+                {String(who)} · {when}
+              </span>
+            </div>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+              <ProgressBadge progress={progress} compact />
+              <VisibilityPill internal={row?.internal === true} size="compact" />
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
-async function loadPdfJs(): Promise<any> {
-  let pdfjsLib: any =
-    (window as any).pdfjsLib || (window as any).pdfjs || (window as any).pdfjsDist || (window as any).pdfjsDist?.default;
-
-  if (!pdfjsLib) {
-    const existingScript = document.querySelector('script[data-pdfjs]');
-    if (!existingScript) {
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js';
-      script.setAttribute('data-pdfjs', 'true');
-      document.head.appendChild(script);
-      await new Promise<void>((resolve, reject) => {
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error('Failed to load PDF.js'));
-      });
-    } else {
-      // Wait a tick to allow the script to populate window globals.
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    pdfjsLib =
-      (window as any).pdfjsLib || (window as any).pdfjs || (window as any).pdfjsDist || (window as any).pdfjsDist?.default;
+function ProgressIcon({ progress }: { progress: SubEffortProgress }) {
+  if (progress === 'completed') {
+    return <CheckCircleSolidIcon className="h-[22px] w-[22px] shrink-0 text-emerald-500" aria-hidden />;
   }
-
-  if (!pdfjsLib) {
-    throw new Error('PDF.js library not available');
+  if (progress === 'in_progress') {
+    return (
+      <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center" aria-hidden>
+        <span className="h-3.5 w-3.5 rounded-full bg-blue-600 shadow-[0_0_0_5px_rgba(37,99,235,0.15)]" />
+      </span>
+    );
   }
-
-  if (pdfjsLib.GlobalWorkerOptions) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsLib.version
-      ? `https://cdn.jsdelivr.net/npm/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.js`
-      : 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
-  }
-
-  return pdfjsLib;
-}
-
-function PdfCanvasPreview({
-  url,
-  title,
-}: {
-  url: string;
-  title: string;
-}) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  React.useEffect(() => {
-    let cancelled = false;
-    const el = containerRef.current;
-    if (!el) return;
-    if (!url) return;
-
-    void (async () => {
-      setIsLoading(true);
-      setErrorMsg(null);
-      try {
-        const pdfjsLib = await loadPdfJs();
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`Failed to fetch PDF (${res.status})`);
-        const arrayBuffer = await res.arrayBuffer();
-        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-
-        // Clear existing canvases
-        el.innerHTML = '';
-
-        const maxPages = Math.min(pdf.numPages || 1, 10);
-        for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-          if (cancelled) return;
-          const page = await pdf.getPage(pageNum);
-          const viewport1 = page.getViewport({ scale: 1 });
-          const containerWidth = el.clientWidth || 600;
-          const scale = Math.max(0.5, Math.min(3, (containerWidth - 8) / viewport1.width));
-          const viewport = page.getViewport({ scale });
-
-          const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
-          if (!ctx) continue;
-          canvas.width = Math.floor(viewport.width);
-          canvas.height = Math.floor(viewport.height);
-          canvas.style.width = '100%';
-          canvas.style.height = 'auto';
-          canvas.style.display = 'block';
-          canvas.style.borderRadius = '12px';
-          canvas.style.background = 'white';
-
-          const wrap = document.createElement('div');
-          wrap.style.padding = '4px';
-          wrap.appendChild(canvas);
-          el.appendChild(wrap);
-
-          await page.render({ canvasContext: ctx, viewport }).promise;
-        }
-      } catch (e: any) {
-        console.error('PDF preview failed:', e);
-        setErrorMsg(e?.message || 'PDF preview failed');
-      } finally {
-        if (!cancelled) setIsLoading(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [url]);
-
   return (
-    <div className="relative h-full w-full">
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-black/70 to-transparent z-[2]" />
-      <div className="pointer-events-none absolute inset-x-0 top-0 px-3 py-2 text-xs text-white truncate z-[3]">
-        PDF document preview{title ? ` · ${title}` : ''}
-      </div>
-
-      <div className="h-full w-full overflow-y-auto overflow-x-hidden pt-10 pb-10">
-        <div ref={containerRef} className="w-full" />
-        {isLoading ? (
-          <div className="absolute inset-0 flex items-center justify-center text-xs opacity-70">
-            Generating preview…
-          </div>
-        ) : null}
-        {errorMsg ? (
-          <div className="absolute inset-0 flex items-center justify-center text-xs opacity-70 px-3 text-center">
-            {errorMsg}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-14 bg-gradient-to-t from-black/70 to-transparent z-[2]" />
-      <div className="pointer-events-none absolute inset-x-0 bottom-0 px-3 py-2 text-xs text-white truncate z-[3]">
-        {title || 'PDF document'}
-      </div>
-    </div>
+    <span className="flex h-[22px] w-[22px] shrink-0 items-center justify-center" aria-hidden>
+      <span className="h-3.5 w-3.5 rounded-full border-2 border-slate-300 bg-white" />
+    </span>
   );
+}
+
+function resolvedDocsToPreviewItems(docs: ResolvedDoc[]): DocumentPreviewItem[] {
+  return docs
+    .filter((d) => !!d.url)
+    .map((d, i) => ({
+      id: d.raw || String(i),
+      name: d.name,
+      downloadUrl: d.url,
+      fileType: d.mimeType || inferMimeFromName(d.name),
+    }));
+}
+
+function resolveSubEffortDocs(documentUrl: unknown, signedUrls: Map<string, string>): ResolvedDoc[] {
+  return normalizeDocItems(documentUrl)
+    .map((d) => {
+      const raw = (d.url || d.path || '').trim();
+      if (!raw) return null;
+      const url = d.url ? d.url : d.path ? (signedUrls.get(d.path) ?? '') : '';
+      const name = d.name || (d.path ? d.path.split('/').slice(-1)[0] : undefined) || 'Document';
+      const mimeType = d.mimeType;
+      const isImage =
+        (typeof mimeType === 'string' && mimeType.startsWith('image/')) ||
+        (url ? isImageUrl(url) : false) ||
+        (name ? isImageUrl(name) : false);
+      const isPdf =
+        mimeType === 'application/pdf' ||
+        (url ? isPdfUrl(url) : false) ||
+        (name ? isPdfUrl(name) : false);
+      return { raw, url, name, mimeType, isImage, isPdf, path: d.path };
+    })
+    .filter(Boolean) as ResolvedDoc[];
 }
 
 export function SubEffortsLogModal({
@@ -364,6 +494,10 @@ export function SubEffortsLogModal({
   caseDocumentsSubfolder = CLIENT_HEADER_ONEDRIVE_SUBFOLDER,
   initialSelectedRowId,
   onRefresh,
+  subEffortOptions = [],
+  isLoadingSubEffortOptions = false,
+  isAddingSubEffort = false,
+  onAddSubEffort,
 }: {
   open: boolean;
   onClose: () => void;
@@ -372,6 +506,10 @@ export function SubEffortsLogModal({
   caseDocumentsSubfolder?: string | null;
   initialSelectedRowId?: string | number | null;
   onRefresh?: () => void;
+  subEffortOptions?: Array<{ id: number; name: string }>;
+  isLoadingSubEffortOptions?: boolean;
+  isAddingSubEffort?: boolean;
+  onAddSubEffort?: (opt: { id: number; name: string }) => Promise<string | number | null | void>;
 }) {
   const [selectedId, setSelectedId] = useState<string | number | null>(initialSelectedRowId ?? null);
   const [mobileStep, setMobileStep] = useState<'list' | 'details'>('list');
@@ -384,24 +522,258 @@ export function SubEffortsLogModal({
   const [notesDraft, setNotesDraft] = useState('');
   const [isSavingNotes, setIsSavingNotes] = useState(false);
   const [isTogglingInternal, setIsTogglingInternal] = useState(false);
+  const [isMarkingComplete, setIsMarkingComplete] = useState(false);
   const [isAttachModalOpen, setIsAttachModalOpen] = useState(false);
   const [caseDocs, setCaseDocs] = useState<CaseDocPick[]>([]);
   const [caseDocsLoading, setCaseDocsLoading] = useState(false);
   const [selectedCaseDocIds, setSelectedCaseDocIds] = useState<Set<string>>(() => new Set());
   const [isAttaching, setIsAttaching] = useState(false);
-  const selectedRow = useMemo(() => {
-    if (!rows?.length) return null;
-    if (selectedId == null) return rows[0] ?? null;
-    return rows.find((r: any) => String(r?.id) === String(selectedId)) ?? rows[0] ?? null;
-  }, [rows, selectedId]);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewItems, setPreviewItems] = useState<DocumentPreviewItem[]>([]);
+  const [previewInitialIndex, setPreviewInitialIndex] = useState(0);
+  const [orderedTimelineRows, setOrderedTimelineRows] = useState<LeadSubEffortRow[]>([]);
+  const [draggingRowId, setDraggingRowId] = useState<string | null>(null);
+  const [dragOverRowId, setDragOverRowId] = useState<string | null>(null);
+  const [holdingRowId, setHoldingRowId] = useState<string | null>(null);
+  const [isSavingTimelineOrder, setIsSavingTimelineOrder] = useState(false);
+  const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRowIdRef = useRef<string | null>(null);
+  const didHoldDragRef = useRef(false);
+  const dragOverRowIdRef = useRef<string | null>(null);
+  const wasOpenRef = useRef(false);
 
-  // Keep selection in sync when opened with a specific row
+  React.useEffect(() => {
+    dragOverRowIdRef.current = dragOverRowId;
+  }, [dragOverRowId]);
+
+  const timelineRowsFromProps = useMemo(() => sortTimelineRows(rows ?? []), [rows]);
+
+  React.useEffect(() => {
+    setOrderedTimelineRows(timelineRowsFromProps);
+  }, [timelineRowsFromProps]);
+
+  const timelineRows = orderedTimelineRows;
+
+  const availableSubEffortOptions = useMemo(() => {
+    if (!onAddSubEffort) return [];
+    const usedActive = new Set(
+      (rows ?? [])
+        .filter((r: any) => r?.active !== false)
+        .map((r: any) => Number(r?.sub_effort_id ?? r?.sub_efforts?.id))
+        .filter((n: number) => Number.isFinite(n)),
+    );
+    const catalog =
+      subEffortOptions.length > 0
+        ? subEffortOptions
+        : [
+            { id: 1, name: 'Aplication submitted' },
+            { id: 2, name: 'Communication with client' },
+          ];
+    return catalog.filter((opt) => !usedActive.has(Number(opt.id)));
+  }, [onAddSubEffort, rows, subEffortOptions]);
+
+  const handleAddSubEffort = useCallback(
+    async (opt: { id: number; name: string }) => {
+      if (!onAddSubEffort || isAddingSubEffort) return;
+      const newId = await onAddSubEffort(opt);
+      if (newId != null) {
+        setSelectedId(newId);
+        setMobileStep('details');
+      }
+    },
+    [isAddingSubEffort, onAddSubEffort],
+  );
+
+  const selectedRow = useMemo(() => {
+    if (!timelineRows.length) return null;
+    if (selectedId == null) return timelineRows[0] ?? null;
+    return timelineRows.find((r: any) => String(r?.id) === String(selectedId)) ?? timelineRows[0] ?? null;
+  }, [timelineRows, selectedId]);
+
+  const reorderTimelineRows = useCallback((fromId: string, toId: string) => {
+    if (!fromId || !toId || fromId === toId) return null;
+    const fromIdx = orderedTimelineRows.findIndex((r) => String(r?.id) === fromId);
+    const toIdx = orderedTimelineRows.findIndex((r) => String(r?.id) === toId);
+    if (fromIdx < 0 || toIdx < 0) return null;
+    const next = [...orderedTimelineRows];
+    const [moved] = next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, moved);
+    return next;
+  }, [orderedTimelineRows]);
+
+  const persistTimelineOrder = useCallback(
+    async (ordered: LeadSubEffortRow[]) => {
+      setIsSavingTimelineOrder(true);
+      try {
+        const actor = await fetchStageActorInfo();
+        const results = await Promise.all(
+          ordered.map((row, index) =>
+            supabase
+              .from('lead_sub_efforts')
+              .update({ sort_order: index, updated_by: actor.fullName })
+              .eq('id', row.id),
+          ),
+        );
+        const err = results.find((r) => r.error)?.error;
+        if (err) throw err;
+        onRefresh?.();
+      } catch (e: any) {
+        console.error('Error saving sub effort timeline order:', e);
+        toast.error(`Failed to save order: ${e?.message || 'Unknown error'}`);
+        setOrderedTimelineRows(timelineRowsFromProps);
+      } finally {
+        setIsSavingTimelineOrder(false);
+      }
+    },
+    [onRefresh, timelineRowsFromProps],
+  );
+
+  const clearHoldTimer = useCallback(() => {
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+  }, []);
+
+  const resetTimelinePointerState = useCallback(() => {
+    clearHoldTimer();
+    pendingRowIdRef.current = null;
+    didHoldDragRef.current = false;
+    setHoldingRowId(null);
+    setDraggingRowId(null);
+    setDragOverRowId(null);
+  }, [clearHoldTimer]);
+
+  const handleRowPointerDown = useCallback(
+    (rowId: string) => (e: React.PointerEvent) => {
+      if (e.button !== 0 || isSavingTimelineOrder) return;
+      pendingRowIdRef.current = rowId;
+      didHoldDragRef.current = false;
+      setHoldingRowId(rowId);
+      clearHoldTimer();
+      holdTimerRef.current = setTimeout(() => {
+        didHoldDragRef.current = true;
+        setDraggingRowId(rowId);
+      }, TIMELINE_HOLD_MS);
+      try {
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    },
+    [clearHoldTimer, isSavingTimelineOrder],
+  );
+
+  const handleRowPointerUp = useCallback(
+    (rowId: string, onSelect: () => void) => (e: React.PointerEvent) => {
+      if (didHoldDragRef.current || draggingRowId) {
+        try {
+          (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      clearHoldTimer();
+      setHoldingRowId(null);
+      if (pendingRowIdRef.current === rowId) onSelect();
+      pendingRowIdRef.current = null;
+      try {
+        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+    },
+    [clearHoldTimer, draggingRowId],
+  );
+
+  const handleRowPointerCancel = useCallback(
+    (_e: React.PointerEvent) => {
+      if (!didHoldDragRef.current && !draggingRowId) {
+        resetTimelinePointerState();
+      }
+    },
+    [draggingRowId, resetTimelinePointerState],
+  );
+
+  React.useEffect(() => {
+    if (!draggingRowId) return;
+
+    const onPointerMove = (e: PointerEvent) => {
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const id = el?.closest('[data-timeline-row-id]')?.getAttribute('data-timeline-row-id');
+      if (id && id !== draggingRowId) {
+        setDragOverRowId(id);
+      }
+    };
+
+    const onPointerUp = () => {
+      const fromId = draggingRowId;
+      const toId = dragOverRowIdRef.current;
+      if (fromId && toId && fromId !== toId) {
+        const next = reorderTimelineRows(fromId, toId);
+        if (next) {
+          setOrderedTimelineRows(next);
+          void persistTimelineOrder(next);
+        }
+      }
+      resetTimelinePointerState();
+    };
+
+    document.addEventListener('pointermove', onPointerMove);
+    document.addEventListener('pointerup', onPointerUp);
+    document.addEventListener('pointercancel', onPointerUp);
+    return () => {
+      document.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('pointerup', onPointerUp);
+      document.removeEventListener('pointercancel', onPointerUp);
+    };
+  }, [draggingRowId, persistTimelineOrder, reorderTimelineRows, resetTimelinePointerState]);
+
+  const selectedIsActive = selectedRow?.active !== false;
+
+  const resolvedDocs = useMemo(
+    () => (selectedRow ? resolveSubEffortDocs(selectedRow.document_url, signedUrls) : []),
+    [selectedRow, signedUrls],
+  );
+
+  const openDocPreview = useCallback(
+    (doc: ResolvedDoc) => {
+      if (!doc.url) return;
+      const items = resolvedDocsToPreviewItems(resolvedDocs);
+      const docId = doc.raw || doc.url;
+      const idx = items.findIndex((item) => item.id === docId);
+      setPreviewItems(items);
+      setPreviewInitialIndex(idx >= 0 ? idx : 0);
+      setPreviewOpen(true);
+    },
+    [resolvedDocs],
+  );
+
+  // Sync selection only when the modal opens — not when rows refresh after save.
+  React.useEffect(() => {
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
+    }
+
+    const justOpened = !wasOpenRef.current;
+    wasOpenRef.current = true;
+
+    if (!justOpened) return;
+
+    setMobileStep('list');
+    if (initialSelectedRowId != null) {
+      setSelectedId(initialSelectedRowId);
+    }
+  }, [open, initialSelectedRowId]);
+
   React.useEffect(() => {
     if (!open) return;
-    setMobileStep('list');
-    if (initialSelectedRowId != null) setSelectedId(initialSelectedRowId);
-    else if (rows?.[0]?.id != null) setSelectedId(rows[0].id);
-  }, [open, initialSelectedRowId, rows]);
+    if (selectedId != null) return;
+    const firstId = timelineRowsFromProps[0]?.id;
+    if (firstId != null) setSelectedId(firstId);
+  }, [open, selectedId, timelineRowsFromProps]);
 
   // Resolve storage paths (private bucket) to signed URLs for previews.
   React.useEffect(() => {
@@ -448,17 +820,16 @@ export function SubEffortsLogModal({
     };
   }, [open, selectedRow?.document_url, selectedRow?.id, signedUrls]);
 
-  if (!open) return null;
-
   const toggleInternal = async () => {
     if (!selectedRow?.id) return;
     if (isTogglingInternal) return;
     setIsTogglingInternal(true);
     try {
+      const actor = await fetchStageActorInfo();
       const nextVal = !(selectedRow?.internal === true);
       const { error } = await supabase
         .from('lead_sub_efforts')
-        .update({ internal: nextVal })
+        .update({ internal: nextVal, updated_by: actor.fullName })
         .eq('id', selectedRow.id);
       if (error) throw error;
       toast.success(nextVal ? 'Marked as Internal' : 'Marked as viewable by client');
@@ -484,9 +855,10 @@ export function SubEffortsLogModal({
     if (isSavingNotes) return;
     setIsSavingNotes(true);
     try {
+      const actor = await fetchStageActorInfo();
       const patch: any = notesKind === 'internal'
-        ? { internal_notes: notesDraft }
-        : { client_notes: notesDraft };
+        ? { internal_notes: notesDraft, updated_by: actor.fullName }
+        : { client_notes: notesDraft, updated_by: actor.fullName };
       const { error } = await supabase
         .from('lead_sub_efforts')
         .update(patch)
@@ -546,9 +918,10 @@ export function SubEffortsLogModal({
       ];
       const nextDocumentUrl = mergedItems;
 
+      const actor = await fetchStageActorInfo();
       const { error: updateError } = await supabase
         .from('lead_sub_efforts')
-        .update({ document_url: nextDocumentUrl })
+        .update({ document_url: nextDocumentUrl, updated_by: actor.fullName })
         .eq('id', selectedRow.id);
       if (updateError) throw updateError;
 
@@ -645,9 +1018,10 @@ export function SubEffortsLogModal({
 
       const merged = [...existingItems, ...addedItems];
 
+      const actor = await fetchStageActorInfo();
       const { error } = await supabase
         .from('lead_sub_efforts')
-        .update({ document_url: merged })
+        .update({ document_url: merged, updated_by: actor.fullName })
         .eq('id', selectedRow.id);
       if (error) throw error;
 
@@ -662,6 +1036,28 @@ export function SubEffortsLogModal({
     }
   };
 
+  const toggleComplete = async () => {
+    if (!selectedRow?.id) return;
+    if (isMarkingComplete) return;
+    setIsMarkingComplete(true);
+    try {
+      const nextActive = selectedRow?.active === false;
+      const actor = await fetchStageActorInfo();
+      const { error } = await supabase
+        .from('lead_sub_efforts')
+        .update({ active: nextActive, updated_by: actor.fullName })
+        .eq('id', selectedRow.id);
+      if (error) throw error;
+      toast.success(nextActive ? 'Sub effort reopened' : 'Marked as complete');
+      onRefresh?.();
+    } catch (e: any) {
+      console.error('Error toggling sub effort complete:', e);
+      toast.error(`Failed to update: ${e?.message || 'Unknown error'}`);
+    } finally {
+      setIsMarkingComplete(false);
+    }
+  };
+
   if (!open) return null;
 
   return (
@@ -671,17 +1067,17 @@ export function SubEffortsLogModal({
       onClose={onClose}
       hideDefaultHeader
       mobileFullHeight
+      desktopFullScreen
       zIndex={50}
       contentClassName="!p-0 flex flex-col min-h-0 !overflow-hidden"
-      sheetClassName="md:max-w-none md:rounded-none md:max-h-full md:h-full"
     >
-        <div className="flex flex-col min-h-0 h-full flex-1 overflow-hidden bg-base-100">
-        <div className="flex items-center justify-between px-4 py-4 border-b border-base-200">
+        <div className="flex flex-col min-h-0 h-full flex-1 overflow-hidden bg-[#f5f5f5]">
+        <div className="flex shrink-0 items-center justify-between px-4 py-3 md:px-6 md:py-4">
           <div className="min-w-0 flex items-center gap-3">
             {mobileStep === 'details' ? (
               <button
                 type="button"
-                className="btn btn-ghost btn-sm md:hidden"
+                className="btn btn-ghost btn-sm btn-square md:hidden"
                 onClick={() => setMobileStep('list')}
                 aria-label="Back to list"
                 title="Back"
@@ -690,355 +1086,474 @@ export function SubEffortsLogModal({
               </button>
             ) : null}
             <div className="min-w-0">
-              <div className="text-base font-semibold">Sub efforts</div>
-              <div className="text-xs opacity-70 truncate">
-                {rows?.length ? `${rows.length} row${rows.length === 1 ? '' : 's'}` : 'No rows'}
+              <div className="text-xl font-bold tracking-tight text-base-content/95">Sub efforts</div>
+              <div className="text-xs text-base-content/50 truncate">
+                {rows?.length ? `${rows.length} step${rows.length === 1 ? '' : 's'} in this case` : 'No steps yet'}
               </div>
             </div>
           </div>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>
+          <button
+            type="button"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-white text-gray-600 shadow-sm transition-colors hover:bg-gray-50"
+            onClick={onClose}
+            aria-label="Close"
+          >
             <XMarkIcon className="w-5 h-5" />
           </button>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-[260px_1fr] lg:grid-cols-[300px_1fr] h-[calc(100vh-65px)]">
-          <div
-            className={[
-              'border-b md:border-b-0 md:border-r border-base-200 overflow-auto',
-              mobileStep === 'details' ? 'hidden md:block' : 'block',
-            ].join(' ')}
-          >
-            <div className="p-4">
-              {rows?.length ? (
-                <div className="flex flex-col gap-2">
-                  {rows.map((r: any) => {
-                    const name = r?.sub_efforts?.name ?? '—';
-                    const who = r?.tenants_employee?.display_name ?? r?.created_by ?? '—';
-                    const when = r?.created_at ? new Date(r.created_at).toLocaleString() : '—';
-                    const isSelected = selectedRow?.id != null && String(selectedRow.id) === String(r?.id);
-                    return (
+        <div className="min-h-0 flex-1 overflow-auto px-4 pb-4 md:px-6 md:pb-6">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-[300px_1fr] lg:grid-cols-[320px_1fr]">
+            {/* Workflow — separate white box */}
+            <div className={mobileStep === 'details' ? 'hidden md:block' : 'block md:overflow-visible'}>
+              <div className="overflow-visible rounded-[18px] border border-gray-200 bg-white/85 p-4 shadow-[0_8px_24px_rgba(15,23,42,0.04)] md:p-5">
+                <div className="mb-3 flex items-center justify-between gap-2 px-0.5">
+                  <div>
+                    <span className="text-base font-semibold text-base-content/80 md:text-lg">Workflow</span>
+                  </div>
+                  {isSavingTimelineOrder ? (
+                    <span className="loading loading-spinner loading-xs text-base-content/40" />
+                  ) : null}
+                </div>
+                {timelineRows.length ? (
+                  <div>
+                    {timelineRows.map((r: any, index: number) => {
+                      const rowId = String(r?.id);
+                      const isSelected = selectedRow?.id != null && String(selectedRow.id) === rowId;
+                      return (
+                        <TimelineStepButton
+                          key={r?.id ?? index}
+                          rowId={rowId}
+                          row={r}
+                          isSelected={isSelected}
+                          isLast={index === timelineRows.length - 1}
+                          isDragging={draggingRowId === rowId}
+                          isHolding={holdingRowId === rowId && draggingRowId !== rowId}
+                          isDragOver={dragOverRowId === rowId && draggingRowId !== rowId}
+                          onSelect={() => {
+                            setSelectedId(r?.id ?? null);
+                            setMobileStep('details');
+                          }}
+                          onPointerDown={handleRowPointerDown(rowId)}
+                          onPointerUp={handleRowPointerUp(rowId, () => {
+                            setSelectedId(r?.id ?? null);
+                            setMobileStep('details');
+                          })}
+                          onPointerCancel={handleRowPointerCancel}
+                        />
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-gray-200 px-4 py-8 text-center text-sm text-base-content/50">
+                    No sub efforts yet.
+                  </div>
+                )}
+
+                {onAddSubEffort ? (
+                  <div className="mt-4 border-t border-gray-200/80 pt-4">
+                    <div className="dropdown dropdown-top dropdown-end w-full">
                       <button
-                        key={r?.id ?? `${name}-${when}`}
                         type="button"
-                        className={`w-full text-left px-4 py-3 rounded-2xl border border-base-200/80 hover:bg-base-200/60 hover:border-base-300 ${
-                          isSelected ? 'bg-base-200' : ''
-                        }`}
-                        onClick={() => {
-                          setSelectedId(r?.id ?? null);
-                          setMobileStep('details');
-                        }}
+                        tabIndex={0}
+                        disabled={isLoadingSubEffortOptions || isAddingSubEffort}
+                        className="btn btn-sm h-10 w-full justify-between rounded-xl border border-gray-200 bg-white px-3 font-medium text-gray-700 shadow-sm hover:bg-gray-50"
                       >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="min-w-0 flex-1">
-                            <div className="text-[15px] font-semibold truncate leading-snug">{name}</div>
-                            <div className="mt-1 text-[13px] opacity-70 truncate">
-                              by <span className="font-medium">{String(who)}</span> · {when}
+                        <span className="flex min-w-0 items-center gap-2">
+                          {isAddingSubEffort ? (
+                            <span className="loading loading-spinner loading-xs" />
+                          ) : (
+                            <PlusIcon className="h-4 w-4 shrink-0" />
+                          )}
+                          <span className="truncate">Add sub effort</span>
+                        </span>
+                        <ChevronDownIcon className="h-4 w-4 shrink-0 text-gray-400" />
+                      </button>
+                      <ul
+                        tabIndex={0}
+                        className="dropdown-content menu z-[70] mb-2 flex max-h-56 w-72 min-w-[18rem] flex-col flex-nowrap overflow-x-hidden overflow-y-auto overscroll-y-contain rounded-xl border border-gray-200 bg-white p-2 shadow-lg"
+                      >
+                        {isLoadingSubEffortOptions ? (
+                          <li>
+                            <span className="px-3 py-2 text-sm text-gray-500">Loading options…</span>
+                          </li>
+                        ) : availableSubEffortOptions.length === 0 ? (
+                          <li>
+                            <span className="px-3 py-2 text-sm text-gray-500">No more sub efforts</span>
+                          </li>
+                        ) : (
+                          availableSubEffortOptions.map((opt) => (
+                            <li key={opt.id}>
+                              <button
+                                type="button"
+                                className="rounded-lg text-left text-sm whitespace-normal"
+                                onClick={() => void handleAddSubEffort(opt)}
+                              >
+                                {opt.name}
+                              </button>
+                            </li>
+                          ))
+                        )}
+                      </ul>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+
+            {/* Detail panels — each section its own white box */}
+            <div className={mobileStep === 'details' ? 'block' : 'hidden md:block'}>
+              <div className="flex min-h-full flex-col space-y-4">
+                {selectedRow ? (
+                  <>
+                    <div className="rounded-[18px] bg-white shadow-sm px-5 py-4">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                            <h2 className="text-2xl font-bold tracking-tight text-base-content/95 md:text-[28px]">
+                              {selectedRow?.sub_efforts?.name ?? 'Sub effort'}
+                            </h2>
+                            <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-base-content/55">
+                              <EmployeeAvatar
+                                name={employeeDisplayName(selectedRow)}
+                                photoUrl={getEmployeePhoto(selectedRow?.tenants_employee)}
+                                size="md"
+                              />
+                              <span className="font-medium text-base-content/75">
+                                {employeeDisplayName(selectedRow)}
+                              </span>
+                              <span className="text-base-content/25">·</span>
+                              <span className="tabular-nums">{formatDateTime(selectedRow?.created_at)}</span>
                             </div>
                           </div>
-                          <ChevronRightIcon className="h-5 w-5 opacity-50 md:hidden" aria-hidden />
                         </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="text-sm opacity-70">No sub efforts yet.</div>
-              )}
-            </div>
-          </div>
-
-          <div
-            className={[
-              'overflow-auto',
-              mobileStep === 'details' ? 'block' : 'hidden md:block',
-            ].join(' ')}
-          >
-            <div className="p-5">
-              {selectedRow ? (
-                <div className="space-y-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <div className="text-base font-semibold truncate">
-                        {selectedRow?.sub_efforts?.name ?? 'Sub effort'}
-                      </div>
-                      <div className="mt-1 flex items-center gap-2 min-w-0">
-                        <div className="avatar">
-                          <div className="w-8 h-8 rounded-full bg-base-200 overflow-hidden flex items-center justify-center">
-                            {(() => {
-                              const emp = selectedRow?.tenants_employee;
-                              const src = (emp?.photo_url as string | null | undefined) ?? (emp?.photo as string | null | undefined) ?? null;
-                              const name = String(emp?.display_name ?? selectedRow?.created_by ?? '—');
-                              const initials = name
-                                .split(' ')
-                                .filter(Boolean)
-                                .slice(0, 2)
-                                .map((s: string) => s[0]?.toUpperCase())
-                                .join('');
-                              if (src) return <img src={src} alt={name} className="w-full h-full object-cover" />;
-                              return <span className="text-[11px] font-semibold text-gray-600">{initials || '—'}</span>;
-                            })()}
-                          </div>
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-sm opacity-80 truncate">
-                            by{' '}
-                            <span className="font-medium">
-                              {String(selectedRow?.tenants_employee?.display_name ?? selectedRow?.created_by ?? '—')}
-                            </span>
-                          </div>
-                          <div className="text-xs opacity-70 truncate">{formatDateTime(selectedRow?.created_at)}</div>
+                        <div className="flex shrink-0 flex-wrap items-center gap-2">
+                          <VisibilityPill internal={selectedRow?.internal === true} size="lg" />
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm btn-square h-9 w-9 rounded-full bg-gray-50"
+                            onClick={() => void toggleInternal()}
+                            disabled={isTogglingInternal}
+                            title="Toggle visibility"
+                            aria-label="Toggle visibility"
+                          >
+                            {isTogglingInternal ? (
+                              <span className="loading loading-spinner loading-xs" />
+                            ) : (
+                              <EyeIcon className="w-4 h-4" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-sm btn-square h-9 w-9 rounded-full bg-gray-50"
+                            onClick={() => onRefresh?.()}
+                            title="Refresh"
+                            aria-label="Refresh"
+                          >
+                            <ArrowPathIcon className="w-4 h-4" />
+                          </button>
                         </div>
                       </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <VisibilityPill internal={selectedRow?.internal === true} />
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-xs btn-circle"
-                        onClick={() => void toggleInternal()}
-                        disabled={isTogglingInternal}
-                        aria-label="Toggle internal/viewable"
-                        title="Toggle internal/viewable"
-                      >
-                        {isTogglingInternal ? (
-                          <span className="loading loading-spinner loading-xs" />
-                        ) : (
-                          <ArrowPathIcon className="w-4 h-4" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
 
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mt-4">
-                    <div>
-                      <div className="flex items-center justify-between gap-3 mb-2">
-                        <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                          Internal notes
-                        </div>
+                      <div className="mt-4 flex flex-wrap items-center gap-2">
                         <button
                           type="button"
-                          className="btn btn-ghost btn-xs btn-circle"
+                          className="btn btn-ghost btn-sm h-9 gap-1.5 rounded-full border-none px-4 font-medium text-gray-700 shadow-none hover:bg-gray-100"
                           onClick={() => openNotesEditor('internal')}
-                          aria-label="Edit internal notes"
-                          title="Edit internal notes"
                         >
                           <PencilSquareIcon className="w-4 h-4" />
-                        </button>
-                      </div>
-                      <div className="rounded-2xl border border-base-200 bg-gray-50/60 px-4 py-3">
-                        {selectedRow?.internal_notes ? (
-                          <div className="text-sm whitespace-pre-wrap break-words min-h-[42px]">
-                            {selectedRow?.internal_notes}
-                          </div>
-                        ) : (
-                          <div className="text-sm text-gray-500">No internal notes.</div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="flex items-center justify-between gap-3 mb-2">
-                        <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">
-                          Client notes
-                        </div>
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-xs btn-circle"
-                          onClick={() => openNotesEditor('client')}
-                          aria-label="Edit client notes"
-                          title="Edit client notes"
-                        >
-                          <PencilSquareIcon className="w-4 h-4" />
-                        </button>
-                      </div>
-                      <div className="rounded-2xl border border-base-200 bg-gray-50/60 px-4 py-3">
-                        {selectedRow?.client_notes ? (
-                          <div className="text-sm whitespace-pre-wrap break-words min-h-[42px]">
-                            {selectedRow?.client_notes}
-                          </div>
-                        ) : (
-                          <div className="text-sm text-gray-500">No client notes.</div>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="rounded-2xl border border-base-200 bg-base-100 p-4">
-                    <div className="flex items-center justify-between gap-3 mb-3">
-                      <div className="text-xs font-semibold uppercase tracking-wide opacity-70">
-                        Documents
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-xs btn-circle"
-                          onClick={() => void openAttachFromCaseDocs()}
-                          disabled={!selectedRow?.id}
-                          aria-label="Attach from case documents"
-                          title="Attach from case documents"
-                        >
-                          <PlusIcon className="w-5 h-5" aria-hidden />
+                          Add note
                         </button>
                         <button
                           type="button"
-                          className="btn btn-ghost btn-xs btn-circle"
+                          className="btn btn-ghost btn-sm h-9 gap-1.5 rounded-full border-none px-4 font-medium text-gray-700 shadow-none hover:bg-gray-100"
                           disabled={isUploading || !selectedRow?.id}
                           onClick={() => fileInputRef.current?.click()}
-                          aria-label="Upload documents"
-                          title="Upload documents"
                         >
                           {isUploading ? (
-                            <span className="loading loading-spinner loading-sm" />
+                            <span className="loading loading-spinner loading-xs" />
                           ) : (
-                            <ArrowUpTrayIcon className="w-5 h-5" aria-hidden />
+                            <ArrowUpTrayIcon className="w-4 h-4" />
                           )}
+                          Upload document
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn btn-sm h-9 gap-1.5 rounded-full px-4 font-semibold ${
+                            selectedIsActive ? 'btn-primary' : 'bg-white text-gray-700 shadow-sm hover:bg-gray-50'
+                          }`}
+                          onClick={() => void toggleComplete()}
+                          disabled={isMarkingComplete}
+                        >
+                          {isMarkingComplete ? (
+                            <span className="loading loading-spinner loading-xs" />
+                          ) : null}
+                          {selectedIsActive ? 'Mark complete' : 'Reopen'}
                         </button>
                       </div>
                     </div>
-                    {(() => {
-                      const items = normalizeDocItems(selectedRow?.document_url);
-                      const hasAnyDocs = items.length > 0;
-                      const resolved = items
-                        .map((d) => {
-                          const raw = (d.url || d.path || '').trim();
-                          if (!raw) return null;
-                          const isHttp = !!d.url && /^https?:\/\//i.test(d.url);
-                          const url = d.url
-                            ? d.url
-                            : d.path
-                              ? (signedUrls.get(d.path) ?? '')
-                              : '';
-                          const name = d.name || (d.path ? d.path.split('/').slice(-1)[0] : undefined);
-                          const mimeType = d.mimeType;
-                          const isImage =
-                            (typeof mimeType === 'string' && mimeType.startsWith('image/')) ||
-                            (url ? isImageUrl(url) : false) ||
-                            (name ? isImageUrl(name) : false);
-                          const isPdf =
-                            mimeType === 'application/pdf' ||
-                            (url ? isPdfUrl(url) : false) ||
-                            (name ? isPdfUrl(name) : false);
-                          return { raw, url, name, mimeType, isImage, isPdf, isHttp, path: d.path };
-                        })
-                        .filter(Boolean) as Array<{
-                        raw: string;
-                        url: string;
-                        name?: string;
-                        mimeType?: string;
-                        isImage: boolean;
-                        isPdf: boolean;
-                        isHttp: boolean;
-                        path?: string;
-                      }>;
 
-                      const hasAny = items.length > 0;
-                      const hasReady = resolved.some((d) => d.url);
+                    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                      <div>
+                        <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
+                          <div className="flex items-center gap-2">
+                            <LockClosedIcon className="h-4 w-4 text-base-content/40" />
+                            <span className="text-sm font-semibold text-base-content/75">Internal notes</span>
+                          </div>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-xs btn-square shrink-0"
+                            onClick={() => openNotesEditor('internal')}
+                            aria-label="Edit internal notes"
+                          >
+                            <PencilSquareIcon className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <div className="rounded-[18px] bg-white shadow-sm px-5 py-4">
+                          <div>
+                            {selectedRow?.internal_notes ? (
+                              <div className="text-sm leading-relaxed whitespace-pre-wrap break-words text-base-content/80">
+                                {selectedRow.internal_notes}
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                className="w-full rounded-xl border border-dashed border-gray-200 bg-gray-50/60 px-4 py-3 text-left text-sm text-base-content/40 transition hover:border-gray-300 hover:bg-gray-50"
+                                onClick={() => openNotesEditor('internal')}
+                              >
+                                No internal notes yet. Add one…
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="mb-2 flex items-center justify-between gap-2 px-0.5">
+                          <div className="flex items-center gap-2">
+                            <EyeIcon className="h-4 w-4 text-base-content/40" />
+                            <span className="text-sm font-semibold text-base-content/75">Client notes</span>
+                          </div>
+                          <button
+                            type="button"
+                            className="btn btn-ghost btn-xs btn-square shrink-0"
+                            onClick={() => openNotesEditor('client')}
+                            aria-label="Edit client notes"
+                          >
+                            <PencilSquareIcon className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <div className="rounded-[18px] bg-white shadow-sm px-5 py-4">
+                          <div>
+                            {selectedRow?.client_notes ? (
+                              <div className="text-sm leading-relaxed whitespace-pre-wrap break-words text-base-content/80">
+                                {selectedRow.client_notes}
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                className="w-full rounded-xl border border-dashed border-gray-200 bg-gray-50/60 px-4 py-3 text-left text-sm text-base-content/40 transition hover:border-gray-300 hover:bg-gray-50"
+                                onClick={() => openNotesEditor('client')}
+                              >
+                                No client notes yet. Add one…
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="mb-2 flex items-center justify-between gap-3 px-0.5">
+                        <div className="flex items-center gap-2">
+                          <DocumentIcon className="h-4 w-4 text-base-content/40" />
+                          <span className="text-sm font-semibold text-base-content/75">Documents</span>
+                        </div>
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs gap-1 rounded-full px-2.5 text-base-content/60 hover:bg-white hover:shadow-sm"
+                          onClick={() => void openAttachFromCaseDocs()}
+                          disabled={!selectedRow?.id}
+                        >
+                          <PlusIcon className="w-3.5 h-3.5" />
+                          Attach from case
+                        </button>
+                      </div>
+                      <div className="rounded-[18px] bg-white shadow-sm px-5 py-4">
+                    {(() => {
+                      const uploader = String(
+                        selectedRow?.tenants_employee?.display_name ?? selectedRow?.created_by ?? '—',
+                      );
+                      const uploadedAt = formatDateTime(selectedRow?.created_at);
+                      const hasAny = resolvedDocs.length > 0;
+                      const hasReady = resolvedDocs.some((d) => d.url);
 
                       if (!hasAny) {
                         return (
-                          <div className="space-y-3">
-                            <div
-                              className={`rounded-2xl border border-dashed px-4 py-6 text-center transition ${
-                                isDraggingDocs
-                                  ? 'border-primary bg-primary/5'
-                                  : 'border-base-300 bg-gray-50/50 hover:bg-gray-50'
-                              }`}
-                              onDragEnter={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setIsDraggingDocs(true);
-                              }}
-                              onDragOver={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setIsDraggingDocs(true);
-                              }}
-                              onDragLeave={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setIsDraggingDocs(false);
-                              }}
-                              onDrop={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setIsDraggingDocs(false);
-                                void handleUploadFiles(e.dataTransfer?.files ?? null);
-                              }}
-                              role="button"
-                              tabIndex={0}
-                              onClick={() => fileInputRef.current?.click()}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click();
-                              }}
-                            >
-                              <div className="mx-auto mb-2 flex h-10 w-10 items-center justify-center rounded-full bg-base-200">
-                                <ArrowUpTrayIcon className="h-5 w-5 opacity-70" />
-                              </div>
-                              <div className="text-sm font-semibold">
-                                Drag & drop documents here
-                              </div>
-                              <div className="text-xs opacity-70 mt-1">
-                                or click to upload
-                              </div>
+                          <div
+                            className={`flex min-h-[200px] flex-col items-center justify-center rounded-xl border border-dashed px-5 py-12 text-center transition ${
+                              isDraggingDocs
+                                ? 'border-primary/40 bg-primary/5'
+                                : 'border-gray-200 bg-gray-50/50 hover:border-gray-300'
+                            }`}
+                            onDragEnter={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setIsDraggingDocs(true);
+                            }}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setIsDraggingDocs(true);
+                            }}
+                            onDragLeave={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setIsDraggingDocs(false);
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setIsDraggingDocs(false);
+                              void handleUploadFiles(e.dataTransfer?.files ?? null);
+                            }}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => fileInputRef.current?.click()}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click();
+                            }}
+                          >
+                            <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-white shadow-sm">
+                              <ArrowUpTrayIcon className="h-5 w-5 text-base-content/40" />
                             </div>
-                            <div className="text-sm opacity-70">No documents uploaded.</div>
+                            <p className="text-sm font-medium text-base-content/70">No documents uploaded yet</p>
+                            <p className="mt-1 text-xs text-base-content/45">
+                              Upload a file or attach from the case
+                            </p>
                           </div>
                         );
                       }
 
                       if (!hasReady) {
-                        return <div className="text-sm opacity-70">Loading documents preview…</div>;
+                        return (
+                          <div className="flex items-center gap-3 py-6 text-sm text-base-content/50">
+                            <span className="loading loading-spinner loading-sm" />
+                            Loading documents…
+                          </div>
+                        );
                       }
 
                       return (
-                        <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1 snap-x snap-mandatory sm:grid sm:overflow-visible sm:pb-0 sm:mx-0 sm:px-0 sm:snap-none sm:grid-cols-2 xl:grid-cols-3 sm:gap-3">
-                          {resolved.map((doc, idx) => {
-                            const href = doc.url || doc.raw;
-                            const canPreview = !!doc.url;
-                            return (
-                              <a
-                                key={`${doc.raw}-${idx}`}
-                                href={href}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="snap-start shrink-0 w-[78vw] max-w-[340px] sm:w-auto rounded-xl border border-base-200 bg-base-100 hover:bg-base-200/40 transition overflow-hidden"
-                              >
-                                {doc.isImage ? (
-                                  <div className="h-44 sm:h-52 md:h-56 bg-black/5 flex items-center justify-center">
-                                    {canPreview ? (
-                                      <img
-                                        src={doc.url}
-                                        alt="Document"
-                                        className="w-full h-full object-cover"
-                                        loading="lazy"
-                                        onError={(e) => {
-                                          // If image fails to load, fall back to generic card.
-                                          (e.currentTarget as any).style.display = 'none';
-                                        }}
-                                      />
-                                    ) : (
-                                      <div className="text-xs opacity-70">Generating preview…</div>
-                                    )}
-                                  </div>
-                                ) : doc.isPdf ? (
-                                  <div className="h-44 sm:h-52 md:h-56 bg-base-200 relative">
-                                    {canPreview ? (
-                                      <PdfCanvasPreview url={doc.url} title={doc.name || 'PDF document'} />
-                                    ) : (
-                                      <div className="w-full h-full flex items-center justify-center text-xs opacity-70">
-                                        Generating preview…
+                        <div className="space-y-3">
+                          <div className="divide-y divide-gray-100">
+                            {resolvedDocs.map((doc, idx) => {
+                              const href = doc.url || doc.raw;
+                              const canPreview = !!doc.url;
+                              const typeLabel = formatFileTypeLabel(doc.mimeType, doc.name);
+                              return (
+                                <div
+                                  key={`${doc.raw}-${idx}`}
+                                  className="flex flex-col gap-3 py-3 first:pt-0 last:pb-0 sm:flex-row sm:items-center"
+                                >
+                                  <div className="flex min-w-0 flex-1 items-center gap-3">
+                                    <button
+                                      type="button"
+                                      disabled={!canPreview}
+                                      onClick={() => openDocPreview(doc)}
+                                      className={`flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-gray-100 ${
+                                        canPreview ? 'cursor-pointer hover:ring-2 hover:ring-primary/20' : 'cursor-default'
+                                      }`}
+                                      aria-label={canPreview ? `Preview ${doc.name}` : undefined}
+                                    >
+                                      {doc.isImage && canPreview ? (
+                                        <img
+                                          src={doc.url}
+                                          alt=""
+                                          className="h-full w-full object-cover"
+                                          loading="lazy"
+                                        />
+                                      ) : doc.isPdf ? (
+                                        <DocumentIcon className="h-6 w-6 text-red-500/80" />
+                                      ) : (
+                                        <DocumentIcon className="h-6 w-6 text-slate-400" />
+                                      )}
+                                    </button>
+                                    <div className="min-w-0">
+                                      <div className="truncate text-sm font-semibold text-base-content/85">{doc.name}</div>
+                                      <div className="mt-0.5 text-xs text-base-content/45">
+                                        {typeLabel}
+                                        <span className="mx-1.5 text-base-content/20">·</span>
+                                        {uploadedAt}
+                                        <span className="mx-1.5 text-base-content/20">·</span>
+                                        {uploader}
                                       </div>
-                                    )}
+                                    </div>
                                   </div>
-                                ) : (
-                                  <div className="p-3">
-                                    <div className="text-sm font-semibold truncate">Open document</div>
-                                    <div className="text-xs opacity-70 truncate">{doc.name || doc.raw}</div>
+                                  <div className="flex shrink-0 items-center gap-1.5 sm:pl-2">
+                                    {canPreview ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => openDocPreview(doc)}
+                                        className="btn btn-ghost btn-xs h-8 rounded-full px-3"
+                                      >
+                                        Preview
+                                      </button>
+                                    ) : null}
+                                    <a
+                                      href={href}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      download={doc.name}
+                                      className="btn btn-ghost btn-xs h-8 gap-1 rounded-full px-3"
+                                    >
+                                      <ArrowDownTrayIcon className="h-3.5 w-3.5" />
+                                      Download
+                                    </a>
                                   </div>
-                                )}
-                              </a>
-                            );
-                          })}
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          <div
+                            className={`flex min-h-[100px] flex-col items-center justify-center rounded-xl border border-dashed px-4 py-8 text-center transition ${
+                              isDraggingDocs
+                                ? 'border-primary/40 bg-primary/5'
+                                : 'border-gray-200 bg-gray-50/40 hover:border-gray-300'
+                            }`}
+                            onDragEnter={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setIsDraggingDocs(true);
+                            }}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setIsDraggingDocs(true);
+                            }}
+                            onDragLeave={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setIsDraggingDocs(false);
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setIsDraggingDocs(false);
+                              void handleUploadFiles(e.dataTransfer?.files ?? null);
+                            }}
+                            role="button"
+                            tabIndex={0}
+                            onClick={() => fileInputRef.current?.click()}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') fileInputRef.current?.click();
+                            }}
+                          >
+                            <span className="text-xs font-medium text-base-content/45">
+                              Drop more files here or click to upload
+                            </span>
+                          </div>
                         </div>
                       );
                     })()}
@@ -1049,11 +1564,31 @@ export function SubEffortsLogModal({
                       multiple
                       onChange={(e) => void handleUploadFiles(e.target.files)}
                     />
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end pt-1">
+                      <div className="inline-flex max-w-full flex-wrap items-center justify-end gap-2 text-xs text-base-content/45">
+                        <span>Last updated by</span>
+                        <EmployeeAvatar
+                          name={updaterDisplayName(selectedRow)}
+                          photoUrl={resolveUpdaterPhoto(selectedRow)}
+                          size="md"
+                        />
+                        <span className="font-medium text-base-content/70">{updaterDisplayName(selectedRow)}</span>
+                        <span className="text-base-content/25">·</span>
+                        <span className="tabular-nums">
+                          {formatDateTime(selectedRow?.updated_at ?? selectedRow?.created_at)}
+                        </span>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="rounded-[18px] bg-white px-5 py-10 text-center text-sm text-base-content/50 shadow-sm">
+                    Select a sub effort to view details.
                   </div>
-                </div>
-              ) : (
-                <div className="text-sm opacity-70">Select a row to view details.</div>
-              )}
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -1084,9 +1619,6 @@ export function SubEffortsLogModal({
                 value={notesDraft}
                 onChange={(e) => setNotesDraft(e.target.value)}
               />
-              <div className="mt-2 text-xs opacity-60">
-                Hebrew/RTL is supported automatically.
-              </div>
             </div>
 
             <div className="modal-action">
@@ -1220,6 +1752,16 @@ export function SubEffortsLogModal({
           <div className="modal-backdrop" onClick={() => (isAttaching ? null : setIsAttachModalOpen(false))} />
         </div>
       ) : null}
+
+      <DocumentPreviewModal
+        isOpen={previewOpen}
+        onClose={() => {
+          setPreviewOpen(false);
+          setPreviewItems([]);
+        }}
+        documents={previewItems}
+        initialIndex={previewInitialIndex}
+      />
     </>
   );
 }

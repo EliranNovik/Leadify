@@ -20,6 +20,7 @@ import {
   writeClockInGateCache,
 } from '../lib/clockInGateCache';
 import { setClockInGateBlocksDataAccess } from '../lib/clockInGateFetchPolicy';
+import { readAdminClockInBypass } from '../lib/adminClockInBypass';
 import { useAuthContext } from './AuthContext';
 import {
   ClockInGateContext,
@@ -46,6 +47,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
   const [employeeId, setEmployeeId] = useState<number | null>(
     () => readCachedGateState(userId).employeeId,
   );
+  const [adminBypassActive, setAdminBypassActive] = useState(false);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
 
   useLayoutEffect(() => {
@@ -65,6 +67,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
     if (!user?.id || !supabaseSessionReady) {
       setStatus('loading');
       setEmployeeId(null);
+      setAdminBypassActive(false);
       setClockInGateBlocksDataAccess(false);
       return;
     }
@@ -78,6 +81,18 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
       setStatus((prev) => (prev === 'loading' ? 'loading' : prev));
       try {
         const profile = await fetchClockInGateProfile(user.id);
+        const bypass = readAdminClockInBypass(user.id);
+        if (bypass) {
+          const effectiveEmployeeId = bypass.targetEmployeeId ?? profile.employeeId;
+          setEmployeeId(effectiveEmployeeId);
+          setAdminBypassActive(true);
+          setStatus('allowed');
+          setClockInGateBlocksDataAccess(false);
+          writeClockInGateCache(user.id, 'allowed', effectiveEmployeeId);
+          return;
+        }
+
+        setAdminBypassActive(false);
         setEmployeeId(profile.employeeId);
 
         if (profile.isExternalUser) {
@@ -101,6 +116,7 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
         writeClockInGateCache(user.id, nextStatus, profile.employeeId);
       } catch (error) {
         console.error('Clock-in gate refresh failed:', error);
+        setAdminBypassActive(false);
         setStatus('blocked');
         setClockInGateBlocksDataAccess(true);
         writeClockInGateCache(user.id, 'blocked', null);
@@ -160,16 +176,26 @@ export function ClockInGateProvider({ children }: { children: React.ReactNode })
   useEffect(() => {
     if (!user?.id) {
       setClockInGateBlocksDataAccess(false);
+      setAdminBypassActive(false);
       clearClockInGateCache();
     }
   }, [user?.id]);
+
+  useEffect(() => {
+    const onBypassChanged = () => {
+      void refreshClockInGate();
+    };
+    window.addEventListener('admin-profile-bypass-changed', onBypassChanged);
+    return () => window.removeEventListener('admin-profile-bypass-changed', onBypassChanged);
+  }, [refreshClockInGate]);
 
   const value = useMemo<ClockInGateContextValue>(() => ({
     status,
     employeeId,
     isGateOpen: isClockInGateOpen(status),
+    adminBypassActive,
     refreshClockInGate,
-  }), [status, employeeId, refreshClockInGate]);
+  }), [status, employeeId, adminBypassActive, refreshClockInGate]);
 
   return (
     <ClockInGateContext.Provider value={value}>

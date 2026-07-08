@@ -509,6 +509,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   // Scheduling information history
   const [showPastMeetingsPanel, setShowPastMeetingsPanel] = useState(false);
+  const [subEffortsModalOpen, setSubEffortsModalOpen] = useState(false);
 
   const [schedulingHistory, setSchedulingHistory] = useState<Array<{
     id: string;
@@ -1597,6 +1598,16 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       window.removeEventListener('meeting-tab:open-schedule-drawer', openSchedule);
       window.removeEventListener('meeting-tab:open-reschedule-drawer', openReschedule);
     };
+  }, []);
+
+  useEffect(() => {
+    const onSubEffortsModalChange = (event: Event) => {
+      const open = Boolean((event as CustomEvent<{ open?: boolean }>).detail?.open);
+      setSubEffortsModalOpen(open);
+      if (open) setShowPastMeetingsPanel(false);
+    };
+    window.addEventListener('sub-efforts-modal:open-change', onSubEffortsModalChange);
+    return () => window.removeEventListener('sub-efforts-modal:open-change', onSubEffortsModalChange);
   }, []);
 
   // Close staff/firm-contact dropdowns on outside click (Schedule + Reschedule).
@@ -7239,7 +7250,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       {/* Upcoming Meetings with Past Meetings toggle */}
       <div className="relative">
         {/* Upcoming Meetings (main content) - centered */}
-        <div className="w-full max-w-3xl mx-auto pr-14 sm:pr-16">
+        <div className={`w-full max-w-3xl mx-auto${subEffortsModalOpen ? '' : ' pr-14 sm:pr-16'}`}>
           <div className="flex items-center justify-end mb-5">
             {upcomingMeetings.length > 0 && (
               <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
@@ -7272,26 +7283,27 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
 
-        {/* Past Meetings icon button - fixed on right edge, above sub-efforts sidebar tab */}
-        <div className="fixed right-0 top-[calc(50%-4.5rem)] -translate-y-1/2 z-[250]">
-          <button
-            type="button"
-            onClick={() => setShowPastMeetingsPanel(!showPastMeetingsPanel)}
-            className={`relative flex flex-col items-center justify-center gap-2 w-12 py-6 rounded-l-2xl border shadow-lg transition-all duration-200 ${
-              showPastMeetingsPanel
-                ? 'bg-gray-100 border-gray-300 hover:bg-gray-50'
-                : 'bg-white border-gray-200 hover:shadow-xl hover:bg-gray-50'
-            }`}
-            title={`Past Meetings${pastMeetings.length > 0 ? ` (${pastMeetings.length})` : ''}`}
-          >
-            <ClockIcon className="w-6 h-6 text-gray-600" />
-            {pastMeetings.length > 0 && (
-              <span className="absolute -top-1 -right-1 min-w-[22px] h-[22px] px-1.5 flex items-center justify-center text-sm font-semibold bg-red-500 text-white rounded-full">
-                {pastMeetings.length}
-              </span>
-            )}
-          </button>
-        </div>
+        {!subEffortsModalOpen && (
+          <div className="fixed right-0 top-[calc(50%-4.5rem)] -translate-y-1/2 z-[250]">
+            <button
+              type="button"
+              onClick={() => setShowPastMeetingsPanel(!showPastMeetingsPanel)}
+              className={`relative flex flex-col items-center justify-center gap-2 w-12 py-6 rounded-l-2xl border shadow-lg transition-all duration-200 ${
+                showPastMeetingsPanel
+                  ? 'bg-gray-100 border-gray-300 hover:bg-gray-50'
+                  : 'bg-white border-gray-200 hover:shadow-xl hover:bg-gray-50'
+              }`}
+              title={`Past Meetings${pastMeetings.length > 0 ? ` (${pastMeetings.length})` : ''}`}
+            >
+              <ClockIcon className="w-6 h-6 text-gray-600" />
+              {pastMeetings.length > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[22px] h-[22px] px-1.5 flex items-center justify-center text-sm font-semibold bg-red-500 text-white rounded-full">
+                  {pastMeetings.length}
+                </span>
+              )}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Past Meetings slide-out panel */}

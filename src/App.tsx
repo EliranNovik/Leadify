@@ -87,6 +87,7 @@ import {
   LazyPortalAboutPage,
   LazyPortalLoginPage,
   LazyPoaPage,
+  LazyPoaDocumentEditor,
   LazyProformaCreatePage,
   LazyProformaLegacyCreatePage,
   LazyProformaLegacyViewPage,
@@ -135,6 +136,8 @@ const AppContentInner: React.FC = () => {
   const isSignedSalesPage = useMemo(() => location.pathname === '/sales/signed', [location.pathname]);
   const isCaseManagerPage = useMemo(() => location.pathname.startsWith('/case-manager'), [location.pathname]);
   const isContractPage = useMemo(() => location.pathname.includes('/contract') && !location.pathname.includes('/public-contract'), [location.pathname]);
+  const isPoaEditPage = useMemo(() => location.pathname.startsWith('/poa/edit'), [location.pathname]);
+  const isFullBleedEditorPage = isContractPage || isPoaEditPage;
   const isCalendarPage = useMemo(
     () => location.pathname === '/calendar' || location.pathname === '/outlook-calendar',
     [location.pathname],
@@ -158,8 +161,8 @@ const AppContentInner: React.FC = () => {
   const sidebarUserName = useMemo(() => userFullName || userName, [userFullName, userName]);
   const sidebarMobileOnly = useMemo(() => isReportsPage || isAdminPage, [isReportsPage, isAdminPage]);
   const showBottomNav = useMemo(
-    () => !isContractPage && !isCaseManagerPage && !isReportsPage,
-    [isContractPage, isCaseManagerPage, isReportsPage]
+    () => !isFullBleedEditorPage && !isCaseManagerPage && !isReportsPage,
+    [isFullBleedEditorPage, isCaseManagerPage, isReportsPage]
   );
   const useStaffSidebarInset = useMemo(
     () =>
@@ -167,14 +170,14 @@ const AppContentInner: React.FC = () => {
       !isReportsPage &&
       !isSignedSalesPage &&
       !isCaseManagerPage &&
-      !isContractPage &&
+      !isFullBleedEditorPage &&
       !(isExternalUser && !isLoadingExternal),
     [
       isAdminPage,
       isReportsPage,
       isSignedSalesPage,
       isCaseManagerPage,
-      isContractPage,
+      isFullBleedEditorPage,
       isExternalUser,
       isLoadingExternal,
     ],
@@ -932,7 +935,7 @@ const AppContentInner: React.FC = () => {
               className={`flex h-[100dvh] max-h-[100dvh] min-h-0 ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : 'bg-base-100'} ${appJustLoggedIn ? 'fade-in' : ''}`}
             >
               {/* Always mount Sidebar so it does not reload when navigating; hide on full-width pages */}
-              <div className={isSignedSalesPage || isCaseManagerPage || isContractPage ? 'hidden' : undefined}>
+              <div className={isSignedSalesPage || isCaseManagerPage || isFullBleedEditorPage ? 'hidden' : undefined}>
                 <Sidebar
                   userName={sidebarUserName}
                   userInitials={userInitials}
@@ -959,9 +962,11 @@ const AppContentInner: React.FC = () => {
                 />
                 <main
                   className={`app-main-scroll min-h-0 w-full min-w-0 flex-1 ${
-                    isCalendarPage
-                      ? 'max-md:overflow-x-hidden max-md:overflow-y-auto md:overflow-hidden md:flex md:flex-col'
-                      : 'overflow-y-auto overflow-x-hidden md:overflow-x-auto'
+                    isPoaEditPage
+                      ? 'overflow-hidden flex flex-col'
+                      : isCalendarPage
+                        ? 'max-md:overflow-x-hidden max-md:overflow-y-auto md:overflow-hidden md:flex md:flex-col'
+                        : 'overflow-y-auto overflow-x-hidden md:overflow-x-auto'
                   } ${isClientDetailPage ? 'clients-detail-scroll scrollbar-hide' : `pt-[calc(env(safe-area-inset-top,0px)+3.5rem)] md:pt-14 ${isClientsPage ? 'scrollbar-hide' : ''}`} ${showBottomNav ? 'main-with-bottom-nav-padding' : ''} ${useGreyAppBackground ? 'bg-gray-100 dark:bg-base-300' : ''}`}
                 >
                   <Routes>
@@ -971,6 +976,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/clients" element={<RouteSuspense><LazyClients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} onOpenWhatsAppForContact={handleOpenWhatsAppForContact} /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/contract" element={<RouteSuspense><LazyContractPage key="contract-lead" /></RouteSuspense>} />
                     <Route path="/contract/:contractId" element={<RouteSuspense><LazyContractPage key="contract-id" /></RouteSuspense>} />
+                    <Route path="/poa/edit/:token" element={<RouteSuspense><LazyPoaDocumentEditor /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/timeline" element={<RouteSuspense><LazyTimelinePage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/history" element={<RouteSuspense><LazyHistoryPage /></RouteSuspense>} />
                     <Route path="/clients/:lead_number/master" element={<RouteSuspense><LazyMasterLeadPage /></RouteSuspense>} />

@@ -5,6 +5,7 @@ export type ClockInGateContextValue = {
   status: ClockInGateStatus;
   employeeId: number | null;
   isGateOpen: boolean;
+  adminBypassActive: boolean;
   refreshClockInGate: () => Promise<void>;
 };
 

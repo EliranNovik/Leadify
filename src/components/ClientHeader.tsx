@@ -1044,13 +1044,15 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     updated_at,
                     internal,
                     active,
+                    sort_order,
                     document_url,
                     internal_notes,
                     client_notes,
                     sub_efforts ( id, name ),
                     tenants_employee ( id, display_name, photo_url, photo )
                 `)
-                .order('created_at', { ascending: false })
+                .order('sort_order', { ascending: true })
+                .order('created_at', { ascending: true })
                 .limit(25);
 
             if (isLegacy && legacyId) {
@@ -1074,9 +1076,9 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     }, [fetchLeadSubEfforts]);
 
     const handleSelectSubEffort = useCallback(
-        async (opt: { id: number; name: string }) => {
-            if (!selectedClient?.id) return;
-            if (isSavingSubEffort) return;
+        async (opt: { id: number; name: string }): Promise<string | number | null> => {
+            if (!selectedClient?.id) return null;
+            if (isSavingSubEffort) return null;
             setIsSavingSubEffort(true);
             try {
                 // Prevent duplicates (same sub_effort only once per lead)
@@ -1087,7 +1089,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 });
                 if (alreadyUsed) {
                     toast.error('This sub effort was already added for this lead.');
-                    return;
+                    return null;
                 }
 
                 const actor = await fetchStageActorInfo();
@@ -1107,14 +1109,22 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                 if (legacyId) payload.legacy_lead_id = legacyId;
                 if (newLeadId) payload.new_lead_id = newLeadId;
 
-                const { error } = await supabase.from('lead_sub_efforts').insert(payload);
+                const maxSort = (leadSubEfforts ?? []).reduce((max: number, r: any) => {
+                    const n = Number(r?.sort_order);
+                    return Number.isFinite(n) ? Math.max(max, n) : max;
+                }, -1);
+                payload.sort_order = maxSort + 1;
+
+                const { data, error } = await supabase.from('lead_sub_efforts').insert(payload).select('id').single();
                 if (error) throw error;
 
                 toast.success(`Sub effort added: ${opt.name}`);
                 await fetchLeadSubEfforts();
+                return data?.id ?? null;
             } catch (e: any) {
                 console.error('Error creating lead_sub_efforts row:', e);
                 toast.error(`Failed to add sub effort: ${e?.message || 'Unknown error'}`);
+                return null;
             } finally {
                 setIsSavingSubEffort(false);
             }
@@ -1126,6 +1136,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         setSubEffortsModalRowId(rowId ?? null);
         setIsSubEffortsModalOpen(true);
     }, []);
+
+    useEffect(() => {
+        window.dispatchEvent(
+            new CustomEvent('sub-efforts-modal:open-change', { detail: { open: isSubEffortsModalOpen } }),
+        );
+    }, [isSubEffortsModalOpen]);
 
     // Local state for employees (matching RolesTab pattern)
     const [localAllEmployees, setLocalAllEmployees] = useState<any[]>(allEmployees || []);
@@ -5502,6 +5518,7 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         rows={leadSubEfforts}
                         onRowClick={(id) => openSubEffortsModal(id)}
                         onViewAll={() => openSubEffortsModal(null)}
+                        hideSideTab={isSubEffortsModalOpen}
                     />
                     <SubEffortsLogModal
                         open={isSubEffortsModalOpen}
@@ -5510,6 +5527,12 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         leadNumber={selectedClient?.lead_number ?? null}
                         initialSelectedRowId={subEffortsModalRowId}
                         onRefresh={() => void fetchLeadSubEfforts()}
+                        subEffortOptions={subEfforts}
+                        isLoadingSubEffortOptions={isLoadingSubEfforts}
+                        isAddingSubEffort={isSavingSubEffort}
+                        onAddSubEffort={
+                            subEffortsStageFlags.showPickerLogAndModal ? handleSelectSubEffort : undefined
+                        }
                     />
                 </>
             )}

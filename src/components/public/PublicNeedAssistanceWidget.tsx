@@ -5,53 +5,118 @@ import { FaWhatsapp, FaEnvelope } from 'react-icons/fa';
 import { OFFICE_EMAIL, OFFICE_PHONE_TEL, WHATSAPP_URL } from './publicContactInfo';
 
 const contactIconBtnClass =
-  'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white shadow-md transition hover:scale-105 active:scale-95';
+  'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-white shadow-lg transition-[transform,opacity,box-shadow] duration-300 ease-out hover:scale-110 hover:shadow-xl active:scale-95';
 
-const ContactActionLinks: React.FC<{ layout?: 'row' | 'column' }> = ({ layout = 'column' }) => (
+type ContactItem = {
+  key: string;
+  href: string;
+  external?: boolean;
+  className: string;
+  title: string;
+  ariaLabel: string;
+  icon: React.ReactNode;
+};
+
+const CONTACT_ITEMS: ContactItem[] = [
+  {
+    key: 'whatsapp',
+    href: WHATSAPP_URL,
+    external: true,
+    className: 'bg-green-500 hover:bg-green-600',
+    title: 'Chat on WhatsApp',
+    ariaLabel: 'WhatsApp',
+    icon: <FaWhatsapp className="h-5 w-5" />,
+  },
+  {
+    key: 'email',
+    href: `mailto:${OFFICE_EMAIL}`,
+    className: 'bg-blue-600 hover:bg-blue-700',
+    title: 'Send Email',
+    ariaLabel: 'Email',
+    icon: <FaEnvelope className="h-5 w-5" />,
+  },
+  {
+    key: 'phone',
+    href: OFFICE_PHONE_TEL,
+    className: 'bg-purple-600 hover:bg-purple-700',
+    title: 'Call Office',
+    ariaLabel: 'Phone',
+    icon: <PhoneIconSolid className="h-5 w-5" />,
+  },
+];
+
+const AnimatedContactLinks: React.FC<{
+  open: boolean;
+  layout?: 'row' | 'column';
+  contactOptionsLabel: string;
+  alignEnd?: boolean;
+}> = ({ open, layout = 'column', contactOptionsLabel, alignEnd = true }) => (
   <div
-    className={
+    className={`flex gap-2.5 ${
       layout === 'column'
-        ? 'flex flex-col items-stretch gap-2'
-        : 'flex items-center justify-center gap-2'
-    }
+        ? `flex-col ${alignEnd ? 'items-end' : 'items-start'}`
+        : 'flex-row items-center justify-center'
+    } ${open ? 'pointer-events-auto' : 'pointer-events-none'}`}
     role="group"
-    aria-label="Contact options"
+    aria-label={contactOptionsLabel}
+    aria-hidden={!open}
   >
-    <a
-      href={WHATSAPP_URL}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={`${contactIconBtnClass} bg-green-500 hover:bg-green-600`}
-      title="Chat on WhatsApp"
-      aria-label="WhatsApp"
-    >
-      <FaWhatsapp className="h-5 w-5" />
-    </a>
-    <a
-      href={`mailto:${OFFICE_EMAIL}`}
-      className={`${contactIconBtnClass} bg-blue-600 hover:bg-blue-700`}
-      title="Send Email"
-      aria-label="Email"
-    >
-      <FaEnvelope className="h-5 w-5" />
-    </a>
-    <a
-      href={OFFICE_PHONE_TEL}
-      className={`${contactIconBtnClass} bg-purple-600 hover:bg-purple-700`}
-      title="Call Office"
-      aria-label="Phone"
-    >
-      <PhoneIconSolid className="h-5 w-5" />
-    </a>
+    {CONTACT_ITEMS.map((item, index) => {
+      const openDelay = (CONTACT_ITEMS.length - 1 - index) * 80;
+      const closeDelay = index * 45;
+
+      return (
+        <a
+          key={item.key}
+          href={item.href}
+          target={item.external ? '_blank' : undefined}
+          rel={item.external ? 'noopener noreferrer' : undefined}
+          className={`${contactIconBtnClass} ${item.className} ${
+            open
+              ? 'translate-y-0 scale-100 opacity-100'
+              : 'translate-y-3 scale-75 opacity-0'
+          }`}
+          style={{
+            transitionDelay: open ? `${openDelay}ms` : `${closeDelay}ms`,
+          }}
+          title={item.title}
+          aria-label={item.ariaLabel}
+          tabIndex={open ? 0 : -1}
+        >
+          {item.icon}
+        </a>
+      );
+    })}
   </div>
 );
+
+type AssistanceLabels = {
+  needAssistance: string;
+  close: string;
+  contactOptions: string;
+};
+
+const DEFAULT_LABELS: AssistanceLabels = {
+  needAssistance: 'Need assistance?',
+  close: 'Close',
+  contactOptions: 'Contact options',
+};
 
 type Props = {
   closerSlot?: React.ReactNode;
   className?: string;
+  dir?: 'ltr' | 'rtl';
+  labels?: Partial<AssistanceLabels>;
 };
 
-const PublicNeedAssistanceWidget: React.FC<Props> = ({ closerSlot, className = '' }) => {
+const PublicNeedAssistanceWidget: React.FC<Props> = ({
+  closerSlot,
+  className = '',
+  dir = 'ltr',
+  labels: labelsProp,
+}) => {
+  const labels = { ...DEFAULT_LABELS, ...labelsProp };
+  const isRtl = dir === 'rtl';
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -71,29 +136,39 @@ const PublicNeedAssistanceWidget: React.FC<Props> = ({ closerSlot, className = '
   return (
     <div
       ref={rootRef}
-      className={`print-hide fixed bottom-6 right-4 z-50 flex items-end gap-2 md:right-6 ${className}`}
+      className={`print-hide fixed bottom-6 z-50 flex items-end gap-2 ${
+        isRtl ? 'left-4 md:left-6' : 'right-4 md:right-6'
+      } ${className}`}
       style={{ paddingBottom: 'max(0px, env(safe-area-inset-bottom))' }}
+      dir={dir}
     >
       {closerSlot}
-      <div className="relative flex flex-col items-end">
-        {open && (
-          <div className="mb-3 rounded-2xl border border-slate-200/80 bg-white p-3 shadow-lg shadow-slate-900/10 ring-1 ring-slate-100">
-            <ContactActionLinks layout="column" />
-          </div>
-        )}
+      <div className={`relative flex flex-col ${isRtl ? 'items-start' : 'items-end'}`}>
+        <div
+          className={`absolute bottom-full z-10 mb-3 ${isRtl ? 'left-0' : 'right-0'}`}
+        >
+          <AnimatedContactLinks
+            open={open}
+            layout="column"
+            contactOptionsLabel={labels.contactOptions}
+            alignEnd={!isRtl}
+          />
+        </div>
         <button
           type="button"
           onClick={() => setOpen((value) => !value)}
           aria-expanded={open}
-          aria-label={open ? 'Close assistance options' : 'Need assistance'}
-          className={`inline-flex items-center gap-2.5 rounded-2xl border px-4 py-3 text-sm font-semibold shadow-md transition hover:shadow-lg active:scale-[0.98] ${
+          aria-label={open ? labels.close : labels.needAssistance}
+          className={`inline-flex items-center gap-2.5 rounded-full border px-4 py-3 text-sm font-semibold shadow-md transition hover:shadow-lg active:scale-[0.98] ${
             open
               ? 'border-slate-300 bg-slate-700 text-white'
               : 'border-slate-200/80 bg-white text-slate-800 hover:border-slate-300 hover:bg-slate-50'
           }`}
         >
           <LifebuoyIcon className={`h-5 w-5 shrink-0 ${open ? 'text-white' : 'text-slate-600'}`} />
-          <span className="whitespace-nowrap hidden sm:inline">{open ? 'Close' : 'Need assistance?'}</span>
+          <span className="whitespace-nowrap hidden sm:inline">
+            {open ? labels.close : labels.needAssistance}
+          </span>
         </button>
       </div>
     </div>

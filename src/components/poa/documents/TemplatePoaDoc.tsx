@@ -2,9 +2,11 @@ import React, { useMemo } from 'react';
 import { PoaField, PoaInlineField, PoaSignatureBox, type PoaDocController } from '../PoaFormPrimitives';
 import {
   parsePoaBody,
+  poaFieldInstanceIdBySegment,
   type PoaTemplateField,
   type PoaFieldType,
 } from '../../../lib/poaTemplateFields';
+import { renderPoaInlineMarkup } from '../../../lib/poaBodyMarkup';
 
 interface Props {
   ctrl: PoaDocController;
@@ -22,26 +24,27 @@ function fieldInput(
   ctrl: PoaDocController,
   dir: 'ltr' | 'rtl',
   inline: boolean,
+  valueId: string,
 ) {
   if (field.type === 'signature') {
-    return <PoaSignatureBox ctrl={ctrl} id={field.key} label={field.label} className="my-3" />;
+    return <PoaSignatureBox ctrl={ctrl} id={valueId} label={field.label} className="my-3" />;
   }
   if (field.type === 'textarea') {
-    return <PoaField ctrl={ctrl} id={field.key} label={field.label} multiline dir={dir} className="my-3" />;
+    return <PoaField ctrl={ctrl} id={valueId} label={field.label} multiline dir={dir} className="my-3" />;
   }
   const inputType = field.type === 'date' ? 'date' : field.type === 'email' ? 'email' : field.type === 'tel' ? 'tel' : 'text';
   if (inline) {
     return (
       <PoaInlineField
         ctrl={ctrl}
-        id={field.key}
+        id={valueId}
         type={inputType}
         dir={dir}
         placeholder={field.label}
       />
     );
   }
-  return <PoaField ctrl={ctrl} id={field.key} label={field.label} type={inputType} dir={dir} className="my-3" />;
+  return <PoaField ctrl={ctrl} id={valueId} label={field.label} type={inputType} dir={dir} className="my-3" />;
 }
 
 /**
@@ -64,6 +67,7 @@ const TemplatePoaDoc: React.FC<Props> = ({
   }, [fields]);
 
   const segments = useMemo(() => parsePoaBody(body), [body]);
+  const instanceIdBySegment = useMemo(() => poaFieldInstanceIdBySegment(body), [body]);
   const placedKeys = useMemo(
     () => new Set(segments.filter((s) => s.kind === 'field').map((s) => (s as { key: string }).key)),
     [segments],
@@ -81,14 +85,19 @@ const TemplatePoaDoc: React.FC<Props> = ({
       <div className="leading-relaxed whitespace-pre-wrap break-words">
         {segments.map((seg, idx) => {
           if (seg.kind === 'text') {
-            return <span key={`t-${idx}`}>{seg.text}</span>;
+            return (
+              <span key={`t-${idx}`}>
+                {renderPoaInlineMarkup(seg.text, `t-${idx}`)}
+              </span>
+            );
           }
           const def: PoaTemplateField =
             byKey.get(seg.key) || { key: seg.key, label: seg.key, type: 'text', required: false, prefill: '' };
           const inline = INLINE_TYPES.includes(def.type);
+          const valueId = instanceIdBySegment.get(idx) || seg.key;
           return (
             <React.Fragment key={`f-${idx}`}>
-              {fieldInput(def, ctrl, direction, inline)}
+              {fieldInput(def, ctrl, direction, inline, valueId)}
             </React.Fragment>
           );
         })}

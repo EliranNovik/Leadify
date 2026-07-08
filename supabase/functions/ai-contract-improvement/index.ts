@@ -1,5 +1,9 @@
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { corsHeaders } from '../_shared/cors.ts';
+import {
+  createThinkingSseResponse,
+  streamOpenAiJsonCompletion,
+} from '../_shared/aiStreamJson.ts';
 
 const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY');
 const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
@@ -29,7 +33,8 @@ Preserve the same primary language as the contract (Hebrew stays Hebrew, English
 
 ${FORMATTING_RULES}
 
-Return a JSON object with exactly two keys:
+Return a JSON object with exactly these keys (put "thinking" first):
+0. "thinking" — 2-4 short plain lines (no bullet symbols) describing what you are reviewing and will change
 1. "improvedContractText" — the full improved contract text (with all [[B]]/[[I]]/etc. markers preserved).
 2. "changeSummary" — a concise plain-text explanation for the lawyer reviewing the draft: what you changed and why (3–8 short bullet lines using "• " prefix; mention meeting-summary sources when relevant; no markdown fences).
 
@@ -74,8 +79,9 @@ Rules:
 
 ${FORMATTING_RULES}
 
-Return JSON with exactly these keys:
+Return JSON with exactly these keys (put "thinking" first):
 {
+  "thinking": "2-4 short plain lines (no bullet symbols) on your plan",
   "intent": "question" | "action",
   "answer": "required when intent is question — plain-text reply for the lawyer",
   "improvedContractText": "required when intent is action — full revised contract with all markers preserved",
@@ -98,6 +104,53 @@ Meeting summaries (context):
 ${summariesBlock}`;
 }
 
+type ContractParsed = {
+  intent?: string;
+  answer?: string;
+  improvedContractText?: string;
+  changeSummary?: string;
+};
+
+function buildContractResult(parsed: ContractParsed, isChat: boolean): Record<string, unknown> {
+  if (isChat) {
+    const intent = parsed.intent === 'action' ? 'action' : 'question';
+    if (intent === 'question') {
+      const answer =
+        typeof parsed.answer === 'string' && parsed.answer.trim()
+          ? parsed.answer.trim()
+          : 'I can suggest improvements — try asking what else could be added or clarified.';
+      return { intent: 'question', answer };
+    }
+
+    const improvedContractText = parsed.improvedContractText?.trim();
+    if (!improvedContractText) {
+      throw new Error('AI returned an empty contract');
+    }
+    const changeSummary =
+      typeof parsed.changeSummary === 'string' && parsed.changeSummary.trim()
+        ? parsed.changeSummary.trim()
+        : 'Contract updated based on your request.';
+
+    return {
+      intent: 'action',
+      improvedContractText,
+      changeSummary,
+    };
+  }
+
+  const improvedContractText = parsed.improvedContractText?.trim();
+  if (!improvedContractText) {
+    throw new Error('AI returned an empty contract');
+  }
+
+  const changeSummary =
+    typeof parsed.changeSummary === 'string' && parsed.changeSummary.trim()
+      ? parsed.changeSummary.trim()
+      : 'Contract wording was improved based on meeting summaries.';
+
+  return { intent: 'action', improvedContractText, changeSummary };
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -111,6 +164,7 @@ serve(async (req) => {
       leadNumber,
       userRemarks,
       chatHistory,
+      streamThinking,
     } = await req.json();
 
     if (!currentContractText || typeof currentContractText !== 'string' || !currentContractText.trim()) {
@@ -145,8 +199,43 @@ serve(async (req) => {
       : buildInitialPrompt(contextLines, currentContractText, summariesBlock);
 
     const systemContent = isChat
-      ? 'You assist lawyers reviewing contract drafts in a citizenship/immigration law CRM. Classify each message as question or action. For questions, answer only. For actions, return improvedContractText with all [[B]], [[I]], [[U]], [[S]], [[FS:...]], and [[FF:...]] markers preserved. Respond with valid JSON only.'
-      : 'You improve legal service contracts for a citizenship/immigration law CRM. Preserve all [[B]], [[I]], [[U]], [[S]], [[FS:...]], and [[FF:...]] markers in improvedContractText. Respond with valid JSON only.';
+      ? 'You assist lawyers reviewing contract drafts in a citizenship/immigration law CRM. Put "thinking" first in JSON. Classify each message as question or action. For questions, answer only. For actions, return improvedContractText with all [[B]], [[I]], [[U]], [[S]], [[FS:...]], and [[FF:...]] markers preserved. Respond with valid JSON only.'
+      : 'You improve legal service contracts for a citizenship/immigration law CRM. Put "thinking" first in JSON. Preserve all [[B]], [[I]], [[U]], [[S]], [[FS:...]], and [[FF:...]] markers in improvedContractText. Respond with valid JSON only.';
+
+    const openaiBody = {
+      model: 'gpt-4o-mini',
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: systemContent },
+        { role: 'user', content: prompt },
+      ],
+      max_tokens: isChat ? 3500 : 4500,
+      temperature: isChat ? 0.3 : 0.35,
+    };
+
+    const parseAndBuild = (raw: string) => {
+      let parsed: ContractParsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        throw new Error('AI returned invalid JSON');
+      }
+      return buildContractResult(parsed, isChat);
+    };
+
+    if (streamThinking === true) {
+      return createThinkingSseResponse(corsHeaders, async (emit) => {
+        let lastThinking = '';
+        const raw = await streamOpenAiJsonCompletion(OPENAI_API_KEY, openaiBody, (text) => {
+          if (text && text !== lastThinking) {
+            lastThinking = text;
+            emit('thinking', { text });
+          }
+        });
+        const result = parseAndBuild(raw);
+        emit('done', result);
+      });
+    }
 
     const openaiRes = await fetch(OPENAI_API_URL, {
       method: 'POST',
@@ -154,16 +243,7 @@ serve(async (req) => {
         Authorization: `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: systemContent },
-          { role: 'user', content: prompt },
-        ],
-        max_tokens: isChat ? 3500 : 4500,
-        temperature: isChat ? 0.3 : 0.35,
-      }),
+      body: JSON.stringify(openaiBody),
     });
 
     if (!openaiRes.ok) {
@@ -187,59 +267,8 @@ serve(async (req) => {
       throw new Error('AI returned an empty response');
     }
 
-    let parsed: {
-      intent?: string;
-      answer?: string;
-      improvedContractText?: string;
-      changeSummary?: string;
-    };
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      throw new Error('AI returned invalid JSON');
-    }
-
-    if (isChat) {
-      const intent = parsed.intent === 'action' ? 'action' : 'question';
-      if (intent === 'question') {
-        const answer =
-          typeof parsed.answer === 'string' && parsed.answer.trim()
-            ? parsed.answer.trim()
-            : 'I can suggest improvements — try asking what else could be added or clarified.';
-        return new Response(JSON.stringify({ intent: 'question', answer }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-
-      const improvedContractText = parsed.improvedContractText?.trim();
-      if (!improvedContractText) {
-        throw new Error('AI returned an empty contract');
-      }
-      const changeSummary =
-        typeof parsed.changeSummary === 'string' && parsed.changeSummary.trim()
-          ? parsed.changeSummary.trim()
-          : 'Contract updated based on your request.';
-
-      return new Response(JSON.stringify({
-        intent: 'action',
-        improvedContractText,
-        changeSummary,
-      }), {
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-    }
-
-    const improvedContractText = parsed.improvedContractText?.trim();
-    if (!improvedContractText) {
-      throw new Error('AI returned an empty contract');
-    }
-
-    const changeSummary =
-      typeof parsed.changeSummary === 'string' && parsed.changeSummary.trim()
-        ? parsed.changeSummary.trim()
-        : 'Contract wording was improved based on meeting summaries.';
-
-    return new Response(JSON.stringify({ intent: 'action', improvedContractText, changeSummary }), {
+    const result = parseAndBuild(raw);
+    return new Response(JSON.stringify(result), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (err: unknown) {

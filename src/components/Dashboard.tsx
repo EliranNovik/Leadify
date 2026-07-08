@@ -12,6 +12,7 @@ const NewHandlerCasesWidget = lazy(() => import('./NewHandlerCasesWidget'));
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon, FaceFrownIcon, SunIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, tryRefreshThenExpire, authRetryQueryOnce } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
+import { useOptionalClockInGate } from '../hooks/useClockInGate';
 import { resolveSessionUser } from '../lib/resolveSessionUser';
 import { getCurrencySymbol } from '../lib/currencyConversion';
 import {
@@ -174,6 +175,7 @@ const MyAvailabilitySection: React.FC<{ onAvailabilityChange?: () => void; onOpe
 const Dashboard: React.FC = () => {
   // Get auth state from context to skip redundant checks
   const { user: authUser, isInitialized } = useAuthContext();
+  const clockInGate = useOptionalClockInGate();
 
   const resolveDashboardAuthUser = useCallback(
     () => resolveSessionUser(authUser, tryRefreshThenExpire),
@@ -297,6 +299,12 @@ const Dashboard: React.FC = () => {
     setCurrentUserEmployeeId(id);
     try { localStorage.setItem('_clockin_emp_id', String(id)); } catch { /* noop */ }
   }, []);
+
+  useEffect(() => {
+    if (clockInGate?.adminBypassActive && clockInGate.employeeId != null) {
+      setAndCacheEmployeeId(clockInGate.employeeId);
+    }
+  }, [clockInGate?.adminBypassActive, clockInGate?.employeeId, setAndCacheEmployeeId]);
   const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
 
   // 1. Add state for real overdue leads

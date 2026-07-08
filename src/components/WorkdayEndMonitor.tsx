@@ -6,7 +6,12 @@ import { useOptionalClockInGate } from '../hooks/useClockInGate';
 const WorkdayEndMonitor: React.FC = () => {
   const gate = useOptionalClockInGate();
   const employeeId = gate?.employeeId ?? null;
-  const enabled = Boolean(gate?.isGateOpen && employeeId != null && gate.status !== 'exempt');
+  const enabled = Boolean(
+    gate?.isGateOpen &&
+    employeeId != null &&
+    gate.status !== 'exempt' &&
+    !gate.adminBypassActive,
+  );
 
   const {
     isOpen,

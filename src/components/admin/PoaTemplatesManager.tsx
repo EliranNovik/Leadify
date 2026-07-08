@@ -21,6 +21,7 @@ import {
   POA_FIELD_TYPE_LABELS,
   poaToken,
   extractPoaBodyKeys,
+  allocatePoaFieldKey,
   type PoaTemplateField,
   type PoaFieldType,
   type PoaPrefillSource,
@@ -157,52 +158,46 @@ const PoaTemplatesManager: React.FC = () => {
 
   // --- Edit form helpers -----------------------------------------------------
 
-  const insertToken = useCallback((key: string) => {
-    const token = poaToken(key);
-    const el = bodyRef.current;
-    setForm((prev) => {
-      const body = prev.body;
-      let next: string;
-      if (el && typeof el.selectionStart === 'number') {
-        const start = el.selectionStart;
-        const end = el.selectionEnd ?? start;
-        next = body.slice(0, start) + token + body.slice(end);
-        // restore caret after the inserted token on next tick
-        requestAnimationFrame(() => {
-          el.focus();
-          const pos = start + token.length;
-          el.setSelectionRange(pos, pos);
-        });
-      } else {
-        next = body + (body && !body.endsWith('\n') ? ' ' : '') + token;
-      }
-      return { ...prev, body: next };
-    });
-  }, []);
-
   const addCatalogField = useCallback(
     (catalogKey: string) => {
       const item = POA_FIELD_CATALOG.find((c) => c.key === catalogKey);
       if (!item) return;
       setForm((prev) => {
-        const exists = prev.fields.some((f) => f.key === item.key);
+        const fieldKey = allocatePoaFieldKey(item.key, prev.fields, prev.body);
+        const exists = prev.fields.some((f) => f.key === fieldKey);
         const fields = exists
           ? prev.fields
           : [
               ...prev.fields,
               {
-                key: item.key,
+                key: fieldKey,
                 label: item.label,
                 type: item.type,
                 required: item.type === 'signature',
                 prefill: item.prefill,
               } as PoaTemplateField,
             ];
-        return { ...prev, fields };
+
+        const token = poaToken(fieldKey);
+        const el = bodyRef.current;
+        let body = prev.body;
+        if (el && typeof el.selectionStart === 'number') {
+          const start = el.selectionStart;
+          const end = el.selectionEnd ?? start;
+          body = body.slice(0, start) + token + body.slice(end);
+          requestAnimationFrame(() => {
+            el.focus();
+            const pos = start + token.length;
+            el.setSelectionRange(pos, pos);
+          });
+        } else {
+          body = body + (body && !body.endsWith('\n') ? ' ' : '') + token;
+        }
+
+        return { ...prev, fields, body };
       });
-      insertToken(item.key);
     },
-    [insertToken],
+    [],
   );
 
   const updateField = (key: string, patch: Partial<PoaTemplateField>) => {

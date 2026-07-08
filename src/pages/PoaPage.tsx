@@ -6,12 +6,11 @@ import {
   ExclamationCircleIcon,
   ArrowDownTrayIcon,
   ArrowRightIcon,
-  ShieldCheckIcon,
   ShareIcon,
   PrinterIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
-import PublicContractFooter from '../components/public/PublicContractFooter';
+import PortalFooter from './portal/components/PortalFooter';
 import {
   fetchPoaByToken,
   fetchPoaSiblings,
@@ -23,10 +22,24 @@ import { getPoaTypeMeta } from '../lib/poaTypes';
 import { getPoaDocRenderer } from '../components/poa/documents';
 import TemplatePoaDoc from '../components/poa/documents/TemplatePoaDoc';
 import type { PoaDocController } from '../components/poa/PoaFormPrimitives';
+import { listPoaFillableInstances } from '../lib/poaTemplateFields';
+import ProformaDocumentStamp from '../components/proforma/ProformaDocumentStamp';
+import PublicNeedAssistanceWidget from '../components/public/PublicNeedAssistanceWidget';
 
 const PAGE_BG: React.CSSProperties = { background: '#f3f4f6' };
 
 const LAW_OFFICE_TITLE = 'Decker, Pex & Co. Law Office';
+const POA_LOGO_SRC = '/DPL-LOGO1.png';
+const POA_BTN_PRIMARY =
+  'border-none bg-blue-950 text-white hover:bg-blue-900 hover:border-blue-900 disabled:bg-blue-950/70';
+const POA_BTN_SIGN =
+  'border-none bg-green-600 text-white hover:bg-green-700 hover:border-green-700 disabled:bg-green-600/70';
+const POA_BTN_OUTLINE =
+  'border-blue-200 bg-white text-blue-950 hover:border-blue-300 hover:bg-blue-50';
+const POA_BTN_HEADER_BADGE =
+  'inline-flex items-center gap-1.5 rounded-full border-none bg-blue-950 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-900 active:scale-[0.98]';
+const POA_BTN_SHARE =
+  'group inline-flex h-9 min-h-9 items-center justify-center gap-1.5 overflow-hidden rounded-full border border-transparent px-2.5 text-gray-600 transition-all duration-200 hover:border-blue-200 hover:bg-blue-50 hover:px-3.5 hover:text-blue-950 sm:px-3.5 sm:py-2';
 
 function CenteredCard({ children }: { children: React.ReactNode }) {
   return (
@@ -36,7 +49,7 @@ function CenteredCard({ children }: { children: React.ReactNode }) {
           {children}
         </div>
       </div>
-      <PublicContractFooter variant="payment" />
+      <PortalFooter />
     </div>
   );
 }
@@ -114,6 +127,15 @@ const PoaPage: React.FC = () => {
       navigate(`/poa/${encodeURIComponent(nextUnsigned.secure_token)}`);
     }, 700);
   }, [nextUnsigned, navigate]);
+
+  const goToPoa = useCallback(
+    (secureToken: string) => {
+      if (!secureToken || secureToken === token) return;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      navigate(`/poa/${encodeURIComponent(secureToken)}`);
+    },
+    [token, navigate],
+  );
   const meta = getPoaTypeMeta(data?.type.key);
   const Renderer = getPoaDocRenderer(data?.type.key);
   const template = data?.template || null;
@@ -151,13 +173,13 @@ const PoaPage: React.FC = () => {
 
     const missing = new Set<string>();
     if (template) {
-      for (const f of template.fields) {
-        if (!f.required) continue;
-        if (f.type === 'signature') {
-          const v = signatures[f.key];
-          if (!(typeof v === 'string' && v.startsWith('data:image/'))) missing.add(f.key);
-        } else if (!(values[f.key] && values[f.key].trim())) {
-          missing.add(f.key);
+      for (const { instanceId, field } of listPoaFillableInstances(template.body, template.fields)) {
+        if (!field.required) continue;
+        if (field.type === 'signature') {
+          const v = signatures[instanceId];
+          if (!(typeof v === 'string' && v.startsWith('data:image/'))) missing.add(instanceId);
+        } else if (!(values[instanceId] && values[instanceId].trim())) {
+          missing.add(instanceId);
         }
       }
     } else if (meta) {
@@ -232,11 +254,11 @@ const PoaPage: React.FC = () => {
         return;
       }
       await navigator.clipboard.writeText(url);
-      toast.success('Link copied to clipboard');
+      toast.success(docDir === 'rtl' ? 'הקישור הועתק ללוח' : 'Link copied to clipboard');
     } catch {
       /* user cancelled share or clipboard unavailable */
     }
-  }, [data]);
+  }, [data, docDir]);
 
   const handlePrint = useCallback(() => {
     // Print the document inside a clean, isolated window. Printing the live page
@@ -346,7 +368,7 @@ ${headStyles}
   if (loading) {
     return (
       <CenteredCard>
-        <span className="loading loading-spinner loading-lg text-primary" />
+        <span className="loading loading-spinner loading-lg text-blue-950" />
         <p className="mt-4 text-gray-600">Loading power of attorney…</p>
       </CenteredCard>
     );
@@ -361,6 +383,15 @@ ${headStyles}
       </CenteredCard>
     );
   }
+
+  const contactName = data.contact.name?.trim() || '';
+  const poaHeaderTitle = [
+    data.type.name,
+    contactName || null,
+    data.type.jurisdiction || null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   return (
     <div className="poa-page min-h-screen flex flex-col" style={PAGE_BG}>
@@ -490,75 +521,136 @@ ${headStyles}
       {advancing && (
         <div className="poa-print-hide fixed inset-0 z-50 flex items-center justify-center bg-gray-900/25 px-4 backdrop-blur-sm">
           <div className="flex w-full max-w-sm flex-col items-center gap-5 rounded-2xl border border-gray-100 bg-white p-8 text-center shadow-2xl">
-            <span className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 ring-8 ring-emerald-50/60">
-              <CheckCircleIcon className="h-9 w-9 text-emerald-500" />
+            <span className="flex h-16 w-16 items-center justify-center rounded-full bg-blue-50 ring-8 ring-blue-50/80">
+              <CheckCircleIcon className="h-9 w-9 text-blue-950" />
             </span>
             <div className="space-y-1">
               <p className="text-lg font-semibold tracking-tight text-gray-900">Document signed</p>
               <p className="text-sm text-gray-500">Taking you to the next document…</p>
             </div>
-            <span className="loading loading-dots loading-md text-indigo-400" />
+            <span className="loading loading-dots loading-md text-blue-700" />
           </div>
         </div>
       )}
 
-      {/* Header — clean white */}
-      <header className="poa-print-hide sticky top-0 z-20 border-b border-gray-200 bg-white/90 backdrop-blur">
-        <div className="mx-auto w-full max-w-3xl px-5 py-4 sm:px-8 sm:py-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
-                <ShieldCheckIcon className="h-5 w-5" />
-              </span>
-              <div>
-                <h1 className="text-base font-semibold tracking-tight text-gray-900 sm:text-lg">
-                  {LAW_OFFICE_TITLE}
-                </h1>
-                <p className="text-xs text-gray-500 sm:text-sm">
-                  {data.type.name}
-                  {data.type.jurisdiction ? ` · ${data.type.jurisdiction}` : ''}
-                </p>
-              </div>
+      {/* Header — mobile stacked; desktop: firm left, title center, actions right */}
+      <header className="poa-print-hide sticky top-0 z-20 w-full bg-white/90 backdrop-blur">
+        <div className="px-4 py-3 sm:hidden">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2.5">
+              <img
+                src={POA_LOGO_SRC}
+                alt="Decker Pex & Co. Law Offices"
+                className="h-12 w-auto max-w-[64px] shrink-0 object-contain"
+              />
+              <h1 className="line-clamp-2 text-sm font-semibold leading-snug text-gray-900">
+                {LAW_OFFICE_TITLE}
+              </h1>
             </div>
-
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-1">
               <button
                 type="button"
                 onClick={handleShare}
-                className="btn btn-sm btn-ghost gap-1.5 text-gray-600 hover:text-gray-900"
+                className={POA_BTN_SHARE}
+                aria-label={docDir === 'rtl' ? 'שתף' : 'Share'}
               >
-                <ShareIcon className="h-4 w-4" />
-                <span className="hidden sm:inline">Share</span>
+                <ShareIcon className="h-4 w-4 shrink-0" />
+                <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-semibold opacity-0 transition-all duration-200 group-hover:max-w-[3.5rem] group-hover:opacity-100 sm:max-w-none sm:text-sm sm:opacity-100">
+                  {docDir === 'rtl' ? 'שתף' : 'Share'}
+                </span>
               </button>
               <button
                 type="button"
                 onClick={handlePrint}
-                className="btn btn-sm btn-outline gap-1.5 border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50"
+                className={POA_BTN_HEADER_BADGE}
+                aria-label={docDir === 'rtl' ? 'שמירה / הדפסה' : 'Save / Print'}
               >
-                <PrinterIcon className="h-4 w-4" />
-                <span className="hidden sm:inline">Save / Print</span>
+                <PrinterIcon className="h-4 w-4 shrink-0" />
+                <span className="text-xs sm:text-sm">
+                  {docDir === 'rtl' ? 'שמירה / הדפסה' : 'Save / Print'}
+                </span>
               </button>
             </div>
+          </div>
+          <p
+            className={`mt-2.5 text-sm font-medium leading-snug text-gray-700 ${
+              docDir === 'rtl' ? 'text-right' : 'text-center'
+            }`}
+            dir={docDir}
+          >
+            {poaHeaderTitle}
+          </p>
+        </div>
+
+        <div className="relative hidden w-full items-center justify-between gap-4 px-8 py-4 md:px-10 lg:px-12 sm:flex">
+          <div className="z-10 flex min-w-0 items-center justify-start gap-3">
+            <img
+              src={POA_LOGO_SRC}
+              alt="Decker Pex & Co. Law Offices"
+              className="h-16 w-auto max-w-[88px] shrink-0 object-contain sm:h-[4.5rem] sm:max-w-[104px]"
+            />
+            <h1 className="truncate text-base font-semibold tracking-tight text-gray-900 sm:text-lg">
+              {LAW_OFFICE_TITLE}
+            </h1>
+          </div>
+
+          <p className="pointer-events-none absolute left-1/2 top-1/2 max-w-[min(52vw,42rem)] -translate-x-1/2 -translate-y-1/2 truncate px-4 text-center text-sm font-medium text-gray-700 md:text-base">
+            {poaHeaderTitle}
+          </p>
+
+          <div className="z-10 flex shrink-0 items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={handleShare}
+              className={POA_BTN_SHARE}
+              aria-label={docDir === 'rtl' ? 'שתף' : 'Share'}
+            >
+              <ShareIcon className="h-4 w-4 shrink-0" />
+              <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-semibold opacity-0 transition-all duration-200 group-hover:max-w-[3.5rem] group-hover:opacity-100 sm:max-w-none sm:text-sm sm:opacity-100">
+                {docDir === 'rtl' ? 'שתף' : 'Share'}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={handlePrint}
+              className={POA_BTN_HEADER_BADGE}
+            >
+              <PrinterIcon className="h-4 w-4 shrink-0" />
+              <span>{docDir === 'rtl' ? 'שמירה / הדפסה' : 'Save / Print'}</span>
+            </button>
           </div>
         </div>
       </header>
 
       <main className="poa-print-main flex-1 w-full">
         <div
-          className={`mx-auto w-full max-w-3xl px-3 py-6 sm:px-6 sm:py-8${
-            hasSideHelp ? ' lg:max-w-[64rem]' : ''
+          className={`mx-auto w-full max-w-5xl px-4 py-6 sm:px-8 sm:py-8${
+            hasSideHelp ? ' lg:max-w-[72rem]' : ''
           }`}
         >
          <div className={hasSideHelp ? 'lg:max-w-[44rem]' : ''}>
           {/* Multi-document signing progress. */}
           {totalDocs > 1 && (
-            <div className="poa-print-hide mb-6 rounded-2xl border border-gray-200/70 bg-white px-5 py-4 shadow-sm sm:px-6">
-              <div className="mb-4 flex items-center justify-between">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-gray-400">
-                  Signing progress
+            <div
+              className="poa-print-hide mb-6 rounded-2xl border border-gray-200/70 bg-white px-5 py-4 shadow-sm sm:px-6"
+              dir={docDir}
+            >
+              <div
+                className={`mb-4 flex items-center justify-between gap-3${
+                  docDir === 'rtl' ? ' flex-row-reverse' : ''
+                }`}
+              >
+                <p
+                  className={`text-xs font-semibold tracking-[0.12em] text-gray-400 sm:text-sm${
+                    docDir === 'rtl' ? ' normal-case tracking-normal' : ' uppercase'
+                  }`}
+                >
+                  {docDir === 'rtl' ? 'התקדמות חתימה' : 'Signing progress'}
                 </p>
-                <span className="rounded-full bg-gray-50 px-2.5 py-0.5 text-xs font-semibold text-gray-500">
-                  {signedCount} of {totalDocs} complete
+                <span className="rounded-full bg-green-50 px-3 py-1 text-sm font-semibold text-green-800">
+                  {docDir === 'rtl'
+                    ? `${signedCount} מתוך ${totalDocs} הושלמו`
+                    : `${signedCount} of ${totalDocs} complete`}
                 </span>
               </div>
               <div className="flex items-center">
@@ -566,29 +658,58 @@ ${headStyles}
                   const done = s.status === 'signed';
                   const isCurrent = s.secure_token === token;
                   const prevDone = i > 0 && siblings[i - 1].status === 'signed';
+                  const canNavigate = !isCurrent;
+                  const stepLabel =
+                    s.type_name ||
+                    (docDir === 'rtl' ? `מסמך ${i + 1}` : `Document ${i + 1}`);
+                  const stepTitle = !canNavigate
+                    ? stepLabel
+                    : done
+                    ? docDir === 'rtl'
+                      ? `${stepLabel} — לחץ לצפייה`
+                      : `${stepLabel} — Click to view`
+                    : docDir === 'rtl'
+                    ? `${stepLabel} — לחץ לחתימה`
+                    : `${stepLabel} — Click to sign`;
+                  const stepClassName = `relative flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-base font-bold transition-all duration-300 ${
+                    done
+                      ? 'bg-green-600 text-white shadow-sm shadow-green-200/80'
+                      : isCurrent
+                      ? 'bg-blue-950 text-white ring-4 ring-blue-100'
+                      : 'bg-blue-100 text-blue-950'
+                  }${
+                    canNavigate
+                      ? done
+                        ? ' cursor-pointer hover:scale-105 hover:bg-green-700 hover:shadow-md focus:outline-none focus-visible:ring-4 focus-visible:ring-green-300 active:scale-95'
+                        : ' cursor-pointer hover:scale-105 hover:bg-blue-200 hover:shadow-md focus:outline-none focus-visible:ring-4 focus-visible:ring-blue-300 active:scale-95'
+                      : ''
+                  }`;
                   return (
                     <React.Fragment key={s.id}>
                       {i > 0 && (
                         <div className="mx-1.5 h-1 flex-1 overflow-hidden rounded-full bg-gray-100 sm:mx-2.5">
                           <div
-                            className={`h-full rounded-full bg-emerald-400 transition-all duration-700 ease-out ${
+                            className={`h-full rounded-full bg-green-800 transition-all duration-700 ease-out ${
                               prevDone ? 'w-full' : 'w-0'
                             }`}
                           />
                         </div>
                       )}
-                      <span
-                        className={`relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-bold transition-all duration-300 ${
-                          done
-                            ? 'bg-emerald-500 text-white shadow-sm shadow-emerald-200'
-                            : isCurrent
-                            ? 'bg-indigo-600 text-white ring-4 ring-indigo-100'
-                            : 'bg-gray-100 text-gray-400'
-                        }`}
-                        title={s.type_name || `Document ${i + 1}`}
-                      >
-                        {done ? <CheckIcon className="h-5 w-5" /> : i + 1}
-                      </span>
+                      {canNavigate ? (
+                        <button
+                          type="button"
+                          onClick={() => goToPoa(s.secure_token)}
+                          className={stepClassName}
+                          title={stepTitle}
+                          aria-label={stepTitle}
+                        >
+                          {done ? <CheckIcon className="h-5 w-5 sm:h-6 sm:w-6" /> : i + 1}
+                        </button>
+                      ) : (
+                        <span className={stepClassName} title={stepTitle}>
+                          {done ? <CheckIcon className="h-5 w-5 sm:h-6 sm:w-6" /> : i + 1}
+                        </span>
+                      )}
                     </React.Fragment>
                   );
                 })}
@@ -597,9 +718,11 @@ ${headStyles}
                 const idx = siblings.findIndex((s) => s.secure_token === token);
                 if (idx < 0) return null;
                 return (
-                  <p className="mt-3.5 text-xs text-gray-500">
+                  <p className={`mt-3.5 text-sm text-gray-500 sm:text-base${docDir === 'rtl' ? ' text-right' : ''}`}>
                     <span className="font-semibold text-gray-700">
-                      Document {idx + 1} of {totalDocs}
+                      {docDir === 'rtl'
+                        ? `מסמך ${idx + 1} מתוך ${totalDocs}`
+                        : `Document ${idx + 1} of ${totalDocs}`}
                     </span>
                     {siblings[idx].type_name ? ` · ${siblings[idx].type_name}` : ''}
                   </p>
@@ -610,31 +733,31 @@ ${headStyles}
 
           {isSigned &&
             (allSigned && totalDocs > 1 ? (
-              <div className="poa-print-hide mb-6 overflow-hidden rounded-2xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50 via-white to-white p-7 text-center shadow-sm">
-                <span className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500 shadow-md shadow-emerald-200/70">
+              <div className="poa-print-hide mb-6 overflow-hidden rounded-2xl border border-blue-200/80 bg-gradient-to-br from-blue-50 via-white to-white p-7 text-center shadow-sm">
+                <span className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-blue-950 shadow-md shadow-blue-200/70">
                   <CheckIcon className="h-9 w-9 text-white" />
                 </span>
-                <p className="text-xl font-bold tracking-tight text-emerald-950">All documents signed</p>
-                <p className="mx-auto mt-1.5 max-w-md text-sm text-emerald-700/90">
+                <p className="text-xl font-bold tracking-tight text-blue-950">All documents signed</p>
+                <p className="mx-auto mt-1.5 max-w-md text-sm text-blue-900/80">
                   All {totalDocs} documents for {data.contact.name || 'this contact'} are complete. Thank you.
                 </p>
                 <button
                   type="button"
                   onClick={handlePrint}
-                  className="btn btn-sm mt-5 gap-1.5 border-emerald-300 bg-white text-emerald-700 shadow-sm hover:border-emerald-400 hover:bg-emerald-50"
+                  className={`btn btn-sm mt-5 gap-1.5 shadow-sm ${POA_BTN_OUTLINE}`}
                 >
                   <ArrowDownTrayIcon className="h-4 w-4" />
                   Save / Print
                 </button>
               </div>
             ) : (
-              <div className="poa-print-hide mb-5 flex flex-col gap-3 rounded-2xl border border-emerald-200/80 bg-emerald-50/80 px-4 py-3.5 sm:flex-row sm:items-center">
-                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-emerald-100">
-                  <CheckCircleIcon className="h-5 w-5 text-emerald-600" />
+              <div className="poa-print-hide mb-5 flex flex-col gap-3 rounded-2xl border border-blue-200/80 bg-blue-50/70 px-4 py-3.5 sm:flex-row sm:items-center">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-blue-100">
+                  <CheckCircleIcon className="h-5 w-5 text-blue-950" />
                 </span>
                 <div className="flex-1">
-                  <p className="text-sm font-semibold text-emerald-900">This document has been signed.</p>
-                  <p className="text-xs text-emerald-700">
+                  <p className="text-sm font-semibold text-blue-950">This document has been signed.</p>
+                  <p className="text-xs text-blue-900/75">
                     {nextUnsigned
                       ? `${totalDocs - signedCount} document${totalDocs - signedCount === 1 ? '' : 's'} still to sign.`
                       : data.poa.signed_at
@@ -643,7 +766,7 @@ ${headStyles}
                   </p>
                 </div>
                 {nextUnsigned && !advancing ? (
-                  <button type="button" onClick={goToNext} className="btn btn-sm btn-primary gap-1.5">
+                  <button type="button" onClick={goToNext} className={`btn btn-sm gap-1.5 ${POA_BTN_PRIMARY}`}>
                     Continue
                     <ArrowRightIcon className="h-4 w-4 rtl:rotate-180" />
                   </button>
@@ -651,7 +774,7 @@ ${headStyles}
                   <button
                     type="button"
                     onClick={handlePrint}
-                    className="btn btn-sm btn-outline border-emerald-300 text-emerald-700 hover:bg-emerald-100 gap-1.5"
+                    className={`btn btn-sm btn-outline gap-1.5 ${POA_BTN_OUTLINE}`}
                   >
                     <ArrowDownTrayIcon className="h-4 w-4" />
                     Save / Print
@@ -662,7 +785,7 @@ ${headStyles}
 
           {!isSigned && (
             <p
-              className="poa-print-hide mb-5 text-sm text-gray-600"
+              className="poa-print-hide mb-5 text-base leading-relaxed text-gray-600 sm:text-lg"
               dir={docDir}
             >
               {docDir === 'rtl'
@@ -676,7 +799,7 @@ ${headStyles}
             id="poa-print-root"
             ref={docRef}
             dir={docDir}
-            className={`rounded-2xl border border-gray-200 bg-white p-5 shadow-sm sm:p-8${
+            className={`relative rounded-2xl border border-gray-200 bg-white p-5 pb-32 shadow-sm sm:p-8 sm:pb-40${
               isRoomyPrint ? ' poa-print--roomy' : ''
             }`}
           >
@@ -692,29 +815,36 @@ ${headStyles}
             ) : Renderer ? (
               <Renderer ctrl={ctrl} />
             ) : null}
+            <ProformaDocumentStamp size="lg" side={docDir === 'rtl' ? 'left' : 'right'} />
           </div>
 
           {/* Actions */}
           {!isSigned && (
-            <div className="poa-print-hide sticky bottom-0 mt-6 flex flex-col gap-3 rounded-xl border border-gray-200 bg-white/95 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-xs text-gray-500">
-                By signing, you confirm the information is correct and grant the power of attorney described above.
+            <div
+              className={`poa-print-hide sticky bottom-0 mt-6 flex flex-col gap-3 rounded-xl border border-gray-200 bg-white/95 p-4 shadow-lg backdrop-blur sm:flex-row sm:items-center sm:justify-between${
+                docDir === 'rtl' ? ' sm:flex-row-reverse' : ''
+              }`}
+            >
+              <p className={`text-sm leading-relaxed text-gray-600 sm:text-base${docDir === 'rtl' ? ' text-right' : ''}`} dir={docDir}>
+                {docDir === 'rtl'
+                  ? 'בחתימתך, הנך מאשר/ת כי המידע נכון ומעניק/ה את ייפוי הכוח המפורט לעיל.'
+                  : 'By signing, you confirm the information is correct and grant the power of attorney described above.'}
               </p>
               <button
                 type="button"
                 onClick={handleSubmit}
                 disabled={submitting}
-                className="btn btn-primary gap-2 sm:min-w-[200px]"
+                className={`btn inline-flex h-12 min-h-12 flex-row items-center justify-center gap-2.5 rounded-full px-8 text-base font-semibold sm:min-w-[220px] ${POA_BTN_SIGN}`}
               >
                 {submitting ? (
                   <>
                     <span className="loading loading-spinner loading-sm" />
-                    Submitting…
+                    {docDir === 'rtl' ? 'שולח…' : 'Submitting…'}
                   </>
                 ) : (
                   <>
-                    <CheckCircleIcon className="h-5 w-5" />
-                    Sign &amp; Submit
+                    <CheckCircleIcon className="h-6 w-6 shrink-0" />
+                    <span>{docDir === 'rtl' ? 'חתום ושלח' : 'Sign & Submit'}</span>
                   </>
                 )}
               </button>
@@ -725,8 +855,22 @@ ${headStyles}
       </main>
 
       <div className="poa-print-hide">
-        <PublicContractFooter variant="payment" />
+        <PortalFooter />
       </div>
+
+      <PublicNeedAssistanceWidget
+        className="poa-print-hide hidden md:flex"
+        dir={docDir}
+        labels={
+          docDir === 'rtl'
+            ? {
+                needAssistance: 'צריכים עזרה?',
+                close: 'סגור',
+                contactOptions: 'אפשרויות יצירת קשר',
+              }
+            : undefined
+        }
+      />
     </div>
   );
 };

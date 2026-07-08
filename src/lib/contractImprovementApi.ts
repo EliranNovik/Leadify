@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { consumeContractAiReviewSse } from './aiReviewStreaming';
 
 export type LeadMeetingSummary = {
   id: number;
@@ -453,8 +454,9 @@ export type ContractAiChatResult = ImproveContractResult | ContractAiQuestionRes
 
 export async function improveContractWithMeetingSummaries(
   input: ImproveContractInput,
+  onThinking?: (text: string) => void,
 ): Promise<ImproveContractResult> {
-  const result = await invokeContractAi(input);
+  const result = await invokeContractAi(input, onThinking);
   if (result.intent === 'question') {
     throw new Error('Expected contract changes but received a question response');
   }
@@ -463,23 +465,12 @@ export async function improveContractWithMeetingSummaries(
 
 export async function sendContractAiChatMessage(
   input: ImproveContractInput & { userRemarks: string },
+  onThinking?: (text: string) => void,
 ): Promise<ContractAiChatResult> {
-  return invokeContractAi(input);
+  return invokeContractAi(input, onThinking);
 }
 
-async function invokeContractAi(input: ImproveContractInput): Promise<ContractAiChatResult> {
-  const { data, error } = await supabase.functions.invoke('ai-contract-improvement', {
-    body: input,
-  });
-
-  if (error) {
-    throw new Error(error.message || 'Failed to improve contract with AI');
-  }
-
-  if (data?.error) {
-    throw new Error(String(data.error));
-  }
-
+function normalizeContractAiResult(data: Record<string, unknown>): ContractAiChatResult {
   if (data?.intent === 'question') {
     const answer =
       typeof data.answer === 'string' && data.answer.trim()
@@ -502,4 +493,36 @@ async function invokeContractAi(input: ImproveContractInput): Promise<ContractAi
     improvedContractText: data.improvedContractText.trim(),
     changeSummary,
   };
+}
+
+async function invokeContractAi(
+  input: ImproveContractInput,
+  onThinking?: (text: string) => void,
+): Promise<ContractAiChatResult> {
+  if (onThinking) {
+    try {
+      const data = await consumeContractAiReviewSse<Record<string, unknown>>(input, onThinking);
+      if (data?.error) {
+        throw new Error(String(data.error));
+      }
+      return normalizeContractAiResult(data);
+    } catch (streamErr) {
+      onThinking('Applying your changes…');
+      console.warn('Contract AI streaming unavailable, falling back:', streamErr);
+    }
+  }
+
+  const { data, error } = await supabase.functions.invoke('ai-contract-improvement', {
+    body: input,
+  });
+
+  if (error) {
+    throw new Error(error.message || 'Failed to improve contract with AI');
+  }
+
+  if (data?.error) {
+    throw new Error(String(data.error));
+  }
+
+  return normalizeContractAiResult(data as Record<string, unknown>);
 }

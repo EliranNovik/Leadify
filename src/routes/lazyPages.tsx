@@ -86,6 +86,7 @@ export const LazyMyProfilePage = lazy(() => import('../pages/MyProfilePage'));
 export const LazyPublicProfilePage = lazy(() => import('../pages/PublicProfilePage'));
 export const LazyBusinessCardPage = lazy(() => import('../pages/BusinessCardPage'));
 export const LazyPoaPage = lazy(() => import('../pages/PoaPage'));
+export const LazyPoaDocumentEditor = lazy(() => import('../components/poa/PoaDocumentEditor'));
 export const LazyPortalLoginPage = lazy(() => import('../pages/portal/PortalLoginPage'));
 export const LazyPortalAboutPage = lazy(() => import('../pages/portal/PortalAboutPage'));
 export const LazyPortalCasePage = lazy(() => import('../pages/portal/PortalCasePage'));

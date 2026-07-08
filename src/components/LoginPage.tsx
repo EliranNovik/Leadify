@@ -7,6 +7,7 @@ import {
   EyeIcon,
   EyeSlashIcon,
   LockClosedIcon,
+  ShieldCheckIcon,
   XMarkIcon,
 } from '@heroicons/react/24/outline';
 import { preCheckExternalUser } from '../hooks/useExternalUser';
@@ -15,6 +16,7 @@ import { setDashboardWelcomePending } from '../lib/dashboardWelcomeSession';
 import LoginHeroBackground from './LoginHeroBackground';
 import LoginHeroTagline from './LoginHeroTagline';
 import ClockInGateVideos from './ClockInGateVideos';
+import LoginAdminAccessModal from './LoginAdminAccessModal';
 
 const LOGIN_PAGE_THEME_COLOR = '#ffffff';
 
@@ -36,6 +38,7 @@ const LoginPage: React.FC = () => {
   const [success, setSuccess] = useState<string | null>(null);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
   const navigate = useNavigate();
   const year = new Date().getFullYear();
 
@@ -241,6 +244,17 @@ const LoginPage: React.FC = () => {
           {error}
         </div>
       ) : null}
+
+      <div className="mt-8 border-t border-base-200 pt-5">
+        <button
+          type="button"
+          onClick={() => setIsAdminModalOpen(true)}
+          className="btn btn-ghost btn-sm w-full gap-2 text-base-content/70 hover:bg-transparent hover:text-primary"
+        >
+          <ShieldCheckIcon className="h-4 w-4" />
+          Admin access
+        </button>
+      </div>
     </div>
   );
 
@@ -318,6 +332,15 @@ const LoginPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      <LoginAdminAccessModal
+        isOpen={isAdminModalOpen}
+        onClose={() => setIsAdminModalOpen(false)}
+        onWorkerSignedIn={() => {
+          setIsAdminModalOpen(false);
+          navigate('/', { replace: true });
+        }}
+      />
     </div>
   );
 };

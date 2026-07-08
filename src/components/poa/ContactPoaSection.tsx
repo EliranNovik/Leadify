@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import {
   DocumentTextIcon,
@@ -65,6 +66,7 @@ const ContactPoaSection: React.FC<Props> = ({
   legacyLeadId,
   createdBy,
 }) => {
+  const navigate = useNavigate();
   const [poas, setPoas] = useState<PoaListItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -160,6 +162,13 @@ const ContactPoaSection: React.FC<Props> = ({
     }
   }, [reload]);
 
+  const openPoaEditor = useCallback(
+    (secureToken: string) => {
+      navigate(`/poa/edit/${encodeURIComponent(secureToken)}`);
+    },
+    [navigate],
+  );
+
   const handleCreate = useCallback(async () => {
     if (!selectedValue) {
       toast.error('Please choose a POA');
@@ -204,12 +213,16 @@ const ContactPoaSection: React.FC<Props> = ({
 
       setShowModal(false);
       await reload();
+
+      if (selectedValue.startsWith('tpl:')) {
+        openPoaEditor(result.secureToken);
+      }
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Could not create POA');
     } finally {
       setCreating(false);
     }
-  }, [selectedValue, types, templates, contactId, newLeadId, legacyLeadId, contact, createdBy, reload]);
+  }, [selectedValue, types, templates, contactId, newLeadId, legacyLeadId, contact, createdBy, reload, openPoaEditor]);
 
   const handleRemove = useCallback(async (poa: PoaListItem) => {
     if (poa.status === 'signed') {
@@ -265,17 +278,31 @@ const ContactPoaSection: React.FC<Props> = ({
                     <ClipboardDocumentIcon className="w-3.5 h-3.5" />
                     Copy link
                   </button>
-                  <a
-                    className={`btn btn-outline btn-primary btn-xs gap-1 ${
-                      poa.status === 'cancelled' ? 'btn-disabled' : ''
-                    }`}
-                    href={buildPoaUrl(poa.secure_token)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    <ArrowTopRightOnSquareIcon className="w-3.5 h-3.5" />
-                    {poa.status === 'signed' ? 'View' : 'Open'}
-                  </a>
+                  {poa.template_id ? (
+                    <button
+                      type="button"
+                      className={`btn btn-outline btn-primary btn-xs gap-1 ${
+                        poa.status === 'cancelled' ? 'btn-disabled' : ''
+                      }`}
+                      disabled={poa.status === 'cancelled'}
+                      onClick={() => openPoaEditor(poa.secure_token)}
+                    >
+                      <ArrowTopRightOnSquareIcon className="w-3.5 h-3.5" />
+                      {poa.status === 'signed' ? 'View' : 'Open'}
+                    </button>
+                  ) : (
+                    <a
+                      className={`btn btn-outline btn-primary btn-xs gap-1 ${
+                        poa.status === 'cancelled' ? 'btn-disabled' : ''
+                      }`}
+                      href={buildPoaUrl(poa.secure_token)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      <ArrowTopRightOnSquareIcon className="w-3.5 h-3.5" />
+                      {poa.status === 'signed' ? 'View' : 'Open'}
+                    </a>
+                  )}
                   <button
                     type="button"
                     className="btn btn-outline btn-error btn-xs gap-1"
@@ -454,7 +481,7 @@ const ContactPoaSection: React.FC<Props> = ({
                   ) : (
                     <>
                       <PlusIcon className="h-4 w-4" />
-                      Create &amp; copy link
+                      Create POA
                     </>
                   )}
                 </button>
