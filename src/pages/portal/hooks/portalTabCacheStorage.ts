@@ -1,6 +1,6 @@
 import type { PortalTabCacheData } from './usePortalTabCache';
 
-const CACHE_VERSION = 2;
+const CACHE_VERSION = 3;
 const CACHE_TTL_MS = 30 * 60 * 1000;
 
 type StoredPortalCache = {

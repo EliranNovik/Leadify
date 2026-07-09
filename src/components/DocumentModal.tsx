@@ -27,6 +27,7 @@ import {
 } from '../lib/caseDocumentsStorage';
 import { isSequenceOfEventsSlug } from '../lib/staffMeetingDocuments';
 import { initialsFromUploaderName, resolveUploaderDisplayByKey } from '../lib/uploaderDisplay';
+import { resolveLeadSubEffortIdentityFromRefs } from '../lib/leadSubEfforts';
 import { createPortal } from 'react-dom';
 import { toast } from 'react-hot-toast';
 import { DocumentFileGlyph } from '../lib/documentFileGlyphs';
@@ -1463,26 +1464,10 @@ const DocumentModal: React.FC<DocumentModalProps> = ({
       // Also include sub-efforts uploaded documents under the mapped category tab (when enabled + configured).
       const subEffortDocuments: Document[] = [];
       if (requireCaseDocumentClassification) {
-        // Resolve lead id (needed for lead_sub_efforts). Prefer caller-provided clientId.
-        let newLeadId: string | null = null;
-        let legacyLeadId: number | null = null;
-        const rawClientId = String(clientId ?? '').trim();
-        if (rawClientId) {
-          if (rawClientId.startsWith('legacy_')) {
-            const n = Number.parseInt(rawClientId.replace('legacy_', ''), 10);
-            legacyLeadId = Number.isFinite(n) ? n : null;
-          } else {
-            newLeadId = rawClientId;
-          }
-        } else if (leadNumber?.trim()) {
-          const { data: leadRow } = await supabase
-            .from('leads')
-            .select('id')
-            .eq('lead_number', leadNumber.trim())
-            .maybeSingle();
-          const id = (leadRow as { id?: string } | null)?.id;
-          if (typeof id === 'string' && id.trim()) newLeadId = id.trim();
-        }
+        const { legacyLeadId, newLeadId } = await resolveLeadSubEffortIdentityFromRefs(supabase, {
+          clientId,
+          leadNumber,
+        });
 
         if (newLeadId || legacyLeadId) {
           let q = supabase

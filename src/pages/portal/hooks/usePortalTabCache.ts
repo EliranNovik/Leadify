@@ -13,6 +13,7 @@ import {
   type PortalContactContractRow,
   type PortalContactPoaRow,
   type PortalLeadSummary,
+  type PortalSubEffortRow,
 } from '../../../lib/portalApi';
 import { useRealtimeRefresh, type RealtimeTableSubscription } from '../../../hooks/useRealtimeRefresh';
 import type { PortalTabId } from '../portalTabTypes';
@@ -21,7 +22,8 @@ import { seedPortalContactProfileUrls } from './usePortalContactProfileUrls';
 
 export type PortalTabCacheData = {
   summary: Awaited<ReturnType<typeof portalGetCaseSummary>>;
-  subEfforts: Array<Record<string, unknown>>;
+  subEfforts: PortalSubEffortRow[];
+  subEffortsCategoryId: number | null;
   finances: Awaited<ReturnType<typeof portalGetFinances>>;
   meetings: Awaited<ReturnType<typeof portalGetMeetings>>;
   documents: Awaited<ReturnType<typeof portalGetDocuments>>;
@@ -43,6 +45,7 @@ function emptyCacheData(): PortalTabCacheData {
   return {
     summary: null,
     subEfforts: [],
+    subEffortsCategoryId: null,
     finances: { payments: [], proformas: [], is_legacy: false },
     meetings: { meetings: [], requests: [] },
     documents: { documents: [], classifications: [], lead_number: '' },
@@ -203,7 +206,8 @@ async function fetchPortalScope(
 
   if (needs('stages') || needs('summary')) {
     const sub = await portalGetSubEfforts();
-    patch.subEfforts = (sub?.rows ?? []) as Array<Record<string, unknown>>;
+    patch.subEfforts = sub?.rows ?? [];
+    patch.subEffortsCategoryId = sub?.category_id ?? null;
   }
 
   if (needs('finance') || needs('summary')) {
@@ -243,6 +247,8 @@ function mergeCache(
   return {
     summary: patch.summary !== undefined ? patch.summary : base.summary,
     subEfforts: patch.subEfforts !== undefined ? patch.subEfforts : base.subEfforts,
+    subEffortsCategoryId:
+      patch.subEffortsCategoryId !== undefined ? patch.subEffortsCategoryId : base.subEffortsCategoryId,
     finances: patch.finances !== undefined ? patch.finances : base.finances,
     meetings: patch.meetings !== undefined ? patch.meetings : base.meetings,
     documents: patch.documents !== undefined ? patch.documents : base.documents,

@@ -1,5 +1,11 @@
 import { supabase } from "./supabase";
 import { generateSearchVariants } from "./transliteration";
+import {
+  buildPhoneSearchOrClause,
+  looksLikePhoneSearchQuery,
+  phoneDigitsMatch,
+  phoneDigitsOnly,
+} from "./phoneSearchUtils";
 
 // -----------------------------------------------------
 // Types
@@ -72,7 +78,7 @@ const DEFAULTS: Required<SearchOptions> = {
 
 const normalize = (s: string) => s.trim();
 const lower = (s: string) => s.trim().toLowerCase();
-const digitsOnly = (s: string) => s.replace(/\D/g, "");
+const digitsOnly = phoneDigitsOnly;
 const looksLikeEmail = (s: string) => s.includes("@");
 const hasLeadPrefix = (s: string) => /^[LC]/i.test(s.trim());
 const stripLeadPrefix = (s: string) => s.trim().replace(/^[LC]/i, "");
@@ -91,51 +97,11 @@ function parseSubLead(raw: string): { master: number | null; suffix: number | nu
 }
 
 /**
- * Phone pattern builder with strict suffix matching.
- * Matches from the END of phone numbers only, never from the middle.
- * 
- * Rules:
- * - Strip everything to digits only
- * - Normalize leading zero variants
- * - Match only suffixes (endsWith logic, not contains)
- * - Require minimum length (5-6 digits)
- * 
- * Example:
- * - Search "7825" on "972507825939" → NO match (middle fragment)
- * - Search "507825939" on "972507825939" → Match (suffix)
- * - Search "07825939" on "972507825939" → Match (with leading zero variant)
+ * Phone pattern builder — matches common Israeli/international prefix variants.
+ * Short queries (e.g. 052, 50, 972) use contains; longer queries also match suffixes.
  */
-function buildPhoneOr(digits: string): string {
-  const d = digitsOnly(digits);
-
-  // Require minimum length: 5-6 digits for meaningful suffix matching
-  // Shorter queries can match too many false positives
-  if (d.length < 5) return "";
-
-  const patterns: string[] = [];
-
-  // Normalize leading zero: handle both with and without leading zero
-  const hadZero = d.startsWith("0");
-  const noZero = hadZero ? d.slice(1) : d;
-  const withZero = hadZero ? d : `0${d}`;
-
-  // Only use the full search string (not fragments)
-  // This ensures we match suffixes, not middle fragments
-  // Use both with/without leading zero variants
-  if (noZero.length >= 5 && noZero.length <= 15) {
-    patterns.push(noZero);
-  }
-  if (withZero.length >= 6 && withZero.length <= 16 && withZero !== noZero) {
-    patterns.push(withZero);
-  }
-
-  const uniq = Array.from(new Set(patterns)).filter((p) => p.length >= 5);
-  if (uniq.length === 0) return "";
-
-  // Use suffix matching: %pattern (no trailing %) means "ends with"
-  // This prevents middle-of-number matches
-  const clauses = uniq.flatMap((p) => [`phone.ilike.%${p}`, `mobile.ilike.%${p}`]);
-  return clauses.join(",");
+function buildPhoneOr(digits: string, rawQuery?: string): string {
+  return buildPhoneSearchOrClause(digits, rawQuery);
 }
 
 /**
@@ -161,22 +127,23 @@ function detectIntent(query: string): SearchIntent | null {
   // - pure numeric length 1-6 and not phone-like
   // - 4-6 digits without prefix are likely lead numbers (not phone numbers which are usually 7+ digits or start with 0)
   const isPureNumeric = rawNoPrefix.length > 0 && /^\d+$/.test(rawNoPrefix) && rawNoPrefix === d;
-  const startsWithZero = d.startsWith("0") && d.length >= 4;
-  const isLikelyLeadNumber = isPureNumeric && d.length >= 4 && d.length <= 6 && !startsWithZero;
+  const startsWithZero = d.startsWith("0") && d.length >= 3;
+  const isLikelyLeadNumber =
+    isPureNumeric && d.length >= 4 && d.length <= 6 && !startsWithZero && !d.startsWith("5");
 
-  const leadLike = hasPrefix || raw.includes("/") || (isPureNumeric && d.length <= 6 && !startsWithZero) || isLikelyLeadNumber;
+  const leadLike = hasPrefix || raw.includes("/") || isLikelyLeadNumber;
 
   if (leadLike) {
     return { kind: "lead", raw, digits: rawNoPrefix, hasPrefix, master, suffix };
   }
 
-  // Phone intent triggers:
-  // - starts with 0 and 4+ digits (Israeli phone numbers)
-  // - 7+ digits always phone
-  // - formatted numbers (raw length > digits length) with 4+ digits
-  // - 4-6 digits that start with 0 are phone numbers
+  if (looksLikePhoneSearchQuery(raw)) {
+    return { kind: "phone", digits: d, raw };
+  }
+
+  // Phone intent triggers (fallback for formatted numbers):
   const formatted = raw.length > d.length;
-  const phoneLike = (startsWithZero && d.length >= 4) || d.length >= 7 || (formatted && d.length >= 4);
+  const phoneLike = formatted && d.length >= 4;
 
   if (phoneLike) {
     return { kind: "phone", digits: d, raw };
@@ -302,7 +269,7 @@ async function searchNewLeads(intent: SearchIntent, opts: Required<SearchOptions
   } else if (intent.kind === "email") {
     qb = qb.ilike("email", `${intent.email}%`);
   } else if (intent.kind === "phone") {
-    const cond = buildPhoneOr(intent.digits);
+    const cond = buildPhoneOr(intent.digits, intent.raw);
     if (!cond) return [];
     qb = qb.or(cond);
   } else if (intent.kind === "name") {
@@ -337,6 +304,35 @@ async function searchNewLeads(intent: SearchIntent, opts: Required<SearchOptions
   return data;
 }
 
+async function searchLegacyLeads(intent: SearchIntent, opts: Required<SearchOptions>): Promise<any[]> {
+  if (intent.kind === "lead") return [];
+
+  let qb = supabase.from("leads_lead").select(LEGACY_LEAD_SEARCH_SELECT);
+
+  if (intent.kind === "email") {
+    qb = qb.ilike("email", `${intent.email}%`);
+  } else if (intent.kind === "phone") {
+    const cond = buildPhoneOr(intent.digits, intent.raw);
+    if (!cond) return [];
+    qb = qb.or(cond);
+  } else if (intent.kind === "name") {
+    if (intent.variants.length > 1) {
+      qb = qb.or(intent.variants.map((v) => `name.ilike.${v}%`).join(","));
+    } else {
+      qb = qb.ilike("name", `${intent.variants[0]}%`);
+    }
+  }
+
+  const { data, error } = await withTimeout(qb.limit(opts.legacyLimit), opts.timeoutMs, "legacy leads search timeout").catch(
+    (err) => {
+      return { data: [], error: err };
+    },
+  );
+
+  if (error || !data) return [];
+  return data;
+}
+
 async function searchContacts(intent: SearchIntent, opts: Required<SearchOptions>): Promise<any[]> {
   const queryStartTime = performance.now();
   // For very short name searches, contacts search is expensive and noisy.
@@ -351,7 +347,7 @@ async function searchContacts(intent: SearchIntent, opts: Required<SearchOptions
     // This prevents matches like "john123@example.com" when searching "john@example.com"
     qb = qb.ilike("email", `${intent.email}%`);
   } else if (intent.kind === "phone") {
-    const cond = buildPhoneOr(intent.digits);
+    const cond = buildPhoneOr(intent.digits, intent.raw);
     if (!cond) return [];
     qb = qb.or(cond);
   } else if (intent.kind === "name") {
@@ -819,9 +815,13 @@ function scoreResult(intent: SearchIntent, r: CombinedLead): number {
     else if (leadNum.startsWith(qNoPrefix)) s += 70;
     else if (leadNum.includes(qNoPrefix)) s += 40;
   } else if (intent.kind === "phone") {
-    if (qDigits && (phone === qDigits || mobile === qDigits)) s += 100;
-    else if (qDigits && (phone.endsWith(qDigits) || mobile.endsWith(qDigits))) s += 70;
-    else if (qDigits && (phone.includes(qDigits) || mobile.includes(qDigits))) s += 40;
+    if (qDigits && (phoneDigitsMatch(r.phone || "", qDigits) || phoneDigitsMatch(r.mobile || "", qDigits))) {
+      const pd = digitsOnly(r.phone || "");
+      const md = digitsOnly(r.mobile || "");
+      if (pd === qDigits || md === qDigits) s += 100;
+      else if (pd.endsWith(qDigits) || md.endsWith(qDigits) || qDigits.endsWith(pd) || qDigits.endsWith(md)) s += 70;
+      else s += 40;
+    }
   } else {
     const q = lower(intent.raw);
     if (name === q) s += 80;
@@ -853,7 +853,9 @@ function markFuzzy(intent: SearchIntent, r: CombinedLead): boolean {
     const qNo = lower(stripLeadPrefix(intent.raw));
     return !(ld === q || ld === qNo || ld.startsWith(qNo));
   }
-  if (intent.kind === "phone") return !(qDigits && (pd.includes(qDigits) || md.includes(qDigits)));
+  if (intent.kind === "phone") {
+    return !(qDigits && (phoneDigitsMatch(r.phone || "", qDigits) || phoneDigitsMatch(r.mobile || "", qDigits)));
+  }
   return !(nm === q || nm.startsWith(q));
 }
 
@@ -911,6 +913,7 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
         const results = await Promise.allSettled([
           searchNewLeads(intent, opts),
           searchContacts(intent, opts),
+          searchLegacyLeads(intent, opts),
         ]);
 
         if (results[0].status === 'fulfilled') {
@@ -919,6 +922,10 @@ export async function searchLeads(query: string, options: SearchOptions = {}): P
 
         if (results[1].status === 'fulfilled') {
           contactRowsResult = results[1].value;
+        }
+
+        if (results[2].status === 'fulfilled') {
+          legacyDirectRows = results[2].value;
         }
       } catch (error) {
         // Continue with empty results

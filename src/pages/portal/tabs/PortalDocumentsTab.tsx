@@ -6,6 +6,7 @@ import {
   EyeIcon,
   PaperClipIcon,
   XCircleIcon,
+  XMarkIcon,
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 import {
@@ -14,9 +15,11 @@ import {
 } from '../../../components/DocumentModal';
 import { DocumentFileGlyph, inferDocumentFileKind } from '../../../lib/documentFileGlyphs';
 import {
+  portalGetLeadCaseDocumentTypes,
   portalUploadDocument,
   type PortalDocumentClassification,
   type PortalDocumentRow,
+  type PortalLeadCaseDocumentType,
 } from '../../../lib/portalApi';
 import {
   getPortalTabHeaderCoverImage,
@@ -215,11 +218,17 @@ function PortalDocumentPreview({
   );
 }
 
-const PortalDocumentsTab: React.FC = () => {
+const PortalDocumentsTab: React.FC<{ sessionContactId?: number | null }> = ({ sessionContactId = null }) => {
   const { data, initialLoading, refresh } = usePortalTabData();
   const classifications = data?.documents?.classifications ?? [];
   const documents = data?.documents?.documents ?? [];
   const signedUrls = data?.documentSignedUrls ?? {};
+  const portalContacts = data?.contacts?.contacts ?? [];
+  const [documentTypes, setDocumentTypes] = useState<PortalLeadCaseDocumentType[]>([]);
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [modalContactId, setModalContactId] = useState<number | ''>('');
+  const [modalDocumentTypeId, setModalDocumentTypeId] = useState<string>('');
   const [activeTabKey, setActiveTabKey] = useState<PortalDocumentTabKey>('sequence');
   const loading = initialLoading && !data;
   const [isUploading, setIsUploading] = useState(false);
@@ -228,6 +237,62 @@ const PortalDocumentsTab: React.FC = () => {
   const [previewItems, setPreviewItems] = useState<DocumentPreviewItem[]>([]);
   const [previewInitialIndex, setPreviewInitialIndex] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const types = await portalGetLeadCaseDocumentTypes();
+        if (!cancelled) setDocumentTypes(types);
+      } catch (e) {
+        console.warn('portal document types:', e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const defaultContactId = useMemo((): number | '' => {
+    if (sessionContactId != null) return sessionContactId;
+    const main = portalContacts.find((c) => c.is_main);
+    if (main?.id != null) return main.id;
+    if (portalContacts[0]?.id != null) return portalContacts[0].id;
+    return '';
+  }, [portalContacts, sessionContactId]);
+
+  const defaultDocumentTypeId = useMemo(
+    () => (documentTypes[0]?.id ? documentTypes[0].id : ''),
+    [documentTypes],
+  );
+
+  const openUploadModal = useCallback(
+    (files: File[]) => {
+      if (!files.length || isUploading) return;
+      if (!documentTypes.length) {
+        toast.error('No document types are set up for your case yet. Please contact your case manager.');
+        return;
+      }
+      setPendingFiles(files);
+      setModalContactId(defaultContactId);
+      setModalDocumentTypeId(defaultDocumentTypeId);
+      setUploadModalOpen(true);
+    },
+    [defaultContactId, defaultDocumentTypeId, documentTypes.length, isUploading],
+  );
+
+  const closeUploadModal = useCallback(() => {
+    if (isUploading) return;
+    setUploadModalOpen(false);
+    setPendingFiles([]);
+  }, [isUploading]);
+
+  const modalCanSubmit =
+    uploadModalOpen &&
+    pendingFiles.length > 0 &&
+    modalContactId !== '' &&
+    !!modalDocumentTypeId &&
+    !isUploading;
 
   const reloadDocuments = useCallback(
     async (opts?: { selectSequenceCategory?: boolean }) => {
@@ -256,7 +321,10 @@ const PortalDocumentsTab: React.FC = () => {
     [documents],
   );
 
-  const uploadFiles = async (files: File[]) => {
+  const uploadFiles = async (
+    files: File[],
+    opts: { contactId: number; documentTypeId: string },
+  ) => {
     if (!files.length) return;
 
     setIsUploading(true);
@@ -313,7 +381,7 @@ const PortalDocumentsTab: React.FC = () => {
     for (const file of files) {
       startProgressSimulation(file.name, file.size);
       try {
-        await portalUploadDocument(file);
+        await portalUploadDocument(file, opts);
         stopProgressSimulation(file.name);
         setUploadedFiles((prev) =>
           prev.map((f) =>
@@ -338,26 +406,39 @@ const PortalDocumentsTab: React.FC = () => {
     progressIntervals.forEach((interval) => clearInterval(interval));
     progressIntervals.clear();
     setIsUploading(false);
+    setUploadModalOpen(false);
+    setPendingFiles([]);
 
     setTimeout(() => {
       setUploadedFiles((prev) => prev.filter((f) => f.status !== 'success'));
     }, 3000);
   };
 
-  const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleConfirmUpload = async () => {
+    if (!modalCanSubmit) {
+      toast.error('Please choose a contact and document type');
+      return;
+    }
+    await uploadFiles(pendingFiles, {
+      contactId: Number(modalContactId),
+      documentTypeId: modalDocumentTypeId,
+    });
+  };
+
+  const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files?.length) return;
-    await uploadFiles(Array.from(files));
+    openUploadModal(Array.from(files));
     e.target.value = '';
   };
 
-  const handleFileDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+  const handleFileDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     if (isUploading) return;
     const files = Array.from(e.dataTransfer.files ?? []);
     if (!files.length) return;
-    await uploadFiles(files);
+    openUploadModal(files);
   };
 
   const resolveDownloadUrl = (doc: PortalDocumentRow): string | null => {
@@ -395,6 +476,8 @@ const PortalDocumentsTab: React.FC = () => {
     [documentsInActiveCategory, signedUrls],
   );
 
+  const canSelectFiles = documentTypes.length > 0 && !isUploading;
+
   if (loading) return <PortalLoading />;
 
   return (
@@ -413,14 +496,26 @@ const PortalDocumentsTab: React.FC = () => {
       />
 
       <p className="text-xs text-base-content/65">
-        Uploads are added to <span className="font-medium text-base-content/90">Sequence of Events</span>.
+        {documentTypes.length > 0
+          ? 'Select files to upload. You will choose the contact and document type before each upload.'
+          : 'Your case manager has not added any document types for upload yet. You can still view shared documents below.'}
       </p>
+
+      {documentTypes.length === 0 ? (
+        <PortalCard>
+          <p className="text-sm text-base-content/60">
+            Upload is not available until your case team adds the required document types in the CRM.
+          </p>
+        </PortalCard>
+      ) : null}
 
       <div
         className={`rounded-lg border-2 border-dashed p-6 text-center transition-colors duration-200 sm:p-8 ${
           isUploading
             ? 'border-primary bg-gray-50'
-            : 'border-gray-300 bg-gray-50 hover:border-primary hover:bg-blue-50'
+            : canSelectFiles
+              ? 'border-gray-300 bg-gray-50 hover:border-primary hover:bg-blue-50'
+              : 'border-gray-200 bg-gray-50/80 opacity-70'
         }`}
         onDragOver={(e) => {
           e.preventDefault();
@@ -430,18 +525,20 @@ const PortalDocumentsTab: React.FC = () => {
           e.preventDefault();
           e.stopPropagation();
         }}
-        onDrop={handleFileDrop}
+        onDrop={canSelectFiles ? handleFileDrop : undefined}
       >
         <DocumentArrowUpIcon className="mx-auto mb-4 h-12 w-12 text-gray-400" />
         <div className="mb-4 text-base text-gray-600">
           {isUploading
             ? 'Processing files...'
-            : 'Drag and drop files here, or click to select files'}
+            : canSelectFiles
+              ? 'Drag and drop files here, or click to select files'
+              : 'Upload unavailable — no document types configured for this case'}
         </div>
         <button
           type="button"
-          className={`btn btn-outline btn-primary ${isUploading ? 'btn-disabled' : ''}`}
-          disabled={isUploading}
+          className={`btn btn-outline btn-primary ${!canSelectFiles ? 'btn-disabled' : ''}`}
+          disabled={!canSelectFiles}
           onClick={() => fileInputRef.current?.click()}
         >
           <PaperClipIcon className="h-5 w-5" />
@@ -577,6 +674,8 @@ const PortalDocumentsTab: React.FC = () => {
                     <p className="mt-1 text-xs text-base-content/45">
                       {new Date(doc.created_at).toLocaleDateString()}
                       {doc.file_size ? ` · ${(doc.file_size / 1024).toFixed(0)} KB` : ''}
+                      {doc.contact_name ? ` · ${doc.contact_name}` : ''}
+                      {doc.document_type_name ? ` · ${doc.document_type_name}` : ''}
                       {doc.uploaded_by ? ` · ${doc.uploaded_by}` : ''}
                     </p>
                     {url ? (
@@ -627,6 +726,115 @@ const PortalDocumentsTab: React.FC = () => {
         documents={previewItems}
         initialIndex={previewInitialIndex}
       />
+
+      {uploadModalOpen ? (
+        <div className="modal modal-open z-[300]">
+          <div className="modal-box max-w-lg">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="text-lg font-bold text-gray-900">Upload documents</h3>
+                <p className="mt-1 text-sm text-base-content/60">
+                  Choose who the documents belong to and what type they are.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm btn-square"
+                onClick={closeUploadModal}
+                disabled={isUploading}
+                aria-label="Close"
+              >
+                <XMarkIcon className="h-5 w-5" />
+              </button>
+            </div>
+
+            {pendingFiles.length > 0 ? (
+              <div className="mt-4 max-h-36 space-y-2 overflow-y-auto rounded-xl bg-gray-50 px-3 py-2">
+                {pendingFiles.map((file, index) => (
+                  <div key={`${file.name}-${file.size}-${index}`} className="flex items-center gap-2 text-sm">
+                    <PaperClipIcon className="h-4 w-4 shrink-0 text-primary" />
+                    <span className="min-w-0 truncate font-medium text-gray-800">{file.name}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="mt-4 grid gap-3">
+              <label className="form-control w-full">
+                <span className="label-text mb-1 text-sm font-medium text-base-content/80">Contact</span>
+                <select
+                  className="select select-bordered w-full"
+                  value={modalContactId === '' ? '' : String(modalContactId)}
+                  onChange={(e) => setModalContactId(e.target.value ? Number(e.target.value) : '')}
+                  disabled={isUploading}
+                >
+                  <option value="">Select contact…</option>
+                  {portalContacts.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                      {c.is_main ? ' (main)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="form-control w-full">
+                <span className="label-text mb-1 text-sm font-medium text-base-content/80">Document type</span>
+                <select
+                  className="select select-bordered w-full"
+                  value={modalDocumentTypeId}
+                  onChange={(e) => setModalDocumentTypeId(e.target.value)}
+                  disabled={isUploading || documentTypes.length === 0}
+                >
+                  <option value="">
+                    {documentTypes.length === 0 ? 'No types configured for this case' : 'Select type…'}
+                  </option>
+                  {documentTypes.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+
+            <div className="modal-action mt-6">
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={closeUploadModal}
+                disabled={isUploading}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary gap-2"
+                onClick={() => void handleConfirmUpload()}
+                disabled={!modalCanSubmit}
+              >
+                {isUploading ? (
+                  <>
+                    <span className="loading loading-spinner loading-sm" />
+                    Uploading…
+                  </>
+                ) : (
+                  <>
+                    <DocumentArrowUpIcon className="h-4 w-4" />
+                    Upload
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="modal-backdrop"
+            aria-label="Close upload dialog"
+            onClick={closeUploadModal}
+            disabled={isUploading}
+          />
+        </div>
+      ) : null}
     </PortalTabFrame>
   );
 };

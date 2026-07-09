@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronLeftIcon, DocumentCheckIcon } from '@heroicons/react/24/outline';
 import MobileBottomSheet from './MobileBottomSheet';
+import { dedupeLeadSubEffortRows, hasLeadSubEffortSavedUpdate, leadSubEffortSavedUpdatedAt, leadSubEffortSavedUpdatedBy } from '../lib/leadSubEfforts';
 
 type SubEffortsLogSidebarProps = {
   isLoading: boolean;
@@ -40,8 +41,9 @@ function SubEffortsLogList({
     <div className="space-y-2">
       {rows.map((row: any) => {
         const name = row?.sub_efforts?.name ?? '—';
-        const who = row?.tenants_employee?.display_name ?? row?.created_by ?? '—';
-        const when = row?.created_at ? new Date(row.created_at).toLocaleString() : '—';
+        const who = leadSubEffortSavedUpdatedBy(row) ?? '—';
+        const savedAt = leadSubEffortSavedUpdatedAt(row);
+        const when = savedAt ? new Date(savedAt).toLocaleString() : '—';
         return (
           <button
             key={row.id}
@@ -52,11 +54,15 @@ function SubEffortsLogList({
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="truncate text-sm font-semibold text-gray-800 dark:text-gray-100">{name}</div>
-                <div className="mt-0.5 truncate text-xs text-gray-500">
-                  by <span className="font-medium text-gray-700 dark:text-gray-300">{String(who)}</span>
-                </div>
+                {hasLeadSubEffortSavedUpdate(row) ? (
+                  <div className="mt-0.5 truncate text-xs text-gray-500">
+                    by <span className="font-medium text-gray-700 dark:text-gray-300">{who}</span>
+                  </div>
+                ) : null}
               </div>
-              <div className="whitespace-nowrap text-[11px] text-gray-400">{when}</div>
+              {when !== '—' ? (
+                <div className="whitespace-nowrap text-[11px] text-gray-400">{when}</div>
+              ) : null}
             </div>
           </button>
         );
@@ -73,6 +79,7 @@ export function SubEffortsLogSidebar({
   hideSideTab = false,
 }: SubEffortsLogSidebarProps) {
   const [open, setOpen] = useState(false);
+  const displayRows = dedupeLeadSubEffortRows(rows);
 
   useEffect(() => {
     if (hideSideTab) setOpen(false);
@@ -80,7 +87,7 @@ export function SubEffortsLogSidebar({
 
   if (hideSideTab) return null;
 
-  const count = rows.length;
+  const count = displayRows.length;
 
   const handleClose = () => setOpen(false);
 
@@ -138,7 +145,7 @@ export function SubEffortsLogSidebar({
           ) : undefined
         }
       >
-        <SubEffortsLogList isLoading={isLoading} rows={rows} onRowClick={handleRowClick} />
+        <SubEffortsLogList isLoading={isLoading} rows={displayRows} onRowClick={handleRowClick} />
       </MobileBottomSheet>
     </>,
     document.body

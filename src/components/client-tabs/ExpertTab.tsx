@@ -41,6 +41,7 @@ import ExpertNotesModal from '../ExpertNotesModal';
 import { toast } from 'react-hot-toast';
 import { buildCaseDocumentStoragePath, CASE_DOCUMENTS_STORAGE_BUCKET, resolveCaseDocumentUploadContentType } from '../../lib/caseDocumentsStorage';
 import { CLIENT_HEADER_ONEDRIVE_SUBFOLDER } from '../../lib/leadOneDrivePaths';
+import { resolveLeadSubEffortIdentityFromRefs } from '../../lib/leadSubEfforts';
 
 /** Same parsing as `DocumentModal` for `lead_sub_efforts.document_url` — used only for total count. */
 function normalizeSubEffortDocumentItems(raw: unknown): unknown[] {
@@ -1515,25 +1516,10 @@ ${combinedText}`;
       }
 
       let subItemCount = 0;
-      const rawClientId = String((client as any)?.id ?? '').trim();
-      let newLeadId: string | null = null;
-      let legacyLeadId: number | null = null;
-      if (rawClientId) {
-        if (rawClientId.startsWith('legacy_')) {
-          const n = Number.parseInt(rawClientId.replace('legacy_', ''), 10);
-          legacyLeadId = Number.isFinite(n) ? n : null;
-        } else {
-          newLeadId = rawClientId;
-        }
-      } else {
-        const { data: leadRow } = await supabase
-          .from('leads')
-          .select('id')
-          .eq('lead_number', leadNum)
-          .maybeSingle();
-        const id = (leadRow as { id?: string } | null)?.id;
-        if (typeof id === 'string' && id.trim()) newLeadId = id.trim();
-      }
+      const { legacyLeadId, newLeadId } = await resolveLeadSubEffortIdentityFromRefs(supabase, {
+        clientId: (client as any)?.id ?? null,
+        leadNumber: leadNum,
+      });
 
       if (newLeadId || legacyLeadId) {
         let q = supabase

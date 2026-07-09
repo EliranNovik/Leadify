@@ -83,6 +83,7 @@ import {
   ArrowRightIcon,
   ArchiveBoxIcon,
   LockClosedIcon,
+  DocumentIcon,
 } from '@heroicons/react/24/outline';
 const loadInfoTab = () => import('./client-tabs/InfoTab');
 const loadRolesTab = () => import('./client-tabs/RolesTab');
@@ -93,6 +94,7 @@ const loadMeetingTab = () => import('./client-tabs/MeetingTab');
 const loadPriceOfferTab = () => import('./client-tabs/PriceOfferTab');
 const loadInteractionsTab = () => import('./client-tabs/InteractionsTab');
 const loadFinancesTab = () => import('./client-tabs/FinancesTab');
+const loadDocumentsTab = () => import('./client-tabs/DocumentsTab');
 
 // Keep the suspense boundary local to the tab body so Header/Sidebar never wait on tab chunks.
 const InfoTab = lazy(loadInfoTab);
@@ -104,6 +106,7 @@ const MeetingTab = lazy(loadMeetingTab);
 const PriceOfferTab = lazy(loadPriceOfferTab);
 const InteractionsTab = lazy(loadInteractionsTab);
 const FinancesTab = lazy(loadFinancesTab);
+const DocumentsTab = lazy(loadDocumentsTab);
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee, getAccessTokenWithFallback, AuthPopupBlockedError, triggerTokenRedirect } from '../lib/graph';
@@ -171,6 +174,7 @@ const TAB_LOADERS: Record<string, () => Promise<any>> = {
   price: loadPriceOfferTab,
   interactions: loadInteractionsTab,
   finances: loadFinancesTab,
+  documents: loadDocumentsTab,
 };
 // Set window.__CLIENTS_DEBUG__ = true to show verbose console logs (handler options, sub-leads, etc.)
 const CLIENTS_DEBUG = typeof window !== 'undefined' && (window as any).__CLIENTS_DEBUG__ === true;
@@ -3371,6 +3375,7 @@ const Clients: React.FC<ClientsProps> = ({
             next_followup: data.next_followup || '',
             probability: data.probability !== null && data.probability !== undefined ? Number(data.probability) : 0,
             category: getCategoryDisplayFromJoin(data) ?? getCategoryName(data.category_id, data.category),
+            category_id: data.category_id ?? null,
             language: languageName, // Always use the language name (never use ID)
             balance: String(data.total || ''), // Map total to balance
             total: data.total || null, // Include total for balance badge logic
@@ -4240,6 +4245,7 @@ const Clients: React.FC<ClientsProps> = ({
                   next_followup: legacyLead.next_followup || '',
                   probability: legacyLead.probability !== null && legacyLead.probability !== undefined ? Number(legacyLead.probability) : 0,
                   category: getCategoryDisplayFromJoin(legacyLead) ?? getCategoryName(legacyLead.category_id, legacyLead.category),
+                  category_id: legacyLead.category_id ?? null,
                   language: languageName, // Always use the language name (never use ID)
                   balance: String(legacyLead.total || ''),
                   balance_currency: legacyCurrencyRecord?.name || (() => {
@@ -10701,6 +10707,7 @@ const Clients: React.FC<ClientsProps> = ({
       { id: 'price', label: 'Offer', icon: CurrencyDollarIcon, component: PriceOfferTab },
       { id: 'interactions', label: 'Interactions', icon: ChatBubbleLeftRightIcon, badge: finalCount, component: InteractionsTab },
       { id: 'finances', label: 'Finances', icon: BanknotesIcon, component: FinancesTab },
+      { id: 'documents', label: 'Documents', icon: DocumentIcon, component: DocumentsTab },
     ];
 
     // Filter out Meeting, Price Offer, and Finances tabs when stage is "Created"

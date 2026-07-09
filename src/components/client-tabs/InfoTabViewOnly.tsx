@@ -289,18 +289,18 @@ const InfoTabViewOnly: React.FC<ClientTabProps> = ({ client }) => {
   const currentSection = isLegacy ? sectionEligibility : (client.section_eligibility ?? '');
 
   return (
-    <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
+    <div className="p-2 sm:p-4 md:p-6 space-y-2 sm:space-y-3">
       <ClientTabPageHeader
-        className="mb-6"
+        className="mb-2"
         icon={InformationCircleIcon}
         title="Client Information"
         subtitle="View client details and case information"
       />
 
       {/* Main Info Grid */}
-      <div className="space-y-12">
+      <div className="space-y-2">
         {/* Row 1: Case Probability, Follow-up Status, Eligibility Status */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 gap-y-12">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-2 gap-y-2">
           {/* Case Probability */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="pl-6 pt-2 pb-2 w-2/5">
@@ -408,7 +408,7 @@ const InfoTabViewOnly: React.FC<ClientTabProps> = ({ client }) => {
         </div>
 
         {/* Row 2: Special Notes and General Notes */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 gap-y-2">
           {/* Special Notes */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="pl-6 pt-2 pb-2 w-2/5">
@@ -463,7 +463,7 @@ const InfoTabViewOnly: React.FC<ClientTabProps> = ({ client }) => {
         </div>
 
         {/* Row 4: Facts of Case and Tags */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 gap-y-12">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 gap-y-2">
           {/* Facts of Case */}
           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
             <div className="pl-6 pt-2 pb-2 w-2/5">

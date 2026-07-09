@@ -66,6 +66,13 @@ import { fetchStageActorInfo } from '../lib/leadStageManager';
 import { SubEffortsLogModal } from './SubEffortsLogModal';
 import { SubEffortsLogSidebar } from './SubEffortsLogSidebar';
 import {
+    ensureLeadSubEffortRows,
+    dedupeLeadSubEffortRows,
+    fetchSubEffortsForMiscCategory,
+    leadSubEffortIdentity,
+    resolveLeadMiscCategoryId,
+} from '../lib/leadSubEfforts';
+import {
     fetchPublicUserId,
     fetchLeadFieldFlagsForLead,
     fetchFlagTypes,
@@ -430,13 +437,14 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     connectToAppHeader = false,
 }) => {
     const navigate = useNavigate();
-    const [subEfforts, setSubEfforts] = useState<Array<{ id: number; name: string }>>([]);
+    const [subEfforts, setSubEfforts] = useState<Array<{ id: number; name: string; sort_order: number }>>([]);
     const [isLoadingSubEfforts, setIsLoadingSubEfforts] = useState(false);
-    const [isSavingSubEffort, setIsSavingSubEffort] = useState(false);
     const [leadSubEfforts, setLeadSubEfforts] = useState<any[]>([]);
     const [isLoadingLeadSubEfforts, setIsLoadingLeadSubEfforts] = useState(false);
     const [isSubEffortsModalOpen, setIsSubEffortsModalOpen] = useState(false);
     const [subEffortsModalRowId, setSubEffortsModalRowId] = useState<string | number | null>(null);
+    const subEffortsProvisionKeyRef = useRef<string | null>(null);
+    const subEffortsFetchInFlightRef = useRef(false);
     const [editLeadDrawerOpen, setEditLeadDrawerOpen] = useState(false);
     const [clientPortalModalOpen, setClientPortalModalOpen] = useState(false);
     const [moreActionsSheetOpen, setMoreActionsSheetOpen] = useState(false);
@@ -955,6 +963,11 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
         };
     }, [selectedClient?.id, (selectedClient as any)?.stage, currentStageName, isStageNumeric, stageNumeric]);
 
+    const leadMiscCategoryId = useMemo(
+        () => resolveLeadMiscCategoryId(selectedClient as { category_id?: unknown } | null),
+        [selectedClient?.category_id, selectedClient?.id],
+    );
+
     const showAssignSchedulerInHeader = useMemo(() => {
         if (!selectedClient) return false;
         const inferred = Number((selectedClient as any)?.stage ?? NaN);
@@ -970,70 +983,42 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
     useEffect(() => {
         let cancelled = false;
         const load = async () => {
-            // Only load when relevant to avoid extra DB calls
             if (!subEffortsStageFlags.loadSubEffortsCatalog) {
                 return;
             }
             setIsLoadingSubEfforts(true);
             try {
-                // Prefer filtering by `active` (admin-controlled). Fallback for environments where
-                // the column hasn't been deployed yet.
-                const withActive = await supabase
-                    .from('sub_efforts')
-                    .select('id, name, active')
-                    .eq('active', true)
-                    .order('name', { ascending: true });
-
-                if (!withActive.error) {
-                    if (!cancelled) {
-                        setSubEfforts(
-                            (withActive.data as any[])?.map(r => ({ id: Number(r.id), name: String(r.name) })) ?? []
-                        );
-                    }
-                } else {
-                    const err: any = withActive.error;
-                    const msg = String(err?.message || '');
-                    if (err?.code === '42703' && msg.toLowerCase().includes('active')) {
-                        const fallback = await supabase
-                            .from('sub_efforts')
-                            .select('id, name')
-                            .order('name', { ascending: true });
-                        if (fallback.error) throw fallback.error;
-                        if (!cancelled) {
-                            setSubEfforts((fallback.data as any[])?.map(r => ({ id: Number(r.id), name: String(r.name) })) ?? []);
-                        }
-                    } else {
-                        throw withActive.error;
-                    }
-                }
+                const items = await fetchSubEffortsForMiscCategory(supabase, leadMiscCategoryId);
+                if (!cancelled) setSubEfforts(items);
             } catch (e) {
-                console.error('Error loading sub_efforts:', e);
-                if (!cancelled) setSubEfforts([
-                    { id: 1, name: 'Aplication submitted' },
-                    { id: 2, name: 'Communication with client' },
-                ]);
+                console.error('Error loading sub_efforts for case type:', e);
+                if (!cancelled) setSubEfforts([]);
             } finally {
                 if (!cancelled) setIsLoadingSubEfforts(false);
             }
         };
         void load();
         return () => { cancelled = true; };
-    }, [subEffortsStageFlags.loadSubEffortsCatalog]);
+    }, [subEffortsStageFlags.loadSubEffortsCatalog, leadMiscCategoryId]);
+
+    useEffect(() => {
+        subEffortsProvisionKeyRef.current = null;
+    }, [selectedClient?.id, leadMiscCategoryId]);
 
     const fetchLeadSubEfforts = useCallback(async () => {
         if (!selectedClient?.id) return;
         if (!subEffortsStageFlags.fetchLeadSubEffortRows) return;
+        if (subEffortsFetchInFlightRef.current) return;
 
-        const idStr = String(selectedClient.id);
-        const isLegacy = idStr.startsWith('legacy_') || selectedClient.lead_type === 'legacy';
-        const legacyId = isLegacy ? Number.parseInt(idStr.replace('legacy_', ''), 10) : null;
-        const newLeadId = !isLegacy ? idStr : null;
+        const { legacyId, newLeadId } = leadSubEffortIdentity(selectedClient);
+        if (!legacyId && !newLeadId) return;
 
+        const provisionKey = `${String(selectedClient.id)}:${leadMiscCategoryId ?? 'none'}`;
+
+        subEffortsFetchInFlightRef.current = true;
         setIsLoadingLeadSubEfforts(true);
         try {
-            let q = supabase
-                .from('lead_sub_efforts')
-                .select(`
+            const selectQuery = `
                     id,
                     legacy_lead_id,
                     new_lead_id,
@@ -1048,14 +1033,30 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                     document_url,
                     internal_notes,
                     client_notes,
-                    sub_efforts ( id, name ),
+                    sub_effort_id,
+                    sub_efforts (
+                        id,
+                        name,
+                        sort_order,
+                        description,
+                        default_client_visible,
+                        sub_category_efforts (
+                            id,
+                            name,
+                            sort_order
+                        )
+                    ),
                     tenants_employee ( id, display_name, photo_url, photo )
-                `)
+                `;
+
+            let q = supabase
+                .from('lead_sub_efforts')
+                .select(selectQuery)
                 .order('sort_order', { ascending: true })
                 .order('created_at', { ascending: true })
-                .limit(25);
+                .limit(500);
 
-            if (isLegacy && legacyId) {
+            if (legacyId) {
                 q = q.eq('legacy_lead_id', legacyId);
             } else if (newLeadId) {
                 q = q.eq('new_lead_id', newLeadId);
@@ -1063,74 +1064,56 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
 
             const { data, error } = await q;
             if (error) throw error;
-            setLeadSubEfforts((data as any[]) ?? []);
+            let rows = (data as any[]) ?? [];
+
+            const catalog = leadMiscCategoryId
+                ? await fetchSubEffortsForMiscCategory(supabase, leadMiscCategoryId)
+                : [];
+
+            if (catalog.length > 0 && subEffortsProvisionKeyRef.current !== provisionKey) {
+                const actor = await fetchStageActorInfo();
+                const inserted = await ensureLeadSubEffortRows(supabase, {
+                    catalog,
+                    legacyLeadId: legacyId,
+                    newLeadId,
+                    actor,
+                });
+                subEffortsProvisionKeyRef.current = provisionKey;
+                if (inserted) {
+                    const { data: refreshed, error: refreshError } = await q;
+                    if (refreshError) throw refreshError;
+                    rows = (refreshed as any[]) ?? [];
+                }
+            }
+
+            if (catalog.length > 0) {
+                const allowedIds = new Set(catalog.map((item) => item.id));
+                rows = rows.filter((row) => {
+                    const id = Number((row as any)?.sub_effort_id ?? (row as any)?.sub_efforts?.id);
+                    return Number.isFinite(id) && allowedIds.has(id);
+                });
+            }
+
+            setLeadSubEfforts(dedupeLeadSubEffortRows(rows));
+            if (catalog.length > 0) {
+                setSubEfforts(catalog);
+            }
         } catch (e) {
             console.error('Error fetching lead_sub_efforts:', e);
         } finally {
+            subEffortsFetchInFlightRef.current = false;
             setIsLoadingLeadSubEfforts(false);
         }
-    }, [selectedClient?.id, selectedClient?.lead_type, subEffortsStageFlags.fetchLeadSubEffortRows]);
+    }, [
+        selectedClient?.id,
+        selectedClient?.lead_type,
+        subEffortsStageFlags.fetchLeadSubEffortRows,
+        leadMiscCategoryId,
+    ]);
 
     useEffect(() => {
         void fetchLeadSubEfforts();
     }, [fetchLeadSubEfforts]);
-
-    const handleSelectSubEffort = useCallback(
-        async (opt: { id: number; name: string }): Promise<string | number | null> => {
-            if (!selectedClient?.id) return null;
-            if (isSavingSubEffort) return null;
-            setIsSavingSubEffort(true);
-            try {
-                // Prevent duplicates (same sub_effort only once per lead)
-                const alreadyUsed = leadSubEfforts?.some((r: any) => {
-                    const isActive = (r as any)?.active !== false;
-                    const id = Number((r as any)?.sub_effort_id ?? (r as any)?.sub_efforts?.id);
-                    return isActive && Number.isFinite(id) && id === Number(opt.id);
-                });
-                if (alreadyUsed) {
-                    toast.error('This sub effort was already added for this lead.');
-                    return null;
-                }
-
-                const actor = await fetchStageActorInfo();
-                const idStr = String(selectedClient.id);
-                const isLegacy = idStr.startsWith('legacy_') || selectedClient.lead_type === 'legacy';
-                const legacyId = isLegacy ? Number.parseInt(idStr.replace('legacy_', ''), 10) : null;
-                const newLeadId = !isLegacy ? idStr : null;
-
-                const payload: any = {
-                    sub_effort_id: opt.id,
-                    employee_id: actor.employeeId ?? null,
-                    created_by: actor.fullName ?? null,
-                    updated_by: actor.fullName ?? null,
-                    internal: false,
-                    active: true,
-                };
-                if (legacyId) payload.legacy_lead_id = legacyId;
-                if (newLeadId) payload.new_lead_id = newLeadId;
-
-                const maxSort = (leadSubEfforts ?? []).reduce((max: number, r: any) => {
-                    const n = Number(r?.sort_order);
-                    return Number.isFinite(n) ? Math.max(max, n) : max;
-                }, -1);
-                payload.sort_order = maxSort + 1;
-
-                const { data, error } = await supabase.from('lead_sub_efforts').insert(payload).select('id').single();
-                if (error) throw error;
-
-                toast.success(`Sub effort added: ${opt.name}`);
-                await fetchLeadSubEfforts();
-                return data?.id ?? null;
-            } catch (e: any) {
-                console.error('Error creating lead_sub_efforts row:', e);
-                toast.error(`Failed to add sub effort: ${e?.message || 'Unknown error'}`);
-                return null;
-            } finally {
-                setIsSavingSubEffort(false);
-            }
-        },
-        [selectedClient?.id, selectedClient?.lead_type, isSavingSubEffort, fetchLeadSubEfforts, leadSubEfforts]
-    );
 
     const openSubEffortsModal = useCallback((rowId?: string | number | null) => {
         setSubEffortsModalRowId(rowId ?? null);
@@ -4124,56 +4107,25 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                                         Finalize Case
                                                                     </button>
                                                                 )}
-                                                                <div className="dropdown dropdown-end">
-                                                                    <button
-                                                                        type="button"
-                                                                        className={STAGE_ACTION_BTN_CLASS_COMPACT}
-                                                                        disabled={isLoadingSubEfforts || isSavingSubEffort}
-                                                                    >
-                                                                        <DocumentCheckIcon className="w-5 h-5" />
-                                                                        Sub efforts
-                                                                        <ChevronDownIcon className="w-5 h-5" />
-                                                                    </button>
-                                                                    <ul tabIndex={0} className="dropdown-content z-[330] menu p-2 shadow bg-base-100 rounded-box w-72">
-                                                                        {(() => {
-                                                                            const usedActive = new Set(
-                                                                                (leadSubEfforts || [])
-                                                                                    .filter((r: any) => (r as any)?.active !== false)
-                                                                                    .map((r: any) =>
-                                                                                        Number((r as any)?.sub_effort_id ?? (r as any)?.sub_efforts?.id)
-                                                                                    )
-                                                                                    .filter((n: any) => Number.isFinite(n))
-                                                                            );
-                                                                            const allOpts = (subEfforts.length > 0 ? subEfforts : [
-                                                                                { id: 1, name: 'Aplication submitted' },
-                                                                                { id: 2, name: 'Communication with client' },
-                                                                            ]);
-                                                                            const remaining = allOpts.filter(opt => !usedActive.has(Number(opt.id)));
-                                                                            if (remaining.length === 0) {
-                                                                                return (
-                                                                                    <li>
-                                                                                        <span className="px-3 py-2 text-sm text-gray-500">
-                                                                                            No more sub efforts
-                                                                                        </span>
-                                                                                    </li>
-                                                                                );
-                                                                            }
-                                                                            return remaining.map(opt => (
-                                                                                <li key={opt.id}>
-                                                                                    <button
-                                                                                        type="button"
-                                                                                        onClick={() => {
-                                                                                            void handleSelectSubEffort(opt);
-                                                                                        }}
-                                                                                        className="text-sm"
-                                                                                    >
-                                                                                        {opt.name}
-                                                                                    </button>
-                                                                                </li>
-                                                                            ));
-                                                                        })()}
-                                                                    </ul>
-                                                                </div>
+                                                                <button
+                                                                    type="button"
+                                                                    className={STAGE_ACTION_BTN_CLASS_COMPACT}
+                                                                    onClick={() => openSubEffortsModal(null)}
+                                                                    disabled={isLoadingLeadSubEfforts || isLoadingSubEfforts}
+                                                                    title={
+                                                                        !leadMiscCategoryId
+                                                                            ? 'Set case type on the lead to load sub efforts'
+                                                                            : undefined
+                                                                    }
+                                                                >
+                                                                    <DocumentCheckIcon className="w-5 h-5" />
+                                                                    Sub efforts
+                                                                    {(leadSubEfforts?.length ?? 0) > 0 ? (
+                                                                        <span className="badge badge-sm badge-primary min-h-5 h-5 px-1.5">
+                                                                            {leadSubEfforts.length}
+                                                                        </span>
+                                                                    ) : null}
+                                                                </button>
                                                             </div>
                                                         </>
                                                     )}
@@ -4656,54 +4608,25 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                                                     Finalize Case
                                                 </button>
                                             )}
-                                            <div className="dropdown dropdown-end">
-                                                <button
-                                                    type="button"
-                                                    className={STAGE_ACTION_BTN_CLASS}
-                                                    disabled={isLoadingSubEfforts || isSavingSubEffort}
-                                                >
-                                                    <DocumentCheckIcon className="w-5 h-5" />
-                                                    Sub efforts
-                                                    <ChevronDownIcon className="w-5 h-5" />
-                                                </button>
-                                                <ul tabIndex={0} className="dropdown-content z-[330] menu p-2 shadow bg-base-100 rounded-box w-72">
-                                                    {(() => {
-                                                        const usedActive = new Set(
-                                                            (leadSubEfforts || [])
-                                                                .filter((r: any) => (r as any)?.active !== false)
-                                                                .map((r: any) => Number((r as any)?.sub_effort_id ?? (r as any)?.sub_efforts?.id))
-                                                                .filter((n: any) => Number.isFinite(n))
-                                                        );
-                                                        const allOpts = (subEfforts.length > 0 ? subEfforts : [
-                                                            { id: 1, name: 'Aplication submitted' },
-                                                            { id: 2, name: 'Communication with client' },
-                                                        ]);
-                                                        const remaining = allOpts.filter(opt => !usedActive.has(Number(opt.id)));
-                                                        if (remaining.length === 0) {
-                                                            return (
-                                                                <li>
-                                                                    <span className="px-3 py-2 text-sm text-gray-500">
-                                                                        No more sub efforts
-                                                                    </span>
-                                                                </li>
-                                                            );
-                                                        }
-                                                        return remaining.map(opt => (
-                                                            <li key={opt.id}>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => {
-                                                                        void handleSelectSubEffort(opt);
-                                                                    }}
-                                                                    className="text-sm"
-                                                                >
-                                                                    {opt.name}
-                                                                </button>
-                                                            </li>
-                                                        ));
-                                                    })()}
-                                                </ul>
-                                            </div>
+                                            <button
+                                                type="button"
+                                                className={STAGE_ACTION_BTN_CLASS}
+                                                onClick={() => openSubEffortsModal(null)}
+                                                disabled={isLoadingLeadSubEfforts || isLoadingSubEfforts}
+                                                title={
+                                                    !leadMiscCategoryId
+                                                        ? 'Set case type on the lead to load sub efforts'
+                                                        : undefined
+                                                }
+                                            >
+                                                <DocumentCheckIcon className="w-5 h-5" />
+                                                Sub efforts
+                                                {(leadSubEfforts?.length ?? 0) > 0 ? (
+                                                    <span className="badge badge-sm badge-primary min-h-5 h-5 px-1.5">
+                                                        {leadSubEfforts.length}
+                                                    </span>
+                                                ) : null}
+                                            </button>
                                         </div>
                                     </>
                                 )}
@@ -5527,12 +5450,8 @@ const ClientHeader: React.FC<ClientHeaderProps> = ({
                         leadNumber={selectedClient?.lead_number ?? null}
                         initialSelectedRowId={subEffortsModalRowId}
                         onRefresh={() => void fetchLeadSubEfforts()}
-                        subEffortOptions={subEfforts}
-                        isLoadingSubEffortOptions={isLoadingSubEfforts}
-                        isAddingSubEffort={isSavingSubEffort}
-                        onAddSubEffort={
-                            subEffortsStageFlags.showPickerLogAndModal ? handleSelectSubEffort : undefined
-                        }
+                        categoryLinkedCount={subEfforts.length}
+                        hasLeadCaseType={leadMiscCategoryId != null}
                     />
                 </>
             )}

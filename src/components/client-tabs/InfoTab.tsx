@@ -1650,21 +1650,22 @@ const InfoTab: React.FC<ClientTabProps> = ({
   const probabilityModalInitialFinancial = pendingProbStored?.financial ?? probFactorFinancial;
 
   return (
-    <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
+    <div className="p-2 sm:p-4 md:p-6 space-y-2 sm:space-y-3">
       <ClientTabPageHeader
         icon={InformationCircleIcon}
         title="Client Information"
         subtitle="View and manage client details and case information"
+        className="mb-2"
       />
 
       {/* Main Info Grid */}
-      <div className="space-y-8">
+      <div className="space-y-2">
         {/* Case Probability + Follow-up; Eligibility + File ID */}
-        <div className="mb-10 flex flex-col gap-10 lg:mb-16 lg:gap-14">
+        <div className="mb-0 flex flex-col gap-2 lg:gap-3">
           <div className="flex flex-col lg:flex-row lg:items-stretch">
           {/* Case Probability */}
           <div className="flex-1 min-w-0 overflow-hidden">
-            <div className="px-0 sm:px-1 pt-2 pb-8 lg:py-2 lg:pr-6 lg:pb-6">
+            <div className="px-0 sm:px-1 pt-0 pb-1 lg:py-0 lg:pr-6 lg:pb-1">
               <div className="flex items-center justify-between gap-2 px-1">
                 <h4 className="text-lg font-semibold text-gray-900">Case Probability</h4>
                 {!readOnly && (
@@ -1680,8 +1681,8 @@ const InfoTab: React.FC<ClientTabProps> = ({
                 )}
               </div>
 
-              <div className="mt-3 rounded-2xl border border-base-200/80 bg-white shadow-sm dark:border-base-300/55 dark:bg-base-100 dark:shadow-none overflow-hidden">
-                <div className="px-4 py-4 space-y-5">
+              <div className="mt-1 rounded-2xl border border-base-200/80 bg-white shadow-sm dark:border-base-300/55 dark:bg-base-100 dark:shadow-none overflow-hidden">
+                <div className="px-4 py-3 space-y-4">
                   <div className="space-y-3">
                 {!probFactorsLoaded ? (
                   <div className="flex justify-center py-4">
@@ -1741,7 +1742,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
 
           {/* Followup */}
           <div className="flex-1 min-w-0 overflow-hidden">
-            <div className="px-0 sm:px-1 pt-2 pb-8 lg:py-2 lg:px-6 lg:pb-6 space-y-5">
+            <div className="px-0 sm:px-1 pt-0 pb-1 lg:py-0 lg:px-6 lg:pb-1 space-y-3">
               <div className="flex items-center justify-between gap-2">
                 <h4 className="text-lg font-semibold text-gray-900">Follow-up Status</h4>
                 {isFollowupLoading ? (
@@ -1888,16 +1889,16 @@ const InfoTab: React.FC<ClientTabProps> = ({
           </div>
           </div>
 
-          <div className="flex flex-col pt-10 lg:flex-row lg:items-stretch lg:pt-14">
+          <div className="flex flex-col pt-0 lg:flex-row lg:items-stretch lg:pt-1">
           {/* Eligibility */}
           <div className="flex-1 min-w-0 overflow-hidden">
-            <div className="px-0 pb-8 pt-2 sm:px-1 lg:pb-6 lg:pl-0 lg:pr-6 lg:pt-2">
+            <div className="px-0 pb-1 pt-0 sm:px-1 lg:pb-1 lg:pl-0 lg:pr-6 lg:pt-0">
               <div className="px-1">
                 <h4 className="text-lg font-semibold text-gray-900">Eligibility Status</h4>
               </div>
 
-              <div className="mt-3 rounded-2xl border border-base-200/80 bg-white shadow-sm dark:border-base-300/55 dark:bg-base-100 dark:shadow-none overflow-hidden">
-                <div className="px-4 py-4 space-y-4">
+              <div className="mt-1 rounded-2xl border border-base-200/80 bg-white shadow-sm dark:border-base-300/55 dark:bg-base-100 dark:shadow-none overflow-hidden">
+                <div className="px-4 py-3 space-y-3">
                   <div className="flex items-center justify-between gap-3 py-1">
                     <div className="flex items-center gap-2">
                       <span
@@ -1977,7 +1978,7 @@ const InfoTab: React.FC<ClientTabProps> = ({
 
           {/* File ID — same row as Eligibility */}
           <div className="flex min-h-0 min-w-0 flex-1 flex-col self-stretch overflow-hidden">
-            <div className="flex min-h-0 flex-1 flex-col gap-3 px-0 pb-8 pt-2 sm:px-1 lg:pb-6 lg:pl-6 lg:pr-0 lg:pt-2">
+            <div className="flex min-h-0 flex-1 flex-col gap-1 px-0 pb-1 pt-0 sm:px-1 lg:pb-1 lg:pl-6 lg:pr-0 lg:pt-0">
               <div className="flex shrink-0 items-center justify-between gap-1">
                 <h4 className="text-base font-semibold text-gray-900 dark:text-gray-100">File ID</h4>
                 {useMobileEditModal && isEditingFileId ? (
@@ -2053,10 +2054,11 @@ const InfoTab: React.FC<ClientTabProps> = ({
         </div>
 
         {/* Special Notes and General Notes */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div className="flex flex-col lg:flex-row lg:items-stretch">
           {/* Special Notes */}
-          <div className="p-0">
-            <div className="flex items-center justify-between mb-3">
+          <div className="flex-1 min-w-0 overflow-hidden">
+            <div className="px-0 sm:px-1 pb-1 lg:pb-1 lg:pr-6">
+            <div className="flex items-center justify-between mb-1">
               <h4 className="text-base font-semibold text-gray-900">Special Notes</h4>
                 {useMobileEditModal && isEditingSpecialNotes ? (
                   <span className="text-xs text-gray-400 shrink-0">Editing…</span>
@@ -2130,11 +2132,13 @@ const InfoTab: React.FC<ClientTabProps> = ({
                 </div>
               )}
             </div>
+            </div>
           </div>
 
-          {/* General Notes */}
-          <div className="p-0">
-            <div className="flex items-center justify-between mb-3">
+          {/* General Notes — aligned with File ID column */}
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col self-stretch overflow-hidden">
+            <div className="flex min-h-0 flex-1 flex-col gap-1 px-0 pb-1 pt-0 sm:px-1 lg:pb-1 lg:pl-6 lg:pr-0 lg:pt-0">
+            <div className="flex items-center justify-between mb-1">
               <h4 className="text-base font-semibold text-gray-900">General Notes</h4>
                 {useMobileEditModal && isEditingGeneralNotes ? (
                   <span className="text-xs text-gray-400 shrink-0">Editing…</span>
@@ -2210,14 +2214,15 @@ const InfoTab: React.FC<ClientTabProps> = ({
                 </div>
               )}
             </div>
+            </div>
           </div>
         </div>
 
         {/* Row 4: Facts of Case and Tags */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
           {/* Facts of Case */}
           <div className="p-0">
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center justify-between mb-1">
               <h4 className="text-base font-semibold text-gray-900">Facts of Case</h4>
                 {useMobileEditModal && isEditingFacts ? (
                   <span className="text-xs text-gray-400 shrink-0">Editing…</span>

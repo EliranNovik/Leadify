@@ -86,7 +86,7 @@ const PortalCaseContent: React.FC<{
             <PortalLoading />
           );
         case 'documents':
-          return <PortalDocumentsTab />;
+          return <PortalDocumentsTab sessionContactId={contact?.id ?? null} />;
         case 'contacts':
           return (
             <PortalContactsTab

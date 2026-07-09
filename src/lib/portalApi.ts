@@ -1,3 +1,4 @@
+import { dedupePortalSubEffortRows, type PortalSubEffortRow } from './portalSubEfforts';
 import { supabase } from './supabase';
 import { getPortalSessionToken } from './portalSession';
 
@@ -75,7 +76,17 @@ export type PortalDocumentRow = {
   classification_id?: string | null;
   classification_slug?: string | null;
   classification_label?: string | null;
+  contact_id?: number | null;
+  document_type_id?: string | null;
+  document_type_name?: string | null;
+  contact_name?: string | null;
   source?: 'case' | 'subeffort';
+};
+
+export type PortalLeadCaseDocumentType = {
+  id: string;
+  name: string;
+  sort_order: number;
 };
 
 function tokenOrThrow(): string {
@@ -183,8 +194,15 @@ export async function portalGetSubEfforts() {
     p_token: tokenOrThrow(),
   });
   if (error) throw error;
-  return data as { rows: Array<Record<string, unknown>> } | null;
+  const payload = data as { rows?: Array<Record<string, unknown>>; category_id?: number | null } | null;
+  if (!payload) return null;
+  return {
+    rows: dedupePortalSubEffortRows(payload.rows ?? []),
+    category_id: payload.category_id ?? null,
+  };
 }
+
+export type { PortalSubEffortRow };
 
 export async function portalGetFinances() {
   const { data, error } = await supabase.rpc('portal_get_finances', {
@@ -220,12 +238,33 @@ export async function portalGetDocumentSignedUrls(storagePaths: string[]): Promi
   return (data.urls ?? {}) as Record<string, string>;
 }
 
-export async function portalPrepareDocumentUpload(fileName: string, mimeType?: string, fileSize?: number) {
+export async function portalGetLeadCaseDocumentTypes(): Promise<PortalLeadCaseDocumentType[]> {
+  const { data, error } = await supabase.rpc('portal_get_lead_case_document_types', {
+    p_token: tokenOrThrow(),
+  });
+  if (error) throw error;
+  const types = (data as { types?: PortalLeadCaseDocumentType[] } | null)?.types ?? [];
+  return types.map((t) => ({
+    id: String(t.id),
+    name: String(t.name ?? ''),
+    sort_order: Number(t.sort_order ?? 0),
+  }));
+}
+
+export async function portalPrepareDocumentUpload(
+  fileName: string,
+  mimeType?: string,
+  fileSize?: number,
+  contactId?: number,
+  documentTypeId?: string,
+) {
   const { data, error } = await supabase.rpc('portal_prepare_document_upload', {
     p_token: tokenOrThrow(),
     p_file_name: fileName,
     p_mime_type: mimeType ?? null,
     p_file_size: fileSize ?? null,
+    p_contact_id: contactId ?? null,
+    p_document_type_id: documentTypeId ?? null,
   });
   if (error) throw error;
   return data as {
@@ -245,8 +284,17 @@ export async function portalFinalizeDocumentUpload(storagePath: string) {
   return data as { ok: boolean; error?: string; document_id?: number };
 }
 
-export async function portalUploadDocument(file: File): Promise<{ documentId?: string }> {
-  const prep = await portalPrepareDocumentUpload(file.name, file.type || undefined, file.size);
+export async function portalUploadDocument(
+  file: File,
+  opts?: { contactId?: number; documentTypeId?: string },
+): Promise<{ documentId?: string }> {
+  const prep = await portalPrepareDocumentUpload(
+    file.name,
+    file.type || undefined,
+    file.size,
+    opts?.contactId,
+    opts?.documentTypeId,
+  );
   if (!prep.ok || !prep.storage_path || !prep.bucket) {
     throw new Error(prep.error || 'Upload preparation failed');
   }
@@ -275,9 +323,12 @@ export async function portalUploadDocument(file: File): Promise<{ documentId?: s
   return { documentId };
 }
 
-export async function portalUploadDocuments(files: File[]): Promise<void> {
+export async function portalUploadDocuments(
+  files: File[],
+  opts?: { contactId?: number; documentTypeId?: string },
+): Promise<void> {
   for (const file of files) {
-    await portalUploadDocument(file);
+    await portalUploadDocument(file, opts);
   }
 }
 
