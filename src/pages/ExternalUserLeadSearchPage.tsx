@@ -773,7 +773,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 
             const rowClasses = isInactive
               ? 'bg-gray-200 text-black hover:bg-gray-300 cursor-pointer transition-colors duration-200 [&_.badge]:!bg-gray-300 [&_.badge]:!border-gray-400 [&_.badge]:![color:black]'
-              : 'hover cursor-pointer transition-colors duration-200 hover:bg-blue-50 active:bg-blue-100';
+              : 'bg-white hover:bg-blue-50 cursor-pointer transition-colors duration-200 active:bg-blue-100';
 
             return (
               <tr
@@ -3256,10 +3256,10 @@ const ExternalUserLeadSearchPage: React.FC = () => {
       'cursor-pointer',
       'group',
       'border',
-      // Inactive card: light grey background, all text black; stage badges grey with black text
+      // Inactive card: light grey background; active cards stay white
       isInactive
         ? 'bg-gray-200 border-gray-300 [&_.card-title]:!text-black [&_p]:!text-black [&_span]:!text-black [&_svg]:!text-black [&_.divider]:!border-gray-400 [&_.stage-badge]:!bg-gray-300 [&_.stage-badge]:!border-gray-400 [&_.stage-badge]:![color:black]'
-        : 'bg-gray-50 border-base-200',
+        : 'bg-white border-base-200',
     ].join(' ');
 
     // Ensure category is always shown as "Subcategory (Main Category)" when possible
@@ -3290,12 +3290,7 @@ const ExternalUserLeadSearchPage: React.FC = () => {
           handleLeadClick(lead, e);
         }}
       >
-        <div className="card-body p-3 sm:p-4 relative">
-          {isInactive && (
-            <span className="badge badge-xs absolute top-1 left-3 bg-white border-gray-500 text-gray-700 shadow-sm">
-              Not active
-            </span>
-          )}
+        <div className="card-body relative p-3 sm:p-4">
         <div className="flex justify-between items-start mb-1 gap-2">
             <div className="min-w-0">
             <h2 className="card-title text-base sm:text-lg font-bold leading-tight group-hover:text-primary transition-colors truncate">
@@ -3310,9 +3305,17 @@ const ExternalUserLeadSearchPage: React.FC = () => {
             {getStageBadge(lead.stage)}
         </div>
         
-        <div className="mt-2 rounded-xl bg-gray-100/90 px-2.5 py-2 relative">
+        <div
+          className={`mt-2 rounded-xl px-2.5 py-2 relative ${
+            isInactive
+              ? 'bg-gray-100/90'
+              : 'border border-base-200 bg-white'
+          }`}
+        >
           <div
-            className="pointer-events-none absolute inset-y-2 left-1/2 w-px -translate-x-1/2 bg-gray-300/80"
+            className={`pointer-events-none absolute inset-y-2 left-1/2 w-px -translate-x-1/2 ${
+              isInactive ? 'bg-gray-300/80' : 'bg-base-200'
+            }`}
             aria-hidden
           />
           <div className="grid grid-cols-2 gap-x-3 gap-y-2 text-[12px] sm:text-sm">
@@ -3335,11 +3338,21 @@ const ExternalUserLeadSearchPage: React.FC = () => {
           </div>
         </div>
 
-        <div className="mt-2 pt-1 flex justify-start">
-          <span className="inline-flex max-w-full items-center rounded-full bg-gray-100 px-2.5 py-1 text-[11px] sm:text-xs font-medium text-gray-700 truncate">
+        <div className={`mt-2 pt-1 flex justify-start ${isInactive ? 'pr-24' : ''}`}>
+          <span
+            className={`inline-flex max-w-full items-center rounded-full px-2.5 py-1 text-[11px] sm:text-xs font-medium text-gray-700 truncate ${
+              isInactive ? 'bg-gray-100' : 'border border-base-200 bg-white'
+            }`}
+          >
             {lead.topic || 'No topic specified'}
           </span>
         </div>
+
+        {isInactive && (
+          <span className="badge badge-xs absolute bottom-3 right-3 border-0 bg-gray-300 px-2.5 text-gray-800 shadow-none">
+            Not active
+          </span>
+        )}
 
       </div>
     </div>

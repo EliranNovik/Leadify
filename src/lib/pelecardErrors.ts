@@ -1,7 +1,13 @@
-/** Pelecard codes that mean the hosted checkout session timed out or is no longer valid. */
+/** Pelecard codes that mean the hosted checkout iframe session timed out (not terminal permission errors). */
 export function isPelecardSessionExpiredCode(statusCode?: string | null): boolean {
   const code = (statusCode || '').trim();
-  return code === '301' || code === '302' || code === '303';
+  return code === '301' || code === '302';
+}
+
+/** Terminal / acquirer permission — transaction type or CNP settings on the Pelecard terminal. */
+export function isPelecardTerminalConfigCode(statusCode?: string | null): boolean {
+  const code = (statusCode || '').trim();
+  return code === '113' || code === '303';
 }
 
 export interface PelecardFailureCopy {
@@ -63,6 +69,30 @@ export function getPelecardFailureCopy(input: FailureCopyInput): PelecardFailure
         'Close any other tabs or windows with this payment link.',
         'Use only one browser window to complete the payment.',
         'Click “Try again” below and enter your card details in the new form.',
+      ],
+    };
+  }
+
+  if (code === '113') {
+    return {
+      title: 'Payment could not be completed',
+      explanation:
+        'Pelecard or the card network rejected this charge before approval. With a required ID field this often means the terminal is missing acquirer configuration for internet checkout with ID (Shva vector 41), not that the ID itself was wrong.',
+      actions: [
+        'Check that ID / passport and CVV are entered correctly, then try again in one browser tab.',
+        'Contact our office if the problem continues — Pelecard may need to enable internet/CNP with ID on the terminal.',
+      ],
+    };
+  }
+
+  if (code === '303') {
+    return {
+      title: 'Internet payment not enabled',
+      explanation:
+        'The payment terminal is not configured to process this card-not-present (internet/e-commerce) transaction. The checkout reached Pelecard, but the acquirer declined it because the terminal lacks permission for this transaction class.',
+      actions: [
+        'Try again later or with a different card.',
+        'Contact our office — Pelecard or the acquiring bank may need to enable internet/CNP transactions on the terminal.',
       ],
     };
   }

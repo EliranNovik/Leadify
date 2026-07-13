@@ -94,7 +94,8 @@ Steps (`pelecardPaymentController.js`):
 2. **Reconcile** if status is `processing` or `failed` (recover charges that succeeded at Pelecard but failed to save locally).
 3. Call `pelecardService.createPaymentSession()`:
    - **`resolvePelecardChargeAmount`**: converts foreign currency to **ILS** using latest **Bank of Israel** rates in `boi_exchange_rates` (Pelecard always charges in ILS, `Currency: '1'`).
-   - **`PaymentGW/init`** with terminal credentials, amount in **agorot** (`Total`), `ActionType: 'J4'`, `ParamX` = secure token.
+   - **`PaymentGW/init`** with terminal credentials, amount in **agorot** (`Total`), `ActionType: 'J4'`, `ShopNo: '001'`, `ParamX` = secure token.
+   - **E-commerce classification**: `J4` + CVV required + phone hidden; never `AuthNum` (telephone/MOTO). `CustomerIdField: must` is kept for Israeli issuers.
    - **Return URLs** point to **`BACKEND_PUBLIC_URL`** (`/api/payments/pelecard/return/success|error|cancel`), not the React app directly.
    - **Display options**: `CssURL`, language, cardholder prefill, email field, iframe-safe flags (`FeedbackOnTop: 'False'`, `Target: '_self'`).
    - Sandbox: `QAResultStatus: '000'` when `PELECARD_SANDBOX=true`.
@@ -372,7 +373,9 @@ Common Pelecard status codes (`src/lib/pelecardErrors.ts`):
 | ---- | ------- |
 | `000` | Approved |
 | `002` | Card declined |
-| `301`–`303` | Session expired — open link again |
+| `301`–`302` | Checkout session expired — open link again |
+| `113` | Acquirer/terminal config issue with ID on internet checkout (Shva vector 41) — ask Pelecard to enable CNP with required ID, not telephone/MOTO |
+| `303` | Terminal not authorized for card-not-present / internet transaction |
 
 ---
 

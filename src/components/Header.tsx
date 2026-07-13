@@ -649,7 +649,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         keywords: ['external', 'firms', 'marketing', 'partners', 'tenants'],
       },
       { label: 'Settings', path: '/settings' },
-      ...(currentUser?.extern ? [{ label: 'External settings', path: '/external-settings', keywords: ['external', 'profile', 'firm'] }] : []),
+      ...(currentUser?.extern
+        ? [
+            { label: 'Report', path: '/external-reports', keywords: ['external', 'marketing', 'performance', 'funnel'] },
+            { label: 'External settings', path: '/external-settings', keywords: ['external', 'profile', 'firm'] },
+          ]
+        : []),
       { label: 'Admin Panel', path: '/admin', keywords: ['admin'] },
     ];
 
@@ -3525,7 +3530,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       <>
         <div
           data-mobile-header={isMobile ? 'floating' : undefined}
-          className={`navbar navbar-safe-x relative h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b md:border-base-200 md:dark:border-base-300 pt-safe pb-1.5 md:pb-0 md:pt-0 ${EXTERNAL_USER_HEADER_PADDING}`}
+          className={`navbar navbar-safe-x relative h-11 md:h-12 fixed top-0 left-0 right-0 z-50 w-full max-w-[100vw] bg-white dark:bg-base-100 md:bg-base-100 border-b-0 shadow-none md:border-b-0 md:border-transparent pt-safe pb-1.5 md:pb-0 md:pt-0 ${EXTERNAL_USER_HEADER_PADDING}`}
         >
           {/* Left: Logo */}
           <div className="flex-1 justify-start flex items-center">
@@ -3545,6 +3550,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           <div className="absolute left-1/2 z-10 hidden max-w-[min(94vw,36rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-x-1 gap-y-1 md:flex md:max-w-none md:flex-nowrap md:gap-2">
             <Link to="/external-home" className={extHeaderNavItemClass}>
               Dashboard
+            </Link>
+            <Link to="/external-reports" className={extHeaderNavItemClass}>
+              Report
             </Link>
             <Link to="/access-logs" className={extHeaderNavItemClass}>
               Access logs
@@ -3582,6 +3590,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               </button>
               <ul className="menu dropdown-content mt-2 w-64 rounded-box bg-base-100 p-2 shadow-lg border border-base-200">
                 <li><Link to="/external-home">Dashboard</Link></li>
+                <li><Link to="/external-reports">Report</Link></li>
                 <li><Link to="/access-logs">Access logs</Link></li>
                 <li><Link to="/external-settings">Settings</Link></li>
                 <li>

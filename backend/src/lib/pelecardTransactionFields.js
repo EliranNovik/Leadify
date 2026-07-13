@@ -344,6 +344,37 @@ function parsePayperDocumentSystemId(payperData) {
   return null;
 }
 
+/** Shva/Pelecard classification from GetTransaction — DebitCode 50 = regular internet, 51 = telephone/MOTO. */
+function extractTransactionClassification(callbackData, verifyPayload) {
+  const keys = {
+    debitCode: ['DebitCode', 'debitCode'],
+    debitType: ['DebitType', 'debitType'],
+    jParam: ['JParam', 'jParam'],
+    approvedBy: ['ApprovedBy', 'approvedBy'],
+  };
+  const pick = (fieldKeys) => {
+    for (const src of flattenPelecardSources(callbackData, verifyPayload)) {
+      const val = pickFirst(src, fieldKeys);
+      if (val) return val;
+    }
+    return null;
+  };
+  const debitCode = pick(keys.debitCode);
+  const debitType = pick(keys.debitType);
+  const jParam = pick(keys.jParam);
+  const approvedBy = pick(keys.approvedBy);
+  const likelyTelephone = debitCode === '51' || debitType === '03';
+  const likelyInternetRegular = debitCode === '50' || jParam === '4' || jParam === '2';
+  return {
+    debitCode,
+    debitType,
+    jParam,
+    approvedBy,
+    likelyTelephone,
+    likelyInternetRegular,
+  };
+}
+
 module.exports = {
   extractPelecardCustomerId,
   extractCardLastFour,
@@ -356,6 +387,7 @@ module.exports = {
   extractTransactionTotalIls,
   extractTransactionUuid,
   summarizePelecardTotalDebug,
+  extractTransactionClassification,
   formatPayperReceiptDate,
   parsePayperDocumentSystemId,
   flattenPelecardSources,

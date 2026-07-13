@@ -144,6 +144,7 @@ async function createPaymentSession(req, res) {
       pelecardProfile: session.profile || pelecardProfile,
       cssUrl: session.cssUrl,
       cssApplied: session.cssApplied,
+      customerIdField: pelecardService.getCustomerIdFieldMode(),
     });
   } catch (error) {
     console.error('Create Pelecard payment session error:', error);

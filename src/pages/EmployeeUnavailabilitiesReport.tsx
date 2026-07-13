@@ -4,7 +4,6 @@ import { toast } from 'react-hot-toast';
 import {
   MagnifyingGlassIcon,
   DocumentArrowUpIcon,
-  UserIcon,
   ArrowDownTrayIcon,
   ClockIcon,
   XMarkIcon,
@@ -15,6 +14,7 @@ import {
   XCircleIcon,
 } from '@heroicons/react/24/outline';
 import DocumentViewerModal from '../components/DocumentViewerModal';
+import ContactProfileAvatar from '../components/ContactProfileAvatar';
 import { usePersistedFilters } from '../hooks/usePersistedState';
 import UnavailabilityTypeBadge from '../components/UnavailabilityTypeBadge';
 import {
@@ -717,17 +717,11 @@ const EmployeeUnavailabilitiesReport = () => {
                     >
                       <td>
                         <div className="flex items-center gap-3">
-                          {emp.photoUrl ? (
-                            <img
-                              src={emp.photoUrl}
-                              alt={emp.employeeName}
-                              className="w-10 h-10 rounded-full object-cover shrink-0"
-                            />
-                          ) : (
-                            <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                              <UserIcon className="w-6 h-6 text-primary" />
-                            </div>
-                          )}
+                          <ContactProfileAvatar
+                            name={emp.employeeName}
+                            imageUrl={emp.photoUrl}
+                            className="h-10 w-10 text-sm"
+                          />
                           <span className="font-medium">{emp.employeeName}</span>
                         </div>
                       </td>
@@ -853,17 +847,11 @@ const EmployeeUnavailabilitiesReport = () => {
           <div className="modal-box max-w-6xl w-full">
             <div className="flex items-start justify-between gap-4 mb-4">
               <div className="flex items-center gap-3 min-w-0">
-                {selectedEmployee.photoUrl ? (
-                  <img
-                    src={selectedEmployee.photoUrl}
-                    alt={selectedEmployee.employeeName}
-                    className="w-12 h-12 rounded-full object-cover shrink-0"
-                  />
-                ) : (
-                  <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center shrink-0">
-                    <UserIcon className="w-7 h-7 text-primary" />
-                  </div>
-                )}
+                <ContactProfileAvatar
+                  name={selectedEmployee.employeeName}
+                  imageUrl={selectedEmployee.photoUrl}
+                  className="h-12 w-12 text-base"
+                />
                 <div className="min-w-0">
                   <h3 className="font-bold text-xl truncate">{selectedEmployee.employeeName}</h3>
                   <p className="text-sm text-gray-500 flex items-center gap-1.5">

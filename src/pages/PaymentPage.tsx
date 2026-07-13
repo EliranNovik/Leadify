@@ -7,7 +7,7 @@ import PaymentSummaryCard, {
   type PaymentSummaryData,
 } from '../components/payment/PaymentSummaryCard';
 import PaymentSummaryGradientDecor from '../components/payment/PaymentSummaryGradientDecor';
-import PublicContractFooter from '../components/public/PublicContractFooter';
+import PortalFooter from './portal/components/PortalFooter';
 import PublicPageContactButtons from '../components/public/PublicPageContactButtons';
 import {
   currencyInputFromLegacyProforma,
@@ -34,11 +34,10 @@ const PAGE_BG_STYLE: React.CSSProperties = {
 };
 
 const SUMMARY_GRADIENT_STYLE: React.CSSProperties = {
-  background:
-    'linear-gradient(145deg, #312e81 0%, #5b21b6 22%, #7e22ce 48%, #a21caf 72%, #e11d48 100%)',
+  background: 'linear-gradient(165deg, #7e22ce 0%, #a21caf 45%, #db2777 72%, #e11d48 100%)',
 };
 
-const CHECKOUT_LAW_OFFICE_TITLE = 'Decker, Pex & Co. Law Office';
+const CHECKOUT_FIRM_LOGO = '/DPLOGO1.png';
 
 /** Gradient panel — credit card illustration from /public */
 const CHECKOUT_DESKTOP_FOOTER_IMAGE = '/ChatGPT Image May 26, 2026, 09_41_00 AM.png';
@@ -57,26 +56,27 @@ function CheckoutCardImage() {
   );
 }
 
-function CheckoutSummaryHeading({
-  summary,
-  titleClassName,
-}: {
-  summary?: PaymentSummaryData | null;
-  titleClassName: string;
-}) {
+function CheckoutSummaryLogo({ className = '' }: { className?: string }) {
   return (
-    <>
-      <h1 className={titleClassName}>{CHECKOUT_LAW_OFFICE_TITLE}</h1>
-      {summary && (
-        <p className="text-base text-white/90 mb-6 flex flex-wrap items-center gap-x-2.5 gap-y-1">
-          <span className="font-mono text-[15px] font-medium text-white/80">Case #{summary.caseNumber}</span>
-          <span className="text-white/40" aria-hidden>
-            ·
-          </span>
-          <span className="text-[17px] font-semibold text-white">{summary.clientName}</span>
-        </p>
-      )}
-    </>
+    <img
+      src={CHECKOUT_FIRM_LOGO}
+      alt="Decker Pex & Co. Law Offices"
+      className={`h-10 w-auto object-contain sm:h-11 xl:h-12 ${className}`.trim()}
+      draggable={false}
+    />
+  );
+}
+
+function CheckoutSummaryHeading({ summary }: { summary?: PaymentSummaryData | null }) {
+  if (!summary) return null;
+  return (
+    <p className="text-base text-white/90 mb-6 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-left">
+      <span className="font-mono text-[15px] font-medium text-white/80">Case #{summary.caseNumber}</span>
+      <span className="text-white/40" aria-hidden>
+        ·
+      </span>
+      <span className="text-[17px] font-semibold text-white/55">{summary.clientName}</span>
+    </p>
   );
 }
 
@@ -291,6 +291,7 @@ const PaymentPage: React.FC = () => {
   const [paymentLink, setPaymentLink] = useState<PaymentLink | null>(null);
   const [loading, setLoading] = useState(true);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
+  const [customerIdField, setCustomerIdField] = useState<'hide' | 'optional' | 'show' | 'must'>('must');
   const [sessionLoading, setSessionLoading] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
@@ -568,6 +569,10 @@ const PaymentPage: React.FC = () => {
         }
         await ensurePelecardClientSecureScript();
         setPaymentUrl(result.paymentUrl);
+        const mode = result.customerIdField;
+        setCustomerIdField(
+          mode === 'must' || mode === 'show' || mode === 'optional' ? mode : 'hide',
+        );
         await loadCheckoutExchange({ forceBoiRefresh: !result.reusedSession });
         if (forceFreshSession) {
           setSearchParams(
@@ -691,7 +696,7 @@ const PaymentPage: React.FC = () => {
             <p className="text-gray-600 mb-6">{pageError}</p>
           </div>
         </div>
-        <PublicContractFooter variant="payment" />
+        <PortalFooter />
       </div>
     );
   }
@@ -708,25 +713,25 @@ const PaymentPage: React.FC = () => {
             </p>
           </div>
         </div>
-        <PublicContractFooter variant="payment" />
+        <PortalFooter />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen lg:h-screen flex flex-col lg:flex-row overflow-x-hidden lg:overflow-hidden bg-white">
-      <div className="hidden lg:flex lg:w-[42%] lg:max-w-[520px] lg:shrink-0 lg:min-h-0 lg:self-stretch p-1 xl:p-1.5 box-border">
+    <div className="min-h-screen flex flex-col bg-white">
+      <div className="flex flex-1 flex-col lg:flex-row overflow-x-hidden lg:min-h-0">
+      <div className="hidden lg:flex lg:w-[40%] lg:shrink-0 lg:self-stretch lg:min-h-0">
         <aside
-          className="relative flex flex-1 flex-col w-full min-h-0 text-white overflow-hidden overflow-y-auto rounded-3xl"
+          className="relative flex flex-1 flex-col w-full min-h-full text-white overflow-hidden overflow-y-auto"
           style={SUMMARY_GRADIENT_STYLE}
         >
           <PaymentSummaryGradientDecor />
-          <div className="relative flex flex-col min-h-full p-10 xl:p-12 z-[1]">
-          <div className="flex-1 flex flex-col">
-            <CheckoutSummaryHeading
-              summary={summaryData}
-              titleClassName="text-xl xl:text-2xl font-semibold text-white leading-snug tracking-tight mb-2 max-w-sm"
-            />
+          <CheckoutSummaryLogo className="absolute top-4 left-6 xl:top-5 xl:left-8 z-10" />
+          <div className="relative flex flex-col min-h-full items-center px-10 xl:px-12 py-10 xl:py-12 z-[1]">
+          <div className="flex w-full max-w-md flex-col text-left pt-14 xl:pt-16">
+          <div className="flex flex-1 flex-col">
+            <CheckoutSummaryHeading summary={summaryData} />
             {summaryData && (
               <PaymentSummaryCard
                 summary={summaryData}
@@ -737,11 +742,14 @@ const PaymentPage: React.FC = () => {
             )}
             <CheckoutCardImage />
             {isAlreadyPaid && <PaymentDoneStamp paidAt={paidAt} />}
-            {canPay && <PaymentPassportIdNote className="lg:mt-auto lg:pt-10 xl:pt-12" />}
+            {canPay && (customerIdField === 'must' || customerIdField === 'show' || customerIdField === 'optional') && (
+              <PaymentPassportIdNote className="lg:mt-auto lg:pt-10 xl:pt-12" />
+            )}
           </div>
-          <p className="text-[11px] text-white/50 leading-relaxed max-w-xs shrink-0">
+          <p className="w-full text-left text-[11px] text-white/50 leading-relaxed shrink-0 mt-6">
             Processed securely by Pelecard. Card details are not stored on our servers.
           </p>
+          </div>
           </div>
         </aside>
       </div>
@@ -755,14 +763,13 @@ const PaymentPage: React.FC = () => {
           style={SUMMARY_GRADIENT_STYLE}
         >
           <PaymentSummaryGradientDecor />
+          <CheckoutSummaryLogo className="absolute top-3.5 left-5 z-10" />
           <div className="pointer-events-none absolute top-5 right-5 z-20">
             <CheckoutSecuredStamp iconOnly />
           </div>
-          <div className="relative z-[1] pr-14">
-            <CheckoutSummaryHeading
-              summary={summaryData}
-              titleClassName="text-xl font-semibold text-white leading-snug tracking-tight mb-2"
-            />
+          <div className="relative z-[1] flex flex-col items-center px-5 pt-8 pb-8">
+            <div className="w-full max-w-md text-left pt-12">
+            <CheckoutSummaryHeading summary={summaryData} />
             {summaryData && (
               <PaymentSummaryCard
                 summary={summaryData}
@@ -772,8 +779,9 @@ const PaymentPage: React.FC = () => {
               />
             )}
             <CheckoutCardImage />
-            {canPay && <PaymentPassportIdNote />}
+            {canPay && (customerIdField === 'must' || customerIdField === 'show' || customerIdField === 'optional') && <PaymentPassportIdNote />}
             {isAlreadyPaid && <PaymentDoneStamp paidAt={paidAt} />}
+            </div>
           </div>
         </div>
 
@@ -801,11 +809,10 @@ const PaymentPage: React.FC = () => {
             />
           )}
         </div>
-
-        <div className="shrink-0">
-          <PublicContractFooter variant="payment" />
-        </div>
       </main>
+      </div>
+
+      <PortalFooter />
 
       <PublicPageContactButtons />
       {walletDebug && <PaymentWalletDebugPanel paymentUrl={paymentUrl} />}

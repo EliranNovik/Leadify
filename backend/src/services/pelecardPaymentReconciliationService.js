@@ -9,7 +9,7 @@ const { profileFromPayment } = require('../lib/pelecardProfiles');
 const { rateFromPelecardRawResponse } = require('../lib/paymentLinkExchangeRate');
 const { chargeAmountFromPayment } = require('./paymentChargeAmountService');
 const { sendPaymentConfirmationEmail } = require('./paymentConfirmationEmailService');
-const { extractPelecardCustomerId } = require('../lib/pelecardTransactionFields');
+const { extractPelecardCustomerId, extractTransactionClassification } = require('../lib/pelecardTransactionFields');
 const {
   createPayperInvoiceForPayment,
   isAutomatedInvoiceEnabled,
@@ -30,7 +30,7 @@ function logSupabaseError(context, error) {
 
 function isSessionExpiredCode(statusCode) {
   const code = String(statusCode || '').trim();
-  return code === '301' || code === '302' || code === '303';
+  return code === '301' || code === '302';
 }
 
 function extractPelecardMeta(data = {}) {
@@ -471,10 +471,13 @@ async function persistPaymentFailure(payment, secureToken, callbackData, verifyR
     errorMessage: String(failMessage).slice(0, 500),
   });
 
+  const txClass = extractTransactionClassification(callbackData, verifyPayload);
+
   console.warn('[Pelecard] Payment recorded as failed', {
     paymentId: secureToken,
     statusCode: resolvedStatusCode,
     message: failMessage,
+    transactionClassification: txClass,
   });
 }
 

@@ -1208,6 +1208,7 @@ function MacroSortableTh({
   children,
   sortLabel,
   className = '',
+  align = 'end',
 }: {
   sortKey: MacroSortKey;
   activeKey: MacroSortKey;
@@ -1217,14 +1218,17 @@ function MacroSortableTh({
   /** Accessible name for the sort control (column title). */
   sortLabel: string;
   className?: string;
+  align?: 'start' | 'center' | 'end';
 }) {
   const active = activeKey === sortKey;
   const nextToggle = active && dir === 'asc' ? 'descending' : 'ascending';
+  const justifyClass =
+    align === 'center' ? 'justify-center' : align === 'start' ? 'justify-start' : 'justify-end';
   return (
     <th scope="col" className={className} aria-sort={active ? (dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
       <button
         type="button"
-        className="inline-flex w-full items-center justify-end gap-1 rounded-lg px-0.5 py-0.5 text-inherit hover:bg-base-200/60 hover:text-base-content/80 dark:hover:bg-base-content/10"
+        className={`inline-flex w-full items-center gap-1 rounded-lg px-0.5 py-0.5 text-inherit hover:bg-base-200/60 hover:text-base-content/80 dark:hover:bg-base-content/10 ${justifyClass}`}
         aria-label={
           active ? `Sorted ${dir === 'asc' ? 'ascending' : 'descending'}. Activate to sort ${nextToggle}.` : `Sort by ${sortLabel}`
         }
@@ -1251,8 +1255,8 @@ type MultiFilterOption = { id: string; label: string };
 const FILTER_FIELD_LABEL_CLASS =
   'mb-1 block text-[11px] font-semibold uppercase tracking-[0.14em] text-base-content/55';
 
-/** Fixed filter column width — keeps the grid left-aligned without stretching across the page. */
-const FILTER_COL_CLASS = 'w-[10.25rem] min-w-0 max-w-full shrink-0';
+/** Filter column — full grid cell width so labels and placeholders are not truncated. */
+const FILTER_COL_CLASS = 'w-full min-w-0';
 
 /** Grey titles: card/section headings (h3) and table column headers (with global `.table th` override). */
 const REPORT_SECTION_TITLE_CLASS = 'text-base-content/55';
@@ -1291,6 +1295,7 @@ function MarketingSearchMultiFilter({
   selected,
   onChange,
   inputClassName = '',
+  wide = false,
 }: {
   label: string;
   placeholder: string;
@@ -1299,6 +1304,8 @@ function MarketingSearchMultiFilter({
   onChange: (ids: string[]) => void;
   /** Merged onto the search input (e.g. {@link ENGRAVED_FILTER_CONTROL_CLASSES}). */
   inputClassName?: string;
+  /** Wider dropdown panel and full option labels (external reports). */
+  wide?: boolean;
 }) {
   const [filter, setFilter] = useState('');
   const [open, setOpen] = useState(false);
@@ -1425,7 +1432,9 @@ function MarketingSearchMultiFilter({
 
         {open && (
           <div
-            className="absolute left-0 right-0 top-full z-40 mt-1 max-h-56 overflow-y-auto overflow-x-hidden rounded-xl border border-black/[0.08] bg-base-100 text-base shadow-[0_10px_28px_rgba(0,0,0,0.12),inset_0_1px_0_rgba(255,255,255,0.85)] dark:border-white/[0.12] dark:bg-base-200 dark:shadow-[0_12px_32px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)]"
+            className={`absolute left-0 top-full z-40 mt-1 max-h-56 overflow-y-auto rounded-xl border border-black/[0.08] bg-base-100 text-base shadow-[0_10px_28px_rgba(0,0,0,0.12),inset_0_1px_0_rgba(255,255,255,0.85)] dark:border-white/[0.12] dark:bg-base-200 dark:shadow-[0_12px_32px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.06)] ${
+              wide ? 'min-w-full w-max max-w-md overflow-x-visible' : 'right-0 overflow-x-hidden'
+            }`}
             style={{ overflowAnchor: 'none' } as React.CSSProperties}
             role="listbox"
             aria-multiselectable
@@ -1457,7 +1466,7 @@ function MarketingSearchMultiFilter({
                         >
                           {isOn && <span className="text-[8px] leading-none text-white">✓</span>}
                         </span>
-                        <span className="truncate">{opt.label}</span>
+                        <span className={wide ? 'whitespace-normal break-words' : 'truncate'}>{opt.label}</span>
                       </button>
                     </li>
                   );
@@ -1504,12 +1513,29 @@ const GROUP_BY_TOGGLE_CLASS =
 export type MarketingDashboardReportProps = {
   docsOpen?: boolean;
   onDocsOpenChange?: (open: boolean) => void;
+  /** Staff (default) vs simplified external-firm view. */
+  variant?: 'staff' | 'external';
+  /** When variant=external, only these misc_leadsource ids are shown and queried. */
+  lockedSourceIds?: string[];
 };
 
 const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   docsOpen: docsOpenProp,
   onDocsOpenChange,
+  variant = 'staff',
+  lockedSourceIds,
 }) => {
+  const isExternalVariant = variant === 'external';
+  const lockedSourceIdSet = useMemo(
+    () => new Set((lockedSourceIds ?? []).map((id) => String(id)).filter(Boolean)),
+    [lockedSourceIds],
+  );
+  const macroSortAlign: 'center' | 'end' = 'center';
+  const macroCellAlign = 'text-center';
+  const macroLabelAlign = 'text-left';
+  const macroLabelColClass = `macro-label-col ${macroLabelAlign} w-[7rem] max-w-[7rem] sm:w-[8rem] sm:max-w-[8rem] whitespace-normal break-words align-top leading-snug`;
+  const macroTableClass = `${REPORT_TABLE_CLASS} table-fixed w-full min-w-0 border-0 bg-white [&_th]:whitespace-nowrap [&_th.macro-label-col]:whitespace-normal [&_th.macro-label-col]:break-words [&_td:not(.macro-label-col)]:whitespace-nowrap [&_th]:border-0 [&_td]:border-0 [&_thead_tr]:border-0 [&_tbody_tr]:border-0 [&_thead_tr]:bg-white [&_tbody_tr]:bg-white [&_th]:bg-white [&_td]:bg-white`;
+  const filterColClass = FILTER_COL_CLASS;
   const macroTableScrollRef = useRef<HTMLDivElement | null>(null);
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
@@ -1631,18 +1657,21 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     }
     if (!src.error && src.data) {
       const rawRows = src.data as { id: number | string; name: string; channel_id: string | null; active?: boolean }[];
-      const rows = rawRows.map((r) => ({
+      let rows = rawRows.map((r) => ({
         id: String(r.id),
         name: r.name,
         channel_id: r.channel_id,
       }));
+      if (isExternalVariant && lockedSourceIdSet.size > 0) {
+        rows = rows.filter((r) => lockedSourceIdSet.has(String(r.id)));
+      }
       setAllSources(rows);
       setSources(rows.filter((r) => {
         const raw = rawRows.find((x) => String(x.id) === r.id);
         return raw?.active !== false;
       }));
     }
-    if (!fr.error && fr.data) setFirms(fr.data as FirmRow[]);
+    if (!isExternalVariant && !fr.error && fr.data) setFirms(fr.data as FirmRow[]);
     if (!co.error && co.data) setCountries(co.data as CountryRow[]);
     if (!mc.error && mc.data) {
       setMainCategories(
@@ -1662,7 +1691,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       }));
       setSourceFirmLinks(rows);
     }
-  }, []);
+  }, [isExternalVariant, lockedSourceIdSet]);
 
   useEffect(() => {
     void loadReferenceData();
@@ -1697,16 +1726,21 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     setFetchTruncated(false);
     try {
       const maxRows = 30000;
+      const scopedSourceIds =
+        isExternalVariant && lockedSourceIdSet.size > 0
+          ? sourceIds.length > 0
+            ? sourceIds.filter((id) => lockedSourceIdSet.has(String(id)))
+            : Array.from(lockedSourceIdSet)
+          : sourceIds;
+      const scopedFirmIds = isExternalVariant ? [] : firmIds;
       const effectiveSourceIds = resolveEffectiveSourceIdsForFetch(
-        sourceIds,
+        scopedSourceIds,
         channelIds,
-        firmIds,
+        scopedFirmIds,
         allSources,
         firmIdToSourceIds,
       );
-      // Firm-only: fetch full date cohort (same as unfiltered), then filter by provider client-side.
-      // SQL source_id scoping misses leads whose resolved source differs from sources_firms ids.
-      const sourceIdsForSql = isFirmOnlyReportScope(sourceIds, channelIds, firmIds)
+      const sourceIdsForSql = isFirmOnlyReportScope(scopedSourceIds, channelIds, scopedFirmIds)
         ? null
         : effectiveSourceIds;
 
@@ -1738,7 +1772,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         channelIds,
         sourceIdsForSql,
         countryIds,
-        firmIds,
+        firmIds: scopedFirmIds,
         mainCategoryIds,
         allSources,
         countries,
@@ -1795,12 +1829,17 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
       }
 
       setLeads(rows);
-      const [mediaBySource, managementByFirm] = await Promise.all([
-        fetchMediaExpensesBySource(fromDate, toDate),
-        fetchManagementExpensesByFirm(fromDate, toDate),
-      ]);
-      setMediaExpenseBySourceId(mediaBySource);
-      setManagementExpenseByFirmId(managementByFirm);
+      if (!isExternalVariant) {
+        const [mediaBySource, managementByFirm] = await Promise.all([
+          fetchMediaExpensesBySource(fromDate, toDate),
+          fetchManagementExpensesByFirm(fromDate, toDate),
+        ]);
+        setMediaExpenseBySourceId(mediaBySource);
+        setManagementExpenseByFirmId(managementByFirm);
+      } else {
+        setMediaExpenseBySourceId({});
+        setManagementExpenseByFirmId({});
+      }
 
       setCallLogsError(null);
       setCallLogsRows([]);
@@ -1976,6 +2015,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
     sourceIdToFirmIds,
     allSources,
     countries,
+    isExternalVariant,
+    lockedSourceIdSet,
   ]);
 
   useEffect(() => {
@@ -2426,7 +2467,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
   };
 
   return (
-    <div className="space-y-4 pb-12 relative">
+    <div className={`${isExternalVariant ? 'space-y-8' : 'space-y-4'} pb-12 relative w-full min-w-0 max-w-full ${isExternalVariant ? 'bg-white' : ''}`}>
       {loading && (
         <div className="fixed inset-0 z-[200] flex items-center justify-center pointer-events-none">
           <div className="flex flex-col items-center gap-3">
@@ -2435,7 +2476,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           </div>
         </div>
       )}
-      {docsOpen && (
+      {docsOpen && !isExternalVariant && (
         <div
           className="modal modal-open z-50"
           role="dialog"
@@ -2479,17 +2520,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
         </div>
       )}
 
-      <div className="flex w-full flex-col items-start gap-3">
-        <div className="flex flex-wrap items-end gap-2 sm:gap-3">
-          <button
-            type="button"
-            className="btn btn-circle h-12 w-12 min-h-12 shrink-0 rounded-full border-0 bg-black text-sm font-bold lowercase tracking-tight text-white shadow-sm hover:bg-neutral-800 disabled:opacity-50"
-            onClick={() => void runReport()}
-            disabled={loading}
-            aria-label="Run report"
-          >
-            {loading ? <span className="loading loading-spinner loading-sm text-white" /> : 'go'}
-          </button>
+      <div className={`flex w-full flex-col items-start ${isExternalVariant ? 'gap-6' : 'gap-3'}`}>
+        <div className={`flex flex-wrap items-end ${isExternalVariant ? 'gap-3 sm:gap-4' : 'gap-2 sm:gap-3'}`}>
           <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
             <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-base-content/55">
               Group by
@@ -2530,9 +2562,24 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               </button>
             </div>
           </div>
+          <button
+            type="button"
+            className="btn btn-circle h-12 w-12 min-h-12 shrink-0 rounded-full border-0 bg-black text-sm font-bold lowercase tracking-tight text-white shadow-sm hover:bg-neutral-800 disabled:opacity-50"
+            onClick={() => void runReport()}
+            disabled={loading}
+            aria-label="Run report"
+          >
+            {loading ? <span className="loading loading-spinner loading-sm text-white" /> : 'go'}
+          </button>
         </div>
-        <div className="grid w-max max-w-full grid-cols-2 gap-x-3 gap-y-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-7">
-          <label className={`form-control ${FILTER_COL_CLASS}`}>
+        <div
+          className={
+            isExternalVariant
+              ? 'grid w-full grid-cols-2 gap-x-5 gap-y-5 sm:grid-cols-3 lg:grid-cols-3'
+              : 'grid w-full grid-cols-2 gap-x-5 gap-y-5 sm:grid-cols-3 lg:grid-cols-4'
+          }
+        >
+          <label className={`form-control ${filterColClass}`}>
             <span className={FILTER_FIELD_LABEL_CLASS}>From</span>
             <input
               type="date"
@@ -2541,7 +2588,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               onChange={(e) => setFromDate(e.target.value)}
             />
           </label>
-          <label className={`form-control ${FILTER_COL_CLASS}`}>
+          <label className={`form-control ${filterColClass}`}>
             <span className={FILTER_FIELD_LABEL_CLASS}>To</span>
             <input
               type="date"
@@ -2550,7 +2597,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               onChange={(e) => setToDate(e.target.value)}
             />
           </label>
-          <div className={FILTER_COL_CLASS}>
+          <div className={filterColClass}>
             <MarketingSearchMultiFilter
               label="Main category"
               placeholder="Search main categories…"
@@ -2558,9 +2605,10 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               selected={mainCategoryIds}
               onChange={setMainCategoryIds}
               inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
+              wide
             />
           </div>
-          <div className={FILTER_COL_CLASS}>
+          <div className={filterColClass}>
             <MarketingSearchMultiFilter
               label="Channel"
               placeholder="Search channels…"
@@ -2568,9 +2616,10 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               selected={channelIds}
               onChange={setChannelIds}
               inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
+              wide
             />
           </div>
-          <div className={FILTER_COL_CLASS}>
+          <div className={filterColClass}>
             <MarketingSearchMultiFilter
               label="Source"
               placeholder="Search sources…"
@@ -2578,9 +2627,23 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               selected={sourceIds}
               onChange={setSourceIds}
               inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
+              wide
             />
           </div>
-          <div className={FILTER_COL_CLASS}>
+          {!isExternalVariant && (
+            <div className={filterColClass}>
+              <MarketingSearchMultiFilter
+                label="Provider (firm)"
+                placeholder="Search firms…"
+                options={firms.map((f) => ({ id: f.id, label: f.name }))}
+                selected={firmIds}
+                onChange={setFirmIds}
+                inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
+                wide
+              />
+            </div>
+          )}
+          <div className={filterColClass}>
             <MarketingSearchMultiFilter
               label="Country"
               placeholder="Search countries…"
@@ -2588,16 +2651,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               selected={countryIds}
               onChange={setCountryIds}
               inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
-            />
-          </div>
-          <div className={FILTER_COL_CLASS}>
-            <MarketingSearchMultiFilter
-              label="Provider (firm)"
-              placeholder="Search firms…"
-              options={firms.map((f) => ({ id: f.id, label: f.name }))}
-              selected={firmIds}
-              onChange={setFirmIds}
-              inputClassName={ENGRAVED_FILTER_CONTROL_CLASSES}
+              wide
             />
           </div>
         </div>
@@ -2625,7 +2679,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
 
       {searched && !loading && (
         <>
-          {/* KPI row */}
+          {!isExternalVariant && (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
             {[
               {
@@ -2690,12 +2744,13 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               </button>
             ))}
           </div>
+          )}
 
           {/* Main macro table */}
           <div
             id="marketing-kpi-macro"
             ref={macroTableScrollRef}
-            className="scroll-mt-24 overflow-x-auto rounded-xl border border-base-300 bg-base-100 shadow-sm"
+            className="scroll-mt-24 w-full max-w-full min-w-0 overflow-x-auto overscroll-x-contain bg-white"
             onScroll={(e) => {
               const el = e.currentTarget;
               const maxLeft = Math.max(0, el.scrollWidth - el.clientWidth);
@@ -2703,17 +2758,15 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               setMacroAtRightEdge(nearRight);
             }}
           >
-            <h3
-              className={`border-b border-base-300 px-4 py-3 text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}
-            >
+            <h3 className="mb-5 text-base font-bold text-base-content">
               Macro performance (by {groupMode})
             </h3>
-            <table className={REPORT_TABLE_CLASS}>
+            <table className={macroTableClass}>
               <thead>
                 <tr className="border-b border-base-300 bg-base-100 text-[11px] uppercase tracking-wide">
                   <th
-                    colSpan={groupMode === 'source' ? 3 : 2}
-                    className="text-left text-base-content/50"
+                    colSpan={(groupMode === 'source' ? 2 : 1) + (isExternalVariant ? 0 : 1)}
+                    className="text-center text-base-content/50"
                     style={{ letterSpacing: '0.08em' }}
                   >
                     Performance
@@ -2732,25 +2785,30 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                   >
                     Revenue
                   </th>
-                  <th
-                    colSpan={4}
-                    className="text-center text-base-content/60"
-                    style={{ letterSpacing: '0.08em' }}
-                  >
-                    Cost
-                  </th>
+                  {!isExternalVariant && (
+                    <th
+                      colSpan={4}
+                      className="text-center text-base-content/60"
+                      style={{ letterSpacing: '0.08em' }}
+                    >
+                      Cost
+                    </th>
+                  )}
                 </tr>
                 <tr className="border-b border-base-300 bg-base-100 text-xs uppercase md:text-sm">
-                  <th scope="col">Channel</th>
-                  {groupMode === 'source' && <th scope="col">Source</th>}
-                  <th scope="col">Provider</th>
+                  <th scope="col" className="text-center">Channel</th>
+                  {groupMode === 'source' && (
+                    <th scope="col" className={macroLabelColClass}>Source</th>
+                  )}
+                  {!isExternalVariant && <th scope="col" className={macroLabelColClass}>Provider</th>}
                   <MacroSortableTh
                     sortKey="leads"
                     activeKey={macroSort.key}
                     dir={macroSort.dir}
                     onSort={toggleMacroSort}
                     sortLabel="Leads"
-                    className="text-right"
+                    align={macroSortAlign}
+                    className={macroCellAlign}
                   >
                     Leads
                   </MacroSortableTh>
@@ -2760,7 +2818,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     dir={macroSort.dir}
                     onSort={toggleMacroSort}
                     sortLabel="Eligible"
-                    className="text-right"
+                    align={macroSortAlign}
+                    className={macroCellAlign}
                   >
                     Eligible
                   </MacroSortableTh>
@@ -2770,7 +2829,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     dir={macroSort.dir}
                     onSort={toggleMacroSort}
                     sortLabel="Meetings"
-                    className="text-right"
+                    align={macroSortAlign}
+                    className={macroCellAlign}
                   >
                     Meetings
                   </MacroSortableTh>
@@ -2780,7 +2840,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     dir={macroSort.dir}
                     onSort={toggleMacroSort}
                     sortLabel="Offers"
-                    className="text-right"
+                    align={macroSortAlign}
+                    className={macroCellAlign}
                   >
                     Offers
                   </MacroSortableTh>
@@ -2790,7 +2851,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     dir={macroSort.dir}
                     onSort={toggleMacroSort}
                     sortLabel="Deals"
-                    className="text-right"
+                    align={macroSortAlign}
+                    className={macroCellAlign}
                   >
                     Deals
                   </MacroSortableTh>
@@ -2800,7 +2862,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     dir={macroSort.dir}
                     onSort={toggleMacroSort}
                     sortLabel="Lead to eligible percent"
-                    className="text-right"
+                    align={macroSortAlign}
+                    className={macroCellAlign}
                   >
                     Lead→Elig %
                   </MacroSortableTh>
@@ -2810,7 +2873,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     dir={macroSort.dir}
                     onSort={toggleMacroSort}
                     sortLabel="Lead to meeting percent"
-                    className="text-right"
+                    align={macroSortAlign}
+                    className={macroCellAlign}
                   >
                     Lead→Mtg %
                   </MacroSortableTh>
@@ -2820,7 +2884,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     dir={macroSort.dir}
                     onSort={toggleMacroSort}
                     sortLabel="Lead to offer percent"
-                    className="text-right"
+                    align={macroSortAlign}
+                    className={macroCellAlign}
                   >
                     Lead→Offer %
                   </MacroSortableTh>
@@ -2830,7 +2895,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     dir={macroSort.dir}
                     onSort={toggleMacroSort}
                     sortLabel="Lead to deal percent"
-                    className="text-right"
+                    align={macroSortAlign}
+                    className={macroCellAlign}
                   >
                     Lead→Deal %
                   </MacroSortableTh>
@@ -2840,7 +2906,8 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     dir={macroSort.dir}
                     onSort={toggleMacroSort}
                     sortLabel="Revenue NIS"
-                    className="text-right"
+                    align={macroSortAlign}
+                    className={macroCellAlign}
                   >
                     Revenue
                   </MacroSortableTh>
@@ -2850,14 +2917,19 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                     dir={macroSort.dir}
                     onSort={toggleMacroSort}
                     sortLabel="Inactive"
-                    className="text-right"
+                    align={macroSortAlign}
+                    className={macroCellAlign}
                   >
                     Inactive
                   </MacroSortableTh>
-                  <th className="text-right">Media</th>
-                  <th className="text-right">Management</th>
-                  <th className="text-right">Total</th>
-                  <th className="text-right">% leads</th>
+                  {!isExternalVariant && (
+                    <>
+                      <th className="text-center">Media</th>
+                      <th className="text-center">Management</th>
+                      <th className="text-center">Total</th>
+                      <th className="text-center">% leads</th>
+                    </>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -2867,20 +2939,26 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                   const totalCostNis = r.mediaNis + r.managementNis;
                   return (
                     <tr key={r.key}>
-                      <td className="whitespace-nowrap">
-                        <ChannelLabel
-                          label={r.channel}
-                          seed={r.channel}
-                          inactive={r.channel.toLowerCase().includes('(inactive)')}
-                        />
+                      <td className={`whitespace-nowrap ${macroCellAlign}`}>
+                        <div className="flex justify-center">
+                          <ChannelLabel
+                            label={r.channel}
+                            seed={r.channel}
+                            inactive={r.channel.toLowerCase().includes('(inactive)')}
+                          />
+                        </div>
                       </td>
-                      {groupMode === 'source' && <td className="max-w-[10rem] truncate">{r.source}</td>}
-                      <td className="text-base-content/50">{r.provider}</td>
-                      <td className="text-right">{r.leads}</td>
-                      <td className="text-right">{r.eligible}</td>
-                      <td className="text-right">{r.meetings}</td>
-                      <td className="text-right">{r.offers}</td>
-                      <td className="text-right">
+                      {groupMode === 'source' && (
+                        <td className={macroLabelColClass}>
+                          {r.source}
+                        </td>
+                      )}
+                      {!isExternalVariant && <td className={`text-base-content/50 ${macroLabelColClass}`}>{r.provider}</td>}
+                      <td className={macroCellAlign}>{r.leads}</td>
+                      <td className={macroCellAlign}>{r.eligible}</td>
+                      <td className={macroCellAlign}>{r.meetings}</td>
+                      <td className={macroCellAlign}>{r.offers}</td>
+                      <td className={macroCellAlign}>
                         {r.deals > 0 ? (
                           <button
                             type="button"
@@ -2894,16 +2972,20 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
                           r.deals
                         )}
                       </td>
-                      <td className="text-right">{macroPct(r.eligible, r.leads)}</td>
-                      <td className="text-right">{macroPct(r.meetings, r.leads)}</td>
-                      <td className="text-right">{macroPct(r.offers, offerDealDenom)}</td>
-                      <td className="text-right">{macroPct(r.deals, offerDealDenom)}</td>
-                      <td className="text-right text-sm font-semibold">{fmtMoney(r.revenueNis)}</td>
-                      <td className="text-right">{r.inactive}</td>
-                      <td className="text-right">{r.mediaNis > 0 ? fmtMoney(r.mediaNis) : '—'}</td>
-                      <td className="text-right">{r.managementNis > 0 ? fmtMoney(r.managementNis) : '—'}</td>
-                      <td className="text-right">{totalCostNis > 0 ? fmtMoney(totalCostNis) : '—'}</td>
-                      <td className="text-right">{pctLeads}%</td>
+                      <td className={macroCellAlign}>{macroPct(r.eligible, r.leads)}</td>
+                      <td className={macroCellAlign}>{macroPct(r.meetings, r.leads)}</td>
+                      <td className={macroCellAlign}>{macroPct(r.offers, offerDealDenom)}</td>
+                      <td className={macroCellAlign}>{macroPct(r.deals, offerDealDenom)}</td>
+                      <td className={`${macroCellAlign} text-sm font-semibold`}>{fmtMoney(r.revenueNis)}</td>
+                      <td className={macroCellAlign}>{r.inactive}</td>
+                      {!isExternalVariant && (
+                        <>
+                          <td className={macroCellAlign}>{r.mediaNis > 0 ? fmtMoney(r.mediaNis) : '—'}</td>
+                          <td className={macroCellAlign}>{r.managementNis > 0 ? fmtMoney(r.managementNis) : '—'}</td>
+                          <td className={macroCellAlign}>{totalCostNis > 0 ? fmtMoney(totalCostNis) : '—'}</td>
+                          <td className={macroCellAlign}>{pctLeads}%</td>
+                        </>
+                      )}
                     </tr>
                   );
                 })}
@@ -2912,6 +2994,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           </div>
 
           {/* Quick horizontal navigation for the macro table */}
+          {!isExternalVariant && (
           <button
             type="button"
             onClick={() => {
@@ -2927,13 +3010,14 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
           >
             <span className="text-xl leading-none">{macroAtRightEdge ? '←' : '→'}</span>
           </button>
+          )}
 
           {/* Funnel chart */}
           <div
             id="marketing-kpi-funnel"
-            className="scroll-mt-24"
+            className={`scroll-mt-24 ${isExternalVariant ? 'pt-2' : ''}`}
           >
-            <h3 className={`mb-2 text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}>Funnel snapshot</h3>
+            <h3 className={`${isExternalVariant ? 'mb-4' : 'mb-2'} text-base font-bold ${REPORT_SECTION_TITLE_CLASS}`}>Funnel snapshot</h3>
             <div className="h-64 w-full min-w-0">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={funnelData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -2948,7 +3032,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
             </div>
           </div>
 
-          {/* Timing from history_leads */}
+          {!isExternalVariant && (
           <div className="grid gap-4 lg:grid-cols-2">
             <div
               id="marketing-kpi-timing"
@@ -3075,6 +3159,7 @@ const MarketingDashboardReport: React.FC<MarketingDashboardReportProps> = ({
               )}
             </div>
           </div>
+          )}
 
           {/* Cost breakdown table removed — columns moved into Macro table above. */}
         </>

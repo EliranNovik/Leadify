@@ -50,6 +50,8 @@ export interface CreatePelecardSessionResponse {
   cssUrl?: string;
   /** False when Pelecard ignores CssURL and loads default variant CSS (terminal must be enabled by Pelecard). */
   cssApplied?: boolean;
+  /** hide | show | must — whether Pelecard checkout shows ID/passport field */
+  customerIdField?: 'hide' | 'optional' | 'show' | 'must';
   error?: string;
 }
 

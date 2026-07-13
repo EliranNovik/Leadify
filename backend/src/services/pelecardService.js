@@ -221,7 +221,7 @@ async function probeTerminalCssUrlSupport(profile = 'production') {
     password: config.password,
     Total: '100',
     Currency: '1',
-    ActionType: 'J4',
+    ...buildEcommerceInitFields(),
     ParamX: `css_probe_${Date.now()}`,
     GoodURL: `${config.appPublicUrl}/payment/success`,
     ErrorURL: `${config.appPublicUrl}/payment/failed`,
@@ -264,16 +264,48 @@ async function probeTerminalCssUrlSupport(profile = 'production') {
   return { cssUrl, cssApplied, variantStylesheet, walletProbe };
 }
 
+/** Internet iframe charge — J4 regular debit (not J5 auth, not telephone/MOTO). */
+const PELECARD_ECOMMERCE_ACTION_TYPE = 'J4';
+
+function resolveShopNo() {
+  const raw = (process.env.PELECARD_SHOP_NO || '001').trim();
+  return raw || '001';
+}
+
 function buildInstallmentOptions() {
   const minRaw = (process.env.PELECARD_MIN_PAYMENTS || '1').trim();
   const maxRaw = (process.env.PELECARD_MAX_PAYMENTS || '1').trim();
   const min = Math.max(1, Number(minRaw) || 1);
   const max = Math.max(min, Number(maxRaw) || min);
+  // Single-payment checkout: omit installment fields (matches pre-installment init; avoids tashlumim UI).
+  if (max <= 1) return {};
   return {
     MinPayments: String(min),
     MaxPayments: String(max),
     // Pelecard: 'auto' splits total evenly; prevents 0-payment NaN in installment breakdown.
     FirstPayment: (process.env.PELECARD_FIRST_PAYMENT || 'auto').trim() || 'auto',
+  };
+}
+
+function resolveCustomerIdField() {
+  // must = required in iframe (Israeli issuers often require TZ). Compatible with internet J4 when
+  // the terminal has vector 41 configured for CNP — not the same as telephone/MOTO.
+  const raw = (process.env.PELECARD_CUSTOMER_ID_FIELD || 'must').trim().toLowerCase();
+  if (raw === 'hide' || raw === 'must' || raw === 'show' || raw === 'optional') return raw;
+  console.warn(`[Pelecard] Invalid PELECARD_CUSTOMER_ID_FIELD="${raw}", using must`);
+  return 'must';
+}
+
+/** Init fields that classify the session as internet iframe checkout (J4), not telephone/MOTO. */
+function buildEcommerceInitFields() {
+  return {
+    ActionType: PELECARD_ECOMMERCE_ACTION_TYPE,
+    ShopNo: resolveShopNo(),
+    // Never set AuthNum — that enables telephone/manual authorization-number flows.
+    CustomerIdField: resolveCustomerIdField(),
+    Cvv2Field: 'must',
+    EmailField: 'hide',
+    TelField: 'hide',
   };
 }
 
@@ -296,11 +328,8 @@ function buildCheckoutDisplayOptions(config, payment) {
     FeedbackOnTop: 'False',
     Target: '_self',
     Language: process.env.PELECARD_CHECKOUT_LANGUAGE || 'en',
-    CustomerIdField: 'must',
-    Cvv2Field: 'must',
-    EmailField: 'hide',
-    TelField: 'hide',
     ShowSubmitButton: 'True',
+    ...buildEcommerceInitFields(),
     ...buildInstallmentOptions(),
   };
 
@@ -387,7 +416,7 @@ async function createPaymentSession(payment, secureToken, profile = 'production'
     password: config.password,
     Total: String(totalAgorot),
     Currency: '1',
-    ActionType: 'J4',
+    ...buildEcommerceInitFields(),
     ParamX: paymentRef,
     GoodURL: `${returnBase}/success`,
     ErrorURL: `${returnBase}/error`,
@@ -405,6 +434,22 @@ async function createPaymentSession(payment, secureToken, profile = 'production'
   }
 
   Object.assign(payload, buildCheckoutDisplayOptions(config, payment));
+
+  console.info('[Pelecard] Checkout init (internet e-commerce)', {
+    profile: config.profile,
+    terminal: config.terminal,
+    ActionType: payload.ActionType,
+    ShopNo: payload.ShopNo,
+    CustomerIdField: payload.CustomerIdField,
+    Cvv2Field: payload.Cvv2Field,
+    TelField: payload.TelField,
+    Currency: payload.Currency,
+    installments: payload.MaxPayments
+      ? { MinPayments: payload.MinPayments, MaxPayments: payload.MaxPayments }
+      : 'single',
+    FeedbackOnTop: payload.FeedbackOnTop,
+    Target: payload.Target,
+  });
 
   const { ok, data } = await pelecardPost(PELECARD_INIT_PATH, payload, config);
 
@@ -499,6 +544,8 @@ module.exports = {
   getConfig,
   assertCredentials,
   normalizeProfile,
+  getCustomerIdFieldMode: resolveCustomerIdField,
+  buildEcommerceInitFields,
   totalToAgorot,
   createPaymentSession,
   getTransaction,

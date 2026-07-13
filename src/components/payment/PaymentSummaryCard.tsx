@@ -41,8 +41,8 @@ const PaymentSummaryCard: React.FC<Props> = ({
 
   if (isGradient) {
     return (
-      <div className="flex flex-col gap-6">
-        <div>
+      <div className="flex w-full max-w-md flex-col gap-6 text-left">
+        <div className="w-full">
           {exchangeLoading && !exchangeInfo ? (
             <div className="h-11 w-40 rounded-lg animate-pulse bg-white/25" />
           ) : (
@@ -53,16 +53,16 @@ const PaymentSummaryCard: React.FC<Props> = ({
               {secondaryForeign && (
                 <p className="text-sm mt-2 font-normal text-white/70">{secondaryForeign}</p>
               )}
-              <p className="text-sm font-semibold text-white mt-3">{summary.service}</p>
+              <p className="text-sm font-semibold text-white/55 mt-3">{summary.service}</p>
             </>
           )}
         </div>
 
         {summary.topic !== '--' && (
-          <p className="text-xs text-white/80 leading-relaxed">{summary.topic}</p>
+          <p className="text-xs text-white/80 leading-relaxed max-w-sm">{summary.topic}</p>
         )}
 
-        <div className="space-y-2.5 text-sm text-white/75">
+        <div className="w-full max-w-xs space-y-2.5 text-sm text-white/75">
           <div className="flex justify-between">
             <span>Subtotal</span>
             <span className="text-white">{formatMoneyAmount(summary.subtotal, summary.currencySymbol)}</span>
@@ -78,7 +78,7 @@ const PaymentSummaryCard: React.FC<Props> = ({
         </div>
 
         {isForeign && exchangeInfo && (
-          <div className="text-[11px] leading-relaxed text-white/60 space-y-0.5">
+          <div className="text-[11px] leading-relaxed text-white/60 space-y-0.5 max-w-xs">
             <p>
               1 {exchangeInfo.isoCode} = ₪
               {exchangeInfo.rateToIls.toLocaleString(undefined, {

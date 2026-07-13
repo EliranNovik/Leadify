@@ -43,7 +43,7 @@ function canReusePelecardSession(payment, profile, options = {}) {
   if (sessionAgeMs(payment) > maxAgeMs) return false;
 
   const statusCode = String(payment.pelecard_status_code || '').trim();
-  if (statusCode === '301' || statusCode === '302' || statusCode === '303') return false;
+  if (statusCode === '301' || statusCode === '302') return false;
 
   const raw = payment.pelecard_raw_response;
   if (raw && typeof raw === 'object' && raw.sessionExpired === true) return false;
@@ -58,6 +58,7 @@ function buildReusedSessionResponse(payment, paymentId, profile) {
     init && typeof init === 'object'
       ? init.CssURL || init.cssUrl || null
       : null;
+  const { getCustomerIdFieldMode } = require('../services/pelecardService');
 
   return {
     success: true,
@@ -66,6 +67,7 @@ function buildReusedSessionResponse(payment, paymentId, profile) {
     pelecardProfile: payment.pelecard_profile || profile,
     cssUrl,
     reusedSession: true,
+    customerIdField: getCustomerIdFieldMode(),
   };
 }
 

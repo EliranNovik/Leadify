@@ -50,6 +50,7 @@ export const LazyTagsManagerPage = lazy(() => import('../pages/TagsManagerPage')
 export const LazyExternalUserAccessLogsPage = lazy(() => import('../pages/ExternalUserAccessLogsPage'));
 export const LazyExternalUserHomePage = lazy(() => import('../pages/ExternalUserHomePage'));
 export const LazyExternalUserSettingsPage = lazy(() => import('../pages/ExternalUserSettingsPage'));
+export const LazyExternalReportsPage = lazy(() => import('../pages/ExternalReportsPage'));
 export const LazyMasterLeadPage = lazy(() => import('../components/MasterLeadPage'));
 export const LazySettingsPage = lazy(() => import('../pages/SettingsPage'));
 export const LazyTimelinePage = lazy(() => import('../components/TimelinePage'));

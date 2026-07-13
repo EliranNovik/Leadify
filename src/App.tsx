@@ -63,6 +63,7 @@ import {
   LazyExternalUserAccessLogsPage,
   LazyExternalUserHomePage,
   LazyExternalUserSettingsPage,
+  LazyExternalReportsPage,
   LazyHandlerManagementPage,
   LazyInternalMeetingDocumentsPage,
   LazyHistoryPage,
@@ -1030,6 +1031,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/reports/external-firms" element={<RouteSuspense><LazyExternalFirmsReportPage /></RouteSuspense>} />
                     <Route path="/access-logs" element={<RouteSuspense><LazyExternalUserAccessLogsPage /></RouteSuspense>} />
                     <Route path="/external-settings" element={<RouteSuspense><LazyExternalUserSettingsPage /></RouteSuspense>} />
+                    <Route path="/external-reports" element={<RouteSuspense><LazyExternalReportsPage /></RouteSuspense>} />
                     <Route path="/sales/signed" element={<RouteSuspense><LazySignedSalesReportPage /></RouteSuspense>} />
                     <Route path="/organization" element={<RouteSuspense><LazyOrganizationPage /></RouteSuspense>} />
                     <Route path="/settings" element={<RouteSuspense><LazySettingsPage /></RouteSuspense>} />
