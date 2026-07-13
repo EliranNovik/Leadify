@@ -246,11 +246,17 @@ async function persistCallbackSnapshot(payment, callbackData, extraRaw = {}) {
 }
 
 async function verifyPelecardTransaction(transactionId, callbackData, profile = 'production') {
+  const verifyAttempts = Number(process.env.PELECARD_VERIFY_ATTEMPTS || '4');
+  const verifyRetryDelayMs = Number(process.env.PELECARD_VERIFY_RETRY_DELAY_MS || '400');
+
   let resolvedStatusCode = extractPelecardMeta(callbackData).statusCode;
   let verifyPayload = { callback: callbackData };
   let resultData = callbackData;
+  let getTransactionAttempted = false;
 
-  if (transactionId) {
+  const pullTransaction = async () => {
+    if (!transactionId) return;
+    getTransactionAttempted = true;
     try {
       const tx = await pelecardService.getTransaction(String(transactionId), profile);
       verifyPayload.pelecard = tx.raw;
@@ -261,15 +267,23 @@ async function verifyPelecardTransaction(transactionId, callbackData, profile = 
     } catch (verifyErr) {
       console.error('[Pelecard] GetTransaction failed:', verifyErr.message || verifyErr);
     }
+  };
+
+  await pullTransaction();
+
+  let verified = pelecardService.isSuccessfulStatus(resolvedStatusCode, resultData);
+  for (let attempt = 1; attempt < verifyAttempts && !verified && transactionId; attempt += 1) {
+    await sleep(verifyRetryDelayMs * attempt);
+    await pullTransaction();
+    verified = pelecardService.isSuccessfulStatus(resolvedStatusCode, resultData);
   }
 
-  const verified = pelecardService.isSuccessfulStatus(resolvedStatusCode, resultData);
   return {
     verified,
     resolvedStatusCode,
     verifyPayload,
     resultData,
-    getTransactionAttempted: Boolean(transactionId),
+    getTransactionAttempted,
   };
 }
 
@@ -526,9 +540,13 @@ async function tryReconcilePaymentLink(payment) {
   const transactionId = getStoredTransactionId(full);
   if (!transactionId) return full;
 
-  // Only reconcile from polling when we have a callback for this attempt (not a stale tx id alone).
-  const callbackData = full.pelecard_raw_response?.callback;
-  if (!callbackData || typeof callbackData !== 'object') return full;
+  let callbackData = full.pelecard_raw_response?.callback;
+  if (!callbackData || typeof callbackData !== 'object') {
+    callbackData = {
+      ParamX: full.secure_token,
+      PelecardTransactionId: transactionId,
+    };
+  }
 
   const verifyResult = await verifyPelecardTransaction(transactionId, {
     ...callbackData,

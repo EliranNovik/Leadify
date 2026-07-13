@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import {
   MagnifyingGlassIcon,
@@ -24,9 +23,10 @@ import {
   buildMergedTimeAndUnavailabilityExportRows,
   exportAllEmployeesMergedTimeAndUnavailabilitiesToExcel,
   exportMergedTimeAndUnavailabilitiesToExcel,
-  fetchClockInRecordsInRange,
+  fetchClockInRecordsInRangeForReport,
   fetchEmployeeClockInRecords,
   groupClockInTotalsByEmployee,
+  sumCountedClockDurationsMs,
   type ClockInExportRecord,
 } from '../lib/workingHoursExport';
 import {
@@ -39,6 +39,7 @@ import {
   expandUnavailabilitiesToDailyRows,
   fetchAllUnavailabilitiesInRange,
   fetchEmployeeUnavailabilitiesInRange,
+  fetchUnavailabilityReasonsForReportInRange,
   unavailabilityDateLabel,
   unavailabilityReasonText,
   unavailabilityTypeLabel,
@@ -48,6 +49,13 @@ import type { DailyClockInSummary } from '../lib/workingHoursExport';
 import { fetchWorkingHoursSubmissionsForMonth } from '../lib/employeeWorkingHoursSubmissions';
 import { fetchActiveStaffEmployeesWithDepartment } from '../lib/employeeSalaries';
 import { filterCountedClockInRecords } from '../lib/employeeClockInApproval';
+import {
+  buildHolidayMapForRange,
+  calculateEmployeeExtraHoursForRange,
+  calculateExtraHoursByEmployee,
+  formatExtraHoursDuration,
+  preloadHolidayMapsForRange,
+} from '../lib/employeeExtraHours';
 
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -103,12 +111,15 @@ interface EmployeeUnavailabilityData {
   employeeName: string;
   photoUrl?: string | null;
   departmentName?: string | null;
+  minHours: number;
   sickDays: number;
   vacationDays: number;
   generalDays: number;
   hasDocuments: boolean;
   totalHours: string;
   daysWorked: number;
+  extraHours125: string;
+  extraHours150: string;
   hoursSubmitted: boolean;
   submittedAt: string | null;
 }
@@ -167,90 +178,62 @@ const EmployeeUnavailabilitiesReport = () => {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const activeEmployees = await fetchActiveStaffEmployeesWithDepartment();
+      const [
+        activeEmployees,
+        ,
+        reasonsData,
+        clockRecords,
+        submissions,
+      ] = await Promise.all([
+        fetchActiveStaffEmployeesWithDepartment(),
+        preloadHolidayMapsForRange(fromDate, toDate),
+        fetchUnavailabilityReasonsForReportInRange(fromDate, toDate),
+        fetchClockInRecordsInRangeForReport(fromDate, toDate),
+        fetchWorkingHoursSubmissionsForMonth(filters.year, filters.month),
+      ]);
+
+      const holidayMap = buildHolidayMapForRange(fromDate, toDate);
       const employeeMap = new Map<number, EmployeeUnavailabilityData>();
+      const minHoursByEmployee = new Map<number, number>();
+
       for (const employee of activeEmployees) {
         employeeMap.set(employee.id, {
           employeeId: employee.id,
           employeeName: employee.display_name,
           photoUrl: employee.photo_url,
           departmentName: employee.departmentName || '—',
+          minHours: employee.minHours,
           sickDays: 0,
           vacationDays: 0,
           generalDays: 0,
           hasDocuments: false,
           totalHours: '0h 0m',
           daysWorked: 0,
+          extraHours125: '0h 0m',
+          extraHours150: '0h 0m',
           hoursSubmitted: false,
           submittedAt: null,
         });
+        minHoursByEmployee.set(employee.id, employee.minHours);
       }
 
-      // Fetch all unavailability reasons that overlap with the date range
-      // We'll fetch all records and filter in JavaScript for better control
-      const { data: reasonsData, error: reasonsError } = await supabase
-        .from('employee_unavailability_reasons')
-        .select(`
-          id,
-          employee_id,
-          unavailability_type,
-          sick_days_reason,
-          vacation_reason,
-          general_reason,
-          document_url,
-          start_date,
-          end_date,
-          created_at,
-          tenants_employee!employee_id(
-            id,
-            display_name,
-            photo_url,
-            department_id,
-            tenant_departement!department_id(
-              id,
-              name
-            )
-          )
-        `)
-        .order('start_date', { ascending: false });
-
-      if (reasonsError) throw reasonsError;
-
-      // Filter records that overlap with the date range
-      const filteredReasons = (reasonsData || []).filter((reason: any) => {
-        const startDate = new Date(reason.start_date);
-        const endDate = reason.end_date ? new Date(reason.end_date) : startDate;
-        const filterFromDate = new Date(fromDate);
-        const filterToDate = new Date(toDate);
-
-        // Check if ranges overlap: start <= filterTo AND end >= filterFrom
-        return startDate <= filterToDate && endDate >= filterFromDate;
-      });
-
       const documentsList: DocumentData[] = [];
+      const filterFromDate = new Date(fromDate);
+      const filterToDate = new Date(toDate);
 
-      filteredReasons.forEach((reason: any) => {
-        const employee = reason.tenants_employee;
-        if (!employee) return;
-
+      for (const reason of reasonsData) {
         const employeeId = reason.employee_id;
-        const employeeData = Array.isArray(employee) ? employee[0] : employee;
-        const employeeName = employeeData?.display_name;
-
-        if (!employeeMap.has(employeeId)) return;
+        if (!employeeMap.has(employeeId)) continue;
 
         const empData = employeeMap.get(employeeId)!;
+        const employeeName = empData.employeeName;
 
-        // Calculate days for this entry within the filter period
         const startDate = new Date(reason.start_date);
         const endDate = reason.end_date ? new Date(reason.end_date) : startDate;
-        const filterFromDate = new Date(fromDate);
-        const filterToDate = new Date(toDate);
-        
-        // Calculate the overlap: use the later of start dates and earlier of end dates
         const overlapStart = startDate > filterFromDate ? startDate : filterFromDate;
         const overlapEnd = endDate < filterToDate ? endDate : filterToDate;
-        const daysDiff = Math.ceil((overlapEnd.getTime() - overlapStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+        const daysDiff =
+          Math.ceil((overlapEnd.getTime() - overlapStart.getTime()) / (1000 * 60 * 60 * 24)) + 1;
 
         if (reason.unavailability_type === 'sick_days') {
           empData.sickDays += daysDiff;
@@ -272,11 +255,34 @@ const EmployeeUnavailabilitiesReport = () => {
         } else if (reason.unavailability_type === 'general') {
           empData.generalDays += daysDiff;
         }
-      });
+      }
 
-      const clockRecords = await fetchClockInRecordsInRange(fromDate, toDate);
       const clockByEmployee = groupClockInTotalsByEmployee(clockRecords);
-      const submissions = await fetchWorkingHoursSubmissionsForMonth(filters.year, filters.month);
+      const clockRecordsByEmployee = new Map<number, ClockInExportRecord[]>();
+      for (const record of clockRecords) {
+        const employeeId = record.employee_id;
+        if (employeeId == null) continue;
+        const list = clockRecordsByEmployee.get(employeeId);
+        if (list) list.push(record);
+        else clockRecordsByEmployee.set(employeeId, [record]);
+      }
+
+      const unavailByEmployee = new Map<number, typeof reasonsData>();
+      for (const reason of reasonsData) {
+        const list = unavailByEmployee.get(reason.employee_id);
+        if (list) list.push(reason);
+        else unavailByEmployee.set(reason.employee_id, [reason]);
+      }
+
+      const extraHoursByEmployee = calculateExtraHoursByEmployee(
+        clockRecordsByEmployee,
+        minHoursByEmployee,
+        holidayMap,
+        fromDate,
+        toDate,
+        unavailByEmployee,
+      );
+
       const submissionByEmployee = new Map(
         submissions.map((submission) => [submission.employee_id, submission]),
       );
@@ -286,6 +292,9 @@ const EmployeeUnavailabilitiesReport = () => {
         if (emp) {
           emp.totalHours = totals.totalDuration;
           emp.daysWorked = totals.daysWorked;
+          const extraHours = extraHoursByEmployee.get(employeeId);
+          emp.extraHours125 = formatExtraHoursDuration(extraHours?.extraHours125Ms ?? 0);
+          emp.extraHours150 = formatExtraHoursDuration(extraHours?.extraHours150Ms ?? 0);
         }
       }
 
@@ -422,13 +431,25 @@ const EmployeeUnavailabilitiesReport = () => {
     }
     setDetailExporting(true);
     try {
-      const periodTotal = sumClockDurations(filterCountedClockInRecords(detailRecords));
+      const countedRecords = filterCountedClockInRecords(detailRecords);
+      const extraHours = calculateEmployeeExtraHoursForRange(
+        detailRecords,
+        selectedEmployee.minHours,
+        fromDate,
+        toDate,
+        detailUnavailabilities,
+      );
       exportMergedTimeAndUnavailabilitiesToExcel(mergedRows, {
         employeeName: selectedEmployee.employeeName,
         department: selectedEmployee.departmentName || '—',
         dateFrom: fromDate,
         dateTo: toDate,
-        periodTotal,
+        periodTotalMs: sumCountedClockDurationsMs(countedRecords),
+        extraHours125Ms: extraHours.extraHours125Ms,
+        extraHours150Ms: extraHours.extraHours150Ms,
+        deficitHoursMs: extraHours.deficitHoursMs,
+        sickDays: selectedEmployee.sickDays,
+        vacationDays: selectedEmployee.vacationDays,
         filenameSuffix: selectedEmployee.employeeName,
       });
       toast.success('Time and unavailabilities exported successfully');
@@ -449,7 +470,7 @@ const EmployeeUnavailabilitiesReport = () => {
     setExportingAll(true);
     try {
       const [clockRecords, allUnavailabilities] = await Promise.all([
-        fetchClockInRecordsInRange(fromDate, toDate),
+        fetchClockInRecordsInRangeForReport(fromDate, toDate),
         fetchAllUnavailabilitiesInRange(fromDate, toDate),
       ]);
 
@@ -469,8 +490,22 @@ const EmployeeUnavailabilitiesReport = () => {
         else unavailByEmployee.set(entry.employee_id, [entry]);
       }
 
+      const minHoursByEmployee = new Map(
+        displayedEmployees.map((emp) => [emp.employeeId, emp.minHours]),
+      );
+      const extraHoursByEmployee = calculateExtraHoursByEmployee(
+        clockByEmployee,
+        minHoursByEmployee,
+        buildHolidayMapForRange(fromDate, toDate),
+        fromDate,
+        toDate,
+        unavailByEmployee,
+      );
+
       const employeeExports = displayedEmployees.map((emp) => {
         const clockRecordsForEmp = clockByEmployee.get(emp.employeeId) ?? [];
+        const countedRecords = filterCountedClockInRecords(clockRecordsForEmp);
+        const extraHours = extraHoursByEmployee.get(emp.employeeId);
         const mergedRows = buildEmployeeMergedTimeAndUnavailabilityExportRows(
           clockRecordsForEmp,
           unavailByEmployee.get(emp.employeeId) ?? [],
@@ -484,7 +519,12 @@ const EmployeeUnavailabilitiesReport = () => {
           employeeName: emp.employeeName,
           department: emp.departmentName || '—',
           rows: mergedRows.map(({ employeeName, department, ...row }) => row),
-          periodTotal: sumClockDurations(filterCountedClockInRecords(clockRecordsForEmp)),
+          periodTotalMs: sumCountedClockDurationsMs(countedRecords),
+          extraHours125Ms: extraHours?.extraHours125Ms ?? 0,
+          extraHours150Ms: extraHours?.extraHours150Ms ?? 0,
+          deficitHoursMs: extraHours?.deficitHoursMs ?? 0,
+          sickDays: emp.sickDays,
+          vacationDays: emp.vacationDays,
         };
       });
 
@@ -647,6 +687,8 @@ const EmployeeUnavailabilitiesReport = () => {
                   <th className="text-right">Vacation</th>
                   <th className="text-right">General</th>
                   <th className="text-right">Total Hours</th>
+                  <th className="text-right">Extra hours 125%</th>
+                  <th className="text-right">Extra hours 150%</th>
                   <th className="text-right">Days Worked</th>
                   <th>Submitted</th>
                 </tr>
@@ -654,14 +696,14 @@ const EmployeeUnavailabilitiesReport = () => {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={8} className="text-center py-8">
+                    <td colSpan={10} className="text-center py-8">
                       <span className="loading loading-spinner loading-md"></span>
                       <span className="ml-2">Loading...</span>
                     </td>
                   </tr>
                 ) : displayedEmployees.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="text-center py-8 text-gray-500">
+                    <td colSpan={10} className="text-center py-8 text-gray-500">
                       No data found for the selected period
                     </td>
                   </tr>
@@ -696,6 +738,8 @@ const EmployeeUnavailabilitiesReport = () => {
                       <td className="text-right font-semibold">{emp.vacationDays}</td>
                       <td className="text-right font-semibold">{emp.generalDays}</td>
                       <td className="text-right font-semibold text-primary">{emp.totalHours}</td>
+                      <td className="text-right font-semibold">{emp.extraHours125}</td>
+                      <td className="text-right font-semibold">{emp.extraHours150}</td>
                       <td className="text-right font-semibold">{emp.daysWorked}</td>
                       <td>
                         {emp.hoursSubmitted ? (

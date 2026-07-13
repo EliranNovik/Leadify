@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { normalizeEmployeeMinHours } from './employeeLeadReporting';
 
 export interface SalaryEntryRow {
   employee_id: number;
@@ -19,6 +20,7 @@ export interface ActiveStaffEmployee {
 
 export interface ActiveStaffEmployeeWithDepartment extends ActiveStaffEmployee {
   departmentName: string | null;
+  minHours: number;
 }
 
 async function fetchActiveStaffEmployeeIds(allEmployeeIds: number[]): Promise<Set<number>> {
@@ -88,6 +90,7 @@ export async function fetchActiveStaffEmployeesWithDepartment(): Promise<ActiveS
       display_name,
       photo_url,
       photo,
+      min_hours,
       tenant_departement!department_id (
         name
       )
@@ -108,6 +111,7 @@ export async function fetchActiveStaffEmployeesWithDepartment(): Promise<ActiveS
         display_name: string | null;
         photo_url: string | null;
         photo: string | null;
+        min_hours: number | null;
         tenant_departement: { name: string } | { name: string }[] | null;
       }) => {
         const dept = Array.isArray(emp.tenant_departement)
@@ -116,6 +120,7 @@ export async function fetchActiveStaffEmployeesWithDepartment(): Promise<ActiveS
         return {
           ...mapActiveStaffEmployee(emp),
           departmentName: dept?.name ?? null,
+          minHours: normalizeEmployeeMinHours(emp.min_hours),
         };
       },
     )

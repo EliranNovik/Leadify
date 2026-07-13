@@ -8332,6 +8332,7 @@ const reports: ReportSection[] = [
     category: 'Employees',
     items: [
       { label: 'Employee Info', icon: UserGroupIcon, route: '/reports/employee-info' },
+      { label: 'Lead allocations', icon: ClipboardDocumentListIcon, route: '/reports/employee-lead-allocations', superuserOnly: true },
     ],
   },
 ];

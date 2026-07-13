@@ -23,6 +23,7 @@ import {
   aggregateClockInRecordsByDay,
   buildMergedTimeAndUnavailabilityExportRows,
   exportMergedTimeAndUnavailabilitiesToExcel,
+  sumCountedClockDurationsMs,
   type DailyClockInSummary,
 } from '../../lib/workingHoursExport';
 import {
@@ -1219,7 +1220,7 @@ const WorkingHoursTab: React.FC<WorkingHoursTabProps> = ({ employeeId, employeeN
         employeeName,
         dateFrom,
         dateTo,
-        periodTotal,
+        periodTotalMs: sumCountedClockDurationsMs(filterCountedClockInRecords(records)),
       });
       toast.success(`Exported ${mergedRows.length} day(s) to Excel.`);
     } catch (err) {

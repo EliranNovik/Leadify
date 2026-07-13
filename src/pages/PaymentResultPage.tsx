@@ -8,8 +8,8 @@ import {
 } from '@heroicons/react/24/outline';
 import { fetchPaymentStatus, type PaymentStatusResponse } from '../lib/pelecardPaymentApi';
 import {
-  describePelecardFailure,
-  isPelecardSessionExpiredCode,
+  getPelecardFailureCopy,
+  getPelecardCancelledCopy,
   logPelecardResult,
 } from '../lib/pelecardErrors';
 
@@ -27,7 +27,8 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
   const urlReason = searchParams.get('reason') || '';
 
   const [statusData, setStatusData] = useState<PaymentStatusResponse | null>(null);
-  const [loading, setLoading] = useState(!!paymentId);
+  /** True while polling the backend for a final status (paid / failed / cancelled). */
+  const [verifying, setVerifying] = useState(!!paymentId);
   const [confirmationEmailSent, setConfirmationEmailSent] = useState(false);
   const [invoiceLink, setInvoiceLink] = useState<string | null>(null);
   const [invoiceNumber, setInvoiceNumber] = useState<string | null>(null);
@@ -65,26 +66,48 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
 
   useEffect(() => {
     if (!paymentId) {
-      setLoading(false);
+      setVerifying(false);
       return;
     }
 
     let cancelled = false;
-    (async () => {
-      const data = await fetchPaymentStatus(paymentId);
-      if (!cancelled) {
-        setStatusData(data);
-        setLoading(false);
-        if (data.confirmation_email_sent) {
-          setConfirmationEmailSent(true);
-        }
-        if (data.payper_invoice_link) {
-          setInvoiceLink(data.payper_invoice_link);
-        }
-        if (data.payper_invoice_number) {
-          setInvoiceNumber(data.payper_invoice_number);
-        }
+    let attempts = 0;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const maxAttempts = variant === 'success' ? 25 : 12;
+    const intervalMs = 2000;
 
+    const applyStatus = (data: PaymentStatusResponse) => {
+      setStatusData(data);
+      if (data.confirmation_email_sent) {
+        setConfirmationEmailSent(true);
+      }
+      if (data.payper_invoice_link) {
+        setInvoiceLink(data.payper_invoice_link);
+      }
+      if (data.payper_invoice_number) {
+        setInvoiceNumber(data.payper_invoice_number);
+      }
+    };
+
+    const isFinalStatus = (status?: PaymentStatusResponse['status']) => {
+      if (status === 'paid') return true;
+      if (variant === 'success') {
+        return status === 'failed' || status === 'cancelled' || status === 'expired';
+      }
+      if (variant === 'failed') {
+        return status === 'failed' || status === 'cancelled' || status === 'expired';
+      }
+      return status === 'cancelled' || status === 'expired';
+    };
+
+    const poll = async () => {
+      const data = await fetchPaymentStatus(paymentId);
+      if (cancelled) return;
+
+      applyStatus(data);
+      attempts += 1;
+
+      if (attempts === 1) {
         logPelecardResult('Payment status from API', {
           variant,
           paymentId,
@@ -112,16 +135,35 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
           });
         }
       }
-    })();
+
+      if (isFinalStatus(data.status) || attempts >= maxAttempts) {
+        setVerifying(false);
+        if (timer) {
+          window.clearInterval(timer);
+          timer = null;
+        }
+      }
+    };
+
+    setVerifying(true);
+    void poll();
+    timer = window.setInterval(() => {
+      if (cancelled || attempts >= maxAttempts) {
+        if (timer) window.clearInterval(timer);
+        return;
+      }
+      void poll();
+    }, intervalMs);
 
     return () => {
       cancelled = true;
+      if (timer) window.clearInterval(timer);
     };
   }, [paymentId, variant, redirectMeta]);
 
   // Email + tax invoice are created asynchronously after redirect — poll briefly
   useEffect(() => {
-    if (variant !== 'success' || !paymentId || loading || statusData?.status !== 'paid') {
+    if (variant !== 'success' || !paymentId || verifying || statusData?.status !== 'paid') {
       return;
     }
 
@@ -158,7 +200,7 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [variant, paymentId, loading, statusData?.status]);
+  }, [variant, paymentId, verifying, statusData?.status]);
 
   const pelecardStatusCode =
     statusData?.pelecard_status_code ||
@@ -169,25 +211,25 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
     urlPelecardMessage ||
     null;
 
-  const sessionExpired = isPelecardSessionExpiredCode(pelecardStatusCode);
+  const failureCopy = useMemo(
+    () =>
+      getPelecardFailureCopy({
+        statusCode: pelecardStatusCode,
+        statusDescription: pelecardStatusDescription,
+        urlReason,
+        variant,
+      }),
+    [pelecardStatusCode, pelecardStatusDescription, urlReason, variant],
+  );
 
-  const failureMessage = useMemo(() => {
-    if (urlReason === 'server_error') {
-      return 'Something went wrong while confirming your payment. Please try again or contact the office.';
-    }
-    if (urlReason === 'missing_payment_id') {
-      return 'Payment reference was missing. Please use the original payment link.';
-    }
-    return describePelecardFailure(pelecardStatusCode, pelecardStatusDescription);
-  }, [pelecardStatusCode, pelecardStatusDescription, urlReason]);
-
-  const failureTitle = sessionExpired ? 'Time has passed' : 'Payment not completed';
+  const cancelledCopy = useMemo(() => getPelecardCancelledCopy(), []);
 
   const backendPaid = statusData?.status === 'paid';
-  const showSuccess = variant === 'success' && backendPaid;
+  const resolvedCancelled = statusData?.status === 'cancelled';
+  const showSuccess = backendPaid;
+  const showCancelled = !verifying && !backendPaid && (variant === 'cancelled' || resolvedCancelled);
   const showFailed =
-    variant === 'failed' || (variant === 'success' && !loading && !backendPaid);
-  const showCancelled = variant === 'cancelled' && !backendPaid;
+    !verifying && !backendPaid && !showCancelled && (variant === 'failed' || variant === 'success');
 
   const getCurrencySymbol = (currency: string | undefined) => {
     if (!currency) return '₪';
@@ -211,10 +253,11 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
 
       <div className="flex flex-col items-center justify-center px-4 pb-12">
         <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full">
-          {loading ? (
+          {verifying ? (
             <div className="flex flex-col items-center gap-4 py-8">
               <span className="loading loading-spinner loading-lg text-primary" />
               <p className="text-sm text-gray-600">Verifying payment status…</p>
+              <p className="text-xs text-gray-400">This usually takes a few seconds.</p>
             </div>
           ) : showSuccess ? (
             <div className="text-center">
@@ -256,12 +299,17 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
           ) : showCancelled ? (
             <div className="text-center">
               <XCircleIcon className="w-16 h-16 text-amber-500 mx-auto mb-4" />
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">Payment cancelled</h2>
-              <p className="text-gray-600 mb-6">
-                You cancelled the payment. You can return to the payment link and try again.
-              </p>
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">{cancelledCopy.title}</h2>
+              <p className="text-gray-600 mb-4 leading-relaxed">{cancelledCopy.explanation}</p>
+              {cancelledCopy.actions.length > 0 && (
+                <ul className="text-sm text-gray-600 text-left mb-6 space-y-2 list-disc pl-5">
+                  {cancelledCopy.actions.map((action) => (
+                    <li key={action}>{action}</li>
+                  ))}
+                </ul>
+              )}
               {paymentId && (
-                <Link to={`/payment/${paymentId}`} className="btn btn-primary w-full">
+                <Link to={`/payment/${paymentId}?fresh=1`} className="btn btn-primary w-full">
                   Back to payment
                 </Link>
               )}
@@ -269,10 +317,20 @@ const PaymentResultPage: React.FC<PaymentResultPageProps> = ({ variant }) => {
           ) : showFailed ? (
             <div className="text-center">
               <ExclamationCircleIcon className="w-16 h-16 text-amber-500 mx-auto mb-4" />
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">{failureTitle}</h2>
-              <p className="text-gray-600 mb-6 leading-relaxed">{failureMessage}</p>
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">{failureCopy.title}</h2>
+              <p className="text-gray-600 mb-4 leading-relaxed">{failureCopy.explanation}</p>
+              {failureCopy.actions.length > 0 && (
+                <ul className="text-sm text-gray-600 text-left mb-6 space-y-2 list-disc pl-5">
+                  {failureCopy.actions.map((action) => (
+                    <li key={action}>{action}</li>
+                  ))}
+                </ul>
+              )}
               {paymentId && statusData?.status !== 'paid' && (
-                <Link to={`/payment/${paymentId}`} className="btn btn-primary w-full rounded-xl">
+                <Link
+                  to={`/payment/${paymentId}?fresh=1`}
+                  className="btn btn-primary w-full rounded-xl"
+                >
                   Try again
                 </Link>
               )}

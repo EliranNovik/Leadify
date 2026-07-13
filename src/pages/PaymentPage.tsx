@@ -284,8 +284,9 @@ function PaymentPassportIdNote({ className = '' }: { className?: string }) {
 const PaymentPage: React.FC = () => {
   const { token } = useParams<{ token: string }>();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const walletDebug = searchParams.get('walletDebug') === '1';
+  const forceFreshSession = searchParams.get('fresh') === '1';
 
   const [paymentLink, setPaymentLink] = useState<PaymentLink | null>(null);
   const [loading, setLoading] = useState(true);
@@ -547,34 +548,55 @@ const PaymentPage: React.FC = () => {
     paymentLink.status !== 'expired' &&
     !(paymentLink.expires_at && new Date(paymentLink.expires_at) < new Date());
 
-  const loadPelecardSession = async () => {
-    if (!token || !paymentLink || !canPay) return;
+  const loadPelecardSession = useCallback(
+    async (options?: { forceNew?: boolean }) => {
+      if (!token || !paymentLink || !canPay) return;
 
-    setSessionLoading(true);
-    setSessionError(null);
+      setSessionLoading(true);
+      setSessionError(null);
 
-    try {
-      const result = await createPelecardPaymentSession(token);
-      if (result.alreadyPaid || result.status === 'paid') {
-        navigate(`/payment/success?paymentId=${encodeURIComponent(token)}`);
-        return;
+      try {
+        const result = await createPelecardPaymentSession(token, {
+          forceNew: options?.forceNew ?? forceFreshSession,
+        });
+        if (result.alreadyPaid || result.status === 'paid') {
+          navigate(`/payment/success?paymentId=${encodeURIComponent(token)}`);
+          return;
+        }
+        if (!result.success || !result.paymentUrl) {
+          throw new Error(result.error || 'Failed to create payment session');
+        }
+        await ensurePelecardClientSecureScript();
+        setPaymentUrl(result.paymentUrl);
+        await loadCheckoutExchange({ forceBoiRefresh: !result.reusedSession });
+        if (forceFreshSession) {
+          setSearchParams(
+            (prev) => {
+              const next = new URLSearchParams(prev);
+              next.delete('fresh');
+              return next;
+            },
+            { replace: true },
+          );
+        }
+      } catch (error) {
+        console.error('[Pelecard] Session error:', error);
+        const raw = error instanceof Error ? error.message : 'Could not start payment';
+        setSessionError(raw);
+      } finally {
+        setSessionLoading(false);
       }
-      if (!result.success || !result.paymentUrl) {
-        throw new Error(result.error || 'Failed to create payment session');
-      }
-      // Iframe wallets need ClientSecureV2 on the parent page before checkout loads.
-      await ensurePelecardClientSecureScript();
-      setPaymentUrl(result.paymentUrl);
-      // Pelecard session was built with fresh BOI — refresh summary NIS to match iframe charge.
-      await loadCheckoutExchange({ forceBoiRefresh: true });
-    } catch (error) {
-      console.error('[Pelecard] Session error:', error);
-      const raw = error instanceof Error ? error.message : 'Could not start payment';
-      setSessionError(raw);
-    } finally {
-      setSessionLoading(false);
-    }
-  };
+    },
+    [
+      token,
+      paymentLink,
+      canPay,
+      forceFreshSession,
+      navigate,
+      loadCheckoutExchange,
+      setSearchParams,
+    ],
+  );
 
   useEffect(() => {
     if (!canPay) {
@@ -772,7 +794,7 @@ const PaymentPage: React.FC = () => {
               paymentUrl={paymentUrl}
               loading={sessionLoading}
               error={sessionError}
-              onRetry={loadPelecardSession}
+              onRetry={() => loadPelecardSession({ forceNew: true })}
               onCheckoutNavigate={(path) => navigate(path)}
               title="Secure payment"
               shellClassName="max-lg:h-auto max-lg:flex-none lg:flex-1 lg:min-h-0 lg:h-full"

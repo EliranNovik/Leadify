@@ -43,6 +43,8 @@ export interface CreatePelecardSessionResponse {
   paymentId?: string;
   /** Set when backend reconciled a prior charge and link is already paid. */
   alreadyPaid?: boolean;
+  /** True when an existing in-progress checkout URL was returned (no new Pelecard init). */
+  reusedSession?: boolean;
   status?: PaymentLinkStatus;
   /** CssURL sent to Pelecard at init — verify this URL returns your CSS file. */
   cssUrl?: string;
@@ -131,13 +133,17 @@ async function parseJsonResponse<T extends { success?: boolean; error?: string }
 }
 
 export async function createPelecardPaymentSession(
-  paymentId: string
+  paymentId: string,
+  options?: { forceNew?: boolean },
 ): Promise<CreatePelecardSessionResponse> {
   try {
     const response = await fetch(`${getApiBase()}/create-payment-session`, {
       method: 'POST',
       headers: buildHeaders(),
-      body: JSON.stringify({ paymentId }),
+      body: JSON.stringify({
+        paymentId,
+        ...(options?.forceNew ? { forceNew: true } : {}),
+      }),
     });
     return await parseJsonResponse<CreatePelecardSessionResponse>(response);
   } catch (error) {

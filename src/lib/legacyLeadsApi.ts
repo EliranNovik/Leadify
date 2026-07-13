@@ -128,8 +128,13 @@ function detectIntent(query: string): SearchIntent | null {
   // - 4-6 digits without prefix are likely lead numbers (not phone numbers which are usually 7+ digits or start with 0)
   const isPureNumeric = rawNoPrefix.length > 0 && /^\d+$/.test(rawNoPrefix) && rawNoPrefix === d;
   const startsWithZero = d.startsWith("0") && d.length >= 3;
+  const isPhoneLikeDigits =
+    startsWithZero ||
+    d.startsWith("5") ||
+    d.startsWith("972") ||
+    d.startsWith("00972");
   const isLikelyLeadNumber =
-    isPureNumeric && d.length >= 4 && d.length <= 6 && !startsWithZero && !d.startsWith("5");
+    isPureNumeric && d.length >= 4 && d.length <= 10 && !isPhoneLikeDigits;
 
   const leadLike = hasPrefix || raw.includes("/") || isLikelyLeadNumber;
 
@@ -211,8 +216,10 @@ async function searchNewLeads(intent: SearchIntent, opts: Required<SearchOptions
       // Example: searching "212421" should NOT match "21242", but "11234" should find "112345"
       const isSixDigitQuery = searchDigits.length === 6 && /^\d+$/.test(searchDigits);
       const isFourOrFiveDigitQuery = searchDigits.length >= 4 && searchDigits.length <= 5 && /^\d+$/.test(searchDigits);
+      const isLongLeadNumberQuery =
+        searchDigits.length >= 7 && searchDigits.length <= 10 && /^\d+$/.test(searchDigits);
 
-      if (isSixDigitQuery) {
+      if (isSixDigitQuery || isLongLeadNumberQuery) {
         // For 6-digit queries, match the lead itself exactly AND any sublead of that master
         // (e.g. typing "209994" must also surface "L209994/2", "C209994/3", "209994/4" — these
         // would have been visible while the user was still typing "20999" via the L20999% prefix
@@ -316,7 +323,17 @@ async function searchLegacyLeads(intent: SearchIntent, opts: Required<SearchOpti
     if (!cond) return [];
     qb = qb.or(cond);
   } else if (intent.kind === "name") {
-    if (intent.variants.length > 1) {
+    const numericOnly = /^\d+$/.test(intent.raw.trim());
+    if (numericOnly) {
+      const digits = intent.raw.trim();
+      qb = qb.or(
+        [
+          `lead_number.ilike.${digits}%`,
+          `manual_id.ilike.${digits}%`,
+          `name.ilike.${digits}%`,
+        ].join(","),
+      );
+    } else if (intent.variants.length > 1) {
       qb = qb.or(intent.variants.map((v) => `name.ilike.${v}%`).join(","));
     } else {
       qb = qb.ilike("name", `${intent.variants[0]}%`);
@@ -401,8 +418,8 @@ async function findContactsForLeadSearch(
     const base = leadIntent.master != null ? String(leadIntent.master) : stripLeadPrefix(leadIntent.raw).split("/")[0];
     if (!base) return null;
     if (!/^\d+$/.test(base)) return null;
-    // Allow 1-6 digits (including 4-digit lead numbers)
-    if (base.length < 1 || base.length > 6) return null;
+    // Allow 1-10 digit lead numbers (legacy ids and lead_number values can exceed 6 digits)
+    if (base.length < 1 || base.length > 10) return null;
     const parsed = parseInt(base, 10);
     if (Number.isNaN(parsed)) return null;
     return parsed;
@@ -438,6 +455,8 @@ async function findContactsForLeadSearch(
     const searchDigits = leadIntent.digits || stripLeadPrefix(leadIntent.raw);
     const isPrefixQuery = searchDigits.length >= 1 && searchDigits.length <= 5;
     const isSixDigitQuery = searchDigits.length === 6 && /^\d+$/.test(searchDigits);
+    const isLongLeadNumberQuery =
+      searchDigits.length >= 7 && searchDigits.length <= 10 && /^\d+$/.test(searchDigits);
 
     if (isPrefixQuery) {
       // Search by lead_number prefix for 1-5 digit queries
@@ -479,6 +498,29 @@ async function findContactsForLeadSearch(
 
       if (exactLeadNumberData && exactLeadNumberData.length) {
         legacyLeads.push(...exactLeadNumberData);
+      }
+    } else if (isLongLeadNumberQuery) {
+      const exactOrSublead = [
+        `lead_number.eq.${searchDigits}`,
+        `lead_number.eq.L${searchDigits}`,
+        `lead_number.eq.C${searchDigits}`,
+        `lead_number.ilike.${searchDigits}/%`,
+        `lead_number.ilike.L${searchDigits}/%`,
+        `lead_number.ilike.C${searchDigits}/%`,
+        `manual_id.eq.${searchDigits}`,
+      ].join(",");
+      const { data: longLeadNumberData } = await withTimeout(
+        supabase
+          .from("leads_lead")
+          .select(LEGACY_LEAD_SEARCH_SELECT)
+          .or(exactOrSublead)
+          .limit(20),
+        opts.timeoutMs,
+        "legacy long lead_number search timeout",
+      ).catch(() => ({ data: [] as any[] }));
+
+      if (longLeadNumberData && longLeadNumberData.length) {
+        legacyLeads.push(...longLeadNumberData);
       }
     }
 

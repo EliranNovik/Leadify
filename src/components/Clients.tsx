@@ -156,6 +156,10 @@ import SendPriceOfferModal from './SendPriceOfferModal';
 import { addToHighlights, removeFromHighlights, isInHighlights } from '../lib/highlightsUtils';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
 import { addRecentLead } from '../lib/recentSearchStorage';
+import {
+  leadViewIdentityFromSelectedClient,
+  recordEmployeeLeadView,
+} from '../lib/employeeLeadReporting';
 import { saveLeadCaseProbability } from '../lib/saveLeadCaseProbability';
 import { readPendingProbSession, clearPendingProbSession, writePendingProbSession } from '../lib/pendingProbabilityStorage';
 import { persistClientToSessionStorage } from '../lib/clientSessionCache';
@@ -723,6 +727,10 @@ const Clients: React.FC<ClientsProps> = ({
       lead_number: leadNumber,
       lead_type: isLegacy ? 'legacy' : 'new',
     });
+    const identity = leadViewIdentityFromSelectedClient(selectedClient);
+    if (identity) {
+      void recordEmployeeLeadView(identity);
+    }
   }, [selectedClient?.id]);
 
   // Helper function to extract country code and number from full phone number

@@ -52,6 +52,10 @@ import { fetchPendingManualClockInCount } from '../lib/employeeClockInApproval';
 import { useManualClockInApprovalLiveRefresh } from '../hooks/useManualClockInApprovalLiveRefresh';
 import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
 import { getRecentLeads, addRecentLead, type RecentLead } from '../lib/recentSearchStorage';
+import {
+  leadViewIdentityFromCombinedLead,
+  recordEmployeeLeadView,
+} from '../lib/employeeLeadReporting';
 import { EXTERNAL_USER_HEADER_PADDING } from '../lib/externalUserLayout';
 import { useExternalUser, shouldDeferInternalChrome } from '../hooks/useExternalUser';
 import { useSignOutWithClockOut } from '../hooks/useSignOutWithClockOut';
@@ -2669,6 +2673,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       lead_number: lead.lead_number || String(lead.id),
       lead_type: lead.lead_type,
     });
+    const identity = leadViewIdentityFromCombinedLead(lead);
+    if (identity) {
+      void recordEmployeeLeadView(identity);
+    }
     navigateLeadContactSearchResult(lead, navigate);
     closeSearchBar();
   };

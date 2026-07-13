@@ -53,6 +53,8 @@ import {
   LazyEditContractsPage,
   LazyEmailThreadLeadPage,
   LazyEmployeeInfoReport,
+  LazyEmployeeLeadAllocationsReportPage,
+  LazyEmployeeLeadReportingPage,
   LazyEmployeePerformancePage,
   LazyEmployeeSalariesReport,
   LazyEmployeeUnavailabilitiesReport,
@@ -1006,6 +1008,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/email-leads" element={<RouteSuspense><LazyEmailThreadLeadPage /></RouteSuspense>} />
                     <Route path="/collection" element={<RouteSuspense><LazyCollectionPage /></RouteSuspense>} />
                     <Route path="/performance" element={<RouteSuspense><LazyMyPerformancePage /></RouteSuspense>} />
+                    <Route path="/lead-time-report" element={<RouteSuspense><LazyEmployeeLeadReportingPage /></RouteSuspense>} />
                     <Route path="/proforma/:id" element={<RouteSuspense><LazyProformaViewPage /></RouteSuspense>} />
                     <Route path="/proforma/create/:paymentId" element={<RouteSuspense><LazyProformaCreatePage /></RouteSuspense>} />
                     <Route path="/proforma-legacy/:id" element={<RouteSuspense><LazyProformaLegacyViewPage /></RouteSuspense>} />
@@ -1021,6 +1024,7 @@ const AppContentInner: React.FC = () => {
                     <Route path="/reports/employee-unavailabilities" element={<RouteSuspense><LazyEmployeeUnavailabilitiesReport /></RouteSuspense>} />
                     <Route path="/reports/employee-salaries" element={<RouteSuspense><LazyEmployeeSalariesReport /></RouteSuspense>} />
                     <Route path="/reports/employee-info" element={<RouteSuspense><LazyEmployeeInfoReport /></RouteSuspense>} />
+                    <Route path="/reports/employee-lead-allocations" element={<RouteSuspense><LazyEmployeeLeadAllocationsReportPage /></RouteSuspense>} />
                     <Route path="/reports/leads-report" element={<RouteSuspense><LazyLeadsReportPage /></RouteSuspense>} />
                     <Route path="/reports/tags-manager" element={<RouteSuspense><LazyTagsManagerPage /></RouteSuspense>} />
                     <Route path="/reports/external-firms" element={<RouteSuspense><LazyExternalFirmsReportPage /></RouteSuspense>} />

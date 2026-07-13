@@ -403,11 +403,45 @@ export async function fetchAllUnavailabilitiesInRange(
       `id, employee_id, unavailability_type, sick_days_reason, vacation_reason,
        general_reason, document_url, start_date, end_date, start_time, end_time, created_at`,
     )
+    .lte('start_date', dateTo)
+    .or(`end_date.gte.${dateFrom},end_date.is.null`)
     .order('start_date', { ascending: true });
 
   if (error) throw error;
 
   return ((data || []) as EmployeeUnavailabilityEntry[]).filter((row) =>
+    rangesOverlap(row.start_date, row.end_date, dateFrom, dateTo),
+  );
+}
+
+export type UnavailabilityReasonReportRow = {
+  id: number;
+  employee_id: number;
+  unavailability_type: string;
+  sick_days_reason: string | null;
+  document_url: string | null;
+  start_date: string;
+  end_date: string | null;
+  created_at: string;
+};
+
+/** Lightweight fetch for the unavailabilities report summary (no employee join). */
+export async function fetchUnavailabilityReasonsForReportInRange(
+  dateFrom: string,
+  dateTo: string,
+): Promise<UnavailabilityReasonReportRow[]> {
+  const { data, error } = await supabase
+    .from('employee_unavailability_reasons')
+    .select(
+      `id, employee_id, unavailability_type, sick_days_reason, document_url, start_date, end_date, created_at`,
+    )
+    .lte('start_date', dateTo)
+    .or(`end_date.gte.${dateFrom},end_date.is.null`)
+    .order('start_date', { ascending: false });
+
+  if (error) throw error;
+
+  return ((data || []) as UnavailabilityReasonReportRow[]).filter((row) =>
     rangesOverlap(row.start_date, row.end_date, dateFrom, dateTo),
   );
 }

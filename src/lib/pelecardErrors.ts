@@ -4,39 +4,176 @@ export function isPelecardSessionExpiredCode(statusCode?: string | null): boolea
   return code === '301' || code === '302' || code === '303';
 }
 
-/** Map Pelecard status codes to user-facing hints (no technical codes in copy). */
-export function describePelecardFailure(
-  statusCode?: string | null,
-  statusDescription?: string | null
-): string {
-  const code = (statusCode || '').trim();
+export interface PelecardFailureCopy {
+  title: string;
+  explanation: string;
+  actions: string[];
+}
+
+type FailureCopyInput = {
+  statusCode?: string | null;
+  statusDescription?: string | null;
+  urlReason?: string | null;
+  variant?: 'success' | 'failed' | 'cancelled';
+};
+
+/** User-facing title + explanation + next steps for a failed or incomplete payment. */
+export function getPelecardFailureCopy(input: FailureCopyInput): PelecardFailureCopy {
+  const code = (input.statusCode || '').trim();
+  const reason = (input.urlReason || '').trim();
+
+  if (reason === 'server_error') {
+    return {
+      title: 'Could not confirm payment',
+      explanation:
+        'Your card may have been charged, but we could not save the confirmation in our system. Do not pay again until we verify the status.',
+      actions: [
+        'Wait a few minutes and refresh this page.',
+        'If the problem continues, contact our office with your case number.',
+        'Do not start a new payment until we confirm whether the charge went through.',
+      ],
+    };
+  }
+
+  if (reason === 'missing_payment_id' || reason === 'payment_not_found') {
+    return {
+      title: 'Payment link problem',
+      explanation: 'We could not match this page to a payment request.',
+      actions: [
+        'Open the payment link from the original email or message we sent you.',
+        'If the link still does not work, contact our office for a new link.',
+      ],
+    };
+  }
 
   if (code === '000') {
-    return 'Payment approved.';
+    return {
+      title: 'Payment approved',
+      explanation: 'Your payment was approved.',
+      actions: [],
+    };
   }
 
   if (isPelecardSessionExpiredCode(code)) {
-    return 'Your secure payment session has expired. Please try again.';
+    return {
+      title: 'Checkout session expired',
+      explanation:
+        'The secure payment form is no longer active. This often happens if the payment page was open in more than one tab or browser, or was left open for a long time before submitting.',
+      actions: [
+        'Close any other tabs or windows with this payment link.',
+        'Use only one browser window to complete the payment.',
+        'Click “Try again” below and enter your card details in the new form.',
+      ],
+    };
   }
 
   if (code === '002') {
-    return 'Your card was declined. Please try another card or contact the office for help.';
+    return {
+      title: 'Card declined',
+      explanation:
+        'Your bank or card issuer declined this transaction. The charge was not completed and no money was taken.',
+      actions: [
+        'Try a different credit or debit card.',
+        'Contact your bank to approve online or international payments.',
+        'Contact our office if you need help completing the payment.',
+      ],
+    };
   }
 
   if (code === '004') {
-    return 'The payment could not be processed. Please try again or use another card.';
+    return {
+      title: 'Payment could not be processed',
+      explanation:
+        'The card network or bank could not complete the charge. This can happen due to a temporary issue, incorrect card details, or bank security rules.',
+      actions: [
+        'Check that the card number, expiry date, and security code (CVV) are correct.',
+        'Try again in a few minutes or use another card.',
+        'Contact your bank if the problem continues.',
+      ],
+    };
   }
 
   if (code === '001' || code === '003') {
-    return 'Your payment could not be completed. Please try another card or contact the office for help.';
+    return {
+      title: 'Payment not approved',
+      explanation:
+        'The transaction was not approved. No payment was completed.',
+      actions: [
+        'Try again with another card.',
+        'Make sure online payments are enabled for your card.',
+        'Contact our office if you need assistance.',
+      ],
+    };
   }
 
-  return 'Your payment was not completed. Please try again or contact the office for help.';
+  if (code === '005') {
+    return {
+      title: 'Insufficient funds',
+      explanation: 'The card does not have enough available balance for this payment.',
+      actions: [
+        'Try another card or payment method.',
+        'Contact your bank if you believe this message is incorrect.',
+      ],
+    };
+  }
+
+  if (code === '006') {
+    return {
+      title: 'Card expired',
+      explanation: 'The card you used has expired.',
+      actions: ['Use a valid, non-expired card and try again.'],
+    };
+  }
+
+  if (code === '555' || input.variant === 'cancelled') {
+    return getPelecardCancelledCopy();
+  }
+
+  const description = (input.statusDescription || '').trim();
+  if (description) {
+    return {
+      title: 'Payment not completed',
+      explanation: description,
+      actions: [
+        'Try again with another card or contact your bank.',
+        'Contact our office if you need help.',
+      ],
+    };
+  }
+
+  return {
+    title: 'Payment not completed',
+    explanation: 'The payment was not completed. No charge was made.',
+    actions: [
+      'Click “Try again” below and complete the form in a single browser window.',
+      'Try another card if the problem continues.',
+      'Contact our office for assistance.',
+    ],
+  };
+}
+
+export function getPelecardCancelledCopy(): PelecardFailureCopy {
+  return {
+    title: 'Payment cancelled',
+    explanation: 'You left the payment form before completing the transaction. No charge was made.',
+    actions: [
+      'Click “Back to payment” when you are ready to try again.',
+      'Complete the form in one browser window — avoid opening the link in multiple tabs.',
+    ],
+  };
+}
+
+/** @deprecated Use getPelecardFailureCopy().explanation */
+export function describePelecardFailure(
+  statusCode?: string | null,
+  statusDescription?: string | null,
+): string {
+  return getPelecardFailureCopy({ statusCode, statusDescription }).explanation;
 }
 
 export function logPelecardResult(
   context: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
 ): void {
   if (import.meta.env.DEV) {
     console.info(`[Pelecard] ${context}`, payload);
