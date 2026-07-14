@@ -101,8 +101,8 @@ async function announce(req, res) {
       });
     }
 
-    const { locationId, employeeName } = req.body || {};
-    const event = clockInKioskEvents.announce({ locationId, employeeName });
+    const { locationId, employeeName, photoUrl } = req.body || {};
+    const event = await clockInKioskEvents.announce({ locationId, employeeName, photoUrl });
     res.json({ success: true, event });
   } catch (error) {
     console.error('POST /api/clock-in-kiosk/announce failed:', error);
@@ -117,7 +117,7 @@ async function announce(req, res) {
 async function recentEvent(req, res) {
   try {
     const locationId = req.query.locationId ?? clockInKioskTokenService.DEFAULT_LOCATION_ID;
-    const event = clockInKioskEvents.getRecent(locationId);
+    const event = await clockInKioskEvents.getRecent(locationId);
     res.json({ success: true, event: event || null });
   } catch (error) {
     console.error('GET /api/clock-in-kiosk/recent-event failed:', error);

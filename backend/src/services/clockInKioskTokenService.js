@@ -6,11 +6,19 @@ const GRACE_MS = 60_000;
 const DEFAULT_LOCATION_ID = 1;
 
 function getFrontendBaseUrl() {
-  return (
+  const configured = (
     process.env.FRONTEND_BASE_URL ||
     process.env.PUBLIC_FRONTEND_URL ||
-    'https://rainmakerqueen.org'
-  ).replace(/\/$/, '');
+    ''
+  ).trim();
+  if (configured) return configured.replace(/\/$/, '');
+
+  // Local kiosk/dev: QR must open the same origin the tablet uses, otherwise
+  // the phone announces to production while the tablet polls localhost.
+  if (process.env.NODE_ENV !== 'production') {
+    return 'http://localhost:5173';
+  }
+  return 'https://rainmakerqueen.org';
 }
 
 function buildQrUrl(locationId, token) {

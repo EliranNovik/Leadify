@@ -24,23 +24,36 @@ type EntryStatus =
   | 'no_employee'
   | 'error';
 
-async function resolveEmployeeDisplayName(employeeId: number | null, fallbackEmail?: string | null) {
+async function resolveEmployeeProfile(employeeId: number | null, fallbackEmail?: string | null) {
+  let name = 'Employee';
+  let photoUrl: string | null = null;
+
   if (employeeId != null) {
     const { data } = await supabase
       .from('tenants_employee')
-      .select('display_name, official_name')
+      .select('display_name, official_name, photo_url, photo')
       .eq('id', employeeId)
       .maybeSingle();
-    const name =
-      (data as { official_name?: string | null; display_name?: string | null } | null)?.official_name
-      || (data as { display_name?: string | null } | null)?.display_name;
-    if (name?.trim()) return name.trim();
+    const row = data as {
+      official_name?: string | null;
+      display_name?: string | null;
+      photo_url?: string | null;
+      photo?: string | null;
+    } | null;
+    const resolved =
+      row?.official_name?.trim()
+      || row?.display_name?.trim();
+    if (resolved) name = resolved;
+    const photo = row?.photo_url?.trim() || row?.photo?.trim();
+    if (photo) photoUrl = photo;
   }
-  if (fallbackEmail?.trim()) {
+
+  if (name === 'Employee' && fallbackEmail?.trim()) {
     const local = fallbackEmail.split('@')[0]?.replace(/[._]/g, ' ');
-    if (local) return local.replace(/\b\w/g, (c) => c.toUpperCase());
+    if (local) name = local.replace(/\b\w/g, (c) => c.toUpperCase());
   }
-  return 'Employee';
+
+  return { name, photoUrl };
 }
 
 /**
@@ -120,7 +133,7 @@ const ClockInEntryPage: React.FC = () => {
         return;
       }
 
-      const name = await resolveEmployeeDisplayName(profile.employeeId, session.user.email);
+      const { name, photoUrl } = await resolveEmployeeProfile(profile.employeeId, session.user.email);
       if (cancelled) return;
       setDisplayName(name);
 
@@ -129,6 +142,10 @@ const ClockInEntryPage: React.FC = () => {
       if (alreadyIn) {
         setStatus('already_in');
         setMessage('You are already clocked in.');
+        // Still flash the tablet so staff see the scan worked.
+        void announceClockInKioskSuccess(resolvedLocationId, name, photoUrl).catch((err) => {
+          console.warn('Kiosk announce failed:', err);
+        });
         window.setTimeout(() => navigate('/', { replace: true }), 1400);
         return;
       }
@@ -170,9 +187,11 @@ const ClockInEntryPage: React.FC = () => {
       setStatus('success');
       setMessage('You are clocked in');
 
-      void announceClockInKioskSuccess(resolvedLocationId, name).catch((err) => {
+      try {
+        await announceClockInKioskSuccess(resolvedLocationId, name, photoUrl);
+      } catch (err) {
         console.warn('Kiosk announce failed:', err);
-      });
+      }
 
       // Session is already authenticated; gate will open after this insert.
       clearClockInGateCache();

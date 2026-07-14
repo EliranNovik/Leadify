@@ -11,7 +11,7 @@ import {
 const OFFICE_LABEL = 'RAMAT GAN';
 const QR_RENDER_SIZE = 512;
 const EVENT_POLL_MS = 1_400;
-const SUCCESS_FLASH_MS = 2_800;
+const SUCCESS_FLASH_MS = 3_600;
 
 function formatClock(now: Date) {
   return now.toLocaleTimeString('en-GB', {
@@ -109,25 +109,51 @@ const EntryKioskPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    const poll = window.setInterval(() => {
-      void (async () => {
+    let cancelled = false;
+
+    const applyEvent = (event: ClockInKioskRecentEvent | null | undefined) => {
+      if (!event?.id || event.id === lastEventIdRef.current) return;
+      lastEventIdRef.current = event.id;
+      setSuccessFlash(event);
+      if (successTimerRef.current) window.clearTimeout(successTimerRef.current);
+      successTimerRef.current = window.setTimeout(() => {
+        setSuccessFlash(null);
+      }, SUCCESS_FLASH_MS);
+    };
+
+    const pollOnce = async () => {
+      try {
         const result = await fetchClockInKioskRecentEvent(ENTRY_KIOSK_DEFAULT_LOCATION_ID);
+        if (cancelled) return;
         if (!result.success) {
           setOnline(false);
           return;
         }
         setOnline(true);
-        const event = result.event;
-        if (!event?.id || event.id === lastEventIdRef.current) return;
-        lastEventIdRef.current = event.id;
-        setSuccessFlash(event);
-        if (successTimerRef.current) window.clearTimeout(successTimerRef.current);
-        successTimerRef.current = window.setTimeout(() => {
-          setSuccessFlash(null);
-        }, SUCCESS_FLASH_MS);
-      })();
+        applyEvent(result.event);
+      } catch (err) {
+        if (!cancelled) {
+          console.warn('Kiosk recent-event poll failed:', err);
+          setOnline(false);
+        }
+      }
+    };
+
+    void pollOnce();
+    const poll = window.setInterval(() => {
+      void pollOnce();
     }, EVENT_POLL_MS);
-    return () => window.clearInterval(poll);
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void pollOnce();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(poll);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, []);
 
   const progress = useMemo(() => {
@@ -158,8 +184,71 @@ const EntryKioskPage: React.FC = () => {
           100% { transform: rotate(360deg); }
         }
         @keyframes kiosk-success-in {
-          0% { opacity: 0; transform: scale(0.94); }
-          100% { opacity: 1; transform: scale(1); }
+          0% { opacity: 0; transform: translateY(12px) scale(0.96); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .kiosk-success-backdrop {
+          position: fixed;
+          inset: 0;
+          z-index: 100;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 1.25rem;
+          background: rgba(2, 6, 15, 0.78);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+        }
+        .kiosk-success-card {
+          width: min(420px, 92vw);
+          border-radius: 28px;
+          background: linear-gradient(180deg, #ffffff 0%, #f4f7fb 100%);
+          box-shadow:
+            0 40px 100px rgba(0, 0, 0, 0.55),
+            0 0 0 1px rgba(255, 255, 255, 0.35);
+          padding: 2rem 1.75rem 1.75rem;
+          text-align: center;
+          animation: kiosk-success-in 320ms ease-out;
+        }
+        .kiosk-success-photo {
+          width: 112px;
+          height: 112px;
+          border-radius: 9999px;
+          object-fit: cover;
+          margin: 0 auto;
+          box-shadow: 0 12px 32px rgba(15, 23, 42, 0.25);
+          border: 4px solid #fff;
+          background: #e2e8f0;
+        }
+        .kiosk-success-photo-fallback {
+          width: 112px;
+          height: 112px;
+          border-radius: 9999px;
+          margin: 0 auto;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: linear-gradient(145deg, #1e3a5f, #0f172a);
+          color: #d8b15a;
+          font-size: 2.25rem;
+          font-weight: 700;
+          letter-spacing: 0.04em;
+          box-shadow: 0 12px 32px rgba(15, 23, 42, 0.25);
+          border: 4px solid #fff;
+        }
+        .kiosk-success-check {
+          width: 2.25rem;
+          height: 2.25rem;
+          border-radius: 9999px;
+          background: #10b981;
+          color: #fff;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 8px 20px rgba(16, 185, 129, 0.45);
+          margin: -1.15rem auto 0.85rem;
+          position: relative;
+          z-index: 1;
         }
 
         /*
@@ -355,24 +444,46 @@ const EntryKioskPage: React.FC = () => {
       `}</style>
 
       {successFlash ? (
-        <div
-          className="absolute inset-0 z-30 flex flex-col items-center justify-center px-4 sm:px-6"
-          style={{
-            background:
-              'radial-gradient(ellipse at 50% 40%, rgba(20, 45, 90, 0.55), rgba(2, 6, 15, 0.92))',
-            animation: 'kiosk-success-in 280ms ease-out',
-          }}
-        >
-          <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/20 ring-2 ring-emerald-400/70 sm:mb-6 sm:h-20 sm:w-20">
-            <CheckIcon className="h-8 w-8 text-emerald-400 sm:h-10 sm:w-10" strokeWidth={2.5} />
+        <div className="kiosk-success-backdrop" role="dialog" aria-live="polite" aria-label="Employee clocked in">
+          <div className="kiosk-success-card">
+            {successFlash.photoUrl ? (
+              <img
+                src={successFlash.photoUrl}
+                alt=""
+                className="kiosk-success-photo"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                  const fallback = e.currentTarget.nextElementSibling;
+                  if (fallback instanceof HTMLElement) fallback.style.display = 'flex';
+                }}
+              />
+            ) : null}
+            <div
+              className="kiosk-success-photo-fallback"
+              style={successFlash.photoUrl ? { display: 'none' } : undefined}
+              aria-hidden={Boolean(successFlash.photoUrl)}
+            >
+              {(successFlash.employeeName || 'E')
+                .split(/\s+/)
+                .filter(Boolean)
+                .slice(0, 2)
+                .map((part) => part[0]?.toUpperCase() ?? '')
+                .join('') || '•'}
+            </div>
+            <div className="kiosk-success-check" aria-hidden>
+              <CheckIcon className="h-5 w-5" strokeWidth={2.75} />
+            </div>
+            <p className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
+              {successFlash.employeeName || 'Employee'}
+            </p>
+            <p className="mt-2 text-sm font-semibold uppercase tracking-[0.16em] text-emerald-600">
+              Clocked in
+            </p>
+            <p className="mt-5 text-4xl font-semibold tabular-nums text-slate-800 sm:text-5xl">
+              {formatClock(new Date(successFlash.at || Date.now()))}
+            </p>
+            <p className="mt-3 text-xs text-slate-500 sm:text-sm">Welcome to the office</p>
           </div>
-          <p className="max-w-[90vw] truncate text-2xl font-bold tracking-tight text-white sm:text-4xl">
-            {successFlash.employeeName}
-          </p>
-          <p className="mt-2 text-base text-emerald-300/90 sm:text-lg">Clocked in</p>
-          <p className="mt-4 text-3xl font-semibold tabular-nums text-white/95 sm:mt-6 sm:text-5xl">
-            {formatClock(new Date(successFlash.at))}
-          </p>
         </div>
       ) : null}
 
