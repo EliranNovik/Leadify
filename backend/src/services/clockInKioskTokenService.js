@@ -6,11 +6,19 @@ const GRACE_MS = 60_000;
 const DEFAULT_LOCATION_ID = 1;
 
 function getFrontendBaseUrl() {
-  return (
-    process.env.FRONTEND_BASE_URL ||
-    process.env.PUBLIC_FRONTEND_URL ||
-    'https://rainmakerqueen.org'
-  ).replace(/\/$/, '');
+  const candidates = [
+    process.env.FRONTEND_BASE_URL,
+    process.env.PUBLIC_FRONTEND_URL,
+    process.env.FRONTEND_URL,
+  ];
+  for (const raw of candidates) {
+    const value = String(raw || '').trim().replace(/\/$/, '');
+    if (!value) continue;
+    // Never encode localhost into phone QR codes.
+    if (/localhost|127\.0\.0\.1/i.test(value)) continue;
+    return value;
+  }
+  return 'https://rainmakerqueen.org';
 }
 
 function buildQrUrl(locationId, token) {

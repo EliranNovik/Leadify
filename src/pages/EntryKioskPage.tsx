@@ -5,6 +5,7 @@ import {
   ENTRY_KIOSK_DEFAULT_LOCATION_ID,
   fetchClockInKioskCurrent,
   fetchClockInKioskRecentEvent,
+  toPublicClockInQrUrl,
   type ClockInKioskRecentEvent,
 } from '../lib/clockInKioskApi';
 
@@ -55,7 +56,7 @@ const EntryKioskPage: React.FC = () => {
         setOnline(false);
         return;
       }
-      setQrUrl(result.qrUrl);
+      setQrUrl(toPublicClockInQrUrl(result.qrUrl));
       setError(null);
       setOnline(true);
       const nextRotate = Math.max(1_000, Number(result.rotateInMs) || 15_000);

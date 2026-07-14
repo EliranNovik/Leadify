@@ -1,6 +1,26 @@
-import { buildApiUrl } from './api';
+import { buildApiUrl, getFrontendBaseUrl } from './api';
 
 export const ENTRY_KIOSK_DEFAULT_LOCATION_ID = 1;
+
+/**
+ * Phone-facing QR links must always open the public production site —
+ * never localhost — even if the kiosk tablet itself is running locally.
+ */
+export function toPublicClockInQrUrl(qrUrl: string): string {
+  try {
+    const parsed = new URL(qrUrl, 'https://rainmakerqueen.org');
+    const token = (parsed.searchParams.get('token') || '').trim();
+    const locationId = (parsed.searchParams.get('locationId') || String(ENTRY_KIOSK_DEFAULT_LOCATION_ID)).trim();
+    if (!token) return `${getFrontendBaseUrl()}/clock-in/entry`;
+    const params = new URLSearchParams({
+      locationId,
+      token,
+    });
+    return `${getFrontendBaseUrl()}/clock-in/entry?${params.toString()}`;
+  } catch {
+    return qrUrl;
+  }
+}
 
 export type ClockInKioskCurrentResponse = {
   success: boolean;
